@@ -1,0 +1,1203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Profile - Resume Sender</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary-color: #1e40af;
+            --primary-hover: #1e3a8a;
+            --secondary-color: #059669;
+            --secondary-hover: #047857;
+            --danger-color: #dc2626;
+            --bg-color: #f8fafc;
+            --card-bg: #FFFFFF;
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --border-color: #e2e8f0;
+            --accent-color: #3b82f6;
+            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+            --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg-color);
+            min-height: 100vh;
+            color: var(--text-primary);
+        }
+
+        .navbar {
+            background: white;
+            border-bottom: 1px solid var(--border-color);
+            padding: 16px 0;
+            box-shadow: var(--shadow);
+        }
+
+        .navbar-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .navbar-brand {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+
+        .back-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            color: var(--text-primary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .back-btn:hover {
+            background: white;
+            border-color: var(--primary-color);
+            color: var(--primary-color);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 32px 24px;
+        }
+
+        .profile-header {
+            background: white;
+            border-radius: 12px;
+            padding: 32px;
+            box-shadow: var(--shadow);
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .profile-avatar-large {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 2.5rem;
+            font-weight: 600;
+            flex-shrink: 0;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .profile-avatar-large img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        .profile-info {
+            flex: 1;
+        }
+
+        .profile-name {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .profile-email {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+        }
+
+        .profile-stats {
+            display: flex;
+            gap: 24px;
+            margin-top: 16px;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+
+        .stat-value {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .content-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: var(--shadow);
+        }
+
+        .card.full-width {
+            grid-column: 1 / -1;
+        }
+
+        .card-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-icon {
+            font-size: 1.25rem;
+        }
+
+        .upload-zone {
+            border: 2px dashed var(--border-color);
+            border-radius: 8px;
+            padding: 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: var(--bg-color);
+            position: relative;
+            min-height: 120px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .upload-zone:hover {
+            border-color: var(--primary-color);
+            background: white;
+        }
+
+        .upload-zone.has-file {
+            border-style: solid;
+            border-color: var(--secondary-color);
+            background: #f0fdf4;
+        }
+
+        .upload-zone.has-file.show-icon {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .upload-zone.has-preview {
+            padding: 0;
+            min-height: 150px;
+        }
+
+        .upload-icon-large {
+            font-size: 2.5rem;
+            margin-bottom: 12px;
+            color: var(--text-secondary);
+        }
+
+        .upload-title {
+            font-size: 0.9375rem;
+            font-weight: 500;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .upload-subtitle {
+            font-size: 0.8125rem;
+            color: var(--text-secondary);
+        }
+
+        .image-preview {
+            width: 100%;
+            height: 100%;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            min-height: 150px;
+        }
+
+        .image-preview.active {
+            display: flex;
+        }
+
+        .preview-photo {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 4px solid white;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        .preview-signature {
+            max-width: 100%;
+            max-height: 100px;
+            object-fit: contain;
+            padding: 16px;
+        }
+
+        .preview-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            border-radius: 8px;
+        }
+
+        .upload-zone:hover .preview-overlay {
+            opacity: 1;
+        }
+
+        .change-btn {
+            background: white;
+            color: var(--text-primary);
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        .resume-info-card {
+            background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+            border: 1px solid #86efac;
+            border-radius: 8px;
+            padding: 16px;
+            display: none;
+            margin-top: 16px;
+        }
+
+        .resume-info-card.active {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .resume-doc-icon {
+            width: 48px;
+            height: 48px;
+            background: white;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
+
+        .resume-details {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .resume-filename {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .resume-meta {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .btn-primary {
+            background: var(--primary-color);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: background 0.2s ease;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-hover);
+        }
+
+        .btn-secondary {
+            background: white;
+            color: var(--text-primary);
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            border: 1px solid var(--border-color);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-secondary:hover {
+            border-color: var(--primary-color);
+            color: var(--primary-color);
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 12px;
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .upload-content {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .upload-content.hidden {
+            display: none;
+        }
+
+        @media (max-width: 768px) {
+            .content-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .profile-header {
+                flex-direction: column;
+                text-align: center;
+            }
+
+            .profile-stats {
+                justify-content: center;
+            }
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: white;
+            padding: 16px 20px;
+            border-radius: 8px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 300px;
+            transform: translateX(400px);
+            transition: transform 0.3s ease;
+            z-index: 1000;
+        }
+
+        .toast.show {
+            transform: translateX(0);
+        }
+
+        .toast.success {
+            border-left: 4px solid var(--secondary-color);
+        }
+
+        .toast.error {
+            border-left: 4px solid var(--danger-color);
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 0.9375rem;
+            color: var(--text-primary);
+            transition: all 0.2s ease;
+            background: white;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(30, 64, 175, 0.1);
+        }
+
+        .form-input:disabled {
+            background: var(--bg-color);
+            color: var(--text-secondary);
+            cursor: not-allowed;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        @media (max-width: 640px) {
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .pdf-icon-display {
+            font-size: 3rem;
+            margin-bottom: 8px;
+        }
+
+        .file-type-text {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar">
+        <div class="navbar-content">
+            <a href="/" class="navbar-brand">Resume Sender</a>
+            <a href="/index.html" class="back-btn">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Back to Dashboard
+            </a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- Profile Header -->
+        <div class="profile-header">
+            <div class="profile-avatar-large" id="profileAvatar"></div>
+            <div class="profile-info">
+                <h1 class="profile-name" id="profileName">Loading...</h1>
+                <div class="profile-email" id="profileEmail">loading@example.com</div>
+                <div class="profile-stats">
+                    <div class="stat-item">
+                        <div class="stat-label">Member Since</div>
+                        <div class="stat-value" id="memberSince">-</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Account Status</div>
+                        <div class="stat-value" style="color: var(--secondary-color);">Active</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Content Grid -->
+        <div class="content-grid">
+            <!-- User Details Section -->
+            <div class="card full-width">
+                <h2 class="card-title">
+                    <span class="card-icon">👤</span>
+                    Personal Information
+                </h2>
+                <form id="userDetailsForm" onsubmit="event.preventDefault(); updateUserDetails();">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Full Name</label>
+                            <input type="text" id="fullName" class="form-input" placeholder="John Doe" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Email Address</label>
+                            <input type="email" id="userEmail" class="form-input" placeholder="john@example.com" disabled>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Date of Birth</label>
+                            <input type="date" id="dateOfBirth" class="form-input">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Phone Number</label>
+                            <input type="tel" id="phoneNumber" class="form-input" placeholder="+1 (555) 000-0000">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Zip Code</label>
+                            <input type="text" id="zipcode" class="form-input" placeholder="10001" oninput="lookupLocation()">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">City</label>
+                            <input type="text" id="city" class="form-input" placeholder="New York">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Country</label>
+                            <select id="country" class="form-input">
+                                <option value="">Select Country</option>
+                                <option value="United States">United States</option>
+                                <option value="United Kingdom">United Kingdom</option>
+                                <option value="Canada">Canada</option>
+                                <option value="Australia">Australia</option>
+                                <option value="Germany">Germany</option>
+                                <option value="France">France</option>
+                                <option value="India">India</option>
+                                <option value="China">China</option>
+                                <option value="Japan">Japan</option>
+                                <option value="Brazil">Brazil</option>
+                                <option value="Mexico">Mexico</option>
+                                <option value="Spain">Spain</option>
+                                <option value="Italy">Italy</option>
+                                <option value="Netherlands">Netherlands</option>
+                                <option value="Switzerland">Switzerland</option>
+                                <option value="Sweden">Sweden</option>
+                                <option value="Norway">Norway</option>
+                                <option value="Denmark">Denmark</option>
+                                <option value="Finland">Finland</option>
+                                <option value="Belgium">Belgium</option>
+                                <option value="Austria">Austria</option>
+                                <option value="Poland">Poland</option>
+                                <option value="Russia">Russia</option>
+                                <option value="Turkey">Turkey</option>
+                                <option value="South Korea">South Korea</option>
+                                <option value="Singapore">Singapore</option>
+                                <option value="Malaysia">Malaysia</option>
+                                <option value="Thailand">Thailand</option>
+                                <option value="Indonesia">Indonesia</option>
+                                <option value="Philippines">Philippines</option>
+                                <option value="Vietnam">Vietnam</option>
+                                <option value="Pakistan">Pakistan</option>
+                                <option value="Bangladesh">Bangladesh</option>
+                                <option value="Saudi Arabia">Saudi Arabia</option>
+                                <option value="United Arab Emirates">United Arab Emirates</option>
+                                <option value="Israel">Israel</option>
+                                <option value="South Africa">South Africa</option>
+                                <option value="Egypt">Egypt</option>
+                                <option value="Nigeria">Nigeria</option>
+                                <option value="Argentina">Argentina</option>
+                                <option value="Chile">Chile</option>
+                                <option value="Colombia">Colombia</option>
+                                <option value="Peru">Peru</option>
+                                <option value="New Zealand">New Zealand</option>
+                                <option value="Ireland">Ireland</option>
+                                <option value="Portugal">Portugal</option>
+                                <option value="Greece">Greece</option>
+                                <option value="Czech Republic">Czech Republic</option>
+                                <option value="Hungary">Hungary</option>
+                                <option value="Romania">Romania</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Address</label>
+                        <input type="text" id="address" class="form-input" placeholder="123 Main Street, Apt 4B">
+                    </div>
+                    <button type="submit" class="btn-primary">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M13 2L6 9L3 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        Update Information
+                    </button>
+                </form>
+            </div>
+
+            <!-- Resume Upload -->
+            <div class="card">
+                <h2 class="card-title">
+                    <span class="card-icon">📄</span>
+                    Resume Document
+                </h2>
+                <div class="upload-zone" id="resumeUpload" onclick="document.getElementById('resumeFile').click()">
+                    <div class="upload-content" id="resumeUploadContent">
+                        <div class="upload-icon-large">📄</div>
+                        <div class="upload-title">Upload Resume</div>
+                        <div class="upload-subtitle">PDF format recommended</div>
+                    </div>
+                    <div class="upload-content hidden" id="resumeIconDisplay">
+                        <div class="pdf-icon-display">📑</div>
+                        <div class="file-type-text">PDF Document</div>
+                    </div>
+                </div>
+                <input type="file" id="resumeFile" accept=".pdf" style="display: none;" onchange="handleResumeUpload(event)">
+                
+                <div class="resume-info-card" id="resumeInfo">
+                    <div class="resume-doc-icon">📄</div>
+                    <div class="resume-details">
+                        <div class="resume-filename" id="resumeFilename">Resume.pdf</div>
+                        <div class="resume-meta" id="resumeMeta">Uploaded recently</div>
+                    </div>
+                    <a id="resumeDownload" class="btn-primary" download>
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M8 11L4 7M8 11L12 7M8 11V1M1 15H15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        Download
+                    </a>
+                </div>
+            </div>
+
+            <!-- Profile Picture Upload -->
+            <div class="card">
+                <h2 class="card-title">
+                    <span class="card-icon">📷</span>
+                    Profile Picture
+                </h2>
+                <div class="upload-zone has-preview" id="photoUpload" onclick="document.getElementById('photoFile').click()">
+                    <div class="upload-content" id="photoUploadContent">
+                        <div class="upload-icon-large">📷</div>
+                        <div class="upload-title">Upload Photo</div>
+                        <div class="upload-subtitle">JPG or PNG format</div>
+                    </div>
+                    <div class="image-preview" id="photoPreview">
+                        <img id="photoPreviewImg" class="preview-photo" alt="Profile Photo">
+                        <div class="preview-overlay">
+                            <button class="change-btn" onclick="event.stopPropagation(); document.getElementById('photoFile').click();">Change Photo</button>
+                        </div>
+                    </div>
+                </div>
+                <input type="file" id="photoFile" accept="image/*" style="display: none;" onchange="handlePhotoUpload(event)">
+            </div>
+
+            <!-- Signature Upload -->
+            <div class="card full-width">
+                <h2 class="card-title">
+                    <span class="card-icon">✍️</span>
+                    Digital Signature
+                </h2>
+                <div class="upload-zone has-preview" id="signatureUpload" onclick="document.getElementById('signatureFile').click()">
+                    <div class="upload-content" id="signatureUploadContent">
+                        <div class="upload-icon-large">✍️</div>
+                        <div class="upload-title">Upload Signature</div>
+                        <div class="upload-subtitle">PNG with transparent background</div>
+                    </div>
+                    <div class="image-preview" id="signaturePreview">
+                        <img id="signaturePreviewImg" class="preview-signature" alt="Signature">
+                        <div class="preview-overlay">
+                            <button class="change-btn" onclick="event.stopPropagation(); document.getElementById('signatureFile').click();">Change Signature</button>
+                        </div>
+                    </div>
+                </div>
+                <input type="file" id="signatureFile" accept="image/*" style="display: none;" onchange="handleSignatureUpload(event)">
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="card" style="margin-top: 24px;">
+            <div class="action-buttons">
+                <button class="btn-primary" onclick="saveProfile()">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M13 2L6 9L3 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Save Changes
+                </button>
+                <button class="btn-secondary" onclick="window.location.href='/index.html'">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let resumeFile = null;
+        let photoFile = null;
+        let signatureFile = null;
+
+        // Authentication check
+        const authToken = localStorage.getItem('authToken');
+        if (!authToken) {
+            window.location.href = '/login.html';
+        }
+
+        // Load user data on page load
+        window.addEventListener('DOMContentLoaded', async () => {
+            await loadUserProfile();
+        });
+
+        async function loadUserProfile() {
+            try {
+                const token = localStorage.getItem('authToken');
+                const response = await fetch('/api/user-profile', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    const profile = data.profile;
+                    
+                    console.log('Profile loaded:', profile);
+                    console.log('Full Name:', profile.fullName);
+                    console.log('Created At:', profile.createdAt);
+                    
+                    // Update user details form
+                    document.getElementById('fullName').value = profile.fullName || '';
+                    document.getElementById('userEmail').value = profile.email || '';
+                    document.getElementById('dateOfBirth').value = profile.dateOfBirth || '';
+                    document.getElementById('phoneNumber').value = profile.phoneNumber || '';
+                    document.getElementById('zipcode').value = profile.zipcode || '';
+                    document.getElementById('city').value = profile.city || '';
+                    document.getElementById('country').value = profile.country || '';
+                    document.getElementById('address').value = profile.address || '';
+                    
+                    // Update profile header
+                    const fullName = profile.fullName || profile.senderName || 'User';
+                    console.log('Using name:', fullName);
+                    document.getElementById('profileName').textContent = fullName;
+                    document.getElementById('profileEmail').textContent = profile.email || '';
+                    
+                    // Update avatar with initials first
+                    const initials = fullName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+                    const avatarElement = document.getElementById('profileAvatar');
+                    avatarElement.textContent = initials;
+                    
+                    // Update member since
+                    if (profile.createdAt) {
+                        console.log('Setting member since for date:', profile.createdAt);
+                        const date = new Date(profile.createdAt);
+                        console.log('Parsed date:', date);
+                        const formattedDate = date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+                        console.log('Formatted date:', formattedDate);
+                        const memberSinceElement = document.getElementById('memberSince');
+                        console.log('Member since element:', memberSinceElement);
+                        memberSinceElement.textContent = formattedDate;
+                        console.log('Member since updated to:', memberSinceElement.textContent);
+                    } else {
+                        console.log('No createdAt date found in profile');
+                    }
+                    
+                    // Load resume
+                    if (profile.resumePath) {
+                        const fileName = profile.resumePath.split('/').pop();
+                        const userName = profile.fullName || 'Resume';
+                        
+                        // Extract date from filename
+                        const dateMatch = fileName.match(/(\d{13})/);
+                        let date;
+                        if (dateMatch) {
+                            date = new Date(parseInt(dateMatch[1])).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                        } else {
+                            date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                        }
+                        
+                        const shortName = `${userName.replace(/\s+/g, '_')}_${date.replace(/\s+/g, '_')}.pdf`;
+                        
+                        document.getElementById('resumeFilename').textContent = shortName;
+                        document.getElementById('resumeMeta').textContent = `Uploaded: ${date}`;
+                        document.getElementById('resumeInfo').classList.add('active');
+                        document.getElementById('resumeUpload').classList.add('has-file', 'show-icon');
+                        document.getElementById('resumeUploadContent').classList.add('hidden');
+                        document.getElementById('resumeIconDisplay').classList.remove('hidden');
+                        
+                        // Set download link
+                        const resumePath = '/' + profile.resumePath;
+                        document.getElementById('resumeDownload').href = resumePath;
+                        document.getElementById('resumeDownload').download = shortName;
+                    }
+                    
+                    // Load photo
+                    if (profile.photoPath) {
+                        const photoPath = profile.photoPath.replace('uploads/', '/uploads/');
+                        const imageResponse = await fetch(photoPath, {
+                            headers: { 'Authorization': `Bearer ${token}` }
+                        });
+                        
+                        if (imageResponse.ok) {
+                            const blob = await imageResponse.blob();
+                            const dataUrl = await blobToDataURL(blob);
+                            
+                            // Update header avatar with photo
+                            avatarElement.innerHTML = `<img src="${dataUrl}" alt="Profile Photo">`;
+                            
+                            // Update profile picture section
+                            document.getElementById('photoPreviewImg').src = dataUrl;
+                            document.getElementById('photoUploadContent').classList.add('hidden');
+                            document.getElementById('photoPreview').classList.add('active');
+                        }
+                    }
+                    
+                    // Load signature
+                    if (profile.signaturePath) {
+                        const signaturePath = profile.signaturePath.replace('uploads/', '/uploads/');
+                        const imageResponse = await fetch(signaturePath, {
+                            headers: { 'Authorization': `Bearer ${token}` }
+                        });
+                        
+                        if (imageResponse.ok) {
+                            const blob = await imageResponse.blob();
+                            const dataUrl = await blobToDataURL(blob);
+                            
+                            document.getElementById('signaturePreviewImg').src = dataUrl;
+                            document.getElementById('signatureUploadContent').classList.add('hidden');
+                            document.getElementById('signaturePreview').classList.add('active');
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading profile:', error);
+            }
+        }
+
+        function blobToDataURL(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        function handleResumeUpload(event) {
+            const file = event.target.files[0];
+            if (file) {
+                resumeFile = file;
+                const userName = document.getElementById('profileName').textContent || 'Resume';
+                const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                const shortName = `${userName.replace(/\s+/g, '_')}_${date.replace(/\s+/g, '_')}.pdf`;
+                
+                document.getElementById('resumeFilename').textContent = shortName;
+                document.getElementById('resumeMeta').textContent = `Uploaded: ${date}`;
+                document.getElementById('resumeInfo').classList.add('active');
+                document.getElementById('resumeUpload').classList.add('has-file', 'show-icon');
+                document.getElementById('resumeUploadContent').classList.add('hidden');
+                document.getElementById('resumeIconDisplay').classList.remove('hidden');
+                
+                const blobUrl = URL.createObjectURL(file);
+                document.getElementById('resumeDownload').href = blobUrl;
+                document.getElementById('resumeDownload').download = shortName;
+            }
+        }
+
+        function handlePhotoUpload(event) {
+            const file = event.target.files[0];
+            if (file) {
+                photoFile = file;
+                
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const dataUrl = e.target.result;
+                    
+                    // Update profile picture section
+                    document.getElementById('photoPreviewImg').src = dataUrl;
+                    document.getElementById('photoUploadContent').classList.add('hidden');
+                    document.getElementById('photoPreview').classList.add('active');
+                    
+                    // Update header avatar
+                    const avatarElement = document.getElementById('profileAvatar');
+                    avatarElement.innerHTML = `<img src="${dataUrl}" alt="Profile Photo">`;
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        function handleSignatureUpload(event) {
+            const file = event.target.files[0];
+            if (file) {
+                signatureFile = file;
+                
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    document.getElementById('signaturePreviewImg').src = e.target.result;
+                    document.getElementById('signatureUploadContent').classList.add('hidden');
+                    document.getElementById('signaturePreview').classList.add('active');
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        async function saveProfile() {
+            const formData = new FormData();
+            
+            if (resumeFile) formData.append('resume', resumeFile);
+            if (photoFile) formData.append('photo', photoFile);
+            if (signatureFile) formData.append('signature', signatureFile);
+
+            if (!resumeFile && !photoFile && !signatureFile) {
+                showToast('No changes to save', 'error');
+                return;
+            }
+
+            try {
+                const token = localStorage.getItem('authToken');
+                const response = await fetch('/api/upload-profile', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: formData,
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    showToast('Profile updated successfully!', 'success');
+                    
+                    resumeFile = null;
+                    photoFile = null;
+                    signatureFile = null;
+                    
+                    document.getElementById('resumeFile').value = '';
+                    document.getElementById('photoFile').value = '';
+                    document.getElementById('signatureFile').value = '';
+                    
+                    await loadUserProfile();
+                } else {
+                    showToast(result.error || 'Failed to upload files', 'error');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                showToast('Failed to upload files. Please try again.', 'error');
+            }
+        }
+
+        // Debounce timer for zipcode lookup
+        let zipcodeTimeout;
+
+        async function lookupLocation() {
+            const zipcode = document.getElementById('zipcode').value.trim();
+            
+            // Clear previous timeout
+            if (zipcodeTimeout) {
+                clearTimeout(zipcodeTimeout);
+            }
+
+            // Only lookup if zipcode has at least 3 characters
+            if (zipcode.length < 3) {
+                return;
+            }
+
+            // Debounce for 500ms
+            zipcodeTimeout = setTimeout(async () => {
+                try {
+                    let cityName = '';
+                    let countryName = '';
+                    
+                    // For Indian pincodes (6 digits), use OpenStreetMap Nominatim API directly
+                    if (/^\d{6}$/.test(zipcode)) {
+                        try {
+                            const nominatimResponse = await fetch(
+                                `https://nominatim.openstreetmap.org/search?postalcode=${zipcode}&country=India&format=json&addressdetails=1&limit=1`,
+                                { headers: { 'User-Agent': 'ResumeApp/1.0' } }
+                            );
+                            
+                            if (nominatimResponse.ok) {
+                                const nominatimData = await nominatimResponse.json();
+                                if (nominatimData && nominatimData.length > 0) {
+                                    const address = nominatimData[0].address;
+                                    cityName = address.city || address.town || address.state_district || address.state || '';
+                                    countryName = 'India';
+                                    
+                                    console.log('Nominatim response:', nominatimData[0]);
+                                    
+                                    if (cityName) {
+                                        document.getElementById('city').value = cityName;
+                                        document.getElementById('country').value = countryName;
+                                        return; // Success, exit early
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            console.log('Nominatim lookup failed, trying Zippopotam:', e);
+                        }
+                    }
+                    
+                    // Fallback to Zippopotam for non-Indian pincodes or if Nominatim fails
+                    const countryCodes = ['us', 'in', 'gb', 'ca', 'au', 'de', 'fr'];
+                    let data = null;
+                    let foundCountryCode = null;
+                    
+                    for (const countryCode of countryCodes) {
+                        try {
+                            const response = await fetch(`https://api.zippopotam.us/${countryCode}/${zipcode}`);
+                            if (response.ok) {
+                                data = await response.json();
+                                foundCountryCode = countryCode;
+                                break;
+                            }
+                        } catch (e) {
+                            continue;
+                        }
+                    }
+
+                    if (data && data.places && data.places.length > 0) {
+                        console.log('Zipcode API response:', data);
+                        
+                        const place = data.places[0];
+                        
+                        // For US and other countries, use place name directly
+                        if (foundCountryCode === 'us') {
+                            cityName = place['place name'];
+                        } else if (foundCountryCode === 'gb' || foundCountryCode === 'uk') {
+                            cityName = place['place name'];
+                        } else if (foundCountryCode === 'in') {
+                            // For India via Zippopotam, try reverse geocoding
+                            try {
+                                const geoResponse = await fetch(
+                                    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${place.latitude}&lon=${place.longitude}&zoom=10&addressdetails=1`,
+                                    { headers: { 'User-Agent': 'ResumeApp/1.0' } }
+                                );
+                                if (geoResponse.ok) {
+                                    const geoData = await geoResponse.json();
+                                    cityName = geoData.address.city || geoData.address.town || 
+                                              geoData.address.state_district || place['state'];
+                                } else {
+                                    cityName = place['state'];
+                                }
+                            } catch (e) {
+                                cityName = place['state'];
+                            }
+                        } else {
+                            cityName = place['place name'] || place['state'];
+                        }
+                        
+                        document.getElementById('city').value = cityName;
+                        
+                        // Set country
+                        if (data.country) {
+                            const countrySelect = document.getElementById('country');
+                            const countryMap = {
+                                'United States': 'United States',
+                                'India': 'India',
+                                'United Kingdom': 'United Kingdom',
+                                'Canada': 'Canada',
+                                'Australia': 'Australia',
+                                'Germany': 'Germany',
+                                'France': 'France'
+                            };
+                            
+                            const mappedCountry = countryMap[data.country] || data.country;
+                            
+                            // Set the country if it exists in dropdown
+                            for (let option of countrySelect.options) {
+                                if (option.value === mappedCountry) {
+                                    countrySelect.value = mappedCountry;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.log('Zipcode lookup failed:', error);
+                }
+            }, 500);
+        }
+
+        async function updateUserDetails() {
+            const fullName = document.getElementById('fullName').value.trim();
+            const dateOfBirth = document.getElementById('dateOfBirth').value;
+            const phoneNumber = document.getElementById('phoneNumber').value.trim();
+            const zipcode = document.getElementById('zipcode').value.trim();
+            const city = document.getElementById('city').value.trim();
+            const country = document.getElementById('country').value;
+            const address = document.getElementById('address').value.trim();
+
+            if (!fullName) {
+                showToast('Full name is required', 'error');
+                return;
+            }
+
+            try {
+                const token = localStorage.getItem('authToken');
+                const response = await fetch('/api/update-user-details', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        fullName,
+                        dateOfBirth,
+                        phoneNumber,
+                        zipcode,
+                        city,
+                        country,
+                        address
+                    })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    showToast('Personal information updated successfully!', 'success');
+                    await loadUserProfile();
+                } else {
+                    showToast(result.error || 'Failed to update information', 'error');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                showToast('Failed to update information. Please try again.', 'error');
+            }
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => toast.classList.add('show'), 100);
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+    </script>
+</body>
+</html>

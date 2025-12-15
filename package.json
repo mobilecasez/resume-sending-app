@@ -1,0 +1,44 @@
+{
+  "name": "resume-sending-app",
+  "version": "2.0.0",
+  "description": "Application to generate custom cover letters for each company and send them with resumes via email",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "generate": "node create-cover-letter.js",
+    "apply": "node apply.js",
+    "test": "node index.js"
+  },
+  "keywords": [
+    "pdf",
+    "resume",
+    "email",
+    "nodemailer",
+    "job-application"
+  ],
+  "author": "Rishi Samadhiya",
+  "license": "MIT",
+  "dependencies": {
+    "@vitalets/google-translate-api": "^9.2.1",
+    "axios": "^1.13.2",
+    "axios-retry": "^4.5.0",
+    "bcryptjs": "^3.0.3",
+    "cheerio": "^1.1.2",
+    "cookie-parser": "^1.4.7",
+    "crypto-js": "^4.2.0",
+    "dotenv": "^16.3.1",
+    "express": "^5.2.1",
+    "express-session": "^1.18.2",
+    "hummus": "^1.0.118",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.0.2",
+    "nodemailer": "^6.9.7",
+    "openai": "^6.10.0",
+    "pdf-lib": "^1.17.1",
+    "pdf-parse": "^1.1.4",
+    "pdf2json": "^4.0.0",
+    "sharp": "^0.34.5",
+    "sqlite3": "^5.1.7"
+  }
+}

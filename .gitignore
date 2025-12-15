@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.temp
+
+# Generated files
+Cover_Letter_*.pdf
+temp_*.pdf
+*.tmp
+
+# Temp folder
+temp/
+
+# User uploads (contains sensitive user data)
+uploads/
+
+# Database (contains user credentials)
+database.db
+
+# Application logs
+applications.log
+
+# Personal files
+companies.json
+your_resume.pdf
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build files
+dist/
+build/
+
+# Logs
+logs/
+*.log

@@ -1,0 +1,29 @@
+# Example Companies Configuration
+# Copy this file to companies.json and customize it
+
+[
+  {
+    "companyName": "Google",
+    "position": "Senior Software Engineer",
+    "recipientEmail": "hiring@google.com",
+    "recipientName": "Hiring Manager",
+    "companyParagraph": "I am particularly drawn to Google's mission to organize the world's information and make it universally accessible. Your commitment to innovation and creating products that impact billions of users aligns perfectly with my passion for building scalable solutions.",
+    "relevantSkills": "Python, Go, distributed systems, Kubernetes, microservices"
+  },
+  {
+    "companyName": "Microsoft",
+    "position": "Software Development Engineer",
+    "recipientEmail": "careers@microsoft.com",
+    "recipientName": "Hiring Manager",
+    "companyParagraph": "Microsoft's transformation into a cloud-first company and your commitment to empowering every person and organization on the planet resonates deeply with my career goals. I'm excited about the opportunity to contribute to Azure and developer tools.",
+    "relevantSkills": "C#, .NET, Azure, TypeScript, React"
+  },
+  {
+    "companyName": "Amazon",
+    "position": "SDE II",
+    "recipientEmail": "aws-jobs@amazon.com",
+    "recipientName": "Hiring Manager",
+    "companyParagraph": "Amazon's customer obsession and ownership principles align perfectly with my approach to software development. I'm particularly excited about AWS's role in transforming how businesses operate in the cloud.",
+    "relevantSkills": "Java, AWS, DynamoDB, Lambda, microservices architecture"
+  }
+]
