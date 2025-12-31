@@ -14,6 +14,17 @@ class AICoverLetterGenerator {
     constructor() {
         // Will use OpenAI API if key is provided, otherwise uses template-based generation
         this.openaiApiKey = process.env.OPENAI_API_KEY || null;
+        
+        // List of invalid/generic words that should NEVER be used as company names
+        this.invalidCompanyNames = [
+            'home', 'careers', 'jobs', 'career', 'job', 'welcome', 'hiring', 
+            'about', 'contact', 'login', 'register', 'apply', 'search',
+            'opportunities', 'vacancy', 'vacancies', 'positions', 'openings',
+            'work', 'employment', 'recruit', 'recruiting', 'recruitment',
+            'talent', 'join', 'team', 'culture', 'benefits', 'company',
+            'undefined', 'null', 'error', 'page', 'website', 'site',
+            'the company', 'our company', 'employer', 'organization'
+        ];
     }
 
     /**
@@ -158,21 +169,108 @@ class AICoverLetterGenerator {
     }
 
     /**
+     * Check if a string is a valid company name (not generic/invalid)
+     */
+    isValidCompanyName(name) {
+        if (!name || typeof name !== 'string') return false;
+        const cleaned = name.trim().toLowerCase();
+        if (cleaned.length < 2) return false;
+        if (this.invalidCompanyNames.includes(cleaned)) return false;
+        if (/^\d+$/.test(cleaned)) return false;
+        return true;
+    }
+    
+    /**
+     * Extract company name from URL with smart parsing
+     */
+    extractCompanyFromUrl(url) {
+        try {
+            const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
+            let hostname = urlObj.hostname.replace('www.', '').toLowerCase();
+            let name = hostname.split('.')[0];
+            
+            // Common job portal patterns
+            const jobPatterns = [
+                /^jobsat(.+)$/i,
+                /^workat(.+)$/i,
+                /^careerat(.+)$/i,
+                /^careersat(.+)$/i,
+                /^join(.+)$/i,
+                /^(.+)careers$/i,
+                /^(.+)jobs$/i,
+                /^(.+)career$/i,
+                /^(.+)hiring$/i,
+            ];
+            
+            for (const pattern of jobPatterns) {
+                const match = name.match(pattern);
+                if (match && match[1] && match[1].length >= 2) {
+                    name = match[1];
+                    break;
+                }
+            }
+            
+            const formattedName = name.charAt(0).toUpperCase() + name.slice(1);
+            return this.isValidCompanyName(formattedName) ? formattedName : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * Extract company name from email domain
      */
     extractCompanyFromEmail(email) {
         const domain = email.split('@')[1];
-        if (!domain) return 'the company';
+        if (!domain) return null;
+
+        // Ignore common email providers
+        const commonProviders = ['gmail', 'yahoo', 'outlook', 'hotmail', 'icloud', 'protonmail', 'aol'];
+        const domainName = domain.split('.')[0].toLowerCase();
+        if (commonProviders.includes(domainName)) return null;
 
         // Remove common TLDs and subdomains
         const name = domain
             .replace(/\.(com|org|net|io|co|in|uk|au|de|fr|ca)$/i, '')
-            .replace(/^(www|mail|info|jobs|careers)\./, '')
+            .replace(/^(www|mail|info|jobs|careers)\./i, '')
             .split('.')
             .map(part => part.charAt(0).toUpperCase() + part.slice(1))
             .join(' ');
 
-        return name;
+        return this.isValidCompanyName(name) ? name : null;
+    }
+
+    /**
+     * Get the best company name from multiple sources
+     */
+    extractBestCompanyName(companyInfo, recipientEmail, recipientWebsite) {
+        const candidates = [];
+        
+        // 1. Try from company info title (split by separators)
+        if (companyInfo?.title) {
+            const titleParts = companyInfo.title.split(/\s*[\|\-–—:>]\s*/);
+            for (const part of titleParts) {
+                const cleaned = part.trim();
+                if (this.isValidCompanyName(cleaned)) {
+                    candidates.push(cleaned);
+                }
+            }
+        }
+        
+        // 2. Try from URL
+        if (recipientWebsite) {
+            const urlName = this.extractCompanyFromUrl(recipientWebsite);
+            if (urlName) candidates.push(urlName);
+        }
+        
+        // 3. Try from email
+        if (recipientEmail) {
+            const emailName = this.extractCompanyFromEmail(recipientEmail);
+            if (emailName) candidates.push(emailName);
+        }
+        
+        // Return first valid candidate or fallback
+        return candidates[0] || 'the Company';
     }
 
     /**
@@ -183,8 +281,7 @@ class AICoverLetterGenerator {
             throw new Error('OpenAI API key not configured');
         }
 
-        const companyName = companyInfo?.title?.split(/[-|]/)[0].trim() || 
-                           this.extractCompanyFromEmail(recipientEmail);
+        const companyName = this.extractBestCompanyName(companyInfo, recipientEmail, recipientWebsite);
 
         const prompt = `Write a professional, human-sounding cover letter for a job application. 
 
@@ -258,8 +355,7 @@ Write ONLY the body of the cover letter (no "Dear Hiring Manager" or signature).
      * Generate cover letter using templates (fallback when no AI)
      */
     generateWithTemplate(userData, resumeData, companyInfo, recipientEmail, recipientWebsite) {
-        const companyName = companyInfo?.title?.split(/[-|]/)[0].trim() || 
-                           this.extractCompanyFromEmail(recipientEmail);
+        const companyName = this.extractBestCompanyName(companyInfo, recipientEmail, recipientWebsite);
 
         // Select a random opening to add variety
         const openings = [

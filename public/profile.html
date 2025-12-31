@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>My Profile - Resume Sender</title>
+    <title>My Profile - Lettrico</title>
     <style>
         * {
             margin: 0;
@@ -521,12 +521,17 @@
     <nav class="navbar">
         <div class="navbar-content">
             <a href="/" class="navbar-brand">Resume Sender</a>
-            <a href="/index.html" class="back-btn">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                Back to Dashboard
-            </a>
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <a href="/index.html" class="back-btn">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Back to Dashboard
+                </a>
+                <button onclick="handleLogout()" class="back-btn" style="background: #fee2e2; border-color: #fecaca; color: #dc2626;">
+                    Logout
+                </button>
+            </div>
         </div>
     </nav>
 
@@ -761,6 +766,13 @@
         // Authentication check
         const authToken = localStorage.getItem('authToken');
         if (!authToken) {
+            window.location.href = '/login.html';
+        }
+
+        // Logout function
+        function handleLogout() {
+            localStorage.removeItem('authToken');
+            sessionStorage.clear();
             window.location.href = '/login.html';
         }
 

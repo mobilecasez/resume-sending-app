@@ -1,7 +1,7 @@
 {
-  "name": "resume-sending-app",
+  "name": "lettrico",
   "version": "2.0.0",
-  "description": "Application to generate custom cover letters for each company and send them with resumes via email",
+  "description": "Lettrico - Turn applications into opportunities. Generate custom cover letters and manage job applications.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -20,6 +20,8 @@
   "author": "Rishi Samadhiya",
   "license": "MIT",
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@pdf-lib/fontkit": "^1.1.1",
     "@vitalets/google-translate-api": "^9.2.1",
     "axios": "^1.13.2",
     "axios-retry": "^4.5.0",
@@ -30,6 +32,9 @@
     "dotenv": "^16.3.1",
     "express": "^5.2.1",
     "express-session": "^1.18.2",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "passport-linkedin-oauth2": "^2.1.1",
     "hummus": "^1.0.118",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
@@ -38,6 +43,7 @@
     "pdf-lib": "^1.17.1",
     "pdf-parse": "^1.1.4",
     "pdf2json": "^4.0.0",
+    "pdfkit": "^0.17.2",
     "sharp": "^0.34.5",
     "sqlite3": "^5.1.7"
   }

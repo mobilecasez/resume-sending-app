@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Expo App QR Code</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      background: linear-gradient(135deg, #059669 0%, #047857 100%);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto;
+    }
+    .container {
+      background: white;
+      padding: 40px;
+      border-radius: 20px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      text-align: center;
+    }
+    h1 {
+      color: #059669;
+      margin-top: 0;
+      font-size: 28px;
+    }
+    .subtitle {
+      color: #6B7280;
+      margin-bottom: 30px;
+      font-size: 14px;
+    }
+    #qrcode {
+      display: inline-block;
+      padding: 20px;
+      background: #f9fafb;
+      border-radius: 12px;
+    }
+    .instructions {
+      margin-top: 30px;
+      color: #4B5563;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .url {
+      font-family: 'Monaco', monospace;
+      background: #f3f4f6;
+      padding: 10px 15px;
+      border-radius: 6px;
+      margin: 15px 0;
+      color: #059669;
+      word-break: break-all;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>✉️ Lettrico Mobile</h1>
+    <p class="subtitle">Scan with Expo Go App</p>
+    <div id="qrcode"></div>
+    <div class="instructions">
+      <p><strong>📱 To use the app:</strong></p>
+      <ol style="text-align: left;">
+        <li>Install <strong>Expo Go</strong> from App Store or Play Store</li>
+        <li>Scan the QR code above</li>
+        <li>Or open this URL:</li>
+      </ol>
+      <div class="url">exp://192.168.1.14:8081</div>
+      <p style="color: #999; font-size: 12px;">Make sure your phone is on the same network as your computer</p>
+    </div>
+  </div>
+  <script>
+    new QRCode(document.getElementById("qrcode"), {
+      text: "exp://192.168.1.14:8081",
+      width: 300,
+      height: 300,
+      colorDark: "#059669",
+      colorLight: "#ffffff",
+      correctLevel: QRCode.CorrectLevel.H
+    });
+  </script>
+</body>
+</html>

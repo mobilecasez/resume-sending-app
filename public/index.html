@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Resume & Cover Letter Sender</title>
+    <title>Lettrico - Turn Applications into Opportunities</title>
     <style>
         * {
             margin: 0;
@@ -31,13 +31,94 @@
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 50%, #3b82f6 100%);
             min-height: 100vh;
-            padding: 20px;
+            padding: 0;
             color: var(--text-primary);
+        }
+
+        /* Top Navigation Bar */
+        .top-navbar {
+            background: white;
+            padding: 12px 24px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .navbar-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .navbar-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+        }
+
+        .navbar-brand h1 {
+            color: var(--primary-color);
+            font-size: 1.25rem;
+            font-weight: 700;
+            margin: 0;
+        }
+
+        .navbar-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .user-section {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 6px 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .nav-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .nav-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            background: #f8f9fa;
+            border: 1px solid #e2e8f0;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-decoration: none;
+            color: #555;
+        }
+
+        .nav-btn:hover {
+            background: var(--primary-color);
+            border-color: var(--primary-color);
+            color: white;
+        }
+
+        .nav-btn svg {
+            width: 18px;
+            height: 18px;
         }
 
         .container {
             max-width: 800px;
             margin: 0 auto;
+            padding: 20px;
         }
 
         .app-header {
@@ -386,42 +467,6 @@
                 transform: translateX(0);
                 opacity: 1;
             }
-        }
-
-        /* Header Icons */
-        .header-icons {
-            position: fixed;
-            top: 24px;
-            right: 24px;
-            display: flex;
-            gap: 12px;
-            z-index: 100;
-        }
-
-        .icon-btn {
-            width: 44px;
-            height: 44px;
-            border-radius: 10px;
-            background: white;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: all 0.2s ease;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        }
-
-        .icon-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
-            background: #f8fafc;
-        }
-
-        .icon-btn svg {
-            width: 22px;
-            height: 22px;
-            color: var(--text-primary);
         }
 
         /* Modal Styles */
@@ -785,23 +830,9 @@
         }
 
         /* User Info Display */
-        .user-info {
-            position: fixed;
-            top: 24px;
-            left: 24px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            background: white;
-            padding: 10px 16px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-            z-index: 100;
-        }
-
         .user-avatar {
-            width: 36px;
-            height: 36px;
+            width: 32px;
+            height: 32px;
             border-radius: 50%;
             background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
             display: flex;
@@ -809,7 +840,7 @@
             justify-content: center;
             color: white;
             font-weight: 600;
-            font-size: 0.875rem;
+            font-size: 0.75rem;
         }
 
         .user-details {
@@ -818,78 +849,85 @@
         }
 
         .user-name {
-            font-size: 0.875rem;
+            font-size: 0.8125rem;
             font-weight: 600;
             color: var(--text-primary);
+            line-height: 1.2;
         }
 
         .user-email {
-            font-size: 0.75rem;
+            font-size: 0.6875rem;
             color: var(--text-secondary);
         }
 
         .logout-btn {
-            margin-left: 12px;
-            padding: 6px 12px;
+            padding: 8px 14px;
             background: transparent;
-            border: 1px solid var(--border-color);
+            border: 1px solid #fecaca;
             border-radius: 6px;
             font-size: 0.75rem;
-            color: var(--text-secondary);
+            color: #dc2626;
             cursor: pointer;
             transition: all 0.2s ease;
             font-weight: 500;
         }
 
         .logout-btn:hover {
-            background: #fee;
-            border-color: var(--danger-color);
-            color: var(--danger-color);
+            background: #fee2e2;
+            border-color: #dc2626;
         }
 
         @media (max-width: 768px) {
-            .user-info {
-                left: 12px;
-                top: 12px;
-                padding: 8px 12px;
+            .top-navbar {
+                padding: 10px 16px;
             }
 
             .user-details {
                 display: none;
             }
 
-            .logout-btn {
-                margin-left: 8px;
-                padding: 4px 8px;
+            .navbar-brand h1 {
+                font-size: 1rem;
             }
         }
     </style>
 </head>
 <body>
-    <!-- User Info Display -->
-    <div class="user-info">
-        <div class="user-avatar" id="userAvatar"></div>
-        <div class="user-details">
-            <div class="user-name" id="userName"></div>
-            <div class="user-email" id="userEmail"></div>
+    <!-- Unified Top Navigation Bar -->
+    <nav class="top-navbar">
+        <div class="navbar-left">
+            <a href="/" class="navbar-brand">
+                <span style="font-size: 1.5rem;">📨</span>
+                <h1>Lettrico</h1>
+            </a>
         </div>
-        <button class="logout-btn" onclick="handleLogout()">Logout</button>
-    </div>
-
-    <!-- Header Icons -->
-    <div class="header-icons">
-        <button class="icon-btn" onclick="openSettings()" title="Settings">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-        </button>
-        <a href="/profile.html" class="icon-btn" title="Profile">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-            </svg>
-        </a>
-    </div>
+        
+        <div class="navbar-right">
+            <div class="user-section">
+                <div class="user-avatar" id="userAvatar"></div>
+                <div class="user-details">
+                    <div class="user-name" id="userName"></div>
+                    <div class="user-email" id="userEmail"></div>
+                </div>
+            </div>
+            
+            <div class="nav-actions">
+                <button class="nav-btn" onclick="openSettings()" title="Settings">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                </button>
+                <a href="/profile.html" class="nav-btn" title="Profile">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                </a>
+            </div>
+            
+            <button class="logout-btn" onclick="handleLogout()">Logout</button>
+        </div>
+    </nav>
 
     <div class="container">
         <!-- Header -->
@@ -1244,7 +1282,7 @@
             
             // Validate email format
             const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-            const urlRegex = /^https?:\/\/.+\..+/;
+            const urlRegex = /^https?:\/\/.+|^www\..+|^[a-zA-Z0-9][a-zA-Z0-9-]+\.[a-zA-Z]{2,}/;
             
             for (let recipient of recipients) {
                 if (!emailRegex.test(recipient.email)) {
@@ -1252,7 +1290,7 @@
                     return false;
                 }
                 if (!urlRegex.test(recipient.website)) {
-                    showToast('Please enter valid website URLs (must start with http:// or https://)', 'error');
+                    showToast('Please enter valid website URLs', 'error');
                     return false;
                 }
             }
@@ -1261,13 +1299,54 @@
         }
 
         async function reviewAndSend() {
-            if (!validateForm()) return;
+            console.log('Review and Send clicked');
+            if (!validateForm()) {
+                console.log('Validation failed');
+                return;
+            }
             
             const recipients = getRecipients();
+            console.log('Recipients:', recipients);
             
-            // Generate cover letters first
-            await generateCoverLetters(recipients);
+            // Store recipients in session storage
+            sessionStorage.setItem('recipients', JSON.stringify(recipients));
+            console.log('Stored in session storage');
+            
+            // Redirect to review page
+            window.location.href = '/review.html';
         }
+
+        // Restore form values from sessionStorage when page loads
+        function restoreFormValues() {
+            const storedRecipients = sessionStorage.getItem('recipients');
+            if (storedRecipients) {
+                try {
+                    const recipients = JSON.parse(storedRecipients);
+                    
+                    // Add recipient items if needed
+                    while (document.querySelectorAll('.recipient-item').length < recipients.length) {
+                        addRecipient();
+                    }
+                    
+                    // Fill in the values
+                    const items = document.querySelectorAll('.recipient-item');
+                    recipients.forEach((recipient, index) => {
+                        if (items[index]) {
+                            items[index].querySelector('input[name="email"]').value = recipient.email || '';
+                            items[index].querySelector('input[name="website"]').value = recipient.website || '';
+                            items[index].querySelector('input[name="position"]').value = recipient.position || '';
+                        }
+                    });
+                    
+                    console.log('Form values restored from session storage');
+                } catch (error) {
+                    console.error('Error restoring form values:', error);
+                }
+            }
+        }
+
+        // Call restoreFormValues when page loads
+        window.addEventListener('DOMContentLoaded', restoreFormValues);
 
         async function sendNow() {
             if (!validateForm()) return;

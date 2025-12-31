@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Application Portal</title>
+    <title>Login - Lettrico</title>
     <style>
         * {
             margin: 0;
@@ -127,6 +127,94 @@
             transform: none;
         }
 
+        .oauth-section {
+            margin-bottom: 24px;
+        }
+
+        .oauth-title {
+            text-align: center;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 16px;
+        }
+
+        .oauth-buttons {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .oauth-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 12px 16px;
+            border: 1.5px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            color: var(--text-primary);
+            background: white;
+            cursor: pointer;
+        }
+
+        .oauth-btn-full-width {
+            padding: 14px 20px;
+            font-size: 0.9375rem;
+        }
+
+        .oauth-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        .oauth-btn-google {
+            color: #1f2937;
+        }
+
+        .oauth-btn-google:hover {
+            border-color: #4285F4;
+            background: #f8f9fa;
+        }
+
+        .oauth-btn svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        .divider {
+            position: relative;
+            margin: 20px 0;
+            text-align: center;
+        }
+
+        .divider::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: var(--border-color);
+        }
+
+        .divider span {
+            position: relative;
+            background: white;
+            padding: 0 12px;
+            color: var(--text-secondary);
+            font-size: 0.8125rem;
+            font-weight: 600;
+            display: inline-block;
+        }
+
         .auth-footer {
             text-align: center;
             margin-top: 24px;
@@ -200,12 +288,28 @@
     <div class="auth-container">
         <div class="auth-card">
             <div class="auth-header">
-                <h1 class="auth-title">Welcome Back</h1>
-                <p class="auth-subtitle">Sign in to your account</p>
+                <h1 class="auth-title">Lettrico</h1>
+                <p class="auth-subtitle">Turn applications into opportunities</p>
             </div>
 
             <div id="errorMessage" class="error-message"></div>
             <div id="successMessage" class="success-message"></div>
+
+            <!-- OAuth Options -->
+            <div class="oauth-section">
+                <h3 class="oauth-title">Sign in with Google</h3>
+                <div class="oauth-buttons">
+                    <a href="/auth/google" class="oauth-btn oauth-btn-google oauth-btn-full-width">
+                        <svg viewBox="0 0 24 24" width="20" height="20">
+                            <path fill="currentColor" d="M12.545,10.239v3.821h5.445c-0.712,2.315-2.647,3.972-5.445,3.972c-3.332,0-6.033-2.701-6.033-6.032 c0-3.331,2.701-6.032,6.033-6.032c1.498,0,2.866,0.549,3.921,1.453l2.814-2.814C17.461,2.268,15.365,1.25,12.545,1.25 c-6.343,0-11.5,5.157-11.5,11.5c0,6.343,5.157,11.5,11.5,11.5c6.343,0,11.5-5.157,11.5-11.5c0-0.828-0.084-1.628-0.239-2.405H12.545z"/>
+                        </svg>
+                        Continue with Google
+                    </a>
+                </div>
+                <div class="divider">
+                    <span>or</span>
+                </div>
+            </div>
 
             <form id="loginForm" onsubmit="handleLogin(event)">
                 <div class="form-group">

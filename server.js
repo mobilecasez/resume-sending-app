@@ -7,10 +7,17 @@ const CryptoJS = require('crypto-js');
 const sqlite3 = require('sqlite3').verbose();
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const LinkedInStrategy = require('passport-linkedin-oauth2').Strategy;
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+const fontkit = require('@pdf-lib/fontkit');
+const PDFKit = require('pdfkit');
 const nodemailer = require('nodemailer');
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const sharp = require('sharp');
+const cheerio = require('cheerio');
 const AICoverLetterGenerator = require('./ai-cover-letter-generator');
 const TemplateCoverLetterGenerator = require('./template-cover-letter-generator');
 require('dotenv').config();
@@ -70,6 +77,27 @@ function initializeDatabase() {
             console.log('Users table ready');
         }
     });
+
+    // Create recipients table for storing user's recipient list
+    db.run(`
+        CREATE TABLE IF NOT EXISTS recipients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            email TEXT NOT NULL,
+            website TEXT NOT NULL,
+            position TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE(user_id, email)
+        )
+    `, (err) => {
+        if (err) {
+            console.error('Error creating recipients table:', err);
+        } else {
+            console.log('Recipients table ready');
+        }
+    });
 }
 
 // Configure multer for file uploads
@@ -95,15 +123,116 @@ const upload = multer({
 
 // Middleware
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+// CORS Middleware - Allow requests from localhost variants and IP address
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const allowedOrigins = [
+    'http://localhost:8081',
+    'http://127.0.0.1:8081',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://192.168.1.14:8081',
+    'http://192.168.1.14:3000'
+  ];
+  
+  // Always set CORS headers (don't check origin for now to debug)
+  res.header('Access-Control-Allow-Origin', origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(session({
     secret: JWT_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 } // 24 hours
 }));
+app.use(passport.initialize());
+app.use(passport.session());
 app.use(express.static('public'));
 app.use('/uploads', express.static('uploads'));
+
+// Passport Google OAuth Configuration
+passport.use(new GoogleStrategy({
+    clientID: process.env.GOOGLE_CLIENT_ID || 'your-google-client-id',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET || 'your-google-client-secret',
+    callbackURL: 'http://localhost:3000/auth/google/callback'
+}, (accessToken, refreshToken, profile, done) => {
+    // Handle Google OAuth callback
+    handleOAuthUser(profile, 'google', done);
+}));
+
+// Passport LinkedIn OAuth Configuration (Disabled due to API compatibility)
+// Uncomment and update when a compatible LinkedIn strategy is available
+/*
+passport.use(new LinkedInStrategy({
+    clientID: process.env.LINKEDIN_CLIENT_ID || 'your-linkedin-client-id',
+    clientSecret: process.env.LINKEDIN_CLIENT_SECRET || 'your-linkedin-client-secret',
+    callbackURL: 'http://localhost:3000/auth/linkedin/callback',
+    scope: ['profile', 'email']
+}, (accessToken, refreshToken, profile, done) => {
+    // Handle LinkedIn OAuth callback
+    handleOAuthUser(profile, 'linkedin', done);
+}));
+*/
+
+// Serialize and deserialize user for session management
+passport.serializeUser((user, done) => {
+    done(null, user.id);
+});
+
+passport.deserializeUser((id, done) => {
+    db.get('SELECT * FROM users WHERE id = ?', [id], (err, user) => {
+        done(err, user);
+    });
+});
+
+// OAuth user handler function
+function handleOAuthUser(profile, provider, callback) {
+    const email = profile.emails && profile.emails[0] ? profile.emails[0].value : null;
+    const fullName = profile.displayName;
+    
+    if (!email) {
+        return callback(new Error('No email found in OAuth profile'));
+    }
+
+    // Check if user exists
+    db.get('SELECT * FROM users WHERE email = ?', [email], (err, user) => {
+        if (err) {
+            return callback(err);
+        }
+
+        if (user) {
+            // User exists, return it
+            return callback(null, user);
+        }
+
+        // Create new user
+        const hashedPassword = jwt.sign({ provider, email }, JWT_SECRET); // Use JWT as placeholder password for OAuth users
+        db.run(
+            'INSERT INTO users (full_name, email, password) VALUES (?, ?, ?)',
+            [fullName, email, hashedPassword],
+            function(err) {
+                if (err) {
+                    return callback(err);
+                }
+                
+                db.get('SELECT * FROM users WHERE id = ?', [this.lastID], (err, newUser) => {
+                    callback(err, newUser);
+                });
+            }
+        );
+    });
+}
 
 // Secure file serving endpoint - only allow users to access their own files
 app.get('/uploads/:userId/:filename', authenticateToken, async (req, res) => {
@@ -136,14 +265,20 @@ function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
+    console.log('Auth check - Header present:', !!authHeader);
+    console.log('Auth check - Token present:', !!token);
+
     if (!token) {
+        console.log('Auth failed: No token provided');
         return res.status(401).json({ error: 'Access denied. No token provided.' });
     }
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) {
-            return res.status(403).json({ error: 'Invalid or expired token' });
+            console.log('Auth failed: Token verification error:', err.message);
+            return res.status(403).json({ error: 'Invalid or expired token. Please login again.' });
         }
+        console.log('Auth success for user:', user.id);
         req.user = user;
         next();
     });
@@ -243,6 +378,155 @@ app.post('/api/auth/login', async (req, res) => {
         res.status(500).json({ error: 'Server error' });
     }
 });
+
+// OAuth Routes
+// Google OAuth
+app.get('/auth/google', passport.authenticate('google', {
+    scope: ['profile', 'email']
+}));
+
+// Google OAuth callback - Web/Desktop version (redirects to HTML)
+app.get('/auth/google/callback', passport.authenticate('google', {
+    failureRedirect: '/login.html'
+}), (req, res) => {
+    // Check if this is a mobile request
+    const isMobile = req.query.mobile === 'true' || req.headers['user-agent']?.includes('Expo');
+    
+    // Generate JWT token for the user
+    const token = jwt.sign(
+        { id: req.user.id, email: req.user.email },
+        JWT_SECRET,
+        { expiresIn: '24h' }
+    );
+
+    const userData = {
+        id: req.user.id,
+        fullName: req.user.full_name,
+        email: req.user.email
+    };
+
+    // For mobile apps, return JSON instead of HTML redirect
+    if (isMobile) {
+        res.json({
+            success: true,
+            token,
+            user: userData
+        });
+    } else {
+        // For web, redirect to success page
+        res.redirect(`/auth-success.html?token=${token}&user=${encodeURIComponent(JSON.stringify(userData))}`);
+    }
+});
+
+// Google OAuth API endpoint for mobile (returns JSON)
+app.post('/api/auth/google', async (req, res) => {
+    try {
+        console.log('Google OAuth Request Body:', req.body);
+        const { accessToken } = req.body;
+        
+        if (!accessToken) {
+            console.log('Missing accessToken in request');
+            return res.status(400).json({ error: 'Access token is required' });
+        }
+
+        console.log('Verifying access token with Google API...');
+        // Get user info from Google
+        const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
+            headers: { Authorization: `Bearer ${accessToken}` }
+        });
+
+        if (!userInfoResponse.ok) {
+            console.error('Google API Error:', userInfoResponse.status, userInfoResponse.statusText);
+            return res.status(401).json({ error: 'Failed to get user info from Google', googleStatus: userInfoResponse.status });
+        }
+
+        const googleUser = await userInfoResponse.json();
+        console.log('Google User Info:', { email: googleUser.email, name: googleUser.name });
+        
+        // Find or create user in database
+        db.get('SELECT * FROM users WHERE email = ?', [googleUser.email], async (err, user) => {
+            if (err) {
+                console.error('Database error:', err);
+                return res.status(500).json({ error: 'Database error' });
+            }
+
+            if (!user) {
+                // Create new user from Google data
+                const hashedPassword = await bcrypt.hash('google-oauth-' + googleUser.id, 10);
+                db.run(
+                    'INSERT INTO users (email, full_name, password) VALUES (?, ?, ?)',
+                    [googleUser.email, googleUser.name, hashedPassword],
+                    function(insertErr) {
+                        if (insertErr) {
+                            return res.status(500).json({ error: 'Failed to create user' });
+                        }
+
+                        // Generate JWT
+                        const token = jwt.sign(
+                            { id: this.lastID, email: googleUser.email },
+                            JWT_SECRET,
+                            { expiresIn: '24h' }
+                        );
+
+                        res.json({
+                            success: true,
+                            token,
+                            user: {
+                                id: this.lastID,
+                                fullName: googleUser.name,
+                                email: googleUser.email
+                            }
+                        });
+                    }
+                );
+            } else {
+                // User exists, generate JWT
+                const token = jwt.sign(
+                    { id: user.id, email: user.email },
+                    JWT_SECRET,
+                    { expiresIn: '24h' }
+                );
+
+                res.json({
+                    success: true,
+                    token,
+                    user: {
+                        id: user.id,
+                        fullName: user.full_name,
+                        email: user.email
+                    }
+                });
+            }
+        });
+    } catch (error) {
+        console.error('Google OAuth error:', error);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+// LinkedIn OAuth (Disabled due to API compatibility issues)
+/*
+app.get('/auth/linkedin', passport.authenticate('linkedin', {
+    scope: ['profile', 'email']
+}));
+
+app.get('/auth/linkedin/callback', passport.authenticate('linkedin', {
+    failureRedirect: '/login.html'
+}), (req, res) => {
+    // Generate JWT token for the user
+    const token = jwt.sign(
+        { id: req.user.id, email: req.user.email },
+        JWT_SECRET,
+        { expiresIn: '24h' }
+    );
+
+    res.redirect(`/auth-success.html?token=${token}&user=${encodeURIComponent(JSON.stringify({
+        id: req.user.id,
+        fullName: req.user.full_name,
+        email: req.user.email
+    }))}`);
+});
+*/
 
 // Email configuration
 function createTransporter(smtpUser, smtpPass) {
@@ -360,6 +644,337 @@ app.post('/api/upload-profile', authenticateToken, upload.fields([
     }
 });
 
+// Mobile API: Get user profile data
+app.get('/api/users/profile', authenticateToken, (req, res) => {
+    const userId = req.user.id;
+    
+    db.get('SELECT full_name, email, resume_path, photo_path, signature_path, phone_number, address, date_of_birth, created_at FROM users WHERE id = ?', [userId], (err, user) => {
+        if (err) {
+            return res.status(500).json({ error: err.message });
+        }
+        
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        res.json({
+            fullName: user.full_name,
+            email: user.email,
+            phone: user.phone_number,
+            address: user.address,
+            dateOfBirth: user.date_of_birth,
+            profileImage: user.photo_path ? `http://${req.get('host')}/${user.photo_path}` : null,
+            resume: user.resume_path ? `http://${req.get('host')}/${user.resume_path}` : null,
+            signature: user.signature_path ? `http://${req.get('host')}/${user.signature_path}` : null,
+            createdAt: user.created_at
+        });
+    });
+});
+
+// Mobile API: Upload profile image
+app.post('/api/users/profile/image', authenticateToken, upload.single('profileImage'), async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+        
+        const filePath = req.file.path.replace(__dirname + '/', '');
+        
+        db.run('UPDATE users SET photo_path = ? WHERE id = ?', [filePath, userId], (err) => {
+            if (err) {
+                return res.status(500).json({ error: err.message });
+            }
+            
+            res.json({
+                success: true,
+                message: 'Profile image uploaded successfully',
+                path: `http://${req.get('host')}/${filePath}`
+            });
+        });
+    } catch (error) {
+        console.error('Upload error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Mobile API: Upload resume
+app.post('/api/users/profile/resume', authenticateToken, upload.single('resume'), async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+        
+        const filePath = req.file.path.replace(__dirname + '/', '');
+        
+        db.run('UPDATE users SET resume_path = ? WHERE id = ?', [filePath, userId], (err) => {
+            if (err) {
+                return res.status(500).json({ error: err.message });
+            }
+            
+            res.json({
+                success: true,
+                message: 'Resume uploaded successfully',
+                path: `http://${req.get('host')}/${filePath}`
+            });
+        });
+    } catch (error) {
+        console.error('Upload error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Mobile API: Upload signature
+app.post('/api/users/profile/signature', authenticateToken, upload.single('signature'), async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+        
+        const filePath = req.file.path.replace(__dirname + '/', '');
+        
+        db.run('UPDATE users SET signature_path = ? WHERE id = ?', [filePath, userId], (err) => {
+            if (err) {
+                return res.status(500).json({ error: err.message });
+            }
+            
+            res.json({
+                success: true,
+                message: 'Signature uploaded successfully',
+                path: `http://${req.get('host')}/${filePath}`
+            });
+        });
+    } catch (error) {
+        console.error('Upload error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Mobile API: Update user profile data
+app.post('/api/users/profile/update', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { fullName, phone, address, dateOfBirth } = req.body;
+
+        const updates = [];
+        const params = [];
+
+        if (fullName) {
+            updates.push('full_name = ?');
+            params.push(fullName);
+        }
+        if (phone) {
+            updates.push('phone_number = ?');
+            params.push(phone);
+        }
+        if (address) {
+            updates.push('address = ?');
+            params.push(address);
+        }
+        if (dateOfBirth) {
+            updates.push('date_of_birth = ?');
+            params.push(dateOfBirth);
+        }
+
+        if (updates.length === 0) {
+            return res.status(400).json({ error: 'No fields to update' });
+        }
+
+        params.push(userId);
+        const sql = `UPDATE users SET ${updates.join(', ')} WHERE id = ?`;
+
+        db.run(sql, params, function(err) {
+            if (err) {
+                console.error('Update error:', err);
+                return res.status(500).json({ error: err.message });
+            }
+
+            res.json({
+                success: true,
+                message: 'Profile updated successfully'
+            });
+        });
+    } catch (error) {
+        console.error('Update error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Change password endpoint
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { currentPassword, newPassword } = req.body;
+
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({ error: 'Current and new password are required' });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({ error: 'New password must be at least 6 characters' });
+        }
+
+        // Get user from database
+        db.get('SELECT password FROM users WHERE id = ?', [userId], async (err, user) => {
+            if (err) {
+                return res.status(500).json({ error: 'Database error' });
+            }
+
+            if (!user) {
+                return res.status(404).json({ error: 'User not found' });
+            }
+
+            // Verify current password
+            const validPassword = await bcrypt.compare(currentPassword, user.password);
+            if (!validPassword) {
+                return res.status(401).json({ error: 'Current password is incorrect' });
+            }
+
+            // Hash new password
+            const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+            // Update password in database
+            db.run('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, userId], function(err) {
+                if (err) {
+                    console.error('Password update error:', err);
+                    return res.status(500).json({ error: 'Failed to update password' });
+                }
+
+                res.json({
+                    success: true,
+                    message: 'Password changed successfully'
+                });
+            });
+        });
+    } catch (error) {
+        console.error('Change password error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Privacy settings endpoint
+app.post('/api/users/privacy-settings', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { emailNotifications, smsNotifications, profilePublic } = req.body;
+
+        // Store privacy settings as JSON in the database
+        // For now, we'll just return success as these settings can be stored in a future update
+        const privacySettings = {
+            emailNotifications,
+            smsNotifications,
+            profilePublic
+        };
+
+        // In the future, add a privacy_settings column to users table and save there
+        // For now, just acknowledge receipt and store in session/memory if needed
+        res.json({
+            success: true,
+            message: 'Privacy settings updated successfully',
+            privacySettings: privacySettings
+        });
+    } catch (error) {
+        console.error('Privacy settings error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Save/Update recipients for a user
+app.post('/api/users/recipients', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { recipients } = req.body;
+
+        if (!recipients || !Array.isArray(recipients)) {
+            return res.status(400).json({ error: 'Recipients must be an array' });
+        }
+
+        // Clear existing recipients for this user
+        db.run('DELETE FROM recipients WHERE user_id = ?', [userId], (err) => {
+            if (err) {
+                console.error('Error clearing recipients:', err);
+                return res.status(500).json({ error: 'Database error' });
+            }
+
+            // Insert new recipients
+            const validRecipients = recipients.filter(r => r.email && r.website);
+            
+            if (validRecipients.length === 0) {
+                return res.json({
+                    success: true,
+                    message: 'Recipients cleared successfully',
+                    recipientsCount: 0
+                });
+            }
+
+            let insertedCount = 0;
+            let errorOccurred = false;
+
+            validRecipients.forEach((recipient, index) => {
+                db.run(
+                    'INSERT INTO recipients (user_id, email, website, position) VALUES (?, ?, ?, ?)',
+                    [userId, recipient.email, recipient.website, recipient.position || ''],
+                    function(err) {
+                        if (err) {
+                            console.error('Error inserting recipient:', err);
+                            errorOccurred = true;
+                        } else {
+                            insertedCount++;
+                        }
+
+                        // Send response after last insert
+                        if (index === validRecipients.length - 1) {
+                            if (errorOccurred && insertedCount === 0) {
+                                return res.status(500).json({ error: 'Failed to save recipients' });
+                            }
+                            res.json({
+                                success: true,
+                                message: `Successfully saved ${insertedCount} recipients`,
+                                recipientsCount: insertedCount
+                            });
+                        }
+                    }
+                );
+            });
+        });
+    } catch (error) {
+        console.error('Save recipients error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get recipients for a user
+app.get('/api/users/recipients', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        db.all(
+            'SELECT id, email, website, position FROM recipients WHERE user_id = ? ORDER BY created_at ASC',
+            [userId],
+            (err, recipients) => {
+                if (err) {
+                    console.error('Error fetching recipients:', err);
+                    return res.status(500).json({ error: 'Database error' });
+                }
+
+                res.json({
+                    success: true,
+                    recipients: recipients || [],
+                    count: (recipients || []).length
+                });
+            }
+        );
+    } catch (error) {
+        console.error('Get recipients error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // API endpoint to get user profile data (protected)
 app.get('/api/user-profile', authenticateToken, (req, res) => {
     const userId = req.user.id;
@@ -459,19 +1074,23 @@ async function createCoverLetter(companyName, position, recipientEmail) {
     const CONFIG = {
         companyName: companyName,
         position: position,
-        recipientName: 'Hiring Team',
+        recipientName: 'Hiring Manager',
         country: 'India',
         relevantSkills: process.env.RELEVANT_SKILLS || 'JavaScript, React, Node.js',
         companyParagraph: process.env.COMPANY_PARAGRAPH || `I am particularly drawn to ${companyName}'s innovative approach and commitment to excellence.`,
     };
 
     const pdfDoc = await PDFDocument.create();
+    pdfDoc.registerFontkit(fontkit);
     const pageWidth = 595;
     const pageHeight = 1067;
     const page = pdfDoc.addPage([pageWidth, pageHeight]);
 
-    const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    // Embed Lato font
+    const latoRegularBytes = await fs.readFile(path.join(__dirname, 'fonts', 'Lato-Regular.ttf'));
+    const latoBoldBytes = await fs.readFile(path.join(__dirname, 'fonts', 'Lato-Bold.ttf'));
+    const helvetica = await pdfDoc.embedFont(latoRegularBytes);
+    const helveticaBold = await pdfDoc.embedFont(latoBoldBytes);
 
     // Sidebar
     const sidebarWidth = 180;
@@ -700,7 +1319,7 @@ async function createCoverLetter(companyName, position, recipientEmail) {
 
     // Letter body
     const paragraphs = [
-        `Dear Hiring Team,`,
+        `Dear Hiring Manager,`,
         `I am writing to express my strong interest in the ${CONFIG.position} position at ${CONFIG.companyName}. With my extensive experience in ${CONFIG.relevantSkills}, I am confident that I would be a valuable addition to your team.`,
         CONFIG.companyParagraph,
         `Throughout my career, I have consistently demonstrated the ability to lead cross-functional teams, deliver complex projects on time and within budget, and drive continuous improvement initiatives. I am excited about the opportunity to bring my skills and experience to ${CONFIG.companyName} and contribute to your continued success.`,
@@ -775,7 +1394,9 @@ async function createCoverLetter(companyName, position, recipientEmail) {
     });
 
     const pdfBytes = await pdfDoc.save();
-    const fileName = `Cover_Letter_${companyName.replace(/\s+/g, '_')}.pdf`;
+    const currentDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    const sanitizedCompanyName = companyName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+    const fileName = `Cover_Letter_${currentDate}_${sanitizedCompanyName}.pdf`;
     const filePath = path.join(__dirname, 'temp', fileName);
 
     await fs.mkdir(path.join(__dirname, 'temp'), { recursive: true });
@@ -784,15 +1405,350 @@ async function createCoverLetter(companyName, position, recipientEmail) {
     return { filePath, fileName };
 }
 
+// NEW: PDF generator using PDFKit - much better font support
+// Creates two-column cover letter with proper text rendering and bold support
+// Single page with dynamic height based on content
+async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyName, companyAddress, photoPath, signaturePath) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            const currentDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+            const sanitizedCompanyName = companyName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+            const fileName = `Cover_Letter_${currentDate}_${sanitizedCompanyName}.pdf`;
+            const filePath = path.join(__dirname, 'temp', fileName);
+            
+            await fs.mkdir(path.join(__dirname, 'temp'), { recursive: true });
+            
+            // First, calculate the required height by parsing content
+            const $ = cheerio.load(coverLetterHtml);
+            const bodyHtml = $('body').html() || coverLetterHtml;
+            const paragraphs = bodyHtml.split(/<br\s*\/?>/gi);
+            
+            // Estimate content height
+            const pageWidth = 595;
+            const sidebarWidth = 180;
+            const contentWidth = pageWidth - sidebarWidth - 80;
+            const lineHeight = 14;
+            const fontSize = 10;
+            
+            // Calculate approximate height needed for content
+            let estimatedContentHeight = 50; // Starting Y
+            estimatedContentHeight += 25; // Name
+            estimatedContentHeight += 25; // Designation
+            estimatedContentHeight += 30; // Separator
+            estimatedContentHeight += 30; // Cover Letter heading
+            estimatedContentHeight += 25; // Dear Hiring Manager
+            
+            // Estimate paragraph heights (rough calculation)
+            for (const paraHtml of paragraphs) {
+                const plainText = cheerio.load(`<div>${paraHtml}</div>`).text().trim();
+                if (!plainText) continue;
+                
+                // Estimate lines needed (approx 80 chars per line at font size 10)
+                const charsPerLine = 75;
+                const numLines = Math.ceil(plainText.length / charsPerLine);
+                estimatedContentHeight += (numLines * lineHeight) + 10; // + paragraph spacing
+            }
+            
+            estimatedContentHeight += 10; // Before closing
+            estimatedContentHeight += 30; // Best regards
+            if (signaturePath) estimatedContentHeight += 50; // Signature
+            estimatedContentHeight += 30; // Name
+            estimatedContentHeight += 50; // Bottom margin
+            
+            // Ensure minimum height for sidebar content
+            const minHeight = 600;
+            const pageHeight = Math.max(minHeight, estimatedContentHeight);
+            
+            // Create PDF with calculated size - autoFirstPage false to control page creation
+            const doc = new PDFKit({
+                size: [pageWidth, pageHeight],
+                margins: { top: 0, bottom: 0, left: 0, right: 0 },
+                autoFirstPage: false
+            });
+            
+            // Add single page with exact size
+            doc.addPage({ size: [pageWidth, pageHeight], margins: { top: 0, bottom: 0, left: 0, right: 0 } });
+            
+            const writeStream = fsSync.createWriteStream(filePath);
+            doc.pipe(writeStream);
+            
+            // Register fonts
+            const latoRegularPath = path.join(__dirname, 'fonts', 'Lato-Regular.ttf');
+            const latoBoldPath = path.join(__dirname, 'fonts', 'Lato-Bold.ttf');
+            
+            doc.registerFont('Lato', latoRegularPath);
+            doc.registerFont('Lato-Bold', latoBoldPath);
+            
+            // LEFT SIDEBAR (dark background) - full height
+            doc.rect(0, 0, sidebarWidth, pageHeight).fill('#262633');
+            
+            // Photo/Initials circle at top
+            const photoX = sidebarWidth / 2;
+            const photoY = 70;
+            const photoSize = 80;
+            
+            if (photoPath) {
+                try {
+                    doc.image(photoPath, photoX - photoSize/2, photoY - photoSize/2, {
+                        width: photoSize,
+                        height: photoSize
+                    });
+                } catch (e) {
+                    // Draw initials circle if photo fails
+                    doc.circle(photoX, photoY, photoSize/2).stroke('#ffffff');
+                    const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
+                    doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+                    doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
+                }
+            } else {
+                doc.circle(photoX, photoY, photoSize/2).lineWidth(2).stroke('#ffffff');
+                const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
+                doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+                doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
+            }
+            
+            let sidebarY = photoY + photoSize/2 + 40;
+            
+            // TO section
+            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+            doc.text('TO', 20, sidebarY);
+            sidebarY += 20;
+            
+            doc.font('Lato').fontSize(10).fillColor('#ffffff');
+            doc.text('Hiring Manager,', 20, sidebarY);
+            sidebarY += 16;
+            
+            // Company name (bold)
+            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+            doc.text(companyName, 20, sidebarY, { width: sidebarWidth - 40 });
+            sidebarY += doc.heightOfString(companyName, { width: sidebarWidth - 40 }) + 4;
+            
+            // Company address
+            if (companyAddress) {
+                doc.font('Lato').fontSize(10).fillColor('#ffffff');
+                doc.text(companyAddress, 20, sidebarY, { width: sidebarWidth - 40 });
+                sidebarY += doc.heightOfString(companyAddress, { width: sidebarWidth - 40 }) + 4;
+            }
+            
+            sidebarY += 10;
+            
+            // Separator line
+            doc.moveTo(20, sidebarY).lineTo(sidebarWidth - 20, sidebarY).lineWidth(0.5).stroke('#808080');
+            sidebarY += 20;
+            
+            // FROM section
+            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+            doc.text('FROM', 20, sidebarY);
+            sidebarY += 20;
+            
+            doc.font('Lato').fontSize(10).fillColor('#ffffff');
+            doc.text((userData.fullName || 'Applicant').toUpperCase(), 20, sidebarY, { width: sidebarWidth - 40 });
+            sidebarY += 20;
+            
+            sidebarY += 10;
+            
+            // Separator line
+            doc.moveTo(20, sidebarY).lineTo(sidebarWidth - 20, sidebarY).lineWidth(0.5).stroke('#808080');
+            sidebarY += 20;
+            
+            // DATE section
+            const today = new Date();
+            const dateStr = today.toLocaleDateString('en-US', { 
+                month: 'short', 
+                day: '2-digit', 
+                year: 'numeric' 
+            }).replace(',', '');
+            
+            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+            doc.text('DATE', 20, sidebarY);
+            sidebarY += 20;
+            
+            doc.font('Lato').fontSize(10).fillColor('#ffffff');
+            doc.text(dateStr, 20, sidebarY);
+            
+            // Contact info at bottom of sidebar (positioned relative to page height)
+            const contactY = pageHeight - 80;
+            doc.font('Lato').fontSize(8).fillColor('#ffffff');
+            if (userData.email) {
+                doc.text(userData.email, 20, contactY, { lineBreak: false });
+            }
+            if (userData.phoneNumber) {
+                doc.text(userData.phoneNumber, 20, contactY + 12, { lineBreak: false });
+            }
+            if (userData.city) {
+                doc.text(userData.city, 20, contactY + 24, { lineBreak: false });
+            }
+            if (userData.country) {
+                doc.text(userData.country, 20, contactY + 36, { lineBreak: false });
+            }
+            
+            // RIGHT CONTENT AREA
+            const contentX = sidebarWidth + 40;
+            let contentY = 50;
+            
+            // Header with name
+            doc.font('Lato-Bold').fontSize(18).fillColor('#000000');
+            doc.text((userData.fullName || 'APPLICANT').toUpperCase(), contentX, contentY, { lineBreak: false });
+            
+            // Contact details on right
+            doc.font('Lato').fontSize(9).fillColor('#4d4d4d');
+            const rightX = pageWidth - 40;
+            if (userData.city && userData.country) {
+                const locationText = `${userData.city}, ${userData.country}`;
+                doc.text(locationText, rightX - doc.widthOfString(locationText), contentY, { lineBreak: false });
+            }
+            if (userData.phoneNumber) {
+                doc.text(userData.phoneNumber, rightX - doc.widthOfString(userData.phoneNumber), contentY + 15, { lineBreak: false });
+            }
+            if (userData.email) {
+                doc.text(userData.email, rightX - doc.widthOfString(userData.email), contentY + 30, { lineBreak: false });
+            }
+            
+            contentY += 25;
+            
+            // Designation
+            doc.font('Lato').fontSize(11).fillColor('#666666');
+            doc.text('Project Manager', contentX, contentY, { lineBreak: false });
+            
+            contentY += 25;
+            
+            // Separator line
+            doc.moveTo(contentX, contentY).lineTo(pageWidth - 40, contentY).lineWidth(1).stroke('#cccccc');
+            
+            contentY += 30;
+            
+            // "Cover Letter" heading
+            doc.font('Lato-Bold').fontSize(14).fillColor('#333333');
+            doc.text('Cover Letter', contentX, contentY, { lineBreak: false });
+            
+            contentY += 30;
+            
+            // Opening
+            doc.font('Lato').fontSize(10).fillColor('#000000');
+            doc.text('Dear Hiring Manager,', contentX, contentY, { width: contentWidth });
+            contentY += 25;
+            
+            // Helper function to extract text segments with bold info
+            function extractTextSegments(node, segments, inheritBold = false) {
+                if (node.type === 'text') {
+                    const text = node.data;
+                    if (text) {
+                        segments.push({ text: text, bold: inheritBold });
+                    }
+                } else if (node.type === 'tag') {
+                    const isBold = inheritBold || node.name === 'strong' || node.name === 'b';
+                    if (node.children) {
+                        node.children.forEach(child => {
+                            extractTextSegments(child, segments, isBold);
+                        });
+                    }
+                }
+            }
+            
+            // Process paragraphs for rendering (already parsed above)
+            for (const paraHtml of paragraphs) {
+                // Parse this paragraph for bold/regular segments
+                const $para = cheerio.load(`<div>${paraHtml}</div>`);
+                const segments = [];
+                
+                $para('div').contents().each((i, elem) => {
+                    extractTextSegments(elem, segments, false);
+                });
+                
+                // If no segments found, try plain text
+                if (segments.length === 0) {
+                    const plainText = $para.text().trim();
+                    if (plainText) {
+                        segments.push({ text: plainText, bold: false });
+                    }
+                }
+                
+                if (segments.length === 0) continue;
+                
+                // Render segments with proper formatting
+                let currentX = contentX;
+                let lineStartY = contentY;
+                const maxX = contentX + contentWidth;
+                
+                for (const segment of segments) {
+                    const fontName = segment.bold ? 'Lato-Bold' : 'Lato';
+                    doc.font(fontName).fontSize(10).fillColor('#000000');
+                    
+                    // Split text into words
+                    const words = segment.text.split(/(\s+)/);
+                    
+                    for (const word of words) {
+                        if (!word) continue;
+                        
+                        const wordWidth = doc.widthOfString(word);
+                        
+                        // Check if word fits on current line
+                        if (currentX + wordWidth > maxX && currentX > contentX) {
+                            // Move to next line
+                            currentX = contentX;
+                            lineStartY += lineHeight;
+                        }
+                        
+                        // Draw the word
+                        doc.text(word, currentX, lineStartY, { lineBreak: false, continued: false });
+                        currentX += wordWidth;
+                    }
+                }
+                
+                contentY = lineStartY + lineHeight + 10;
+            }
+            
+            // Closing
+            contentY += 10;
+            doc.font('Lato').fontSize(10).fillColor('#000000');
+            doc.text('Best regards,', contentX, contentY, { width: contentWidth });
+            contentY += 30;
+            
+            // Signature
+            if (signaturePath) {
+                try {
+                    doc.image(signaturePath, contentX, contentY, { width: 120, height: 40 });
+                    contentY += 50;
+                } catch (e) {
+                    console.log('Could not embed signature');
+                }
+            }
+            
+            // Name
+            doc.font('Lato-Bold').fontSize(10).fillColor('#000000');
+            doc.text((userData.fullName || 'APPLICANT').toUpperCase(), contentX, contentY);
+            
+            // Finalize PDF
+            doc.end();
+            
+            writeStream.on('finish', () => {
+                console.log(`✅ PDF created with PDFKit: ${fileName}`);
+                resolve({ filePath, fileName });
+            });
+            
+            writeStream.on('error', (err) => {
+                reject(err);
+            });
+            
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
 // TWO-COLUMN cover letter PDF generator (like Cover_Letter_Google_New.pdf from Dec 4)
 async function createCoverLetterPDF(userData, coverLetterText, companyName, photoPath, signaturePath) {
     const pdfDoc = await PDFDocument.create();
+    pdfDoc.registerFontkit(fontkit);
     const pageWidth = 595;
     const pageHeight = 1067;
     const page = pdfDoc.addPage([pageWidth, pageHeight]);
 
-    const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    // Embed Lato font
+    const latoRegularBytes = await fs.readFile(path.join(__dirname, 'fonts', 'Lato-Regular.ttf'));
+    const latoBoldBytes = await fs.readFile(path.join(__dirname, 'fonts', 'Lato-Bold.ttf'));
+    const helvetica = await pdfDoc.embedFont(latoRegularBytes);
+    const helveticaBold = await pdfDoc.embedFont(latoBoldBytes);
 
     // Helper function for text wrapping - preserves sentence structure
     function wrapText(text, maxWidth, font, fontSize) {
@@ -933,7 +1889,7 @@ async function createCoverLetterPDF(userData, coverLetterText, companyName, phot
         color: rgb(1, 1, 1),
     });
     sidebarY -= 22;
-    page.drawText('Hiring Team', {
+    page.drawText('Hiring Manager', {
         x: 20,
         y: sidebarY,
         size: 10,
@@ -954,16 +1910,8 @@ async function createCoverLetterPDF(userData, coverLetterText, companyName, phot
         });
         sidebarY -= 16;
     }
-    
-    page.drawText(userData.country || 'India', {
-        x: 20,
-        y: sidebarY,
-        size: 10,
-        font: helvetica,
-        color: rgb(1, 1, 1),
-    });
 
-    sidebarY -= 20;
+    sidebarY -= 4;
     
     // Separator line after TO section
     page.drawLine({
@@ -1166,7 +2114,7 @@ async function createCoverLetterPDF(userData, coverLetterText, companyName, phot
     contentY -= 40; // Space before body (increased by 10px)
 
     // Cover letter body
-    const paragraphs = ['Dear Hiring Team,', ...coverLetterText.split('\n').filter(p => p.trim())];
+    const paragraphs = ['Dear Hiring Manager,', ...coverLetterText.split('\n').filter(p => p.trim())];
 
     const paragraphFontSize = 10;
     const lineHeight = 16;
@@ -1229,11 +2177,15 @@ async function createCoverLetterPDF(userData, coverLetterText, companyName, phot
     });
 
     const pdfBytes = await pdfDoc.save();
-    const fileName = `CoverLetter_${Date.now()}_${companyName.replace(/\s+/g, '_')}.pdf`;
+    const currentDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    const sanitizedCompanyName = companyName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+    const fileName = `Cover_Letter_${currentDate}_${sanitizedCompanyName}.pdf`;
     const filePath = path.join(__dirname, 'temp', fileName);
 
     await fs.mkdir(path.join(__dirname, 'temp'), { recursive: true });
     await fs.writeFile(filePath, pdfBytes);
+    
+    console.log(`✅ PDF created: ${fileName} (${(pdfBytes.length / 1024).toFixed(2)} KB)`);
 
     return { filePath, fileName };
 }
@@ -1354,6 +2306,339 @@ app.post('/api/generate-cover-letters', authenticateToken, async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// API endpoint to generate cover letter details with AI for review page
+app.post('/api/generate-cover-letter-details', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { recipientEmail, websiteUrl, position } = req.body;
+
+        console.log('Generate cover letter details request:', { userId, recipientEmail, websiteUrl, position });
+
+        // Get user profile
+        db.get('SELECT * FROM users WHERE id = ?', [userId], async (err, user) => {
+            if (err) {
+                console.error('Database error:', err);
+                return res.status(500).json({ error: 'Failed to load user profile' });
+            }
+            
+            if (!user) {
+                console.error('User not found:', userId);
+                return res.status(500).json({ error: 'User not found' });
+            }
+
+            if (!user.resume_path) {
+                console.error('Resume not found for user:', userId);
+                return res.status(400).json({ error: 'Resume is required. Please upload your resume first.' });
+            }
+
+            try {
+                // Prepare user data
+                const userData = {
+                    fullName: user.full_name,
+                    email: user.email,
+                    phoneNumber: user.phone_number,
+                    city: user.city,
+                    country: user.country
+                };
+
+                const resumePath = path.join(__dirname, user.resume_path);
+                console.log('Resume path:', resumePath);
+                
+                // Generate cover letter with AI
+                const generator = new TemplateCoverLetterGenerator();
+                console.log('Generating cover letter...');
+                
+                const result = await generator.generateCoverLetter(
+                    userData,
+                    resumePath,
+                    recipientEmail,
+                    websiteUrl,
+                    position
+                );
+
+                console.log('Cover letter generation result:', result.success);
+
+                if (!result.success) {
+                    console.error('Cover letter generation failed');
+                    return res.status(500).json({ error: 'Failed to generate cover letter' });
+                }
+
+                // Format cover letter with HTML (bold key points)
+                const coverLetterHtml = formatCoverLetterWithHTML(result.coverLetter, result.metadata);
+
+                // Generate hiring manager name, all locations, and subject using AI
+                console.log('Generating additional details...');
+                const { hiringManager, locations, subject } = await generateAdditionalDetails(websiteUrl, result.companyName, position);
+                console.log('Generated locations:', locations.length);
+                console.log('Generated subject:', subject);
+
+                res.json({
+                    success: true,
+                    companyName: result.companyName,
+                    hiringManager: hiringManager,
+                    subject: subject,
+                    locations: locations,
+                    coverLetterHtml: coverLetterHtml,
+                    metadata: result.metadata
+                });
+
+            } catch (error) {
+                console.error('Error generating cover letter details:', error);
+                console.error('Error stack:', error.stack);
+                return res.status(500).json({ error: error.message || 'Failed to generate cover letter' });
+            }
+        });
+    } catch (error) {
+        console.error('Server error:', error);
+        console.error('Server error stack:', error.stack);
+        return res.status(500).json({ error: error.message || 'Server error' });
+    }
+});
+
+// API endpoint to generate cover letter PDF for download
+app.post('/api/generate-cover-letter-pdf', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { coverLetterHtml, companyName, companyAddress } = req.body;
+
+        console.log('Generate PDF request:', { userId, companyName, companyAddress });
+
+        // Get user profile
+        db.get('SELECT * FROM users WHERE id = ?', [userId], async (err, user) => {
+            if (err) {
+                console.error('Database error:', err);
+                return res.status(500).json({ error: 'Failed to load user profile' });
+            }
+            
+            if (!user) {
+                console.error('User not found:', userId);
+                return res.status(500).json({ error: 'User not found' });
+            }
+
+            try {
+                // Prepare user data
+                const userData = {
+                    fullName: user.full_name,
+                    email: user.email,
+                    phoneNumber: user.phone_number,
+                    city: user.city,
+                    country: user.country
+                };
+
+                // Get photo and signature paths if they exist
+                const photoPath = user.photo_path ? path.join(__dirname, user.photo_path) : null;
+                const signaturePath = user.signature_path ? path.join(__dirname, user.signature_path) : null;
+
+                // Generate PDF using existing logic with HTML content
+                const { filePath, fileName } = await createCoverLetterPDFFromHTML(
+                    userData,
+                    coverLetterHtml,
+                    companyName,
+                    companyAddress || '',
+                    photoPath,
+                    signaturePath
+                );
+
+                console.log(`📄 Generated PDF: ${fileName}`);
+
+                // Generate download URL
+                const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
+
+                res.json({
+                    success: true,
+                    downloadUrl: downloadUrl,
+                    fileName: fileName
+                });
+
+            } catch (error) {
+                console.error('Error generating PDF:', error);
+                console.error('Error stack:', error.stack);
+                return res.status(500).json({ error: error.message || 'Failed to generate PDF' });
+            }
+        });
+    } catch (error) {
+        console.error('Server error:', error);
+        console.error('Server error stack:', error.stack);
+        return res.status(500).json({ error: error.message || 'Server error' });
+    }
+});
+
+// Helper function to format cover letter with HTML highlighting
+function formatCoverLetterWithHTML(coverLetterText, metadata) {
+    let html = '';
+    const paragraphs = coverLetterText.split('\n\n');
+    
+    paragraphs.forEach(para => {
+        if (!para.trim()) return;
+        
+        // Bold important keywords
+        let formattedPara = para;
+        
+        // Bold skills if mentioned
+        if (metadata.techMatches && metadata.techMatches.length > 0) {
+            metadata.techMatches.forEach(skill => {
+                const regex = new RegExp(`\\b${skill}\\b`, 'gi');
+                formattedPara = formattedPara.replace(regex, `<strong>${skill}</strong>`);
+            });
+        }
+        
+        // Bold years of experience
+        formattedPara = formattedPara.replace(/(\d+[\+]?\s+years?)/gi, '<strong>$1</strong>');
+        
+        // Bold company name
+        formattedPara = formattedPara.replace(/(\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*'s)/g, '<strong>$1</strong>');
+        
+        // Bold action verbs at sentence start
+        const actionVerbs = ['Led', 'Managed', 'Developed', 'Built', 'Created', 'Implemented', 'Designed', 'Achieved', 'Delivered'];
+        actionVerbs.forEach(verb => {
+            const regex = new RegExp(`^${verb}\\b`, 'g');
+            formattedPara = formattedPara.replace(regex, `<strong>${verb}</strong>`);
+        });
+        
+        html += `<p>${formattedPara}</p>`;
+    });
+    
+    return html;
+}
+
+// Helper function to generate hiring manager name and all company locations using AI
+async function generateAdditionalDetails(websiteUrl, companyName, position = 'Position') {
+    const geminiKey = process.env.GEMINI_API_KEY;
+    
+    if (!geminiKey) {
+        return {
+            hiringManager: 'Hiring Manager',
+            subject: `Application for ${position}`,
+            locations: [{
+                country: 'N/A',
+                city: 'N/A',
+                address: 'N/A',
+                isHeadquarters: true
+            }]
+        };
+    }
+
+    try {
+        const { GoogleGenerativeAI } = require('@google/generative-ai');
+        const genAI = new GoogleGenerativeAI(geminiKey);
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
+
+        const prompt = `You are a research assistant. Find ALL office locations and addresses for the company "${companyName}" (website: ${websiteUrl}).
+
+TASK:
+1. Search for ALL physical office locations including: current headquarters, historical/previous addresses, branch offices, regional offices
+2. For Comparis specifically, look for BOTH: Birmensdorferstrasse 108 AND Stampfenbachstrasse 48 addresses
+3. Check: contact pages, about us pages, impressum, legal notices, company registry
+4. Generate a realistic hiring manager name based on the company's country/region
+5. Generate a professional email subject line for the position: "${position}"
+
+REQUIRED OUTPUT (JSON format only):
+{
+    "hiringManager": "Realistic Full Name",
+    "subject": "Professional Email Subject Line for Application",
+    "locations": [
+        {
+            "country": "Full Country Name",
+            "city": "City Name",
+            "address": "Complete Street Address with Postal/ZIP Code",
+            "isHeadquarters": true
+        },
+        {
+            "country": "Full Country Name",
+            "city": "City Name",
+            "address": "Complete Street Address with Postal/ZIP Code",
+            "isHeadquarters": false
+        }
+    ]
+}
+
+IMPORTANT RULES:
+- Find ALL real addresses (current AND historical/alternative addresses)
+- For Swiss companies, use format: "Street Number, CH-PostalCode City"
+- Include postal/ZIP codes in the address
+- If company has multiple locations, list ALL of them
+- Mark the main/current office with "isHeadquarters": true
+- Generate a professional Swiss name for hiring manager (e.g., Lukas Schmidt, Hans Mueller)
+- Subject line should be formal and professional (e.g., "Application for ${position} Position at ${companyName}")
+- Return ONLY valid JSON, no additional text
+
+Example for Comparis:
+{
+    "hiringManager": "Hans Mueller",
+    "subject": "Application for Solution Architect Position at Comparis",
+    "locations": [
+        {
+            "country": "Switzerland",
+            "city": "Zürich",
+            "address": "Birmensdorferstrasse 108, CH-8003 Zürich",
+            "isHeadquarters": true
+        },
+        {
+            "country": "Switzerland",
+            "city": "Zürich",
+            "address": "Stampfenbachstrasse 48, CH-8006 Zürich",
+            "isHeadquarters": false
+        }
+    ]
+}`;
+
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
+        
+        console.log('Gemini AI response for locations:', text.substring(0, 200));
+        
+        // Try to extract JSON from the response
+        let jsonMatch = text.match(/\{[\s\S]*\}/);
+        
+        // If no match, try to clean the response
+        if (!jsonMatch) {
+            // Remove markdown code blocks if present
+            const cleanedText = text.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+            jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+        }
+        
+        if (jsonMatch) {
+            try {
+                const data = JSON.parse(jsonMatch[0]);
+                console.log('Parsed location data:', JSON.stringify(data, null, 2));
+                
+                return {
+                    hiringManager: data.hiringManager || 'Hiring Manager',
+                    subject: data.subject || `Application for ${position}`,
+                    locations: data.locations && data.locations.length > 0 ? data.locations : [{
+                        country: 'N/A',
+                        city: 'N/A',
+                        address: 'N/A',
+                        isHeadquarters: true
+                    }]
+                };
+            } catch (parseError) {
+                console.error('JSON parse error:', parseError.message);
+                console.error('Attempted to parse:', jsonMatch[0].substring(0, 200));
+            }
+        } else {
+            console.error('No JSON found in Gemini response');
+        }
+    } catch (error) {
+        console.error('Error generating additional details:', error.message);
+        if (error.stack) {
+            console.error('Error stack:', error.stack);
+        }
+    }
+
+    return {
+        hiringManager: 'Hiring Manager',
+        subject: `Application for ${position}`,
+        locations: [{
+            country: 'N/A',
+            city: 'N/A',
+            address: 'N/A',
+            isHeadquarters: true
+        }]
+    };
+}
 
 // API endpoint to download generated cover letter
 app.get('/api/download-cover-letter/:filename', authenticateToken, async (req, res) => {
@@ -1499,7 +2784,7 @@ app.post('/api/send-applications', authenticateToken, async (req, res) => {
                             subject: `Application for ${position}`,
                             html: `
                                 <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
-                                    <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Dear Hiring Team at ${companyName},</h2>
+                                    <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Dear Hiring Manager at ${companyName},</h2>
                                     
                                     <p style="font-size: 16px; margin: 20px 0;">
                                         I'm excited to submit my application for the <strong>${position}</strong> role. 
@@ -1587,6 +2872,98 @@ app.get('/api/health', (req, res) => {
         status: 'ok',
         message: 'Server is running. Configure your email settings to send applications.',
     });
+});
+
+// API endpoint to send single application from review page
+app.post('/api/send-single-application', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { recipientEmail, websiteUrl, position, coverLetterText, companyName } = req.body;
+
+        // Get user profile
+        db.get('SELECT * FROM users WHERE id = ?', [userId], async (err, user) => {
+            if (err || !user) {
+                return res.status(500).json({ error: 'Failed to load user profile' });
+            }
+
+            if (!user.smtp_email || !user.smtp_password) {
+                return res.status(400).json({ error: 'Please configure SMTP settings in Settings' });
+            }
+
+            if (!user.resume_path) {
+                return res.status(400).json({ error: 'Resume is required' });
+            }
+
+            try {
+                // Prepare user data
+                const userData = {
+                    fullName: user.full_name,
+                    email: user.email,
+                    phoneNumber: user.phone_number,
+                    city: user.city,
+                    country: user.country
+                };
+
+                const resumePath = path.join(__dirname, user.resume_path);
+                const photoPath = user.photo_path ? path.join(__dirname, user.photo_path) : null;
+                const signaturePath = user.signature_path ? path.join(__dirname, user.signature_path) : null;
+
+                // Generate PDF from the cover letter text
+                const { filePath, fileName } = await createCoverLetterPDF(
+                    userData,
+                    coverLetterText,
+                    companyName,
+                    photoPath,
+                    signaturePath
+                );
+
+                // Decrypt SMTP password
+                const decryptedPassword = decryptData(user.smtp_password);
+
+                // Create transporter
+                const transporter = createTransporter(user.smtp_email, decryptedPassword);
+
+                // Send email
+                const senderName = user.sender_name || user.full_name || user.smtp_email.split('@')[0];
+                const subject = `Application for ${position} - ${user.full_name}`;
+
+                await transporter.sendMail({
+                    from: `"${senderName}" <${user.smtp_email}>`,
+                    to: recipientEmail,
+                    subject: subject,
+                    html: `
+                        <p>Dear Hiring Manager,</p>
+                        <p>Please find attached my application for the ${position} position.</p>
+                        <p>Best regards,<br>${user.full_name}</p>
+                    `,
+                    attachments: [
+                        {
+                            filename: fileName,
+                            path: filePath,
+                        },
+                        {
+                            filename: path.basename(resumePath),
+                            path: resumePath,
+                        },
+                    ],
+                });
+
+                console.log(`✅ Application sent to ${recipientEmail}`);
+
+                res.json({
+                    success: true,
+                    message: 'Application sent successfully'
+                });
+
+            } catch (error) {
+                console.error('Error sending application:', error);
+                res.status(500).json({ error: error.message });
+            }
+        });
+    } catch (error) {
+        console.error('Server error:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // Start server
