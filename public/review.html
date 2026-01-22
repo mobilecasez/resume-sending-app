@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Review Applications - Lettrico</title>
+    <title>Review Applications - CVApplyr</title>
     <style>
         * {
             margin: 0;
@@ -467,6 +467,71 @@
             }
         }
 
+        /* Loading Overlay */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+        }
+
+        .loading-overlay.active {
+            display: flex;
+        }
+
+        .loading-card {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            text-align: center;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            min-width: 300px;
+        }
+
+        .spinner-large {
+            width: 60px;
+            height: 60px;
+            border: 4px solid #f3f4f6;
+            border-top-color: #0d9488;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-message {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 24px;
+        }
+
+        .cancel-btn {
+            background: #ef4444;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 10px;
+            border: none;
+            font-size: 0.875rem;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            transition: background 0.2s ease;
+        }
+
+        .cancel-btn:hover {
+            background: #dc2626;
+        }
+
         @media (max-width: 768px) {
             .form-grid {
                 grid-template-columns: 1fr;
@@ -536,6 +601,28 @@
             <div class="tabs" id="tabs"></div>
             <div id="tab-contents"></div>
         </div>
+
+        <!-- Parent-Level Action Buttons -->
+        <div id="parent-actions" style="margin-top: 20px; padding: 0 20px;">
+            <button id="generateAllBtn" class="btn btn-primary" style="width: 100%; padding: 16px; margin-bottom: 10px; font-size: 16px;" onclick="generateAllCoverLetters()">
+                🚀 Generate All Cover Letters
+            </button>
+            <button id="sendAllBtn" class="btn btn-success" style="width: 100%; padding: 16px; margin-bottom: 10px; font-size: 16px;" onclick="sendAllApplications()">
+                📧 Send to All
+            </button>
+            <button id="generateAndSendAllBtn" class="btn" style="width: 100%; padding: 16px; background: #10b981; color: white; font-size: 16px;" onclick="generateAndSendAll()">
+                🚀📧 Generate & Send to All
+            </button>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="loading-card">
+            <div class="spinner-large"></div>
+            <div class="loading-message" id="loadingMessage">Processing...</div>
+            <button class="cancel-btn" onclick="cancelOperation()">✕ Cancel</button>
+        </div>
     </div>
 
     <div class="toast" id="toast"></div>
@@ -581,6 +668,135 @@
 
         let recipients = [];
         let currentTab = 0;
+        let abortController = null;
+        let isCancelled = false;
+        let applicationHistory = [];
+        let reviewCoverLetters = {};
+
+        // Get cumulative counters
+        function getCounters() {
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            if (!userData.email) return { totalGenerated: 0, totalSent: 0 };
+            
+            const stored = localStorage.getItem(`appCounters_${userData.email}`);
+            if (stored) {
+                return JSON.parse(stored);
+            }
+            return { totalGenerated: 0, totalSent: 0 };
+        }
+
+        // Save cumulative counters to both localStorage and backend
+        async function saveCounters(counters) {
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            if (userData.email) {
+                // Save to localStorage
+                localStorage.setItem(`appCounters_${userData.email}`, JSON.stringify(counters));
+                console.log('📊 Saved counters to localStorage - Generated:', counters.totalGenerated, 'Sent:', counters.totalSent);
+                
+                // Save to backend API
+                try {
+                    const authToken = localStorage.getItem('authToken');
+                    const response = await fetch('/api/users/counters', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${authToken}`,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(counters)
+                    });
+                    
+                    if (response.ok) {
+                        console.log('📊 Saved counters to backend API');
+                    }
+                } catch (error) {
+                    console.error('Failed to save counters to backend:', error);
+                }
+            }
+        }
+
+        // Increment generated counter
+        async function incrementGenerated() {
+            const counters = getCounters();
+            counters.totalGenerated++;
+            await saveCounters(counters);
+        }
+
+        // Increment sent counter
+        async function incrementSent() {
+            const counters = getCounters();
+            counters.totalSent++;
+            await saveCounters(counters);
+        }
+
+        // Load application history from localStorage
+        function loadApplicationHistory() {
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            if (userData.email) {
+                const stored = localStorage.getItem(`applicationHistory_${userData.email}`);
+                if (stored) {
+                    applicationHistory = JSON.parse(stored);
+                    console.log('📖 Loaded application history:', applicationHistory.length, 'items');
+                }
+            }
+        }
+
+        // Save application history to localStorage
+        function saveApplicationHistory() {
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            if (userData.email) {
+                localStorage.setItem(`applicationHistory_${userData.email}`, JSON.stringify(applicationHistory));
+                console.log('💾 Saved application history:', applicationHistory.length, 'items');
+            }
+        }
+
+        // Load review cover letters from localStorage
+        function loadReviewCoverLetters() {
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            if (userData.email) {
+                const stored = localStorage.getItem(`reviewCoverLetters_${userData.email}`);
+                if (stored) {
+                    reviewCoverLetters = JSON.parse(stored);
+                    console.log('📖 Loaded review cover letters:', Object.keys(reviewCoverLetters).length, 'items');
+                }
+            }
+        }
+
+        // Save review cover letters to localStorage
+        function saveReviewCoverLetters() {
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            if (userData.email) {
+                localStorage.setItem(`reviewCoverLetters_${userData.email}`, JSON.stringify(reviewCoverLetters));
+                console.log('💾 Saved review cover letters:', Object.keys(reviewCoverLetters).length, 'items');
+            }
+        }
+
+        // Load data on page load
+        loadApplicationHistory();
+        loadReviewCoverLetters();
+
+        // Loading overlay functions
+        function showLoading(message = 'Processing...') {
+            const overlay = document.getElementById('loadingOverlay');
+            const messageEl = document.getElementById('loadingMessage');
+            messageEl.textContent = message;
+            overlay.classList.add('active');
+        }
+
+        function hideLoading() {
+            const overlay = document.getElementById('loadingOverlay');
+            overlay.classList.remove('active');
+        }
+
+        function cancelOperation() {
+            console.log('🛑 Cancel button clicked');
+            isCancelled = true;
+            if (abortController) {
+                abortController.abort();
+                console.log('🛑 AbortController aborted');
+            }
+            hideLoading();
+            showToast('Operation cancelled', 'error');
+        }
 
         // Toast notification function
         function showToast(message, type) {
@@ -592,33 +808,67 @@
             }, 3000);
         }
 
-        // Get recipients from session storage
-        window.addEventListener('DOMContentLoaded', () => {
-            const storedRecipients = sessionStorage.getItem('recipients');
-            console.log('Stored recipients:', storedRecipients);
+        // Get recipients from backend API
+        window.addEventListener('DOMContentLoaded', async () => {
+            console.log('🔍 DOMContentLoaded event fired');
+            const authToken = localStorage.getItem('authToken');
+            console.log('🔑 Auth token:', authToken ? 'exists' : 'missing');
             
-            if (!storedRecipients) {
-                console.log('No recipients found');
-                showToast('No recipients found. Please go back and add recipients.', 'error');
-                setTimeout(() => window.location.href = '/index.html', 2000);
+            if (!authToken) {
+                console.log('❌ No auth token, redirecting to login');
+                showToast('Please log in first', 'error');
+                setTimeout(() => window.location.href = '/login.html', 2000);
                 return;
             }
 
             try {
-                recipients = JSON.parse(storedRecipients);
-                console.log('Parsed recipients:', recipients);
+                console.log('📡 Fetching recipients from /api/users/recipients');
+                const response = await fetch('/api/users/recipients', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                console.log('📡 Response status:', response.status, response.statusText);
+
+                if (!response.ok) {
+                    console.log('❌ Failed to load recipients from backend');
+                    showToast('No recipients found. Please go back and add recipients.', 'error');
+                    setTimeout(() => window.location.href = '/index.html', 2000);
+                    return;
+                }
+
+                const data = await response.json();
+                console.log('📦 Loaded data:', JSON.stringify(data, null, 2));
+                
+                if (!data.success || !data.recipients || data.recipients.length === 0) {
+                    console.log('❌ No recipients in data');
+                    showToast('No recipients found. Please go back and add recipients.', 'error');
+                    setTimeout(() => window.location.href = '/index.html', 2000);
+                    return;
+                }
+
+                recipients = data.recipients;
+                console.log('✅ Parsed recipients:', recipients.length, 'recipient(s)');
+                console.log('👥 Recipients:', JSON.stringify(recipients, null, 2));
                 
                 if (!recipients || recipients.length === 0) {
-                    console.log('Empty recipients array');
+                    console.log('❌ Empty recipients array');
                     showToast('No recipients found', 'error');
                     setTimeout(() => window.location.href = '/index.html', 2000);
                     return;
                 }
                 
+                console.log('🎨 Calling renderTabs()');
                 renderTabs();
-                generateAllCoverLetters();
+                console.log('✅ Tabs rendered successfully');
+                
+                // Load existing cover letters from backend
+                await loadExistingCoverLetters();
             } catch (error) {
-                console.error('Error parsing recipients:', error);
+                console.error('❌ Error parsing recipients:', error);
                 showToast('Error loading recipients', 'error');
                 setTimeout(() => window.location.href = '/index.html', 2000);
             }
@@ -641,11 +891,11 @@
                 content.className = `tab-content ${index === 0 ? 'active' : ''}`;
                 content.id = `tab-${index}`;
                 content.innerHTML = `
-                    <div class="loading active">
+                    <div class="loading" style="display: none;">
                         <div class="spinner"></div>
                         <p>Generating cover letter with AI...</p>
                     </div>
-                    <div class="form-content" style="display: none;">
+                    <div class="form-content">
                         <div class="edit-mode-control">
                             <button class="btn btn-edit" id="edit-btn-${index}" onclick="toggleEditMode(${index})">✏️ Edit</button>
                             <div class="edit-actions" id="edit-actions-${index}" style="display: none;">
@@ -655,8 +905,8 @@
                         </div>
                         <div class="form-grid">
                             <div class="form-group">
-                                <label>To (Hiring Manager)</label>
-                                <input type="text" id="to-${index}" readonly data-field="hiringManager">
+                                <label>To</label>
+                                <input type="text" id="to-${index}" value="The Hiring Manager" readonly data-field="hiringManager">
                             </div>
                             <div class="form-group">
                                 <label>Employer</label>
@@ -690,9 +940,9 @@
                             <div class="rich-text-editor" id="cover-letter-${index}" data-field="coverLetterHtml"></div>
                         </div>
                         <div class="buttons">
-                            <button class="btn btn-primary" onclick="regenerateCoverLetter(${index})">🔄 Regenerate Cover Letter</button>
-                            <button class="btn btn-success" onclick="sendApplication(${index})">📧 Send Application</button>
-                            <button class="btn btn-secondary" onclick="downloadCoverLetterPDF(${index})">📄 Download Cover Letter PDF</button>
+                            <button class="btn btn-primary" onclick="regenerateCoverLetter(${index})">🔄 Regenerate</button>
+                            <button class="btn btn-secondary" onclick="downloadCoverLetterPDF(${index})">📥 Download</button>
+                            <button class="btn btn-success" onclick="sendApplication(${index})">📧 Send</button>
                         </div>
                     </div>
                 `;
@@ -714,6 +964,154 @@
             });
         }
 
+        async function loadExistingCoverLetters() {
+            try {
+                console.log('📥 Loading existing cover letters from backend...');
+                const response = await fetch('/api/users/review-cover-letters', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('📦 Loaded cover letters:', data);
+                    
+                    if (data.success && data.reviewCoverLetters && Object.keys(data.reviewCoverLetters).length > 0) {
+                        // reviewCoverLetters is an object with letter_key as keys
+                        let hasValidData = false;
+                        let needsRegeneration = false;
+                        
+                        Object.keys(data.reviewCoverLetters).forEach((key) => {
+                            const letter = data.reviewCoverLetters[key];
+                            const index = parseInt(key);
+                            
+                            if (index < recipients.length && letter.coverLetterHtml) {
+                                const currentRecipient = recipients[index];
+                                
+                                // Only check for changes if we have stored recipient data to compare
+                                // This prevents false positives when the saved data doesn't have these fields yet
+                                if (letter.storedRecipientEmail && letter.storedRecipientWebsite) {
+                                    const emailChanged = letter.storedRecipientEmail !== currentRecipient.email;
+                                    const websiteChanged = letter.storedRecipientWebsite !== currentRecipient.website;
+                                    
+                                    if (emailChanged || websiteChanged) {
+                                        console.log(`🔄 Recipient ${index} data changed - will regenerate`);
+                                        console.log(`  Old: ${letter.storedRecipientEmail} / ${letter.storedRecipientWebsite}`);
+                                        console.log(`  New: ${currentRecipient.email} / ${currentRecipient.website}`);
+                                        needsRegeneration = true;
+                                    } else {
+                                        populateFormWithData(index, letter);
+                                        hasValidData = true;
+                                    }
+                                } else {
+                                    // No stored recipient data, just populate (old data format)
+                                    populateFormWithData(index, letter);
+                                    hasValidData = true;
+                                }
+                            }
+                        });
+                        
+                        if (needsRegeneration) {
+                            console.log('🔄 Recipient data changed - regenerating all cover letters...');
+                            await generateAllCoverLetters();
+                        } else if (hasValidData) {
+                            console.log('✅ Populated forms with existing cover letters');
+                        } else {
+                            console.log('ℹ️ No valid cover letters found, starting automatic generation...');
+                            await generateAllCoverLetters();
+                        }
+                    } else {
+                        console.log('ℹ️ No existing cover letters found, starting automatic generation...');
+                        await generateAllCoverLetters();
+                    }
+                } else {
+                    console.log('ℹ️ No existing cover letters, starting automatic generation...');
+                    await generateAllCoverLetters();
+                }
+            } catch (error) {
+                console.error('⚠️ Error loading existing cover letters:', error);
+                console.log('ℹ️ Starting automatic generation...');
+                await generateAllCoverLetters();
+            }
+        }
+
+        function populateFormWithData(index, data) {
+            try {
+                console.log(`📝 Populating form ${index} with data:`, data);
+                
+                document.getElementById(`to-${index}`).value = 'The Hiring Manager';
+                document.getElementById(`employer-${index}`).value = data.companyName || data.company_name || '';
+                document.getElementById(`subject-${index}`).value = data.subject || '';
+                document.getElementById(`email-${index}`).value = recipients[index].email;
+                document.getElementById(`position-${index}`).value = recipients[index].position;
+                
+                // Set date
+                const dateField = document.getElementById(`date-${index}`);
+                if (dateField) {
+                    dateField.value = data.date || new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+                }
+                
+                // Populate address if available
+                const addressDropdown = document.getElementById(`address-${index}`);
+                if (data.locations && data.locations.length > 0) {
+                    // Use locations array if available
+                    addressDropdown.innerHTML = '';
+                    data.locations.forEach((location) => {
+                        const option = document.createElement('option');
+                        let displayText = location.address;
+                        const countryInAddress = location.address.toLowerCase().includes(location.country.toLowerCase());
+                        if (!countryInAddress) {
+                            displayText = `${location.address}, ${location.country}`;
+                        }
+                        option.value = displayText;
+                        option.textContent = displayText;
+                        option.dataset.country = location.country;
+                        option.dataset.city = location.city;
+                        option.dataset.address = location.address;
+                        // Select the current address or headquarters
+                        if (data.address && displayText === data.address) {
+                            option.selected = true;
+                        } else if (!data.address && location.isHeadquarters) {
+                            option.selected = true;
+                        }
+                        addressDropdown.appendChild(option);
+                    });
+                } else if (data.address) {
+                    // Fallback: only show the selected address
+                    addressDropdown.innerHTML = `<option value="${data.address}">${data.address}</option>`;
+                }
+                
+                // Populate cover letter
+                const coverLetterDiv = document.getElementById(`cover-letter-${index}`);
+                if (data.coverLetterHtml || data.cover_letter_html) {
+                    const htmlContent = data.coverLetterHtml || data.cover_letter_html;
+                    coverLetterDiv.innerHTML = htmlContent;
+                    coverLetterDiv.contentEditable = false;
+                    
+                    // Show form, hide loading
+                    const loading = document.querySelector(`#tab-${index} .loading`);
+                    const formContent = document.querySelector(`#tab-${index} .form-content`);
+                    if (loading) loading.style.display = 'none';
+                    if (formContent) formContent.style.display = 'block';
+                }
+                
+                // Store in reviewCoverLetters
+                reviewCoverLetters[index] = {
+                    ...data,
+                    recipientEmail: recipients[index].email,
+                    storedRecipientEmail: recipients[index].email,
+                    storedRecipientWebsite: recipients[index].website
+                };
+                
+                console.log(`✅ Populated form ${index} successfully`);
+            } catch (error) {
+                console.error(`⚠️ Error populating form ${index}:`, error);
+            }
+        }
+
         async function generateAllCoverLetters() {
             for (let i = 0; i < recipients.length; i++) {
                 await generateCoverLetter(i);
@@ -726,8 +1124,12 @@
             const formContent = document.querySelector(`#tab-${index} .form-content`);
 
             try {
+                isCancelled = false;
+                abortController = new AbortController();
+                
                 loading.style.display = 'block';
                 formContent.style.display = 'none';
+                showLoading('Generating cover letter with AI...');
 
                 const response = await fetch('/api/generate-cover-letter-details', {
                     method: 'POST',
@@ -735,12 +1137,20 @@
                         'Authorization': `Bearer ${token}`,
                         'Content-Type': 'application/json'
                     },
+                    signal: abortController.signal,
                     body: JSON.stringify({
                         recipientEmail: recipient.email,
                         websiteUrl: recipient.website,
                         position: recipient.position
                     })
                 });
+
+                // Check if cancelled
+                if (isCancelled) {
+                    console.log('🛑 Generation cancelled');
+                    hideLoading();
+                    return;
+                }
 
                 if (!response.ok) {
                     const errorData = await response.json().catch(() => ({}));
@@ -762,7 +1172,7 @@
                 const data = await response.json();
 
                 // Populate fields
-                document.getElementById(`to-${index}`).value = data.hiringManager || 'Hiring Manager';
+                document.getElementById(`to-${index}`).value = 'The Hiring Manager';
                 document.getElementById(`employer-${index}`).value = data.companyName || 'Company';
                 document.getElementById(`subject-${index}`).value = data.subject || `Application for ${recipient.position}`;
                 
@@ -809,12 +1219,36 @@
                 coverLetterDiv.innerHTML = data.coverLetterHtml;
                 coverLetterDiv.contentEditable = false; // Not editable until edit mode is toggled
 
+                // Store in reviewCoverLetters
+                reviewCoverLetters[index] = {
+                    ...data,
+                    generated: true,
+                    sent: false,
+                    recipientEmail: recipient.email,
+                    storedRecipientEmail: recipient.email,
+                    storedRecipientWebsite: recipient.website
+                };
+                saveReviewCoverLetters();
+                
+                // Increment cumulative counter
+                incrementGenerated();
+
                 loading.style.display = 'none';
                 formContent.style.display = 'block';
+                hideLoading();
 
             } catch (error) {
+                if (error.name === 'AbortError') {
+                    console.log('🛑 Generation aborted');
+                    loading.style.display = 'none';
+                    hideLoading();
+                    return;
+                }
                 console.error('Error generating cover letter:', error);
-                showToast('Failed to generate cover letter for ' + recipient.email, 'error');
+                hideLoading();
+                if (!isCancelled) {
+                    showToast('Failed to generate cover letter for ' + recipient.email, 'error');
+                }
                 loading.style.display = 'none';
             }
         }
@@ -825,41 +1259,138 @@
             showToast('Cover letter regenerated successfully!', 'success');
         }
 
-        async function sendApplication(index) {
+        async function sendApplication(index, skipConfirm = false, skipLoadingUI = false) {
             const recipient = recipients[index];
             const coverLetterDiv = document.getElementById(`cover-letter-${index}`);
             const coverLetterHtml = coverLetterDiv.innerHTML;
-            const coverLetterText = coverLetterDiv.innerText;
+            
+            // Get company name and address
+            const companyName = document.getElementById(`employer-${index}`).value;
+            const addressDropdown = document.getElementById(`address-${index}`);
+            const companyAddress = addressDropdown ? addressDropdown.value : '';
 
-            if (!confirm(`Send application to ${recipient.email}?`)) return;
+            if (!skipConfirm && !confirm(`Send application to ${recipient.email}?`)) return;
 
             try {
+                if (!skipLoadingUI) {
+                    showLoading('Sending application...');
+                }
+                console.log('=== SENDING APPLICATION ===');
+                console.log('Recipient:', recipient.email);
+                console.log('Position:', recipient.position);
+                console.log('Company:', companyName);
+                console.log('Address:', companyAddress);
+                console.log('Token exists:', !!token);
+
+                // Create AbortController for this request
+                isCancelled = false;
+                abortController = new AbortController();
+                
                 const response = await fetch('/api/send-single-application', {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${token}`,
                         'Content-Type': 'application/json'
                     },
+                    signal: abortController.signal,
                     body: JSON.stringify({
                         recipientEmail: recipient.email,
                         websiteUrl: recipient.website,
                         position: recipient.position,
-                        coverLetterText: coverLetterText,
-                        companyName: document.getElementById(`employer-${index}`).value
+                        coverLetterText: coverLetterHtml,  // Send HTML with <strong> tags, not plain text
+                        companyName: companyName,
+                        companyAddress: companyAddress  // Include address
                     })
                 });
 
-                if (!response.ok) throw new Error('Failed to send application');
+                console.log('Response status:', response.status);
+                console.log('Response ok:', response.ok);
 
-                showToast('Application sent successfully!', 'success');
+                // Check if cancelled
+                if (isCancelled) {
+                    console.log('🛑 Request cancelled');
+                    return;
+                }
+
+                // Check response status FIRST before parsing
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`Server error: ${response.status} - ${errorText}`);
+                }
+
+                // Try to parse JSON, but treat 200 as success even if parsing fails
+                let responseData;
+                try {
+                    const responseText = await response.text();
+                    responseData = JSON.parse(responseText);
+                    console.log('✅ Response data:', responseData);
+                } catch (jsonError) {
+                    console.log('✅ Email sent (response OK despite parse error)');
+                    responseData = { method: 'email', success: true };
+                }
+
+                // Check if cancelled after response
+                if (isCancelled) {
+                    console.log('🛑 Operation cancelled');
+                    hideLoading();
+                    return;
+                }
+
+                // Track in application history
+                const historyEntry = {
+                    id: Date.now() + index,
+                    companyName: document.getElementById(`employer-${index}`).value,
+                    position: recipient.position || 'N/A',
+                    recipientEmail: recipient.email,
+                    sentDate: new Date().toISOString(),
+                    replyReceived: false,
+                    replyDate: null
+                };
+                applicationHistory = [historyEntry, ...applicationHistory].slice(0, 10);
+                saveApplicationHistory();
+
+                // Update reviewCoverLetters with sent status
+                reviewCoverLetters[index] = {
+                    ...reviewCoverLetters[index],
+                    sent: true,
+                    sentDate: new Date().toISOString()
+                };
+                saveReviewCoverLetters();
+                
+                // Increment cumulative counter
+                incrementSent();
+
+                console.log('✅ Application sent successfully via:', responseData.method);
+                if (!skipLoadingUI) {
+                    hideLoading();
+                    showToast(`Application sent successfully via ${responseData.method}!`, 'success');
+                }
                 
                 // Disable send button
-                event.target.disabled = true;
-                event.target.textContent = '✓ Sent';
+                const buttons = document.querySelectorAll(`#tab-${index} .btn-success`);
+                buttons.forEach(btn => {
+                    btn.disabled = true;
+                    btn.textContent = '✓ Sent';
+                });
 
             } catch (error) {
-                console.error('Error sending application:', error);
-                showToast('Failed to send application', 'error');
+                if (error.name === 'AbortError') {
+                    console.log('🛑 Request aborted by user');
+                    if (!skipLoadingUI) {
+                        hideLoading();
+                    }
+                    return;
+                }
+                console.error('❌ Error sending application:', error);
+                console.error('Error message:', error.message);
+                console.error('Error stack:', error.stack);
+                if (!skipLoadingUI) {
+                    hideLoading();
+                    if (!isCancelled) {
+                        showToast(`Failed to send application: ${error.message}`, 'error');
+                    }
+                }
+                throw error; // Re-throw so the batch function can count it
             }
         }
 
@@ -989,12 +1520,12 @@
         // Save edits
         async function saveEdits(index) {
             const tabContent = document.querySelector(`#tab-${index}`);
-            const inputs = tabContent.querySelectorAll('input, select');
             const coverLetterDiv = document.getElementById(`cover-letter-${index}`);
             const recipient = recipients[index];
 
-            // Collect edited values
-            const editedData = {
+            // Collect edited values - map to the correct recipient properties
+            const updatedRecipient = {
+                ...recipient,
                 hiringManager: document.getElementById(`to-${index}`).value,
                 companyName: document.getElementById(`employer-${index}`).value,
                 email: document.getElementById(`email-${index}`).value,
@@ -1007,30 +1538,137 @@
             };
 
             // Validate required fields
-            if (!editedData.hiringManager || !editedData.companyName || !editedData.email) {
+            if (!updatedRecipient.email || !updatedRecipient.companyName || !updatedRecipient.position) {
                 showToast('Please fill in all required fields', 'error');
                 return;
             }
 
             try {
-                // Exit edit mode
-                toggleEditMode(index);
-
                 // Update local data
-                recipients[index] = {
-                    ...recipient,
-                    ...editedData
-                };
+                recipients[index] = updatedRecipient;
 
                 // Save to sessionStorage for persistence during session
                 sessionStorage.setItem('recipients', JSON.stringify(recipients));
 
-                showToast('Changes saved successfully!', 'success');
+                // Also update the tab label if email changed
+                const tabs = document.querySelectorAll('.tab');
+                if (tabs[index]) {
+                    tabs[index].textContent = updatedRecipient.email;
+                }
 
+                // Update all display values in the form
+                document.getElementById(`to-${index}`).value = updatedRecipient.hiringManager || '';
+                document.getElementById(`employer-${index}`).value = updatedRecipient.companyName || '';
+                document.getElementById(`email-${index}`).value = updatedRecipient.email || '';
+                document.getElementById(`address-${index}`).value = updatedRecipient.address || '';
+                document.getElementById(`date-${index}`).value = updatedRecipient.date || '';
+                document.getElementById(`position-${index}`).value = updatedRecipient.position || '';
+                document.getElementById(`subject-${index}`).value = updatedRecipient.subject || '';
+
+                // Exit edit mode after saving
+                exitEditMode(index);
             } catch (error) {
-                console.error('Error saving edits:', error);
+                console.error('Error saving recipient:', error);
                 showToast('Failed to save changes', 'error');
             }
         }
+
+        // Parent-level action functions
+        async function generateAllCoverLetters() {
+            if (recipients.length === 0) {
+                showToast('No recipients to generate cover letters for', 'error');
+                return;
+            }
+
+            showLoading('Generating all cover letters...');
+            let successCount = 0;
+            let errorCount = 0;
+
+            for (let i = 0; i < recipients.length; i++) {
+                try {
+                    await regenerateCoverLetter(i);
+                    successCount++;
+                } catch (error) {
+                    console.error(`Error generating cover letter for recipient ${i}:`, error);
+                    errorCount++;
+                }
+            }
+
+            hideLoading();
+            if (errorCount === 0) {
+                showToast(`Successfully generated ${successCount} cover letter(s)!`, 'success');
+                // Re-enable Send to All button
+                const sendAllBtn = document.getElementById('sendAllBtn');
+                if (sendAllBtn) {
+                    sendAllBtn.disabled = false;
+                    sendAllBtn.innerHTML = '📧 Send to All';
+                    sendAllBtn.style.opacity = '1';
+                }
+            } else {
+                showToast(`Generated ${successCount} cover letter(s), ${errorCount} failed`, 'error');
+            }
+        }
+
+        async function sendAllApplications() {
+            if (recipients.length === 0) {
+                showToast('No recipients to send applications to', 'error');
+                return;
+            }
+
+            const confirmed = confirm(`Are you sure you want to send applications to all ${recipients.length} recipient(s)?`);
+            if (!confirmed) return;
+
+            showLoading('Sending all applications...');
+            let successCount = 0;
+            let errorCount = 0;
+
+            for (let i = 0; i < recipients.length; i++) {
+                try {
+                    await sendApplication(i, true, true); // Skip confirmation and loading UI
+                    successCount++;
+                } catch (error) {
+                    console.error(`Error sending application to recipient ${i}:`, error);
+                    errorCount++;
+                }
+            }
+
+            hideLoading();
+            if (errorCount === 0) {
+                showToast(`Successfully sent ${successCount} application(s)!`, 'success');
+                // Disable Send to All button
+                const sendAllBtn = document.getElementById('sendAllBtn');
+                if (sendAllBtn) {
+                    sendAllBtn.disabled = true;
+                    sendAllBtn.innerHTML = '✓ All Sent';
+                    sendAllBtn.style.opacity = '0.6';
+                }
+            } else {
+                showToast(`Sent ${successCount} application(s), ${errorCount} failed`, 'error');
+            }
+        }
+
+        async function generateAndSendAll() {
+            if (recipients.length === 0) {
+                showToast('No recipients available', 'error');
+                return;
+            }
+
+            const confirmed = confirm(`Generate and send applications to all ${recipients.length} recipient(s)?`);
+            if (!confirmed) return;
+
+            await generateAllCoverLetters();
+            // Small delay to let generation complete
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            await sendAllApplications();
+            
+            // Disable Generate & Send All button
+            const generateAndSendBtn = document.getElementById('generateAndSendAllBtn');
+            if (generateAndSendBtn) {
+                generateAndSendBtn.disabled = true;
+                generateAndSendBtn.innerHTML = '✓ All Generated & Sent';
+                generateAndSendBtn.style.opacity = '0.6';
+            }
+        }
+    </script>
 </body>
 </html>

@@ -285,18 +285,36 @@ class TemplateCoverLetterGenerator {
 
             const $ = cheerio.load(response.data);
             const fullHtml = response.data.toLowerCase();
-            $('script, style, nav, footer').remove();
+            $('script, style, nav, footer, header').remove();
 
             const title = $('title').text().trim();
             const metaDescription = $('meta[name="description"]').attr('content') || '';
-            const h1s = $('h1').map((i, el) => $(el).text().trim()).get().slice(0, 3);
-            const h2s = $('h2').map((i, el) => $(el).text().trim()).get().slice(0, 5);
+            const h1s = $('h1').map((i, el) => $(el).text().trim()).get().slice(0, 5);
+            const h2s = $('h2').map((i, el) => $(el).text().trim()).get().slice(0, 10);
+            const h3s = $('h3').map((i, el) => $(el).text().trim()).get().slice(0, 10);
+            
+            // Extract ALL meaningful paragraphs (this captures product descriptions, services, etc.)
+            const allParagraphs = $('p').map((i, el) => $(el).text().trim()).get()
+                .filter(p => p.length > 40 && p.length < 800) // Substantial content only
+                .slice(0, 15); // Get more paragraphs
+            
+            // Extract list items (often contains services, products, features)
+            const listItems = $('li').map((i, el) => $(el).text().trim()).get()
+                .filter(li => li.length > 20 && li.length < 300)
+                .slice(0, 15);
+            
+            // Extract main content sections (often where detailed info lives)
+            const mainContent = $('main, article, .content, .about, .services, .solutions, .products, section').first()
+                .text()
+                .replace(/\s+/g, ' ')
+                .trim()
+                .substring(0, 3000); // Get substantial content
 
             if (!title && h1s.length === 0) {
                 throw new Error('Could not extract company information from website');
             }
 
-            console.log('🏠 Homepage analyzed');
+            console.log('🏠 Homepage analyzed - extracted detailed content');
 
             // Translate homepage content
             const translatedTitle = await this.detectAndTranslate(title);
@@ -837,9 +855,147 @@ Be professional and factual. If you don't have specific information, make reason
     }
 
     /**
-     * Use Gemini AI to generate the complete cover letter
+     * Use Gemini AI to research the company website and extract detailed intelligence
      */
-    async generateCoverLetterWithAI(resumeText, websiteUrl, position, companyName) {
+    async researchCompanyWithAI(websiteUrl, companyName) {
+        const geminiKey = process.env.GEMINI_API_KEY;
+        
+        if (!geminiKey) {
+            console.log('⚠️  No Gemini API key - cannot research company');
+            return null;
+        }
+
+        try {
+            const { GoogleGenerativeAI } = require('@google/generative-ai');
+            const genAI = new GoogleGenerativeAI(geminiKey);
+            const model = genAI.getGenerativeModel({ 
+                model: 'gemini-2.0-flash-exp',
+                generationConfig: {
+                    temperature: 0.7,
+                    topP: 0.95,
+                    topK: 40,
+                    maxOutputTokens: 4096,
+                }
+            });
+
+            const researchPrompt = `Role: You are an expert Headhunter performing deep company research to extract SPECIFIC PROPER NOUNS.
+
+**Company to Research:**
+- Name: ${companyName}
+- Website: ${websiteUrl}
+
+**CRITICAL INSTRUCTIONS - Step 1: Deep Research & Entity Extraction**
+
+You MUST perform a real-time web search on this company. You are FORBIDDEN from responding until you have extracted the following "Proper Nouns":
+
+1. **Specific Product Names** (CRITICAL):
+   - Find the names of SaaS products, platforms, or tools they have built
+   - Examples: "Simp Realty Platform", "Textbook Treasure", "Property Management SaaS"
+   - Look for branded product names, not generic descriptions
+   - If they build custom software, find client project names
+
+2. **Specific Client Names** (CRITICAL):
+   - Find actual company names they have worked with
+   - Examples: "Capital Bank", "BCBS", "United Health Care", "Delphix"
+   - Look in case studies, testimonials, client logos, or portfolio sections
+   - Industry names are NOT enough - we need actual client company names
+
+3. **Specific Partners/Tools/Technologies** (CRITICAL):
+   - Find niche tools, platforms, or technologies they specialize in
+   - Examples: "Delphix", "Salesforce", "Azure DevOps", "ASP.NET Core", "Angular"
+   - Look for technology partnerships or certified partnerships
+   - Find their exact tech stack if mentioned
+
+4. **Founder/Leadership Background** (IMPORTANT):
+   - Find the founder's name and professional background
+   - Examples: "Founded by John Smith, former Supply Chain Director at IBM"
+   - Look for leadership team bios or About Us pages
+   - Note any unique expertise or industry experience
+
+5. **Company Focus & Methodology** (IMPORTANT):
+   - What industry do they focus on? (Healthcare, Finance, Real Estate, etc.)
+   - Do they follow specific methodologies? (Agile, DevOps, etc.)
+   - What makes them unique in their market?
+
+**VALIDATION RULES:**
+- If you cannot find specific product/client/partner names, explicitly state: "Could not find specific [product/client/partner] names"
+- Do NOT invent or guess names
+- Do NOT use generic terms like "their software" or "various clients"
+- Prioritize finding at least 2-3 specific proper nouns from the categories above
+
+**CRITICAL RULES:**
+- Find SPECIFIC details, not generic descriptions
+- Look for proper nouns (product names, client names, partner names)
+- Extract actual quotes or phrases from their website
+- If you can't find something, say "Not found" - don't make it up
+
+**Output Format (JSON):**
+{
+  "companyName": "Exact company name with proper spacing and capitalization (e.g., 'Disruptive Tech Solutions' not 'disruptivetechsolutions')",
+  "products": ["Product 1 with brief description", "Product 2 with brief description"],
+  "clients": ["Client 1", "Client 2"],
+  "technologies": ["Tech 1", "Tech 2", "Tech 3"],
+  "partnerships": ["Partner 1", "Partner 2"],
+  "businessModel": "Brief description of what they do",
+  "mission": "Their mission statement or vision",
+  "uniqueDetails": ["Unique fact 1", "Unique fact 2"],
+  "industryFocus": "Industries they serve"
+}
+
+Research ${websiteUrl} now and extract these details. Return ONLY the JSON, no other text.`;
+
+            console.log('🔍 Step 1: Researching company with Gemini AI + Google Search...');
+            const result = await model.generateContent({
+                contents: [{ role: 'user', parts: [{ text: researchPrompt }] }],
+                tools: [{ googleSearch: {} }]
+            });
+            const response = await result.response;
+            let researchText = response.text();
+            
+            // Clean up the response (remove markdown code fences if present)
+            researchText = researchText.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+            
+            // Extract JSON from response - try multiple patterns
+            let jsonMatch = researchText.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) {
+                // Try finding JSON starting with { and ending with }
+                const startIdx = researchText.indexOf('{');
+                const endIdx = researchText.lastIndexOf('}');
+                if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+                    jsonMatch = [researchText.substring(startIdx, endIdx + 1)];
+                }
+            }
+            
+            if (!jsonMatch) {
+                console.log('⚠️  Could not parse research results - no JSON found');
+                console.log('Response text:', researchText.substring(0, 200));
+                return null;
+            }
+            
+            try {
+                const companyIntel = JSON.parse(jsonMatch[0]);
+                console.log('✅ Company research complete:');
+                console.log('   Products:', companyIntel.products?.length || 0);
+                console.log('   Technologies:', companyIntel.technologies?.length || 0);
+                console.log('   Partnerships:', companyIntel.partnerships?.length || 0);
+                
+                return companyIntel;
+            } catch (parseError) {
+                console.log('⚠️  Could not parse research JSON:', parseError.message);
+                console.log('JSON string:', jsonMatch[0].substring(0, 200));
+                return null;
+            }
+
+        } catch (error) {
+            console.error('Company research failed:', error.message);
+            return null;
+        }
+    }
+
+    /**
+     * Use Gemini AI to generate the complete cover letter WITH RESEARCHED COMPANY DATA
+     */
+    async generateCoverLetterWithAI(resumeText, websiteUrl, position, companyName, companyIntel, companyLocations = null) {
         const geminiKey = process.env.GEMINI_API_KEY;
         
         if (!geminiKey) {
@@ -860,86 +1016,237 @@ Be professional and factual. If you don't have specific information, make reason
                 }
             });
 
-            console.log('🤖 Using Model: gemini-2.0-flash-exp with generation config');
-            console.log('   Temperature: 1, TopP: 0.95, TopK: 40, MaxTokens: 8192');
+            console.log('🤖 Step 2: Generating cover letter with research...');
 
-            const prompt = `You are an expert career and HR assistant. Your task is to act as a professional cover letter writer.
+            // Extract company location info
+            let locationText = 'your location';
+            let continentText = '';
+            
+            if (companyLocations && companyLocations.length > 0) {
+                const headquarters = companyLocations.find(loc => loc.isHeadquarters) || companyLocations[0];
+                const country = headquarters.country;
+                const city = headquarters.city;
+                
+                console.log(`📍 Company location detected: ${city}, ${country}`);
+                
+                // Determine continent and relocation text
+                const europeanCountries = ['Switzerland', 'Germany', 'Austria', 'France', 'Italy', 'Spain', 'Netherlands', 'Belgium', 'Sweden', 'Norway', 'Denmark', 'Finland', 'Poland', 'Czech Republic', 'Hungary', 'Romania', 'Bulgaria', 'Greece', 'Portugal', 'Ireland', 'Luxembourg', 'Slovakia', 'Slovenia', 'Croatia', 'Estonia', 'Latvia', 'Lithuania', 'Malta', 'Cyprus', 'United Kingdom', 'UK'];
+                const asianCountries = ['China', 'Japan', 'India', 'Singapore', 'South Korea', 'Thailand', 'Vietnam', 'Malaysia', 'Indonesia', 'Philippines', 'Taiwan', 'Hong Kong'];
+                const northAmericanCountries = ['United States', 'USA', 'US', 'Canada', 'Mexico'];
+                
+                if (europeanCountries.includes(country)) {
+                    locationText = `${country}/Europe`;
+                    continentText = 'Europe';
+                } else if (asianCountries.includes(country)) {
+                    locationText = `${country}/Asia`;
+                    continentText = 'Asia';
+                } else if (northAmericanCountries.includes(country)) {
+                    locationText = country === 'United States' || country === 'USA' || country === 'US' ? 'the United States' : country;
+                    continentText = 'North America';
+                } else {
+                    locationText = country;
+                    continentText = country;
+                }
+            }
 
-**GOAL:**
-Generate a formal, professional, and highly targeted cover letter for the candidate. The letter MUST be based on a thorough analysis of the provided **RESUME CONTENT** and the specific **TARGET JOB DATA**.
+            // Format the company intelligence nicely
+            const productsInfo = companyIntel?.products?.join('\n   - ') || 'Not available';
+            const clientsInfo = companyIntel?.clients?.join(', ') || 'Not available';
+            const techInfo = companyIntel?.technologies?.join(', ') || 'Not available';
+            const partnersInfo = companyIntel?.partnerships?.join(', ') || 'Not available';
+            const businessModel = companyIntel?.businessModel || 'Technology company';
+            const mission = companyIntel?.mission || '';
+            const uniqueDetails = companyIntel?.uniqueDetails?.join('\n   - ') || '';
+            const industry = companyIntel?.industryFocus || '';
 
-**CRITICAL REQUIREMENTS:**
-1.  **ABSOLUTELY NO PLACEHOLDERS:** Do not include ANY placeholders in square brackets like [LinkedIn Profile], [Insert Link], [Your Contact], [Platform where job was advertised], [Company Website], etc. If you don't have specific information, simply omit that phrase entirely. Write only complete, real information.
-2.  **NO SECTION PREFIXES:** Do not write "Section 1:" or "Section 2:" - use the actual headings directly (e.g., "How My Experience Directly Matches Your Requirements", "My Value Proposition to [Company Name]").
-3.  **BOLD FORMATTING:** Use **double asterisks** to make text bold for:
-    - All section headings (e.g., **How My Experience Directly Matches Your Requirements**)
-    - Important keywords (e.g., **.NET Core**, **Azure DevOps**, **14+ years**, **leadership**)
-    - Key phrases that should be emphasized (e.g., **complex enterprise projects**, **strategic value**)
-    - Technical skills and technologies
-    - Years of experience and quantifiable achievements
-4.  **Professional and Formal:** Maintain a highly formal business tone throughout.
-5.  **CRITICAL PERSONALIZATION:** Explicitly reference the target company's name **[Company Name]** and the candidate's desire to work in **Switzerland/Europe**. Crucially, connect the candidate's experience to the specific **Key Business Domain** (e.g., Financial Services, Health Tech, E-commerce) of the target company.
-6.  **Targeted Alignment:** Directly connect the candidate's specific skills (e.g., .NET Core, C#, Azure DevOps, Agile leadership, Enterprise Integrations) identified in the resume to the technical and leadership requirements in the job data.
-7.  **Value-Driven:** Include a dedicated section titled "My Value Proposition to [Company Name]" that explains *how* the candidate's 14+ years of leadership and technical experience will solve business problems or drive strategic success for the company.
+            // Extract candidate insights from resume
+            const yearsMatch = resumeText.match(/(\d+)\+?\s*years?\s+of\s+(experience|exp)/i);
+            const yearsOfExperience = yearsMatch ? yearsMatch[1] + '+ years' : 'extensive';
+            
+            const hasLeadership = /team\s+lead|project\s+manager|scrum\s+master|technical\s+lead|architect|senior/i.test(resumeText);
+            const hasAIExperience = /\b(AI|artificial\s+intelligence|machine\s+learning|ML|deep\s+learning|neural\s+network|NLP|computer\s+vision|GPT|LLM|generative\s+AI)\b/i.test(resumeText);
+            
+            // Extract all technologies from resume for bolding
+            const techKeywords = resumeText.match(/\b(\.NET|C#|ASP\.NET|Azure|AWS|SQL|Python|JavaScript|React|Angular|Node\.js|Docker|Kubernetes|DevOps|CI\/CD|Agile|Scrum|SAP|REST|API|Microservices|MongoDB|Redis|Jenkins|Git|TypeScript|Java|Spring|Kafka|RabbitMQ|GraphQL|TensorFlow|PyTorch|OpenAI|GPT|LLM|Machine Learning|AI|Blockchain|Web3|Cloud|GCP|Oracle|PostgreSQL|MySQL|NoSQL|Elasticsearch|Terraform|Ansible|Linux|Windows Server|IIS|NGINX|Apache|HTML|CSS|SASS|Redux|Vue\.js|Next\.js|Express|Django|Flask|FastAPI|Ruby|Rails|PHP|Laravel|Symfony|Go|Rust|Scala|Kotlin|Swift|Objective-C|Flutter|React Native|Ionic|Xamarin|Unity|Unreal Engine|Salesforce|Dynamics|ServiceNow|Jira|Confluence|SharePoint|Power BI|Tableau|Excel|VBA)\b/gi) || [];
+            const uniqueTechs = [...new Set(techKeywords.map(t => t.toUpperCase()))];
 
-**STRUCTURE:** The letter must strictly adhere to the following body structure (do not include addresses, salutation, or sign-off—start directly with the first paragraph):
-    * Opening Paragraph (Stating profound interest, job title, and core expertise, and mentioning the company's business domain).
-    * **How My Experience Directly Matches Your Requirements** (Use 3-4 distinct, cited bullet points - make heading BOLD).
-    * **My Value Proposition to [Company Name]** (Use 2-3 distinct bullet points focusing on business impact and complex projects - make heading BOLD).
-    * Closing Paragraph (Reiterate interest, mention desired relocation to Switzerland/Europe, and include a call to action).
+            const prompt = `You are an expert Executive Recruiter and Career Storyteller. Write a highly personalized, narrative-driven cover letter that proves deep research was done.
 
-**INPUT DATA:**
+**TARGET COMPANY:** ${companyName}
+**POSITION:** ${position}
+**COMPANY LOCATION:** ${locationText}
 
-**RESUME CONTENT:**
+**CANDIDATE PROFILE:**
 ${resumeText}
 
-**TARGET JOB DATA (This MUST be populated by your app):**
-Company Name: ${companyName}
-Position Applying For: ${position}
-Key Business Domain: [Research the company at ${websiteUrl} to identify their business sector - e.g., Personal Finance & Health, Logistics, E-commerce, Insurance, Technology Services]
-Technical Stack Requirements: [Research ${websiteUrl} to identify their technology stack - look for .NET, C#, Azure Cloud, React, Agile/Scrum, or other technologies mentioned]
-Job Location: [Research ${websiteUrl} to identify the job location]
+**CANDIDATE KEY INSIGHTS (MUST INCLUDE):**
+- Years of Experience: ${yearsOfExperience}
+- Leadership Experience: ${hasLeadership ? 'YES - Team Lead/Project Manager roles' : 'Individual Contributor'}
+- AI/ML Experience: ${hasAIExperience ? 'YES - Has AI/ML expertise' : 'No'}
+- Key Technologies: ${uniqueTechs.slice(0, 15).join(', ')}
 
-**EXECUTION INSTRUCTIONS (ENSURE THESE ARE FOLLOWED):**
-1.  **STEP 1: ANALYSIS:** Analyze the RESUME CONTENT for leadership (14+ years Project Manager), core technical skills (.NET Core, C#, AZURE DEVOPS, SQL Server), enterprise integration experience (SAP, QuickBooks), and career goals (Germany, Switzerland, Netherlands).
-2.  **STEP 2: SYNTHESIS (THE CUSTOMIZATION):** The output must be written using the specific **Company Name** and **Key Business Domain** provided in the \`TARGET JOB DATA\`.
-3.  **STEP 3: MATCHING:** In the "How My Experience Directly Matches Your Requirements" section, create bullet points that explicitly link the candidate's resume skills (e.g., .NET Core, AZURE DEVOPS) to the **Technical Stack Requirements** and the nature of the role (e.g., leadership, architectural design) in the job data.
-4.  **STEP 4: VALUE:** The "My Value Proposition" must leverage the candidate's background in complex, domain-diverse enterprise projects (chemical inventory, waste tracking, ERP) to demonstrate capability in managing complex solutions within the target company's **Key Business Domain**.
-5.  **STEP 5: BOLD KEY ELEMENTS:** Strategically use **bold formatting** for headings, technical skills, years of experience, and phrases that deserve emphasis.
-6.  **STEP 6: NO BRACKETS OR PLACEHOLDERS:** Never use square brackets [ ] for missing information. If you don't know where the job was advertised, don't mention it at all. Write complete sentences only with real information.
-7.  **OUTPUT:** Return **ONLY** the body paragraphs of the cover letter. Use actual headings without "Section 1:" or "Section 2:" prefixes. Every sentence must be complete with real information - no placeholders whatsoever.
+**COMPANY RESEARCH (use these specific details):**
+- Products: ${productsInfo}
+- Clients: ${clientsInfo}  
+- Tech Stack: ${techInfo}
+- Partners: ${partnersInfo}
+- Business Model: ${businessModel}
+- Mission: ${mission}
 
-**BEGIN GENERATION:**`;
+**INSTRUCTIONS:**
+
+Write a 3-4 paragraph cover letter following this EXACT structure:
+
+**Paragraph 1 - The Hook with Experience:**
+MUST START with years of experience and current role level. Then reference a specific product/initiative from company research.
+
+Example: "With over ${yearsOfExperience} of experience as a ${hasLeadership ? 'Team Lead and Solutions Architect' : 'Senior Software Engineer'}, I have been following ${companyName}'s unique trajectory in the market, specifically your ability to balance [specific product/service from research]..."
+
+**Paragraph 2 - Technical Depth:**
+Connect candidate's architecture/technical skills to company's specific products or technologies. Bold ALL technology names using **double asterisks**.
+
+Example: "Having architected and deployed enterprise applications using **ASP.NET Core** and **SQL Server**, I recognize the complexities involved in building scalable platforms like **${companyName}'s specific product**..."
+
+**Paragraph 3 - Leadership & Strategic Value:**
+${hasLeadership ? 'MUST emphasize Team Lead/Project Management experience and how it helps employer manage teams, deliver projects on time, and coordinate cross-functional efforts.' : 'Focus on technical contributions and collaboration.'}
+${hasAIExperience ? 'MUST include 2-3 sentences about AI/ML expertise and how it can help employer innovate, automate processes, or enhance products with intelligent features.' : ''}
+Reference specific company clients/partners from research. Bold all proper nouns.
+
+Example: "As a Team Lead managing cross-functional Agile teams, I bring not just technical expertise but the ability to drive projects to completion. ${hasAIExperience ? 'My experience in **AI** and **Machine Learning** positions me to help ' + companyName + ' leverage intelligent automation and data-driven insights...' : ''} I see powerful synergy with your work for clients like **[specific client name]**..."
+
+**Paragraph 4 - Closing (MANDATORY):**
+End with: "I am eager to relocate to ${locationText} and believe my skills and experience are an excellent fit for **${companyName}**'s environment. I am keen to discuss how my expertise can contribute to your team's success. I look forward to hearing from you soon."
+
+**CRITICAL FORMATTING RULES:**
+**CRITICAL FORMATTING RULES:**
+✅ MUST start first sentence with years of experience (${yearsOfExperience})
+✅ MUST bold ALL technologies using **double asterisks** (e.g., **ASP.NET Core**, **Azure**, **SQL Server**, **Python**, **JavaScript**)
+✅ MUST bold ALL company products using **double asterisks** (e.g., **Simp Realty Platform**)
+✅ MUST bold ALL client names using **double asterisks** (e.g., **Capital Bank**, **BCBS**)
+✅ MUST bold ALL partnerships/tools using **double asterisks** (e.g., **Delphix**, **Salesforce**)
+${hasLeadership ? '✅ MUST include leadership/project management experience and how it helps deliver projects on time' : ''}
+${hasAIExperience ? '✅ MUST include 2-3 sentences about AI/ML expertise and how it helps employer with automation/innovation' : ''}
+✅ Use narrative paragraphs only - NO bullet points, NO lists
+✅ Professional, confident, senior-level tone
+✅ 300-400 words total
+
+❌ NO generic phrases ("I am writing to express...", "proven track record", "aligns with")
+❌ NO bullet points or skill lists
+❌ NO preambles ("Here's the letter...")
+
+**OUTPUT:** Return ONLY the cover letter body. No meta-commentary. Start directly with paragraph 1 stating years of experience.
+
+---
+
+**MANDATORY INCLUSIONS:**
+1. First sentence MUST mention "${yearsOfExperience} of experience"
+${hasLeadership ? '2. MUST dedicate sentences to Team Lead/Project Manager experience and delivering projects' : ''}
+${hasAIExperience ? '3. MUST dedicate 2-3 sentences to AI/ML capabilities and business value for employer' : ''}
+4. MUST bold EVERY technology, product, client, and partnership name
+5. MUST end with exact closing about relocation to ${locationText}
+
+---
+
+**FORBIDDEN PHRASES (Will be rejected):**
+- "I am writing to express my profound interest"
+- "aligns with my career aspirations"
+- "your esteemed organization"
+- "I would be a valuable asset"
+- "proven track record"
+- "I look forward to the opportunity"
+
+---
+
+**VALIDATION REQUIREMENTS:**
+- Every paragraph MUST reference at least one specific proper noun from the research (product name, client name, technology, or partnership)
+- If research lacks details, be honest: "While specific client names aren't publicly listed, I understand you focus on [industry]..."
+- Bold all specific company products, clients, and technologies using **double asterisks**
+
+---
+
+**CRITICAL OUTPUT INSTRUCTIONS:**
+- Return ONLY the cover letter content itself
+- Do NOT include any preambles like "Here's the cover letter" or "Okay, here's..." or "tailored to..."
+- Do NOT include any explanations about what you're doing
+- Do NOT include any meta-commentary
+- Start directly with the opening paragraph of the letter
+- Write ONLY the body (no "Dear Hiring Manager" or signature)
+- **NO BULLET POINTS, NO LISTS** - pure narrative paragraphs only
+
+Generate the narrative-driven cover letter now:`;
 
             console.log('\n========================================');
             console.log('GEMINI AI PROMPT BEING SENT:');
             console.log('========================================');
-            console.log(prompt);
+            console.log(prompt.substring(0, 800) + '...');
             console.log('========================================\n');
 
-            console.log('🤖 Using Gemini 2.5 Pro to generate cover letter...');
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            let coverLetterText = response.text();
+            console.log('🤖 Using Gemini with Google Search + deep research prompt...');
             
-            console.log('\n========================================');
-            console.log('GEMINI AI RESPONSE RECEIVED:');
-            console.log('========================================');
-            console.log(coverLetterText);
-            console.log('========================================\n');
+            // Try up to 2 times to get non-generic content
+            for (let attempt = 1; attempt <= 2; attempt++) {
+                console.log(`\n🔄 Attempt ${attempt}/2 to generate specific cover letter...`);
+                
+                const result = await model.generateContent({
+                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                    tools: [{ googleSearch: {} }]
+                });
+                const response = await result.response;
+                let coverLetterText = response.text();
+                
+                // Clean up any meta commentary the AI might have added
+                coverLetterText = coverLetterText
+                    .replace(/^(Okay,?\s+)?(Here's|Here is) (the|a) cover letter.*?[\n:]+/i, '')
+                    .replace(/^.*?tailored to.*?[\n:]+/i, '')
+                    .trim();
+                
+                console.log('\n========================================');
+                console.log(`GEMINI AI RESPONSE (Attempt ${attempt}):`);
+                console.log('========================================');
+                console.log(coverLetterText.substring(0, 500) + '...');
+                console.log('========================================\n');
+                
+                // VALIDATE: Reject if too generic (only check for the most egregious phrases)
+                const genericPhrases = [
+                    'I am writing to express my profound interest',
+                    'How My Experience Directly Matches Your Requirements',
+                    'My Value Proposition to',
+                    'I bring a proven track record'
+                ];
+                
+                const foundGeneric = genericPhrases.filter(phrase => 
+                    coverLetterText.toLowerCase().includes(phrase.toLowerCase())
+                );
+                
+                if (foundGeneric.length > 0) {
+                    console.log(`⚠️ Attempt ${attempt} contained generic phrases:`, foundGeneric);
+                    if (attempt < 2) {
+                        console.log('🔄 Retrying with stricter prompt...');
+                        continue;
+                    } else {
+                        console.log('❌ Both attempts were generic, falling back to template');
+                        return null; // Force fallback to template
+                    }
+                }
+                
+                console.log('✅ AI generated specific, personalized content');
+                
+                // Convert markdown formatting to HTML
+                // Convert **bold** to <strong>bold</strong>
+                coverLetterText = coverLetterText.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                
+                // Convert single * to nothing (list bullets will be handled by line breaks)
+                coverLetterText = coverLetterText.replace(/^\* /gm, '• ');
+                
+                // Convert line breaks to <br> for HTML display
+                coverLetterText = coverLetterText.replace(/\n/g, '<br>');
+                
+                console.log('✅ Gemini AI cover letter generated and formatted');
+                return coverLetterText;
+            }
             
-            // Convert markdown formatting to HTML
-            // Convert **bold** to <strong>bold</strong>
-            coverLetterText = coverLetterText.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-            
-            // Convert single * to nothing (list bullets will be handled by line breaks)
-            coverLetterText = coverLetterText.replace(/^\* /gm, '• ');
-            
-            // Convert line breaks to <br> for HTML display
-            coverLetterText = coverLetterText.replace(/\n/g, '<br>');
-            
-            console.log('✅ Gemini AI cover letter generated and formatted');
-            return coverLetterText;
+            // If we get here, both attempts failed
+            return null;
 
         } catch (error) {
             console.error('Gemini AI cover letter generation failed:', error.message);
@@ -950,7 +1257,7 @@ Job Location: [Research ${websiteUrl} to identify the job location]
     /**
      * Main method: Generate cover letter (returns TEXT for existing PDF generator)
      */
-    async generateCoverLetter(userData, resumePath, recipientEmail, websiteUrl, position = 'Position') {
+    async generateCoverLetter(userData, resumePath, recipientEmail, websiteUrl, position = 'Position', companyLocations = null) {
         try {
             console.log('\n📄 === DEEP COMPANY RESEARCH COVER LETTER GENERATOR ===\n');
 
@@ -960,52 +1267,49 @@ Job Location: [Research ${websiteUrl} to identify the job location]
             const resumeData = this.parseResumeData(resumeText);
             console.log(`✅ Found ${resumeData.skills.length} skills, ${resumeData.experience.length} experiences\n`);
 
-            // 2. Deep scrape company
-            let companyData = await this.deepScrapeCompany(websiteUrl, resumeData.skills);
+            // 2. Extract company name (initial fallback)
+            const urlCompanyName = this.extractCompanyFromUrl(websiteUrl) || 'the Company';
+            let finalCompanyName = this.isValidCompanyName(urlCompanyName) ? urlCompanyName : 'the Company';
 
-            // 3. If scraping failed, try AI research
-            if (!companyData || !companyData.homepage || !companyData.homepage.title) {
-                console.log('⚠️  Web scraping failed, trying AI research...');
-                const companyNameFromUrl = this.extractCompanyFromUrl(websiteUrl) || 'the Company';
-                companyData = await this.aiCompanyResearch(websiteUrl, companyNameFromUrl, resumeData.skills);
+            // 3. TWO-STEP AI APPROACH: Research THEN Generate
+            let coverLetterText = null;
+            
+            if (process.env.GEMINI_API_KEY) {
+                // STEP 1: Research the company with AI
+                console.log('🔍 Step 1: Researching company with AI...');
+                const companyIntel = await this.researchCompanyWithAI(websiteUrl, finalCompanyName);
                 
-                // If AI also failed, create minimal data with URL-based company name
-                if (!companyData) {
-                    console.log('⚠️  AI research unavailable, using URL-based data');
-                    companyData = {
-                        homepage: {
-                            title: companyNameFromUrl,
-                            description: `${companyNameFromUrl} is a leading organization in their industry.`,
-                            headings: []
-                        },
-                        about: null,
-                        culture: ['innovation', 'excellence', 'collaboration'],
-                        techStack: [],
-                        mission: '',
-                        uniqueInsights: [],
-                        careers: { matchingPositions: [], count: 0 },
-                        contact: { hrEmail: null, address: null },
-                        companyName: companyNameFromUrl
-                    };
+                // Use AI-extracted company name if available (preserves proper spacing/capitalization)
+                if (companyIntel && companyIntel.companyName) {
+                    finalCompanyName = companyIntel.companyName;
+                    console.log(`✅ Using AI-extracted company name: ${finalCompanyName}`);
+                }
+                
+                // STEP 2: Generate cover letter using researched intelligence
+                if (companyIntel) {
+                    console.log('🤖 Step 2: Generating cover letter with research...');
+                    coverLetterText = await this.generateCoverLetterWithAI(
+                        resumeText,
+                        websiteUrl,
+                        position,
+                        finalCompanyName,
+                        companyIntel,
+                        companyLocations
+                    );
                 }
             }
-
-            // Use the extracted company name from deepScrapeCompany, or fallback
-            const companyName = companyData.companyName || 
-                               this.extractCompanyFromUrl(websiteUrl) ||
-                               'the Company';
             
-            // Final validation - ensure we never use invalid names
-            const finalCompanyName = this.isValidCompanyName(companyName) ? companyName : 'the Company';
-
-            // 4. Try to generate with Gemini AI first
-            let coverLetterText = await this.generateCoverLetterWithAI(resumeText, websiteUrl, position, finalCompanyName);
-            
-            // 5. If AI generation failed, fall back to template generation
+            // 4. If AI generation failed, fall back to template generation
             if (!coverLetterText) {
-                console.log('✍️  Generating cover letter content with template...');
-                // Update companyData with the validated company name for template generation
-                companyData.companyName = finalCompanyName;
+                console.log('✍️  AI unavailable, generating cover letter with template fallback...');
+                // Create minimal companyData for template generation
+                const companyData = {
+                    companyName: finalCompanyName,
+                    about: {},
+                    contact: {},
+                    careers: { matchingPositions: [], count: 0 },
+                    uniqueInsights: []
+                };
                 const result = this.generateCoverLetterContent(userData, resumeData, companyData, position);
                 coverLetterText = result.coverLetterText;
             }
@@ -1019,11 +1323,11 @@ Job Location: [Research ${websiteUrl} to identify the job location]
                 metadata: {
                     techMatches: resumeData.skills || [],
                     cultureMatches: [],
-                    matchingJobs: companyData?.careers?.matchingPositions || [],
-                    hrEmail: companyData?.contact?.hrEmail,
-                    aboutPageFound: !!companyData?.about,
-                    careersPageFound: companyData?.careers?.count > 0,
-                    uniqueInsightsFound: (companyData?.uniqueInsights || []).length > 0
+                    matchingJobs: [],
+                    hrEmail: null,
+                    aboutPageFound: false,
+                    careersPageFound: false,
+                    uniqueInsightsFound: false
                 }
             };
 

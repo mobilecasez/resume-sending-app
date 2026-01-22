@@ -1,0 +1,19 @@
+<svg width="400" height="100" viewBox="0 0 400 100" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;700&amp;display=swap');
+    .text-bold { font-family: 'Poppins', sans-serif; font-weight: 700; fill: #002D5B; }
+    .text-light { font-family: 'Poppins', sans-serif; font-weight: 400; fill: #3B82F6; }
+  </style>
+
+  <g transform="translate(10, 10) scale(0.8)">
+    <path d="M10 10 L60 10 L80 30 L80 90 L10 90 Z" fill="none" stroke="#3B82F6" stroke-width="3" />
+    <text x="25" y="45" font-family="'Poppins', sans-serif" font-weight="700" font-size="24" fill="#002D5B">CV</text>
+    
+    <path d="M0 60 L90 20 L40 90 L40 60 L60 40" fill="#E6F0FF" stroke="#002D5B" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M0 60 L40 60" fill="#3B82F6" opacity="0.8"/>
+  </g>
+
+  <text x="110" y="68" font-size="55" class="text-bold">CV</text>
+
+  <text x="195" y="68" font-size="55" class="text-light">Applyr</text>
+</svg>

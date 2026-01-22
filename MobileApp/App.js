@@ -1,16 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, ActionSheetIOS, Modal } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, ActionSheetIOS, Modal, ActivityIndicator } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView } from 'react-native-webview';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
 // Get your Google Client ID from Google Cloud Console
 const GOOGLE_CLIENT_ID = '832256639733-b0481qdpal17m1rcmmvq4nlnlvavgg59.apps.googleusercontent.com';
 
 // API Base - always use IP address (works for both web and mobile)
-const API_BASE = 'http://192.168.1.11:3000/api';
+const API_BASE = 'http://192.168.1.15:3000/api';
 const { width, height } = Dimensions.get('window');
 
 WebBrowser.maybeCompleteAuthSession();
@@ -124,17 +128,19 @@ const HTMLContentViewer = ({ htmlContent, onEdit }) => {
         originWhitelist={['*']}
         javaScriptEnabled={true}
       />
-      <TouchableOpacity
-        onPress={onEdit}
-        style={{
-          padding: 12,
-          backgroundColor: '#1e40af',
-          alignItems: 'center',
-          justifyContent: 'center'
-        }}
-      >
-        <Text style={{ color: 'white', fontWeight: '600', fontSize: 14 }}>✏️ Edit</Text>
-      </TouchableOpacity>
+      {onEdit && (
+        <TouchableOpacity
+          onPress={onEdit}
+          style={{
+            padding: 12,
+            backgroundColor: '#1e40af',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+        >
+          <Text style={{ color: 'white', fontWeight: '600', fontSize: 14 }}>✏️ Edit</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 };
@@ -355,16 +361,25 @@ export default function App() {
     profilePublic: false,
   });
   const [reviewCoverLetters, setReviewCoverLetters] = useState({});
+  const [applicationHistory, setApplicationHistory] = useState([]);
+  const [totalGenerated, setTotalGenerated] = useState(0);
+  const [totalSent, setTotalSent] = useState(0);
+  const [countersLoaded, setCountersLoaded] = useState(false);
   const [currentReviewTab, setCurrentReviewTab] = useState(0);
   const [reviewGeneratingIndex, setReviewGeneratingIndex] = useState(null);
   const [reviewGeneratingAll, setReviewGeneratingAll] = useState(false);
+  const [reviewSendingAll, setReviewSendingAll] = useState(false);
+  const [reviewGeneratingAndSendingAll, setReviewGeneratingAndSendingAll] = useState(false);
   const [selectedCoverLetterIndex, setSelectedCoverLetterIndex] = useState(null);
   const [showCoverLetterPreview, setShowCoverLetterPreview] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewDownloading, setReviewDownloading] = useState(false);
   const [editingReviewIndex, setEditingReviewIndex] = useState(null);
   const [editedCoverLetterData, setEditedCoverLetterData] = useState({});
   const [showAddressDropdown, setShowAddressDropdown] = useState(false);
   const slideAnim = useRef(new Animated.Value(-width)).current;
+  const abortControllerRef = useRef(null);
+  const isCancelledRef = useRef(false);
   
   // Validation functions
   const isValidEmail = (email) => {
@@ -433,7 +448,7 @@ export default function App() {
 
   const handleReview = () => {
     if (validateAllRecipients()) {
-      setReviewCoverLetters({});
+      // Don't clear existing cover letters - preserve sent/generated status
       setCurrentReviewTab(0);
       setScreen('review');
     }
@@ -758,6 +773,11 @@ export default function App() {
   // Google OAuth setup
   const [request, response, promptAsync] = Google.useAuthRequest({
     clientId: GOOGLE_CLIENT_ID,
+    scopes: [
+      'profile',
+      'email',
+      'https://www.googleapis.com/auth/gmail.send'
+    ],
   });
 
   // Handle password change
@@ -833,6 +853,30 @@ export default function App() {
     }
   };
 
+  // Cancel ongoing operation
+  const cancelOperation = () => {
+    console.log('🛑 Cancel button pressed');
+    
+    // Set cancellation flag
+    isCancelledRef.current = true;
+    
+    // Abort ongoing fetch requests
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      console.log('🛑 Fetch request aborted');
+    }
+    
+    // Reset all loading states
+    setReviewGeneratingAll(false);
+    setReviewSendingAll(false);
+    setReviewGeneratingAndSendingAll(false);
+    setReviewLoading(false);
+    setReviewDownloading(false);
+    setReviewGeneratingIndex(null);
+    
+    Alert.alert('Cancelled', 'Operation has been cancelled');
+  };
+
   // REVIEW SCREEN HANDLERS
   const generateCoverLetterForReview = async (recipientIndex, retryCount = 0) => {
     const recipient = recipients[recipientIndex];
@@ -841,62 +885,113 @@ export default function App() {
       return;
     }
 
+    const requestId = `REQ_${Date.now()}_${recipientIndex}`;
     try {
-      setReviewGeneratingIndex(recipientIndex);
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 120000); // 120 second timeout
+      // Reset cancellation flag for single operations
+      if (!reviewGeneratingAll && !reviewGeneratingAndSendingAll) {
+        isCancelledRef.current = false;
+      }
       
-      const response = await fetch(`${API_BASE}/generate-cover-letter-details`, {
+      setReviewGeneratingIndex(recipientIndex);
+      
+      // Keep the app awake during the request (prevents background suspension)
+      await activateKeepAwakeAsync();
+      console.log('🔒 Keep-awake activated - app will stay active during request');
+      
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`🚀 [${requestId}] Starting cover letter generation for index: ${recipientIndex}`);
+      console.log(`   Recipient: ${recipient.email}`);
+      
+      // Use longer timeout for Gemini AI which can take 30-60 seconds
+      const TIMEOUT_MS = 180000; // 3 minutes
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => {
+          console.log(`⏱️  [${requestId}] Timeout triggered after ${TIMEOUT_MS / 1000} seconds`);
+          reject(new Error(`Request timeout - ${TIMEOUT_MS / 1000} seconds exceeded`));
+        }, TIMEOUT_MS)
+      );
+
+      // Create new AbortController for this request
+      abortControllerRef.current = new AbortController();
+      
+      console.log(`📤 [${requestId}] Initiating fetch request...`);
+      const fetchPromise = fetch(`${API_BASE}/generate-cover-letter-details`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${user.token}`,
           'Content-Type': 'application/json'
         },
+        signal: abortControllerRef.current.signal,
         body: JSON.stringify({
           recipientEmail: recipient.email,
           websiteUrl: recipient.website,
           position: recipient.position
-        }),
-        signal: controller.signal
+        })
       });
 
-      clearTimeout(timeoutId);
-      if (!response.ok) throw new Error('Failed to generate cover letter');
-      const data = await response.json();
+      console.log(`⏳ [${requestId}] Waiting for response (may take 30-90 seconds)...`);
+      const startTime = Date.now();
+      const response = await Promise.race([fetchPromise, timeoutPromise]);
+      const elapsedTime = Date.now() - startTime;
       
-      // === DEBUG: Log the raw response ===
-      console.log('=== RAW RESPONSE FROM SERVER ===');
-      console.log('coverLetterHtml:', data.coverLetterHtml);
-      console.log('=== END RAW RESPONSE ===');
+      console.log(`✅ [${requestId}] Response received in ${elapsedTime}ms`);
+      console.log(`   Status: ${response.status}, Ok: ${response.ok}`);
       
-      // === DEBUG: Log the raw response ===
-      console.log('=== RAW RESPONSE FROM SERVER ===');
-      console.log('coverLetterHtml:', data.coverLetterHtml);
-      console.log('=== END RAW RESPONSE ===');
+      if (!response.ok) {
+        console.log(`❌ [${requestId}] Response not OK: ${response.status}`);
+        throw new Error(`Failed with status ${response.status}`);
+      }
+      
+      console.log(`📖 [${requestId}] Reading response body...`);
+      const responseText = await response.text();
+      console.log(`✅ [${requestId}] Response body read, length: ${responseText.length} bytes`);
+      
+      console.log(`🔄 [${requestId}] Parsing JSON...`);
+      let data;
+      try {
+        data = JSON.parse(responseText);
+        console.log(`✅ [${requestId}] JSON parsed successfully`);
+        console.log(`   Keys in response: ${Object.keys(data).join(', ')}`);
+        console.log(`   Cover letter HTML length: ${data.coverLetterHtml?.length || 0} chars`);
+      } catch (parseError) {
+        console.log(`❌ [${requestId}] JSON parse failed: ${parseError.message}`);
+        console.log(`   Response text (first 500 chars): ${responseText.substring(0, 500)}`);
+        throw parseError;
+      }
+      
+      // Check if operation was cancelled while waiting for response
+      if (isCancelledRef.current) {
+        console.log(`🛑 [${requestId}] Operation cancelled - not updating state`);
+        return;
+      }
       
       // Get headquarter address as default
       const headquarterLocation = data.locations?.find(loc => loc.isHeadquarters) || data.locations?.[0];
       const defaultAddress = headquarterLocation ? `${headquarterLocation.address}, ${headquarterLocation.city}, ${headquarterLocation.country}` : '';
       
-      // === DEBUG: Log what's being stored in state ===
-      console.log('=== STORING IN STATE ===');
-      console.log('data.coverLetterHtml:', data.coverLetterHtml);
-      console.log('=== END STATE STORE ===');
+      console.log(`💾 [${requestId}] Storing in state...`);
+      setReviewCoverLetters(prev => {
+        console.log(`   State update callback triggered`);
+        return {
+          ...prev,
+          [recipientIndex]: {
+            ...data,
+            coverLetterHtml: data.coverLetterHtml,
+            address: defaultAddress,
+            date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+            generated: true,
+            sent: false,
+            storedRecipientEmail: recipient.email,
+            storedRecipientWebsite: recipient.website
+          }
+        };
+      });
       
-      setReviewCoverLetters(prev => ({
-        ...prev,
-        [recipientIndex]: {
-          ...data,
-          // KEEP THE ORIGINAL HTML - Don't convert it!
-          coverLetterHtml: data.coverLetterHtml,
-          address: defaultAddress,
-          generated: true,
-          sent: false
-        }
-      }));
+      // Increment total generated counter
+      setTotalGenerated(prev => prev + 1);
       
-      // Auto-enter edit mode with populated data
-      setEditingReviewIndex(recipientIndex);
+      setEditingReviewIndex(null);
+      
       setEditedCoverLetterData({
         hiringManager: data.hiringManager,
         companyName: data.companyName,
@@ -905,81 +1000,373 @@ export default function App() {
         date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
         position: recipient.position,
         subject: data.subject,
-        // Store the original HTML content - don't modify it!
         coverLetterHtml: data.coverLetterHtml
       });
+      
+      const totalTime = Date.now() - startTime;
+      console.log(`✅ [${requestId}] COMPLETE - Cover letter ready! Total time: ${totalTime}ms`);
+      console.log(`${'='.repeat(60)}\n`);
+      
     } catch (error) {
+      const errorTime = Date.now();
+      console.log(`\n❌ [${requestId}] ERROR CAUGHT at ${errorTime}`);
+      console.log(`   Type: ${error.name}`);
+      console.log(`   Message: ${error.message}`);
+      console.log(`   Stack: ${error.stack?.split('\n')[0]}`);
+      console.log(`   Retry count: ${retryCount}`);
+
+      // Handle user cancellation
       if (error.name === 'AbortError') {
+        console.log(`🛑 [${requestId}] Request cancelled by user`);
+        return;
+      }
+      
+      if (error.name === 'AbortError' || error.message.includes('timeout')) {
         if (retryCount < 2) {
+          console.log(`🔄 [${requestId}] Retrying attempt ${retryCount + 1}...`);
           Alert.alert('Network Timeout', 'Retrying...');
           setTimeout(() => generateCoverLetterForReview(recipientIndex, retryCount + 1), 1000);
           return;
         } else {
+          console.log(`❌ [${requestId}] Max retries exceeded`);
           Alert.alert('Network Error', 'Failed to generate cover letter after retries. Please check your connection and try again.');
         }
       } else {
+        console.log(`❌ [${requestId}] Non-timeout error`);
         Alert.alert('Error', error.message || 'Failed to generate cover letter');
       }
+      console.log(`${'='.repeat(60)}\n`);
+      
     } finally {
+      // Always deactivate keep-awake when done
+      deactivateKeepAwake();
+      console.log('🔓 Keep-awake deactivated - app can sleep normally');
       setReviewGeneratingIndex(null);
     }
   };
 
   const generateAllCoverLettersForReview = async () => {
     try {
+      isCancelledRef.current = false;
       setReviewGeneratingAll(true);
-      for (let i = 0; i < recipients.length; i++) {
-        if (recipients[i].email && recipients[i].website) {
-          await generateCoverLetterForReview(i);
-        }
+      
+      // Generate all cover letters simultaneously
+      const promises = recipients
+        .map((recipient, index) => {
+          if (recipient.email && recipient.website) {
+            return generateCoverLetterForReview(index);
+          }
+          return Promise.resolve();
+        });
+      
+      await Promise.all(promises);
+      
+      // Only show alert if not cancelled
+      if (!isCancelledRef.current) {
+        Alert.alert('Success', 'All cover letters generated');
       }
-      Alert.alert('Success', 'All cover letters generated');
     } catch (error) {
-      Alert.alert('Error', error.message);
+      if (!isCancelledRef.current) {
+        Alert.alert('Error', error.message);
+      }
     } finally {
       setReviewGeneratingAll(false);
     }
   };
 
-  const sendApplicationFromReview = async (recipientIndex) => {
+  const sendAllApplicationsFromReview = async () => {
+    try {
+      // Validate that all cover letters are generated
+      const recipientsWithoutCoverLetters = recipients.filter((recipient, index) => {
+        const coverLetter = reviewCoverLetters[index];
+        return recipient.email && recipient.website && !coverLetter;
+      });
+
+      if (recipientsWithoutCoverLetters.length > 0) {
+        Alert.alert(
+          'Generate Cover Letters First',
+          'Please generate cover letters for all recipients before sending.'
+        );
+        return;
+      }
+
+      isCancelledRef.current = false;
+      setReviewSendingAll(true);
+      
+      // Send all applications simultaneously (silent mode to avoid multiple alerts)
+      const promises = recipients
+        .map((recipient, index) => {
+          const coverLetter = reviewCoverLetters[index];
+          if (recipient.email && recipient.website && coverLetter && !coverLetter.sent) {
+            return sendApplicationFromReview(index, true);
+          }
+          return Promise.resolve();
+        });
+      
+      await Promise.all(promises);
+      
+      // Only show alert if not cancelled
+      if (!isCancelledRef.current) {
+        Alert.alert('Success', 'All applications sent');
+      }
+    } catch (error) {
+      if (!isCancelledRef.current) {
+        Alert.alert('Error', error.message);
+      }
+    } finally {
+      setReviewSendingAll(false);
+    }
+  };
+
+  const generateAndSendAllApplications = async () => {
+    try {
+      isCancelledRef.current = false;
+      setReviewGeneratingAndSendingAll(true);
+      
+      // First, generate all cover letters sequentially to ensure state updates
+      console.log('🚀 Starting Generate and Send All...');
+      console.log('Total recipients:', recipients.length);
+      
+      for (let index = 0; index < recipients.length; index++) {
+        // Check if cancelled
+        if (isCancelledRef.current) {
+          console.log('🛑 Operation cancelled during generation phase');
+          return;
+        }
+        
+        const recipient = recipients[index];
+        if (recipient.email && recipient.website) {
+          console.log(`Generating cover letter for recipient ${index}...`);
+          await generateCoverLetterForReview(index);
+          // Wait for state to update
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+      
+      console.log('✅ All cover letters generated');
+      
+      // Wait for final state updates to complete
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Now send all applications - use a callback to get the latest state
+      console.log('📧 Starting to send all applications...');
+      
+      // Get the current state snapshot
+      let coverLettersSnapshot = {};
+      setReviewCoverLetters(current => {
+        coverLettersSnapshot = { ...current };
+        console.log('📦 Current cover letters in state:', Object.keys(current).length);
+        return current;
+      });
+      
+      // Wait for state callback to execute
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      let sentCount = 0;
+      let failedCount = 0;
+      
+      for (let index = 0; index < recipients.length; index++) {
+        // Check if cancelled
+        if (isCancelledRef.current) {
+          console.log('🛑 Operation cancelled during send phase');
+          return;
+        }
+        
+        const recipient = recipients[index];
+        const coverLetter = coverLettersSnapshot[index];
+        
+        if (recipient.email && recipient.website && coverLetter) {
+          console.log(`\n📤 Attempting to send application for recipient ${index}...`);
+          // Pass the cover letter directly to avoid state access issues
+          const success = await sendApplicationFromReview(index, true, coverLetter);
+          if (success) {
+            sentCount++;
+            console.log(`✅ Sent ${sentCount}/${recipients.length}`);
+            // Wait a bit between sends to avoid overwhelming the backend
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          } else {
+            failedCount++;
+            console.log(`❌ Failed to send to recipient ${index}`);
+          }
+        } else {
+          console.log(`⚠️ Skipping recipient ${index}: hasEmail=${!!recipient.email}, hasWebsite=${!!recipient.website}, hasCoverLetter=${!!coverLetter}`);
+          failedCount++;
+        }
+      }
+      
+      console.log(`\n✅ Completed: Sent ${sentCount} applications, Failed: ${failedCount}`);
+      
+      // Only show alerts if not cancelled
+      if (!isCancelledRef.current) {
+        if (sentCount > 0) {
+          Alert.alert('Success', `Generated and sent ${sentCount} application${sentCount > 1 ? 's' : ''}${failedCount > 0 ? `. ${failedCount} failed.` : ''}`);
+        } else {
+          Alert.alert('Error', 'Failed to send any applications. Check console logs.');
+        }
+      }
+    } catch (error) {
+      console.error('❌ Generate and Send All error:', error);
+      if (!isCancelledRef.current) {
+        Alert.alert('Error', error.message);
+      }
+    } finally {
+      setReviewGeneratingAndSendingAll(false);
+    }
+  };
+
+  const sendApplicationFromReview = async (recipientIndex, silent = false, coverLetterOverride = null) => {
     const recipient = recipients[recipientIndex];
-    const coverLetter = reviewCoverLetters[recipientIndex];
+    const coverLetter = coverLetterOverride || reviewCoverLetters[recipientIndex];
+    
+    console.log(`\n🔍 [SEND ${recipientIndex}] Starting send process...`);
+    console.log(`   Recipient: ${recipient?.email}`);
+    console.log(`   Cover letter source: ${coverLetterOverride ? 'OVERRIDE' : 'STATE'}`);
+    console.log(`   Cover letter exists: ${!!coverLetter}`);
+    
+    // Reset cancellation flag for single send operations
+    if (!reviewSendingAll && !reviewGeneratingAndSendingAll && !silent) {
+      isCancelledRef.current = false;
+    }
+    
+    if (coverLetter) {
+      console.log(`   Cover letter details:`);
+      console.log(`     - Company: ${coverLetter.companyName}`);
+      console.log(`     - Has HTML: ${!!coverLetter.coverLetterHtml}`);
+      console.log(`     - HTML length: ${coverLetter.coverLetterHtml?.length || 0}`);
+      console.log(`     - Already sent: ${coverLetter.sent || false}`);
+    }
     
     if (!coverLetter) {
-      Alert.alert('Error', 'Generate cover letter first');
-      return;
+      console.log(`❌ [SEND ${recipientIndex}] No cover letter found`);
+      if (!silent) Alert.alert('Error', 'Generate cover letter first');
+      return false;
     }
 
     try {
       setReviewLoading(true);
-      const response = await fetch(`${API_BASE}/send-single-application`, {
+      console.log(`\n=== [SEND ${recipientIndex}] MOBILE: SENDING APPLICATION ===`);
+      console.log('Recipient email:', recipient.email);
+      console.log('Recipient website:', recipient.website);
+      console.log('Position:', recipient.position);
+      console.log('Company name:', coverLetter.companyName);
+      console.log('🔍 COMPANY ADDRESS DEBUG:');
+      console.log('  coverLetter.locations:', coverLetter.locations);
+      console.log('  coverLetter.locations[0]:', coverLetter.locations?.[0]);
+      console.log('  coverLetter.locations[0].address:', coverLetter.locations?.[0]?.address);
+      console.log('Cover letter length:', coverLetter.coverLetterHtml?.length || 0);
+      console.log('API endpoint:', `${API_BASE}/send-single-application`);
+      console.log('User token present:', !!user.token);
+      
+      const requestBody = {
+        recipientEmail: recipient.email,
+        websiteUrl: recipient.website,
+        position: recipient.position,
+        coverLetterText: coverLetter.coverLetterHtml,
+        companyName: coverLetter.companyName,
+        companyAddress: coverLetter.address || ''
+      };
+      console.log('Request body companyAddress:', requestBody.companyAddress);
+      console.log('Request body:', JSON.stringify(requestBody, null, 2));
+      
+      console.log(`⏱️  [SEND ${recipientIndex}] Starting fetch request...`);
+      
+      // Add timeout to prevent hanging
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Request timeout after 60 seconds')), 60000)
+      );
+
+      // Create new AbortController for this request
+      abortControllerRef.current = new AbortController();
+      
+      const fetchPromise = fetch(`${API_BASE}/send-single-application`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${user.token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          recipientEmail: recipient.email,
-          websiteUrl: recipient.website,
-          position: recipient.position,
-          coverLetterText: coverLetter.coverLetterHtml,
-          companyName: coverLetter.companyName
-        })
+        signal: abortControllerRef.current.signal,
+        body: JSON.stringify(requestBody)
       });
-
-      if (!response.ok) throw new Error('Failed to send application');
       
+      const response = await Promise.race([fetchPromise, timeoutPromise]);
+      
+      console.log(`✅ [SEND ${recipientIndex}] Got response!`);
+      console.log(`Response status [${recipientIndex}]:`, response.status);
+      
+      // Check if operation was cancelled while waiting for response
+      if (isCancelledRef.current) {
+        console.log(`🛑 [SEND ${recipientIndex}] Operation cancelled - not updating state`);
+        return false;
+      }
+      
+      // Check if response is OK first
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.log(`❌ [SEND ${recipientIndex}] Response not OK:`, response.status, errorText);
+        throw new Error(`Server error: ${response.status}`);
+      }
+      
+      // Get response as text first to see what we're dealing with
+      const responseText = await response.text();
+      console.log(`Response text [${recipientIndex}] (first 500 chars):`, responseText.substring(0, 500));
+      
+      // Try to parse as JSON
+      let responseData;
+      try {
+        responseData = JSON.parse(responseText);
+        console.log(`Parsed response data [${recipientIndex}]:`, responseData);
+      } catch (parseError) {
+        console.log(`⚠️ JSON parse error [${recipientIndex}]:`, parseError.message);
+        // If response was OK but can't parse JSON, still consider it success
+        console.log(`✅ [SEND ${recipientIndex}] Email sent (response OK despite parse error)`);
+      }
+
+      console.log(`✅ [SEND ${recipientIndex}] Updating state to mark as sent`);
       setReviewCoverLetters(prev => ({
         ...prev,
         [recipientIndex]: {
           ...prev[recipientIndex],
-          sent: true
+          sent: true,
+          sentDate: new Date().toISOString()
         }
       }));
       
-      Alert.alert('Success', `Application sent to ${recipient.email}`);
+      // Add to application history
+      const historyEntry = {
+        id: Date.now() + recipientIndex, // Ensure unique ID
+        companyName: coverLetter.companyName,
+        position: recipient.position || 'N/A',
+        recipientEmail: recipient.email,
+        sentDate: new Date().toISOString(),
+        replyReceived: false,
+        replyDate: null
+      };
+      
+      setApplicationHistory(prev => [historyEntry, ...prev].slice(0, 10)); // Keep last 10
+      
+      // Increment total sent counter
+      setTotalSent(prev => prev + 1);
+      
+      console.log(`=== [SEND ${recipientIndex}] APPLICATION SENT SUCCESSFULLY ===\n`);
+      if (!silent) Alert.alert('Success', `Application sent to ${recipient.email}`);
+      return true;
     } catch (error) {
-      Alert.alert('Error', error.message);
+      console.log(`\n=== [SEND ${recipientIndex}] SEND APPLICATION ERROR ===`);
+      console.log('Error name:', error.name);
+      console.log('Error message:', error.message);
+      console.log('Error stack:', error.stack);
+      console.log('Error type:', typeof error);
+      console.log('Full error object:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
+      console.log('================================\n');
+
+      // Handle user cancellation
+      if (error.name === 'AbortError') {
+        console.log('🛑 Request cancelled by user');
+        return false;
+      }
+
+      if (!silent) Alert.alert('Error', error.message || 'Failed to send application');
+      return false;
     } finally {
       setReviewLoading(false);
     }
@@ -994,26 +1381,71 @@ export default function App() {
     }
 
     try {
-      setReviewLoading(true);
+      isCancelledRef.current = false;
+      setReviewDownloading(true);
+
+      // Create new AbortController for this request
+      abortControllerRef.current = new AbortController();
+
       const response = await fetch(`${API_BASE}/generate-cover-letter-pdf`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${user.token}`,
           'Content-Type': 'application/json'
         },
+        signal: abortControllerRef.current.signal,
         body: JSON.stringify({
           coverLetterHtml: coverLetter.coverLetterHtml,
           companyName: coverLetter.companyName,
-          companyAddress: coverLetter.locations?.[0]?.address || ''
+          companyAddress: coverLetter.address || ''
         })
       });
 
       if (!response.ok) throw new Error('Failed to generate PDF');
-      Alert.alert('Success', 'PDF generated. Feature for download is available on web version.');
+      
+      // Check if operation was cancelled
+      if (isCancelledRef.current) {
+        console.log('🛑 Download cancelled - aborting');
+        return;
+      }
+      
+      // Get the response JSON with download URL
+      const data = await response.json();
+      
+      if (!data.downloadUrl) {
+        throw new Error('No download URL received');
+      }
+      
+      // Save to file system using FileSystem.downloadAsync
+      const fileName = data.fileName || `${coverLetter.companyName.replace(/[^a-z0-9]/gi, '_')}_CoverLetter.pdf`;
+      const fileUri = FileSystem.documentDirectory + fileName;
+      
+      const downloadResult = await FileSystem.downloadAsync(
+        `${API_BASE}${data.downloadUrl}`,
+        fileUri,
+        {
+          headers: {
+            'Authorization': `Bearer ${user.token}`
+          }
+        }
+      );
+      
+      // Share the file
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri);
+        Alert.alert('Success', 'PDF downloaded successfully!');
+      } else {
+        Alert.alert('Error', 'Sharing is not available on this device');
+      }
     } catch (error) {
+      // Handle user cancellation
+      if (error.name === 'AbortError') {
+        console.log('🛑 Download cancelled by user');
+        return;
+      }
       Alert.alert('Error', error.message);
     } finally {
-      setReviewLoading(false);
+      setReviewDownloading(false);
     }
   };
 
@@ -1082,6 +1514,96 @@ export default function App() {
     }
   };
 
+  const loadReviewCoverLettersFromStorage = async () => {
+    try {
+      if (!user?.email) {
+        console.log('⚠️ Cannot load review cover letters - no user email');
+        return;
+      }
+      
+      const stored = await AsyncStorage.getItem(`reviewCoverLetters_${user.email}`);
+      console.log('🔍 Attempting to load review cover letters for:', user.email);
+      
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setReviewCoverLetters(parsed);
+        console.log('📖 Review cover letters loaded from AsyncStorage:', Object.keys(parsed).length, 'items');
+      } else {
+        console.log('ℹ️ No stored review cover letters found');
+      }
+    } catch (error) {
+      console.error('Failed to load review cover letters:', error);
+    }
+  };
+
+  const loadApplicationHistoryFromStorage = async () => {
+    try {
+      if (!user?.email) {
+        console.log('⚠️ Cannot load application history - no user email');
+        return;
+      }
+      
+      const stored = await AsyncStorage.getItem(`applicationHistory_${user.email}`);
+      console.log('🔍 Attempting to load application history for:', user.email);
+      
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setApplicationHistory(parsed);
+        console.log('📖 Application history loaded from AsyncStorage:', parsed.length, 'items');
+      } else {
+        console.log('ℹ️ No stored application history found');
+      }
+      
+      // Load cumulative counters from backend API first, fallback to AsyncStorage
+      try {
+        const response = await fetch(`${API_BASE}/users/counters`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${user.token}`,
+            'Content-Type': 'application/json',
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          setTotalGenerated(data.totalGenerated || 0);
+          setTotalSent(data.totalSent || 0);
+          console.log('📊 Loaded counters from backend API - Generated:', data.totalGenerated, 'Sent:', data.totalSent);
+          
+          // Also cache in AsyncStorage
+          await AsyncStorage.setItem(`appCounters_${user.email}`, JSON.stringify({
+            totalGenerated: data.totalGenerated || 0,
+            totalSent: data.totalSent || 0
+          }));
+        } else {
+          // Fallback to AsyncStorage
+          console.log('⚠️ Failed to load from backend, using AsyncStorage cache');
+          const countersStored = await AsyncStorage.getItem(`appCounters_${user.email}`);
+          if (countersStored) {
+            const counters = JSON.parse(countersStored);
+            setTotalGenerated(counters.totalGenerated || 0);
+            setTotalSent(counters.totalSent || 0);
+            console.log('📊 Loaded counters from AsyncStorage - Generated:', counters.totalGenerated, 'Sent:', counters.totalSent);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load counters from backend:', error);
+        // Fallback to AsyncStorage
+        const countersStored = await AsyncStorage.getItem(`appCounters_${user.email}`);
+        if (countersStored) {
+          const counters = JSON.parse(countersStored);
+          setTotalGenerated(counters.totalGenerated || 0);
+          setTotalSent(counters.totalSent || 0);
+          console.log('📊 Loaded counters from AsyncStorage (fallback) - Generated:', counters.totalGenerated, 'Sent:', counters.totalSent);
+        }
+      }
+      
+      setCountersLoaded(true);
+    } catch (error) {
+      console.error('Failed to load application history:', error);
+    }
+  };
+
   // Auto-save recipients when they change (debounced with 2 second delay)
   useEffect(() => {
     if (!user?.token) return;
@@ -1096,12 +1618,213 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [recipients, user?.token]);
 
+  // Auto-save reviewCoverLetters to AsyncStorage AND backend API whenever it changes
+  useEffect(() => {
+    if (!user?.token || !user?.email) return;
+    
+    const saveReviewCoverLetters = async () => {
+      try {
+        const keyCount = Object.keys(reviewCoverLetters).length;
+        if (keyCount === 0) {
+          console.log('⏭️  Skipping save - no cover letters to save');
+          return;
+        }
+        
+        const dataToSave = JSON.stringify(reviewCoverLetters);
+        const storageKey = `reviewCoverLetters_${user.email}`;
+        await AsyncStorage.setItem(storageKey, dataToSave);
+        
+        console.log(`💾 Review cover letters saved to AsyncStorage`);
+        console.log(`   Storage key: ${storageKey}`);
+        console.log(`   Keys in data: ${keyCount}`);
+        console.log(`   Data size: ${dataToSave.length} bytes`);
+        
+        // Verify it was saved
+        const verification = await AsyncStorage.getItem(storageKey);
+        if (verification) {
+          console.log(`   ✅ Verification: Data successfully stored (${verification.length} bytes)`);
+        } else {
+          console.log(`   ❌ Verification failed: No data found after save!`);
+        }
+
+        // Also save to backend API
+        try {
+          const response = await fetch(`${API_BASE}/users/review-cover-letters`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${user.token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ reviewCoverLetters })
+          });
+          
+          if (response.ok) {
+            console.log(`   ✅ Also synced to backend API`);
+          }
+        } catch (apiError) {
+          console.log('   ⚠️ Backend sync failed (offline?):', apiError.message);
+        }
+      } catch (error) {
+        console.error('Failed to save review cover letters:', error);
+      }
+    };
+    
+    saveReviewCoverLetters();
+  }, [reviewCoverLetters, user?.token, user?.email]);
+
+  // Auto-save applicationHistory to AsyncStorage AND backend API whenever it changes
+  useEffect(() => {
+    if (!user?.token || !user?.email) return;
+    
+    const saveApplicationHistory = async () => {
+      try {
+        if (applicationHistory.length === 0) {
+          console.log('⏭️  Skipping save - no application history to save');
+          return;
+        }
+        
+        const dataToSave = JSON.stringify(applicationHistory);
+        const storageKey = `applicationHistory_${user.email}`;
+        await AsyncStorage.setItem(storageKey, dataToSave);
+        
+        console.log(`📊 Application history saved to AsyncStorage`);
+        console.log(`   Storage key: ${storageKey}`);
+        console.log(`   Items: ${applicationHistory.length}`);
+        console.log(`   Data size: ${dataToSave.length} bytes`);
+
+        // Also save to backend API
+        try {
+          const response = await fetch(`${API_BASE}/users/application-history`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${user.token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ applicationHistory })
+          });
+          
+          if (response.ok) {
+            console.log(`   ✅ Also synced to backend API`);
+          }
+        } catch (apiError) {
+          console.log('   ⚠️ Backend sync failed (offline?):', apiError.message);
+        }
+      } catch (error) {
+        console.error('Failed to save application history:', error);
+      }
+    };
+    
+    saveApplicationHistory();
+  }, [applicationHistory, user?.token, user?.email]);
+
+  // Auto-save cumulative counters whenever they change
+  useEffect(() => {
+    if (!user?.email || !countersLoaded) return;
+    
+    const saveCounters = async () => {
+      try {
+        const counters = {
+          totalGenerated,
+          totalSent
+        };
+        
+        // Save to AsyncStorage (cache)
+        const storageKey = `appCounters_${user.email}`;
+        await AsyncStorage.setItem(storageKey, JSON.stringify(counters));
+        console.log(`📊 Counters saved to AsyncStorage - Generated: ${totalGenerated}, Sent: ${totalSent}`);
+        
+        // Save to backend API (permanent)
+        try {
+          const response = await fetch(`${API_BASE}/users/counters`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${user.token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(counters)
+          });
+          
+          if (response.ok) {
+            console.log(`📊 Counters saved to backend API - Generated: ${totalGenerated}, Sent: ${totalSent}`);
+          } else {
+            console.log('⚠️ Failed to save counters to backend API');
+          }
+        } catch (apiError) {
+          console.error('Failed to save counters to backend API:', apiError);
+        }
+      } catch (error) {
+        console.error('Failed to save counters:', error);
+      }
+    };
+    
+    saveCounters();
+  }, [totalGenerated, totalSent, user?.email, countersLoaded]);
+
   // Load recipients when user is set
   useEffect(() => {
-    if (user?.token && screen === 'dashboard') {
+    if (user?.token && user?.email) {
+      console.log('🔄 User token and email available, loading data...');
       loadRecipientsFromBackend(user.token);
+      loadReviewCoverLettersFromStorage();
+      loadApplicationHistoryFromStorage();
     }
-  }, [user?.token]);
+  }, [user?.token, user?.email]);
+
+  // Also load when screen changes to dashboard
+  useEffect(() => {
+    if (screen === 'dashboard' && user?.token && user?.email) {
+      console.log('🔄 Dashboard opened, checking for stored data...');
+      loadReviewCoverLettersFromStorage();
+      loadApplicationHistoryFromStorage();
+    }
+  }, [screen]);
+
+  // Check for recipient data changes when entering review screen (runs only once per entry)
+  const lastReviewCheckRef = useRef(null);
+  
+  useEffect(() => {
+    // Only check when first entering review screen, not on every state change
+    const currentCheckKey = `${screen}_${recipients.map(r => `${r.email}_${r.website}`).join('|')}`;
+    
+    if (screen === 'review' && user?.token && recipients.length > 0 && lastReviewCheckRef.current !== currentCheckKey) {
+      lastReviewCheckRef.current = currentCheckKey;
+      console.log('🔄 Review screen opened, checking if recipient data changed...');
+      
+      // Check if any recipient data has changed compared to saved cover letters
+      let needsRegeneration = false;
+      
+      recipients.forEach((recipient, index) => {
+        const savedCoverLetter = reviewCoverLetters[index];
+        
+        // Only check if we have stored recipient data to compare against
+        if (savedCoverLetter && savedCoverLetter.storedRecipientEmail && savedCoverLetter.storedRecipientWebsite) {
+          const emailChanged = savedCoverLetter.storedRecipientEmail !== recipient.email;
+          const websiteChanged = savedCoverLetter.storedRecipientWebsite !== recipient.website;
+          
+          if (emailChanged || websiteChanged) {
+            console.log(`🔄 Recipient ${index} data changed - needs regeneration`);
+            console.log(`  Old: ${savedCoverLetter.storedRecipientEmail} / ${savedCoverLetter.storedRecipientWebsite}`);
+            console.log(`  New: ${recipient.email} / ${recipient.website}`);
+            needsRegeneration = true;
+          }
+        }
+      });
+      
+      if (needsRegeneration) {
+        console.log('🔄 Recipient data changed - auto-regenerating all cover letters...');
+        Alert.alert(
+          'Recipient Data Changed',
+          'Recipient information has been updated. Cover letters will be regenerated automatically.',
+          [
+            {
+              text: 'OK',
+              onPress: () => generateAllCoverLettersForReview()
+            }
+          ]
+        );
+      }
+    }
+  }, [screen]);
 
   // Handle Google OAuth response
   useEffect(() => {
@@ -1212,7 +1935,7 @@ export default function App() {
       console.log('API Base:', API_BASE);
       
       // Send access token to backend
-      const response = await fetch(`${API_BASE}/auth/google`, {
+      const response = await fetch(`${API_BASE}/api/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ accessToken })
@@ -1226,7 +1949,11 @@ export default function App() {
         throw new Error(data.error || 'Google login failed');
       }
 
-      setUser(data.user);
+      // Store user data with token
+      setUser({
+        ...data.user,
+        token: data.token
+      });
       setScreen('dashboard');
       Alert.alert('Success', `Welcome ${data.user.fullName}!`);
     } catch (err) {
@@ -1259,8 +1986,11 @@ export default function App() {
           {/* Header with gradient effect */}
           <View style={styles.gradientHeader}>
             <View style={styles.logoContainer}>
-              <Text style={styles.logo}>✉️</Text>
-              <Text style={styles.logoText}>Lettrico</Text>
+              <Image 
+                source={require('./assets/images/icon_dark_background_small.png')} 
+                style={{ width: 200, height: 60 }}
+                resizeMode="contain"
+              />
             </View>
             <Text style={styles.headerSubtitle}>Turn applications into opportunities</Text>
           </View>
@@ -1361,8 +2091,11 @@ export default function App() {
           {/* Header with gradient effect */}
           <View style={[styles.gradientHeader, { backgroundColor: '#059669' }]}>
             <View style={styles.logoContainer}>
-              <Text style={styles.logo}>✉️</Text>
-              <Text style={styles.logoText}>Lettrico</Text>
+              <Image 
+                source={require('./assets/images/icon_dark_background_small.png')} 
+                style={{ width: 200, height: 60 }}
+                resizeMode="contain"
+              />
             </View>
             <Text style={styles.headerSubtitle}>Join the community</Text>
           </View>
@@ -1481,9 +2214,12 @@ export default function App() {
           <View style={styles.premiumHeader}>
             <View style={styles.headerContent}>
               <View style={styles.logoSection}>
-                <Text style={styles.headerLargeLogo}>✉️</Text>
-                <View>
-                  <Text style={styles.headerBrandName}>Lettrico</Text>
+                <View style={{ alignItems: 'center' }}>
+                  <Image 
+                    source={require('./assets/images/icon_light_background.png')} 
+                    style={{ width: 180, height: 50, marginLeft: -12 }}
+                    resizeMode="contain"
+                  />
                   <Text style={styles.headerBrandSubtext}>Turn Applications into Opportunities</Text>
                 </View>
               </View>
@@ -1508,12 +2244,18 @@ export default function App() {
           )}
 
           {/* Side Menu - slides in from right */}
-          <Animated.View style={[styles.sideMenu, { right: slideAnim }]}>
+          <Animated.View 
+            style={[styles.sideMenu, { right: slideAnim }]}
+            pointerEvents={showSettings ? 'auto' : 'none'}
+          >
             <View style={styles.sideMenuContent}>
               {/* Close button */}
               <TouchableOpacity 
                 style={styles.closeMenuButton}
-                onPress={() => setShowSettings(false)}
+                onPress={() => {
+                  console.log('Close button pressed');
+                  setShowSettings(false);
+                }}
               >
                 <Text style={styles.closeMenuIcon}>✕</Text>
               </TouchableOpacity>
@@ -1566,12 +2308,16 @@ export default function App() {
             <View style={styles.statsCard}>
               <View style={styles.statsRow}>
                 <View style={styles.statBox}>
-                  <Text style={styles.statNumber}>127</Text>
+                  <Text style={styles.statNumber}>
+                    {totalSent}
+                  </Text>
                   <Text style={styles.statLabel}>Total Application Sent</Text>
                 </View>
                 <View style={[styles.statBox, { borderLeftWidth: 1, borderLeftColor: '#E5E7EB' }]}>
-                  <Text style={styles.statNumber}>24</Text>
-                  <Text style={styles.statLabel}>This Week</Text>
+                  <Text style={styles.statNumber}>
+                    {totalGenerated}
+                  </Text>
+                  <Text style={styles.statLabel}>Generated</Text>
                 </View>
               </View>
             </View>
@@ -1655,64 +2401,139 @@ export default function App() {
               <Text style={styles.addRecipientText}>Add Another Recipient</Text>
             </TouchableOpacity>
 
-            {/* Action Buttons */}
-            <View style={styles.actionButtonsGroup}>
-              <TouchableOpacity style={styles.secondaryActionBtn} onPress={handleReview}>
-                <Text style={styles.secondaryActionBtnIcon}>📋</Text>
-                <Text style={styles.secondaryActionBtnText}>Review</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.primaryActionBtn} onPress={handleSendNow}>
-                <Text style={styles.primaryActionBtnIcon}>📧</Text>
-                <Text style={styles.primaryActionBtnText}>Send Now</Text>
-              </TouchableOpacity>
-            </View>
+            {/* Action Button */}
+            <TouchableOpacity style={styles.fullWidthActionBtn} onPress={handleReview}>
+              <Text style={styles.fullWidthActionBtnIcon}>🚀</Text>
+              <Text style={styles.fullWidthActionBtnText}>Review & Generate</Text>
+            </TouchableOpacity>
           </View>
 
-          {/* Top Countries Section */}
-          <View style={styles.countriesSection}>
-            <View style={styles.countriesCard}>
-              <Text style={styles.countriesTitle}>🌍 Top Countries</Text>
-              
-              <View style={styles.countryItem}>
-                <Text style={styles.countryRank}>1.</Text>
-                <View style={styles.countryContent}>
-                  <Text style={styles.countryName}>United States</Text>
-                </View>
-                <Text style={styles.countryCount}>42</Text>
-              </View>
-
-              <View style={styles.countryItem}>
-                <Text style={styles.countryRank}>2.</Text>
-                <View style={styles.countryContent}>
-                  <Text style={styles.countryName}>Canada</Text>
-                </View>
-                <Text style={styles.countryCount}>18</Text>
-              </View>
-
-              <View style={styles.countryItem}>
-                <Text style={styles.countryRank}>3.</Text>
-                <View style={styles.countryContent}>
-                  <Text style={styles.countryName}>United Kingdom</Text>
-                </View>
-                <Text style={styles.countryCount}>31</Text>
-              </View>
-
-              <View style={styles.countryItem}>
-                <Text style={styles.countryRank}>4.</Text>
-                <View style={styles.countryContent}>
-                  <Text style={styles.countryName}>Australia</Text>
-                </View>
-                <Text style={styles.countryCount}>22</Text>
-              </View>
-
-              <View style={[styles.countryItem, { borderBottomWidth: 0 }]}>
-                <Text style={styles.countryRank}>5.</Text>
-                <View style={styles.countryContent}>
-                  <Text style={styles.countryName}>Germany</Text>
-                </View>
-                <Text style={styles.countryCount}>14</Text>
+          {/* Last 5 Employers Section */}
+          <View style={styles.employersSection}>
+            <View style={styles.employersSectionHeader}>
+              <Text style={styles.employersSectionTitle}>Recent Applications</Text>
+              <View style={styles.employersBadge}>
+                <Text style={styles.employersBadgeText}>{applicationHistory.length}</Text>
               </View>
             </View>
+            
+            {applicationHistory.length === 0 ? (
+              <View style={styles.emptyStateContainer}>
+                <Text style={styles.emptyStateIcon}>📭</Text>
+                <Text style={styles.emptyStateTitle}>No Applications Yet</Text>
+                <Text style={styles.emptyStateSubtitle}>Your recent job applications will appear here</Text>
+              </View>
+            ) : (
+              <View style={styles.employersListContainer}>
+                {applicationHistory.slice(0, 5).map((app, index) => (
+                  <TouchableOpacity 
+                    key={app.id}
+                    style={styles.employerCard}
+                    disabled={user.provider === 'google' || app.replyReceived}
+                    activeOpacity={user.provider === 'email' && !app.replyReceived ? 0.7 : 1}
+                    onPress={() => {
+                      if (user.provider === 'email' && !app.replyReceived) {
+                        Alert.alert(
+                          'Mark Reply Received',
+                          `Did you receive a reply from ${app.companyName}?`,
+                          [
+                            {
+                              text: 'Cancel',
+                              style: 'cancel'
+                            },
+                            {
+                              text: 'Yes, Received',
+                              onPress: () => {
+                                Alert.prompt(
+                                  'Reply Date',
+                                  'Enter the date you received the reply (YYYY-MM-DD):',
+                                  (text) => {
+                                    setApplicationHistory(prev =>
+                                      prev.map(item =>
+                                        item.id === app.id
+                                          ? { ...item, replyReceived: true, replyDate: text || new Date().toISOString() }
+                                          : item
+                                      )
+                                    );
+                                  }
+                                );
+                              }
+                            }
+                          ]
+                        );
+                      }
+                    }}
+                  >
+                    {/* Status Indicator */}
+                    <View style={[
+                      styles.statusIndicator,
+                      app.replyReceived ? styles.statusReplied : styles.statusPending
+                    ]} />
+                    
+                    {/* Card Content */}
+                    <View style={styles.employerCardContent}>
+                      <View style={styles.employerMainInfo}>
+                        <View style={styles.employerNumberBadge}>
+                          <Text style={styles.employerNumber}>{index + 1}</Text>
+                        </View>
+                        <View style={styles.employerDetails}>
+                          <Text style={styles.employerCompanyName} numberOfLines={1}>{app.companyName}</Text>
+                          <Text style={styles.employerJobPosition} numberOfLines={1}>{app.position}</Text>
+                        </View>
+                      </View>
+                      
+                      {/* Status & Dates Row */}
+                      <View style={styles.employerMetaRow}>
+                        <View style={[
+                          styles.statusBadge,
+                          app.replyReceived ? styles.statusBadgeReplied : styles.statusBadgePending
+                        ]}>
+                          <Text style={[
+                            styles.statusBadgeText,
+                            app.replyReceived ? styles.statusBadgeTextReplied : styles.statusBadgeTextPending
+                          ]}>
+                            {app.replyReceived ? '✓ Replied' : '⏳ Pending'}
+                          </Text>
+                        </View>
+                        
+                        <View style={styles.datesContainer}>
+                          <View style={styles.dateItem}>
+                            <Text style={styles.dateLabelSmall}>Sent</Text>
+                            <Text style={styles.dateValueSmall}>
+                              {new Date(app.sentDate).toLocaleDateString('en-US', { 
+                                month: 'short', 
+                                day: 'numeric' 
+                              })}
+                            </Text>
+                          </View>
+                          {app.replyReceived && (
+                            <>
+                              <Text style={styles.dateSeparator}>→</Text>
+                              <View style={styles.dateItem}>
+                                <Text style={styles.dateLabelSmall}>Reply</Text>
+                                <Text style={styles.dateValueReplied}>
+                                  {new Date(app.replyDate).toLocaleDateString('en-US', { 
+                                    month: 'short', 
+                                    day: 'numeric' 
+                                  })}
+                                </Text>
+                              </View>
+                            </>
+                          )}
+                        </View>
+                      </View>
+                      
+                      {/* Action hint for email users */}
+                      {user.provider === 'email' && !app.replyReceived && (
+                        <View style={styles.actionHintContainer}>
+                          <Text style={styles.actionHintText}>✓ Tap to mark as replied</Text>
+                        </View>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
           </View>
 
           {/* Settings Section - Show when toggle is on */}
@@ -1969,15 +2790,21 @@ export default function App() {
             <Text style={styles.cardTitleProfile}>📊 Statistics</Text>
             <View style={styles.statsGrid}>
               <View style={styles.statItemProfile}>
-                <Text style={styles.statValueProfile}>127</Text>
+                <Text style={styles.statValueProfile}>
+                  {totalSent}
+                </Text>
                 <Text style={styles.statLabelProfile}>Total Sent</Text>
               </View>
               <View style={styles.statItemProfile}>
-                <Text style={styles.statValueProfile}>24</Text>
-                <Text style={styles.statLabelProfile}>This Week</Text>
+                <Text style={styles.statValueProfile}>
+                  {totalGenerated}
+                </Text>
+                <Text style={styles.statLabelProfile}>Generated</Text>
               </View>
               <View style={styles.statItemProfile}>
-                <Text style={styles.statValueProfile}>8</Text>
+                <Text style={styles.statValueProfile}>
+                  {applicationHistory.filter(app => app.replyReceived).length}
+                </Text>
                 <Text style={styles.statLabelProfile}>Responses</Text>
               </View>
             </View>
@@ -2180,6 +3007,16 @@ export default function App() {
   };
 
   // ===== END REVIEW SCREEN EDIT FUNCTIONS =====
+  
+  // Check if any loading operation is in progress
+  const isAnyLoadingActive = reviewGeneratingAll || reviewSendingAll || reviewGeneratingAndSendingAll || reviewLoading || reviewDownloading || (reviewGeneratingIndex !== null);
+  
+  // Check if all applications have been sent
+  const allApplicationsSent = recipients.length > 0 && recipients.every((recipient, index) => {
+    const coverLetter = reviewCoverLetters[index];
+    return coverLetter && coverLetter.sent;
+  });
+  
     return (
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
@@ -2233,12 +3070,15 @@ export default function App() {
           {/* Cover Letter Generation Section */}
           {reviewCoverLetters[currentReviewTab] ? (
             <View style={styles.reviewCoverLetterCard}>
-              {/* Header with Edit Link */}
+              {/* Header with Edit Button */}
               <View style={styles.sectionHeader}>
                 <Text style={styles.coverLetterTitle}>✓ Recipient #{currentReviewTab + 1}</Text>
-                {!editingReviewIndex === currentReviewTab && (
-                  <TouchableOpacity onPress={() => toggleReviewEditMode(currentReviewTab)}>
-                    <Text style={styles.editLink}>✏️ Edit</Text>
+                {editingReviewIndex !== currentReviewTab && (
+                  <TouchableOpacity 
+                    style={styles.editButton}
+                    onPress={() => toggleReviewEditMode(currentReviewTab)}
+                  >
+                    <Text style={styles.editButtonText}>✏️ Edit Details</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -2403,7 +3243,7 @@ export default function App() {
                     <View style={styles.fieldDisplayRow}>
                       <View style={styles.fieldDisplay}>
                         <Text style={styles.fieldDisplayLabel}>To</Text>
-                        <Text style={styles.fieldDisplayValue}>{reviewCoverLetters[currentReviewTab].hiringManager}</Text>
+                        <Text style={styles.fieldDisplayValue}>The Hiring Manager</Text>
                       </View>
                     </View>
 
@@ -2445,7 +3285,6 @@ export default function App() {
                       <View style={{ height: 400 }}>
                         <HTMLContentViewer 
                           htmlContent={reviewCoverLetters[currentReviewTab].coverLetterHtml || 'Cover letter content'}
-                          onEdit={() => toggleReviewEditMode(currentReviewTab)}
                         />
                       </View>
                     </View>
@@ -2455,21 +3294,21 @@ export default function App() {
                       <TouchableOpacity
                         style={[styles.reviewActionBtn, styles.regenerateBtn]}
                         onPress={() => generateCoverLetterForReview(currentReviewTab)}
-                        disabled={reviewGeneratingIndex === currentReviewTab || reviewLoading}
+                        disabled={reviewGeneratingIndex === currentReviewTab || reviewLoading || reviewGeneratingAll || reviewGeneratingAndSendingAll}
                       >
                         <Text style={styles.reviewActionBtnText}>🔄 Regenerate</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={[styles.reviewActionBtn, styles.downloadBtn]}
                         onPress={() => downloadCoverLetterPDFFromReview(currentReviewTab)}
-                        disabled={reviewLoading}
+                        disabled={reviewDownloading}
                       >
                         <Text style={styles.reviewActionBtnText}>📥 Download</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={[styles.reviewActionBtn, styles.sendBtn, reviewCoverLetters[currentReviewTab].sent && styles.sentBtn]}
                         onPress={() => sendApplicationFromReview(currentReviewTab)}
-                        disabled={reviewLoading || reviewCoverLetters[currentReviewTab].sent}
+                        disabled={reviewLoading || reviewSendingAll || reviewGeneratingAndSendingAll || reviewCoverLetters[currentReviewTab].sent}
                       >
                         <Text style={styles.reviewActionBtnText}>
                           {reviewCoverLetters[currentReviewTab].sent ? '✓ Sent' : '📧 Send'}
@@ -2488,11 +3327,9 @@ export default function App() {
               <TouchableOpacity
                 style={styles.generateBtn}
                 onPress={() => generateCoverLetterForReview(currentReviewTab)}
-                disabled={reviewGeneratingIndex === currentReviewTab}
+                disabled={reviewGeneratingIndex === currentReviewTab || reviewGeneratingAll || reviewGeneratingAndSendingAll}
               >
-                <Text style={styles.generateBtnText}>
-                  {reviewGeneratingIndex === currentReviewTab ? '⏳ Generating...' : '✨ Generate Cover Letter'}
-                </Text>
+                <Text style={styles.generateBtnText}>✨ Generate Cover Letter</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -2503,13 +3340,52 @@ export default function App() {
             onPress={generateAllCoverLettersForReview}
             disabled={reviewGeneratingAll}
           >
-            <Text style={styles.generateAllBtnText}>
-              {reviewGeneratingAll ? '⏳ Generating All...' : '🚀 Generate All Cover Letters'}
-            </Text>
+            <Text style={styles.generateAllBtnText}>🚀 Generate All Cover Letters</Text>
+          </TouchableOpacity>
+
+          {/* Send All Button */}
+          <TouchableOpacity
+            style={[styles.generateAllBtn, { backgroundColor: allApplicationsSent ? '#9ca3af' : '#3b82f6', marginTop: 8 }]}
+            onPress={sendAllApplicationsFromReview}
+            disabled={reviewSendingAll || allApplicationsSent}
+          >
+            <Text style={styles.generateAllBtnText}>{allApplicationsSent ? '✓ All Sent' : '📧 Send to All'}</Text>
+          </TouchableOpacity>
+
+          {/* Generate and Send All Button */}
+          <TouchableOpacity
+            style={[styles.generateAllBtn, { backgroundColor: allApplicationsSent ? '#9ca3af' : '#10b981', marginTop: 8 }]}
+            onPress={generateAndSendAllApplications}
+            disabled={reviewGeneratingAndSendingAll || allApplicationsSent}
+          >
+            <Text style={styles.generateAllBtnText}>{allApplicationsSent ? '✓ All Generated & Sent' : '🚀📧 Generate & Send to All'}</Text>
           </TouchableOpacity>
 
           <View style={{ height: 30 }} />
         </ScrollView>
+        
+        {/* Full Screen Loading Overlay */}
+        {isAnyLoadingActive && (
+          <View style={styles.loadingOverlay}>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0d9488" />
+              <Text style={styles.loadingText}>
+                {reviewGeneratingAll ? 'Generating all cover letters...' :
+                 reviewSendingAll ? 'Sending all applications...' :
+                 reviewGeneratingAndSendingAll ? 'Generating & sending all...' :
+                 reviewDownloading ? 'Downloading PDF...' :
+                 reviewLoading ? 'Sending application...' :
+                 'Processing...'}
+              </Text>
+              <TouchableOpacity 
+                style={styles.cancelButton}
+                onPress={cancelOperation}
+              >
+                <Text style={styles.cancelButtonText}>✕ Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
       </SafeAreaView>
     );
   }
@@ -2521,6 +3397,56 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 40,
+  },
+  
+  // ===== LOADING OVERLAY =====
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  loadingContainer: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 30,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 10,
+    minWidth: 200,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#374151',
+    textAlign: 'center',
+  },
+  cancelButton: {
+    marginTop: 20,
+    backgroundColor: '#ef4444',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  cancelButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   
   // ===== LOGIN/REGISTER STYLES =====
@@ -2878,8 +3804,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   logoSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     flex: 1,
   },
   headerLargeLogo: {
@@ -3231,6 +4156,209 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     marginBottom: 24,
   },
+  
+  // ===== EMPLOYERS SECTION (REDESIGNED) =====
+  employersSection: {
+    paddingHorizontal: 16,
+    marginBottom: 24,
+  },
+  employersSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  employersSectionTitle: {
+    fontSize: 16.5,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.3,
+  },
+  employersBadge: {
+    backgroundColor: '#0d9488',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    minWidth: 28,
+    alignItems: 'center',
+  },
+  employersBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  
+  // Empty State
+  emptyStateContainer: {
+    backgroundColor: '#F9FAFB',
+    borderRadius: 16,
+    paddingVertical: 48,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderStyle: 'dashed',
+  },
+  emptyStateIcon: {
+    fontSize: 42,
+    marginBottom: 12,
+  },
+  emptyStateTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#374151',
+    marginBottom: 6,
+  },
+  emptyStateSubtitle: {
+    fontSize: 12.5,
+    color: '#6B7280',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  
+  // Employers List
+  employersListContainer: {
+    gap: 12,
+  },
+  employerCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+    marginBottom: 12,
+  },
+  statusIndicator: {
+    height: 4,
+    width: '100%',
+  },
+  statusPending: {
+    backgroundColor: '#FCA5A5',
+  },
+  statusReplied: {
+    backgroundColor: '#6EE7B7',
+  },
+  employerCardContent: {
+    padding: 14,
+  },
+  employerMainInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  employerNumberBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#F0FDFA',
+    borderWidth: 1.5,
+    borderColor: '#99F6E4',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  employerNumber: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0d9488',
+  },
+  employerDetails: {
+    flex: 1,
+  },
+  employerCompanyName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 4,
+    letterSpacing: -0.2,
+  },
+  employerJobPosition: {
+    fontSize: 12.5,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  
+  // Status & Dates Row
+  employerMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  statusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  statusBadgePending: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
+  statusBadgeReplied: {
+    backgroundColor: '#ECFDF5',
+    borderColor: '#A7F3D0',
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  statusBadgeTextPending: {
+    color: '#DC2626',
+  },
+  statusBadgeTextReplied: {
+    color: '#059669',
+  },
+  datesContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dateItem: {
+    alignItems: 'flex-end',
+  },
+  dateLabelSmall: {
+    fontSize: 9,
+    color: '#9CA3AF',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  dateValueSmall: {
+    fontSize: 11.5,
+    color: '#374151',
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  dateValueReplied: {
+    fontSize: 11.5,
+    color: '#059669',
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  dateSeparator: {
+    fontSize: 12,
+    color: '#D1D5DB',
+    marginHorizontal: 8,
+    fontWeight: '600',
+  },
+  
+  // Action Hint
+  actionHintContainer: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+    alignItems: 'center',
+  },
+  actionHintText: {
+    fontSize: 11,
+    color: '#0d9488',
+    fontWeight: '600',
+  },
 
   // ===== RECIPIENT FORM STYLES =====
   recipientFormCard: {
@@ -3344,6 +4472,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 12,
     marginBottom: 20,
+  },
+  fullWidthActionBtn: {
+    width: '100%',
+    backgroundColor: '#10b981',
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#10b981',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 4,
+    flexDirection: 'row',
+    marginBottom: 20,
+  },
+  fullWidthActionBtnIcon: {
+    fontSize: 20,
+    marginRight: 8,
+  },
+  fullWidthActionBtnText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 0.3,
   },
   secondaryActionBtn: {
     flex: 1,
@@ -4053,6 +5206,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+  editButton: {
+    backgroundColor: '#17a2b8',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  editButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   editModeContainer: {
     backgroundColor: '#fffbf0',
     borderRadius: 8,
@@ -4160,6 +5329,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   fieldDisplayRow: {
+    flexDirection: 'row',
     marginBottom: 12,
     paddingBottom: 12,
     borderBottomWidth: 1,

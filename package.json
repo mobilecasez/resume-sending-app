@@ -1,7 +1,7 @@
 {
-  "name": "lettrico",
+  "name": "cvapplyr",
   "version": "2.0.0",
-  "description": "Lettrico - Turn applications into opportunities. Generate custom cover letters and manage job applications.",
+  "description": "CVApplyr - Turn applications into opportunities. Generate custom cover letters and manage job applications.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -32,9 +32,9 @@
     "dotenv": "^16.3.1",
     "express": "^5.2.1",
     "express-session": "^1.18.2",
+    "googleapis": "^134.0.0",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
-    "passport-linkedin-oauth2": "^2.1.1",
     "hummus": "^1.0.118",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>My Profile - Lettrico</title>
+    <title>My Profile - CVApplyr</title>
     <style>
         * {
             margin: 0;
@@ -191,6 +191,34 @@
 
         .card-icon {
             font-size: 1.25rem;
+        }
+
+        /* Application Statistics */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+
+        .stats-card {
+            background: var(--bg-color);
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            border: 1px solid var(--border-color);
+        }
+
+        .stats-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--primary-color);
+            margin-bottom: 8px;
+        }
+
+        .stats-label {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            font-weight: 500;
         }
 
         .upload-zone {
@@ -665,6 +693,28 @@
                 </form>
             </div>
 
+            <!-- Application Statistics -->
+            <div class="card">
+                <h2 class="card-title">
+                    <span class="card-icon">📊</span>
+                    Application Statistics
+                </h2>
+                <div class="stats-grid">
+                    <div class="stats-card">
+                        <div class="stats-value" id="totalSent">0</div>
+                        <div class="stats-label">Total Sent</div>
+                    </div>
+                    <div class="stats-card">
+                        <div class="stats-value" id="totalGenerated">0</div>
+                        <div class="stats-label">Generated</div>
+                    </div>
+                    <div class="stats-card">
+                        <div class="stats-value" id="totalResponses">0</div>
+                        <div class="stats-label">Responses</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Resume Upload -->
             <div class="card">
                 <h2 class="card-title">
@@ -779,7 +829,73 @@
         // Load user data on page load
         window.addEventListener('DOMContentLoaded', async () => {
             await loadUserProfile();
+            loadApplicationStatistics();
         });
+
+        // Load application statistics from localStorage
+        async function loadApplicationStatistics() {
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            if (!userData.email) return;
+
+            try {
+                const authToken = localStorage.getItem('authToken');
+                
+                // Load reviewCoverLetters from backend API
+                const coverLettersResponse = await fetch('/api/users/review-cover-letters', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                // Load cumulative counters from localStorage
+                const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+                let totalSent = 0;
+                let totalGenerated = 0;
+                
+                if (userData.email) {
+                    const stored = localStorage.getItem(`appCounters_${userData.email}`);
+                    if (stored) {
+                        const counters = JSON.parse(stored);
+                        totalSent = counters.totalSent || 0;
+                        totalGenerated = counters.totalGenerated || 0;
+                        console.log('📊 Loaded cumulative counters from localStorage');
+                    }
+                }
+
+                // Load applicationHistory from backend API
+                const historyResponse = await fetch('/api/users/application-history', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                let totalResponses = 0;
+
+                if (historyResponse.ok) {
+                    const historyData = await historyResponse.json();
+                    if (historyData.success && historyData.applicationHistory) {
+                        totalResponses = historyData.applicationHistory.filter(app => app.replyReceived).length;
+                    }
+                }
+
+                // Update DOM
+                document.getElementById('totalSent').textContent = totalSent;
+                document.getElementById('totalGenerated').textContent = totalGenerated;
+                document.getElementById('totalResponses').textContent = totalResponses;
+
+                console.log('📊 Statistics loaded from backend:', { totalSent, totalGenerated, totalResponses });
+            } catch (error) {
+                console.error('Error loading statistics:', error);
+                // Set defaults on error
+                document.getElementById('totalSent').textContent = '0';
+                document.getElementById('totalGenerated').textContent = '0';
+                document.getElementById('totalResponses').textContent = '0';
+            }
+        }
 
         async function loadUserProfile() {
             try {

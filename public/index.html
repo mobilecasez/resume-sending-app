@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lettrico - Turn Applications into Opportunities</title>
+    <title>CVApplyr - Turn Applications into Opportunities</title>
     <style>
         * {
             margin: 0;
@@ -877,6 +877,213 @@
             border-color: #dc2626;
         }
 
+        /* Dashboard Statistics */
+        .stats-grid-dashboard {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0;
+            background: white;
+        }
+
+        .stat-card-dashboard {
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+
+        .stat-value-dashboard {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #1e293b;
+            margin-bottom: 8px;
+        }
+
+        .stat-label-dashboard {
+            font-size: 0.875rem;
+            color: #64748b;
+            font-weight: 500;
+        }
+
+        /* Last 5 Employers Section */
+        .employers-section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .employers-badge {
+            background: #0d9488;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.875rem;
+            font-weight: 700;
+        }
+
+        .employers-container {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-secondary);
+        }
+
+        .empty-icon {
+            font-size: 3rem;
+            margin-bottom: 12px;
+            opacity: 0.5;
+        }
+
+        .empty-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+
+        .empty-subtitle {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .employer-card {
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            overflow: hidden;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .employer-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .employer-card-clickable {
+            cursor: pointer;
+        }
+
+        .employer-card-clickable:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+            border-color: #0d9488;
+        }
+
+        .employer-card-clickable:active {
+            transform: translateY(0);
+        }
+
+        .action-hint {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #e5e7eb;
+            text-align: center;
+        }
+
+        .status-indicator {
+            height: 4px;
+            width: 100%;
+        }
+
+        .status-pending {
+            background: linear-gradient(90deg, #fee2e2 0%, #fecaca 100%);
+        }
+
+        .status-replied {
+            background: linear-gradient(90deg, #d1fae5 0%, #a7f3d0 100%);
+        }
+
+        .employer-card-content {
+            padding: 16px;
+        }
+
+        .employer-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .employer-info {
+            flex: 1;
+        }
+
+        .employer-number-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, #0d9488 0%, #14b8a6 100%);
+            color: white;
+            border-radius: 50%;
+            font-size: 0.75rem;
+            font-weight: 700;
+            margin-right: 12px;
+            flex-shrink: 0;
+        }
+
+        .employer-company-name {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .employer-job-position {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .status-badge-pending {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+
+        .status-badge-replied {
+            background: #d1fae5;
+            color: #059669;
+        }
+
+        .employer-dates {
+            display: flex;
+            gap: 16px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .employer-date-item {
+            flex: 1;
+        }
+
+        .employer-date-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .employer-date-value {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
         @media (max-width: 768px) {
             .top-navbar {
                 padding: 10px 16px;
@@ -897,8 +1104,7 @@
     <nav class="top-navbar">
         <div class="navbar-left">
             <a href="/" class="navbar-brand">
-                <span style="font-size: 1.5rem;">📨</span>
-                <h1>Lettrico</h1>
+                <img src="/icon_light_background.png" alt="CVApplyr" style="height: 45px;">
             </a>
         </div>
         
@@ -930,15 +1136,29 @@
     </nav>
 
     <div class="container">
-        <!-- Header -->
+        <!-- Welcome Section -->
         <div class="app-header">
-            <h1 class="app-title">Professional Application Portal</h1>
-            <p class="app-subtitle">Send personalized cover letters and resumes to hiring managers</p>
+            <h1 class="app-title">Welcome, <span id="dashboardUserName">User</span>!</h1>
+            <p class="app-subtitle">Send Applications with AI Generated Cover Letter</p>
         </div>
 
-        <!-- Main Card -->
-        <div class="card">
-            <h2 class="section-title">Recipients</h2>
+        <!-- Stats Card - 2 columns like mobile -->
+        <div class="card" style="margin-bottom: 24px;">
+            <div class="stats-grid-dashboard">
+                <div class="stat-card-dashboard">
+                    <div class="stat-value-dashboard" id="dashboardTotalSent">0</div>
+                    <div class="stat-label-dashboard">Total Application Sent</div>
+                </div>
+                <div class="stat-card-dashboard" style="border-left: 1px solid #E5E7EB;">
+                    <div class="stat-value-dashboard" id="dashboardTotalGenerated">0</div>
+                    <div class="stat-label-dashboard">Generated</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recipients Section -->
+        <div class="card" style="margin-bottom: 24px;">
+            <h2 class="section-title">📬 Recipients</h2>
 
             <!-- Recipients List -->
             <div id="recipientList" class="recipient-list">
@@ -988,14 +1208,26 @@
                 Add Another Recipient
             </button>
 
-            <!-- Action Buttons -->
-            <div class="button-group">
-                <button class="btn btn-secondary" onclick="reviewAndSend()">
-                    Review Before Sending
-                </button>
-                <button class="btn btn-primary" onclick="sendNow()">
-                    <span>Send Applications</span>
-                </button>
+            <!-- Action Button (Single like mobile) -->
+            <button class="btn btn-primary" style="width: 100%; padding: 16px; font-size: 1rem; display: flex; align-items: center; justify-content: center; gap: 8px;" onclick="reviewAndSend()">
+                <span style="font-size: 1.25rem;">🚀</span>
+                <span>Review & Generate</span>
+            </button>
+        </div>
+
+        <!-- Recent Applications Section -->
+        <div class="card" id="employersSection" style="margin-bottom: 24px;">
+            <div class="employers-section-header">
+                <h2 class="section-title">Recent Applications</h2>
+                <span class="employers-badge" id="employersBadge">0</span>
+            </div>
+            
+            <div id="employersContainer" class="employers-container">
+                <div class="empty-state">
+                    <div class="empty-icon">📭</div>
+                    <div class="empty-title">No Applications Yet</div>
+                    <div class="empty-subtitle">Your recent job applications will appear here</div>
+                </div>
             </div>
         </div>
     </div>
@@ -1144,6 +1376,234 @@
             const initials = userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
             document.getElementById('userAvatar').textContent = initials;
         }
+
+        // Load and render application history from backend API
+        async function loadApplicationHistory() {
+            if (!userData.email) return;
+            
+            try {
+                const authToken = localStorage.getItem('authToken');
+                const response = await fetch('/api/users/application-history', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                if (!response.ok) {
+                    console.log('No application history found in backend');
+                    return;
+                }
+
+                const data = await response.json();
+                if (data.success && data.applicationHistory && data.applicationHistory.length > 0) {
+                    const applicationHistory = data.applicationHistory;
+                    console.log('📖 Loaded application history from backend:', applicationHistory.length, 'items');
+                    
+                    // Update badge
+                    const badge = document.getElementById('employersBadge');
+                    badge.textContent = Math.min(applicationHistory.length, 5);
+                    
+                    // Render employers
+                    renderEmployers(applicationHistory.slice(0, 5));
+                } else {
+                    console.log('No application history found');
+                }
+            } catch (error) {
+                console.error('Error loading application history:', error);
+            }
+        }
+
+        async function loadDashboardStatistics() {
+            // Load userData from localStorage
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            if (!userData.email) return;
+            
+            // Set welcome message with user name
+            const userName = userData.fullName || userData.name || 'User';
+            document.getElementById('dashboardUserName').textContent = userName;
+            
+            try {
+                const authToken = localStorage.getItem('authToken');
+                
+                // Load cumulative counters from backend API
+                const countersResponse = await fetch('/api/users/counters', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                let totalSent = 0, totalGenerated = 0;
+                
+                if (countersResponse.ok) {
+                    const countersData = await countersResponse.json();
+                    totalSent = countersData.totalSent || 0;
+                    totalGenerated = countersData.totalGenerated || 0;
+                    console.log('📊 Loaded counters from backend API - Generated:', totalGenerated, 'Sent:', totalSent);
+                    
+                    // Also cache in localStorage
+                    localStorage.setItem(`appCounters_${userData.email}`, JSON.stringify({
+                        totalGenerated,
+                        totalSent
+                    }));
+                } else {
+                    console.log('⚠️ Failed to load counters from backend, using localStorage cache');
+                    // Fallback to localStorage
+                    const stored = localStorage.getItem(`appCounters_${userData.email}`);
+                    if (stored) {
+                        const counters = JSON.parse(stored);
+                        totalSent = counters.totalSent || 0;
+                        totalGenerated = counters.totalGenerated || 0;
+                    }
+                }
+
+                // Update UI (only 2 stats like mobile)
+                document.getElementById('dashboardTotalSent').textContent = totalSent;
+                document.getElementById('dashboardTotalGenerated').textContent = totalGenerated;
+                
+                console.log('📊 Dashboard stats loaded - Sent:', totalSent, 'Generated:', totalGenerated);
+            } catch (error) {
+                console.error('Error loading dashboard statistics:', error);
+                // Set defaults on error
+                document.getElementById('dashboardTotalSent').textContent = '0';
+                document.getElementById('dashboardTotalGenerated').textContent = '0';
+            }
+        }
+
+        function renderEmployers(employers) {
+            const container = document.getElementById('employersContainer');
+            
+            if (!employers || employers.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">📭</div>
+                        <div class="empty-title">No Applications Yet</div>
+                        <div class="empty-subtitle">Your recent job applications will appear here</div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = employers.map((employer, index) => {
+                const sentDate = new Date(employer.sentDate).toLocaleDateString('en-US', { 
+                    month: 'short', 
+                    day: 'numeric', 
+                    year: 'numeric' 
+                });
+                const replyDate = employer.replyReceived && employer.replyDate 
+                    ? new Date(employer.replyDate).toLocaleDateString('en-US', { 
+                        month: 'short', 
+                        day: 'numeric', 
+                        year: 'numeric' 
+                    })
+                    : null;
+
+                const isClickable = !employer.replyReceived;
+                const clickableClass = isClickable ? 'employer-card-clickable' : '';
+
+                return `
+                    <div class="employer-card ${clickableClass}" data-app-id="${employer.id}" onclick="${isClickable ? `markAsReplied(${employer.id}, '${employer.companyName}')` : ''}">
+                        <div class="status-indicator ${employer.replyReceived ? 'status-replied' : 'status-pending'}"></div>
+                        <div class="employer-card-content">
+                            <div class="employer-header">
+                                <div style="display: flex; align-items: start;">
+                                    <span class="employer-number-badge">${index + 1}</span>
+                                    <div class="employer-info">
+                                        <div class="employer-company-name">${employer.companyName}</div>
+                                        <div class="employer-job-position">${employer.position}</div>
+                                    </div>
+                                </div>
+                                <span class="status-badge ${employer.replyReceived ? 'status-badge-replied' : 'status-badge-pending'}">
+                                    ${employer.replyReceived ? '✓ Replied' : '⏳ Pending'}
+                                </span>
+                            </div>
+                            <div class="employer-dates">
+                                <div class="employer-date-item">
+                                    <div class="employer-date-label">Sent</div>
+                                    <div class="employer-date-value">${sentDate}</div>
+                                </div>
+                                ${employer.replyReceived && replyDate ? `
+                                    <div class="employer-date-item">
+                                        <div class="employer-date-label">Reply</div>
+                                        <div class="employer-date-value">${replyDate}</div>
+                                    </div>
+                                ` : ''}
+                            </div>
+                            ${!employer.replyReceived ? `
+                                <div class="action-hint">
+                                    <span style="font-size: 0.875rem; color: #059669;">✓ Tap to mark as replied</span>
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Function to mark application as replied
+        async function markAsReplied(appId, companyName) {
+            const confirmed = confirm(`Did you receive a reply from ${companyName}?`);
+            if (!confirmed) return;
+
+            const replyDate = prompt('Enter the date you received the reply (YYYY-MM-DD):', new Date().toISOString().split('T')[0]);
+            if (!replyDate) return;
+
+            try {
+                // Load current application history
+                const authToken = localStorage.getItem('authToken');
+                const response = await fetch('/api/users/application-history', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    const applicationHistory = data.applicationHistory || [];
+                    
+                    // Update the specific application
+                    const updatedHistory = applicationHistory.map(app => {
+                        if (app.id === appId) {
+                            return {
+                                ...app,
+                                replyReceived: true,
+                                replyDate: replyDate
+                            };
+                        }
+                        return app;
+                    });
+
+                    // Save back to backend
+                    const saveResponse = await fetch('/api/users/application-history', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${authToken}`,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ applicationHistory: updatedHistory })
+                    });
+
+                    if (saveResponse.ok) {
+                        showToast('Application marked as replied!', 'success');
+                        // Reload the application history to reflect changes
+                        loadApplicationHistory();
+                    } else {
+                        showToast('Failed to save changes', 'error');
+                    }
+                }
+            } catch (error) {
+                console.error('Error marking as replied:', error);
+                showToast('Failed to update application', 'error');
+            }
+        }
+
+        // Load application history on page load
+        loadApplicationHistory();
 
         // Logout function
         function handleLogout() {
@@ -1308,45 +1768,127 @@
             const recipients = getRecipients();
             console.log('Recipients:', recipients);
             
-            // Store recipients in session storage
-            sessionStorage.setItem('recipients', JSON.stringify(recipients));
-            console.log('Stored in session storage');
+            // Store recipients to backend API
+            const authToken = localStorage.getItem('authToken');
+            if (authToken) {
+                try {
+                    const response = await fetch('/api/users/recipients', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${authToken}`,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ recipients })
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        console.log(`✅ Saved ${data.recipientsCount} recipients before review`);
+                    }
+                } catch (error) {
+                    console.error('Error saving recipients:', error);
+                }
+            }
             
             // Redirect to review page
             window.location.href = '/review.html';
         }
 
-        // Restore form values from sessionStorage when page loads
-        function restoreFormValues() {
-            const storedRecipients = sessionStorage.getItem('recipients');
-            if (storedRecipients) {
-                try {
-                    const recipients = JSON.parse(storedRecipients);
-                    
-                    // Add recipient items if needed
-                    while (document.querySelectorAll('.recipient-item').length < recipients.length) {
-                        addRecipient();
+        // Restore form values from API when page loads
+        async function restoreFormValues() {
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            if (!userData.email) return;
+            
+            try {
+                // Load recipients from backend API
+                const authToken = localStorage.getItem('authToken');
+                const response = await fetch('/api/users/recipients', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
                     }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
                     
-                    // Fill in the values
-                    const items = document.querySelectorAll('.recipient-item');
-                    recipients.forEach((recipient, index) => {
-                        if (items[index]) {
-                            items[index].querySelector('input[name="email"]').value = recipient.email || '';
-                            items[index].querySelector('input[name="website"]').value = recipient.website || '';
-                            items[index].querySelector('input[name="position"]').value = recipient.position || '';
+                    if (data.success && data.recipients && data.recipients.length > 0) {
+                        console.log(`✅ Loaded ${data.recipients.length} recipients from backend`);
+                        
+                        // Add recipient items if needed
+                        while (document.querySelectorAll('.recipient-item').length < data.recipients.length) {
+                            addRecipient();
                         }
-                    });
-                    
-                    console.log('Form values restored from session storage');
-                } catch (error) {
-                    console.error('Error restoring form values:', error);
+                        
+                        // Fill in the values
+                        const items = document.querySelectorAll('.recipient-item');
+                        data.recipients.forEach((recipient, index) => {
+                            if (items[index]) {
+                                items[index].querySelector('input[name="email"]').value = recipient.email || '';
+                                items[index].querySelector('input[name="website"]').value = recipient.website || '';
+                                items[index].querySelector('input[name="position"]').value = recipient.position || '';
+                            }
+                        });
+                        
+                        console.log('Form values restored from backend API');
+                    } else {
+                        console.log('ℹ️ No stored recipients found');
+                    }
+                } else {
+                    console.log('Failed to load recipients from backend');
                 }
+            } catch (error) {
+                console.error('Error loading recipients:', error);
             }
         }
 
-        // Call restoreFormValues when page loads
-        window.addEventListener('DOMContentLoaded', restoreFormValues);
+        // Auto-save recipients function (debounced) - save to backend API
+        let saveTimer;
+        function autoSaveRecipients() {
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(async () => {
+                const authToken = localStorage.getItem('authToken');
+                if (!authToken) return;
+                
+                const recipients = getRecipients();
+                if (recipients.length > 0 && recipients.some(r => r.email || r.website)) {
+                    try {
+                        const response = await fetch('/api/users/recipients', {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${authToken}`,
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ recipients })
+                        });
+
+                        if (response.ok) {
+                            const data = await response.json();
+                            console.log(`✅ Auto-saved ${data.recipientsCount} recipients to backend`);
+                        } else {
+                            console.log('Failed to auto-save recipients');
+                        }
+                    } catch (error) {
+                        console.error('Error auto-saving recipients:', error);
+                    }
+                }
+            }, 2000); // 2 second debounce (same as mobile)
+        }
+
+        // Add event listeners for auto-save
+        document.addEventListener('input', (e) => {
+            if (e.target.closest('.recipient-item')) {
+                autoSaveRecipients();
+            }
+        });
+
+        // Call functions when page loads
+        window.addEventListener('DOMContentLoaded', () => {
+            restoreFormValues();
+            loadDashboardStatistics();
+            loadApplicationHistory();
+        });
 
         async function sendNow() {
             if (!validateForm()) return;
@@ -1391,25 +1933,63 @@
             });
             
             try {
-                // Generate cover letters
-                const response = await fetch('/api/generate-cover-letters', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${authToken}`
-                    },
-                    body: JSON.stringify({ recipients }),
-                });
+                // Use SAME endpoint as mobile - call it for each recipient
+                const results = [];
                 
-                const result = await response.json();
-                
-                if (response.ok && result.success) {
-                    // Show results with download links
-                    showCoverLetterResults(result.results);
-                    showToast(`✅ Generated ${result.results.filter(r => r.status === 'generated').length} cover letter(s)!`, 'success');
-                } else {
-                    showToast(result.error || 'Failed to generate cover letters', 'error');
+                for (let i = 0; i < recipients.length; i++) {
+                    const recipient = recipients[i];
+                    
+                    try {
+                        console.log(`Generating ${i + 1}/${recipients.length}: ${recipient.email}`);
+                        
+                        // Call MOBILE endpoint (same as mobile app uses)
+                        const response = await fetch('/api/generate-cover-letter-details', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${authToken}`
+                            },
+                            body: JSON.stringify({
+                                recipientEmail: recipient.email,
+                                websiteUrl: recipient.website,
+                                position: recipient.position || 'Position'
+                            }),
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (response.ok && data.success) {
+                            results.push({
+                                status: 'generated',
+                                email: recipient.email,
+                                company: data.companyName,
+                                position: recipient.position,
+                                website: recipient.website,
+                                fileName: data.fileName,
+                                downloadUrl: data.downloadUrl
+                            });
+                        } else {
+                            results.push({
+                                status: 'failed',
+                                email: recipient.email,
+                                error: data.error || 'Generation failed'
+                            });
+                        }
+                    } catch (error) {
+                        console.error(`Error generating for ${recipient.email}:`, error);
+                        results.push({
+                            status: 'failed',
+                            email: recipient.email,
+                            error: error.message
+                        });
+                    }
                 }
+                
+                // Show results with download links
+                showCoverLetterResults(results);
+                const successCount = results.filter(r => r.status === 'generated').length;
+                showToast(`✅ Generated ${successCount} cover letter(s)!`, 'success');
+                
             } catch (error) {
                 console.error('Error:', error);
                 showToast('Failed to generate cover letters. Please try again.', 'error');
