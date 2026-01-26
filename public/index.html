@@ -74,6 +74,37 @@
             gap: 16px;
         }
 
+        /* Credit Badge Styles */
+        .credit-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
+            border-radius: 12px;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+            cursor: pointer;
+        }
+
+        .credit-badge:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(139, 92, 246, 0.4);
+        }
+
+        .credit-icon {
+            font-size: 20px;
+        }
+
+        .credit-number {
+            font-size: 18px;
+            font-weight: 700;
+            color: white;
+            min-width: 24px;
+            text-align: center;
+        }
+
         .user-section {
             display: flex;
             align-items: center;
@@ -1098,43 +1129,11 @@
             }
         }
     </style>
+    <script src="/js/common-header.js"></script>
+    <script src="/js/credit-validation.js"></script>
+    <script src="/js/common-footer.js"></script>
 </head>
 <body>
-    <!-- Unified Top Navigation Bar -->
-    <nav class="top-navbar">
-        <div class="navbar-left">
-            <a href="/" class="navbar-brand">
-                <img src="/icon_light_background.png" alt="CVApplyr" style="height: 45px;">
-            </a>
-        </div>
-        
-        <div class="navbar-right">
-            <div class="user-section">
-                <div class="user-avatar" id="userAvatar"></div>
-                <div class="user-details">
-                    <div class="user-name" id="userName"></div>
-                    <div class="user-email" id="userEmail"></div>
-                </div>
-            </div>
-            
-            <div class="nav-actions">
-                <button class="nav-btn" onclick="openSettings()" title="Settings">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                </button>
-                <a href="/profile.html" class="nav-btn" title="Profile">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                    </svg>
-                </a>
-            </div>
-            
-            <button class="logout-btn" onclick="handleLogout()">Logout</button>
-        </div>
-    </nav>
-
     <div class="container">
         <!-- Welcome Section -->
         <div class="app-header">
@@ -1360,22 +1359,17 @@
     </div>
 
     <script>
+        // Flag to tell common header this is dashboard page (handles its own credit loading)
+        window.dashboardPage = true;
+        
         // Authentication check
         const authToken = localStorage.getItem('authToken');
         if (!authToken) {
-            window.location.href = '/login.html';
+            window.location.href = '/login';
         }
 
-        // Load user info
+        // Load user info from header (already loaded by common-header.js)
         const userData = JSON.parse(localStorage.getItem('userData') || '{}');
-        if (userData.fullName) {
-            document.getElementById('userName').textContent = userData.fullName;
-            document.getElementById('userEmail').textContent = userData.email;
-            
-            // Set avatar initials
-            const initials = userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-            document.getElementById('userAvatar').textContent = initials;
-        }
 
         // Load and render application history from backend API
         async function loadApplicationHistory() {
@@ -1412,6 +1406,34 @@
                 }
             } catch (error) {
                 console.error('Error loading application history:', error);
+            }
+        }
+
+        async function loadCredits() {
+            try {
+                const authToken = localStorage.getItem('authToken');
+                if (!authToken) return;
+                
+                const response = await fetch('/api/user/credits', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success) {
+                        const creditBadge = document.getElementById('creditBadgeNumber');
+                        if (creditBadge) {
+                            creditBadge.textContent = data.balance || 0;
+                        }
+                        console.log('💳 Loaded credits:', data.balance);
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading credits:', error);
             }
         }
 
@@ -1471,6 +1493,43 @@
                 document.getElementById('dashboardTotalSent').textContent = '0';
                 document.getElementById('dashboardTotalGenerated').textContent = '0';
             }
+            
+            // Load credit balance
+            await loadCreditBalance();
+        }
+
+        async function loadCreditBalance() {
+            try {
+                const authToken = localStorage.getItem('authToken');
+                if (!authToken) return;
+                
+                const response = await fetch('/api/user/credits', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success) {
+                        const creditBalance = data.balance || 0;
+                        document.getElementById('creditBalance').textContent = creditBalance;
+                        console.log('💳 Loaded credits:', creditBalance);
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading credits:', error);
+            }
+        }
+
+        async function openUsageScreen() {
+            window.location.href = '/usage';
+        }
+        
+        function closeUsageScreen() {
+            // Not needed for separate page
         }
 
         function renderEmployers(employers) {
@@ -1488,17 +1547,37 @@
             }
 
             container.innerHTML = employers.map((employer, index) => {
-                const sentDate = new Date(employer.sentDate).toLocaleDateString('en-US', { 
-                    month: 'short', 
-                    day: 'numeric', 
-                    year: 'numeric' 
-                });
+                // Format sentDate with null check
+                let sentDate = 'N/A';
+                if (employer.sentDate) {
+                    try {
+                        const date = new Date(employer.sentDate);
+                        if (!isNaN(date.getTime())) {
+                            sentDate = date.toLocaleDateString('en-US', { 
+                                month: 'short', 
+                                day: 'numeric', 
+                                year: 'numeric' 
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Error parsing sentDate:', e);
+                    }
+                }
+                
+                // Format replyDate with null check
                 const replyDate = employer.replyReceived && employer.replyDate 
-                    ? new Date(employer.replyDate).toLocaleDateString('en-US', { 
-                        month: 'short', 
-                        day: 'numeric', 
-                        year: 'numeric' 
-                    })
+                    ? (() => {
+                        try {
+                            const date = new Date(employer.replyDate);
+                            return !isNaN(date.getTime()) ? date.toLocaleDateString('en-US', { 
+                                month: 'short', 
+                                day: 'numeric', 
+                                year: 'numeric' 
+                            }) : null;
+                        } catch (e) {
+                            return null;
+                        }
+                    })()
                     : null;
 
                 const isClickable = !employer.replyReceived;
@@ -1602,15 +1681,12 @@
             }
         }
 
-        // Load application history on page load
-        loadApplicationHistory();
-
         // Logout function
         function handleLogout() {
             if (confirm('Are you sure you want to logout?')) {
                 localStorage.removeItem('authToken');
                 localStorage.removeItem('userData');
-                window.location.href = '/login.html';
+                window.location.href = '/login';
             }
         }
 
@@ -1760,6 +1836,14 @@
 
         async function reviewAndSend() {
             console.log('Review and Send clicked');
+            
+            // Check credits first
+            const hasCredits = await creditValidation.checkCredits();
+            if (!hasCredits) {
+                creditValidation.showModal();
+                return;
+            }
+            
             if (!validateForm()) {
                 console.log('Validation failed');
                 return;
@@ -1791,7 +1875,7 @@
             }
             
             // Redirect to review page
-            window.location.href = '/review.html';
+            window.location.href = '/review';
         }
 
         // Restore form values from API when page loads
@@ -1886,9 +1970,31 @@
         // Call functions when page loads
         window.addEventListener('DOMContentLoaded', () => {
             restoreFormValues();
+            loadCredits();
             loadDashboardStatistics();
             loadApplicationHistory();
+            checkAdminStatus();
         });
+
+        // Check if user is admin and show admin button
+        async function checkAdminStatus() {
+            const token = localStorage.getItem('authToken');
+            if (!token) return;
+            
+            try {
+                const response = await fetch('/api/user/is-admin', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                const data = await response.json();
+                if (data.isAdmin) {
+                    document.getElementById('adminBtn').style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Error checking admin status:', error);
+            }
+        }
 
         async function sendNow() {
             if (!validateForm()) return;
@@ -1922,6 +2028,33 @@
             } catch (error) {
                 console.error('Error checking profile:', error);
                 showToast('Failed to verify profile', 'error');
+                return;
+            }
+            
+            // Check if user has enough credits
+            try {
+                const creditsResponse = await fetch('/api/user/credits', {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`
+                    }
+                });
+                
+                if (creditsResponse.ok) {
+                    const creditsData = await creditsResponse.json();
+                    const availableCredits = creditsData.balance || 0;
+                    const requiredCredits = recipients.length;
+                    
+                    if (availableCredits < requiredCredits) {
+                        showToast(`Insufficient credits! You need ${requiredCredits} credit(s) but only have ${availableCredits}. Visit the Usage page to purchase more.`, 'error');
+                        return;
+                    }
+                } else {
+                    showToast('Unable to verify credit balance', 'error');
+                    return;
+                }
+            } catch (error) {
+                console.error('Error checking credits:', error);
+                showToast('Unable to verify credit balance', 'error');
                 return;
             }
 
@@ -1958,7 +2091,16 @@
                         
                         const data = await response.json();
                         
-                        if (response.ok && data.success) {
+                        if (response.status === 402) {
+                            // Insufficient credits
+                            showToast(data.message || 'Insufficient credits to generate cover letter', 'error');
+                            results.push({
+                                status: 'failed',
+                                email: recipient.email,
+                                error: 'Insufficient credits'
+                            });
+                            break; // Stop generating for remaining recipients
+                        } else if (response.ok && data.success) {
                             results.push({
                                 status: 'generated',
                                 email: recipient.email,
@@ -1968,6 +2110,30 @@
                                 fileName: data.fileName,
                                 downloadUrl: data.downloadUrl
                             });
+                            
+                            // Reload credit balance after successful generation
+                            try {
+                                const creditsResponse = await fetch('/api/user/credits', {
+                                    method: 'GET',
+                                    headers: {
+                                        'Authorization': `Bearer ${authToken}`,
+                                        'Content-Type': 'application/json',
+                                    }
+                                });
+                                
+                                if (creditsResponse.ok) {
+                                    const creditsData = await creditsResponse.json();
+                                    if (creditsData.success) {
+                                        const creditBadge = document.getElementById('creditBadgeNumber');
+                                        if (creditBadge) {
+                                            creditBadge.textContent = creditsData.balance || 0;
+                                        }
+                                        console.log('💳 Updated credits after generation:', creditsData.balance);
+                                    }
+                                }
+                            } catch (creditsError) {
+                                console.log('Failed to reload credits:', creditsError);
+                            }
                         } else {
                             results.push({
                                 status: 'failed',
@@ -1989,6 +2155,32 @@
                 showCoverLetterResults(results);
                 const successCount = results.filter(r => r.status === 'generated').length;
                 showToast(`✅ Generated ${successCount} cover letter(s)!`, 'success');
+                
+                // Final credit reload to ensure badge is updated
+                if (successCount > 0) {
+                    try {
+                        const finalCreditsResponse = await fetch('/api/user/credits', {
+                            method: 'GET',
+                            headers: {
+                                'Authorization': `Bearer ${authToken}`,
+                                'Content-Type': 'application/json',
+                            }
+                        });
+                        
+                        if (finalCreditsResponse.ok) {
+                            const finalCreditsData = await finalCreditsResponse.json();
+                            if (finalCreditsData.success) {
+                                const creditBadge = document.getElementById('creditBadgeNumber');
+                                if (creditBadge) {
+                                    creditBadge.textContent = finalCreditsData.balance || 0;
+                                }
+                                console.log('💳 Final credit update:', finalCreditsData.balance);
+                            }
+                        }
+                    } catch (finalCreditsError) {
+                        console.log('Failed to reload final credits:', finalCreditsError);
+                    }
+                }
                 
             } catch (error) {
                 console.error('Error:', error);
@@ -2662,5 +2854,8 @@
             }
         }
     </script>
+
 </body>
+</html>
+
 </html>

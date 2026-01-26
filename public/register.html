@@ -260,7 +260,7 @@
 
             <div class="auth-footer">
                 <p class="auth-link">
-                    Already have an account? <a href="/login.html">Sign in</a>
+                    Already have an account? <a href="/login">Sign in</a>
                 </p>
             </div>
         </div>
@@ -320,7 +320,7 @@
                     successMessage.style.display = 'block';
                     
                     setTimeout(() => {
-                        window.location.href = '/login.html';
+                        window.location.href = '/login';
                     }, 1500);
                 } else {
                     errorMessage.textContent = data.error || 'Registration failed. Please try again.';

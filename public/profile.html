@@ -34,48 +34,162 @@
             color: var(--text-primary);
         }
 
-        .navbar {
+        /* Top Navigation Bar */
+        .top-navbar {
             background: white;
-            border-bottom: 1px solid var(--border-color);
-            padding: 16px 0;
-            box-shadow: var(--shadow);
-        }
-
-        .navbar-content {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 0 24px;
+            padding: 12px 24px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .navbar-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
         }
 
         .navbar-brand {
-            font-size: 1.25rem;
-            font-weight: 700;
-            color: var(--primary-color);
+            display: flex;
+            align-items: center;
+            gap: 10px;
             text-decoration: none;
         }
 
-        .back-btn {
+        .navbar-brand h1 {
+            color: var(--primary-color);
+            font-size: 1.25rem;
+            font-weight: 700;
+            margin: 0;
+        }
+
+        .navbar-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        /* Credit Badge Styles */
+        .credit-badge {
             display: flex;
             align-items: center;
             gap: 8px;
             padding: 8px 16px;
-            background: var(--bg-color);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            color: var(--text-primary);
+            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
+            border-radius: 12px;
             text-decoration: none;
-            font-size: 0.875rem;
-            font-weight: 500;
-            transition: all 0.2s ease;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+            cursor: pointer;
         }
 
-        .back-btn:hover {
-            background: white;
+        .credit-badge:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(139, 92, 246, 0.4);
+        }
+
+        .credit-icon {
+            font-size: 20px;
+        }
+
+        .credit-number {
+            font-size: 18px;
+            font-weight: 700;
+            color: white;
+            min-width: 24px;
+            text-align: center;
+        }
+
+        .user-section {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 6px 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .nav-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .nav-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            background: #f8f9fa;
+            border: 1px solid #e2e8f0;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-decoration: none;
+            color: #555;
+        }
+
+        .nav-btn:hover {
+            background: var(--primary-color);
             border-color: var(--primary-color);
-            color: var(--primary-color);
+            color: white;
+        }
+
+        .nav-btn svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .user-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 0.75rem;
+        }
+
+        .user-details {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .user-name {
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1.2;
+        }
+
+        .user-email {
+            font-size: 0.6875rem;
+            color: var(--text-secondary);
+        }
+
+        .logout-btn {
+            padding: 8px 14px;
+            background: transparent;
+            border: 1px solid #fecaca;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            color: #dc2626;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-weight: 500;
+        }
+
+        .logout-btn:hover {
+            background: #fee2e2;
+            border-color: #dc2626;
         }
 
         .container {
@@ -543,26 +657,10 @@
             font-weight: 500;
         }
     </style>
+    <script src="/js/common-header.js"></script>
+    <script src="/js/common-footer.js"></script>
 </head>
 <body>
-    <!-- Navigation Bar -->
-    <nav class="navbar">
-        <div class="navbar-content">
-            <a href="/" class="navbar-brand">Resume Sender</a>
-            <div style="display: flex; align-items: center; gap: 12px;">
-                <a href="/index.html" class="back-btn">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                    Back to Dashboard
-                </a>
-                <button onclick="handleLogout()" class="back-btn" style="background: #fee2e2; border-color: #fecaca; color: #dc2626;">
-                    Logout
-                </button>
-            </div>
-        </div>
-    </nav>
-
     <div class="container">
         <!-- Profile Header -->
         <div class="profile-header">
@@ -612,7 +710,7 @@
                             <input type="tel" id="phoneNumber" class="form-input" placeholder="+1 (555) 000-0000">
                         </div>
                     </div>
-                    <div class="form-row">
+                    <div class="form-row" style="display: none;">
                         <div class="form-group">
                             <label class="form-label">Zip Code</label>
                             <input type="text" id="zipcode" class="form-input" placeholder="10001" oninput="lookupLocation()">
@@ -622,7 +720,7 @@
                             <input type="text" id="city" class="form-input" placeholder="New York">
                         </div>
                     </div>
-                    <div class="form-row">
+                    <div class="form-row" style="display: none;">
                         <div class="form-group">
                             <label class="form-label">Country</label>
                             <select id="country" class="form-input">
@@ -803,7 +901,7 @@
                     </svg>
                     Save Changes
                 </button>
-                <button class="btn-secondary" onclick="window.location.href='/index.html'">Cancel</button>
+                <button class="btn-secondary" onclick="window.location.href='/'">Cancel</button>
             </div>
         </div>
     </div>
@@ -816,14 +914,14 @@
         // Authentication check
         const authToken = localStorage.getItem('authToken');
         if (!authToken) {
-            window.location.href = '/login.html';
+            window.location.href = '/login';
         }
 
         // Logout function
         function handleLogout() {
             localStorage.removeItem('authToken');
             sessionStorage.clear();
-            window.location.href = '/login.html';
+            window.location.href = '/login';
         }
 
         // Load user data on page load
@@ -919,9 +1017,13 @@
                     document.getElementById('userEmail').value = profile.email || '';
                     document.getElementById('dateOfBirth').value = profile.dateOfBirth || '';
                     document.getElementById('phoneNumber').value = profile.phoneNumber || '';
-                    document.getElementById('zipcode').value = profile.zipcode || '';
-                    document.getElementById('city').value = profile.city || '';
-                    document.getElementById('country').value = profile.country || '';
+                    // These fields don't exist in DB, hide them or set to empty
+                    const zipcodeField = document.getElementById('zipcode');
+                    const cityField = document.getElementById('city');
+                    const countryField = document.getElementById('country');
+                    if (zipcodeField) zipcodeField.value = '';
+                    if (cityField) cityField.value = '';
+                    if (countryField) countryField.value = '';
                     document.getElementById('address').value = profile.address || '';
                     
                     // Update profile header
@@ -981,39 +1083,57 @@
                     
                     // Load photo
                     if (profile.photoPath) {
-                        const photoPath = profile.photoPath.replace('uploads/', '/uploads/');
-                        const imageResponse = await fetch(photoPath, {
-                            headers: { 'Authorization': `Bearer ${token}` }
-                        });
+                        // Ensure proper path format
+                        let photoPath = profile.photoPath;
+                        if (!photoPath.startsWith('/')) {
+                            photoPath = '/' + photoPath;
+                        }
                         
-                        if (imageResponse.ok) {
-                            const blob = await imageResponse.blob();
-                            const dataUrl = await blobToDataURL(blob);
+                        try {
+                            const imageResponse = await fetch(photoPath);
                             
-                            // Update header avatar with photo
-                            avatarElement.innerHTML = `<img src="${dataUrl}" alt="Profile Photo">`;
-                            
-                            // Update profile picture section
-                            document.getElementById('photoPreviewImg').src = dataUrl;
-                            document.getElementById('photoUploadContent').classList.add('hidden');
-                            document.getElementById('photoPreview').classList.add('active');
+                            if (imageResponse.ok) {
+                                const blob = await imageResponse.blob();
+                                const dataUrl = await blobToDataURL(blob);
+                                
+                                // Update header avatar with photo
+                                avatarElement.innerHTML = `<img src="${dataUrl}" alt="Profile Photo">`;
+                                
+                                // Update profile picture section
+                                document.getElementById('photoPreviewImg').src = dataUrl;
+                                document.getElementById('photoUploadContent').classList.add('hidden');
+                                document.getElementById('photoPreview').classList.add('active');
+                            } else {
+                                console.log('Failed to load photo:', imageResponse.status);
+                            }
+                        } catch (error) {
+                            console.error('Error loading photo:', error);
                         }
                     }
                     
                     // Load signature
                     if (profile.signaturePath) {
-                        const signaturePath = profile.signaturePath.replace('uploads/', '/uploads/');
-                        const imageResponse = await fetch(signaturePath, {
-                            headers: { 'Authorization': `Bearer ${token}` }
-                        });
+                        // Ensure proper path format
+                        let signaturePath = profile.signaturePath;
+                        if (!signaturePath.startsWith('/')) {
+                            signaturePath = '/' + signaturePath;
+                        }
                         
-                        if (imageResponse.ok) {
-                            const blob = await imageResponse.blob();
-                            const dataUrl = await blobToDataURL(blob);
+                        try {
+                            const imageResponse = await fetch(signaturePath);
                             
-                            document.getElementById('signaturePreviewImg').src = dataUrl;
-                            document.getElementById('signatureUploadContent').classList.add('hidden');
-                            document.getElementById('signaturePreview').classList.add('active');
+                            if (imageResponse.ok) {
+                                const blob = await imageResponse.blob();
+                                const dataUrl = await blobToDataURL(blob);
+                                
+                                document.getElementById('signaturePreviewImg').src = dataUrl;
+                                document.getElementById('signatureUploadContent').classList.add('hidden');
+                                document.getElementById('signaturePreview').classList.add('active');
+                            } else {
+                                console.log('Failed to load signature:', imageResponse.status);
+                            }
+                        } catch (error) {
+                            console.error('Error loading signature:', error);
                         }
                     }
                 }

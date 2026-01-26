@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const CryptoJS = require('crypto-js');
 const sqlite3 = require('sqlite3').verbose();
+const { Pool } = require('pg');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
 const passport = require('passport');
@@ -20,6 +21,8 @@ const sharp = require('sharp');
 const cheerio = require('cheerio');
 const AICoverLetterGenerator = require('./ai-cover-letter-generator');
 const TemplateCoverLetterGenerator = require('./template-cover-letter-generator');
+const dbConfig = require('./db-config');
+const { initializeDatabase } = require('./db-init');
 require('dotenv').config();
 
 const app = express();
@@ -161,200 +164,14 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
     }
 }
 
-// Initialize SQLite database
-const db = new sqlite3.Database('./database.db', (err) => {
-    if (err) {
-        console.error('Error opening database:', err);
-    } else {
-        console.log('Connected to SQLite database');
-        initializeDatabase();
-    }
+// Initialize database (supports both SQLite and PostgreSQL)
+const db = dbConfig.initializeConnection();
+
+// Initialize database schema
+initializeDatabase().catch(err => {
+    console.error('Fatal error initializing database:', err);
+    process.exit(1);
 });
-
-// Create tables
-function initializeDatabase() {
-    db.run(`
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            full_name TEXT NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            smtp_email TEXT,
-            smtp_password TEXT,
-            sender_name TEXT,
-            resume_path TEXT,
-            photo_path TEXT,
-            signature_path TEXT,
-            date_of_birth DATE,
-            phone_number TEXT,
-            address TEXT,
-            oauth_provider TEXT,
-            google_access_token TEXT,
-            google_refresh_token TEXT,
-            total_generated INTEGER DEFAULT 0,
-            total_sent INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    `, (err) => {
-        if (err) {
-            console.error('Error creating users table:', err);
-        } else {
-            console.log('Users table ready');
-            // Add new columns to existing tables
-            addOAuthColumnsIfNeeded();
-        }
-    });
-
-    // Create recipients table for storing user's recipient list
-    db.run(`
-        CREATE TABLE IF NOT EXISTS recipients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            email TEXT NOT NULL,
-            website TEXT NOT NULL,
-            position TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-            UNIQUE(user_id, email)
-        )
-    `, (err) => {
-        if (err) {
-            console.error('Error creating recipients table:', err);
-        } else {
-            console.log('Recipients table ready');
-        }
-    });
-
-    // Create application_history table for tracking sent applications
-    db.run(`
-        CREATE TABLE IF NOT EXISTS application_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            company_name TEXT NOT NULL,
-            position TEXT NOT NULL,
-            recipient_email TEXT NOT NULL,
-            sent_date DATETIME NOT NULL,
-            reply_received INTEGER DEFAULT 0,
-            reply_date DATETIME,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        )
-    `, (err) => {
-        if (err) {
-            console.error('Error creating application_history table:', err);
-        } else {
-            console.log('Application history table ready');
-        }
-    });
-
-    // Create review_cover_letters table for storing generated cover letters
-    db.run(`
-        CREATE TABLE IF NOT EXISTS review_cover_letters (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            letter_key TEXT NOT NULL,
-            company_name TEXT,
-            recipient_email TEXT,
-            cover_letter_html TEXT,
-            subject TEXT,
-            address TEXT,
-            date TEXT,
-            position TEXT,
-            locations TEXT,
-            generated INTEGER DEFAULT 0,
-            sent INTEGER DEFAULT 0,
-            sent_date DATETIME,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-            UNIQUE(user_id, letter_key)
-        )
-    `, (err) => {
-        if (err) {
-            console.error('Error creating review_cover_letters table:', err);
-        } else {
-            console.log('Review cover letters table ready');
-            
-            // Add stored recipient data columns if they don't exist
-            db.all("PRAGMA table_info(review_cover_letters)", (err, columns) => {
-                if (err) {
-                    console.error('Error checking review_cover_letters schema:', err);
-                    return;
-                }
-                
-                const hasStoredEmail = columns.some(col => col.name === 'stored_recipient_email');
-                const hasStoredWebsite = columns.some(col => col.name === 'stored_recipient_website');
-                
-                if (!hasStoredEmail) {
-                    db.run('ALTER TABLE review_cover_letters ADD COLUMN stored_recipient_email TEXT', (err) => {
-                        if (err) console.error('Error adding stored_recipient_email column:', err);
-                        else console.log('Added stored_recipient_email column');
-                    });
-                }
-                
-                if (!hasStoredWebsite) {
-                    db.run('ALTER TABLE review_cover_letters ADD COLUMN stored_recipient_website TEXT', (err) => {
-                        if (err) console.error('Error adding stored_recipient_website column:', err);
-                        else console.log('Added stored_recipient_website column');
-                    });
-                }
-            });
-        }
-    });
-}
-
-// Function to add OAuth columns to existing users table
-function addOAuthColumnsIfNeeded() {
-    // Check if oauth_provider column exists
-    db.all("PRAGMA table_info(users)", (err, columns) => {
-        if (err) {
-            console.error('Error checking table schema:', err);
-            return;
-        }
-        
-        const hasOAuthProvider = columns.some(col => col.name === 'oauth_provider');
-        const hasGoogleAccessToken = columns.some(col => col.name === 'google_access_token');
-        const hasGoogleRefreshToken = columns.some(col => col.name === 'google_refresh_token');
-        const hasTotalGenerated = columns.some(col => col.name === 'total_generated');
-        const hasTotalSent = columns.some(col => col.name === 'total_sent');
-        
-        if (!hasOAuthProvider) {
-            db.run('ALTER TABLE users ADD COLUMN oauth_provider TEXT', (err) => {
-                if (err) console.error('Error adding oauth_provider column:', err);
-                else console.log('Added oauth_provider column');
-            });
-        }
-        
-        if (!hasGoogleAccessToken) {
-            db.run('ALTER TABLE users ADD COLUMN google_access_token TEXT', (err) => {
-                if (err) console.error('Error adding google_access_token column:', err);
-                else console.log('Added google_access_token column');
-            });
-        }
-        
-        if (!hasGoogleRefreshToken) {
-            db.run('ALTER TABLE users ADD COLUMN google_refresh_token TEXT', (err) => {
-                if (err) console.error('Error adding google_refresh_token column:', err);
-                else console.log('Added google_refresh_token column');
-            });
-        }
-        
-        if (!hasTotalGenerated) {
-            db.run('ALTER TABLE users ADD COLUMN total_generated INTEGER DEFAULT 0', (err) => {
-                if (err) console.error('Error adding total_generated column:', err);
-                else console.log('Added total_generated column');
-            });
-        }
-        
-        if (!hasTotalSent) {
-            db.run('ALTER TABLE users ADD COLUMN total_sent INTEGER DEFAULT 0', (err) => {
-                if (err) console.error('Error adding total_sent column:', err);
-                else console.log('Added total_sent column');
-            });
-        }
-    });
-}
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -414,6 +231,46 @@ app.use(session({
 }));
 app.use(passport.initialize());
 app.use(passport.session());
+
+// Protected admin pages - MUST come before express.static
+app.get('/admin-packages.html', serveAdminPageOnly, (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'admin-packages.html'));
+});
+
+// Middleware to handle clean URLs without .html extension
+app.use((req, res, next) => {
+    // Skip if URL already has .html extension
+    if (req.path.endsWith('.html')) {
+        return next();
+    }
+    
+    // Skip if URL has a file extension (css, js, png, etc.)
+    if (path.extname(req.path) !== '') {
+        return next();
+    }
+    
+    // Skip API routes
+    if (req.path.startsWith('/api/') || req.path.startsWith('/auth/')) {
+        return next();
+    }
+    
+    // Try to serve the .html version of the requested path
+    const htmlPath = path.join(__dirname, 'public', req.path + '.html');
+    fsSync.access(htmlPath, fsSync.constants.F_OK, (err) => {
+        if (!err) {
+            res.sendFile(htmlPath);
+        } else {
+            next();
+        }
+    });
+});
+
+// Clean URL route for admin-packages (without .html)
+app.get('/admin-packages', serveAdminPageOnly, (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'admin-packages.html'));
+});
+
+// Static files for public access
 app.use(express.static('public'));
 app.use('/uploads', express.static('uploads'));
 
@@ -552,6 +409,266 @@ function authenticateToken(req, res, next) {
     });
 }
 
+// Admin authentication middleware
+function authenticateAdmin(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({ error: 'Access denied. No token provided.' });
+    }
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) {
+            return res.status(403).json({ error: 'Invalid or expired token.' });
+        }
+        
+        // Check if user is admin
+        db.get('SELECT role FROM users WHERE id = ?', [user.id], (err, row) => {
+            if (err) {
+                return res.status(500).json({ error: 'Database error' });
+            }
+            if (!row || row.role !== 'admin') {
+                return res.status(403).json({ error: 'Access denied. Admin privileges required.' });
+            }
+            req.user = user;
+            next();
+        });
+    });
+}
+
+// Server-side HTML page protection middleware
+function serveAdminPageOnly(req, res, next) {
+    // Check if there's an auth token in cookie
+    const token = req.cookies?.authToken;
+    
+    if (!token) {
+        // No token, redirect to login
+        return res.redirect('/login.html?error=admin_required');
+    }
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) {
+            return res.redirect('/login.html?error=session_expired');
+        }
+        
+        // Check if user is admin
+        db.get('SELECT role FROM users WHERE id = ?', [user.id], (err, row) => {
+            if (err || !row || row.role !== 'admin') {
+                return res.status(403).send(`
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Access Denied</title>
+                        <style>
+                            body { 
+                                font-family: Arial, sans-serif; 
+                                display: flex; 
+                                justify-content: center; 
+                                align-items: center; 
+                                height: 100vh; 
+                                margin: 0;
+                                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                            }
+                            .container {
+                                background: white;
+                                padding: 40px;
+                                border-radius: 12px;
+                                text-align: center;
+                                box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                                max-width: 500px;
+                            }
+                            h1 { color: #EF4444; margin-bottom: 16px; }
+                            p { color: #6B7280; margin-bottom: 24px; }
+                            a { 
+                                display: inline-block;
+                                padding: 12px 24px;
+                                background: #6366F1;
+                                color: white;
+                                text-decoration: none;
+                                border-radius: 8px;
+                                font-weight: 600;
+                            }
+                            .icon { font-size: 48px; margin-bottom: 16px; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="container">
+                            <div class="icon">🔒</div>
+                            <h1>Access Denied</h1>
+                            <p>This page requires administrator privileges. You do not have permission to access this resource.</p>
+                            <a href="/index.html">← Return to Dashboard</a>
+                        </div>
+                    </body>
+                    </html>
+                `);
+            }
+            // User is admin, serve the page
+            next();
+        });
+    });
+}
+
+// ============================================
+// CREDITS MANAGEMENT HELPER FUNCTIONS
+// ============================================
+
+// Helper function to check if user has sufficient credits
+function checkUserCredits(userId, creditsRequired = 1) {
+    return new Promise((resolve, reject) => {
+        db.get(`
+            SELECT credits_remaining, expiry_date
+            FROM user_credits
+            WHERE user_id = ?
+        `, [userId], (err, credits) => {
+            if (err) {
+                return reject(new Error('Failed to check credit balance'));
+            }
+            
+            if (!credits) {
+                return resolve({ 
+                    hasCredits: false, 
+                    remaining: 0, 
+                    message: 'No credits available. Please purchase a plan to continue.' 
+                });
+            }
+            
+            // Check if credits are expired
+            const now = new Date();
+            const expiryDate = credits.expiry_date ? new Date(credits.expiry_date) : null;
+            const isExpired = expiryDate && expiryDate < now;
+            
+            if (isExpired) {
+                return resolve({
+                    hasCredits: false,
+                    remaining: 0,
+                    message: 'Your credits have expired. Please purchase a new plan.'
+                });
+            }
+            
+            if (credits.credits_remaining < creditsRequired) {
+                return resolve({
+                    hasCredits: false,
+                    remaining: credits.credits_remaining,
+                    message: `Insufficient credits. You need ${creditsRequired} credit(s) but only have ${credits.credits_remaining} remaining.`
+                });
+            }
+            
+            resolve({
+                hasCredits: true,
+                remaining: credits.credits_remaining,
+                message: 'Credits available'
+            });
+        });
+    });
+}
+
+// Helper function to deduct credits from user account
+function deductCredits(userId, creditsToDeduct = 1, actionType = 'cover_letter_generation', metadata = {}) {
+    return new Promise((resolve, reject) => {
+        db.serialize(() => {
+            db.run('BEGIN TRANSACTION');
+            
+            // Deduct from user_credits
+            db.run(`
+                UPDATE user_credits
+                SET credits_remaining = credits_remaining - ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            `, [creditsToDeduct, userId], function(err) {
+                if (err) {
+                    db.run('ROLLBACK');
+                    return reject(new Error('Failed to deduct credits'));
+                }
+                
+                // Record in credit_usage_history
+                db.run(`
+                    INSERT INTO credit_usage_history
+                    (user_id, credits_used, action_type, company_name, position, recipient_email)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                `, [
+                    userId, 
+                    creditsToDeduct, 
+                    actionType, 
+                    metadata.companyName || null, 
+                    metadata.position || null, 
+                    metadata.recipientEmail || null
+                ], function(err) {
+                    if (err) {
+                        db.run('ROLLBACK');
+                        return reject(new Error('Failed to record credit usage'));
+                    }
+                    
+                    // Update monthly stats
+                    const now = new Date();
+                    const month = now.getMonth() + 1; // 1-12
+                    const year = now.getFullYear();
+                    
+                    db.run(`
+                        INSERT INTO monthly_usage_stats (user_id, month, year, credits_used, letters_generated)
+                        VALUES (?, ?, ?, ?, 1)
+                        ON CONFLICT(user_id, month, year) DO UPDATE SET
+                            credits_used = credits_used + ?,
+                            letters_generated = letters_generated + 1,
+                            updated_at = CURRENT_TIMESTAMP
+                    `, [userId, month, year, creditsToDeduct, creditsToDeduct], function(err) {
+                        if (err) {
+                            db.run('ROLLBACK');
+                            return reject(new Error('Failed to update monthly stats'));
+                        }
+                        
+                        db.run('COMMIT', (err) => {
+                            if (err) {
+                                db.run('ROLLBACK');
+                                return reject(new Error('Transaction commit failed'));
+                            }
+                            
+                            // Get updated balance
+                            db.get('SELECT credits_remaining FROM user_credits WHERE user_id = ?', 
+                                [userId], (err, result) => {
+                                    if (err) {
+                                        return reject(new Error('Failed to get updated balance'));
+                                    }
+                                    resolve({
+                                        success: true,
+                                        remainingCredits: result ? result.credits_remaining : 0
+                                    });
+                                }
+                            );
+                        });
+                    });
+                });
+            });
+        });
+    });
+}
+
+// Helper function to update monthly sent counter
+function updateMonthlySent(userId) {
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const year = now.getFullYear();
+    
+    return new Promise((resolve, reject) => {
+        db.run(`
+            INSERT INTO monthly_usage_stats (user_id, month, year, letters_sent)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(user_id, month, year) DO UPDATE SET
+                letters_sent = letters_sent + 1,
+                updated_at = CURRENT_TIMESTAMP
+        `, [userId, month, year], function(err) {
+            if (err) {
+                return reject(err);
+            }
+            resolve({ success: true });
+        });
+    });
+}
+
+// ============================================
+// END CREDITS MANAGEMENT HELPER FUNCTIONS
+// ============================================
+
 // Auth endpoints
 app.post('/api/auth/register', async (req, res) => {
     try {
@@ -566,34 +683,46 @@ app.post('/api/auth/register', async (req, res) => {
         }
 
         // Check if user already exists
-        db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => {
-            if (err) {
-                return res.status(500).json({ error: 'Database error' });
-            }
+        const existingUser = await dbConfig.get('SELECT * FROM users WHERE email = ?', [email]);
+        
+        if (existingUser) {
+            return res.status(400).json({ error: 'Email already registered' });
+        }
 
-            if (user) {
-                return res.status(400).json({ error: 'Email already registered' });
-            }
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 10);
 
-            // Hash password
-            const hashedPassword = await bcrypt.hash(password, 10);
+        // Insert user
+        const result = await dbConfig.run(
+            'INSERT INTO users (full_name, email, password) VALUES (?, ?, ?)',
+            [fullName, email, hashedPassword]
+        );
 
-            // Insert user
-            db.run(
-                'INSERT INTO users (full_name, email, password) VALUES (?, ?, ?)',
-                [fullName, email, hashedPassword],
-                function(err) {
-                    if (err) {
-                        return res.status(500).json({ error: 'Failed to create user' });
-                    }
-
-                    res.json({ 
-                        success: true, 
-                        message: 'User created successfully',
-                        userId: this.lastID 
-                    });
-                }
+        const userId = result.lastID || result.id;
+        
+        // Give 2 free credits to new user
+        try {
+            await dbConfig.run(
+                'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
+                [userId, 2, 2]
             );
+            
+            // Log the credit transaction
+            await dbConfig.run(
+                `INSERT INTO credit_transactions 
+                (user_id, transaction_type, credits_change, balance_after, description) 
+                VALUES (?, ?, ?, ?, ?)`,
+                [userId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+            );
+        } catch (creditErr) {
+            console.error('Failed to add welcome credits:', creditErr);
+        }
+
+        res.json({ 
+            success: true, 
+            message: 'User created successfully! You received 2 free credits.',
+            userId: userId,
+            freeCredits: 2
         });
     } catch (error) {
         console.error('Registration error:', error);
@@ -609,42 +738,52 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(400).json({ error: 'Email and password are required' });
         }
 
-        db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => {
-            if (err) {
-                return res.status(500).json({ error: 'Database error' });
-            }
+        const user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [email]);
+        
+        if (!user) {
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
 
-            if (!user) {
-                return res.status(401).json({ error: 'Invalid email or password' });
-            }
+        // Verify password
+        const validPassword = await bcrypt.compare(password, user.password);
+        if (!validPassword) {
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
 
-            // Verify password
-            const validPassword = await bcrypt.compare(password, user.password);
-            if (!validPassword) {
-                return res.status(401).json({ error: 'Invalid email or password' });
-            }
+        // Generate JWT
+        const token = jwt.sign(
+            { id: user.id, email: user.email },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
 
-            // Generate JWT
-            const token = jwt.sign(
-                { id: user.id, email: user.email },
-                JWT_SECRET,
-                { expiresIn: '24h' }
-            );
+        // Set secure HTTP-only cookie for admin page protection
+        res.cookie('authToken', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            maxAge: 24 * 60 * 60 * 1000, // 24 hours
+            sameSite: 'strict'
+        });
 
-            res.json({
-                success: true,
-                token,
-                user: {
-                    id: user.id,
-                    fullName: user.full_name,
-                    email: user.email
+        res.json({
+            success: true,
+            token,
+            user: {
+                id: user.id,
+                fullName: user.full_name,
+                email: user.email
                 }
-            });
         });
     } catch (error) {
         console.error('Login error:', error);
         res.status(500).json({ error: 'Server error' });
     }
+});
+
+// Logout endpoint - clear auth cookie
+app.post('/api/auth/logout', (req, res) => {
+    res.clearCookie('authToken');
+    res.json({ success: true, message: 'Logged out successfully' });
 });
 
 // OAuth Routes
@@ -926,13 +1065,11 @@ app.post('/api/upload-profile', authenticateToken, upload.fields([
 });
 
 // Mobile API: Get user profile data
-app.get('/api/users/profile', authenticateToken, (req, res) => {
+app.get('/api/users/profile', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     
-    db.get('SELECT full_name, email, resume_path, photo_path, signature_path, phone_number, address, date_of_birth, created_at FROM users WHERE id = ?', [userId], (err, user) => {
-        if (err) {
-            return res.status(500).json({ error: err.message });
-        }
+    try {
+        const user = await dbConfig.get('SELECT full_name, email, resume_path, photo_path, signature_path, phone_number, address, date_of_birth, created_at FROM users WHERE id = ?', [userId]);
         
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
@@ -949,7 +1086,9 @@ app.get('/api/users/profile', authenticateToken, (req, res) => {
             signature: user.signature_path ? `http://${req.get('host')}/${user.signature_path}` : null,
             createdAt: user.created_at
         });
-    });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
 });
 
 // Mobile API: Upload profile image
@@ -963,16 +1102,12 @@ app.post('/api/users/profile/image', authenticateToken, upload.single('profileIm
         
         const filePath = req.file.path.replace(__dirname + '/', '');
         
-        db.run('UPDATE users SET photo_path = ? WHERE id = ?', [filePath, userId], (err) => {
-            if (err) {
-                return res.status(500).json({ error: err.message });
-            }
-            
-            res.json({
-                success: true,
-                message: 'Profile image uploaded successfully',
-                path: `http://${req.get('host')}/${filePath}`
-            });
+        await dbConfig.run('UPDATE users SET photo_path = ? WHERE id = ?', [filePath, userId]);
+        
+        res.json({
+            success: true,
+            message: 'Profile image uploaded successfully',
+            path: `http://${req.get('host')}/${filePath}`
         });
     } catch (error) {
         console.error('Upload error:', error);
@@ -991,16 +1126,12 @@ app.post('/api/users/profile/resume', authenticateToken, upload.single('resume')
         
         const filePath = req.file.path.replace(__dirname + '/', '');
         
-        db.run('UPDATE users SET resume_path = ? WHERE id = ?', [filePath, userId], (err) => {
-            if (err) {
-                return res.status(500).json({ error: err.message });
-            }
-            
-            res.json({
-                success: true,
-                message: 'Resume uploaded successfully',
-                path: `http://${req.get('host')}/${filePath}`
-            });
+        await dbConfig.run('UPDATE users SET resume_path = ? WHERE id = ?', [filePath, userId]);
+        
+        res.json({
+            success: true,
+            message: 'Resume uploaded successfully',
+            path: `http://${req.get('host')}/${filePath}`
         });
     } catch (error) {
         console.error('Upload error:', error);
@@ -1019,16 +1150,12 @@ app.post('/api/users/profile/signature', authenticateToken, upload.single('signa
         
         const filePath = req.file.path.replace(__dirname + '/', '');
         
-        db.run('UPDATE users SET signature_path = ? WHERE id = ?', [filePath, userId], (err) => {
-            if (err) {
-                return res.status(500).json({ error: err.message });
-            }
-            
-            res.json({
-                success: true,
-                message: 'Signature uploaded successfully',
-                path: `http://${req.get('host')}/${filePath}`
-            });
+        await dbConfig.run('UPDATE users SET signature_path = ? WHERE id = ?', [filePath, userId]);
+        
+        res.json({
+            success: true,
+            message: 'Signature uploaded successfully',
+            path: `http://${req.get('host')}/${filePath}`
         });
     } catch (error) {
         console.error('Upload error:', error);
@@ -1037,7 +1164,7 @@ app.post('/api/users/profile/signature', authenticateToken, upload.single('signa
 });
 
 // Mobile API: Update user profile data
-app.post('/api/users/profile/update', authenticateToken, (req, res) => {
+app.post('/api/users/profile/update', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
         const { fullName, phone, address, dateOfBirth } = req.body;
@@ -1069,16 +1196,11 @@ app.post('/api/users/profile/update', authenticateToken, (req, res) => {
         params.push(userId);
         const sql = `UPDATE users SET ${updates.join(', ')} WHERE id = ?`;
 
-        db.run(sql, params, function(err) {
-            if (err) {
-                console.error('Update error:', err);
-                return res.status(500).json({ error: err.message });
-            }
+        await dbConfig.run(sql, params);
 
-            res.json({
-                success: true,
-                message: 'Profile updated successfully'
-            });
+        res.json({
+            success: true,
+            message: 'Profile updated successfully'
         });
     } catch (error) {
         console.error('Update error:', error);
@@ -1101,36 +1223,27 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
         }
 
         // Get user from database
-        db.get('SELECT password FROM users WHERE id = ?', [userId], async (err, user) => {
-            if (err) {
-                return res.status(500).json({ error: 'Database error' });
-            }
+        const user = await dbConfig.get('SELECT password FROM users WHERE id = ?', [userId]);
 
-            if (!user) {
-                return res.status(404).json({ error: 'User not found' });
-            }
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
 
-            // Verify current password
-            const validPassword = await bcrypt.compare(currentPassword, user.password);
-            if (!validPassword) {
-                return res.status(401).json({ error: 'Current password is incorrect' });
-            }
+        // Verify current password
+        const validPassword = await bcrypt.compare(currentPassword, user.password);
+        if (!validPassword) {
+            return res.status(401).json({ error: 'Current password is incorrect' });
+        }
 
-            // Hash new password
-            const hashedPassword = await bcrypt.hash(newPassword, 10);
+        // Hash new password
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-            // Update password in database
-            db.run('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, userId], function(err) {
-                if (err) {
-                    console.error('Password update error:', err);
-                    return res.status(500).json({ error: 'Failed to update password' });
-                }
+        // Update password in database
+        await dbConfig.run('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, userId]);
 
-                res.json({
-                    success: true,
-                    message: 'Password changed successfully'
-                });
-            });
+        res.json({
+            success: true,
+            message: 'Password changed successfully'
         });
     } catch (error) {
         console.error('Change password error:', error);
@@ -1166,7 +1279,7 @@ app.post('/api/users/privacy-settings', authenticateToken, (req, res) => {
 });
 
 // Save/Update recipients for a user
-app.post('/api/users/recipients', authenticateToken, (req, res) => {
+app.post('/api/users/recipients', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
         const { recipients } = req.body;
@@ -1176,52 +1289,41 @@ app.post('/api/users/recipients', authenticateToken, (req, res) => {
         }
 
         // Clear existing recipients for this user
-        db.run('DELETE FROM recipients WHERE user_id = ?', [userId], (err) => {
-            if (err) {
-                console.error('Error clearing recipients:', err);
-                return res.status(500).json({ error: 'Database error' });
-            }
+        await dbConfig.run('DELETE FROM recipients WHERE user_id = ?', [userId]);
 
-            // Insert new recipients
-            const validRecipients = recipients.filter(r => r.email && r.website);
-            
-            if (validRecipients.length === 0) {
-                return res.json({
-                    success: true,
-                    message: 'Recipients cleared successfully',
-                    recipientsCount: 0
-                });
-            }
-
-            let insertedCount = 0;
-            let errorOccurred = false;
-
-            validRecipients.forEach((recipient, index) => {
-                db.run(
-                    'INSERT INTO recipients (user_id, email, website, position) VALUES (?, ?, ?, ?)',
-                    [userId, recipient.email, recipient.website, recipient.position || ''],
-                    function(err) {
-                        if (err) {
-                            console.error('Error inserting recipient:', err);
-                            errorOccurred = true;
-                        } else {
-                            insertedCount++;
-                        }
-
-                        // Send response after last insert
-                        if (index === validRecipients.length - 1) {
-                            if (errorOccurred && insertedCount === 0) {
-                                return res.status(500).json({ error: 'Failed to save recipients' });
-                            }
-                            res.json({
-                                success: true,
-                                message: `Successfully saved ${insertedCount} recipients`,
-                                recipientsCount: insertedCount
-                            });
-                        }
-                    }
-                );
+        // Insert new recipients
+        const validRecipients = recipients.filter(r => r.email && r.website);
+        
+        if (validRecipients.length === 0) {
+            return res.json({
+                success: true,
+                message: 'Recipients cleared successfully',
+                recipientsCount: 0
             });
+        }
+
+        let insertedCount = 0;
+
+        for (const recipient of validRecipients) {
+            try {
+                await dbConfig.run(
+                    'INSERT INTO recipients (user_id, email, website, position) VALUES (?, ?, ?, ?)',
+                    [userId, recipient.email, recipient.website, recipient.position || '']
+                );
+                insertedCount++;
+            } catch (err) {
+                console.error('Error inserting recipient:', err);
+            }
+        }
+
+        if (insertedCount === 0) {
+            return res.status(500).json({ error: 'Failed to save recipients' });
+        }
+        
+        res.json({
+            success: true,
+            message: `Successfully saved ${insertedCount} recipients`,
+            recipientsCount: insertedCount
         });
     } catch (error) {
         console.error('Save recipients error:', error);
@@ -1230,26 +1332,20 @@ app.post('/api/users/recipients', authenticateToken, (req, res) => {
 });
 
 // Get recipients for a user
-app.get('/api/users/recipients', authenticateToken, (req, res) => {
+app.get('/api/users/recipients', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
 
-        db.all(
+        const recipients = await dbConfig.query(
             'SELECT id, email, website, position FROM recipients WHERE user_id = ? ORDER BY created_at ASC',
-            [userId],
-            (err, recipients) => {
-                if (err) {
-                    console.error('Error fetching recipients:', err);
-                    return res.status(500).json({ error: 'Database error' });
-                }
-
-                res.json({
-                    success: true,
-                    recipients: recipients || [],
-                    count: (recipients || []).length
-                });
-            }
+            [userId]
         );
+
+        res.json({
+            success: true,
+            recipients: recipients || [],
+            count: (recipients || []).length
+        });
     } catch (error) {
         console.error('Get recipients error:', error);
         res.status(500).json({ error: error.message });
@@ -1257,7 +1353,7 @@ app.get('/api/users/recipients', authenticateToken, (req, res) => {
 });
 
 // Save application history for a user
-app.post('/api/users/application-history', authenticateToken, (req, res) => {
+app.post('/api/users/application-history', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
         const { applicationHistory } = req.body;
@@ -1267,42 +1363,26 @@ app.post('/api/users/application-history', authenticateToken, (req, res) => {
         }
 
         // Delete existing history for this user
-        db.run('DELETE FROM application_history WHERE user_id = ?', [userId], (err) => {
-            if (err) {
-                console.error('Error deleting old application history:', err);
-                return res.status(500).json({ error: 'Database error' });
-            }
+        await dbConfig.run('DELETE FROM application_history WHERE user_id = ?', [userId]);
 
-            // Insert new history
-            const stmt = db.prepare('INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date) VALUES (?, ?, ?, ?, ?, ?, ?)');
-            
-            let inserted = 0;
-            applicationHistory.forEach((app) => {
-                stmt.run(
-                    userId,
-                    app.companyName || '',
-                    app.position || '',
-                    app.recipientEmail || '',
-                    app.sentDate || new Date().toISOString(),
-                    app.replyReceived ? 1 : 0,
-                    app.replyDate || null,
-                    (err) => {
-                        if (err) {
-                            console.error('Error inserting application history:', err);
-                        } else {
-                            inserted++;
-                        }
-                    }
+        // Insert new history
+        let inserted = 0;
+        for (const app of applicationHistory) {
+            try {
+                await dbConfig.run(
+                    'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    [userId, app.companyName || '', app.position || '', app.recipientEmail || '', app.sentDate || new Date().toISOString(), app.replyReceived ? 1 : 0, app.replyDate || null]
                 );
-            });
+                inserted++;
+            } catch (err) {
+                console.error('Error inserting application history:', err);
+            }
+        }
 
-            stmt.finalize(() => {
-                res.json({
-                    success: true,
-                    message: 'Application history saved',
-                    count: inserted
-                });
-            });
+        res.json({
+            success: true,
+            message: 'Application history saved',
+            count: inserted
         });
     } catch (error) {
         console.error('Save application history error:', error);
@@ -1311,32 +1391,26 @@ app.post('/api/users/application-history', authenticateToken, (req, res) => {
 });
 
 // Get application history for a user
-app.get('/api/users/application-history', authenticateToken, (req, res) => {
+app.get('/api/users/application-history', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
 
-        db.all(
+        const history = await dbConfig.query(
             'SELECT id, company_name as companyName, position, recipient_email as recipientEmail, sent_date as sentDate, reply_received as replyReceived, reply_date as replyDate FROM application_history WHERE user_id = ? ORDER BY sent_date DESC',
-            [userId],
-            (err, history) => {
-                if (err) {
-                    console.error('Error fetching application history:', err);
-                    return res.status(500).json({ error: 'Database error' });
-                }
-
-                // Convert reply_received from 0/1 to boolean
-                const formattedHistory = (history || []).map(app => ({
-                    ...app,
-                    replyReceived: app.replyReceived === 1
-                }));
-
-                res.json({
-                    success: true,
-                    applicationHistory: formattedHistory,
-                    count: formattedHistory.length
-                });
-            }
+            [userId]
         );
+
+        // Convert reply_received from 0/1 to boolean
+        const formattedHistory = (history || []).map(app => ({
+            ...app,
+            replyReceived: app.replyReceived === 1
+        }));
+
+        res.json({
+            success: true,
+            applicationHistory: formattedHistory,
+            count: formattedHistory.length
+        });
     } catch (error) {
         console.error('Get application history error:', error);
         res.status(500).json({ error: error.message });
@@ -1344,7 +1418,7 @@ app.get('/api/users/application-history', authenticateToken, (req, res) => {
 });
 
 // Save review cover letters for a user
-app.post('/api/users/review-cover-letters', authenticateToken, (req, res) => {
+app.post('/api/users/review-cover-letters', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
         const { reviewCoverLetters } = req.body;
@@ -1354,50 +1428,44 @@ app.post('/api/users/review-cover-letters', authenticateToken, (req, res) => {
         }
 
         // Delete existing cover letters for this user
-        db.run('DELETE FROM review_cover_letters WHERE user_id = ?', [userId], (err) => {
-            if (err) {
-                console.error('Error deleting old review cover letters:', err);
-                return res.status(500).json({ error: 'Database error' });
-            }
+        await dbConfig.run('DELETE FROM review_cover_letters WHERE user_id = ?', [userId]);
 
-            // Insert new cover letters
-            const stmt = db.prepare('INSERT INTO review_cover_letters (user_id, letter_key, company_name, recipient_email, cover_letter_html, subject, address, date, position, locations, generated, sent, sent_date, stored_recipient_email, stored_recipient_website) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-            
-            let inserted = 0;
-            Object.entries(reviewCoverLetters).forEach(([key, letter]) => {
-                stmt.run(
-                    userId,
-                    key,
-                    letter.companyName || '',
-                    letter.recipientEmail || '',
-                    letter.coverLetterHtml || '',
-                    letter.subject || '',
-                    letter.address || '',
-                    letter.date || '',
-                    letter.position || '',
-                    letter.locations ? JSON.stringify(letter.locations) : null,
-                    letter.generated ? 1 : 0,
-                    letter.sent ? 1 : 0,
-                    letter.sentDate || null,
-                    letter.storedRecipientEmail || '',
-                    letter.storedRecipientWebsite || '',
-                    (err) => {
-                        if (err) {
-                            console.error('Error inserting review cover letter:', err);
-                        } else {
-                            inserted++;
-                        }
-                    }
+        // Insert new cover letters
+        let inserted = 0;
+        const entries = Object.entries(reviewCoverLetters);
+        
+        for (const [key, letter] of entries) {
+            try {
+                await dbConfig.run(
+                    'INSERT INTO review_cover_letters (user_id, letter_key, company_name, recipient_email, cover_letter_html, subject, address, date, position, locations, generated, sent, sent_date, stored_recipient_email, stored_recipient_website) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    [
+                        userId,
+                        key,
+                        letter.companyName || '',
+                        letter.recipientEmail || '',
+                        letter.coverLetterHtml || '',
+                        letter.subject || '',
+                        letter.address || '',
+                        letter.date || '',
+                        letter.position || '',
+                        letter.locations ? JSON.stringify(letter.locations) : null,
+                        letter.generated ? 1 : 0,
+                        letter.sent ? 1 : 0,
+                        letter.sentDate || null,
+                        letter.storedRecipientEmail || '',
+                        letter.storedRecipientWebsite || ''
+                    ]
                 );
-            });
+                inserted++;
+            } catch (err) {
+                console.error('Error inserting review cover letter:', err);
+            }
+        }
 
-            stmt.finalize(() => {
-                res.json({
-                    success: true,
-                    message: 'Review cover letters saved',
-                    count: inserted
-                });
-            });
+        res.json({
+            success: true,
+            message: 'Review cover letters saved',
+            count: inserted
         });
     } catch (error) {
         console.error('Save review cover letters error:', error);
@@ -1406,46 +1474,40 @@ app.post('/api/users/review-cover-letters', authenticateToken, (req, res) => {
 });
 
 // Get review cover letters for a user
-app.get('/api/users/review-cover-letters', authenticateToken, (req, res) => {
+app.get('/api/users/review-cover-letters', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
 
-        db.all(
+        const letters = await dbConfig.query(
             'SELECT letter_key, company_name as companyName, recipient_email as recipientEmail, cover_letter_html as coverLetterHtml, subject, address, date, position, locations, generated, sent, sent_date as sentDate, stored_recipient_email as storedRecipientEmail, stored_recipient_website as storedRecipientWebsite FROM review_cover_letters WHERE user_id = ?',
-            [userId],
-            (err, letters) => {
-                if (err) {
-                    console.error('Error fetching review cover letters:', err);
-                    return res.status(500).json({ error: 'Database error' });
-                }
-
-                // Convert to object with letter_key as keys
-                const reviewCoverLetters = {};
-                (letters || []).forEach(letter => {
-                    reviewCoverLetters[letter.letter_key] = {
-                        companyName: letter.companyName,
-                        recipientEmail: letter.recipientEmail,
-                        coverLetterHtml: letter.coverLetterHtml,
-                        subject: letter.subject,
-                        address: letter.address,
-                        date: letter.date,
-                        position: letter.position,
-                        locations: letter.locations ? JSON.parse(letter.locations) : null,
-                        generated: letter.generated === 1,
-                        sent: letter.sent === 1,
-                        sentDate: letter.sentDate,
-                        storedRecipientEmail: letter.storedRecipientEmail,
-                        storedRecipientWebsite: letter.storedRecipientWebsite
-                    };
-                });
-
-                res.json({
-                    success: true,
-                    reviewCoverLetters: reviewCoverLetters,
-                    count: Object.keys(reviewCoverLetters).length
-                });
-            }
+            [userId]
         );
+
+        // Convert to object with letter_key as keys
+        const reviewCoverLetters = {};
+        (letters || []).forEach(letter => {
+            reviewCoverLetters[letter.letter_key] = {
+                companyName: letter.companyName,
+                recipientEmail: letter.recipientEmail,
+                coverLetterHtml: letter.coverLetterHtml,
+                subject: letter.subject,
+                address: letter.address,
+                date: letter.date,
+                position: letter.position,
+                locations: letter.locations ? JSON.parse(letter.locations) : null,
+                generated: letter.generated === 1,
+                sent: letter.sent === 1,
+                sentDate: letter.sentDate,
+                storedRecipientEmail: letter.storedRecipientEmail,
+                storedRecipientWebsite: letter.storedRecipientWebsite
+            };
+        });
+
+        res.json({
+            success: true,
+            reviewCoverLetters: reviewCoverLetters,
+            count: Object.keys(reviewCoverLetters).length
+        });
     } catch (error) {
         console.error('Get review cover letters error:', error);
         res.status(500).json({ error: error.message });
@@ -1453,23 +1515,23 @@ app.get('/api/users/review-cover-letters', authenticateToken, (req, res) => {
 });
 
 // API endpoint to get user counters
-app.get('/api/users/counters', authenticateToken, (req, res) => {
-    const userId = req.user.id;
-    
-    db.get(
-        'SELECT total_generated, total_sent FROM users WHERE id = ?',
-        [userId],
-        (err, row) => {
-            if (err) {
-                console.error('Error fetching counters:', err);
-                return res.status(500).json({ error: 'Failed to fetch counters' });
-            }
-            res.json({
-                totalGenerated: row?.total_generated || 0,
-                totalSent: row?.total_sent || 0
-            });
-        }
-    );
+app.get('/api/users/counters', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        const row = await dbConfig.get(
+            'SELECT total_generated, total_sent FROM users WHERE id = ?',
+            [userId]
+        );
+        
+        res.json({
+            totalGenerated: row?.total_generated || 0,
+            totalSent: row?.total_sent || 0
+        });
+    } catch (error) {
+        console.error('Error fetching counters:', error);
+        res.status(500).json({ error: 'Failed to fetch counters' });
+    }
 });
 
 // API endpoint to update user counters
@@ -1538,14 +1600,406 @@ app.post('/api/users/counters/increment-sent', authenticateToken, (req, res) => 
     );
 });
 
-// API endpoint to get user profile data (protected)
-app.get('/api/user-profile', authenticateToken, (req, res) => {
-    const userId = req.user.id;
+// ============================================
+// CREDITS MANAGEMENT API ENDPOINTS
+// ============================================
 
-    db.get('SELECT full_name, email, resume_path, photo_path, signature_path, smtp_email, smtp_password, sender_name, date_of_birth, phone_number, address, city, country, zipcode, created_at FROM users WHERE id = ?', [userId], (err, user) => {
-        if (err) {
-            return res.status(500).json({ error: 'Database error' });
+// API endpoint to get all available plans
+app.get('/api/plans', async (req, res) => {
+    try {
+        const plans = await dbConfig.query('SELECT * FROM plans WHERE is_active = 1 ORDER BY price ASC', []);
+        
+        // Parse features JSON string back to array
+        const plansWithFeatures = plans.map(plan => ({
+            ...plan,
+            features: plan.features ? JSON.parse(plan.features) : []
+        }));
+        
+        res.json({ success: true, plans: plansWithFeatures });
+    } catch (error) {
+        console.error('Error fetching plans:', error);
+        res.status(500).json({ error: 'Failed to fetch plans' });
+    }
+});
+
+// API endpoint to get user's credit balance and info
+app.get('/api/user/credits', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        const credits = await dbConfig.get(`
+            SELECT 
+                uc.credits_remaining,
+                uc.credits_total,
+                uc.last_purchase_date,
+                uc.expiry_date,
+                uc.created_at
+            FROM user_credits uc
+            WHERE uc.user_id = ?
+        `, [userId]);
+        
+        // If no credits record exists, create one with 0 credits
+        if (!credits) {
+            await dbConfig.run('INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, 0, 0)', 
+                [userId]
+            );
+            return res.json({
+                success: true,
+                balance: 0, // For backward compatibility
+                credits: {
+                    remaining: 0,
+                    total: 0,
+                    lastPurchaseDate: null,
+                    expiryDate: null,
+                    isExpired: false
+                }
+            });
         }
+        
+        const now = new Date();
+        const expiryDate = credits.expiry_date ? new Date(credits.expiry_date) : null;
+        const isExpired = expiryDate && expiryDate < now;
+        
+        res.json({
+            success: true,
+            balance: isExpired ? 0 : credits.credits_remaining, // For backward compatibility
+            credits: {
+                remaining: isExpired ? 0 : credits.credits_remaining,
+                total: credits.credits_total,
+                lastPurchaseDate: credits.last_purchase_date,
+                expiryDate: credits.expiry_date,
+                isExpired: isExpired
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching user credits:', error);
+        res.status(500).json({ error: 'Failed to fetch credit balance' });
+    }
+});
+
+// API endpoint to purchase credits (simulated for now)
+app.post('/api/purchase-credits', authenticateToken, (req, res) => {
+    const userId = req.user.id;
+    const { planId, paymentMethod, transactionId } = req.body;
+    
+    if (!planId) {
+        return res.status(400).json({ error: 'Plan ID is required' });
+    }
+    
+    // Get plan details
+    db.get('SELECT * FROM plans WHERE id = ? AND is_active = 1', [planId], (err, plan) => {
+        if (err) {
+            console.error('Error fetching plan:', err);
+            return res.status(500).json({ error: 'Failed to fetch plan details' });
+        }
+        
+        if (!plan) {
+            return res.status(404).json({ error: 'Plan not found' });
+        }
+        
+        const now = new Date();
+        const validUntil = new Date(now.getTime() + plan.validity_days * 24 * 60 * 60 * 1000);
+        
+        // Begin transaction
+        db.serialize(() => {
+            // Insert transaction record
+            db.run(`
+                INSERT INTO credit_transactions 
+                (user_id, plan_id, credits_purchased, amount_paid, transaction_status, valid_from, valid_until, payment_method, transaction_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [userId, planId, plan.credits, plan.price, 'completed', now.toISOString(), validUntil.toISOString(), paymentMethod || 'simulated', transactionId || `TXN-${Date.now()}`], 
+            function(err) {
+                if (err) {
+                    console.error('Error recording transaction:', err);
+                    return res.status(500).json({ error: 'Failed to record transaction' });
+                }
+                
+                // Update or create user credits
+                db.get('SELECT * FROM user_credits WHERE user_id = ?', [userId], (err, userCredits) => {
+                    if (err) {
+                        console.error('Error fetching user credits:', err);
+                        return res.status(500).json({ error: 'Failed to update credits' });
+                    }
+                    
+                    if (!userCredits) {
+                        // Create new credits record
+                        db.run(`
+                            INSERT INTO user_credits (user_id, credits_remaining, credits_total, last_purchase_date, expiry_date)
+                            VALUES (?, ?, ?, ?, ?)
+                        `, [userId, plan.credits, plan.credits, now.toISOString(), validUntil.toISOString()], 
+                        function(err) {
+                            if (err) {
+                                console.error('Error creating user credits:', err);
+                                return res.status(500).json({ error: 'Failed to create credits' });
+                            }
+                            res.json({
+                                success: true,
+                                message: 'Credits purchased successfully',
+                                credits: {
+                                    remaining: plan.credits,
+                                    total: plan.credits,
+                                    expiryDate: validUntil.toISOString()
+                                }
+                            });
+                        });
+                    } else {
+                        // Update existing credits (add to existing balance if not expired)
+                        const currentExpiry = userCredits.expiry_date ? new Date(userCredits.expiry_date) : null;
+                        const isExpired = currentExpiry && currentExpiry < now;
+                        
+                        const newRemaining = isExpired ? plan.credits : userCredits.credits_remaining + plan.credits;
+                        const newTotal = userCredits.credits_total + plan.credits;
+                        const newExpiry = (currentExpiry && !isExpired && currentExpiry > validUntil) ? currentExpiry : validUntil;
+                        
+                        db.run(`
+                            UPDATE user_credits 
+                            SET credits_remaining = ?, credits_total = ?, last_purchase_date = ?, expiry_date = ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE user_id = ?
+                        `, [newRemaining, newTotal, now.toISOString(), newExpiry.toISOString(), userId], 
+                        function(err) {
+                            if (err) {
+                                console.error('Error updating user credits:', err);
+                                return res.status(500).json({ error: 'Failed to update credits' });
+                            }
+                            res.json({
+                                success: true,
+                                message: 'Credits purchased successfully',
+                                credits: {
+                                    remaining: newRemaining,
+                                    total: newTotal,
+                                    expiryDate: newExpiry.toISOString()
+                                }
+                            });
+                        });
+                    }
+                });
+            });
+        });
+    });
+});
+
+// API endpoint to get user's monthly usage statistics
+app.get('/api/user/usage-stats', authenticateToken, (req, res) => {
+    const userId = req.user.id;
+    
+    const currentDate = new Date();
+    const currentMonth = currentDate.getMonth() + 1; // 1-12
+    const currentYear = currentDate.getFullYear();
+    const firstDayOfMonth = new Date(currentYear, currentMonth - 1, 1);
+    const lastDayOfMonth = new Date(currentYear, currentMonth, 0);
+    
+    // Get user's credit info
+    db.get('SELECT credits_remaining, credits_total, expiry_date FROM user_credits WHERE user_id = ?', 
+        [userId], (err, credits) => {
+            if (err) {
+                console.error('Error fetching credits:', err);
+            }
+            
+            const creditBalance = credits?.credits_remaining || 0;
+            const creditTotal = credits?.credits_total || 0;
+            const expiryDate = credits?.expiry_date;
+            
+            // Calculate expiring credits (credits expiring within 30 days)
+            let expiringCredits = 0;
+            let creditExpiryDate = null;
+            if (expiryDate) {
+                const expiryDateObj = new Date(expiryDate);
+                const daysUntilExpiry = Math.floor((expiryDateObj - currentDate) / (1000 * 60 * 60 * 24));
+                if (daysUntilExpiry <= 30 && daysUntilExpiry >= 0) {
+                    expiringCredits = creditBalance;
+                    creditExpiryDate = expiryDate;
+                }
+            }
+            
+            // Get user's total generated and sent from users table
+            db.get('SELECT total_generated, total_sent FROM users WHERE id = ?', [userId], (err, userStats) => {
+                if (err) {
+                    console.error('Error fetching user stats:', err);
+                }
+                
+                const totalGenerated = userStats?.total_generated || 0;
+                const totalSent = userStats?.total_sent || 0;
+                
+                // Get credit history (transactions)
+                db.all(`
+                    SELECT 
+                        description,
+                        credits_change as creditsChange,
+                        balance_after as balanceAfter,
+                        transaction_type as transactionType,
+                        created_at as transactionDate
+                    FROM credit_transactions
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 20
+                `, [userId], (err, transactions) => {
+                    if (err) {
+                        console.error('Error fetching credit transactions:', err);
+                    }
+                    
+                    // Get date-wise activity for last 30 days
+                    const thirtyDaysAgo = new Date();
+                    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+                    
+                    db.all(`
+                        SELECT 
+                            DATE(created_at) as date,
+                            SUM(CASE WHEN transaction_type = 'deduction' THEN ABS(credits_change) ELSE 0 END) as creditsUsed,
+                            MAX(balance_after) as creditsAvailable
+                        FROM credit_transactions
+                        WHERE user_id = ? AND created_at >= ?
+                        GROUP BY DATE(created_at)
+                        ORDER BY date DESC
+                    `, [userId, thirtyDaysAgo.toISOString()], (err, dailyActivity) => {
+                        if (err) {
+                            console.error('Error fetching daily activity:', err);
+                        }
+                        
+                        // Create a map for quick lookup
+                        const activityMap = {};
+                        if (dailyActivity && dailyActivity.length > 0) {
+                            dailyActivity.forEach(day => {
+                                activityMap[day.date] = {
+                                    creditsUsed: day.creditsUsed || 0,
+                                    creditsAvailable: day.creditsAvailable || 0
+                                };
+                            });
+                        }
+                        
+                        // Generate date-wise data for last 30 days
+                        const dateWiseData = [];
+                        for (let i = 29; i >= 0; i--) {
+                            const date = new Date();
+                            date.setDate(date.getDate() - i);
+                            const dateStr = date.toISOString().split('T')[0];
+                            const dayData = activityMap[dateStr] || { creditsUsed: 0, creditsAvailable: creditBalance };
+                            
+                            dateWiseData.push({
+                                date: dateStr,
+                                dateFormatted: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+                                generated: 0, // Will be calculated from review_cover_letters
+                                sent: 0, // Will be calculated from review_cover_letters
+                                creditsUsed: dayData.creditsUsed,
+                                creditsAvailable: dayData.creditsAvailable
+                            });
+                        }
+                        
+                        // Get generated/sent counts per day from review_cover_letters
+                        db.all(`
+                            SELECT 
+                                DATE(created_at) as date,
+                                COUNT(*) as generated,
+                                SUM(CASE WHEN sent = 1 THEN 1 ELSE 0 END) as sent
+                            FROM review_cover_letters
+                            WHERE user_id = ? AND created_at >= ?
+                            GROUP BY DATE(created_at)
+                        `, [userId, thirtyDaysAgo.toISOString()], (err, letterStats) => {
+                            if (err) {
+                                console.error('Error fetching letter stats:', err);
+                            }
+                            
+                            // Merge letter stats into dateWiseData
+                            if (letterStats && letterStats.length > 0) {
+                                letterStats.forEach(stat => {
+                                    const dayIndex = dateWiseData.findIndex(d => d.date === stat.date);
+                                    if (dayIndex >= 0) {
+                                        dateWiseData[dayIndex].generated = stat.generated || 0;
+                                        dateWiseData[dayIndex].sent = stat.sent || 0;
+                                    }
+                                });
+                            }
+                            
+                            res.json({
+                                success: true,
+                                creditBalance: creditBalance,
+                                creditTotal: creditTotal,
+                                expiringCredits: expiringCredits,
+                                creditExpiryDate: creditExpiryDate,
+                                currentMonthUsage: {
+                                    totalGenerated: totalGenerated,
+                                    totalSent: totalSent,
+                                    monthlyGenerated: totalGenerated, // Show actual count
+                                    monthlySent: totalSent // Show actual count
+                                },
+                                creditHistory: transactions || [],
+                                dateWiseActivity: dateWiseData
+                            });
+                        });
+                    });
+                });
+            });
+        }
+    );
+});
+
+// API endpoint to get detailed credit usage history
+app.get('/api/user/credit-history', authenticateToken, (req, res) => {
+    const userId = req.user.id;
+    const { limit = 50 } = req.query;
+    
+    db.all(`
+        SELECT 
+            id,
+            credits_used,
+            action_type,
+            company_name,
+            position,
+            recipient_email,
+            created_at
+        FROM credit_usage_history
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+    `, [userId, parseInt(limit)], (err, history) => {
+        if (err) {
+            console.error('Error fetching credit history:', err);
+            return res.status(500).json({ error: 'Failed to fetch credit history' });
+        }
+        
+        res.json({ success: true, history: history || [] });
+    });
+});
+
+// API endpoint to get purchase/transaction history
+app.get('/api/user/purchase-history', authenticateToken, (req, res) => {
+    const userId = req.user.id;
+    
+    db.all(`
+        SELECT 
+            ct.id,
+            ct.credits_purchased,
+            ct.amount_paid,
+            ct.transaction_status,
+            ct.transaction_date,
+            ct.valid_from,
+            ct.valid_until,
+            ct.payment_method,
+            ct.transaction_id,
+            p.name as plan_name
+        FROM credit_transactions ct
+        LEFT JOIN plans p ON ct.plan_id = p.id
+        WHERE ct.user_id = ?
+        ORDER BY ct.transaction_date DESC
+    `, [userId], (err, transactions) => {
+        if (err) {
+            console.error('Error fetching purchase history:', err);
+            return res.status(500).json({ error: 'Failed to fetch purchase history' });
+        }
+        
+        res.json({ success: true, transactions: transactions || [] });
+    });
+});
+
+// ============================================
+// END CREDITS MANAGEMENT API ENDPOINTS
+// ============================================
+
+// API endpoint to get user profile data (protected)
+app.get('/api/user-profile', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        const user = await dbConfig.get('SELECT full_name, email, resume_path, photo_path, signature_path, smtp_email, smtp_password, sender_name, date_of_birth, phone_number, address, created_at FROM users WHERE id = ?', [userId]);
 
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
@@ -1568,42 +2022,41 @@ app.get('/api/user-profile', authenticateToken, (req, res) => {
                 dateOfBirth: user.date_of_birth,
                 phoneNumber: user.phone_number,
                 address: user.address,
-                city: user.city,
-                country: user.country,
-                zipcode: user.zipcode,
                 createdAt: user.created_at,
             }
         });
-    });
+    } catch (error) {
+        console.error('Profile fetch error:', error);
+        res.status(500).json({ error: 'Database error' });
+    }
 });
 
 // API endpoint to save email settings (protected)
-app.post('/api/save-settings', authenticateToken, (req, res) => {
-    const userId = req.user.id;
-    const { email, password, name } = req.body;
+app.post('/api/save-settings', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { email, password, name } = req.body;
 
-    if (!email || !password || !name) {
-        return res.status(400).json({ error: 'All fields are required' });
-    }
-
-    // Encrypt SMTP password before storing
-    const encryptedPassword = encryptData(password);
-
-    db.run(
-        'UPDATE users SET smtp_email = ?, smtp_password = ?, sender_name = ? WHERE id = ?',
-        [email, encryptedPassword, name, userId],
-        function(err) {
-            if (err) {
-                console.error('Settings update error:', err);
-                return res.status(500).json({ error: 'Failed to save settings' });
-            }
-
-            res.json({
-                success: true,
-                message: 'Settings saved successfully'
-            });
+        if (!email || !password || !name) {
+            return res.status(400).json({ error: 'All fields are required' });
         }
-    );
+
+        // Encrypt SMTP password before storing
+        const encryptedPassword = encryptData(password);
+
+        await dbConfig.run(
+            'UPDATE users SET smtp_email = ?, smtp_password = ?, sender_name = ? WHERE id = ?',
+            [email, encryptedPassword, name, userId]
+        );
+
+        res.json({
+            success: true,
+            message: 'Settings saved successfully'
+        });
+    } catch (error) {
+        console.error('Settings update error:', error);
+        res.status(500).json({ error: 'Failed to save settings' });
+    }
 });
 
 // API endpoint to update user personal details (protected)
@@ -2784,6 +3237,22 @@ app.post('/api/generate-cover-letters', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'No recipients provided' });
         }
 
+        // CHECK CREDITS - Each recipient requires 1 credit
+        const creditsRequired = recipients.length;
+        try {
+            const creditCheck = await checkUserCredits(userId, creditsRequired);
+            if (!creditCheck.hasCredits) {
+                return res.status(402).json({ 
+                    error: creditCheck.message,
+                    remainingCredits: creditCheck.remaining,
+                    creditsRequired: creditsRequired
+                });
+            }
+        } catch (error) {
+            console.error('Credit check error:', error);
+            return res.status(500).json({ error: 'Failed to check credit balance' });
+        }
+
         // Get user's complete profile and files from database
         db.get('SELECT full_name, email, phone_number, city, country, resume_path, photo_path, signature_path FROM users WHERE id = ?', 
             [userId], async (err, user) => {
@@ -2798,6 +3267,7 @@ app.post('/api/generate-cover-letters', authenticateToken, async (req, res) => {
                 }
 
                 const results = [];
+                let creditsDeducted = 0;
 
                 // Prepare user data for AI generation
                 const userData = {
@@ -2837,6 +3307,20 @@ app.post('/api/generate-cover-letters', authenticateToken, async (req, res) => {
                         
                         console.log(`✅ Generated personalized cover letter for ${companyName}`);
                         console.log(`📊 Metadata:`, coverLetterResult.metadata);
+
+                        // DEDUCT CREDIT for successful generation
+                        try {
+                            await deductCredits(userId, 1, 'cover_letter_generation', {
+                                companyName: companyName,
+                                position: recipient.position,
+                                recipientEmail: recipient.email
+                            });
+                            creditsDeducted++;
+                            console.log(`💳 Deducted 1 credit (${creditsDeducted}/${recipients.length})`);
+                        } catch (creditError) {
+                            console.error('Failed to deduct credit:', creditError);
+                            // Continue anyway - letter was generated
+                        }
 
                         // Format cover letter with HTML (bold key points) - same as mobile
                         const coverLetterHtml = formatCoverLetterWithHTML(coverLetterText, coverLetterResult.metadata);
@@ -2881,12 +3365,26 @@ app.post('/api/generate-cover-letters', authenticateToken, async (req, res) => {
                 const successCount = results.filter(r => r.status === 'generated').length;
                 
                 console.log(`\n✅ Generated: ${successCount}/${recipients.length} cover letters`);
+                console.log(`💳 Total credits deducted: ${creditsDeducted}`);
                 
-                res.json({
-                    success: true,
-                    message: `Generated ${successCount}/${recipients.length} cover letters`,
-                    results,
-                });
+                // Get updated credit balance
+                try {
+                    const creditCheck = await checkUserCredits(userId, 0);
+                    res.json({
+                        success: true,
+                        message: `Generated ${successCount}/${recipients.length} cover letters`,
+                        results,
+                        creditsUsed: creditsDeducted,
+                        creditsRemaining: creditCheck.remaining
+                    });
+                } catch {
+                    res.json({
+                        success: true,
+                        message: `Generated ${successCount}/${recipients.length} cover letters`,
+                        results,
+                        creditsUsed: creditsDeducted
+                    });
+                }
         });
     } catch (error) {
         console.error('Server error:', error);
@@ -2907,6 +3405,23 @@ app.post('/api/generate-cover-letter-details', authenticateToken, async (req, re
         const { recipientEmail, websiteUrl, position } = req.body;
 
         console.log(`🔍 [${requestId}] Parsing request body:`, { userId, recipientEmail, websiteUrl, position });
+
+        // CHECK CREDITS - 1 credit required for generation
+        try {
+            const creditCheck = await checkUserCredits(userId, 1);
+            if (!creditCheck.hasCredits) {
+                console.warn(`⚠️ [${requestId}] Insufficient credits:`, creditCheck.message);
+                return res.status(402).json({ 
+                    error: creditCheck.message,
+                    remainingCredits: creditCheck.remaining,
+                    creditsRequired: 1
+                });
+            }
+            console.log(`✅ [${requestId}] Credits available: ${creditCheck.remaining}`);
+        } catch (error) {
+            console.error(`❌ [${requestId}] Credit check error:`, error);
+            return res.status(500).json({ error: 'Failed to check credit balance' });
+        }
 
         // Get user profile
         db.get('SELECT * FROM users WHERE id = ?', [userId], async (err, user) => {
@@ -2972,9 +3487,31 @@ app.post('/api/generate-cover-letter-details', authenticateToken, async (req, re
                     return res.status(500).json({ error: 'Failed to generate cover letter' });
                 }
 
+                // DEDUCT CREDIT for successful generation
+                try {
+                    await deductCredits(userId, 1, 'cover_letter_generation', {
+                        companyName: result.companyName,
+                        position: position,
+                        recipientEmail: recipientEmail
+                    });
+                    console.log(`💳 [${requestId}] Deducted 1 credit for generation`);
+                } catch (creditError) {
+                    console.error(`❌ [${requestId}] Failed to deduct credit:`, creditError);
+                    // Continue anyway - letter was generated
+                }
+
                 // Format cover letter with HTML (bold key points)
                 const coverLetterHtml = formatCoverLetterWithHTML(result.coverLetter, result.metadata);
                 console.log(`📝 [${requestId}] HTML formatted, length: ${coverLetterHtml.length}`);
+
+                // Get updated credit balance
+                let creditsRemaining = null;
+                try {
+                    const creditCheck = await checkUserCredits(userId, 0);
+                    creditsRemaining = creditCheck.remaining;
+                } catch (error) {
+                    console.error(`❌ [${requestId}] Failed to fetch updated credits:`, error);
+                }
 
                 const responseData = {
                     success: true,
@@ -2983,11 +3520,14 @@ app.post('/api/generate-cover-letter-details', authenticateToken, async (req, re
                     subject: subject,
                     locations: locations,
                     coverLetterHtml: coverLetterHtml,
-                    metadata: result.metadata
+                    metadata: result.metadata,
+                    creditsUsed: 1,
+                    creditsRemaining: creditsRemaining
                 };
 
                 console.log(`📤 [${requestId}] Preparing response... data keys:`, Object.keys(responseData));
                 console.log(`📤 [${requestId}] Response size: ${JSON.stringify(responseData).length} bytes`);
+                console.log(`💳 [${requestId}] Credits remaining: ${creditsRemaining}`);
                 
                 // Log response before sending
                 console.log(`📤 [${requestId}] Setting response headers...`);
@@ -3774,6 +4314,222 @@ app.post('/api/send-single-application', authenticateToken, (req, res) => {
                 });
             }
         });
+});
+
+// ============================================
+// ADMIN - CREDIT PACKAGE MANAGEMENT
+// ============================================
+
+// Get all packages (public - for users to see available packages)
+app.get('/api/packages', (req, res) => {
+    db.all(`
+        SELECT id, name, amount, credits, validity_days, description, currency, is_popular, display_order
+        FROM credit_packages 
+        WHERE is_active = 1
+        ORDER BY display_order ASC, id ASC
+    `, [], (err, packages) => {
+        if (err) {
+            console.error('Error fetching packages:', err);
+            return res.status(500).json({ error: 'Failed to fetch packages' });
+        }
+        res.json({ packages });
+    });
+});
+
+// Get active packages (for users to view and purchase)
+app.get('/api/packages', authenticateToken, (req, res) => {
+    db.all(`
+        SELECT * FROM credit_packages 
+        WHERE is_active = 1
+        ORDER BY display_order ASC, id ASC
+    `, [], (err, packages) => {
+        if (err) {
+            console.error('Error fetching packages:', err);
+            return res.status(500).json({ error: 'Failed to fetch packages' });
+        }
+        res.json({ packages });
+    });
+});
+
+// Get all packages (admin - including inactive)
+app.get('/api/admin/packages', authenticateAdmin, (req, res) => {
+    db.all(`
+        SELECT * FROM credit_packages 
+        ORDER BY display_order ASC, id ASC
+    `, [], (err, packages) => {
+        if (err) {
+            console.error('Error fetching packages:', err);
+            return res.status(500).json({ error: 'Failed to fetch packages' });
+        }
+        res.json({ packages });
+    });
+});
+
+// Get single package
+app.get('/api/admin/packages/:id', authenticateAdmin, (req, res) => {
+    const { id } = req.params;
+    
+    db.get('SELECT * FROM credit_packages WHERE id = ?', [id], (err, package) => {
+        if (err) {
+            console.error('Error fetching package:', err);
+            return res.status(500).json({ error: 'Failed to fetch package' });
+        }
+        if (!package) {
+            return res.status(404).json({ error: 'Package not found' });
+        }
+        res.json({ package });
+    });
+});
+
+// Create new package
+app.post('/api/admin/packages', authenticateAdmin, (req, res) => {
+    const { name, amount, credits, validity_days, description, currency, is_popular, display_order } = req.body;
+    
+    // Validation
+    if (!name || amount === undefined || !credits || !validity_days) {
+        return res.status(400).json({ error: 'Missing required fields: name, amount, credits, validity_days' });
+    }
+    
+    if (amount < 0 || credits < 1 || validity_days < 1) {
+        return res.status(400).json({ error: 'Invalid values for amount, credits, or validity_days' });
+    }
+    
+    db.run(`
+        INSERT INTO credit_packages (name, amount, credits, validity_days, description, currency, is_popular, display_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+        name, 
+        amount, 
+        credits, 
+        validity_days, 
+        description || null, 
+        currency || 'USD',
+        is_popular ? 1 : 0,
+        display_order || 0
+    ], function(err) {
+        if (err) {
+            console.error('Error creating package:', err);
+            return res.status(500).json({ error: 'Failed to create package' });
+        }
+        
+        res.json({ 
+            success: true, 
+            message: 'Package created successfully',
+            packageId: this.lastID 
+        });
+    });
+});
+
+// Update package
+app.put('/api/admin/packages/:id', authenticateAdmin, (req, res) => {
+    const { id } = req.params;
+    const { name, amount, credits, validity_days, description, currency, is_active, is_popular, display_order } = req.body;
+    
+    // Validation
+    if (!name || amount === undefined || !credits || !validity_days) {
+        return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    if (amount < 0 || credits < 1 || validity_days < 1) {
+        return res.status(400).json({ error: 'Invalid values' });
+    }
+    
+    db.run(`
+        UPDATE credit_packages 
+        SET name = ?, 
+            amount = ?, 
+            credits = ?, 
+            validity_days = ?, 
+            description = ?, 
+            currency = ?,
+            is_active = ?,
+            is_popular = ?,
+            display_order = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    `, [
+        name, 
+        amount, 
+        credits, 
+        validity_days, 
+        description || null,
+        currency || 'USD',
+        is_active !== undefined ? (is_active ? 1 : 0) : 1,
+        is_popular ? 1 : 0,
+        display_order || 0,
+        id
+    ], function(err) {
+        if (err) {
+            console.error('Error updating package:', err);
+            return res.status(500).json({ error: 'Failed to update package' });
+        }
+        
+        if (this.changes === 0) {
+            return res.status(404).json({ error: 'Package not found' });
+        }
+        
+        res.json({ 
+            success: true, 
+            message: 'Package updated successfully'
+        });
+    });
+});
+
+// Delete package
+app.delete('/api/admin/packages/:id', authenticateAdmin, (req, res) => {
+    const { id } = req.params;
+    
+    db.run('DELETE FROM credit_packages WHERE id = ?', [id], function(err) {
+        if (err) {
+            console.error('Error deleting package:', err);
+            return res.status(500).json({ error: 'Failed to delete package' });
+        }
+        
+        if (this.changes === 0) {
+            return res.status(404).json({ error: 'Package not found' });
+        }
+        
+        res.json({ 
+            success: true, 
+            message: 'Package deleted successfully'
+        });
+    });
+});
+
+// Toggle package active status
+app.patch('/api/admin/packages/:id/toggle-active', authenticateAdmin, (req, res) => {
+    const { id } = req.params;
+    
+    db.run(`
+        UPDATE credit_packages 
+        SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    `, [id], function(err) {
+        if (err) {
+            console.error('Error toggling package status:', err);
+            return res.status(500).json({ error: 'Failed to toggle package status' });
+        }
+        
+        if (this.changes === 0) {
+            return res.status(404).json({ error: 'Package not found' });
+        }
+        
+        res.json({ 
+            success: true, 
+            message: 'Package status toggled successfully'
+        });
+    });
+});
+
+// Check if user is admin
+app.get('/api/user/is-admin', authenticateToken, async (req, res) => {
+    try {
+        const row = await dbConfig.get('SELECT role FROM users WHERE id = ?', [req.user.id]);
+        res.json({ isAdmin: row && row.role === 'admin' });
+    } catch (error) {
+        res.status(500).json({ error: 'Database error' });
+    }
 });
 
 // Start server

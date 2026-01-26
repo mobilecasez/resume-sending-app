@@ -30,6 +30,7 @@
     },
     "web": {
     },
-    "plugins": []
+    "plugins": [],
+    "newArchEnabled": false
   }
 }

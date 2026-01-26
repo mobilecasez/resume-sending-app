@@ -161,6 +161,7 @@ Sincerely,
 };
 
 export const API_BASE_URL = config.API_BASE_URL;
+export const API_BASE = `${config.API_BASE_URL}/api`; // Base URL for API endpoints
 export const APP_NAME = config.APP_NAME;
 
 export default config;

@@ -14,7 +14,7 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 const GOOGLE_CLIENT_ID = '832256639733-b0481qdpal17m1rcmmvq4nlnlvavgg59.apps.googleusercontent.com';
 
 // API Base - always use IP address (works for both web and mobile)
-const API_BASE = 'http://192.168.1.15:3000/api';
+const API_BASE = 'http://192.168.1.19:3000/api';
 const { width, height } = Dimensions.get('window');
 
 WebBrowser.maybeCompleteAuthSession();
@@ -338,6 +338,29 @@ export default function App() {
     { id: 0, email: '', website: '', position: '', error: '' }
   ]);
   const [showSettings, setShowSettings] = useState(false);
+  
+  // Animation for side menu - slides from right
+  const slideAnim = useRef(new Animated.Value(300)).current; // Start off-screen (300px to the right)
+  
+  useEffect(() => {
+    if (showSettings) {
+      // Opening: animate from 300 to 0
+      Animated.spring(slideAnim, {
+        toValue: 0,
+        friction: 8,
+        tension: 40,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      // Closing: animate from current position to 300
+      Animated.timing(slideAnim, {
+        toValue: 300,
+        duration: 250,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [showSettings]);
+  
   const [profileData, setProfileData] = useState({
     fullName: '',
     email: '',
@@ -365,6 +388,11 @@ export default function App() {
   const [totalGenerated, setTotalGenerated] = useState(0);
   const [totalSent, setTotalSent] = useState(0);
   const [countersLoaded, setCountersLoaded] = useState(false);
+  const [creditBalance, setCreditBalance] = useState(0);
+  const [expiringCredits, setExpiringCredits] = useState(0);
+  const [creditExpiryDate, setCreditExpiryDate] = useState(null);
+  const [usageData, setUsageData] = useState(null);
+  const [loadingUsage, setLoadingUsage] = useState(false);
   const [currentReviewTab, setCurrentReviewTab] = useState(0);
   const [reviewGeneratingIndex, setReviewGeneratingIndex] = useState(null);
   const [reviewGeneratingAll, setReviewGeneratingAll] = useState(false);
@@ -373,13 +401,30 @@ export default function App() {
   const [selectedCoverLetterIndex, setSelectedCoverLetterIndex] = useState(null);
   const [showCoverLetterPreview, setShowCoverLetterPreview] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [reviewDownloading, setReviewDownloading] = useState(false);
   const [editingReviewIndex, setEditingReviewIndex] = useState(null);
+  const [adminPackages, setAdminPackages] = useState([]);
+  const [loadingAdminPackages, setLoadingAdminPackages] = useState(false);
+  const [editingPackage, setEditingPackage] = useState(null);
+  const [showPackageForm, setShowPackageForm] = useState(false);
+  const [packageFormData, setPackageFormData] = useState({
+    name: '',
+    amount: '',
+    credits: '',
+    validity_days: '',
+    display_order: '',
+    description: '',
+    is_popular: false
+  });
   const [editedCoverLetterData, setEditedCoverLetterData] = useState({});
   const [showAddressDropdown, setShowAddressDropdown] = useState(false);
-  const slideAnim = useRef(new Animated.Value(-width)).current;
   const abortControllerRef = useRef(null);
   const isCancelledRef = useRef(false);
+  
+  // Packages screen state
+  const [userPackages, setUserPackages] = useState([]);
+  const [loadingUserPackages, setLoadingUserPackages] = useState(false);
   
   // Validation functions
   const isValidEmail = (email) => {
@@ -761,15 +806,6 @@ export default function App() {
     }
   }, [screen]);
   
-  // Animation for side menu
-  useEffect(() => {
-    Animated.timing(slideAnim, {
-      toValue: showSettings ? 0 : -width,
-      duration: 300,
-      useNativeDriver: false,
-    }).start();
-  }, [showSettings]);
-  
   // Google OAuth setup
   const [request, response, promptAsync] = Google.useAuthRequest({
     clientId: GOOGLE_CLIENT_ID,
@@ -877,6 +913,167 @@ export default function App() {
     Alert.alert('Cancelled', 'Operation has been cancelled');
   };
 
+  // ADMIN PANEL FUNCTIONS
+  const fetchAdminPackages = async () => {
+    try {
+      setLoadingAdminPackages(true);
+      const response = await fetch(`${API_BASE}/admin/packages`, {
+        headers: {
+          'Authorization': `Bearer ${user.token}`
+        }
+      });
+      const data = await response.json();
+      if (data.packages) {
+        setAdminPackages(data.packages);
+      }
+    } catch (error) {
+      console.error('Error fetching admin packages:', error);
+      Alert.alert('Error', 'Failed to load packages');
+    } finally {
+      setLoadingAdminPackages(false);
+    }
+  };
+
+  const createPackage = async () => {
+    if (!packageFormData.name || !packageFormData.amount || !packageFormData.credits || !packageFormData.validity_days) {
+      Alert.alert('Error', 'Please fill in all required fields');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/admin/packages`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: packageFormData.name,
+          amount: parseFloat(packageFormData.amount),
+          credits: parseInt(packageFormData.credits),
+          validity_days: parseInt(packageFormData.validity_days),
+          description: packageFormData.description,
+          is_popular: packageFormData.is_popular ? 1 : 0,
+          display_order: parseInt(packageFormData.display_order || 0)
+        })
+      });
+
+      const data = await response.json();
+      if (response.ok) {
+        Alert.alert('Success', 'Package created successfully');
+        setShowPackageForm(false);
+        fetchAdminPackages();
+      } else {
+        Alert.alert('Error', data.error || 'Failed to create package');
+      }
+    } catch (error) {
+      console.error('Error creating package:', error);
+      Alert.alert('Error', 'Failed to create package');
+    }
+  };
+
+  const updatePackage = async () => {
+    if (!packageFormData.name || !packageFormData.amount || !packageFormData.credits || !packageFormData.validity_days) {
+      Alert.alert('Error', 'Please fill in all required fields');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/admin/packages/${editingPackage.id}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: packageFormData.name,
+          amount: parseFloat(packageFormData.amount),
+          credits: parseInt(packageFormData.credits),
+          validity_days: parseInt(packageFormData.validity_days),
+          description: packageFormData.description,
+          is_popular: packageFormData.is_popular ? 1 : 0,
+          display_order: parseInt(packageFormData.display_order || 0)
+        })
+      });
+
+      const data = await response.json();
+      if (response.ok) {
+        Alert.alert('Success', 'Package updated successfully');
+        setShowPackageForm(false);
+        fetchAdminPackages();
+      } else {
+        Alert.alert('Error', data.error || 'Failed to update package');
+      }
+    } catch (error) {
+      console.error('Error updating package:', error);
+      Alert.alert('Error', 'Failed to update package');
+    }
+  };
+
+  const deletePackage = async (packageId) => {
+    Alert.alert(
+      'Confirm Delete',
+      'Are you sure you want to delete this package?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const response = await fetch(`${API_BASE}/admin/packages/${packageId}`, {
+                method: 'DELETE',
+                headers: {
+                  'Authorization': `Bearer ${user.token}`
+                }
+              });
+
+              if (response.ok) {
+                Alert.alert('Success', 'Package deleted successfully');
+                fetchAdminPackages();
+              } else {
+                const data = await response.json();
+                Alert.alert('Error', data.error || 'Failed to delete package');
+              }
+            } catch (error) {
+              console.error('Error deleting package:', error);
+              Alert.alert('Error', 'Failed to delete package');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const togglePackageStatus = async (packageId, currentStatus) => {
+    try {
+      const response = await fetch(`${API_BASE}/admin/packages/${packageId}/toggle-active`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${user.token}`
+        }
+      });
+
+      if (response.ok) {
+        Alert.alert('Success', `Package ${currentStatus === 1 ? 'deactivated' : 'activated'} successfully`);
+        fetchAdminPackages();
+      } else {
+        const data = await response.json();
+        Alert.alert('Error', data.error || 'Failed to toggle package status');
+      }
+    } catch (error) {
+      console.error('Error toggling package status:', error);
+      Alert.alert('Error', 'Failed to toggle package status');
+    }
+  };
+
+  // Load admin packages when admin screen is accessed
+  useEffect(() => {
+    if (screen === 'admin' && isAdmin) {
+      fetchAdminPackages();
+    }
+  }, [screen]);
+
   // REVIEW SCREEN HANDLERS
   const generateCoverLetterForReview = async (recipientIndex, retryCount = 0) => {
     const recipient = recipients[recipientIndex];
@@ -937,6 +1134,21 @@ export default function App() {
       console.log(`✅ [${requestId}] Response received in ${elapsedTime}ms`);
       console.log(`   Status: ${response.status}, Ok: ${response.ok}`);
       
+      // Check for insufficient credits (402 status)
+      if (response.status === 402) {
+        console.log(`💳 [${requestId}] Insufficient credits error`);
+        const errorData = await response.json();
+        Alert.alert(
+          'Insufficient Credits',
+          errorData.message || `You need credits to generate cover letters. Current balance: ${creditBalance}. Visit the Usage & Credits screen to purchase more.`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'View Usage', onPress: () => setScreen('usage') }
+          ]
+        );
+        return;
+      }
+      
       if (!response.ok) {
         console.log(`❌ [${requestId}] Response not OK: ${response.status}`);
         throw new Error(`Failed with status ${response.status}`);
@@ -989,6 +1201,27 @@ export default function App() {
       
       // Increment total generated counter
       setTotalGenerated(prev => prev + 1);
+      
+      // Reload credit balance after successful generation
+      try {
+        const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${user.token}`,
+            'Content-Type': 'application/json',
+          }
+        });
+        
+        if (creditsResponse.ok) {
+          const creditsData = await creditsResponse.json();
+          if (creditsData.success) {
+            setCreditBalance(creditsData.balance || 0);
+            console.log('💳 Updated credits after generation:', creditsData.balance);
+          }
+        }
+      } catch (creditsError) {
+        console.log('Failed to reload credits:', creditsError);
+      }
       
       setEditingReviewIndex(null);
       
@@ -1046,6 +1279,19 @@ export default function App() {
   };
 
   const generateAllCoverLettersForReview = async () => {
+    // Check credits before generating
+    if (creditBalance <= 0) {
+      Alert.alert(
+        'Insufficient Credits',
+        'Remaining credits are 0. Please recharge to continue generating cover letters.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+        ]
+      );
+      return;
+    }
+    
     try {
       isCancelledRef.current = false;
       setReviewGeneratingAll(true);
@@ -1075,6 +1321,19 @@ export default function App() {
   };
 
   const sendAllApplicationsFromReview = async () => {
+    // Check credits before sending
+    if (creditBalance <= 0) {
+      Alert.alert(
+        'Insufficient Credits',
+        'Remaining credits are 0. Please recharge to continue sending applications.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+        ]
+      );
+      return;
+    }
+    
     try {
       // Validate that all cover letters are generated
       const recipientsWithoutCoverLetters = recipients.filter((recipient, index) => {
@@ -1119,6 +1378,19 @@ export default function App() {
   };
 
   const generateAndSendAllApplications = async () => {
+    // Check credits before generating and sending
+    if (creditBalance <= 0) {
+      Alert.alert(
+        'Insufficient Credits',
+        'Remaining credits are 0. Please recharge to continue generating and sending applications.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+        ]
+      );
+      return;
+    }
+    
     try {
       isCancelledRef.current = false;
       setReviewGeneratingAndSendingAll(true);
@@ -1569,6 +1841,29 @@ export default function App() {
           setTotalGenerated(data.totalGenerated || 0);
           setTotalSent(data.totalSent || 0);
           console.log('📊 Loaded counters from backend API - Generated:', data.totalGenerated, 'Sent:', data.totalSent);
+
+          // Also load credit balance
+          try {
+            const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${user.token}`,
+                'Content-Type': 'application/json',
+              }
+            });
+            
+            if (creditsResponse.ok) {
+              const creditsData = await creditsResponse.json();
+              if (creditsData.success) {
+                setCreditBalance(creditsData.balance || 0);
+                setExpiringCredits(creditsData.expiringCredits || 0);
+                setCreditExpiryDate(creditsData.expiryDate);
+                console.log('💳 Loaded credits:', creditsData.balance);
+              }
+            }
+          } catch (creditsError) {
+            console.log('⚠️ Could not load credits:', creditsError);
+          }
           
           // Also cache in AsyncStorage
           await AsyncStorage.setItem(`appCounters_${user.email}`, JSON.stringify({
@@ -1779,6 +2074,66 @@ export default function App() {
     }
   }, [screen]);
 
+  // Load packages when screen changes to 'packages'
+  useEffect(() => {
+    if (screen === 'packages' && user?.token) {
+      const fetchUserPackages = async () => {
+        try {
+          setLoadingUserPackages(true);
+          const response = await fetch(`${API_BASE}/packages`, {
+            headers: {
+              'Authorization': `Bearer ${user.token}`
+            }
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            console.log('Packages response:', data);
+            setUserPackages(data.packages || []);
+          } else {
+            console.error('Failed to fetch packages, status:', response.status);
+          }
+        } catch (error) {
+          console.error('Error fetching packages:', error);
+        } finally {
+          setLoadingUserPackages(false);
+        }
+      };
+      
+      fetchUserPackages();
+    }
+  }, [screen, user]);
+
+  // Load usage data when screen changes to 'usage'
+  useEffect(() => {
+    if (screen === 'usage' && user?.token) {
+      const fetchUsageData = async () => {
+        try {
+          setLoadingUsage(true);
+          const response = await fetch(`${API_BASE}/user/usage-stats`, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${user.token}`,
+              'Content-Type': 'application/json',
+            }
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            if (data.success) {
+              setUsageData(data);
+            }
+          }
+        } catch (error) {
+          console.error('Failed to load usage data:', error);
+        } finally {
+          setLoadingUsage(false);
+        }
+      };
+      fetchUsageData();
+    }
+  }, [screen, user?.token]);
+
   // Check for recipient data changes when entering review screen (runs only once per entry)
   const lastReviewCheckRef = useRef(null);
   
@@ -1833,6 +2188,22 @@ export default function App() {
     }
   }, [response]);
 
+  // Function to check if user is admin
+  const checkAdminStatus = async (token) => {
+    try {
+      const response = await fetch(`${API_BASE}/user/is-admin`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await response.json();
+      setIsAdmin(data.isAdmin || false);
+    } catch (err) {
+      console.log('Error checking admin status:', err);
+      setIsAdmin(false);
+    }
+  };
+
   const handleLogin = async () => {
     if (!email || !password) {
       setError('Please fill in all fields');
@@ -1871,6 +2242,10 @@ export default function App() {
       
       console.log('Login User:', userData);
       setUser(userData);
+      
+      // Check admin status
+      await checkAdminStatus(data.token);
+      
       setScreen('dashboard');
       setEmail('');
       setPassword('');
@@ -2214,16 +2589,22 @@ export default function App() {
           <View style={styles.premiumHeader}>
             <View style={styles.headerContent}>
               <View style={styles.logoSection}>
-                <View style={{ alignItems: 'center' }}>
-                  <Image 
-                    source={require('./assets/images/icon_light_background.png')} 
-                    style={{ width: 180, height: 50, marginLeft: -12 }}
-                    resizeMode="contain"
-                  />
-                  <Text style={styles.headerBrandSubtext}>Turn Applications into Opportunities</Text>
-                </View>
+                <Image 
+                  source={require('./assets/images/icon_light_background.png')} 
+                  style={{ width: 180, height: 50 }}
+                  resizeMode="contain"
+                />
+                <Text style={styles.headerBrandSubtext}>Turn Applications into Opportunities</Text>
               </View>
-              <View style={styles.headerMenuButton}>
+              <View style={styles.headerRightSection}>
+                <TouchableOpacity 
+                  style={styles.compactCreditBadge}
+                  onPress={() => setScreen('usage')}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.creditIcon}>💎</Text>
+                  <Text style={styles.creditNumber}>{creditBalance}</Text>
+                </TouchableOpacity>
                 <TouchableOpacity 
                   style={styles.menuIconButton}
                   onPress={() => setShowSettings(!showSettings)}
@@ -2234,66 +2615,136 @@ export default function App() {
             </View>
           </View>
 
-          {/* Backdrop for menu */}
-          {showSettings && (
-            <TouchableOpacity 
-              style={styles.menuBackdrop}
-              activeOpacity={1}
-              onPress={() => setShowSettings(false)}
-            />
-          )}
-
-          {/* Side Menu - slides in from right */}
-          <Animated.View 
-            style={[styles.sideMenu, { right: slideAnim }]}
-            pointerEvents={showSettings ? 'auto' : 'none'}
+          {/* Side Menu Modal - slides in from right */}
+          <Modal
+            visible={showSettings}
+            transparent={true}
+            animationType="none"
+            onRequestClose={() => setShowSettings(false)}
           >
-            <View style={styles.sideMenuContent}>
-              {/* Close button */}
+            <View style={styles.modalMenuContainer}>
+              {/* Backdrop */}
               <TouchableOpacity 
-                style={styles.closeMenuButton}
-                onPress={() => {
-                  console.log('Close button pressed');
-                  setShowSettings(false);
-                }}
-              >
-                <Text style={styles.closeMenuIcon}>✕</Text>
-              </TouchableOpacity>
+                style={styles.modalMenuBackdrop}
+                activeOpacity={1}
+                onPress={() => setShowSettings(false)}
+              />
+              
+              {/* Menu Content - Animated from right */}
+              <Animated.View style={[
+                styles.modalMenuContent,
+                {
+                  transform: [{ translateX: slideAnim }]
+                }
+              ]}>
+                <View style={styles.sideMenuContent}>
+                  {/* Close button */}
+                  <TouchableOpacity 
+                    style={styles.closeMenuButton}
+                    onPress={() => {
+                      console.log('Close button pressed');
+                      setShowSettings(false);
+                    }}
+                  >
+                    <Text style={styles.closeMenuIcon}>✕</Text>
+                  </TouchableOpacity>
 
-              {/* Menu Items */}
-              <View style={styles.sideMenuItems}>
-                <TouchableOpacity 
-                  style={styles.sideMenuItem} 
-                  onPress={() => {
-                    setShowSettings(false);
-                    setScreen('profile');
-                  }}
-                >
-                  <Text style={styles.sideMenuItemIcon}>⚙️</Text>
-                  <View style={styles.sideMenuItemContent}>
-                    <Text style={styles.sideMenuItemTitle}>Account Settings</Text>
-                    <Text style={styles.sideMenuItemDesc}>View your profile</Text>
+                  {/* Menu Items */}
+                  <View style={styles.sideMenuItems}>
+                    <TouchableOpacity 
+                      style={styles.sideMenuItem} 
+                      onPress={() => {
+                        setShowSettings(false);
+                        setScreen('profile');
+                      }}
+                    >
+                      <Text style={styles.sideMenuItemIcon}>⚙️</Text>
+                      <View style={styles.sideMenuItemContent}>
+                        <Text style={styles.sideMenuItemTitle}>Account Settings</Text>
+                        <Text style={styles.sideMenuItemDesc}>View your profile</Text>
+                      </View>
+                    </TouchableOpacity>
+
+                    {isAdmin && (
+                      <TouchableOpacity 
+                        style={styles.sideMenuItem} 
+                        onPress={() => {
+                          setShowSettings(false);
+                          setScreen('admin');
+                        }}
+                      >
+                        <Text style={styles.sideMenuItemIcon}>🛡️</Text>
+                        <View style={styles.sideMenuItemContent}>
+                          <Text style={styles.sideMenuItemTitle}>Admin Panel</Text>
+                          <Text style={styles.sideMenuItemDesc}>Manage credit packages</Text>
+                        </View>
+                      </TouchableOpacity>
+                    )}
+
+                    <View style={styles.sideMenuDivider} />
+
+                    <TouchableOpacity 
+                      style={styles.sideMenuItem} 
+                      onPress={() => {
+                        setShowSettings(false);
+                        setScreen('terms');
+                      }}
+                    >
+                      <Text style={styles.sideMenuItemIcon}>📄</Text>
+                      <View style={styles.sideMenuItemContent}>
+                        <Text style={styles.sideMenuItemTitle}>Terms & Conditions</Text>
+                        <Text style={styles.sideMenuItemDesc}>View terms of service</Text>
+                      </View>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity 
+                      style={styles.sideMenuItem} 
+                      onPress={() => {
+                        setShowSettings(false);
+                        setScreen('privacy');
+                      }}
+                    >
+                      <Text style={styles.sideMenuItemIcon}>🔒</Text>
+                      <View style={styles.sideMenuItemContent}>
+                        <Text style={styles.sideMenuItemTitle}>Privacy Policy</Text>
+                        <Text style={styles.sideMenuItemDesc}>How we protect your data</Text>
+                      </View>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity 
+                      style={styles.sideMenuItem} 
+                      onPress={() => {
+                        setShowSettings(false);
+                        setScreen('refund');
+                      }}
+                    >
+                      <Text style={styles.sideMenuItemIcon}>💰</Text>
+                      <View style={styles.sideMenuItemContent}>
+                        <Text style={styles.sideMenuItemTitle}>Refund Policy</Text>
+                        <Text style={styles.sideMenuItemDesc}>Credit refund information</Text>
+                      </View>
+                    </TouchableOpacity>
+
+                    <View style={styles.sideMenuDivider} />
+
+                    <TouchableOpacity 
+                      style={styles.sideMenuItem}
+                      onPress={() => {
+                        setShowSettings(false);
+                        handleLogout();
+                      }}
+                    >
+                      <Text style={styles.sideMenuItemIcon}>🚪</Text>
+                      <View style={styles.sideMenuItemContent}>
+                        <Text style={styles.sideMenuItemTitle}>Sign Out</Text>
+                        <Text style={styles.sideMenuItemDesc}>Logout from your account</Text>
+                      </View>
+                    </TouchableOpacity>
                   </View>
-                </TouchableOpacity>
-
-                <View style={styles.sideMenuDivider} />
-
-                <TouchableOpacity 
-                  style={styles.sideMenuItem}
-                  onPress={() => {
-                    setShowSettings(false);
-                    handleLogout();
-                  }}
-                >
-                  <Text style={styles.sideMenuItemIcon}>🚪</Text>
-                  <View style={styles.sideMenuItemContent}>
-                    <Text style={styles.sideMenuItemTitle}>Sign Out</Text>
-                    <Text style={styles.sideMenuItemDesc}>Logout from your account</Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
+                </View>
+              </Animated.View>
             </View>
-          </Animated.View>
+          </Modal>
 
 
           {/* Welcome Section */}
@@ -2569,6 +3020,388 @@ export default function App() {
     );
   }
 
+  // USAGE & CREDITS SCREEN
+  if (screen === 'usage') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
+        
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          {/* Header with Back Button */}
+          <View style={styles.usageHeader}>
+            <TouchableOpacity 
+              style={styles.backButton}
+              onPress={() => {
+                setShowSettings(false);
+                setScreen('dashboard');
+              }}
+            >
+              <Text style={styles.backButtonText}>← Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.usageHeaderTitle}>Usage & Credits</Text>
+            <View style={{ width: 50 }} />
+          </View>
+
+          {loadingUsage ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#8B5CF6" />
+              <Text style={styles.loadingText}>Loading usage data...</Text>
+            </View>
+          ) : (
+            <>
+              {/* Credit Balance Card */}
+              <View style={styles.usageCreditCard}>
+                <Text style={styles.usageCreditLabel}>💳 Available Credits</Text>
+                <Text style={styles.usageCreditNumber}>{creditBalance}</Text>
+                {expiringCredits > 0 && creditExpiryDate && (
+                  <View style={styles.usageExpiryWarning}>
+                    <Text style={styles.usageExpiryText}>
+                      ⚠️ {expiringCredits} credits expiring on {new Date(creditExpiryDate).toLocaleDateString()}
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Monthly Usage Stats */}
+              {usageData?.currentMonthUsage && (
+                <View style={styles.usageMonthCard}>
+                  <View style={styles.usageCardHeader}>
+                    <Text style={styles.usageCardTitle}>📊 This Month</Text>
+                    <Text style={styles.usageCardIcon}>📈</Text>
+                  </View>
+                  <View style={styles.usageProgressSection}>
+                    <View style={styles.usageProgressHeader}>
+                      <Text style={styles.usageProgressLabel}>Generated</Text>
+                      <Text style={styles.usageProgressValue}>
+                        {usageData.currentMonthUsage.monthlyGenerated || usageData.currentMonthUsage.totalGenerated || 0}
+                      </Text>
+                    </View>
+                    <View style={styles.usageProgressBar}>
+                      <View 
+                        style={[
+                          styles.usageProgressFill, 
+                          { 
+                            width: '100%',
+                            backgroundColor: '#8B5CF6'
+                          }
+                        ]} 
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.usageProgressSection}>
+                    <View style={styles.usageProgressHeader}>
+                      <Text style={styles.usageProgressLabel}>Sent</Text>
+                      <Text style={styles.usageProgressValue}>
+                        {usageData.currentMonthUsage.monthlySent || usageData.currentMonthUsage.totalSent || 0}
+                      </Text>
+                    </View>
+                    <View style={styles.usageProgressBar}>
+                      <View 
+                        style={[
+                          styles.usageProgressFill, 
+                          { 
+                            width: '100%',
+                            backgroundColor: '#10B981'
+                          }
+                        ]} 
+                      />
+                    </View>
+                  </View>
+                </View>
+              )}
+
+              {/* 30-Day Activity Overview Chart */}
+              {usageData?.dateWiseActivity && usageData.dateWiseActivity.length > 0 && (
+                <View style={styles.usageHistoryCard}>
+                  <Text style={styles.usageCardTitle}>📈 7-Day Activity Overview</Text>
+                  <View style={styles.chartContainer}>
+                    {(() => {
+                      // Get last 7 days for chart
+                      const chartData = usageData.dateWiseActivity.slice(-7);
+                      const maxValue = Math.max(
+                        ...chartData.map(d => Math.max(d.generated || 0, d.sent || 0, d.creditsUsed || 0)),
+                        5
+                      );
+                      
+                      // Generate Y-axis labels (0 to maxValue)
+                      const yAxisLabels = [];
+                      const labelCount = 5;
+                      for (let i = 0; i <= labelCount; i++) {
+                        yAxisLabels.push(Math.round((maxValue / labelCount) * (labelCount - i)));
+                      }
+                      
+                      return (
+                        <View>
+                          {/* Chart with Y-axis */}
+                          <View style={styles.chartWithAxis}>
+                            {/* Y-axis labels */}
+                            <View style={styles.chartYAxis}>
+                              {yAxisLabels.map((label, index) => (
+                                <Text key={index} style={styles.chartYAxisLabel}>{label}</Text>
+                              ))}
+                            </View>
+                            {/* Chart bars */}
+                            <View style={styles.chartBars}>
+                              {chartData.map((day, index) => {
+                                const genHeight = ((day.generated || 0) / maxValue) * 120;
+                                const sentHeight = ((day.sent || 0) / maxValue) * 120;
+                                const usedHeight = ((day.creditsUsed || 0) / maxValue) * 120;
+                                
+                                return (
+                                  <View key={index} style={styles.chartBarGroup}>
+                                    <View style={styles.chartBarContainer}>
+                                      <View style={[styles.chartBar, { height: Math.max(genHeight, 2), backgroundColor: '#8B5CF6' }]} />
+                                      <View style={[styles.chartBar, { height: Math.max(sentHeight, 2), backgroundColor: '#10B981', marginLeft: 2 }]} />
+                                      <View style={[styles.chartBar, { height: Math.max(usedHeight, 2), backgroundColor: '#EF4444', marginLeft: 2 }]} />
+                                    </View>
+                                    <Text style={styles.chartLabel}>
+                                      {new Date(day.date).toLocaleDateString('en-US', { day: 'numeric' })}
+                                    </Text>
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          </View>
+                          {/* Legend */}
+                          <View style={styles.chartLegend}>
+                            <View style={styles.chartLegendItem}>
+                              <View style={[styles.chartLegendDot, { backgroundColor: '#8B5CF6' }]} />
+                              <Text style={styles.chartLegendText}>Generated</Text>
+                            </View>
+                            <View style={styles.chartLegendItem}>
+                              <View style={[styles.chartLegendDot, { backgroundColor: '#10B981' }]} />
+                              <Text style={styles.chartLegendText}>Sent</Text>
+                            </View>
+                            <View style={styles.chartLegendItem}>
+                              <View style={[styles.chartLegendDot, { backgroundColor: '#EF4444' }]} />
+                              <Text style={styles.chartLegendText}>Credits Used</Text>
+                            </View>
+                          </View>
+                        </View>
+                      );
+                    })()}
+                  </View>
+                </View>
+              )}
+
+              {/* Date-wise Activity Table */}
+              {usageData?.dateWiseActivity && usageData.dateWiseActivity.length > 0 && (
+                <View style={styles.usageHistoryCard}>
+                  <Text style={styles.usageCardTitle}>📅 Date-wise Activity (Last 30 Days)</Text>
+                  <View style={styles.activityTableHeader}>
+                    <Text style={[styles.activityTableHeaderText, { flex: 2 }]}>Date</Text>
+                    <Text style={[styles.activityTableHeaderText, { flex: 1, textAlign: 'center' }]}>Generated</Text>
+                    <Text style={[styles.activityTableHeaderText, { flex: 1, textAlign: 'center' }]}>Sent</Text>
+                    <Text style={[styles.activityTableHeaderText, { flex: 1, textAlign: 'center' }]}>Credits Used</Text>
+                    <Text style={[styles.activityTableHeaderText, { flex: 1, textAlign: 'center' }]}>Credits Available</Text>
+                  </View>
+                  <ScrollView style={{ maxHeight: 300 }}>
+                    {usageData.dateWiseActivity
+                      .filter(day => day.generated > 0 || day.sent > 0 || day.creditsUsed > 0)
+                      .reverse()
+                      .slice(0, 15)
+                      .map((day, index) => (
+                        <View key={index} style={styles.activityTableRow}>
+                          <Text style={[styles.activityTableCell, { flex: 2, fontWeight: '500' }]}>
+                            {new Date(day.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                          </Text>
+                          <Text style={[styles.activityTableCell, styles.activityHighlight, { flex: 1, textAlign: 'center' }]}>
+                            {day.generated}
+                          </Text>
+                          <Text style={[styles.activityTableCell, styles.activityHighlight, { flex: 1, textAlign: 'center' }]}>
+                            {day.sent}
+                          </Text>
+                          <Text style={[styles.activityTableCell, styles.activityHighlight, { flex: 1, textAlign: 'center' }]}>
+                            {day.creditsUsed}
+                          </Text>
+                          <Text style={[styles.activityTableCell, { flex: 1, textAlign: 'center' }]}>
+                            {day.creditsAvailable}
+                          </Text>
+                        </View>
+                      ))}
+                  </ScrollView>
+                </View>
+              )}
+
+              {/* Recent Credit Activity */}
+              <View style={styles.usageHistoryCard}>
+                <Text style={styles.usageCardTitle}>📜 Recent Credit Activity</Text>
+                {usageData?.creditHistory && usageData.creditHistory.length > 0 ? (
+                  usageData.creditHistory.slice(0, 15).map((item, index) => (
+                    <View key={index} style={styles.usageHistoryItem}>
+                      <View style={styles.usageHistoryLeft}>
+                        <Text style={[
+                          styles.usageHistoryType,
+                          { color: item.transactionType === 'deduction' ? '#EF4444' : '#10B981' }
+                        ]}>
+                          {item.transactionType === 'deduction' ? '−' : '+'}
+                          {Math.abs(item.creditsChange)}
+                        </Text>
+                        <Text style={styles.usageHistoryDesc}>{item.description}</Text>
+                      </View>
+                      <View style={styles.usageHistoryRight}>
+                        <Text style={styles.usageHistoryDate}>
+                          {new Date(item.transactionDate).toLocaleDateString()}
+                        </Text>
+                        <Text style={styles.usageHistoryBalance}>
+                          Balance: {item.balanceAfter}
+                        </Text>
+                      </View>
+                    </View>
+                  ))
+                ) : (
+                  <View style={styles.emptyState}>
+                    <Text style={styles.emptyStateIcon}>📋</Text>
+                    <Text style={styles.emptyStateText}>No credit activity yet</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Buy More Credits Button */}
+              <TouchableOpacity 
+                style={styles.buyCreditsButton}
+                onPress={() => setScreen('plans')}
+              >
+                <Text style={styles.buyCreditsButtonText}>💎 Buy More Credits</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // PACKAGES SCREEN
+  if (screen === 'packages') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
+        
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          {/* Header with Back Button */}
+          <View style={styles.usageHeader}>
+            <TouchableOpacity 
+              style={styles.backButton}
+              onPress={() => setScreen('dashboard')}
+            >
+              <Text style={styles.backButtonText}>← Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.usageHeaderTitle}>💎 Credit Packages</Text>
+            <View style={{ width: 50 }} />
+          </View>
+
+          {/* Page Header */}
+          <View style={styles.packagesPageHeader}>
+            <Text style={styles.packagesPageTitle}>Choose Your Plan</Text>
+            <Text style={styles.packagesPageSubtitle}>Select the perfect package for your job application needs</Text>
+          </View>
+
+          {/* Current Credits Card */}
+          <View style={styles.packagesCreditCard}>
+            <Text style={styles.packagesCreditLabel}>💳 YOUR CURRENT CREDITS</Text>
+            <Text style={styles.packagesCreditNumber}>{creditBalance}</Text>
+            <Text style={styles.packagesCreditSubtext}>Purchase credits to continue generating cover letters</Text>
+          </View>
+
+          {/* Packages Section */}
+          {loadingUserPackages ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#8B5CF6" />
+              <Text style={styles.loadingText}>Loading packages...</Text>
+            </View>
+          ) : (
+            <>
+              <View style={styles.packagesSectionHeader}>
+                <Text style={styles.packagesSectionTitle}>Available Packages</Text>
+                <Text style={styles.packagesSectionSubtitle}>Select a package below to get started</Text>
+              </View>
+
+              <View style={styles.packagesGrid}>
+                {userPackages.map((pkg) => (
+                  <View 
+                    key={pkg.id} 
+                    style={[
+                      styles.packageCard,
+                      pkg.is_popular === 1 && styles.packageCardPopular
+                    ]}
+                  >
+                    {/* Popular Badge */}
+                    {pkg.is_popular === 1 && (
+                      <View style={styles.popularBadge}>
+                        <Text style={styles.popularBadgeText}>⭐ MOST POPULAR</Text>
+                      </View>
+                    )}
+                    
+                    {/* Package Header */}
+                    <View style={styles.packageCardHeader}>
+                      <Text style={styles.packageName}>{pkg.name}</Text>
+                      {pkg.description && (
+                        <Text style={styles.packageDescriptionText}>{pkg.description}</Text>
+                      )}
+                    </View>
+
+                    {/* Package Price - Large and Centered */}
+                    <View style={styles.packagePriceSection}>
+                      <View style={styles.packagePriceContainer}>
+                        <Text style={styles.packageCurrency}>$</Text>
+                        <Text style={styles.packagePrice}>{pkg.amount}</Text>
+                      </View>
+                    </View>
+
+                    {/* Package Details - Label Value Pairs */}
+                    <View style={styles.packageDetailsSection}>
+                      <View style={styles.packageDetailRowNew}>
+                        <View style={styles.packageDetailLeft}>
+                          <Text style={styles.packageDetailIconNew}>💎</Text>
+                          <Text style={styles.packageDetailLabel}>Credits</Text>
+                        </View>
+                        <Text style={styles.packageDetailValue}>{pkg.credits}</Text>
+                      </View>
+                      
+                      <View style={styles.packageDetailRowNew}>
+                        <View style={styles.packageDetailLeft}>
+                          <Text style={styles.packageDetailIconNew}>⏰</Text>
+                          <Text style={styles.packageDetailLabel}>Validity</Text>
+                        </View>
+                        <Text style={styles.packageDetailValue}>{pkg.validity_days} days</Text>
+                      </View>
+                    </View>
+
+                    {/* Buy Button */}
+                    <TouchableOpacity 
+                      style={[
+                        styles.packageBuyButton,
+                        pkg.is_popular === 1 && styles.packageBuyButtonPopular
+                      ]}
+                      onPress={() => {
+                        Alert.alert(
+                          'Purchase Credits',
+                          `Package: ${pkg.name}\nAmount: $${pkg.amount}\nCredits: ${pkg.credits}\n\nPayment integration coming soon!`,
+                          [{ text: 'OK' }]
+                        );
+                      }}
+                    >
+                      <Text style={styles.packageBuyButtonText}>💳 Buy Plan</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            </>
+          )}
+
+          {userPackages.length === 0 && !loadingUserPackages && (
+            <View style={styles.emptyPackagesContainer}>
+              <Text style={styles.emptyPackagesIcon}>📦</Text>
+              <Text style={styles.emptyPackagesText}>No packages available</Text>
+              <Text style={styles.emptyPackagesSubtext}>Please check back later</Text>
+            </View>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
   // PROFILE SCREEN
   if (screen === 'profile') {
     const displayName = profileData?.fullName || user?.fullName || user?.name || 'User';
@@ -2584,7 +3417,10 @@ export default function App() {
           <View style={styles.profileHeader}>
             <TouchableOpacity 
               style={styles.backButton}
-              onPress={() => setScreen('dashboard')}
+              onPress={() => {
+                setShowSettings(false);
+                setScreen('dashboard');
+              }}
             >
               <Text style={styles.backButtonText}>← Back</Text>
             </TouchableOpacity>
@@ -2965,6 +3801,536 @@ export default function App() {
     );
   }
 
+  // ADMIN PACKAGES SCREEN
+  if (screen === 'admin') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
+        
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          {/* Header with Back Button */}
+          <View style={styles.profileHeader}>
+            <TouchableOpacity 
+              style={styles.backButton}
+              onPress={() => {
+                setShowSettings(false);
+                setScreen('dashboard');
+              }}
+            >
+              <Text style={styles.backButtonText}>← Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.profileHeaderTitle}>🛡️ Admin Panel</Text>
+            <View style={{ width: 50 }} />
+          </View>
+
+          {loadingAdminPackages ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#8B5CF6" />
+              <Text style={styles.loadingText}>Loading packages...</Text>
+            </View>
+          ) : (
+            <>
+              {/* Page Title */}
+              <View style={styles.adminPageHeader}>
+                <Text style={styles.adminPageTitle}>💳 Credit Packages</Text>
+                <Text style={styles.adminPageSubtitle}>Manage credit packages for users</Text>
+              </View>
+
+              {/* Create Package Button */}
+              <TouchableOpacity 
+                style={styles.adminCreateButton}
+                onPress={() => {
+                  setEditingPackage(null);
+                  setPackageFormData({
+                    name: '',
+                    amount: '',
+                    credits: '',
+                    validity_days: '',
+                    description: '',
+                    is_popular: false,
+                    is_active: 1,
+                    display_order: '0'
+                  });
+                  setShowPackageForm(true);
+                }}
+              >
+                <Text style={styles.adminCreateButtonIcon}>+</Text>
+                <Text style={styles.adminCreateButtonText}>Create New Package</Text>
+              </TouchableOpacity>
+
+              {/* Packages List */}
+              {adminPackages && adminPackages.length > 0 ? (
+                adminPackages.map((pkg) => (
+                  <View key={pkg.id} style={styles.adminPackageCard}>
+                    {/* Popular Badge */}
+                    {pkg.is_popular === 1 && (
+                      <View style={styles.adminPopularBadge}>
+                        <Text style={styles.adminPopularBadgeText}>★ POPULAR</Text>
+                      </View>
+                    )}
+
+                    {/* Package Name */}
+                    <Text style={styles.adminPackageName}>{pkg.name}</Text>
+                    
+                    {/* Description */}
+                    {pkg.description && (
+                      <Text style={styles.adminPackageDescription}>{pkg.description}</Text>
+                    )}
+
+                    {/* Price - Centered and Bold */}
+                    <Text style={styles.adminPackagePrice}>USD {parseFloat(pkg.amount).toFixed(2)}</Text>
+
+                    {/* Package Details - Label Value Pairs */}
+                    <View style={styles.adminPackageDetails}>
+                      <View style={styles.adminDetailRow}>
+                        <Text style={styles.adminDetailLabel}>Credits</Text>
+                        <Text style={styles.adminDetailValue}>{pkg.credits}</Text>
+                      </View>
+                      <View style={styles.adminDetailRow}>
+                        <Text style={styles.adminDetailLabel}>Validity</Text>
+                        <Text style={styles.adminDetailValue}>{pkg.validity_days} days</Text>
+                      </View>
+                      <View style={styles.adminDetailRow}>
+                        <Text style={styles.adminDetailLabel}>Display Order</Text>
+                        <Text style={styles.adminDetailValue}>{pkg.display_order || 0}</Text>
+                      </View>
+                      <View style={styles.adminDetailRow}>
+                        <Text style={styles.adminDetailLabel}>Status</Text>
+                        <View style={[
+                          styles.adminStatusBadge,
+                          pkg.is_active === 1 ? styles.adminStatusActive : styles.adminStatusInactive
+                        ]}>
+                          <Text style={[
+                            styles.adminStatusText,
+                            pkg.is_active === 1 ? styles.adminStatusTextActive : styles.adminStatusTextInactive
+                          ]}>
+                            {pkg.is_active === 1 ? 'Active' : 'Inactive'}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* Action Buttons */}
+                    <View style={styles.adminPackageActions}>
+                      <TouchableOpacity 
+                        style={styles.adminActionButton}
+                        onPress={() => {
+                          setEditingPackage(pkg);
+                          setPackageFormData({
+                            name: pkg.name,
+                            amount: pkg.amount.toString(),
+                            credits: pkg.credits.toString(),
+                            validity_days: pkg.validity_days.toString(),
+                            description: pkg.description || '',
+                            is_popular: pkg.is_popular === 1,
+                            is_active: pkg.is_active,
+                            display_order: (pkg.display_order || 0).toString()
+                          });
+                          setShowPackageForm(true);
+                        }}
+                      >
+                        <Text style={styles.adminActionButtonText}>✏️ Edit</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity 
+                        style={[styles.adminActionButton, { backgroundColor: pkg.is_active === 1 ? '#FEF3C7' : '#D1FAE5' }]}
+                        onPress={() => togglePackageStatus(pkg.id, pkg.is_active)}
+                      >
+                        <Text style={[styles.adminActionButtonText, { color: pkg.is_active === 1 ? '#92400E' : '#065F46' }]}>
+                          {pkg.is_active === 1 ? '⭘ Deactivate' : '● Activate'}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity 
+                        style={[styles.adminActionButton, { backgroundColor: '#FEE2E2' }]}
+                        onPress={() => {
+                          Alert.alert(
+                            'Delete Package',
+                            `Are you sure you want to delete "${pkg.name}"? This action cannot be undone.`,
+                            [
+                              { text: 'Cancel', style: 'cancel' },
+                              { text: 'Delete', style: 'destructive', onPress: () => deletePackage(pkg.id) }
+                            ]
+                          );
+                        }}
+                      >
+                        <Text style={[styles.adminActionButtonText, { color: '#991B1B' }]}>🗑️ Delete</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))
+              ) : (
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyStateIcon}>📦</Text>
+                  <Text style={styles.emptyStateText}>No Packages Yet</Text>
+                  <Text style={styles.emptyStateSubtext}>Create your first credit package to get started</Text>
+                </View>
+              )}
+            </>
+          )}
+        </ScrollView>
+
+        {/* Package Form Modal */}
+        {showPackageForm && (
+          <Modal
+            visible={showPackageForm}
+            transparent={true}
+            animationType="slide"
+            onRequestClose={() => setShowPackageForm(false)}
+          >
+            <View style={styles.modalOverlay}>
+              <View style={styles.packageFormModal}>
+                {/* Modal Header */}
+                <View style={styles.packageFormHeader}>
+                  <Text style={styles.packageFormTitle}>
+                    {editingPackage ? 'Edit Package' : 'Create Package'}
+                  </Text>
+                  <TouchableOpacity onPress={() => setShowPackageForm(false)}>
+                    <Text style={styles.packageFormClose}>×</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Modal Body */}
+                <View style={styles.packageFormBody}>
+                  {/* Package Name */}
+                  <View style={styles.adminFormGroup}>
+                    <Text style={styles.adminFormLabel}>Package Name *</Text>
+                    <TextInput
+                      style={styles.adminFormInput}
+                      value={packageFormData.name}
+                      onChangeText={(text) => setPackageFormData({...packageFormData, name: text})}
+                      placeholder="e.g., Starter Pack"
+                      placeholderTextColor="#9CA3AF"
+                    />
+                  </View>
+
+                  {/* Amount and Credits Row */}
+                  <View style={styles.formRowGroup}>
+                    <View style={styles.formGroupHalf}>
+                      <Text style={styles.adminFormLabel}>Amount (USD) *</Text>
+                      <TextInput
+                        style={styles.adminFormInput}
+                        value={packageFormData.amount}
+                        onChangeText={(text) => setPackageFormData({...packageFormData, amount: text})}
+                        placeholder="9.99"
+                        keyboardType="decimal-pad"
+                        placeholderTextColor="#9CA3AF"
+                      />
+                    </View>
+                    <View style={styles.formGroupHalf}>
+                      <Text style={styles.adminFormLabel}>Credits *</Text>
+                      <TextInput
+                        style={styles.adminFormInput}
+                        value={packageFormData.credits}
+                        onChangeText={(text) => setPackageFormData({...packageFormData, credits: text})}
+                        placeholder="50"
+                        keyboardType="number-pad"
+                        placeholderTextColor="#9CA3AF"
+                      />
+                    </View>
+                  </View>
+
+                  {/* Validity and Display Order Row */}
+                  <View style={styles.formRowGroup}>
+                    <View style={styles.formGroupHalf}>
+                      <Text style={styles.adminFormLabel}>Validity (Days) *</Text>
+                      <TextInput
+                        style={styles.adminFormInput}
+                        value={packageFormData.validity_days}
+                        onChangeText={(text) => setPackageFormData({...packageFormData, validity_days: text})}
+                        placeholder="30"
+                        keyboardType="number-pad"
+                        placeholderTextColor="#9CA3AF"
+                      />
+                    </View>
+                    <View style={styles.formGroupHalf}>
+                      <Text style={styles.adminFormLabel}>Display Order</Text>
+                      <TextInput
+                        style={styles.adminFormInput}
+                        value={packageFormData.display_order}
+                        onChangeText={(text) => setPackageFormData({...packageFormData, display_order: text})}
+                        placeholder="0"
+                        keyboardType="number-pad"
+                        placeholderTextColor="#9CA3AF"
+                      />
+                    </View>
+                  </View>
+
+                  {/* Description */}
+                  <View style={styles.adminFormGroup}>
+                    <Text style={styles.adminFormLabel}>Description</Text>
+                    <TextInput
+                      style={[styles.adminFormInput, styles.formTextArea]}
+                      value={packageFormData.description}
+                      onChangeText={(text) => setPackageFormData({...packageFormData, description: text})}
+                      placeholder="Brief description of the package..."
+                      multiline
+                      numberOfLines={3}
+                      placeholderTextColor="#9CA3AF"
+                    />
+                  </View>
+
+                  {/* Checkboxes */}
+                  <View style={styles.formCheckboxContainer}>
+                    <View style={styles.formCheckboxRow}>
+                      <TouchableOpacity 
+                        style={styles.formCheckboxWrapper}
+                        onPress={() => setPackageFormData({...packageFormData, is_popular: !packageFormData.is_popular})}
+                      >
+                        <View style={[styles.checkbox, packageFormData.is_popular && styles.checkboxChecked]}>
+                          {packageFormData.is_popular && <Text style={styles.checkboxCheck}>✓</Text>}
+                        </View>
+                        <Text style={styles.checkboxLabel}>Mark as Popular</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity 
+                        style={styles.formCheckboxWrapper}
+                        onPress={() => setPackageFormData({...packageFormData, is_active: packageFormData.is_active === 1 ? 0 : 1})}
+                      >
+                        <View style={[styles.checkbox, packageFormData.is_active === 1 && styles.checkboxChecked]}>
+                          {packageFormData.is_active === 1 && <Text style={styles.checkboxCheck}>✓</Text>}
+                        </View>
+                        <Text style={styles.checkboxLabel}>Active Status</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+
+                {/* Modal Footer */}
+                <View style={styles.packageFormFooter}>
+                  <TouchableOpacity 
+                    style={styles.formCancelButton}
+                    onPress={() => setShowPackageForm(false)}
+                  >
+                    <Text style={styles.formCancelButtonText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={styles.formSaveButton}
+                    onPress={() => editingPackage ? updatePackage() : createPackage()}
+                  >
+                    <Text style={styles.formSaveButtonText}>
+                      {editingPackage ? 'Update Package' : 'Save Package'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        )}
+      </SafeAreaView>
+    );
+  }
+
+  // Terms & Conditions Screen
+  if (screen === 'terms') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
+        
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          {/* Header with Back Button */}
+          <View style={styles.profileHeader}>
+            <TouchableOpacity 
+              style={styles.backButton}
+              onPress={() => {
+                setShowSettings(false);
+                setScreen('dashboard');
+              }}
+            >
+              <Text style={styles.backButtonText}>← Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.profileHeaderTitle}>📄 Terms & Conditions</Text>
+            <View style={{ width: 50 }} />
+          </View>
+
+          {/* Content Card */}
+          <View style={styles.legalContentCard}>
+            <Text style={styles.legalUpdateText}>Last Updated: {new Date().toLocaleDateString()}</Text>
+
+            <Text style={styles.legalSection}>1. Acceptance of Terms</Text>
+            <Text style={styles.legalParagraph}>By accessing and using CVApplyr, you accept and agree to be bound by these Terms and Conditions. If you do not agree, please discontinue use immediately.</Text>
+
+            <Text style={styles.legalSection}>2. Service Description</Text>
+            <Text style={styles.legalParagraph}>CVApplyr is a credit-based platform that helps users create professional cover letters using AI technology and send them to potential employers via email.</Text>
+
+            <Text style={styles.legalSection}>3. User Account</Text>
+            <Text style={styles.legalParagraph}>• You must provide accurate registration information{'\n'}• You are responsible for maintaining account security{'\n'}• One account per user is permitted{'\n'}• Sharing accounts is prohibited</Text>
+
+            <Text style={styles.legalSection}>4. Credits and Payment</Text>
+            <Text style={styles.legalParagraph}>• Credits are required for generating and sending cover letters{'\n'}• Credits are purchased through packages{'\n'}• All purchases are final unless otherwise stated in our Refund Policy{'\n'}• Credits expire after the validity period mentioned in the package{'\n'}• Prices are in USD</Text>
+
+            <Text style={styles.legalSection}>5. Acceptable Use Policy</Text>
+            <Text style={styles.legalParagraph}>You agree NOT to:{'\n'}• Use the service for spam or unsolicited emails{'\n'}• Upload malicious content{'\n'}• Violate any laws or regulations{'\n'}• Misrepresent yourself or your qualifications{'\n'}• Abuse the AI generation system</Text>
+
+            <Text style={styles.legalSection}>6. Intellectual Property</Text>
+            <Text style={styles.legalParagraph}>• Cover letters generated are your property{'\n'}• You retain all rights to content you upload{'\n'}• CVApplyr retains rights to its platform and technology{'\n'}• Our logo, branding, and design are protected</Text>
+
+            <Text style={styles.legalSection}>7. AI-Generated Content</Text>
+            <Text style={styles.legalParagraph}>• Cover letters are generated using AI technology{'\n'}• You are responsible for reviewing and editing content{'\n'}• We do not guarantee job placement or interview calls{'\n'}• Always verify AI-generated information before use</Text>
+
+            <Text style={styles.legalSection}>8. Privacy and Data</Text>
+            <Text style={styles.legalParagraph}>Your privacy is important. Please review our Privacy Policy to understand how we collect, use, and protect your information.</Text>
+
+            <Text style={styles.legalSection}>9. Service Availability</Text>
+            <Text style={styles.legalParagraph}>• We strive for 99.9% uptime but cannot guarantee uninterrupted service{'\n'}• Maintenance windows may be scheduled{'\n'}• We are not liable for service interruptions</Text>
+
+            <Text style={styles.legalSection}>10. Limitation of Liability</Text>
+            <Text style={styles.legalParagraph}>CVApplyr is provided "as is". We are not liable for:{'\n'}• Job application outcomes{'\n'}• Email delivery failures{'\n'}• Data loss or corruption{'\n'}• Indirect or consequential damages</Text>
+
+            <Text style={styles.legalSection}>11. Termination</Text>
+            <Text style={styles.legalParagraph}>We reserve the right to suspend or terminate accounts that violate these terms. Upon termination, unused credits are forfeited.</Text>
+
+            <Text style={styles.legalSection}>12. Changes to Terms</Text>
+            <Text style={styles.legalParagraph}>We may update these terms at any time. Continued use after changes constitutes acceptance.</Text>
+
+            <Text style={styles.legalSection}>13. Governing Law</Text>
+            <Text style={styles.legalParagraph}>These terms are governed by applicable laws. Any disputes will be resolved in appropriate courts.</Text>
+
+            <Text style={styles.legalSection}>14. Contact Us</Text>
+            <Text style={styles.legalParagraph}>For questions about these Terms:{'\n'}Email: support@cvapplyr.com</Text>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // Privacy Policy Screen
+  if (screen === 'privacy') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
+        
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          {/* Header with Back Button */}
+          <View style={styles.profileHeader}>
+            <TouchableOpacity 
+              style={styles.backButton}
+              onPress={() => {
+                setShowSettings(false);
+                setScreen('dashboard');
+              }}
+            >
+              <Text style={styles.backButtonText}>← Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.profileHeaderTitle}>🔒 Privacy Policy</Text>
+            <View style={{ width: 50 }} />
+          </View>
+
+          {/* Content Card */}
+          <View style={styles.legalContentCard}>
+            <Text style={styles.legalUpdateText}>Last Updated: {new Date().toLocaleDateString()}</Text>
+
+            <Text style={styles.legalSection}>1. Introduction</Text>
+            <Text style={styles.legalParagraph}>CVApplyr ("we", "our", "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information.</Text>
+
+            <Text style={styles.legalSection}>2. Information We Collect</Text>
+            <Text style={styles.legalParagraph}>We collect information you provide directly:{'\n'}• Name and email address{'\n'}• Password (encrypted){'\n'}• Resume/CV content{'\n'}• Cover letter templates{'\n'}• Employer contact information{'\n'}• Payment/billing information (processed securely)</Text>
+
+            <Text style={styles.legalSection}>3. How We Use Your Information</Text>
+            <Text style={styles.legalParagraph}>We use your information to:{'\n'}• Provide our cover letter generation service{'\n'}• Send emails on your behalf to employers{'\n'}• Process credit purchases{'\n'}• Improve our AI algorithms{'\n'}• Send service-related notifications{'\n'}• Provide customer support</Text>
+
+            <Text style={styles.legalSection}>4. Information Sharing</Text>
+            <Text style={styles.legalParagraph}>We do NOT sell your personal information. We may share data with:{'\n'}• Email service providers (to send applications){'\n'}• Payment processors (for credit purchases){'\n'}• Cloud hosting services (for data storage){'\n'}• Law enforcement (if legally required)</Text>
+
+            <Text style={styles.legalSection}>5. Data Security</Text>
+            <Text style={styles.legalParagraph}>We implement security measures including:{'\n'}• Encryption of sensitive data{'\n'}• Secure password hashing{'\n'}• Regular security audits{'\n'}• Access controls and authentication{'\n'}• HTTPS encryption for all transmissions</Text>
+
+            <Text style={styles.legalSection}>6. Data Retention</Text>
+            <Text style={styles.legalParagraph}>We retain your data:{'\n'}• Account data: Until you delete your account{'\n'}• Cover letters: Until you delete them{'\n'}• Transaction records: For legal/tax purposes (typically 7 years){'\n'}• Logs: 90 days</Text>
+
+            <Text style={styles.legalSection}>7. Your Rights</Text>
+            <Text style={styles.legalParagraph}>You have the right to:{'\n'}• Access your personal data{'\n'}• Correct inaccurate information{'\n'}• Request data deletion{'\n'}• Export your data{'\n'}• Withdraw consent{'\n'}• Object to processing{'\n'}• Lodge a complaint with authorities</Text>
+
+            <Text style={styles.legalSection}>8. Children's Privacy</Text>
+            <Text style={styles.legalParagraph}>CVApplyr is not intended for users under 16 years of age. We do not knowingly collect information from children.</Text>
+
+            <Text style={styles.legalSection}>9. Third-Party Links</Text>
+            <Text style={styles.legalParagraph}>Our service may contain links to third-party websites. We are not responsible for their privacy practices.</Text>
+
+            <Text style={styles.legalSection}>10. International Data Transfers</Text>
+            <Text style={styles.legalParagraph}>Your data may be transferred and stored in countries outside your residence. We ensure appropriate safeguards are in place.</Text>
+
+            <Text style={styles.legalSection}>11. Changes to Privacy Policy</Text>
+            <Text style={styles.legalParagraph}>We may update this policy periodically. Continued use after changes constitutes acceptance.</Text>
+
+            <Text style={styles.legalSection}>12. Contact Us</Text>
+            <Text style={styles.legalParagraph}>For privacy-related questions:{'\n'}Email: support@cvapplyr.com</Text>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // Refund Policy Screen
+  if (screen === 'refund') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
+        
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          {/* Header with Back Button */}
+          <View style={styles.profileHeader}>
+            <TouchableOpacity 
+              style={styles.backButton}
+              onPress={() => {
+                setShowSettings(false);
+                setScreen('dashboard');
+              }}
+            >
+              <Text style={styles.backButtonText}>← Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.profileHeaderTitle}>💰 Refund Policy</Text>
+            <View style={{ width: 50 }} />
+          </View>
+
+          {/* Content Card */}
+          <View style={styles.legalContentCard}>
+            <Text style={styles.legalUpdateText}>Last Updated: {new Date().toLocaleDateString()}</Text>
+
+            {/* Important Notice */}
+            <View style={styles.importantNotice}>
+              <Text style={styles.importantNoticeTitle}>⚠️ Important</Text>
+              <Text style={styles.importantNoticeText}>Credits are generally non-refundable once purchased. Please review this policy carefully before making a purchase.</Text>
+            </View>
+
+            <Text style={styles.legalSection}>1. General Policy</Text>
+            <Text style={styles.legalParagraph}>All credit purchases on CVApplyr are final and non-refundable unless otherwise stated in this policy or required by law.</Text>
+
+            <Text style={styles.legalSection}>2. Non-Refundable Credits</Text>
+            <Text style={styles.legalParagraph}>The following are NOT eligible for refunds:{'\n'}• Used credits (generated or sent cover letters){'\n'}• Expired credits after validity period{'\n'}• Promotional or bonus credits{'\n'}• Credits purchased more than 7 days ago{'\n'}• Account violations or terminations</Text>
+
+            <Text style={styles.legalSection}>3. Eligible Refund Scenarios</Text>
+            <Text style={styles.legalParagraph}>Refunds may be considered in these cases:{'\n'}• Duplicate or accidental charges{'\n'}• Technical errors preventing credit delivery{'\n'}• Service unavailability for extended periods{'\n'}• Unused credits within 7 days of purchase</Text>
+
+            <Text style={styles.legalSection}>4. Refund Request Process</Text>
+            <Text style={styles.legalParagraph}>To request a refund:{'\n'}1. Contact support@cvapplyr.com within 7 days{'\n'}2. Provide your transaction ID and reason{'\n'}3. Include any supporting documentation{'\n'}4. Wait for our team to review (2-5 business days){'\n'}5. Refund processed if approved (7-14 business days)</Text>
+
+            <Text style={styles.legalSection}>5. Refund Processing</Text>
+            <Text style={styles.legalParagraph}>• Approved refunds are processed to original payment method{'\n'}• Processing time: 7-14 business days{'\n'}• Bank processing may take additional time{'\n'}• Unused credits will be deducted from account</Text>
+
+            <Text style={styles.legalSection}>6. Partial Refunds</Text>
+            <Text style={styles.legalParagraph}>If you've used some credits from a package, partial refunds may be calculated as:{'\n'}(Total Amount × Unused Credits) ÷ Total Credits</Text>
+
+            <Text style={styles.legalSection}>7. Credit Expiration</Text>
+            <Text style={styles.legalParagraph}>Credits expire according to the validity period of your purchased package. Expired credits cannot be refunded or extended.</Text>
+
+            <Text style={styles.legalSection}>8. Chargebacks and Disputes</Text>
+            <Text style={styles.legalParagraph}>• Contact us before initiating a chargeback{'\n'}• Chargebacks may result in account suspension{'\n'}• We reserve the right to dispute illegitimate chargebacks{'\n'}• Evidence will be provided to payment processors</Text>
+
+            <Text style={styles.legalSection}>9. Modifications to Policy</Text>
+            <Text style={styles.legalParagraph}>We reserve the right to modify this refund policy. Changes will not affect purchases made before the modification date.</Text>
+
+            <Text style={styles.legalSection}>10. Free Credits</Text>
+            <Text style={styles.legalParagraph}>Credits received as bonuses, promotions, or sign-up rewards are not eligible for cash refunds.</Text>
+
+            <Text style={styles.legalSection}>11. Contact for Refunds</Text>
+            <Text style={styles.legalParagraph}>For refund requests or questions:{'\n'}Email: support@cvapplyr.com{'\n'}Subject: "Refund Request - [Transaction ID]"</Text>
+
+            <Text style={styles.legalSection}>12. Legal Rights</Text>
+            <Text style={styles.legalParagraph}>This policy does not affect your statutory rights as a consumer under applicable laws.</Text>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
   // ===== REVIEW SCREEN EDIT FUNCTIONS =====
   
   const toggleReviewEditMode = (index) => {
@@ -3022,13 +4388,24 @@ export default function App() {
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
         
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {/* Header */}
-          <View style={styles.reviewHeader}>
+          {/* Header with Credit Badge and User Info */}
+          <View style={styles.reviewHeaderEnhanced}>
             <TouchableOpacity onPress={() => setScreen('dashboard')} style={styles.backButton}>
               <Text style={styles.backIcon}>← Back</Text>
             </TouchableOpacity>
-            <Text style={styles.reviewTitle}>📋 Review Applications</Text>
-            <View style={{ width: 40 }} />
+            <View style={styles.reviewHeaderCenter}>
+              <Text style={styles.reviewTitle}>📋 Review Applications</Text>
+            </View>
+            <View style={styles.reviewHeaderRight}>
+              <TouchableOpacity 
+                style={styles.compactCreditBadge}
+                onPress={() => setScreen('usage')}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.creditIcon}>💎</Text>
+                <Text style={styles.creditNumber}>{creditBalance}</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* Tab Navigation */}
@@ -3300,14 +4677,40 @@ export default function App() {
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={[styles.reviewActionBtn, styles.downloadBtn]}
-                        onPress={() => downloadCoverLetterPDFFromReview(currentReviewTab)}
+                        onPress={() => {
+                          if (creditBalance <= 0) {
+                            Alert.alert(
+                              'Insufficient Credits',
+                              'Remaining credits are 0. Please recharge to continue downloading PDFs.',
+                              [
+                                { text: 'Cancel', style: 'cancel' },
+                                { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+                              ]
+                            );
+                            return;
+                          }
+                          downloadCoverLetterPDFFromReview(currentReviewTab);
+                        }}
                         disabled={reviewDownloading}
                       >
                         <Text style={styles.reviewActionBtnText}>📥 Download</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={[styles.reviewActionBtn, styles.sendBtn, reviewCoverLetters[currentReviewTab].sent && styles.sentBtn]}
-                        onPress={() => sendApplicationFromReview(currentReviewTab)}
+                        onPress={() => {
+                          if (creditBalance <= 0) {
+                            Alert.alert(
+                              'Insufficient Credits',
+                              'Remaining credits are 0. Please recharge to continue sending applications.',
+                              [
+                                { text: 'Cancel', style: 'cancel' },
+                                { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+                              ]
+                            );
+                            return;
+                          }
+                          sendApplicationFromReview(currentReviewTab);
+                        }}
                         disabled={reviewLoading || reviewSendingAll || reviewGeneratingAndSendingAll || reviewCoverLetters[currentReviewTab].sent}
                       >
                         <Text style={styles.reviewActionBtnText}>
@@ -3326,7 +4729,20 @@ export default function App() {
               <Text style={styles.emptySubtitle}>Generate a cover letter to view and send</Text>
               <TouchableOpacity
                 style={styles.generateBtn}
-                onPress={() => generateCoverLetterForReview(currentReviewTab)}
+                onPress={() => {
+                  if (creditBalance <= 0) {
+                    Alert.alert(
+                      'Insufficient Credits',
+                      'Remaining credits are 0. Please recharge to continue generating cover letters.',
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+                      ]
+                    );
+                    return;
+                  }
+                  generateCoverLetterForReview(currentReviewTab);
+                }}
                 disabled={reviewGeneratingIndex === currentReviewTab || reviewGeneratingAll || reviewGeneratingAndSendingAll}
               >
                 <Text style={styles.generateBtnText}>✨ Generate Cover Letter</Text>
@@ -3802,10 +5218,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
   },
   logoSection: {
     alignItems: 'flex-start',
     flex: 1,
+    marginLeft: -18,
+  },
+  headerRightSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   headerLargeLogo: {
     fontSize: 40,
@@ -3823,6 +5247,28 @@ const styles = StyleSheet.create({
     marginTop: 2,
     fontWeight: '500',
   },
+  compactCreditBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#8B5CF6',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    shadowColor: '#8B5CF6',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
+    gap: 6,
+  },
+  creditIcon: {
+    fontSize: 16,
+  },
+  creditNumber: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+  },
   headerMenuButton: {
     marginLeft: 12,
   },
@@ -3833,6 +5279,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#e5e7eb',
     alignItems: 'center',
     justifyContent: 'center',
+    marginRight: -19,
   },
   menuIcon: {
     fontSize: 20,
@@ -3884,32 +5331,33 @@ const styles = StyleSheet.create({
     marginHorizontal: 14,
   },
 
-  // ===== SIDE MENU STYLES =====
-  menuBackdrop: {
+  // ===== SIDE MENU MODAL STYLES =====
+  modalMenuContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  modalMenuBackdrop: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
-    zIndex: 999,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
   },
-  sideMenu: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: '75%',
+  modalMenuContent: {
+    width: 280,
+    height: '100%',
     backgroundColor: '#fff',
-    zIndex: 1000,
     shadowColor: '#000',
     shadowOffset: { width: -4, height: 0 },
-    shadowOpacity: 0.15,
+    shadowOpacity: 0.2,
     shadowRadius: 12,
     elevation: 10,
   },
   sideMenuContent: {
     flex: 1,
-    paddingTop: 20,
+    paddingTop: 50,
   },
   closeMenuButton: {
     width: 40,
@@ -4052,6 +5500,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#e5e7eb',
+  },
+
+  // ===== COMPACT CREDIT BADGE STYLES =====
+  compactCreditBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#8B5CF6',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    shadowColor: '#8B5CF6',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
+    gap: 6,
+  },
+  creditIcon: {
+    fontSize: 16,
+  },
+  creditNumber: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
   },
 
   // ===== STATISTICS SECTION STYLES =====
@@ -4606,6 +6078,338 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
+  // ===== USAGE & CREDITS SCREEN STYLES =====
+  usageHeader: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    marginBottom: 16,
+  },
+  usageHeaderTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1F2937',
+    textAlign: 'center',
+    flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  usageCreditCard: {
+    backgroundColor: '#8B5CF6',
+    marginHorizontal: 16,
+    marginBottom: 16,
+    borderRadius: 16,
+    padding: 24,
+    shadowColor: '#8B5CF6',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  usageCreditLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#F3E8FF',
+    marginBottom: 8,
+  },
+  usageCreditNumber: {
+    fontSize: 56,
+    fontWeight: '800',
+    color: '#fff',
+    marginBottom: 12,
+  },
+  usageExpiryWarning: {
+    backgroundColor: '#FCD34D',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    marginTop: 8,
+  },
+  usageExpiryText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#78350F',
+  },
+  usageMonthCard: {
+    backgroundColor: '#fff',
+    marginHorizontal: 16,
+    marginBottom: 16,
+    borderRadius: 14,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  usageCardTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1F2937',
+    marginBottom: 16,
+  },
+  usageCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  usageCardIcon: {
+    fontSize: 24,
+  },
+  chartPlaceholder: {
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    padding: 32,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#E5E7EB',
+    borderStyle: 'dashed',
+  },
+  chartPlaceholderText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#6B7280',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  chartPlaceholderSubtext: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    textAlign: 'center',
+  },
+  chartContainer: {
+    paddingVertical: 16,
+  },
+  chartWithAxis: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  chartYAxis: {
+    justifyContent: 'space-between',
+    height: 140,
+    paddingRight: 8,
+    paddingTop: 10,
+  },
+  chartYAxisLabel: {
+    fontSize: 10,
+    color: '#6B7280',
+    fontWeight: '500',
+    textAlign: 'right',
+    minWidth: 25,
+  },
+  chartBars: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    height: 140,
+    paddingHorizontal: 8,
+    marginBottom: 8,
+  },
+  chartBarGroup: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+  },
+  chartBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    height: 120,
+    marginBottom: 4,
+  },
+  chartBar: {
+    width: 3,
+    borderRadius: 2,
+    minHeight: 2,
+  },
+  chartLabel: {
+    fontSize: 9,
+    color: '#6B7280',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  chartLegend: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+  },
+  chartLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 8,
+    marginVertical: 4,
+  },
+  chartLegendDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginRight: 6,
+  },
+  chartLegendText: {
+    fontSize: 12,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  usageProgressSection: {
+    marginBottom: 16,
+  },
+  usageProgressHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  usageProgressLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#6B7280',
+  },
+  usageProgressValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1F2937',
+  },
+  usageProgressBar: {
+    height: 8,
+    backgroundColor: '#E5E7EB',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  usageProgressFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  usageHistoryCard: {
+    backgroundColor: '#fff',
+    marginHorizontal: 16,
+    marginBottom: 16,
+    borderRadius: 14,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  usageHistoryItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+  },
+  usageHistoryLeft: {
+    flex: 1,
+  },
+  usageHistoryType: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  usageHistoryDesc: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  usageHistoryRight: {
+    alignItems: 'flex-end',
+  },
+  usageHistoryDate: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginBottom: 4,
+  },
+  usageHistoryBalance: {
+    fontSize: 13,
+    color: '#1F2937',
+    fontWeight: '600',
+  },
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  emptyStateIcon: {
+    fontSize: 48,
+    marginBottom: 12,
+  },
+  emptyStateText: {
+    fontSize: 14,
+    color: '#9CA3AF',
+  },
+  activityTableHeader: {
+    flexDirection: 'row',
+    paddingVertical: 12,
+    borderBottomWidth: 2,
+    borderBottomColor: '#E5E7EB',
+    backgroundColor: '#F9FAFB',
+    marginHorizontal: -20,
+    paddingHorizontal: 20,
+    marginBottom: 8,
+  },
+  activityTableHeaderText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#6B7280',
+    textTransform: 'uppercase',
+  },
+  activityTableRow: {
+    flexDirection: 'row',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+  },
+  activityTableCell: {
+    fontSize: 13,
+    color: '#6B7280',
+  },
+  activityHighlight: {
+    color: '#8B5CF6',
+    fontWeight: '600',
+  },
+  buyCreditsButton: {
+    backgroundColor: '#8B5CF6',
+    marginHorizontal: 16,
+    marginBottom: 24,
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    shadowColor: '#8B5CF6',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  buyCreditsButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+  },
+
   // ===== PROFILE SCREEN STYLES =====
   profileHeader: {
     backgroundColor: '#fff',
@@ -4954,6 +6758,26 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#e5e7eb',
   },
+  reviewHeaderEnhanced: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  reviewHeaderCenter: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   backButton: {
     paddingHorizontal: 8,
   },
@@ -4966,8 +6790,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     color: '#1f2937',
-    flex: 1,
-    textAlign: 'center',
   },
   reviewTabsContainer: {
     backgroundColor: '#fff',
@@ -5423,6 +7245,811 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#333',
   },
+  // ==================== ADMIN PANEL STYLES ====================
+  adminModalContainer: {
+    flex: 1,
+    backgroundColor: '#F9FAFB',
+  },
+  adminHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 50,
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+    backgroundColor: '#8B5CF6',
+  },
+  adminHeaderLeft: {
+    flex: 1,
+  },
+  adminHeaderTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    marginBottom: 4,
+  },
+  adminHeaderSubtitle: {
+    fontSize: 14,
+    color: '#E9D5FF',
+  },
+  adminCloseButton: {
+    fontSize: 28,
+    color: '#FFFFFF',
+    fontWeight: '300',
+    paddingHorizontal: 10,
+  },
+  adminActions: {
+    padding: 20,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  createPackageButton: {
+    backgroundColor: '#8B5CF6',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  createPackageButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  adminLoadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  adminLoadingText: {
+    marginTop: 12,
+    fontSize: 16,
+    color: '#6B7280',
+  },
+  adminPackagesList: {
+    flex: 1,
+    padding: 16,
+  },
+  adminEmptyState: {
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  adminEmptyIcon: {
+    fontSize: 64,
+    marginBottom: 16,
+  },
+  adminEmptyText: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 8,
+  },
+  adminEmptySubtext: {
+    fontSize: 14,
+    color: '#6B7280',
+  },
+  packageCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  packageCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  packageName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#111827',
+    marginBottom: 4,
+  },
+  popularBadge: {
+    backgroundColor: '#FEF3C7',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+    alignSelf: 'flex-start',
+  },
+  popularBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#92400E',
+  },
+  statusBadgeActive: {
+    backgroundColor: '#D1FAE5',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  statusBadgeTextActive: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#065F46',
+  },
+  statusBadgeInactive: {
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  statusBadgeTextInactive: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#991B1B',
+  },
+  packageDescription: {
+    fontSize: 14,
+    color: '#6B7280',
+    marginBottom: 12,
+    lineHeight: 20,
+  },
+  packageDetails: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+    marginBottom: 12,
+  },
+  packageDetailItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  packageDetailLabel: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginBottom: 4,
+  },
+  packageDetailValue: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  packageActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  packageActionButton: {
+    flex: 1,
+    backgroundColor: '#F3F4F6',
+    paddingVertical: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  packageActionButtonText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#374151',
+  },
+  packageActionButtonDanger: {
+    backgroundColor: '#FEE2E2',
+  },
+  packageActionButtonDangerText: {
+    color: '#991B1B',
+  },
+  // Form Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  packageFormModal: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    width: '90%',
+    maxWidth: 500,
+    overflow: 'hidden',
+  },
+  packageFormHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+  },
+  packageFormTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#111827',
+  },
+  packageFormClose: {
+    fontSize: 28,
+    color: '#9CA3AF',
+    fontWeight: '300',
+    lineHeight: 28,
+  },
+  packageFormBody: {
+    padding: 20,
+  },
+  adminFormGroup: {
+    marginBottom: 20,
+  },
+  formRowGroup: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 20,
+  },
+  formGroupHalf: {
+    flex: 1,
+  },
+  adminFormLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 8,
+  },
+  adminFormInput: {
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 16,
+    color: '#111827',
+  },
+  formTextArea: {
+    height: 80,
+    textAlignVertical: 'top',
+    paddingTop: 10,
+  },
+  formCheckboxContainer: {
+    marginBottom: 8,
+  },
+  formCheckboxRow: {
+    flexDirection: 'row',
+    gap: 16,
+  },
+  formCheckboxWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    flex: 1,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderWidth: 2,
+    borderColor: '#D1D5DB',
+    borderRadius: 4,
+    marginRight: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  checkboxChecked: {
+    backgroundColor: '#8B5CF6',
+    borderColor: '#8B5CF6',
+  },
+  checkboxCheck: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  checkboxLabel: {
+    fontSize: 14,
+    color: '#374151',
+    fontWeight: '500',
+  },
+  packageFormFooter: {
+    flexDirection: 'row',
+    gap: 12,
+    padding: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+  },
+  formCancelButton: {
+    flex: 1,
+    backgroundColor: '#F3F4F6',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  formCancelButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  formSaveButton: {
+    flex: 1,
+    backgroundColor: '#8B5CF6',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  formSaveButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  // New Admin Package Styles
+  adminPageHeader: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 20,
+  },
+  adminPageTitle: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 4,
+  },
+  adminPageSubtitle: {
+    fontSize: 14,
+    color: '#6B7280',
+  },
+  adminCreateButton: {
+    marginHorizontal: 16,
+    marginBottom: 20,
+    backgroundColor: '#8B5CF6',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#8B5CF6',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  adminCreateButtonIcon: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginRight: 8,
+  },
+  adminCreateButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  adminPackageCard: {
+    marginHorizontal: 16,
+    marginBottom: 20,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 24,
+    borderWidth: 2,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+    position: 'relative',
+  },
+  adminPopularBadge: {
+    position: 'absolute',
+    top: -10,
+    right: 20,
+    backgroundColor: '#F59E0B',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 20,
+  },
+  adminPopularBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  adminPackageName: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1F2937',
+    marginBottom: 8,
+  },
+  adminPackageDescription: {
+    fontSize: 14,
+    color: '#6B7280',
+    lineHeight: 21,
+    marginBottom: 16,
+  },
+  adminPackagePrice: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: '#6366F1',
+    textAlign: 'center',
+    marginVertical: 16,
+  },
+  adminPackageDetails: {
+    marginTop: 20,
+    marginBottom: 16,
+  },
+  adminDetailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  adminDetailLabel: {
+    fontSize: 14,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  adminDetailValue: {
+    fontSize: 14,
+    color: '#1F2937',
+    fontWeight: '600',
+  },
+  adminStatusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  adminStatusActive: {
+    backgroundColor: '#D1FAE5',
+  },
+  adminStatusInactive: {
+    backgroundColor: '#FEE2E2',
+  },
+  adminStatusText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  adminStatusTextActive: {
+    color: '#065F46',
+  },
+  adminStatusTextInactive: {
+    color: '#991B1B',
+  },
+  adminPackageActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  adminActionButton: {
+    flex: 1,
+    backgroundColor: '#DBEAFE',
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  adminActionButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1E40AF',
+  },
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 20,
+    marginHorizontal: 16,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 16,
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    borderColor: '#D1D5DB',
+  },
+  emptyStateIcon: {
+    fontSize: 64,
+    marginBottom: 16,
+  },
+  emptyStateText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 8,
+  },
+  emptyStateSubtext: {
+    fontSize: 14,
+    color: '#6B7280',
+    textAlign: 'center',
+  },
+  
+  // PACKAGES SCREEN STYLES
+  packagesPageHeader: {
+    backgroundColor: 'white',
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 20,
+    borderRadius: 16,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  packagesPageTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#1F2937',
+    marginBottom: 8,
+  },
+  packagesPageSubtitle: {
+    fontSize: 14,
+    color: '#6B7280',
+    textAlign: 'center',
+  },
+  packagesCreditCard: {
+    backgroundColor: 'white',
+    marginHorizontal: 16,
+    marginBottom: 20,
+    padding: 24,
+    borderRadius: 16,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+    borderWidth: 2,
+    borderColor: '#E0E7FF',
+  },
+  packagesCreditLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#6B7280',
+    marginBottom: 12,
+    letterSpacing: 1,
+  },
+  packagesCreditNumber: {
+    fontSize: 48,
+    fontWeight: '800',
+    color: '#8B5CF6',
+    marginBottom: 8,
+  },
+  packagesCreditSubtext: {
+    fontSize: 13,
+    color: '#9CA3AF',
+    textAlign: 'center',
+  },
+  packagesSectionHeader: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    alignItems: 'center',
+  },
+  packagesSectionTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1F2937',
+    marginBottom: 6,
+  },
+  packagesSectionSubtitle: {
+    fontSize: 14,
+    color: '#6B7280',
+    textAlign: 'center',
+  },
+  packagesGrid: {
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+  },
+  packageCard: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    padding: 24,
+    marginBottom: 16,
+    borderWidth: 2,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  packageCardPopular: {
+    borderColor: '#8B5CF6',
+    borderWidth: 3,
+    backgroundColor: '#FAF5FF',
+  },
+  popularBadge: {
+    position: 'absolute',
+    top: 12,
+    right: -35,
+    backgroundColor: '#8B5CF6',
+    paddingHorizontal: 40,
+    paddingVertical: 6,
+    transform: [{ rotate: '45deg' }],
+    shadowColor: '#8B5CF6',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  popularBadgeText: {
+    color: 'white',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  packageCardHeader: {
+    marginBottom: 20,
+    paddingBottom: 20,
+    borderBottomWidth: 2,
+    borderBottomColor: '#E5E7EB',
+  },
+  packageName: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#1F2937',
+    marginBottom: 8,
+  },
+  packageDescriptionText: {
+    fontSize: 13,
+    color: '#6B7280',
+    lineHeight: 20,
+    marginTop: 4,
+  },
+  packagePriceSection: {
+    alignItems: 'center',
+    marginBottom: 24,
+    paddingVertical: 12,
+  },
+  packagePriceContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  packageCurrency: {
+    fontSize: 22,
+    fontWeight: '600',
+    color: '#8B5CF6',
+    marginTop: 6,
+    marginRight: 4,
+  },
+  packagePrice: {
+    fontSize: 44,
+    fontWeight: '800',
+    color: '#8B5CF6',
+  },
+  packageDetailsSection: {
+    marginBottom: 24,
+  },
+  packageDetailRowNew: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+  },
+  packageDetailLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  packageDetailIconNew: {
+    fontSize: 20,
+    marginRight: 10,
+  },
+  packageDetailLabel: {
+    fontSize: 14,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  packageDetailValue: {
+    fontSize: 15,
+    color: '#1F2937',
+    fontWeight: '600',
+  },
+  packageDetails: {
+    marginBottom: 20,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+  },
+  packageDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  packageDetailIcon: {
+    fontSize: 18,
+    marginRight: 10,
+  },
+  packageDetailText: {
+    fontSize: 15,
+    color: '#4B5563',
+    flex: 1,
+  },
+  packageBuyButton: {
+    backgroundColor: '#8B5CF6',
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    shadowColor: '#8B5CF6',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  packageBuyButtonPopular: {
+    backgroundColor: '#7C3AED',
+  },
+  packageBuyButtonText: {
+    color: 'white',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  emptyPackagesContainer: {
+    alignItems: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 20,
+  },
+  emptyPackagesIcon: {
+    fontSize: 64,
+    marginBottom: 16,
+  },
+  emptyPackagesText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 8,
+  },
+  emptyPackagesSubtext: {
+    fontSize: 14,
+    color: '#6B7280',
+  },
+
+  // ===== LEGAL PAGES STYLES =====
+  legalContentCard: {
+    backgroundColor: 'white',
+    marginHorizontal: 16,
+    marginBottom: 20,
+    padding: 20,
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  legalUpdateText: {
+    fontSize: 13,
+    color: '#6B7280',
+    marginBottom: 20,
+    fontStyle: 'italic',
+  },
+  legalSection: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#1F2937',
+    marginTop: 20,
+    marginBottom: 12,
+  },
+  legalParagraph: {
+    fontSize: 15,
+    color: '#4B5563',
+    lineHeight: 24,
+    marginBottom: 12,
+  },
+  importantNotice: {
+    backgroundColor: '#FEF3C7',
+    padding: 16,
+    borderRadius: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: '#F59E0B',
+    marginBottom: 20,
+  },
+  importantNoticeTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#92400E',
+    marginBottom: 8,
+  },
+  importantNoticeText: {
+    fontSize: 14,
+    color: '#78350F',
+    lineHeight: 20,
+  },
 });
-
-

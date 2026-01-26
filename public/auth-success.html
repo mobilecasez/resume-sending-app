@@ -70,11 +70,11 @@
                 window.location.href = '/';
             } catch (error) {
                 console.error('Error parsing auth data:', error);
-                window.location.href = '/login.html?error=auth-failed';
+                window.location.href = '/login?error=auth-failed';
             }
         } else {
             console.error('Missing token or user data');
-            window.location.href = '/login.html?error=missing-data';
+            window.location.href = '/login?error=missing-data';
         }
     </script>
 </body>
