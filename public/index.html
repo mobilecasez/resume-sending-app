@@ -1394,6 +1394,7 @@
                 if (data.success && data.applicationHistory && data.applicationHistory.length > 0) {
                     const applicationHistory = data.applicationHistory;
                     console.log('📖 Loaded application history from backend:', applicationHistory.length, 'items');
+                    console.log('🔍 First item:', JSON.stringify(applicationHistory[0], null, 2));
                     
                     // Update badge
                     const badge = document.getElementById('employersBadge');
@@ -1515,7 +1516,10 @@
                     const data = await response.json();
                     if (data.success) {
                         const creditBalance = data.balance || 0;
-                        document.getElementById('creditBalance').textContent = creditBalance;
+                        const creditBadgeNumber = document.getElementById('creditBadgeNumber');
+                        if (creditBadgeNumber) {
+                            creditBadgeNumber.textContent = creditBalance;
+                        }
                         console.log('💳 Loaded credits:', creditBalance);
                     }
                 }
@@ -1545,6 +1549,8 @@
                 `;
                 return;
             }
+
+            console.log('🎨 Rendering employers:', employers.length, 'First employer:', JSON.stringify(employers[0], null, 2));
 
             container.innerHTML = employers.map((employer, index) => {
                 // Format sentDate with null check

@@ -697,7 +697,9 @@
                         </div>
                         <div class="form-group">
                             <label class="form-label">Email Address</label>
-                            <input type="email" id="userEmail" class="form-input" placeholder="john@example.com" disabled>
+                            <input type="email" id="userEmailInput" class="form-input" placeholder="john@example.com" 
+                                   style="background-color: #f5f5f5 !important; color: #000 !important; cursor: not-allowed; opacity: 1 !important; -webkit-text-fill-color: #000 !important;" 
+                                   autocomplete="off" readonly>
                         </div>
                     </div>
                     <div class="form-row">
@@ -1010,12 +1012,41 @@
                     
                     console.log('Profile loaded:', profile);
                     console.log('Full Name:', profile.fullName);
+                    console.log('Email:', profile.email);
+                    console.log('Date of Birth:', profile.dateOfBirth);
                     console.log('Created At:', profile.createdAt);
                     
                     // Update user details form
                     document.getElementById('fullName').value = profile.fullName || '';
-                    document.getElementById('userEmail').value = profile.email || '';
-                    document.getElementById('dateOfBirth').value = profile.dateOfBirth || '';
+                    
+                    // Email field - set value multiple times to ensure it sticks
+                    const emailField = document.getElementById('userEmailInput');
+                    const emailValue = profile.email || '';
+                    console.log('Setting email to:', emailValue);
+                    emailField.value = emailValue;
+                    emailField.setAttribute('value', emailValue);
+                    
+                    // Prevent editing
+                    emailField.addEventListener('keydown', (e) => e.preventDefault());
+                    emailField.addEventListener('paste', (e) => e.preventDefault());
+                    emailField.addEventListener('cut', (e) => e.preventDefault());
+                    
+                    // Also set with a slight delay to ensure DOM is ready
+                    setTimeout(() => {
+                        emailField.value = emailValue;
+                        console.log('Email field value after timeout:', emailField.value);
+                        console.log('Email field displayed value:', emailField.value);
+                        console.log('Email field element:', emailField);
+                    }, 100);
+                    
+                    // Format date from ISO or YYYY-MM-DD HH:MM:SS to YYYY-MM-DD for date input
+                    let dobValue = '';
+                    if (profile.dateOfBirth) {
+                        // Handle both ISO format (YYYY-MM-DDTHH:MM:SS.SSSZ) and SQL format (YYYY-MM-DD HH:MM:SS)
+                        const datePart = profile.dateOfBirth.split('T')[0].split(' ')[0];
+                        dobValue = datePart;
+                    }
+                    document.getElementById('dateOfBirth').value = dobValue;
                     document.getElementById('phoneNumber').value = profile.phoneNumber || '';
                     // These fields don't exist in DB, hide them or set to empty
                     const zipcodeField = document.getElementById('zipcode');

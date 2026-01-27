@@ -752,27 +752,32 @@
                     }
                 });
 
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.success) {
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
                         // Update credit balance
-                        const creditBalance = data.creditBalance || 0;
+                        const creditBalance = data.credits?.remaining || 0;
                         document.getElementById('creditAmount').textContent = creditBalance;
-                        document.getElementById('navCreditBalance').textContent = creditBalance;
+                        
+                        // Update nav credit badge if it exists
+                        const navCreditBalance = document.getElementById('navCreditBalance');
+                        if (navCreditBalance) {
+                            navCreditBalance.textContent = creditBalance;
+                        }
 
                         // Show expiry warning if applicable
-                        if (data.expiringCredits > 0 && data.creditExpiryDate) {
+                        if (data.credits?.expiring > 0 && data.credits?.expiryDate) {
                             const expiryWarning = document.getElementById('expiryWarning');
                             const expiryText = document.getElementById('expiryText');
-                            const expiryDate = new Date(data.creditExpiryDate).toLocaleDateString();
-                            expiryText.textContent = `⚠️ ${data.expiringCredits} credits expiring on ${expiryDate}`;
+                            const expiryDate = new Date(data.credits.expiryDate).toLocaleDateString();
+                            expiryText.textContent = `⚠️ ${data.credits.expiring} credits expiring on ${expiryDate}`;
                             expiryWarning.style.display = 'block';
                         }
 
                         // Update monthly usage stats
-                        if (data.currentMonthUsage) {
-                            const generated = data.currentMonthUsage.monthlyGenerated || data.currentMonthUsage.totalGenerated || 0;
-                            const sent = data.currentMonthUsage.monthlySent || data.currentMonthUsage.totalSent || 0;
+                        if (data.currentMonth) {
+                            const generated = data.currentMonth.lettersGenerated || 0;
+                            const sent = data.currentMonth.lettersSent || 0;
 
                             document.getElementById('generatedCount').textContent = generated;
                             document.getElementById('sentCount').textContent = sent;
@@ -812,7 +817,8 @@
                                 `;
                             }).join('');
                         }
-                    }
+                } else {
+                    throw new Error(data.error || 'Failed to fetch usage statistics');
                 }
 
                 // Show content
@@ -950,7 +956,7 @@
         }
 
         function showBuyCredits() {
-            showToast('Credit purchase feature coming soon!', 'info');
+            window.location.href = '/packages';
         }
 
         function handleLogout() {

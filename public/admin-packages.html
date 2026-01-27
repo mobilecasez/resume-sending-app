@@ -744,27 +744,29 @@
         function renderPackageCard(pkg) {
             const isActive = pkg.is_active === 1;
             const isPopular = pkg.is_popular === 1;
+            const amount = pkg.amount || pkg.price || 0;
+            const currency = pkg.currency || 'USD';
             
             return `
                 <div class="package-card ${!isActive ? 'inactive' : ''}">
                     ${isPopular ? '<div class="package-badge">⭐ Popular</div>' : ''}
                     <div class="package-header">
-                        <div class="package-name">${pkg.name}</div>
+                        <div class="package-name">${pkg.name || 'Unnamed Package'}</div>
                         <div class="package-description">${pkg.description || 'No description'}</div>
                     </div>
-                    <div class="package-price">${pkg.currency} ${pkg.amount.toFixed(2)}</div>
+                    <div class="package-price">${currency} ${parseFloat(amount).toFixed(2)}</div>
                     <div class="package-details">
                         <div class="detail-row">
                             <span class="detail-label">Credits</span>
-                            <span class="detail-value">${pkg.credits}</span>
+                            <span class="detail-value">${pkg.credits || 0}</span>
                         </div>
                         <div class="detail-row">
                             <span class="detail-label">Validity</span>
-                            <span class="detail-value">${pkg.validity_days} days</span>
+                            <span class="detail-value">${pkg.validity_days || 0} days</span>
                         </div>
                         <div class="detail-row">
                             <span class="detail-label">Display Order</span>
-                            <span class="detail-value">#${pkg.display_order}</span>
+                            <span class="detail-value">#${pkg.display_order || pkg.id || 0}</span>
                         </div>
                         <div class="detail-row">
                             <span class="detail-label">Status</span>

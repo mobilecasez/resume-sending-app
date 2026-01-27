@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const path = require('path');
 const multer = require('multer');
@@ -23,7 +25,6 @@ const AICoverLetterGenerator = require('./ai-cover-letter-generator');
 const TemplateCoverLetterGenerator = require('./template-cover-letter-generator');
 const dbConfig = require('./db-config');
 const { initializeDatabase } = require('./db-init');
-require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -107,13 +108,13 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
             const resumeFilename = path.basename(resumePath);
             
             message += [
-                `--${boundary}`,
-                'Content-Type: application/pdf',
-                'Content-Transfer-Encoding: base64',
-                `Content-Disposition: attachment; filename="${resumeFilename}"`,
-                '',
-                resumeBase64,
-                ''
+        `--${boundary}`,
+        'Content-Type: application/pdf',
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: attachment; filename="${resumeFilename}"`,
+        '',
+        resumeBase64,
+        ''
             ].join(nl);
         }
         
@@ -122,13 +123,13 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
             const coverLetterBase64 = coverLetterPdfBuffer.toString('base64');
             
             message += [
-                `--${boundary}`,
-                'Content-Type: application/pdf',
-                'Content-Transfer-Encoding: base64',
-                'Content-Disposition: attachment; filename="cover_letter.pdf"',
-                '',
-                coverLetterBase64,
-                ''
+        `--${boundary}`,
+        'Content-Type: application/pdf',
+        'Content-Transfer-Encoding: base64',
+        'Content-Disposition: attachment; filename="cover_letter.pdf"',
+        '',
+        coverLetterBase64,
+        ''
             ].join(nl);
         }
         
@@ -145,7 +146,7 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
         const result = await gmail.users.messages.send({
             userId: 'me',
             requestBody: {
-                raw: encodedMessage
+        raw: encodedMessage
             }
         });
         
@@ -306,57 +307,49 @@ passport.serializeUser((user, done) => {
     done(null, user.id);
 });
 
-passport.deserializeUser((id, done) => {
-    db.get('SELECT * FROM users WHERE id = ?', [id], (err, user) => {
-        done(err, user);
-    });
+passport.deserializeUser(async (id, done) => {
+    try {
+        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [id]);
+        done(null, user);
+    } catch (err) {
+        done(err);
+    }
 });
 
 // OAuth user handler function
-function handleOAuthUser(profile, provider, accessToken, refreshToken, callback) {
-    const email = profile.emails && profile.emails[0] ? profile.emails[0].value : null;
-    const fullName = profile.displayName;
-    
-    if (!email) {
-        return callback(new Error('No email found in OAuth profile'));
-    }
-
-    // Check if user exists
-    db.get('SELECT * FROM users WHERE email = ?', [email], (err, user) => {
-        if (err) {
-            return callback(err);
+async function handleOAuthUser(profile, provider, accessToken, refreshToken, callback) {
+    try {
+        const email = profile.emails && profile.emails[0] ? profile.emails[0].value : null;
+        const fullName = profile.displayName;
+        
+        if (!email) {
+            return callback(new Error('No email found in OAuth profile'));
         }
+
+        // Check if user exists
+        const user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [email]);
 
         if (user) {
             // User exists, update OAuth tokens
-            db.run(
-                'UPDATE users SET oauth_provider = ?, google_access_token = ?, google_refresh_token = ? WHERE id = ?',
-                [provider, accessToken, refreshToken, user.id],
-                (updateErr) => {
-                    if (updateErr) {
-                        console.error('Error updating OAuth tokens:', updateErr);
-                    }
-                    return callback(null, user);
-                }
+            await dbConfig.run(
+        'UPDATE users SET oauth_provider = ?, google_access_token = ?, google_refresh_token = ? WHERE id = ?',
+        [provider, accessToken, refreshToken, user.id]
             );
+            return callback(null, user);
         } else {
             // Create new user
-            const hashedPassword = jwt.sign({ provider, email }, JWT_SECRET); // Use JWT as placeholder password for OAuth users
-            db.run(
-                'INSERT INTO users (full_name, email, password, oauth_provider, google_access_token, google_refresh_token) VALUES (?, ?, ?, ?, ?, ?)',
-                [fullName, email, hashedPassword, provider, accessToken, refreshToken],
-                function(err) {
-                    if (err) {
-                        return callback(err);
-                    }
-                    
-                    db.get('SELECT * FROM users WHERE id = ?', [this.lastID], (err, newUser) => {
-                        callback(err, newUser);
-                    });
-                }
+            const hashedPassword = jwt.sign({ provider, email }, JWT_SECRET);
+            const result = await dbConfig.run(
+        'INSERT INTO users (full_name, email, password, oauth_provider, google_access_token, google_refresh_token) VALUES (?, ?, ?, ?, ?, ?)',
+        [fullName, email, hashedPassword, provider, accessToken, refreshToken]
             );
+            
+            const newUser = await dbConfig.get('SELECT * FROM users WHERE id = ?', [result.lastID || result.id]);
+            return callback(null, newUser);
         }
-    });
+    } catch (err) {
+        return callback(err);
+    }
 }
 
 // Secure file serving endpoint - only allow users to access their own files
@@ -410,7 +403,7 @@ function authenticateToken(req, res, next) {
 }
 
 // Admin authentication middleware
-function authenticateAdmin(req, res, next) {
+async function authenticateAdmin(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
@@ -418,23 +411,20 @@ function authenticateAdmin(req, res, next) {
         return res.status(401).json({ error: 'Access denied. No token provided.' });
     }
 
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) {
-            return res.status(403).json({ error: 'Invalid or expired token.' });
-        }
+    try {
+        const user = jwt.verify(token, JWT_SECRET);
         
         // Check if user is admin
-        db.get('SELECT role FROM users WHERE id = ?', [user.id], (err, row) => {
-            if (err) {
-                return res.status(500).json({ error: 'Database error' });
-            }
-            if (!row || row.role !== 'admin') {
-                return res.status(403).json({ error: 'Access denied. Admin privileges required.' });
-            }
-            req.user = user;
-            next();
-        });
-    });
+        const row = await dbConfig.get('SELECT role FROM users WHERE id = ?', [user.id]);
+        
+        if (!row || row.role !== 'admin') {
+            return res.status(403).json({ error: 'Access denied. Admin privileges required.' });
+        }
+        req.user = user;
+        next();
+    } catch (err) {
+        return res.status(403).json({ error: 'Invalid or expired token.' });
+    }
 }
 
 // Server-side HTML page protection middleware
@@ -447,65 +437,82 @@ function serveAdminPageOnly(req, res, next) {
         return res.redirect('/login.html?error=admin_required');
     }
 
-    jwt.verify(token, JWT_SECRET, (err, user) => {
+    jwt.verify(token, JWT_SECRET, async (err, user) => {
         if (err) {
             return res.redirect('/login.html?error=session_expired');
         }
         
         // Check if user is admin
-        db.get('SELECT role FROM users WHERE id = ?', [user.id], (err, row) => {
-            if (err || !row || row.role !== 'admin') {
-                return res.status(403).send(`
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                        <title>Access Denied</title>
-                        <style>
-                            body { 
-                                font-family: Arial, sans-serif; 
-                                display: flex; 
-                                justify-content: center; 
-                                align-items: center; 
-                                height: 100vh; 
-                                margin: 0;
-                                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                            }
-                            .container {
-                                background: white;
-                                padding: 40px;
-                                border-radius: 12px;
-                                text-align: center;
-                                box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-                                max-width: 500px;
-                            }
-                            h1 { color: #EF4444; margin-bottom: 16px; }
-                            p { color: #6B7280; margin-bottom: 24px; }
-                            a { 
-                                display: inline-block;
-                                padding: 12px 24px;
-                                background: #6366F1;
-                                color: white;
-                                text-decoration: none;
-                                border-radius: 8px;
-                                font-weight: 600;
-                            }
-                            .icon { font-size: 48px; margin-bottom: 16px; }
-                        </style>
-                    </head>
-                    <body>
-                        <div class="container">
-                            <div class="icon">🔒</div>
-                            <h1>Access Denied</h1>
-                            <p>This page requires administrator privileges. You do not have permission to access this resource.</p>
-                            <a href="/index.html">← Return to Dashboard</a>
-                        </div>
-                    </body>
-                    </html>
-                `);
+        try {
+            const row = await dbConfig.get('SELECT role FROM users WHERE id = ?', [user.id]);
+            if (!row || row.role !== 'admin') {
+        return res.status(403).send(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Access Denied</title>
+                <style>
+                    body { 
+                        font-family: Arial, sans-serif; 
+                        display: flex; 
+                        justify-content: center; 
+                        align-items: center; 
+                        height: 100vh; 
+                        margin: 0;
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    }
+                    .container {
+                        background: white;
+                        padding: 40px;
+                        border-radius: 12px;
+                        text-align: center;
+                        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                        max-width: 500px;
+                    }
+                    h1 { color: #EF4444; margin-bottom: 16px; }
+                    p { color: #6B7280; margin-bottom: 24px; }
+                    a { 
+                        display: inline-block;
+                        padding: 12px 24px;
+                        background: #6366F1;
+                        color: white;
+                        text-decoration: none;
+                        border-radius: 8px;
+                        font-weight: 600;
+                    }
+                    .icon { font-size: 48px; margin-bottom: 16px; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="icon">🔒</div>
+                    <h1>Access Denied</h1>
+                    <p>This page requires administrator privileges. You do not have permission to access this resource.</p>
+                    <a href="/index.html">← Return to Dashboard</a>
+                </div>
+            </body>
+            </html>
+        `);
             }
             // User is admin, serve the page
             next();
-        });
+        } catch (error) {
+            console.error('Admin check error:', error);
+            return res.status(403).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Access Denied</title>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Access Denied</h1>
+                <p>Error checking admin privileges.</p>
+            </div>
+        </body>
+        </html>
+            `);
+        }
     });
 }
 
@@ -514,155 +521,125 @@ function serveAdminPageOnly(req, res, next) {
 // ============================================
 
 // Helper function to check if user has sufficient credits
-function checkUserCredits(userId, creditsRequired = 1) {
-    return new Promise((resolve, reject) => {
-        db.get(`
-            SELECT credits_remaining, expiry_date
+async function checkUserCredits(userId, creditsRequired = 1) {
+    try {
+        const credits = await dbConfig.get(`
+            SELECT credits_remaining as "creditsRemaining", expiry_date as "expiryDate"
             FROM user_credits
             WHERE user_id = ?
-        `, [userId], (err, credits) => {
-            if (err) {
-                return reject(new Error('Failed to check credit balance'));
-            }
+        `, [userId]);
             
             if (!credits) {
-                return resolve({ 
-                    hasCredits: false, 
-                    remaining: 0, 
-                    message: 'No credits available. Please purchase a plan to continue.' 
-                });
-            }
-            
-            // Check if credits are expired
-            const now = new Date();
-            const expiryDate = credits.expiry_date ? new Date(credits.expiry_date) : null;
-            const isExpired = expiryDate && expiryDate < now;
-            
-            if (isExpired) {
-                return resolve({
-                    hasCredits: false,
-                    remaining: 0,
-                    message: 'Your credits have expired. Please purchase a new plan.'
-                });
-            }
-            
-            if (credits.credits_remaining < creditsRequired) {
-                return resolve({
-                    hasCredits: false,
-                    remaining: credits.credits_remaining,
-                    message: `Insufficient credits. You need ${creditsRequired} credit(s) but only have ${credits.credits_remaining} remaining.`
-                });
-            }
-            
-            resolve({
-                hasCredits: true,
-                remaining: credits.credits_remaining,
-                message: 'Credits available'
-            });
+        return resolve({ 
+            hasCredits: false, 
+            remaining: 0, 
+            message: 'No credits available. Please purchase a plan to continue.' 
         });
-    });
+            }
+            
+        // Check if credits are expired
+        const now = new Date();
+        const expiryDate = credits.expiryDate ? new Date(credits.expiryDate) : null;
+        const isExpired = expiryDate && expiryDate < now;
+        
+        if (isExpired) {
+            return {
+        hasCredits: false,
+        remaining: 0,
+        message: 'Your credits have expired. Please purchase a new plan.'
+            };
+        }
+        
+        if (credits.creditsRemaining < creditsRequired) {
+            return {
+        hasCredits: false,
+        remaining: credits.creditsRemaining,
+        message: `Insufficient credits. You need ${creditsRequired} credit(s) but have ${credits.creditsRemaining}.`
+            };
+        }
+        
+        return {
+            hasCredits: true,
+            remaining: credits.creditsRemaining,
+            message: 'Credits available'
+        };
+    } catch (error) {
+        console.error('Credit check error:', error);
+        throw new Error('Failed to check credit balance');
+    }
 }
 
 // Helper function to deduct credits from user account
-function deductCredits(userId, creditsToDeduct = 1, actionType = 'cover_letter_generation', metadata = {}) {
-    return new Promise((resolve, reject) => {
-        db.serialize(() => {
-            db.run('BEGIN TRANSACTION');
-            
-            // Deduct from user_credits
-            db.run(`
-                UPDATE user_credits
-                SET credits_remaining = credits_remaining - ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = ?
-            `, [creditsToDeduct, userId], function(err) {
-                if (err) {
-                    db.run('ROLLBACK');
-                    return reject(new Error('Failed to deduct credits'));
-                }
-                
-                // Record in credit_usage_history
-                db.run(`
-                    INSERT INTO credit_usage_history
-                    (user_id, credits_used, action_type, company_name, position, recipient_email)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                `, [
-                    userId, 
-                    creditsToDeduct, 
-                    actionType, 
-                    metadata.companyName || null, 
-                    metadata.position || null, 
-                    metadata.recipientEmail || null
-                ], function(err) {
-                    if (err) {
-                        db.run('ROLLBACK');
-                        return reject(new Error('Failed to record credit usage'));
-                    }
-                    
-                    // Update monthly stats
-                    const now = new Date();
-                    const month = now.getMonth() + 1; // 1-12
-                    const year = now.getFullYear();
-                    
-                    db.run(`
-                        INSERT INTO monthly_usage_stats (user_id, month, year, credits_used, letters_generated)
-                        VALUES (?, ?, ?, ?, 1)
-                        ON CONFLICT(user_id, month, year) DO UPDATE SET
-                            credits_used = credits_used + ?,
-                            letters_generated = letters_generated + 1,
-                            updated_at = CURRENT_TIMESTAMP
-                    `, [userId, month, year, creditsToDeduct, creditsToDeduct], function(err) {
-                        if (err) {
-                            db.run('ROLLBACK');
-                            return reject(new Error('Failed to update monthly stats'));
-                        }
-                        
-                        db.run('COMMIT', (err) => {
-                            if (err) {
-                                db.run('ROLLBACK');
-                                return reject(new Error('Transaction commit failed'));
-                            }
-                            
-                            // Get updated balance
-                            db.get('SELECT credits_remaining FROM user_credits WHERE user_id = ?', 
-                                [userId], (err, result) => {
-                                    if (err) {
-                                        return reject(new Error('Failed to get updated balance'));
-                                    }
-                                    resolve({
-                                        success: true,
-                                        remainingCredits: result ? result.credits_remaining : 0
-                                    });
-                                }
-                            );
-                        });
-                    });
-                });
-            });
-        });
-    });
+async function deductCredits(userId, creditsToDeduct = 1, actionType = 'cover_letter_generation', metadata = {}) {
+    try {
+        // Deduct from user_credits
+        await dbConfig.run(`
+            UPDATE user_credits
+            SET credits_remaining = credits_remaining - ?,
+        updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        `, [creditsToDeduct, userId]);
+        
+        // Record in credit_usage_history
+        await dbConfig.run(`
+            INSERT INTO credit_usage_history
+            (user_id, credits_used, action_type, company_name, position, recipient_email)
+            VALUES (?, ?, ?, ?, ?, ?)
+        `, [
+            userId, 
+            creditsToDeduct, 
+            actionType, 
+            metadata.companyName || null, 
+            metadata.position || null, 
+            metadata.recipientEmail || null
+        ]);
+        
+        // Update monthly stats
+        const now = new Date();
+        const month = now.getMonth() + 1; // 1-12
+        const year = now.getFullYear();
+        
+        await dbConfig.run(`
+            INSERT INTO monthly_usage_stats (user_id, month, year, credits_used, letters_generated)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT(user_id, month, year) DO UPDATE SET
+        credits_used = credits_used + ?,
+        letters_generated = letters_generated + 1,
+        updated_at = CURRENT_TIMESTAMP
+        `, [userId, month, year, creditsToDeduct, creditsToDeduct]);
+        
+        // Get updated balance
+        const result = await dbConfig.get('SELECT credits_remaining as "creditsRemaining" FROM user_credits WHERE user_id = ?', [userId]);
+        
+        return {
+            success: true,
+            remainingCredits: result ? result.creditsRemaining : 0
+        };
+    } catch (error) {
+        console.error('Deduct credits error:', error);
+        throw new Error('Failed to deduct credits: ' + error.message);
+    }
 }
 
 // Helper function to update monthly sent counter
-function updateMonthlySent(userId) {
+async function updateMonthlySent(userId) {
     const now = new Date();
     const month = now.getMonth() + 1;
     const year = now.getFullYear();
     
-    return new Promise((resolve, reject) => {
-        db.run(`
+    try {
+        await dbConfig.run(`
             INSERT INTO monthly_usage_stats (user_id, month, year, letters_sent)
             VALUES (?, ?, ?, 1)
             ON CONFLICT(user_id, month, year) DO UPDATE SET
-                letters_sent = letters_sent + 1,
-                updated_at = CURRENT_TIMESTAMP
-        `, [userId, month, year], function(err) {
-            if (err) {
-                return reject(err);
-            }
-            resolve({ success: true });
-        });
-    });
+        letters_sent = letters_sent + 1,
+        updated_at = CURRENT_TIMESTAMP
+        `, [userId, month, year]);
+        return { success: true };
+    } catch (error) {
+        console.error('Update monthly sent error:', error);
+        throw new Error('Failed to update monthly sent counter');
+    }
 }
 
 // ============================================
@@ -703,16 +680,16 @@ app.post('/api/auth/register', async (req, res) => {
         // Give 2 free credits to new user
         try {
             await dbConfig.run(
-                'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
-                [userId, 2, 2]
+        'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
+        [userId, 2, 2]
             );
             
             // Log the credit transaction
             await dbConfig.run(
-                `INSERT INTO credit_transactions 
-                (user_id, transaction_type, credits_change, balance_after, description) 
-                VALUES (?, ?, ?, ?, ?)`,
-                [userId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+        `INSERT INTO credit_transactions 
+        (user_id, transaction_type, credits_change, balance_after, description) 
+        VALUES (?, ?, ?, ?, ?)`,
+        [userId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
             );
         } catch (creditErr) {
             console.error('Failed to add welcome credits:', creditErr);
@@ -769,10 +746,10 @@ app.post('/api/auth/login', async (req, res) => {
             success: true,
             token,
             user: {
-                id: user.id,
-                fullName: user.full_name,
-                email: user.email
-                }
+        id: user.id,
+        fullName: user.full_name,
+        email: user.email
+        }
         });
     } catch (error) {
         console.error('Login error:', error);
@@ -853,71 +830,63 @@ app.post('/api/auth/google', async (req, res) => {
         console.log('Google User Info:', { email: googleUser.email, name: googleUser.name });
         
         // Find or create user in database
-        db.get('SELECT * FROM users WHERE email = ?', [googleUser.email], async (err, user) => {
-            if (err) {
-                console.error('Database error:', err);
-                return res.status(500).json({ error: 'Database error' });
-            }
+        try {
+            let user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [googleUser.email]);
 
             if (!user) {
-                // Create new user from Google data
-                const hashedPassword = await bcrypt.hash('google-oauth-' + googleUser.id, 10);
-                db.run(
-                    'INSERT INTO users (email, full_name, password, oauth_provider, google_access_token) VALUES (?, ?, ?, ?, ?)',
-                    [googleUser.email, googleUser.name, hashedPassword, 'google', accessToken],
-                    function(insertErr) {
-                        if (insertErr) {
-                            return res.status(500).json({ error: 'Failed to create user' });
-                        }
+        // Create new user from Google data
+        const hashedPassword = await bcrypt.hash('google-oauth-' + googleUser.id, 10);
+        const result = await dbConfig.run(
+            'INSERT INTO users (email, full_name, password, oauth_provider, google_access_token) VALUES (?, ?, ?, ?, ?) RETURNING id',
+            [googleUser.email, googleUser.name, hashedPassword, 'google', accessToken]
+        );
 
-                        // Generate JWT
-                        const token = jwt.sign(
-                            { id: this.lastID, email: googleUser.email },
-                            JWT_SECRET,
-                            { expiresIn: '24h' }
-                        );
+        const newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
 
-                        res.json({
-                            success: true,
-                            token,
-                            user: {
-                                id: this.lastID,
-                                fullName: googleUser.name,
-                                email: googleUser.email
-                            }
-                        });
-                    }
-                );
-            } else {
-                // User exists, update OAuth tokens
-                db.run(
-                    'UPDATE users SET oauth_provider = ?, google_access_token = ? WHERE id = ?',
-                    ['google', accessToken, user.id],
-                    (updateErr) => {
-                        if (updateErr) {
-                            console.error('Error updating OAuth tokens:', updateErr);
-                        }
-                        
-                        // Generate JWT
-                        const token = jwt.sign(
-                            { id: user.id, email: user.email },
-                            JWT_SECRET,
-                            { expiresIn: '24h' }
-                        );
+        // Generate JWT
+        const token = jwt.sign(
+            { id: newUserId, email: googleUser.email },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
 
-                        res.json({
-                            success: true,
-                            token,
-                            user: {
-                                id: user.id,
-                                fullName: user.full_name,
-                                email: user.email
-                            }
-                        });
-                    }
-                );
+        return res.json({
+            success: true,
+            token,
+            user: {
+                id: newUserId,
+                fullName: googleUser.name,
+                email: googleUser.email
             }
         });
+            } else {
+        // User exists, update OAuth tokens
+        await dbConfig.run(
+            'UPDATE users SET oauth_provider = ?, google_access_token = ? WHERE id = ?',
+            ['google', accessToken, user.id]
+        );
+        
+        // Generate JWT
+        const token = jwt.sign(
+            { id: user.id, email: user.email },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        return res.json({
+            success: true,
+            token,
+            user: {
+                id: user.id,
+                fullName: user.full_name,
+                email: user.email
+            }
+        });
+            }
+        } catch (error) {
+            console.error('Database error:', error);
+            return res.status(500).json({ error: 'Database error' });
+        }
     } catch (error) {
         console.error('Google OAuth error:', error);
         res.status(500).json({ error: 'Server error' });
@@ -974,39 +943,39 @@ app.post('/api/upload-profile', authenticateToken, upload.fields([
         // Process photo to circular format if uploaded
         if (req.files['photo']) {
             try {
-                const photoFile = req.files['photo'][0];
-                const size = 500; // Output size in pixels
-                
-                // Read the uploaded image
-                const imageBuffer = await fs.readFile(photoFile.path);
-                
-                // Create circular mask
-                const circularMask = Buffer.from(
-                    `<svg width="${size}" height="${size}">
-                        <circle cx="${size/2}" cy="${size/2}" r="${size/2}" fill="white"/>
-                    </svg>`
-                );
-                
-                // Process image: resize, composite with circular mask
-                const circularImage = await sharp(imageBuffer)
-                    .resize(size, size, { 
-                        fit: 'cover',
-                        position: 'center'
-                    })
-                    .composite([{
-                        input: circularMask,
-                        blend: 'dest-in'
-                    }])
-                    .png()
-                    .toBuffer();
-                
-                // Save the circular image
-                await fs.writeFile(photoFile.path, circularImage);
-                console.log('✅ Converted photo to circular format');
-                
+        const photoFile = req.files['photo'][0];
+        const size = 500; // Output size in pixels
+        
+        // Read the uploaded image
+        const imageBuffer = await fs.readFile(photoFile.path);
+        
+        // Create circular mask
+        const circularMask = Buffer.from(
+            `<svg width="${size}" height="${size}">
+                <circle cx="${size/2}" cy="${size/2}" r="${size/2}" fill="white"/>
+            </svg>`
+        );
+        
+        // Process image: resize, composite with circular mask
+        const circularImage = await sharp(imageBuffer)
+            .resize(size, size, { 
+                fit: 'cover',
+                position: 'center'
+            })
+            .composite([{
+                input: circularMask,
+                blend: 'dest-in'
+            }])
+            .png()
+            .toBuffer();
+        
+        // Save the circular image
+        await fs.writeFile(photoFile.path, circularImage);
+        console.log('✅ Converted photo to circular format');
+        
             } catch (error) {
-                console.error('Error converting photo to circular:', error);
-                // Continue anyway - the upload still works
+        console.error('Error converting photo to circular:', error);
+        // Continue anyway - the upload still works
             }
         }
         
@@ -1040,22 +1009,22 @@ app.post('/api/upload-profile', authenticateToken, upload.fields([
             params.push(userId);
             const sql = `UPDATE users SET ${updates.join(', ')} WHERE id = ?`;
 
-            db.run(sql, params, function(err) {
-                if (err) {
-                    console.error('Database update error:', err);
-                    return res.status(500).json({ error: 'Failed to save file information' });
-                }
+            try {
+        await dbConfig.run(sql, params);
 
-                res.json({
-                    success: true,
-                    message: 'Files uploaded successfully',
-                    files,
-                });
-            });
+        res.json({
+            success: true,
+            message: 'Files uploaded successfully',
+            files,
+        });
+            } catch (err) {
+        console.error('Database update error:', err);
+        return res.status(500).json({ error: 'Failed to save file information' });
+            }
         } else {
             res.json({
-                success: true,
-                message: 'No files to upload',
+        success: true,
+        message: 'No files to upload',
             });
         }
     } catch (error) {
@@ -1069,22 +1038,22 @@ app.get('/api/users/profile', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     
     try {
-        const user = await dbConfig.get('SELECT full_name, email, resume_path, photo_path, signature_path, phone_number, address, date_of_birth, created_at FROM users WHERE id = ?', [userId]);
+        const user = await dbConfig.get('SELECT full_name as "fullName", email, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath", phone_number as "phoneNumber", address, date_of_birth as "dateOfBirth", created_at as "createdAt" FROM users WHERE id = ?', [userId]);
         
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
         
         res.json({
-            fullName: user.full_name,
+            fullName: user.fullName,
             email: user.email,
-            phone: user.phone_number,
+            phone: user.phoneNumber,
             address: user.address,
-            dateOfBirth: user.date_of_birth,
-            profileImage: user.photo_path ? `http://${req.get('host')}/${user.photo_path}` : null,
-            resume: user.resume_path ? `http://${req.get('host')}/${user.resume_path}` : null,
-            signature: user.signature_path ? `http://${req.get('host')}/${user.signature_path}` : null,
-            createdAt: user.created_at
+            dateOfBirth: user.dateOfBirth,
+            profileImage: user.photoPath ? `http://${req.get('host')}/${user.photoPath}` : null,
+            resume: user.resumePath ? `http://${req.get('host')}/${user.resumePath}` : null,
+            signature: user.signaturePath ? `http://${req.get('host')}/${user.signaturePath}` : null,
+            createdAt: user.createdAt
         });
     } catch (err) {
         return res.status(500).json({ error: err.message });
@@ -1296,9 +1265,9 @@ app.post('/api/users/recipients', authenticateToken, async (req, res) => {
         
         if (validRecipients.length === 0) {
             return res.json({
-                success: true,
-                message: 'Recipients cleared successfully',
-                recipientsCount: 0
+        success: true,
+        message: 'Recipients cleared successfully',
+        recipientsCount: 0
             });
         }
 
@@ -1306,13 +1275,13 @@ app.post('/api/users/recipients', authenticateToken, async (req, res) => {
 
         for (const recipient of validRecipients) {
             try {
-                await dbConfig.run(
-                    'INSERT INTO recipients (user_id, email, website, position) VALUES (?, ?, ?, ?)',
-                    [userId, recipient.email, recipient.website, recipient.position || '']
-                );
-                insertedCount++;
+        await dbConfig.run(
+            'INSERT INTO recipients (user_id, email, website, position) VALUES (?, ?, ?, ?)',
+            [userId, recipient.email, recipient.website, recipient.position || '']
+        );
+        insertedCount++;
             } catch (err) {
-                console.error('Error inserting recipient:', err);
+        console.error('Error inserting recipient:', err);
             }
         }
 
@@ -1369,13 +1338,13 @@ app.post('/api/users/application-history', authenticateToken, async (req, res) =
         let inserted = 0;
         for (const app of applicationHistory) {
             try {
-                await dbConfig.run(
-                    'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                    [userId, app.companyName || '', app.position || '', app.recipientEmail || '', app.sentDate || new Date().toISOString(), app.replyReceived ? 1 : 0, app.replyDate || null]
-                );
-                inserted++;
+        await dbConfig.run(
+            'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [userId, app.companyName || '', app.position || '', app.recipientEmail || '', app.sentDate || new Date().toISOString(), app.replyReceived ? 1 : 0, app.replyDate || null]
+        );
+        inserted++;
             } catch (err) {
-                console.error('Error inserting application history:', err);
+        console.error('Error inserting application history:', err);
             }
         }
 
@@ -1396,7 +1365,7 @@ app.get('/api/users/application-history', authenticateToken, async (req, res) =>
         const userId = req.user.id;
 
         const history = await dbConfig.query(
-            'SELECT id, company_name as companyName, position, recipient_email as recipientEmail, sent_date as sentDate, reply_received as replyReceived, reply_date as replyDate FROM application_history WHERE user_id = ? ORDER BY sent_date DESC',
+            'SELECT id, company_name as "companyName", position, recipient_email as "recipientEmail", sent_date as "sentDate", reply_received as "replyReceived", reply_date as "replyDate" FROM application_history WHERE user_id = ? ORDER BY sent_date DESC',
             [userId]
         );
 
@@ -1436,29 +1405,29 @@ app.post('/api/users/review-cover-letters', authenticateToken, async (req, res) 
         
         for (const [key, letter] of entries) {
             try {
-                await dbConfig.run(
-                    'INSERT INTO review_cover_letters (user_id, letter_key, company_name, recipient_email, cover_letter_html, subject, address, date, position, locations, generated, sent, sent_date, stored_recipient_email, stored_recipient_website) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    [
-                        userId,
-                        key,
-                        letter.companyName || '',
-                        letter.recipientEmail || '',
-                        letter.coverLetterHtml || '',
-                        letter.subject || '',
-                        letter.address || '',
-                        letter.date || '',
-                        letter.position || '',
-                        letter.locations ? JSON.stringify(letter.locations) : null,
-                        letter.generated ? 1 : 0,
-                        letter.sent ? 1 : 0,
-                        letter.sentDate || null,
-                        letter.storedRecipientEmail || '',
-                        letter.storedRecipientWebsite || ''
-                    ]
-                );
-                inserted++;
+        await dbConfig.run(
+            'INSERT INTO review_cover_letters (user_id, letter_key, company_name, recipient_email, cover_letter_html, subject, address, date, position, locations, generated, sent, sent_date, stored_recipient_email, stored_recipient_website) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [
+                userId,
+                key,
+                letter.companyName || '',
+                letter.recipientEmail || '',
+                letter.coverLetterHtml || '',
+                letter.subject || '',
+                letter.address || '',
+                letter.date || '',
+                letter.position || '',
+                letter.locations ? JSON.stringify(letter.locations) : null,
+                letter.generated ? 1 : 0,
+                letter.sent ? 1 : 0,
+                letter.sentDate || null,
+                letter.storedRecipientEmail || '',
+                letter.storedRecipientWebsite || ''
+            ]
+        );
+        inserted++;
             } catch (err) {
-                console.error('Error inserting review cover letter:', err);
+        console.error('Error inserting review cover letter:', err);
             }
         }
 
@@ -1487,19 +1456,19 @@ app.get('/api/users/review-cover-letters', authenticateToken, async (req, res) =
         const reviewCoverLetters = {};
         (letters || []).forEach(letter => {
             reviewCoverLetters[letter.letter_key] = {
-                companyName: letter.companyName,
-                recipientEmail: letter.recipientEmail,
-                coverLetterHtml: letter.coverLetterHtml,
-                subject: letter.subject,
-                address: letter.address,
-                date: letter.date,
-                position: letter.position,
-                locations: letter.locations ? JSON.parse(letter.locations) : null,
-                generated: letter.generated === 1,
-                sent: letter.sent === 1,
-                sentDate: letter.sentDate,
-                storedRecipientEmail: letter.storedRecipientEmail,
-                storedRecipientWebsite: letter.storedRecipientWebsite
+        companyName: letter.companyName,
+        recipientEmail: letter.recipientEmail,
+        coverLetterHtml: letter.coverLetterHtml,
+        subject: letter.subject,
+        address: letter.address,
+        date: letter.date,
+        position: letter.position,
+        locations: letter.locations ? JSON.parse(letter.locations) : null,
+        generated: letter.generated === 1,
+        sent: letter.sent === 1,
+        sentDate: letter.sentDate,
+        storedRecipientEmail: letter.storedRecipientEmail,
+        storedRecipientWebsite: letter.storedRecipientWebsite
             };
         });
 
@@ -1535,69 +1504,63 @@ app.get('/api/users/counters', authenticateToken, async (req, res) => {
 });
 
 // API endpoint to update user counters
-app.post('/api/users/counters', authenticateToken, (req, res) => {
-    const userId = req.user.id;
-    const { totalGenerated, totalSent } = req.body;
-    
-    db.run(
-        'UPDATE users SET total_generated = ?, total_sent = ? WHERE id = ?',
-        [totalGenerated || 0, totalSent || 0, userId],
-        function(err) {
-            if (err) {
-                console.error('Error updating counters:', err);
-                return res.status(500).json({ error: 'Failed to update counters' });
-            }
-            res.json({
-                success: true,
-                totalGenerated: totalGenerated || 0,
-                totalSent: totalSent || 0
-            });
-        }
-    );
+app.post('/api/users/counters', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { totalGenerated, totalSent } = req.body;
+        
+        await dbConfig.run(
+            'UPDATE users SET total_generated = ?, total_sent = ? WHERE id = ?',
+            [totalGenerated || 0, totalSent || 0, userId]
+        );
+        
+        res.json({
+            success: true,
+            totalGenerated: totalGenerated || 0,
+            totalSent: totalSent || 0
+        });
+    } catch (error) {
+        console.error('Error updating counters:', error);
+        res.status(500).json({ error: 'Failed to update counters' });
+    }
 });
 
 // API endpoint to increment generated counter
-app.post('/api/users/counters/increment-generated', authenticateToken, (req, res) => {
-    const userId = req.user.id;
-    
-    db.run(
-        'UPDATE users SET total_generated = total_generated + 1 WHERE id = ?',
-        [userId],
-        function(err) {
-            if (err) {
-                console.error('Error incrementing generated counter:', err);
-                return res.status(500).json({ error: 'Failed to increment counter' });
-            }
-            
-            // Fetch updated counter
-            db.get('SELECT total_generated FROM users WHERE id = ?', [userId], (err, row) => {
-                if (err) return res.status(500).json({ error: 'Failed to fetch updated counter' });
-                res.json({ success: true, totalGenerated: row.total_generated });
-            });
-        }
-    );
+app.post('/api/users/counters/increment-generated', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        await dbConfig.run(
+            'UPDATE users SET total_generated = total_generated + 1 WHERE id = ?',
+            [userId]
+        );
+        
+        // Fetch updated counter
+        const row = await dbConfig.get('SELECT total_generated FROM users WHERE id = ?', [userId]);
+        res.json({ success: true, totalGenerated: row.total_generated });
+    } catch (error) {
+        console.error('Error incrementing generated counter:', error);
+        res.status(500).json({ error: 'Failed to increment counter' });
+    }
 });
 
 // API endpoint to increment sent counter
-app.post('/api/users/counters/increment-sent', authenticateToken, (req, res) => {
-    const userId = req.user.id;
-    
-    db.run(
-        'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
-        [userId],
-        function(err) {
-            if (err) {
-                console.error('Error incrementing sent counter:', err);
-                return res.status(500).json({ error: 'Failed to increment counter' });
-            }
-            
-            // Fetch updated counter
-            db.get('SELECT total_sent FROM users WHERE id = ?', [userId], (err, row) => {
-                if (err) return res.status(500).json({ error: 'Failed to fetch updated counter' });
-                res.json({ success: true, totalSent: row.total_sent });
-            });
-        }
-    );
+app.post('/api/users/counters/increment-sent', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        await dbConfig.run(
+            'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
+            [userId]
+        );
+        
+        // Fetch updated counter
+        const row = await dbConfig.get('SELECT total_sent FROM users WHERE id = ?', [userId]);
+        res.json({ success: true, totalSent: row.total_sent });
+    } catch (error) {
+        console.error('Error incrementing sent counter:', error);
+        res.status(500).json({ error: 'Failed to increment counter' });
+    }
 });
 
 // ============================================
@@ -1629,11 +1592,11 @@ app.get('/api/user/credits', authenticateToken, async (req, res) => {
         
         const credits = await dbConfig.get(`
             SELECT 
-                uc.credits_remaining,
-                uc.credits_total,
-                uc.last_purchase_date,
-                uc.expiry_date,
-                uc.created_at
+        uc.credits_remaining,
+        uc.credits_total,
+        uc.last_purchase_date,
+        uc.expiry_date,
+        uc.created_at
             FROM user_credits uc
             WHERE uc.user_id = ?
         `, [userId]);
@@ -1641,18 +1604,18 @@ app.get('/api/user/credits', authenticateToken, async (req, res) => {
         // If no credits record exists, create one with 0 credits
         if (!credits) {
             await dbConfig.run('INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, 0, 0)', 
-                [userId]
+        [userId]
             );
             return res.json({
-                success: true,
-                balance: 0, // For backward compatibility
-                credits: {
-                    remaining: 0,
-                    total: 0,
-                    lastPurchaseDate: null,
-                    expiryDate: null,
-                    isExpired: false
-                }
+        success: true,
+        balance: 0, // For backward compatibility
+        credits: {
+            remaining: 0,
+            total: 0,
+            lastPurchaseDate: null,
+            expiryDate: null,
+            isExpired: false
+        }
             });
         }
         
@@ -1664,11 +1627,11 @@ app.get('/api/user/credits', authenticateToken, async (req, res) => {
             success: true,
             balance: isExpired ? 0 : credits.credits_remaining, // For backward compatibility
             credits: {
-                remaining: isExpired ? 0 : credits.credits_remaining,
-                total: credits.credits_total,
-                lastPurchaseDate: credits.last_purchase_date,
-                expiryDate: credits.expiry_date,
-                isExpired: isExpired
+        remaining: isExpired ? 0 : credits.credits_remaining,
+        total: credits.credits_total,
+        lastPurchaseDate: credits.last_purchase_date,
+        expiryDate: credits.expiry_date,
+        isExpired: isExpired
             }
         });
     } catch (error) {
@@ -1678,7 +1641,7 @@ app.get('/api/user/credits', authenticateToken, async (req, res) => {
 });
 
 // API endpoint to purchase credits (simulated for now)
-app.post('/api/purchase-credits', authenticateToken, (req, res) => {
+app.post('/api/purchase-credits', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const { planId, paymentMethod, transactionId } = req.body;
     
@@ -1686,12 +1649,9 @@ app.post('/api/purchase-credits', authenticateToken, (req, res) => {
         return res.status(400).json({ error: 'Plan ID is required' });
     }
     
-    // Get plan details
-    db.get('SELECT * FROM plans WHERE id = ? AND is_active = 1', [planId], (err, plan) => {
-        if (err) {
-            console.error('Error fetching plan:', err);
-            return res.status(500).json({ error: 'Failed to fetch plan details' });
-        }
+    try {
+        // Get plan details
+        const plan = await dbConfig.get('SELECT * FROM plans WHERE id = ? AND is_active = 1', [planId]);
         
         if (!plan) {
             return res.status(404).json({ error: 'Plan not found' });
@@ -1700,86 +1660,65 @@ app.post('/api/purchase-credits', authenticateToken, (req, res) => {
         const now = new Date();
         const validUntil = new Date(now.getTime() + plan.validity_days * 24 * 60 * 60 * 1000);
         
-        // Begin transaction
-        db.serialize(() => {
-            // Insert transaction record
-            db.run(`
-                INSERT INTO credit_transactions 
-                (user_id, plan_id, credits_purchased, amount_paid, transaction_status, valid_from, valid_until, payment_method, transaction_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `, [userId, planId, plan.credits, plan.price, 'completed', now.toISOString(), validUntil.toISOString(), paymentMethod || 'simulated', transactionId || `TXN-${Date.now()}`], 
-            function(err) {
-                if (err) {
-                    console.error('Error recording transaction:', err);
-                    return res.status(500).json({ error: 'Failed to record transaction' });
-                }
-                
-                // Update or create user credits
-                db.get('SELECT * FROM user_credits WHERE user_id = ?', [userId], (err, userCredits) => {
-                    if (err) {
-                        console.error('Error fetching user credits:', err);
-                        return res.status(500).json({ error: 'Failed to update credits' });
-                    }
-                    
-                    if (!userCredits) {
-                        // Create new credits record
-                        db.run(`
-                            INSERT INTO user_credits (user_id, credits_remaining, credits_total, last_purchase_date, expiry_date)
-                            VALUES (?, ?, ?, ?, ?)
-                        `, [userId, plan.credits, plan.credits, now.toISOString(), validUntil.toISOString()], 
-                        function(err) {
-                            if (err) {
-                                console.error('Error creating user credits:', err);
-                                return res.status(500).json({ error: 'Failed to create credits' });
-                            }
-                            res.json({
-                                success: true,
-                                message: 'Credits purchased successfully',
-                                credits: {
-                                    remaining: plan.credits,
-                                    total: plan.credits,
-                                    expiryDate: validUntil.toISOString()
-                                }
-                            });
-                        });
-                    } else {
-                        // Update existing credits (add to existing balance if not expired)
-                        const currentExpiry = userCredits.expiry_date ? new Date(userCredits.expiry_date) : null;
-                        const isExpired = currentExpiry && currentExpiry < now;
-                        
-                        const newRemaining = isExpired ? plan.credits : userCredits.credits_remaining + plan.credits;
-                        const newTotal = userCredits.credits_total + plan.credits;
-                        const newExpiry = (currentExpiry && !isExpired && currentExpiry > validUntil) ? currentExpiry : validUntil;
-                        
-                        db.run(`
-                            UPDATE user_credits 
-                            SET credits_remaining = ?, credits_total = ?, last_purchase_date = ?, expiry_date = ?, updated_at = CURRENT_TIMESTAMP
-                            WHERE user_id = ?
-                        `, [newRemaining, newTotal, now.toISOString(), newExpiry.toISOString(), userId], 
-                        function(err) {
-                            if (err) {
-                                console.error('Error updating user credits:', err);
-                                return res.status(500).json({ error: 'Failed to update credits' });
-                            }
-                            res.json({
-                                success: true,
-                                message: 'Credits purchased successfully',
-                                credits: {
-                                    remaining: newRemaining,
-                                    total: newTotal,
-                                    expiryDate: newExpiry.toISOString()
-                                }
-                            });
-                        });
-                    }
-                });
+        // Insert transaction record
+        await dbConfig.run(`
+            INSERT INTO credit_transactions 
+            (user_id, plan_id, credits_purchased, amount_paid, transaction_status, valid_from, valid_until, payment_method, transaction_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [userId, planId, plan.credits, plan.price, 'completed', now.toISOString(), validUntil.toISOString(), paymentMethod || 'simulated', transactionId || `TXN-${Date.now()}`]);
+        
+        // Update or create user credits
+        const userCredits = await dbConfig.get('SELECT * FROM user_credits WHERE user_id = ?', [userId]);
+        
+        if (!userCredits) {
+            // Create new credits record
+            await dbConfig.run(`
+        INSERT INTO user_credits (user_id, credits_remaining, credits_total, last_purchase_date, expiry_date)
+        VALUES (?, ?, ?, ?, ?)
+            `, [userId, plan.credits, plan.credits, now.toISOString(), validUntil.toISOString()]);
+            
+            return res.json({
+        success: true,
+        message: 'Credits purchased successfully',
+        credits: {
+            remaining: plan.credits,
+            total: plan.credits,
+            expiryDate: validUntil.toISOString()
+        }
             });
-        });
-    });
+        } else {
+            // Update existing credits (add to existing balance if not expired)
+            const currentExpiry = userCredits.expiry_date ? new Date(userCredits.expiry_date) : null;
+            const isExpired = currentExpiry && currentExpiry < now;
+            
+            const newRemaining = isExpired ? plan.credits : userCredits.credits_remaining + plan.credits;
+            const newTotal = userCredits.credits_total + plan.credits;
+            const newExpiry = (currentExpiry && !isExpired && currentExpiry > validUntil) ? currentExpiry : validUntil;
+            
+            await dbConfig.run(`
+        UPDATE user_credits 
+        SET credits_remaining = ?, credits_total = ?, last_purchase_date = ?, expiry_date = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+            `, [newRemaining, newTotal, now.toISOString(), newExpiry.toISOString(), userId]);
+            
+            return res.json({
+        success: true,
+        message: 'Credits purchased successfully',
+        credits: {
+            remaining: newRemaining,
+            total: newTotal,
+            expiryDate: newExpiry.toISOString()
+        }
+            });
+        }
+    } catch (error) {
+        console.error('Purchase credits error:', error);
+        return res.status(500).json({ error: 'Failed to purchase credits' });
+    }
 });
 
 // API endpoint to get user's monthly usage statistics
-app.get('/api/user/usage-stats', authenticateToken, (req, res) => {
+app.get('/api/user/usage-stats', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     
     const currentDate = new Date();
@@ -1788,206 +1727,193 @@ app.get('/api/user/usage-stats', authenticateToken, (req, res) => {
     const firstDayOfMonth = new Date(currentYear, currentMonth - 1, 1);
     const lastDayOfMonth = new Date(currentYear, currentMonth, 0);
     
-    // Get user's credit info
-    db.get('SELECT credits_remaining, credits_total, expiry_date FROM user_credits WHERE user_id = ?', 
-        [userId], (err, credits) => {
-            if (err) {
-                console.error('Error fetching credits:', err);
+    try {
+        // Get user's credit info
+        const credits = await dbConfig.get('SELECT credits_remaining as "creditsRemaining", credits_total as "creditsTotal", expiry_date as "expiryDate" FROM user_credits WHERE user_id = ?', [userId]);
+        
+        const creditBalance = credits?.creditsRemaining || 0;
+        const creditTotal = credits?.creditsTotal || 0;
+        const expiryDate = credits?.expiryDate;
+        
+        // Calculate expiring credits (credits expiring within 30 days)
+        let expiringCredits = 0;
+        let creditExpiryDate = null;
+        if (expiryDate) {
+            const expiryDateObj = new Date(expiryDate);
+            const daysUntilExpiry = Math.floor((expiryDateObj - currentDate) / (1000 * 60 * 60 * 24));
+            if (daysUntilExpiry <= 30 && daysUntilExpiry >= 0) {
+        expiringCredits = creditBalance;
+        creditExpiryDate = expiryDate;
             }
-            
-            const creditBalance = credits?.credits_remaining || 0;
-            const creditTotal = credits?.credits_total || 0;
-            const expiryDate = credits?.expiry_date;
-            
-            // Calculate expiring credits (credits expiring within 30 days)
-            let expiringCredits = 0;
-            let creditExpiryDate = null;
-            if (expiryDate) {
-                const expiryDateObj = new Date(expiryDate);
-                const daysUntilExpiry = Math.floor((expiryDateObj - currentDate) / (1000 * 60 * 60 * 24));
-                if (daysUntilExpiry <= 30 && daysUntilExpiry >= 0) {
-                    expiringCredits = creditBalance;
-                    creditExpiryDate = expiryDate;
-                }
-            }
-            
-            // Get user's total generated and sent from users table
-            db.get('SELECT total_generated, total_sent FROM users WHERE id = ?', [userId], (err, userStats) => {
-                if (err) {
-                    console.error('Error fetching user stats:', err);
-                }
-                
-                const totalGenerated = userStats?.total_generated || 0;
-                const totalSent = userStats?.total_sent || 0;
-                
-                // Get credit history (transactions)
-                db.all(`
-                    SELECT 
-                        description,
-                        credits_change as creditsChange,
-                        balance_after as balanceAfter,
-                        transaction_type as transactionType,
-                        created_at as transactionDate
-                    FROM credit_transactions
-                    WHERE user_id = ?
-                    ORDER BY created_at DESC
-                    LIMIT 20
-                `, [userId], (err, transactions) => {
-                    if (err) {
-                        console.error('Error fetching credit transactions:', err);
-                    }
-                    
-                    // Get date-wise activity for last 30 days
-                    const thirtyDaysAgo = new Date();
-                    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-                    
-                    db.all(`
-                        SELECT 
-                            DATE(created_at) as date,
-                            SUM(CASE WHEN transaction_type = 'deduction' THEN ABS(credits_change) ELSE 0 END) as creditsUsed,
-                            MAX(balance_after) as creditsAvailable
-                        FROM credit_transactions
-                        WHERE user_id = ? AND created_at >= ?
-                        GROUP BY DATE(created_at)
-                        ORDER BY date DESC
-                    `, [userId, thirtyDaysAgo.toISOString()], (err, dailyActivity) => {
-                        if (err) {
-                            console.error('Error fetching daily activity:', err);
-                        }
-                        
-                        // Create a map for quick lookup
-                        const activityMap = {};
-                        if (dailyActivity && dailyActivity.length > 0) {
-                            dailyActivity.forEach(day => {
-                                activityMap[day.date] = {
-                                    creditsUsed: day.creditsUsed || 0,
-                                    creditsAvailable: day.creditsAvailable || 0
-                                };
-                            });
-                        }
-                        
-                        // Generate date-wise data for last 30 days
-                        const dateWiseData = [];
-                        for (let i = 29; i >= 0; i--) {
-                            const date = new Date();
-                            date.setDate(date.getDate() - i);
-                            const dateStr = date.toISOString().split('T')[0];
-                            const dayData = activityMap[dateStr] || { creditsUsed: 0, creditsAvailable: creditBalance };
-                            
-                            dateWiseData.push({
-                                date: dateStr,
-                                dateFormatted: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-                                generated: 0, // Will be calculated from review_cover_letters
-                                sent: 0, // Will be calculated from review_cover_letters
-                                creditsUsed: dayData.creditsUsed,
-                                creditsAvailable: dayData.creditsAvailable
-                            });
-                        }
-                        
-                        // Get generated/sent counts per day from review_cover_letters
-                        db.all(`
-                            SELECT 
-                                DATE(created_at) as date,
-                                COUNT(*) as generated,
-                                SUM(CASE WHEN sent = 1 THEN 1 ELSE 0 END) as sent
-                            FROM review_cover_letters
-                            WHERE user_id = ? AND created_at >= ?
-                            GROUP BY DATE(created_at)
-                        `, [userId, thirtyDaysAgo.toISOString()], (err, letterStats) => {
-                            if (err) {
-                                console.error('Error fetching letter stats:', err);
-                            }
-                            
-                            // Merge letter stats into dateWiseData
-                            if (letterStats && letterStats.length > 0) {
-                                letterStats.forEach(stat => {
-                                    const dayIndex = dateWiseData.findIndex(d => d.date === stat.date);
-                                    if (dayIndex >= 0) {
-                                        dateWiseData[dayIndex].generated = stat.generated || 0;
-                                        dateWiseData[dayIndex].sent = stat.sent || 0;
-                                    }
-                                });
-                            }
-                            
-                            res.json({
-                                success: true,
-                                creditBalance: creditBalance,
-                                creditTotal: creditTotal,
-                                expiringCredits: expiringCredits,
-                                creditExpiryDate: creditExpiryDate,
-                                currentMonthUsage: {
-                                    totalGenerated: totalGenerated,
-                                    totalSent: totalSent,
-                                    monthlyGenerated: totalGenerated, // Show actual count
-                                    monthlySent: totalSent // Show actual count
-                                },
-                                creditHistory: transactions || [],
-                                dateWiseActivity: dateWiseData
-                            });
-                        });
-                    });
-                });
+        }
+        
+        // Get user's total generated and sent from users table
+        const userStats = await dbConfig.get('SELECT total_generated as "totalGenerated", total_sent as "totalSent" FROM users WHERE id = ?', [userId]);
+        
+        const totalGenerated = userStats?.totalGenerated || 0;
+        const totalSent = userStats?.totalSent || 0;
+        
+        // Get credit history (transactions)
+        const transactions = await dbConfig.query(`
+            SELECT 
+        description,
+        credits_change as "creditsChange",
+        balance_after as "balanceAfter",
+        transaction_type as "transactionType",
+        created_at as "transactionDate"
+            FROM credit_transactions
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT 20
+        `, [userId]);
+        
+        // Get date-wise activity for last 30 days
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        
+        const dailyActivity = await dbConfig.query(`
+            SELECT 
+        DATE(created_at) as date,
+        SUM(CASE WHEN transaction_type = 'deduction' THEN ABS(credits_change) ELSE 0 END) as "creditsUsed",
+        MAX(balance_after) as "creditsAvailable"
+            FROM credit_transactions
+            WHERE user_id = ? AND created_at >= ?
+            GROUP BY DATE(created_at)
+            ORDER BY date DESC
+        `, [userId, thirtyDaysAgo.toISOString()]);
+        
+        // Create a map for quick lookup
+        const activityMap = {};
+        if (dailyActivity && dailyActivity.length > 0) {
+            dailyActivity.forEach(day => {
+        activityMap[day.date] = {
+            creditsUsed: day.creditsUsed || 0,
+            creditsAvailable: day.creditsAvailable || 0
+        };
             });
         }
-    );
+        
+        // Generate date-wise data for last 30 days
+        const dateWiseData = [];
+        for (let i = 29; i >= 0; i--) {
+            const date = new Date();
+            date.setDate(date.getDate() - i);
+            const dateStr = date.toISOString().split('T')[0];
+            const dayData = activityMap[dateStr] || { creditsUsed: 0, creditsAvailable: creditBalance };
+            
+            dateWiseData.push({
+        date: dateStr,
+        dateFormatted: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        generated: 0, // Will be calculated from review_cover_letters
+        sent: 0, // Will be calculated from review_cover_letters
+        creditsUsed: dayData.creditsUsed,
+        creditsAvailable: dayData.creditsAvailable
+            });
+        }
+        
+        // Get generated/sent counts per day from review_cover_letters
+        const letterStats = await dbConfig.query(`
+            SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as generated,
+        SUM(CASE WHEN sent = 1 THEN 1 ELSE 0 END) as sent
+            FROM review_cover_letters
+            WHERE user_id = ? AND created_at >= ?
+            GROUP BY DATE(created_at)
+        `, [userId, thirtyDaysAgo.toISOString()]);
+        
+        // Merge letter stats into dateWiseData
+        if (letterStats && letterStats.length > 0) {
+            letterStats.forEach(stat => {
+        const dayIndex = dateWiseData.findIndex(d => d.date === stat.date);
+        if (dayIndex >= 0) {
+            dateWiseData[dayIndex].generated = stat.generated || 0;
+            dateWiseData[dayIndex].sent = stat.sent || 0;
+        }
+            });
+        }
+        
+        res.json({
+            success: true,
+            credits: {
+                remaining: creditBalance,
+                total: creditTotal,
+                expiring: expiringCredits,
+                expiryDate: creditExpiryDate
+            },
+            currentMonth: {
+                month: currentMonth,
+                year: currentYear,
+                creditsUsed: creditTotal - creditBalance, // Credits used = total - remaining
+                lettersGenerated: totalGenerated,
+                lettersSent: totalSent
+            },
+            history: [], // Monthly history from monthly_usage_stats if needed
+            creditHistory: transactions || [],
+            dateWiseActivity: dateWiseData
+        });
+    } catch (error) {
+        console.error('Usage stats error:', error);
+        return res.status(500).json({ error: 'Failed to fetch usage statistics' });
+    }
 });
 
 // API endpoint to get detailed credit usage history
-app.get('/api/user/credit-history', authenticateToken, (req, res) => {
+app.get('/api/user/credit-history', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const { limit = 50 } = req.query;
     
-    db.all(`
-        SELECT 
-            id,
-            credits_used,
-            action_type,
-            company_name,
-            position,
-            recipient_email,
-            created_at
-        FROM credit_usage_history
-        WHERE user_id = ?
-        ORDER BY created_at DESC
-        LIMIT ?
-    `, [userId, parseInt(limit)], (err, history) => {
-        if (err) {
-            console.error('Error fetching credit history:', err);
-            return res.status(500).json({ error: 'Failed to fetch credit history' });
-        }
+    try {
+        const history = await dbConfig.query(`
+            SELECT 
+        id,
+        credits_used as "creditsUsed",
+        action_type as "actionType",
+        company_name as "companyName",
+        position,
+        recipient_email as "recipientEmail",
+        created_at as "createdAt"
+            FROM credit_usage_history
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+        `, [userId, parseInt(limit)]);
         
         res.json({ success: true, history: history || [] });
-    });
+    } catch (error) {
+        console.error('Error fetching credit history:', error);
+        return res.status(500).json({ error: 'Failed to fetch credit history' });
+    }
 });
 
 // API endpoint to get purchase/transaction history
-app.get('/api/user/purchase-history', authenticateToken, (req, res) => {
+app.get('/api/user/purchase-history', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     
-    db.all(`
-        SELECT 
-            ct.id,
-            ct.credits_purchased,
-            ct.amount_paid,
-            ct.transaction_status,
-            ct.transaction_date,
-            ct.valid_from,
-            ct.valid_until,
-            ct.payment_method,
-            ct.transaction_id,
-            p.name as plan_name
-        FROM credit_transactions ct
-        LEFT JOIN plans p ON ct.plan_id = p.id
-        WHERE ct.user_id = ?
-        ORDER BY ct.transaction_date DESC
-    `, [userId], (err, transactions) => {
-        if (err) {
-            console.error('Error fetching purchase history:', err);
-            return res.status(500).json({ error: 'Failed to fetch purchase history' });
-        }
+    try {
+        const transactions = await dbConfig.query(`
+            SELECT 
+        ct.id,
+        ct.credits_purchased as "creditsPurchased",
+        ct.amount_paid as "amountPaid",
+        ct.transaction_status as "transactionStatus",
+        ct.transaction_date as "transactionDate",
+        ct.valid_from as "validFrom",
+        ct.valid_until as "validUntil",
+        ct.payment_method as "paymentMethod",
+        ct.transaction_id as "transactionId",
+        p.name as "planName"
+            FROM credit_transactions ct
+            LEFT JOIN plans p ON ct.plan_id = p.id
+            WHERE ct.user_id = ?
+            ORDER BY ct.transaction_date DESC
+        `, [userId]);
         
         res.json({ success: true, transactions: transactions || [] });
-    });
+    } catch (error) {
+        console.error('Error fetching purchase history:', error);
+        return res.status(500).json({ error: 'Failed to fetch purchase history' });
+    }
 });
 
 // ============================================
@@ -1999,30 +1925,30 @@ app.get('/api/user-profile', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
 
-        const user = await dbConfig.get('SELECT full_name, email, resume_path, photo_path, signature_path, smtp_email, smtp_password, sender_name, date_of_birth, phone_number, address, created_at FROM users WHERE id = ?', [userId]);
+        const user = await dbConfig.get('SELECT full_name as "fullName", email, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath", smtp_email as "smtpEmail", smtp_password as "smtpPassword", sender_name as "senderName", date_of_birth as "dateOfBirth", phone_number as "phoneNumber", address, created_at as "createdAt" FROM users WHERE id = ?', [userId]);
 
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
 
         // Decrypt SMTP password before sending (only send masked version to frontend)
-        const decryptedPassword = user.smtp_password ? '********' : '';
+        const decryptedPassword = user.smtpPassword ? '********' : '';
 
         res.json({
             success: true,
             profile: {
-                fullName: user.full_name,
-                email: user.email,
-                resumePath: user.resume_path,
-                photoPath: user.photo_path,
-                signaturePath: user.signature_path,
-                smtpEmail: user.smtp_email,
-                smtpPassword: decryptedPassword, // Send masked password
-                senderName: user.sender_name,
-                dateOfBirth: user.date_of_birth,
-                phoneNumber: user.phone_number,
-                address: user.address,
-                createdAt: user.created_at,
+        fullName: user.fullName,
+        email: user.email,
+        resumePath: user.resumePath,
+        photoPath: user.photoPath,
+        signaturePath: user.signaturePath,
+        smtpEmail: user.smtpEmail,
+        smtpPassword: decryptedPassword, // Send masked password
+        senderName: user.senderName,
+        dateOfBirth: user.dateOfBirth,
+        phoneNumber: user.phoneNumber,
+        address: user.address,
+        createdAt: user.createdAt,
             }
         });
     } catch (error) {
@@ -2060,29 +1986,28 @@ app.post('/api/save-settings', authenticateToken, async (req, res) => {
 });
 
 // API endpoint to update user personal details (protected)
-app.post('/api/update-user-details', authenticateToken, (req, res) => {
-    const userId = req.user.id;
-    const { fullName, dateOfBirth, phoneNumber, address, city, country, zipcode } = req.body;
+app.post('/api/update-user-details', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { fullName, dateOfBirth, phoneNumber, address, city, country, zipcode } = req.body;
 
-    if (!fullName) {
-        return res.status(400).json({ error: 'Full name is required' });
-    }
-
-    db.run(
-        'UPDATE users SET full_name = ?, date_of_birth = ?, phone_number = ?, address = ?, city = ?, country = ?, zipcode = ? WHERE id = ?',
-        [fullName, dateOfBirth || null, phoneNumber || null, address || null, city || null, country || null, zipcode || null, userId],
-        function(err) {
-            if (err) {
-                console.error('User details update error:', err);
-                return res.status(500).json({ error: 'Failed to update user details' });
-            }
-
-            res.json({
-                success: true,
-                message: 'User details updated successfully'
-            });
+        if (!fullName) {
+            return res.status(400).json({ error: 'Full name is required' });
         }
-    );
+
+        await dbConfig.run(
+            'UPDATE users SET full_name = ?, date_of_birth = ?, phone_number = ?, address = ? WHERE id = ?',
+            [fullName, dateOfBirth || null, phoneNumber || null, address || null, userId]
+        );
+
+        res.json({
+            success: true,
+            message: 'User details updated successfully'
+        });
+    } catch (error) {
+        console.error('User details update error:', error);
+        res.status(500).json({ error: 'Failed to update user details' });
+    }
 });
 
 // Helper function to create cover letter (from create-cover-letter.js)
@@ -2352,10 +2277,10 @@ async function createCoverLetter(companyName, position, recipientEmail) {
             const testWidth = font.widthOfTextAtSize(testLine, fontSize);
 
             if (testWidth > maxWidth && currentLine) {
-                lines.push(currentLine);
-                currentLine = word;
+        lines.push(currentLine);
+        currentLine = word;
             } else {
-                currentLine = testLine;
+        currentLine = testLine;
             }
         }
 
@@ -2373,11 +2298,11 @@ async function createCoverLetter(companyName, position, recipientEmail) {
         const lines = wrapText(para, contentWidth, helvetica, paragraphFontSize);
         for (const line of lines) {
             page.drawText(line, {
-                x: contentX,
-                y: contentY,
-                size: paragraphFontSize,
-                font: helvetica,
-                color: rgb(0, 0, 0),
+        x: contentX,
+        y: contentY,
+        size: paragraphFontSize,
+        font: helvetica,
+        color: rgb(0, 0, 0),
             });
             contentY -= lineHeight;
         }
@@ -2467,13 +2392,13 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             
             // Estimate paragraph heights (rough calculation)
             for (const paraHtml of paragraphs) {
-                const plainText = cheerio.load(`<div>${paraHtml}</div>`).text().trim();
-                if (!plainText) continue;
-                
-                // Estimate lines needed (approx 80 chars per line at font size 10)
-                const charsPerLine = 75;
-                const numLines = Math.ceil(plainText.length / charsPerLine);
-                estimatedContentHeight += (numLines * lineHeight) + 10; // + paragraph spacing
+        const plainText = cheerio.load(`<div>${paraHtml}</div>`).text().trim();
+        if (!plainText) continue;
+        
+        // Estimate lines needed (approx 80 chars per line at font size 10)
+        const charsPerLine = 75;
+        const numLines = Math.ceil(plainText.length / charsPerLine);
+        estimatedContentHeight += (numLines * lineHeight) + 10; // + paragraph spacing
             }
             
             estimatedContentHeight += 10; // Before closing
@@ -2488,9 +2413,9 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             
             // Create PDF with calculated size - autoFirstPage false to control page creation
             const doc = new PDFKit({
-                size: [pageWidth, pageHeight],
-                margins: { top: 0, bottom: 0, left: 0, right: 0 },
-                autoFirstPage: false
+        size: [pageWidth, pageHeight],
+        margins: { top: 0, bottom: 0, left: 0, right: 0 },
+        autoFirstPage: false
             });
             
             // Add single page with exact size
@@ -2515,23 +2440,23 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             const photoSize = 80;
             
             if (photoPath) {
-                try {
-                    doc.image(photoPath, photoX - photoSize/2, photoY - photoSize/2, {
-                        width: photoSize,
-                        height: photoSize
-                    });
-                } catch (e) {
-                    // Draw initials circle if photo fails
-                    doc.circle(photoX, photoY, photoSize/2).stroke('#ffffff');
-                    const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
-                    doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
-                    doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
-                }
+        try {
+            doc.image(photoPath, photoX - photoSize/2, photoY - photoSize/2, {
+                width: photoSize,
+                height: photoSize
+            });
+        } catch (e) {
+            // Draw initials circle if photo fails
+            doc.circle(photoX, photoY, photoSize/2).stroke('#ffffff');
+            const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
+            doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+            doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
+        }
             } else {
-                doc.circle(photoX, photoY, photoSize/2).lineWidth(2).stroke('#ffffff');
-                const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
-                doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
-                doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
+        doc.circle(photoX, photoY, photoSize/2).lineWidth(2).stroke('#ffffff');
+        const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
+        doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+        doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
             }
             
             let sidebarY = photoY + photoSize/2 + 40;
@@ -2552,9 +2477,9 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             
             // Company address
             if (companyAddress) {
-                doc.font('Lato').fontSize(10).fillColor('#ffffff');
-                doc.text(companyAddress, 20, sidebarY, { width: sidebarWidth - 40 });
-                sidebarY += doc.heightOfString(companyAddress, { width: sidebarWidth - 40 }) + 4;
+        doc.font('Lato').fontSize(10).fillColor('#ffffff');
+        doc.text(companyAddress, 20, sidebarY, { width: sidebarWidth - 40 });
+        sidebarY += doc.heightOfString(companyAddress, { width: sidebarWidth - 40 }) + 4;
             }
             
             sidebarY += 10;
@@ -2581,9 +2506,9 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             // DATE section
             const today = new Date();
             const dateStr = today.toLocaleDateString('en-US', { 
-                month: 'short', 
-                day: '2-digit', 
-                year: 'numeric' 
+        month: 'short', 
+        day: '2-digit', 
+        year: 'numeric' 
             }).replace(',', '');
             
             doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
@@ -2597,16 +2522,16 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             const contactY = pageHeight - 80;
             doc.font('Lato').fontSize(8).fillColor('#ffffff');
             if (userData.email) {
-                doc.text(userData.email, 20, contactY, { lineBreak: false });
+        doc.text(userData.email, 20, contactY, { lineBreak: false });
             }
             if (userData.phoneNumber) {
-                doc.text(userData.phoneNumber, 20, contactY + 12, { lineBreak: false });
+        doc.text(userData.phoneNumber, 20, contactY + 12, { lineBreak: false });
             }
             if (userData.city) {
-                doc.text(userData.city, 20, contactY + 24, { lineBreak: false });
+        doc.text(userData.city, 20, contactY + 24, { lineBreak: false });
             }
             if (userData.country) {
-                doc.text(userData.country, 20, contactY + 36, { lineBreak: false });
+        doc.text(userData.country, 20, contactY + 36, { lineBreak: false });
             }
             
             // RIGHT CONTENT AREA
@@ -2621,14 +2546,14 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             doc.font('Lato').fontSize(9).fillColor('#4d4d4d');
             const rightX = pageWidth - 40;
             if (userData.city && userData.country) {
-                const locationText = `${userData.city}, ${userData.country}`;
-                doc.text(locationText, rightX - doc.widthOfString(locationText), contentY, { lineBreak: false });
+        const locationText = `${userData.city}, ${userData.country}`;
+        doc.text(locationText, rightX - doc.widthOfString(locationText), contentY, { lineBreak: false });
             }
             if (userData.phoneNumber) {
-                doc.text(userData.phoneNumber, rightX - doc.widthOfString(userData.phoneNumber), contentY + 15, { lineBreak: false });
+        doc.text(userData.phoneNumber, rightX - doc.widthOfString(userData.phoneNumber), contentY + 15, { lineBreak: false });
             }
             if (userData.email) {
-                doc.text(userData.email, rightX - doc.widthOfString(userData.email), contentY + 30, { lineBreak: false });
+        doc.text(userData.email, rightX - doc.widthOfString(userData.email), contentY + 30, { lineBreak: false });
             }
             
             contentY += 25;
@@ -2657,82 +2582,82 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             
             // Helper function to extract text segments with bold info
             function extractTextSegments(node, segments, inheritBold = false) {
-                if (node.type === 'text') {
-                    const text = node.data;
-                    if (text) {
-                        segments.push({ text: text, bold: inheritBold });
-                    }
-                } else if (node.type === 'tag') {
-                    const isBold = inheritBold || node.name === 'strong' || node.name === 'b';
-                    if (node.children) {
-                        node.children.forEach(child => {
-                            extractTextSegments(child, segments, isBold);
-                        });
-                    }
-                }
+        if (node.type === 'text') {
+            const text = node.data;
+            if (text) {
+                segments.push({ text: text, bold: inheritBold });
+            }
+        } else if (node.type === 'tag') {
+            const isBold = inheritBold || node.name === 'strong' || node.name === 'b';
+            if (node.children) {
+                node.children.forEach(child => {
+                    extractTextSegments(child, segments, isBold);
+                });
+            }
+        }
             }
             
             // Process paragraphs for rendering (already parsed above)
             for (const paraHtml of paragraphs) {
-                // Parse this paragraph for bold/regular segments
-                const $para = cheerio.load(`<div>${paraHtml}</div>`);
-                const segments = [];
+        // Parse this paragraph for bold/regular segments
+        const $para = cheerio.load(`<div>${paraHtml}</div>`);
+        const segments = [];
+        
+        $para('div').contents().each((i, elem) => {
+            extractTextSegments(elem, segments, false);
+        });
+        
+        // If no segments found, try plain text
+        if (segments.length === 0) {
+            const plainText = $para.text().trim();
+            if (plainText) {
+                segments.push({ text: plainText, bold: false });
+            }
+        }
+        
+        if (segments.length === 0) continue;
+        
+        // Render segments with proper formatting
+        let currentX = contentX;
+        let lineStartY = contentY;
+        const maxX = contentX + contentWidth;
+        
+        for (const segment of segments) {
+            const fontName = segment.bold ? 'Lato-Bold' : 'Lato';
+            doc.font(fontName).fontSize(10).fillColor('#000000');
+            
+            // Split text into words
+            const words = segment.text.split(/(\s+)/);
+            
+            for (const word of words) {
+                if (!word) continue;
                 
-                $para('div').contents().each((i, elem) => {
-                    extractTextSegments(elem, segments, false);
-                });
+                // Skip leading spaces at the start of a new line
+                if (currentX === contentX && /^\s+$/.test(word)) {
+                    continue;
+                }
                 
-                // If no segments found, try plain text
-                if (segments.length === 0) {
-                    const plainText = $para.text().trim();
-                    if (plainText) {
-                        segments.push({ text: plainText, bold: false });
+                const wordWidth = doc.widthOfString(word);
+                
+                // Check if word fits on current line
+                if (currentX + wordWidth > maxX && currentX > contentX) {
+                    // Move to next line
+                    currentX = contentX;
+                    lineStartY += lineHeight;
+                    
+                    // Skip this word if it's just whitespace (don't render space at line start)
+                    if (/^\s+$/.test(word)) {
+                        continue;
                     }
                 }
                 
-                if (segments.length === 0) continue;
-                
-                // Render segments with proper formatting
-                let currentX = contentX;
-                let lineStartY = contentY;
-                const maxX = contentX + contentWidth;
-                
-                for (const segment of segments) {
-                    const fontName = segment.bold ? 'Lato-Bold' : 'Lato';
-                    doc.font(fontName).fontSize(10).fillColor('#000000');
-                    
-                    // Split text into words
-                    const words = segment.text.split(/(\s+)/);
-                    
-                    for (const word of words) {
-                        if (!word) continue;
-                        
-                        // Skip leading spaces at the start of a new line
-                        if (currentX === contentX && /^\s+$/.test(word)) {
-                            continue;
-                        }
-                        
-                        const wordWidth = doc.widthOfString(word);
-                        
-                        // Check if word fits on current line
-                        if (currentX + wordWidth > maxX && currentX > contentX) {
-                            // Move to next line
-                            currentX = contentX;
-                            lineStartY += lineHeight;
-                            
-                            // Skip this word if it's just whitespace (don't render space at line start)
-                            if (/^\s+$/.test(word)) {
-                                continue;
-                            }
-                        }
-                        
-                        // Draw the word
-                        doc.text(word, currentX, lineStartY, { lineBreak: false, continued: false });
-                        currentX += wordWidth;
-                    }
-                }
-                
-                contentY = lineStartY + lineHeight + 10;
+                // Draw the word
+                doc.text(word, currentX, lineStartY, { lineBreak: false, continued: false });
+                currentX += wordWidth;
+            }
+        }
+        
+        contentY = lineStartY + lineHeight + 10;
             }
             
             // Closing
@@ -2743,12 +2668,12 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             
             // Signature
             if (signaturePath) {
-                try {
-                    doc.image(signaturePath, contentX, contentY, { width: 120, height: 40 });
-                    contentY += 50;
-                } catch (e) {
-                    console.log('Could not embed signature');
-                }
+        try {
+            doc.image(signaturePath, contentX, contentY, { width: 120, height: 40 });
+            contentY += 50;
+        } catch (e) {
+            console.log('Could not embed signature');
+        }
             }
             
             // Name
@@ -2759,12 +2684,12 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             doc.end();
             
             writeStream.on('finish', () => {
-                console.log(`✅ PDF created with PDFKit: ${fileName}`);
-                resolve({ filePath, fileName });
+        console.log(`✅ PDF created with PDFKit: ${fileName}`);
+        resolve({ filePath, fileName });
             });
             
             writeStream.on('error', (err) => {
-                reject(err);
+        reject(err);
             });
             
         } catch (error) {
@@ -2799,27 +2724,27 @@ async function createCoverLetterPDF(userData, coverLetterText, companyName, phot
             
             // If sentence fits on one line, add it
             if (sentenceWidth <= maxWidth) {
-                lines.push(sentence.trim());
+        lines.push(sentence.trim());
             } else {
-                // If sentence is too long, wrap by words
-                const words = sentence.trim().split(' ');
-                let currentLine = '';
-                
-                for (const word of words) {
-                    const testLine = currentLine ? `${currentLine} ${word}` : word;
-                    const testWidth = font.widthOfTextAtSize(testLine, fontSize);
-                    
-                    if (testWidth > maxWidth && currentLine) {
-                        lines.push(currentLine);
-                        currentLine = word;
-                    } else {
-                        currentLine = testLine;
-                    }
-                }
-                
-                if (currentLine) {
-                    lines.push(currentLine);
-                }
+        // If sentence is too long, wrap by words
+        const words = sentence.trim().split(' ');
+        let currentLine = '';
+        
+        for (const word of words) {
+            const testLine = currentLine ? `${currentLine} ${word}` : word;
+            const testWidth = font.widthOfTextAtSize(testLine, fontSize);
+            
+            if (testWidth > maxWidth && currentLine) {
+                lines.push(currentLine);
+                currentLine = word;
+            } else {
+                currentLine = testLine;
+            }
+        }
+        
+        if (currentLine) {
+            lines.push(currentLine);
+        }
             }
         }
         
@@ -2849,46 +2774,46 @@ async function createCoverLetterPDF(userData, coverLetterText, companyName, phot
             
             // Try to embed as PNG (circular images are saved as PNG)
             try {
-                photoImage = await pdfDoc.embedPng(photoBytes);
+        photoImage = await pdfDoc.embedPng(photoBytes);
             } catch (pngError) {
-                try {
-                    photoImage = await pdfDoc.embedJpg(photoBytes);
-                } catch (jpgError) {
-                    console.error('Could not embed photo:', jpgError);
-                }
+        try {
+            photoImage = await pdfDoc.embedJpg(photoBytes);
+        } catch (jpgError) {
+            console.error('Could not embed photo:', jpgError);
+        }
             }
             
             if (photoImage) {
-                // Simply draw the circular image - no masking needed
-                page.drawImage(photoImage, {
-                    x: photoX - photoSize / 2,
-                    y: photoY,
-                    width: photoSize,
-                    height: photoSize,
-                });
+        // Simply draw the circular image - no masking needed
+        page.drawImage(photoImage, {
+            x: photoX - photoSize / 2,
+            y: photoY,
+            width: photoSize,
+            height: photoSize,
+        });
             } else {
-                throw new Error('Could not load photo');
+        throw new Error('Could not load photo');
             }
         } catch (error) {
             console.error('Error loading photo, using initials:', error.message);
             // Fallback: Draw circle with initials
             page.drawCircle({
-                x: photoX,
-                y: photoY + photoSize / 2,
-                size: photoSize / 2,
-                borderColor: rgb(1, 1, 1),
-                borderWidth: 2,
-                color: rgb(0.25, 0.25, 0.3),
+        x: photoX,
+        y: photoY + photoSize / 2,
+        size: photoSize / 2,
+        borderColor: rgb(1, 1, 1),
+        borderWidth: 2,
+        color: rgb(0.25, 0.25, 0.3),
             });
             
             const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
             const initialsWidth = helveticaBold.widthOfTextAtSize(initials, 24);
             page.drawText(initials, {
-                x: photoX - initialsWidth / 2,
-                y: photoY + photoSize / 2 - 8,
-                size: 24,
-                font: helveticaBold,
-                color: rgb(1, 1, 1),
+        x: photoX - initialsWidth / 2,
+        y: photoY + photoSize / 2 - 8,
+        size: 24,
+        font: helveticaBold,
+        color: rgb(1, 1, 1),
             });
         }
     } else {
@@ -3160,16 +3085,16 @@ async function createCoverLetterPDF(userData, coverLetterText, companyName, phot
         const lines = wrapText(para, contentWidth, helvetica, paragraphFontSize);
         for (const line of lines) {
             if (contentY < 150) {
-                // Would need new page - for now just stop
-                break;
+        // Would need new page - for now just stop
+        break;
             }
             
             page.drawText(line, {
-                x: contentX,
-                y: contentY,
-                size: paragraphFontSize,
-                font: helvetica,
-                color: rgb(0, 0, 0),
+        x: contentX,
+        y: contentY,
+        size: paragraphFontSize,
+        font: helvetica,
+        color: rgb(0, 0, 0),
             });
             contentY -= lineHeight;
         }
@@ -3194,10 +3119,10 @@ async function createCoverLetterPDF(userData, coverLetterText, companyName, phot
             const signatureBytes = await fs.readFile(signaturePath);
             const signatureImage = await pdfDoc.embedPng(signatureBytes);
             page.drawImage(signatureImage, {
-                x: contentX,
-                y: contentY - 30,
-                width: 120,
-                height: 40,
+        x: contentX,
+        y: contentY - 30,
+        width: 120,
+        height: 40,
             });
             contentY -= 50;
         } catch (error) {
@@ -3242,11 +3167,11 @@ app.post('/api/generate-cover-letters', authenticateToken, async (req, res) => {
         try {
             const creditCheck = await checkUserCredits(userId, creditsRequired);
             if (!creditCheck.hasCredits) {
-                return res.status(402).json({ 
-                    error: creditCheck.message,
-                    remainingCredits: creditCheck.remaining,
-                    creditsRequired: creditsRequired
-                });
+        return res.status(402).json({ 
+            error: creditCheck.message,
+            remainingCredits: creditCheck.remaining,
+            creditsRequired: creditsRequired
+        });
             }
         } catch (error) {
             console.error('Credit check error:', error);
@@ -3254,138 +3179,142 @@ app.post('/api/generate-cover-letters', authenticateToken, async (req, res) => {
         }
 
         // Get user's complete profile and files from database
-        db.get('SELECT full_name, email, phone_number, city, country, resume_path, photo_path, signature_path FROM users WHERE id = ?', 
-            [userId], async (err, user) => {
-                if (err) {
-                    return res.status(500).json({ error: 'Database error' });
-                }
+        try {
+            const user = await dbConfig.get('SELECT full_name as "fullName", email, phone_number as "phoneNumber", city, country, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath" FROM users WHERE id = ?', [userId]);
+            
+            if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+            }
 
-                if (!user.resume_path) {
-                    return res.status(400).json({ 
-                        error: 'Resume is required. Please upload your resume in the Profile page.' 
-                    });
-                }
-
-                const results = [];
-                let creditsDeducted = 0;
-
-                // Prepare user data for AI generation
-                const userData = {
-                    fullName: user.full_name,
-                    email: user.email,
-                    phoneNumber: user.phone_number,
-                    city: user.city,
-                    country: user.country
-                };
-
-                const resumePath = path.join(__dirname, user.resume_path);
-                const photoPath = user.photo_path ? path.join(__dirname, user.photo_path) : null;
-                const signaturePath = user.signature_path ? path.join(__dirname, user.signature_path) : null;
-
-                console.log('\n📝 Generating cover letters...');
-                console.log(`📧 Generating for ${recipients.length} recipient(s)`);
-
-                for (const recipient of recipients) {
-                    try {
-                        console.log(`\n📤 Processing: ${recipient.email}`);
-
-                        // Use template generator for DEEP RESEARCH, returns TEXT
-                        const coverLetterResult = await templateGenerator.generateCoverLetter(
-                            userData,
-                            resumePath,
-                            recipient.email,
-                            recipient.website,
-                            recipient.position || 'Position'
-                        );
-
-                        if (!coverLetterResult.success) {
-                            throw new Error(`Cover letter generation failed: ${coverLetterResult.error}`);
-                        }
-
-                        const companyName = coverLetterResult.companyName;
-                        const coverLetterText = coverLetterResult.coverLetter; // This is TEXT now
-                        
-                        console.log(`✅ Generated personalized cover letter for ${companyName}`);
-                        console.log(`📊 Metadata:`, coverLetterResult.metadata);
-
-                        // DEDUCT CREDIT for successful generation
-                        try {
-                            await deductCredits(userId, 1, 'cover_letter_generation', {
-                                companyName: companyName,
-                                position: recipient.position,
-                                recipientEmail: recipient.email
-                            });
-                            creditsDeducted++;
-                            console.log(`💳 Deducted 1 credit (${creditsDeducted}/${recipients.length})`);
-                        } catch (creditError) {
-                            console.error('Failed to deduct credit:', creditError);
-                            // Continue anyway - letter was generated
-                        }
-
-                        // Format cover letter with HTML (bold key points) - same as mobile
-                        const coverLetterHtml = formatCoverLetterWithHTML(coverLetterText, coverLetterResult.metadata);
-                        console.log(`📝 HTML formatted for PDF generation`);
-
-                        // Use common PDF generation function (same as mobile)
-                        const { filePath, fileName } = await generateCoverLetterPDF(
-                            user,
-                            coverLetterHtml,
-                            companyName,
-                            '' // no specific address from bulk generation
-                        );
-
-                        console.log(`📄 Created PDF: ${fileName}`);
-
-                        // Generate download URL
-                        const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
-
-                        results.push({
-                            email: recipient.email,
-                            company: companyName,
-                            position: recipient.position || 'Position',
-                            website: recipient.website,
-                            fileName: fileName,
-                            downloadUrl: downloadUrl,
-                            status: 'generated',
-                            metadata: coverLetterResult.metadata
-                        });
-
-                        console.log(`✅ Cover letter ready for ${recipient.email}`);
-
-                    } catch (error) {
-                        console.error(`❌ Failed to generate for ${recipient.email}:`, error.message);
-                        results.push({
-                            email: recipient.email,
-                            status: 'failed',
-                            error: error.message,
-                        });
-                    }
-                }
-
-                const successCount = results.filter(r => r.status === 'generated').length;
-                
-                console.log(`\n✅ Generated: ${successCount}/${recipients.length} cover letters`);
-                console.log(`💳 Total credits deducted: ${creditsDeducted}`);
-                
-                // Get updated credit balance
-                try {
-                    const creditCheck = await checkUserCredits(userId, 0);
-                    res.json({
-                        success: true,
-                        message: `Generated ${successCount}/${recipients.length} cover letters`,
-                        results,
-                        creditsUsed: creditsDeducted,
-                        creditsRemaining: creditCheck.remaining
-                    });
-                } catch {
-                    res.json({
-                        success: true,
-                        message: `Generated ${successCount}/${recipients.length} cover letters`,
-                        results,
-                        creditsUsed: creditsDeducted
-                    });
-                }
+            if (!user.resumePath) {
+        return res.status(400).json({ 
+            error: 'Resume is required. Please upload your resume in the Profile page.' 
         });
+            }
+
+            const results = [];
+            let creditsDeducted = 0;
+
+            // Prepare user data for AI generation
+            const userData = {
+        fullName: user.fullName,
+        email: user.email,
+        phoneNumber: user.phoneNumber,
+        city: user.city,
+        country: user.country
+            };
+
+            const resumePath = path.join(__dirname, user.resumePath);
+            const photoPath = user.photoPath ? path.join(__dirname, user.photoPath) : null;
+            const signaturePath = user.signaturePath ? path.join(__dirname, user.signaturePath) : null;
+
+        console.log('\n📝 Generating cover letters...');
+        console.log(`📧 Generating for ${recipients.length} recipient(s)`);
+
+        for (const recipient of recipients) {
+            try {
+                console.log(`\n📤 Processing: ${recipient.email}`);
+
+                // Use template generator for DEEP RESEARCH, returns TEXT
+                const coverLetterResult = await templateGenerator.generateCoverLetter(
+                    userData,
+                    resumePath,
+                    recipient.email,
+                    recipient.website,
+                    recipient.position || 'Position'
+                );
+
+                if (!coverLetterResult.success) {
+                    throw new Error(`Cover letter generation failed: ${coverLetterResult.error}`);
+                }
+
+                const companyName = coverLetterResult.companyName;
+                const coverLetterText = coverLetterResult.coverLetter; // This is TEXT now
+                
+                console.log(`✅ Generated personalized cover letter for ${companyName}`);
+                console.log(`📊 Metadata:`, coverLetterResult.metadata);
+
+                // DEDUCT CREDIT for successful generation
+                try {
+                    await deductCredits(userId, 1, 'cover_letter_generation', {
+                        companyName: companyName,
+                        position: recipient.position,
+                        recipientEmail: recipient.email
+                    });
+                    creditsDeducted++;
+                    console.log(`💳 Deducted 1 credit (${creditsDeducted}/${recipients.length})`);
+                } catch (creditError) {
+                    console.error('Failed to deduct credit:', creditError);
+                    // Continue anyway - letter was generated
+                }
+
+                // Format cover letter with HTML (bold key points) - same as mobile
+                const coverLetterHtml = formatCoverLetterWithHTML(coverLetterText, coverLetterResult.metadata);
+                console.log(`📝 HTML formatted for PDF generation`);
+
+                // Use common PDF generation function (same as mobile)
+                const { filePath, fileName } = await generateCoverLetterPDF(
+                    user,
+                    coverLetterHtml,
+                    companyName,
+                    '' // no specific address from bulk generation
+                );
+
+                console.log(`📄 Created PDF: ${fileName}`);
+
+                // Generate download URL
+                const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
+
+                results.push({
+                    email: recipient.email,
+                    company: companyName,
+                    position: recipient.position || 'Position',
+                    website: recipient.website,
+                    fileName: fileName,
+                    downloadUrl: downloadUrl,
+                    status: 'generated',
+                    metadata: coverLetterResult.metadata
+                });
+
+                console.log(`✅ Cover letter ready for ${recipient.email}`);
+
+            } catch (error) {
+                console.error(`❌ Failed to generate for ${recipient.email}:`, error.message);
+                results.push({
+                    email: recipient.email,
+                    status: 'failed',
+                    error: error.message,
+                });
+            }
+        }
+
+        const successCount = results.filter(r => r.status === 'generated').length;
+        
+        console.log(`\n✅ Generated: ${successCount}/${recipients.length} cover letters`);
+        console.log(`💳 Total credits deducted: ${creditsDeducted}`);
+        
+        // Get updated credit balance
+        try {
+            const creditCheck = await checkUserCredits(userId, 0);
+            res.json({
+                success: true,
+                message: `Generated ${successCount}/${recipients.length} cover letters`,
+                results,
+                creditsUsed: creditsDeducted,
+                creditsRemaining: creditCheck.remaining
+            });
+        } catch {
+            res.json({
+                success: true,
+                message: `Generated ${successCount}/${recipients.length} cover letters`,
+                results,
+                creditsUsed: creditsDeducted
+            });
+        }
+        } catch (error) {
+            console.error('Database error:', error);
+            return res.status(500).json({ error: 'Failed to load user profile' });
+        }
     } catch (error) {
         console.error('Server error:', error);
         res.status(500).json({ error: error.message });
@@ -3410,12 +3339,12 @@ app.post('/api/generate-cover-letter-details', authenticateToken, async (req, re
         try {
             const creditCheck = await checkUserCredits(userId, 1);
             if (!creditCheck.hasCredits) {
-                console.warn(`⚠️ [${requestId}] Insufficient credits:`, creditCheck.message);
-                return res.status(402).json({ 
-                    error: creditCheck.message,
-                    remainingCredits: creditCheck.remaining,
-                    creditsRequired: 1
-                });
+        console.warn(`⚠️ [${requestId}] Insufficient credits:`, creditCheck.message);
+        return res.status(402).json({ 
+            error: creditCheck.message,
+            remainingCredits: creditCheck.remaining,
+            creditsRequired: 1
+        });
             }
             console.log(`✅ [${requestId}] Credits available: ${creditCheck.remaining}`);
         } catch (error) {
@@ -3424,130 +3353,130 @@ app.post('/api/generate-cover-letter-details', authenticateToken, async (req, re
         }
 
         // Get user profile
-        db.get('SELECT * FROM users WHERE id = ?', [userId], async (err, user) => {
-            if (err) {
-                console.error(`❌ [${requestId}] Database error:`, err);
-                return res.status(500).json({ error: 'Failed to load user profile' });
-            }
+        try {
+            const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
             
             if (!user) {
-                console.error(`❌ [${requestId}] User not found:`, userId);
-                return res.status(500).json({ error: 'User not found' });
+        console.error(`❌ [${requestId}] User not found:`, userId);
+        return res.status(500).json({ error: 'User not found' });
             }
 
             console.log(`✅ [${requestId}] User loaded: ${user.email}`);
 
             if (!user.resume_path) {
-                console.error(`❌ [${requestId}] Resume not found for user:`, userId);
-                return res.status(400).json({ error: 'Resume is required. Please upload your resume first.' });
+        console.error(`❌ [${requestId}] Resume not found for user:`, userId);
+        return res.status(400).json({ error: 'Resume is required. Please upload your resume first.' });
             }
 
             try {
-                // Prepare user data
-                const userData = {
-                    fullName: user.full_name,
-                    email: user.email,
-                    phoneNumber: user.phone_number,
-                    city: user.city,
-                    country: user.country
-                };
+        // Prepare user data
+        const userData = {
+            fullName: user.full_name,
+            email: user.email,
+            phoneNumber: user.phone_number,
+            city: user.city,
+            country: user.country
+        };
 
-                const resumePath = path.join(__dirname, user.resume_path);
-                console.log(`📂 [${requestId}] Resume path:`, resumePath);
-                
-                // First, generate hiring manager name, all locations, and subject using AI
-                console.log(`⏳ [${requestId}] Generating additional details (calling Gemini AI - may take 30-60 seconds)...`);
-                const additionalDetailsStart = Date.now();
-                // Extract company name from URL for initial lookup
-                const urlCompanyName = websiteUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0];
-                const initialCompanyName = urlCompanyName.charAt(0).toUpperCase() + urlCompanyName.slice(1);
-                const { hiringManager, locations, subject } = await generateAdditionalDetails(websiteUrl, initialCompanyName, position);
-                const additionalDetailsDuration = Date.now() - additionalDetailsStart;
-                console.log(`✅ [${requestId}] Generated additional details in ${additionalDetailsDuration}ms`);
-                console.log(`   Locations: ${locations.length}, Headquarters: ${locations.find(l => l.isHeadquarters)?.country || 'Unknown'}`);
-                console.log(`   Subject: ${subject.substring(0, 50)}...`);
-                
-                // Generate cover letter with AI (pass locations for dynamic relocation text)
-                const generator = new TemplateCoverLetterGenerator();
-                console.log(`⏳ [${requestId}] Generating cover letter with location context...`);
-                
-                const result = await generator.generateCoverLetter(
-                    userData,
-                    resumePath,
-                    recipientEmail,
-                    websiteUrl,
-                    position,
-                    locations
-                );
+        const resumePath = path.join(__dirname, user.resume_path);
+        console.log(`📂 [${requestId}] Resume path:`, resumePath);
+        
+        // First, generate hiring manager name, all locations, and subject using AI
+        console.log(`⏳ [${requestId}] Generating additional details (calling Gemini AI - may take 30-60 seconds)...`);
+        const additionalDetailsStart = Date.now();
+        // Extract company name from URL for initial lookup
+        const urlCompanyName = websiteUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0];
+        const initialCompanyName = urlCompanyName.charAt(0).toUpperCase() + urlCompanyName.slice(1);
+        const { hiringManager, locations, subject } = await generateAdditionalDetails(websiteUrl, initialCompanyName, position);
+        const additionalDetailsDuration = Date.now() - additionalDetailsStart;
+        console.log(`✅ [${requestId}] Generated additional details in ${additionalDetailsDuration}ms`);
+        console.log(`   Locations: ${locations.length}, Headquarters: ${locations.find(l => l.isHeadquarters)?.country || 'Unknown'}`);
+        console.log(`   Subject: ${subject.substring(0, 50)}...`);
+        
+        // Generate cover letter with AI (pass locations for dynamic relocation text)
+        const generator = new TemplateCoverLetterGenerator();
+        console.log(`⏳ [${requestId}] Generating cover letter with location context...`);
+        
+        const result = await generator.generateCoverLetter(
+            userData,
+            resumePath,
+            recipientEmail,
+            websiteUrl,
+            position,
+            locations
+        );
 
-                console.log(`✅ [${requestId}] Cover letter generated successfully:`, result.success);
+        console.log(`✅ [${requestId}] Cover letter generated successfully:`, result.success);
 
-                if (!result.success) {
-                    console.error(`❌ [${requestId}] Cover letter generation failed`);
-                    return res.status(500).json({ error: 'Failed to generate cover letter' });
-                }
+        if (!result.success) {
+            console.error(`❌ [${requestId}] Cover letter generation failed`);
+            return res.status(500).json({ error: 'Failed to generate cover letter' });
+        }
 
-                // DEDUCT CREDIT for successful generation
-                try {
-                    await deductCredits(userId, 1, 'cover_letter_generation', {
-                        companyName: result.companyName,
-                        position: position,
-                        recipientEmail: recipientEmail
-                    });
-                    console.log(`💳 [${requestId}] Deducted 1 credit for generation`);
-                } catch (creditError) {
-                    console.error(`❌ [${requestId}] Failed to deduct credit:`, creditError);
-                    // Continue anyway - letter was generated
-                }
+        // DEDUCT CREDIT for successful generation
+        try {
+            await deductCredits(userId, 1, 'cover_letter_generation', {
+                companyName: result.companyName,
+                position: position,
+                recipientEmail: recipientEmail
+            });
+            console.log(`💳 [${requestId}] Deducted 1 credit for generation`);
+        } catch (creditError) {
+            console.error(`❌ [${requestId}] Failed to deduct credit:`, creditError);
+            // Continue anyway - letter was generated
+        }
 
-                // Format cover letter with HTML (bold key points)
-                const coverLetterHtml = formatCoverLetterWithHTML(result.coverLetter, result.metadata);
-                console.log(`📝 [${requestId}] HTML formatted, length: ${coverLetterHtml.length}`);
+        // Format cover letter with HTML (bold key points)
+        const coverLetterHtml = formatCoverLetterWithHTML(result.coverLetter, result.metadata);
+        console.log(`📝 [${requestId}] HTML formatted, length: ${coverLetterHtml.length}`);
 
-                // Get updated credit balance
-                let creditsRemaining = null;
-                try {
-                    const creditCheck = await checkUserCredits(userId, 0);
-                    creditsRemaining = creditCheck.remaining;
-                } catch (error) {
-                    console.error(`❌ [${requestId}] Failed to fetch updated credits:`, error);
-                }
+        // Get updated credit balance
+        let creditsRemaining = null;
+        try {
+            const creditCheck = await checkUserCredits(userId, 0);
+            creditsRemaining = creditCheck.remaining;
+        } catch (error) {
+            console.error(`❌ [${requestId}] Failed to fetch updated credits:`, error);
+        }
 
-                const responseData = {
-                    success: true,
-                    companyName: result.companyName,
-                    hiringManager: hiringManager,
-                    subject: subject,
-                    locations: locations,
-                    coverLetterHtml: coverLetterHtml,
-                    metadata: result.metadata,
-                    creditsUsed: 1,
-                    creditsRemaining: creditsRemaining
-                };
+        const responseData = {
+            success: true,
+            companyName: result.companyName,
+            hiringManager: hiringManager,
+            subject: subject,
+            locations: locations,
+            coverLetterHtml: coverLetterHtml,
+            metadata: result.metadata,
+            creditsUsed: 1,
+            creditsRemaining: creditsRemaining
+        };
 
-                console.log(`📤 [${requestId}] Preparing response... data keys:`, Object.keys(responseData));
-                console.log(`📤 [${requestId}] Response size: ${JSON.stringify(responseData).length} bytes`);
-                console.log(`💳 [${requestId}] Credits remaining: ${creditsRemaining}`);
-                
-                // Log response before sending
-                console.log(`📤 [${requestId}] Setting response headers...`);
-                res.setHeader('Content-Type', 'application/json');
-                res.setHeader('Connection', 'keep-alive');
-                
-                console.log(`📤 [${requestId}] Calling res.json()...`);
-                res.json(responseData);
-                
-                const duration = Date.now() - startTime;
-                console.log(`✅ [${requestId}] RESPONSE SENT successfully in ${duration}ms`);
-                console.log(`${'='.repeat(60)}\n`);
+        console.log(`📤 [${requestId}] Preparing response... data keys:`, Object.keys(responseData));
+        console.log(`📤 [${requestId}] Response size: ${JSON.stringify(responseData).length} bytes`);
+        console.log(`💳 [${requestId}] Credits remaining: ${creditsRemaining}`);
+        
+        // Log response before sending
+        console.log(`📤 [${requestId}] Setting response headers...`);
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Connection', 'keep-alive');
+        
+        console.log(`📤 [${requestId}] Calling res.json()...`);
+        res.json(responseData);
+        
+        const duration = Date.now() - startTime;
+        console.log(`✅ [${requestId}] RESPONSE SENT successfully in ${duration}ms`);
+        console.log(`${'='.repeat(60)}\n`);
 
             } catch (error) {
-                const duration = Date.now() - startTime;
-                console.error(`❌ [${requestId}] Error generating cover letter details (after ${duration}ms):`, error.message);
-                console.error(`❌ [${requestId}] Error stack:`, error.stack);
-                return res.status(500).json({ error: error.message || 'Failed to generate cover letter' });
+        const duration = Date.now() - startTime;
+        console.error(`❌ [${requestId}] Error generating cover letter details (after ${duration}ms):`, error.message);
+        console.error(`❌ [${requestId}] Error stack:`, error.stack);
+        return res.status(500).json({ error: error.message || 'Failed to generate cover letter' });
             }
-        });
+        } catch (error) {
+            console.error('Database error:', error);
+            return res.status(500).json({ error: 'Failed to load user profile' });
+        }
     } catch (error) {
         const duration = Date.now() - startTime;
         console.error(`❌ [${requestId}] Server error (after ${duration}ms):`, error.message);
@@ -3565,43 +3494,43 @@ app.post('/api/generate-cover-letter-pdf', authenticateToken, async (req, res) =
         console.log('Generate PDF request:', { userId, companyName, companyAddress });
 
         // Get user profile
-        db.get('SELECT * FROM users WHERE id = ?', [userId], async (err, user) => {
-            if (err) {
-                console.error('Database error:', err);
-                return res.status(500).json({ error: 'Failed to load user profile' });
-            }
+        try {
+            const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
             
             if (!user) {
-                console.error('User not found:', userId);
-                return res.status(500).json({ error: 'User not found' });
+        console.error('User not found:', userId);
+        return res.status(500).json({ error: 'User not found' });
             }
 
             try {
-                // Use common PDF generation function
-                const { filePath, fileName } = await generateCoverLetterPDF(
-                    user,
-                    coverLetterHtml,
-                    companyName,
-                    companyAddress
-                );
+        // Use common PDF generation function
+        const { filePath, fileName } = await generateCoverLetterPDF(
+            user,
+            coverLetterHtml,
+            companyName,
+            companyAddress
+        );
 
-                console.log(`📄 Generated PDF: ${fileName}`);
+        console.log(`📄 Generated PDF: ${fileName}`);
 
-                // Generate download URL
-                const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
+        // Generate download URL
+        const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
 
-                res.json({
-                    success: true,
-                    downloadUrl: downloadUrl,
-                    fileName: fileName
-                });
+        res.json({
+            success: true,
+            downloadUrl: downloadUrl,
+            fileName: fileName
+        });
 
             } catch (error) {
-                console.error('Error generating PDF:', error);
-                console.error('Error stack:', error.stack);
-                return res.status(500).json({ error: error.message || 'Failed to generate PDF' });
+        console.error('Error generating PDF:', error);
+        console.error('Error stack:', error.stack);
+        return res.status(500).json({ error: error.message || 'Failed to generate PDF' });
             }
-        });
+        } catch (error) {
+            console.error('Database error:', error);
+            return res.status(500).json({ error: 'Failed to load user profile' });
+        }
     } catch (error) {
         console.error('Server error:', error);
         console.error('Server error stack:', error.stack);
@@ -3624,9 +3553,9 @@ function formatCoverLetterWithHTML(coverLetterText, metadata) {
         // Bold skills if mentioned (but avoid double-bolding if already bolded by markdown)
         if (metadata.techMatches && metadata.techMatches.length > 0) {
             metadata.techMatches.forEach(skill => {
-                // Only bold if not already inside <strong> tags
-                const regex = new RegExp(`(?!<strong>)\\b${skill}\\b(?![^<]*<\/strong>)`, 'gi');
-                formattedPara = formattedPara.replace(regex, `<strong>${skill}</strong>`);
+        // Only bold if not already inside <strong> tags
+        const regex = new RegExp(`(?!<strong>)\\b${skill}\\b(?![^<]*<\/strong>)`, 'gi');
+        formattedPara = formattedPara.replace(regex, `<strong>${skill}</strong>`);
             });
         }
         
@@ -3641,7 +3570,7 @@ function formatCoverLetterWithHTML(coverLetterText, metadata) {
         actionVerbs.forEach(verb => {
             const regex = new RegExp(`^${verb}\\b`, 'g');
             if (!formattedPara.startsWith('<strong>')) {
-                formattedPara = formattedPara.replace(regex, `<strong>${verb}</strong>`);
+        formattedPara = formattedPara.replace(regex, `<strong>${verb}</strong>`);
             }
         });
         
@@ -3727,10 +3656,10 @@ async function generateAdditionalDetails(websiteUrl, companyName, position = 'Po
             hiringManager: 'Hiring Manager',
             subject: `Application for ${position}`,
             locations: [{
-                country: 'N/A',
-                city: 'N/A',
-                address: 'N/A',
-                isHeadquarters: true
+        country: 'N/A',
+        city: 'N/A',
+        address: 'N/A',
+        isHeadquarters: true
             }]
         };
     }
@@ -3741,7 +3670,7 @@ async function generateAdditionalDetails(websiteUrl, companyName, position = 'Po
         const model = genAI.getGenerativeModel({ 
             model: 'gemini-2.0-flash-exp',
             tools: [{
-                googleSearch: {}
+        googleSearch: {}
             }]
         });
 
@@ -3834,22 +3763,22 @@ Return ONLY valid JSON, no additional text.`;
         
         if (jsonMatch) {
             try {
-                const data = JSON.parse(jsonMatch[0]);
-                console.log('Parsed location data:', JSON.stringify(data, null, 2));
-                
-                return {
-                    hiringManager: data.hiringManager || 'Hiring Manager',
-                    subject: data.subject || `Application for ${position}`,
-                    locations: data.locations && data.locations.length > 0 ? data.locations : [{
-                        country: 'N/A',
-                        city: 'N/A',
-                        address: 'N/A',
-                        isHeadquarters: true
-                    }]
-                };
+        const data = JSON.parse(jsonMatch[0]);
+        console.log('Parsed location data:', JSON.stringify(data, null, 2));
+        
+        return {
+            hiringManager: data.hiringManager || 'Hiring Manager',
+            subject: data.subject || `Application for ${position}`,
+            locations: data.locations && data.locations.length > 0 ? data.locations : [{
+                country: 'N/A',
+                city: 'N/A',
+                address: 'N/A',
+                isHeadquarters: true
+            }]
+        };
             } catch (parseError) {
-                console.error('JSON parse error:', parseError.message);
-                console.error('Attempted to parse:', jsonMatch[0].substring(0, 200));
+        console.error('JSON parse error:', parseError.message);
+        console.error('Attempted to parse:', jsonMatch[0].substring(0, 200));
             }
         } else {
             console.error('No JSON found in Gemini response');
@@ -3904,212 +3833,212 @@ app.post('/api/send-applications', authenticateToken, async (req, res) => {
         }
 
         // Get user's complete profile and files from database
-        db.get('SELECT full_name, email, phone_number, city, country, smtp_email, smtp_password, sender_name, resume_path, photo_path, signature_path FROM users WHERE id = ?', 
-            [userId], async (err, user) => {
-                if (err) {
-                    return res.status(500).json({ error: 'Database error' });
-                }
+        try {
+            const user = await dbConfig.get('SELECT full_name as "fullName", email, phone_number as "phoneNumber", city, country, smtp_email as "smtpEmail", smtp_password as "smtpPassword", sender_name as "senderName", resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath" FROM users WHERE id = ?', [userId]);
+            
+            if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+            }
 
-                if (!user) {
-                    return res.status(404).json({ error: 'User not found' });
-                }
-
-                // Check if user has personal SMTP or use default from .env
-                let smtpEmail, smtpPassword;
-                
-                if (user.smtp_email && user.smtp_password) {
-                    // Use user's personal SMTP credentials
-                    console.log('📧 Using user SMTP credentials...');
-                    smtpEmail = user.smtp_email;
-                    smtpPassword = decryptData(user.smtp_password);
-                } else if (process.env.SMTP_USER && process.env.SMTP_PASS) {
-                    // Use default SMTP credentials from .env
-                    console.log('📧 Using default SMTP credentials (.env)...');
-                    smtpEmail = process.env.SMTP_USER;
-                    smtpPassword = process.env.SMTP_PASS;
-                } else {
-                    return res.status(400).json({ 
-                        error: 'Email settings are required. Please configure your email in Settings or log in with Google OAuth.' 
-                    });
-                }
-
-                if (!user.resume_path) {
-                    return res.status(400).json({ 
-                        error: 'Resume is required. Please upload your resume in the Profile page.' 
-                    });
-                }
-
-                // Create transporter with credentials
-                const transporter = createTransporter(smtpEmail, smtpPassword);
-                
-                const results = [];
-                const emailSettings = {
-                    email: smtpEmail,
-                    name: user.sender_name || user.full_name || smtpEmail.split('@')[0]
-                };
-
-                // Prepare user data for AI generation
-                const userData = {
-                    fullName: user.full_name,
-                    email: user.email,
-                    phoneNumber: user.phone_number,
-                    city: user.city,
-                    country: user.country
-                };
-
-                const resumePath = path.join(__dirname, user.resume_path);
-                const photoPath = user.photo_path ? path.join(__dirname, user.photo_path) : null;
-                const signaturePath = user.signature_path ? path.join(__dirname, user.signature_path) : null;
-
-                console.log('\n🚀 Starting application sending process...');
-                console.log(`📧 Sending to ${recipients.length} recipient(s)`);
-
-                for (const recipient of recipients) {
-                    try {
-                        console.log(`\n📤 Processing: ${recipient.email}`);
-
-                        let filePath, fileName, companyName;
-
-                        // Check if cover letter was pre-generated (fileName provided)
-                        if (recipient.fileName) {
-                            // Use pre-generated cover letter from temp folder
-                            fileName = recipient.fileName;
-                            filePath = path.join(__dirname, 'temp', fileName);
-                            companyName = fileName.split('_')[2] || 'Company'; // Extract from filename
-                            
-                            // Verify file exists
-                            try {
-                                await fs.access(filePath);
-                                console.log(`✅ Using pre-generated cover letter: ${fileName}`);
-                            } catch {
-                                throw new Error('Pre-generated cover letter not found. Please regenerate.');
-                            }
-                        } else {
-                            // Generate cover letter on the fly (fallback for backward compatibility)
-                            const coverLetterResult = await templateGenerator.generateCoverLetter(
-                                userData,
-                                resumePath,
-                                recipient.email,
-                                recipient.website,
-                                recipient.position || 'Position'
-                            );
-
-                            if (!coverLetterResult.success) {
-                                throw new Error(`Cover letter generation failed: ${coverLetterResult.error}`);
-                            }
-
-                            companyName = coverLetterResult.companyName;
-                            const coverLetterText = coverLetterResult.coverLetter; // TEXT format
-                            
-                            console.log(`✅ Generated personalized cover letter for ${companyName}`);
-
-                            // Format cover letter with HTML (bold key points) - same as mobile
-                            const coverLetterHtml = formatCoverLetterWithHTML(coverLetterText, coverLetterResult.metadata);
-                            console.log(`📝 HTML formatted for PDF generation`);
-
-                            // Use common PDF generation function (same as mobile)
-                            const pdfResult = await generateCoverLetterPDF(
-                                user,
-                                coverLetterHtml,
-                                companyName,
-                                '' // no specific address
-                            );
-                            
-                            filePath = pdfResult.filePath;
-                            fileName = pdfResult.fileName;
-                            
-                            console.log(`📄 Created PDF: ${fileName}`);
-                        }
-
-                        console.log(`📎 Attaching cover letter: ${fileName}`);
-
-                        // Position from recipient or default
-                        const position = recipient.position || 'Position at your company';
-
-                        // Send email with personalized content
-                        const mailOptions = {
-                            from: `${emailSettings.name} <${emailSettings.email}>`,
-                            to: recipient.email,
-                            replyTo: user.email,
-                            subject: `Application for ${position}`,
-                            html: `
-                                <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
-                                    <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Dear Hiring Manager at ${companyName},</h2>
-                                    
-                                    <p style="font-size: 16px; margin: 20px 0;">
-                                        I'm excited to submit my application for the <strong>${position}</strong> role. 
-                                        Please find attached my personalized cover letter and resume.
-                                    </p>
-                                    
-                                    <p style="font-size: 16px; margin: 20px 0;">
-                                        I believe my background and skills align well with what ${companyName} is looking for, 
-                                        and I'd love the opportunity to discuss how I can contribute to your team's success.
-                                    </p>
-                                    
-                                    <div style="background: #f8f9fa; padding: 15px; border-left: 4px solid #3498db; margin: 25px 0;">
-                                        <p style="margin: 0; font-size: 14px;">
-                                            📧 <strong>Email:</strong> ${user.email}<br>
-                                            ${user.phone_number ? `📱 <strong>Phone:</strong> ${user.phone_number}<br>` : ''}
-                                            ${user.city && user.country ? `📍 <strong>Location:</strong> ${user.city}, ${user.country}` : ''}
-                                        </p>
-                                    </div>
-                                    
-                                    <p style="font-size: 16px; margin: 20px 0;">
-                                        I'm looking forward to hearing from you!
-                                    </p>
-                                    
-                                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
-                                        <p style="margin: 5px 0; font-size: 16px;"><strong>${userData.fullName}</strong></p>
-                                        <p style="margin: 5px 0; font-size: 14px; color: #666;">${user.email}</p>
-                                    </div>
-                                </div>
-                            `,
-                            attachments: [
-                                {
-                                    filename: fileName,
-                                    path: filePath,
-                                },
-                                {
-                                    filename: path.basename(resumePath),
-                                    path: resumePath,
-                                }
-                            ],
-                        };
-
-                        await transporter.sendMail(mailOptions);
-
-                        // Clean up temp PDF file
-                        await fs.unlink(filePath);
-
-                        results.push({
-                            email: recipient.email,
-                            company: companyName,
-                            status: 'success',
-                            message: 'Application sent successfully'
-                        });
-
-                        console.log(`✅ Email sent successfully to ${recipient.email}`);
-
-                    } catch (error) {
-                        console.error(`❌ Failed to send to ${recipient.email}:`, error.message);
-                        results.push({
-                            email: recipient.email,
-                            status: 'failed',
-                            error: error.message,
-                        });
-                    }
-                }
-
-                const successCount = results.filter(r => r.status === 'success').length;
-                
-                console.log(`\n✅ Completed: ${successCount}/${recipients.length} successful`);
-                
-                res.json({
-                    success: true,
-                    message: `Sent to ${successCount}/${recipients.length} recipients`,
-                    results,
-                });
+            // Check if user has personal SMTP or use default from .env
+            let smtpEmail, smtpPassword;
+            
+            if (user.smtpEmail && user.smtpPassword) {
+        // Use user's personal SMTP credentials
+        console.log('📧 Using user SMTP credentials...');
+        smtpEmail = user.smtpEmail;
+        smtpPassword = decryptData(user.smtpPassword);
+            } else if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+        // Use default SMTP credentials from .env
+        console.log('📧 Using default SMTP credentials (.env)...');
+        smtpEmail = process.env.SMTP_USER;
+        smtpPassword = process.env.SMTP_PASS;
+            } else {
+        return res.status(400).json({ 
+            error: 'Email settings are required. Please configure your email in Settings or log in with Google OAuth.' 
         });
+            }
+
+            if (!user.resumePath) {
+        return res.status(400).json({ 
+            error: 'Resume is required. Please upload your resume in the Profile page.' 
+        });
+            }
+
+            // Create transporter with credentials
+            const transporter = createTransporter(smtpEmail, smtpPassword);
+            
+            const results = [];
+            const emailSettings = {
+        email: smtpEmail,
+        name: user.senderName || user.fullName || smtpEmail.split('@')[0]
+            };
+
+            // Prepare user data for AI generation
+            const userData = {
+        fullName: user.fullName,
+        email: user.email,
+        phoneNumber: user.phoneNumber,
+        city: user.city,
+        country: user.country
+            };
+
+            const resumePath = path.join(__dirname, user.resumePath);
+            const photoPath = user.photoPath ? path.join(__dirname, user.photoPath) : null;
+            const signaturePath = user.signaturePath ? path.join(__dirname, user.signaturePath) : null;
+
+        console.log('\n🚀 Starting application sending process...');
+        console.log(`📧 Sending to ${recipients.length} recipient(s)`);
+
+        for (const recipient of recipients) {
+            try {
+                console.log(`\n📤 Processing: ${recipient.email}`);
+
+                let filePath, fileName, companyName;
+
+                // Check if cover letter was pre-generated (fileName provided)
+                if (recipient.fileName) {
+                    // Use pre-generated cover letter from temp folder
+                    fileName = recipient.fileName;
+                    filePath = path.join(__dirname, 'temp', fileName);
+                    companyName = fileName.split('_')[2] || 'Company'; // Extract from filename
+                    
+                    // Verify file exists
+                    try {
+                        await fs.access(filePath);
+                        console.log(`✅ Using pre-generated cover letter: ${fileName}`);
+                    } catch {
+                        throw new Error('Pre-generated cover letter not found. Please regenerate.');
+                    }
+                } else {
+                    // Generate cover letter on the fly (fallback for backward compatibility)
+                    const coverLetterResult = await templateGenerator.generateCoverLetter(
+                        userData,
+                        resumePath,
+                        recipient.email,
+                        recipient.website,
+                        recipient.position || 'Position'
+                    );
+
+                    if (!coverLetterResult.success) {
+                        throw new Error(`Cover letter generation failed: ${coverLetterResult.error}`);
+                    }
+
+                    companyName = coverLetterResult.companyName;
+                    const coverLetterText = coverLetterResult.coverLetter; // TEXT format
+                    
+                    console.log(`✅ Generated personalized cover letter for ${companyName}`);
+
+                    // Format cover letter with HTML (bold key points) - same as mobile
+                    const coverLetterHtml = formatCoverLetterWithHTML(coverLetterText, coverLetterResult.metadata);
+                    console.log(`📝 HTML formatted for PDF generation`);
+
+                    // Use common PDF generation function (same as mobile)
+                    const pdfResult = await generateCoverLetterPDF(
+                        user,
+                        coverLetterHtml,
+                        companyName,
+                        '' // no specific address
+                    );
+                    
+                    filePath = pdfResult.filePath;
+                    fileName = pdfResult.fileName;
+                    
+                    console.log(`📄 Created PDF: ${fileName}`);
+                }
+
+                console.log(`📎 Attaching cover letter: ${fileName}`);
+
+                // Position from recipient or default
+                const position = recipient.position || 'Position at your company';
+
+                // Send email with personalized content
+                const mailOptions = {
+                    from: `${emailSettings.name} <${emailSettings.email}>`,
+                    to: recipient.email,
+                    replyTo: user.email,
+                    subject: `Application for ${position}`,
+                    html: `
+                        <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
+                            <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Dear Hiring Manager at ${companyName},</h2>
+                            
+                            <p style="font-size: 16px; margin: 20px 0;">
+                                I'm excited to submit my application for the <strong>${position}</strong> role. 
+                                Please find attached my personalized cover letter and resume.
+                            </p>
+                            
+                            <p style="font-size: 16px; margin: 20px 0;">
+                                I believe my background and skills align well with what ${companyName} is looking for, 
+                                and I'd love the opportunity to discuss how I can contribute to your team's success.
+                            </p>
+                            
+                            <div style="background: #f8f9fa; padding: 15px; border-left: 4px solid #3498db; margin: 25px 0;">
+                                <p style="margin: 0; font-size: 14px;">
+                                    📧 <strong>Email:</strong> ${user.email}<br>
+                                    ${user.phone_number ? `📱 <strong>Phone:</strong> ${user.phone_number}<br>` : ''}
+                                    ${user.city && user.country ? `📍 <strong>Location:</strong> ${user.city}, ${user.country}` : ''}
+                                </p>
+                            </div>
+                            
+                            <p style="font-size: 16px; margin: 20px 0;">
+                                I'm looking forward to hearing from you!
+                            </p>
+                            
+                            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
+                                <p style="margin: 5px 0; font-size: 16px;"><strong>${userData.fullName}</strong></p>
+                                <p style="margin: 5px 0; font-size: 14px; color: #666;">${user.email}</p>
+                            </div>
+                        </div>
+                    `,
+                    attachments: [
+                        {
+                            filename: fileName,
+                            path: filePath,
+                        },
+                        {
+                            filename: path.basename(resumePath),
+                            path: resumePath,
+                        }
+                    ],
+                };
+
+                await transporter.sendMail(mailOptions);
+
+                // Clean up temp PDF file
+                await fs.unlink(filePath);
+
+                results.push({
+                    email: recipient.email,
+                    company: companyName,
+                    status: 'success',
+                    message: 'Application sent successfully'
+                });
+
+                console.log(`✅ Email sent successfully to ${recipient.email}`);
+
+            } catch (error) {
+                console.error(`❌ Failed to send to ${recipient.email}:`, error.message);
+                results.push({
+                    email: recipient.email,
+                    status: 'failed',
+                    error: error.message,
+                });
+            }
+        }
+
+        const successCount = results.filter(r => r.status === 'success').length;
+        
+        console.log(`\n✅ Completed: ${successCount}/${recipients.length} successful`);
+        
+        res.json({
+            success: true,
+            message: `Sent to ${successCount}/${recipients.length} recipients`,
+            results,
+        });
+        } catch (error) {
+            console.error('Database error:', error);
+            return res.status(500).json({ error: 'Failed to load user profile' });
+        }
     } catch (error) {
         console.error('Server error:', error);
         res.status(500).json({ error: error.message });
@@ -4125,7 +4054,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // API endpoint to send single application from review page
-app.post('/api/send-single-application', authenticateToken, (req, res) => {
+app.post('/api/send-single-application', authenticateToken, async (req, res) => {
     console.log('\n=== SEND APPLICATION REQUEST RECEIVED ===');
     console.log('Request body:', JSON.stringify(req.body, null, 2));
     console.log('User from token:', req.user);
@@ -4143,23 +4072,24 @@ app.post('/api/send-single-application', authenticateToken, (req, res) => {
     console.log('\n');
 
     // Get user profile
-    db.get('SELECT * FROM users WHERE id = ?', [userId], async (err, user) => {
+    try {
+        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        
         console.log('\n=== DATABASE USER QUERY ===');
-        console.log('Query error:', err);
         console.log('User found:', !!user);
         if (user) {
             console.log('User data:', {
-                id: user.id,
-                email: user.email,
-                oauth_provider: user.oauth_provider,
-                has_google_access_token: !!user.google_access_token,
-                has_smtp_email: !!user.smtp_email,
-                has_smtp_password: !!user.smtp_password
+        id: user.id,
+        email: user.email,
+        oauth_provider: user.oauth_provider,
+        has_google_access_token: !!user.google_access_token,
+        has_smtp_email: !!user.smtp_email,
+        has_smtp_password: !!user.smtp_password
             });
         }
         console.log('===========================\n');
         
-        if (err || !user) {
+        if (!user) {
             return res.status(500).json({ error: 'Failed to load user profile' });
         }
 
@@ -4168,152 +4098,145 @@ app.post('/api/send-single-application', authenticateToken, (req, res) => {
             return res.status(400).json({ error: 'Resume is required' });
         }
 
-        try {
-                // Use common PDF generation function (mobile version logic)
-                const { filePath, fileName } = await generateCoverLetterPDF(
-                    user,
-                    coverLetterText,  // coverLetterText contains HTML from mobile
-                    companyName,
-                    companyAddress
-                );
+        // Use common PDF generation function (mobile version logic)
+        const { filePath, fileName } = await generateCoverLetterPDF(
+            user,
+            coverLetterText,  // coverLetterText contains HTML from mobile
+            companyName,
+            companyAddress
+        );
 
-                console.log(`📄 Generated PDF for email: ${fileName} at ${filePath}`);
+        console.log(`📄 Generated PDF for email: ${fileName} at ${filePath}`);
 
-                // STEP 2: Read the generated PDF file
-                const resumePath = path.join(__dirname, user.resume_path);
-                const coverLetterPdfBuffer = await fs.readFile(filePath);
+        // STEP 2: Read the generated PDF file
+        const resumePath = path.join(__dirname, user.resume_path);
+        const coverLetterPdfBuffer = await fs.readFile(filePath);
 
-                // Generate professional email body
-                const emailBody = generateEmailBody(position, companyName, user.full_name);
-                const subject = `Application for ${position} - ${user.full_name}`;
+        // Generate professional email body
+        const emailBody = generateEmailBody(position, companyName, user.full_name);
+        const subject = `Application for ${position} - ${user.full_name}`;
 
-                // Debug: Log user OAuth status
-                console.log('=== USER OAUTH STATUS ===');
-                console.log('User ID:', user.id);
-                console.log('User Email:', user.email);
-                console.log('OAuth Provider:', user.oauth_provider || 'NOT SET');
-                console.log('Has Google Access Token:', !!user.google_access_token);
-                console.log('Has Google Refresh Token:', !!user.google_refresh_token);
-                console.log('Has SMTP Email:', !!user.smtp_email);
-                console.log('Has SMTP Password:', !!user.smtp_password);
-                console.log('=========================');
+        // Debug: Log user OAuth status
+        console.log('=== USER OAUTH STATUS ===');
+        console.log('User ID:', user.id);
+        console.log('User Email:', user.email);
+        console.log('OAuth Provider:', user.oauth_provider || 'NOT SET');
+        console.log('Has Google Access Token:', !!user.google_access_token);
+        console.log('Has Google Refresh Token:', !!user.google_refresh_token);
+        console.log('Has SMTP Email:', !!user.smtp_email);
+        console.log('Has SMTP Password:', !!user.smtp_password);
+        console.log('=========================');
 
-                // Priority 1: Try Gmail API if user logged in with OAuth
-                if (user.oauth_provider === 'google' && user.google_access_token) {
-                    try {
-                        console.log('📧 Sending email via Gmail API (OAuth)...');
-                        console.log('OAuth User:', { id: user.id, email: user.email, provider: user.oauth_provider });
-                        console.log('Recipient:', recipientEmail);
-                        console.log('Subject:', subject);
-                        
-                        const result = await sendEmailViaGmail(
-                            user,
-                            recipientEmail,
-                            subject,
-                            emailBody,
-                            resumePath,
-                            coverLetterPdfBuffer
-                        );
-
-                        console.log(`✅ Application sent via Gmail to ${recipientEmail}`);
-                        return res.json({
-                            success: true,
-                            message: 'Application sent successfully via Gmail',
-                            method: 'gmail-api'
-                        });
-
-                    } catch (gmailError) {
-                        console.error('❌ Gmail API error:', gmailError.message);
-                        console.error('Error details:', gmailError);
-                        console.error('Error stack:', gmailError.stack);
-                        
-                        // If OAuth token expired, inform user
-                        if (gmailError.message?.includes('OAuth token expired')) {
-                            return res.status(401).json({
-                                error: 'Your Google authentication has expired. Please log out and log in again with Google.',
-                                requiresReauth: true
-                            });
-                        }
-                        
-                        // Otherwise, fall through to SMTP
-                        console.log('⚠️ Gmail API failed, falling back to SMTP...');
-                    }
-                }
-
-                // Priority 2: Fall back to SMTP
-                // Check if user has personal SMTP or use default from .env
-                let smtpEmail, smtpPassword;
-                
-                if (user.smtp_email && user.smtp_password) {
-                    // Use user's personal SMTP credentials
-                    console.log('📧 Sending email via user SMTP credentials...');
-                    smtpEmail = user.smtp_email;
-                    smtpPassword = decryptData(user.smtp_password);
-                } else if (process.env.SMTP_USER && process.env.SMTP_PASS) {
-                    // Use default SMTP credentials from .env
-                    console.log('📧 Sending email via default SMTP credentials (.env)...');
-                    smtpEmail = process.env.SMTP_USER;
-                    smtpPassword = process.env.SMTP_PASS;
-                    console.log('SMTP_USER from .env:', process.env.SMTP_USER);
-                    console.log('SMTP_PASS length:', process.env.SMTP_PASS?.length);
-                    console.log('SMTP_PASS first 4 chars:', process.env.SMTP_PASS?.substring(0, 4));
-                } else {
-                    console.error('❌ No SMTP credentials available');
-                    console.error('User SMTP email:', user.smtp_email ? 'Set' : 'Not set');
-                    console.error('User SMTP password:', user.smtp_password ? 'Set' : 'Not set');
-                    console.error('Default SMTP email:', process.env.SMTP_USER ? 'Set' : 'Not set');
-                    console.error('Default SMTP password:', process.env.SMTP_PASS ? 'Set' : 'Not set');
-                    return res.status(400).json({ 
-                        error: 'Email sending failed. Please configure SMTP settings in Settings or log in with Google OAuth.' 
-                    });
-                }
-
-                console.log('SMTP User:', { id: user.id, email: user.email, smtp_email: smtpEmail });
+        // Priority 1: Try Gmail API if user logged in with OAuth
+        if (user.oauth_provider === 'google' && user.google_access_token) {
+            try {
+                console.log('📧 Sending email via Gmail API (OAuth)...');
+                console.log('OAuth User:', { id: user.id, email: user.email, provider: user.oauth_provider });
                 console.log('Recipient:', recipientEmail);
                 console.log('Subject:', subject);
+                
+                const result = await sendEmailViaGmail(
+                    user,
+                    recipientEmail,
+                    subject,
+                    emailBody,
+                    resumePath,
+                    coverLetterPdfBuffer
+                );
 
-                // Create transporter
-                const transporter = createTransporter(smtpEmail, smtpPassword);
-
-                // Send email via SMTP
-                const senderName = user.sender_name || user.full_name || smtpEmail.split('@')[0];
-
-                await transporter.sendMail({
-                    from: `"${senderName}" <${smtpEmail}>`,
-                    replyTo: user.email,
-                    to: recipientEmail,
-                    subject: subject,
-                    text: emailBody,
-                    attachments: [
-                        {
-                            filename: fileName,
-                            path: filePath,
-                        },
-                        {
-                            filename: path.basename(resumePath),
-                            path: resumePath,
-                        },
-                    ],
-                });
-
-                console.log(`✅ Application sent via SMTP to ${recipientEmail}`);
-
-                res.json({
+                console.log(`✅ Application sent via Gmail to ${recipientEmail}`);
+                return res.json({
                     success: true,
-                    message: 'Application sent successfully via SMTP',
-                    method: 'smtp'
+                    message: 'Application sent successfully via Gmail',
+                    method: 'gmail-api'
                 });
 
-            } catch (error) {
-                console.error('❌ Error sending application:', error.message);
-                console.error('Error details:', error);
-                console.error('Error stack:', error.stack);
-                return res.status(500).json({ 
-                    error: error.message,
-                    details: 'Check server logs for more information'
-                });
+            } catch (gmailError) {
+                console.error('❌ Gmail API error:', gmailError.message);
+                console.error('Error details:', gmailError);
+                console.error('Error stack:', gmailError.stack);
+                
+                // If OAuth token expired, inform user
+                if (gmailError.message?.includes('OAuth token expired')) {
+                    return res.status(401).json({
+                        error: 'Your Google authentication has expired. Please log out and log in again with Google.',
+                        requiresReauth: true
+                    });
+                }
+                
+                // Otherwise, fall through to SMTP
+                console.log('⚠️ Gmail API failed, falling back to SMTP...');
             }
+        }
+
+        // Priority 2: Fall back to SMTP
+        // Check if user has personal SMTP or use default from .env
+        let smtpEmail, smtpPassword;
+        
+        if (user.smtp_email && user.smtp_password) {
+            // Use user's personal SMTP credentials
+            console.log('📧 Sending email via user SMTP credentials...');
+            smtpEmail = user.smtp_email;
+            smtpPassword = decryptData(user.smtp_password);
+        } else if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+            // Use default SMTP credentials from .env
+            console.log('📧 Sending email via default SMTP credentials (.env)...');
+            smtpEmail = process.env.SMTP_USER;
+            smtpPassword = process.env.SMTP_PASS;
+            console.log('SMTP_USER from .env:', process.env.SMTP_USER);
+            console.log('SMTP_PASS length:', process.env.SMTP_PASS?.length);
+            console.log('SMTP_PASS first 4 chars:', process.env.SMTP_PASS?.substring(0, 4));
+        } else {
+            console.error('❌ No SMTP credentials available');
+            console.error('User SMTP email:', user.smtp_email ? 'Set' : 'Not set');
+            console.error('User SMTP password:', user.smtp_password ? 'Set' : 'Not set');
+            console.error('Default SMTP email:', process.env.SMTP_USER ? 'Set' : 'Not set');
+            console.error('Default SMTP password:', process.env.SMTP_PASS ? 'Set' : 'Not set');
+            return res.status(400).json({ 
+                error: 'Email sending failed. Please configure SMTP settings in Settings or log in with Google OAuth.' 
+            });
+        }
+
+        console.log('SMTP User:', { id: user.id, email: user.email, smtp_email: smtpEmail });
+        console.log('Recipient:', recipientEmail);
+        console.log('Subject:', subject);
+
+        // Create transporter
+        const transporter = createTransporter(smtpEmail, smtpPassword);
+
+        // Send email via SMTP
+        const senderName = user.sender_name || user.full_name || smtpEmail.split('@')[0];
+
+        await transporter.sendMail({
+            from: `"${senderName}" <${smtpEmail}>`,
+            replyTo: user.email,
+            to: recipientEmail,
+            subject: subject,
+            text: emailBody,
+            attachments: [
+                {
+                    filename: fileName,
+                    path: filePath,
+                },
+                {
+                    filename: path.basename(resumePath),
+                    path: resumePath,
+                },
+            ],
         });
+
+        console.log(`✅ Application sent via SMTP to ${recipientEmail}`);
+
+        res.json({
+            success: true,
+            message: 'Application sent successfully via SMTP',
+            method: 'smtp'
+        });
+
+    } catch (error) {
+        console.error('Database error:', error);
+        return res.status(500).json({ error: 'Failed to load user profile' });
+    }
 });
 
 // ============================================
@@ -4321,68 +4244,87 @@ app.post('/api/send-single-application', authenticateToken, (req, res) => {
 // ============================================
 
 // Get all packages (public - for users to see available packages)
-app.get('/api/packages', (req, res) => {
-    db.all(`
-        SELECT id, name, amount, credits, validity_days, description, currency, is_popular, display_order
-        FROM credit_packages 
-        WHERE is_active = 1
-        ORDER BY display_order ASC, id ASC
-    `, [], (err, packages) => {
-        if (err) {
-            console.error('Error fetching packages:', err);
-            return res.status(500).json({ error: 'Failed to fetch packages' });
-        }
+app.get('/api/packages', async (req, res) => {
+    try {
+        const packages = await dbConfig.query(`
+            SELECT id, name, credits as amount, credits, validity_days, description, price as currency, is_active as is_popular, id as display_order
+            FROM plans 
+            WHERE is_active = 1
+            ORDER BY id ASC
+        `, []);
         res.json({ packages });
-    });
+    } catch (error) {
+        console.error('Error fetching packages:', error);
+        res.status(500).json({ error: 'Failed to fetch packages' });
+    }
 });
 
-// Get active packages (for users to view and purchase)
-app.get('/api/packages', authenticateToken, (req, res) => {
-    db.all(`
-        SELECT * FROM credit_packages 
-        WHERE is_active = 1
-        ORDER BY display_order ASC, id ASC
-    `, [], (err, packages) => {
-        if (err) {
-            console.error('Error fetching packages:', err);
-            return res.status(500).json({ error: 'Failed to fetch packages' });
-        }
-        res.json({ packages });
-    });
-});
+// Removed duplicate route - keeping first /api/packages above
 
 // Get all packages (admin - including inactive)
-app.get('/api/admin/packages', authenticateAdmin, (req, res) => {
-    db.all(`
-        SELECT * FROM credit_packages 
-        ORDER BY display_order ASC, id ASC
-    `, [], (err, packages) => {
-        if (err) {
-            console.error('Error fetching packages:', err);
-            return res.status(500).json({ error: 'Failed to fetch packages' });
-        }
+app.get('/api/admin/packages', authenticateAdmin, async (req, res) => {
+    try {
+        const packages = await dbConfig.query(`
+            SELECT 
+        id,
+        name,
+        credits,
+        price as amount,
+        validity_days,
+        description,
+        features,
+        is_active,
+        'USD' as currency,
+        0 as is_popular,
+        id as display_order,
+        created_at,
+        updated_at
+            FROM plans 
+            ORDER BY id ASC
+        `, []);
         res.json({ packages });
-    });
+    } catch (error) {
+        console.error('Error fetching packages:', error);
+        res.status(500).json({ error: 'Failed to fetch packages' });
+    }
 });
 
 // Get single package
-app.get('/api/admin/packages/:id', authenticateAdmin, (req, res) => {
+app.get('/api/admin/packages/:id', authenticateAdmin, async (req, res) => {
     const { id } = req.params;
     
-    db.get('SELECT * FROM credit_packages WHERE id = ?', [id], (err, package) => {
-        if (err) {
-            console.error('Error fetching package:', err);
-            return res.status(500).json({ error: 'Failed to fetch package' });
-        }
+    try {
+        const package = await dbConfig.get(`
+            SELECT 
+        id,
+        name,
+        credits,
+        price as amount,
+        validity_days,
+        description,
+        features,
+        is_active,
+        'USD' as currency,
+        0 as is_popular,
+        id as display_order,
+        created_at,
+        updated_at
+            FROM plans 
+            WHERE id = ?
+        `, [id]);
+        
         if (!package) {
             return res.status(404).json({ error: 'Package not found' });
         }
         res.json({ package });
-    });
+    } catch (error) {
+        console.error('Error fetching package:', error);
+        res.status(500).json({ error: 'Failed to fetch package' });
+    }
 });
 
 // Create new package
-app.post('/api/admin/packages', authenticateAdmin, (req, res) => {
+app.post('/api/admin/packages', authenticateAdmin, async (req, res) => {
     const { name, amount, credits, validity_days, description, currency, is_popular, display_order } = req.body;
     
     // Validation
@@ -4394,34 +4336,35 @@ app.post('/api/admin/packages', authenticateAdmin, (req, res) => {
         return res.status(400).json({ error: 'Invalid values for amount, credits, or validity_days' });
     }
     
-    db.run(`
-        INSERT INTO credit_packages (name, amount, credits, validity_days, description, currency, is_popular, display_order)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-        name, 
-        amount, 
-        credits, 
-        validity_days, 
-        description || null, 
-        currency || 'USD',
-        is_popular ? 1 : 0,
-        display_order || 0
-    ], function(err) {
-        if (err) {
-            console.error('Error creating package:', err);
-            return res.status(500).json({ error: 'Failed to create package' });
-        }
+    try {
+        const result = await dbConfig.run(`
+            INSERT INTO plans (name, price, credits, validity_days, description, is_active)
+            VALUES (?, ?, ?, ?, ?, ?)
+            RETURNING id
+        `, [
+            name, 
+            amount, 
+            credits, 
+            validity_days, 
+            description || null,
+            1
+        ]);
+        
+        const packageId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
         
         res.json({ 
             success: true, 
             message: 'Package created successfully',
-            packageId: this.lastID 
+            packageId: packageId
         });
-    });
+    } catch (error) {
+        console.error('Error creating package:', error);
+        return res.status(500).json({ error: 'Failed to create package' });
+    }
 });
 
 // Update package
-app.put('/api/admin/packages/:id', authenticateAdmin, (req, res) => {
+app.put('/api/admin/packages/:id', authenticateAdmin, async (req, res) => {
     const { id } = req.params;
     const { name, amount, credits, validity_days, description, currency, is_active, is_popular, display_order } = req.body;
     
@@ -4434,37 +4377,28 @@ app.put('/api/admin/packages/:id', authenticateAdmin, (req, res) => {
         return res.status(400).json({ error: 'Invalid values' });
     }
     
-    db.run(`
-        UPDATE credit_packages 
-        SET name = ?, 
-            amount = ?, 
-            credits = ?, 
-            validity_days = ?, 
-            description = ?, 
-            currency = ?,
-            is_active = ?,
-            is_popular = ?,
-            display_order = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-    `, [
-        name, 
-        amount, 
-        credits, 
-        validity_days, 
-        description || null,
-        currency || 'USD',
-        is_active !== undefined ? (is_active ? 1 : 0) : 1,
-        is_popular ? 1 : 0,
-        display_order || 0,
-        id
-    ], function(err) {
-        if (err) {
-            console.error('Error updating package:', err);
-            return res.status(500).json({ error: 'Failed to update package' });
-        }
+    try {
+        const result = await dbConfig.run(`
+            UPDATE plans 
+            SET name = ?, 
+                price = ?, 
+                credits = ?, 
+                validity_days = ?, 
+                description = ?, 
+                is_active = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        `, [
+            name, 
+            amount, 
+            credits, 
+            validity_days, 
+            description || null,
+            is_active !== undefined ? (is_active ? 1 : 0) : 1,
+            id
+        ]);
         
-        if (this.changes === 0) {
+        if (result.rowCount === 0) {
             return res.status(404).json({ error: 'Package not found' });
         }
         
@@ -4472,20 +4406,20 @@ app.put('/api/admin/packages/:id', authenticateAdmin, (req, res) => {
             success: true, 
             message: 'Package updated successfully'
         });
-    });
+    } catch (error) {
+        console.error('Error updating package:', error);
+        return res.status(500).json({ error: 'Failed to update package' });
+    }
 });
 
 // Delete package
-app.delete('/api/admin/packages/:id', authenticateAdmin, (req, res) => {
+app.delete('/api/admin/packages/:id', authenticateAdmin, async (req, res) => {
     const { id } = req.params;
     
-    db.run('DELETE FROM credit_packages WHERE id = ?', [id], function(err) {
-        if (err) {
-            console.error('Error deleting package:', err);
-            return res.status(500).json({ error: 'Failed to delete package' });
-        }
+    try {
+        const result = await dbConfig.run('DELETE FROM plans WHERE id = ?', [id]);
         
-        if (this.changes === 0) {
+        if (result.rowCount === 0) {
             return res.status(404).json({ error: 'Package not found' });
         }
         
@@ -4493,25 +4427,25 @@ app.delete('/api/admin/packages/:id', authenticateAdmin, (req, res) => {
             success: true, 
             message: 'Package deleted successfully'
         });
-    });
+    } catch (error) {
+        console.error('Error deleting package:', error);
+        return res.status(500).json({ error: 'Failed to delete package' });
+    }
 });
 
 // Toggle package active status
-app.patch('/api/admin/packages/:id/toggle-active', authenticateAdmin, (req, res) => {
+app.patch('/api/admin/packages/:id/toggle-active', authenticateAdmin, async (req, res) => {
     const { id } = req.params;
     
-    db.run(`
-        UPDATE credit_packages 
-        SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-    `, [id], function(err) {
-        if (err) {
-            console.error('Error toggling package status:', err);
-            return res.status(500).json({ error: 'Failed to toggle package status' });
-        }
+    try {
+        const result = await dbConfig.run(`
+            UPDATE plans 
+            SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        `, [id]);
         
-        if (this.changes === 0) {
+        if (result.rowCount === 0) {
             return res.status(404).json({ error: 'Package not found' });
         }
         
@@ -4519,7 +4453,10 @@ app.patch('/api/admin/packages/:id/toggle-active', authenticateAdmin, (req, res)
             success: true, 
             message: 'Package status toggled successfully'
         });
-    });
+    } catch (error) {
+        console.error('Error toggling package status:', error);
+        return res.status(500).json({ error: 'Failed to toggle package status' });
+    }
 });
 
 // Check if user is admin

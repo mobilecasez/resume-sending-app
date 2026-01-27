@@ -11,8 +11,9 @@ import {
 } from 'react-native';
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
+import config from '../config';
 
-const API_BASE_URL = 'http://localhost:3000';
+const { API_BASE_URL } = config;
 
 export default function ProfileScreen({ navigation }) {
   const [user, setUser] = useState(null);
@@ -50,17 +51,17 @@ export default function ProfileScreen({ navigation }) {
 
       // Fetch full profile from backend
       if (token) {
-        const response = await axios.get(`${API_BASE_URL}/api/profile`, {
+        const response = await axios.get(`${API_BASE_URL}/api/users/profile`, {
           headers: { Authorization: `Bearer ${token}` },
         });
 
-        if (response.data.success && response.data.user) {
+        if (response.data) {
           setFormData({
-            name: response.data.user.name || '',
-            email: response.data.user.email || '',
-            phone: response.data.user.phone || '',
-            location: response.data.user.location || '',
-            bio: response.data.user.bio || '',
+            name: response.data.fullName || '',
+            email: response.data.email || '',
+            phone: response.data.phone || '',
+            location: response.data.address || '',
+            bio: '', // Bio not in backend, keep empty
           });
         }
       }
@@ -81,19 +82,26 @@ export default function ProfileScreen({ navigation }) {
     try {
       const token = await SecureStore.getItemAsync('authToken');
 
-      const response = await axios.put(
-        `${API_BASE_URL}/api/profile`,
-        formData,
+      // Map mobile app field names to server field names
+      const updateData = {
+        fullName: formData.name,
+        phone: formData.phone,
+        address: formData.location,
+        // dateOfBirth can be added if needed
+      };
+
+      const response = await axios.post(
+        `${API_BASE_URL}/api/users/profile/update`,
+        updateData,
         {
           headers: { Authorization: `Bearer ${token}` },
         }
       );
 
       if (response.data.success) {
-        // Update local storage
-        await SecureStore.setItemAsync('userData', JSON.stringify(response.data.user));
-        setUser(response.data.user);
         Alert.alert('Success', 'Profile updated successfully');
+        // Reload profile to get fresh data
+        await loadProfile();
       }
     } catch (error) {
       Alert.alert('Error', error.response?.data?.error || 'Failed to save profile');

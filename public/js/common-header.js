@@ -298,7 +298,7 @@
             if (!token) return;
 
             try {
-                const response = await fetch('/api/users/credits', {
+                const response = await fetch('/api/user/credits', {
                     headers: {
                         'Authorization': `Bearer ${token}`
                     }
@@ -313,7 +313,9 @@
                 if (data.success) {
                     const creditBadgeNumber = document.getElementById('creditBadgeNumber');
                     if (creditBadgeNumber) {
-                        creditBadgeNumber.textContent = data.credits || 0;
+                        // Handle both old format (data.balance) and new format (data.credits.remaining)
+                        const credits = data.balance || (data.credits && typeof data.credits === 'object' ? data.credits.remaining : data.credits) || 0;
+                        creditBadgeNumber.textContent = credits;
                     }
                 }
             } catch (error) {

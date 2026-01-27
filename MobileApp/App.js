@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, ActionSheetIOS, Modal, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, ActionSheetIOS, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView } from 'react-native-webview';
 import * as WebBrowser from 'expo-web-browser';
@@ -3976,20 +3976,29 @@ export default function App() {
             animationType="slide"
             onRequestClose={() => setShowPackageForm(false)}
           >
-            <View style={styles.modalOverlay}>
-              <View style={styles.packageFormModal}>
-                {/* Modal Header */}
-                <View style={styles.packageFormHeader}>
-                  <Text style={styles.packageFormTitle}>
-                    {editingPackage ? 'Edit Package' : 'Create Package'}
-                  </Text>
-                  <TouchableOpacity onPress={() => setShowPackageForm(false)}>
-                    <Text style={styles.packageFormClose}>×</Text>
-                  </TouchableOpacity>
-                </View>
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              style={{ flex: 1 }}
+            >
+              <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+                <View style={styles.modalOverlay}>
+                  <View style={styles.packageFormModal}>
+                    {/* Modal Header */}
+                    <View style={styles.packageFormHeader}>
+                      <Text style={styles.packageFormTitle}>
+                        {editingPackage ? 'Edit Package' : 'Create Package'}
+                      </Text>
+                      <TouchableOpacity onPress={() => setShowPackageForm(false)}>
+                        <Text style={styles.packageFormClose}>×</Text>
+                      </TouchableOpacity>
+                    </View>
 
-                {/* Modal Body */}
-                <View style={styles.packageFormBody}>
+                    {/* Modal Body - Scrollable */}
+                    <ScrollView 
+                      style={styles.packageFormBody}
+                      keyboardShouldPersistTaps="handled"
+                      showsVerticalScrollIndicator={true}
+                    >
                   {/* Package Name */}
                   <View style={styles.adminFormGroup}>
                     <Text style={styles.adminFormLabel}>Package Name *</Text>
@@ -4091,7 +4100,7 @@ export default function App() {
                       </TouchableOpacity>
                     </View>
                   </View>
-                </View>
+                </ScrollView>
 
                 {/* Modal Footer */}
                 <View style={styles.packageFormFooter}>
@@ -4112,8 +4121,10 @@ export default function App() {
                 </View>
               </View>
             </View>
-          </Modal>
-        )}
+          </TouchableWithoutFeedback>
+        </KeyboardAvoidingView>
+      </Modal>
+    )}
       </SafeAreaView>
     );
   }
@@ -7880,67 +7891,71 @@ const styles = StyleSheet.create({
     borderBottomColor: '#E5E7EB',
   },
   packageName: {
-    fontSize: 22,
+    fontSize: 26,
     fontWeight: '700',
     color: '#1F2937',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   packageDescriptionText: {
-    fontSize: 13,
+    fontSize: 17,
     color: '#6B7280',
-    lineHeight: 20,
-    marginTop: 4,
+    lineHeight: 24,
+    marginTop: 8,
   },
   packagePriceSection: {
     alignItems: 'center',
-    marginBottom: 24,
-    paddingVertical: 12,
+    marginBottom: 28,
+    paddingVertical: 16,
   },
   packagePriceContainer: {
     flexDirection: 'row',
     alignItems: 'flex-start',
   },
   packageCurrency: {
-    fontSize: 22,
+    fontSize: 26,
     fontWeight: '600',
     color: '#8B5CF6',
-    marginTop: 6,
-    marginRight: 4,
+    marginTop: 8,
+    marginRight: 6,
   },
   packagePrice: {
-    fontSize: 44,
+    fontSize: 52,
     fontWeight: '800',
     color: '#8B5CF6',
   },
   packageDetailsSection: {
-    marginBottom: 24,
+    marginBottom: 28,
+    backgroundColor: '#F9FAFB',
+    padding: 20,
+    borderRadius: 12,
   },
   packageDetailRowNew: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 12,
+    paddingVertical: 20,
     borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
+    borderBottomColor: '#E5E7EB',
   },
   packageDetailLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    marginRight: 12,
   },
   packageDetailIconNew: {
-    fontSize: 20,
-    marginRight: 10,
+    fontSize: 28,
+    marginRight: 14,
   },
   packageDetailLabel: {
-    fontSize: 14,
-    color: '#6B7280',
-    fontWeight: '500',
+    fontSize: 19,
+    color: '#374151',
+    fontWeight: '600',
   },
   packageDetailValue: {
-    fontSize: 15,
-    color: '#1F2937',
-    fontWeight: '600',
+    fontSize: 22,
+    color: '#8B5CF6',
+    fontWeight: '700',
   },
   packageDetails: {
     marginBottom: 20,
