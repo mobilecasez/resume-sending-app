@@ -324,6 +324,7 @@
                     z-index: 1000;
                     overflow-y: auto;
                     pointer-events: auto !important;
+                    opacity: 1 !important;
                 }
 
                 .navbar-right.active {
@@ -362,6 +363,7 @@
                     flex-direction: column;
                     width: 100%;
                     gap: 8px;
+                    opacity: 1 !important;
                 }
 
                 .nav-btn {
@@ -374,6 +376,8 @@
                     cursor: pointer !important;
                     position: relative;
                     z-index: 10;
+                    opacity: 1 !important;
+                    color: #555 !important;
                 }
 
                 .nav-label {
@@ -391,6 +395,7 @@
                     cursor: pointer !important;
                     position: relative;
                     z-index: 10;
+                    opacity: 1 !important;
                 }
 
                 .navbar-brand h1 {
@@ -475,23 +480,37 @@
             menuToggle.addEventListener('click', toggleMenu);
             overlay.addEventListener('click', toggleMenu);
 
-            // Close menu when clicking nav links
-            const navLinks = navbarRight.querySelectorAll('a, button');
+            // Close menu when clicking nav links (but let them navigate first)
+            const navLinks = navbarRight.querySelectorAll('a:not(#logoutBtn)');
             navLinks.forEach(link => {
-                link.addEventListener('click', () => {
+                link.addEventListener('click', (e) => {
+                    if (window.innerWidth <= 768) {
+                        // Close menu after a tiny delay to allow navigation
+                        setTimeout(() => {
+                            menuToggle.classList.remove('active');
+                            navbarRight.classList.remove('active');
+                            overlay.classList.remove('active');
+                            document.body.style.overflow = '';
+                        }, 100);
+                    }
+                });
+            });
+
+            // Bind logout button separately
+            const logoutBtn = document.getElementById('logoutBtn');
+            if (logoutBtn) {
+                logoutBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    // Close menu first
                     if (window.innerWidth <= 768) {
                         menuToggle.classList.remove('active');
                         navbarRight.classList.remove('active');
                         overlay.classList.remove('active');
                         document.body.style.overflow = '';
                     }
+                    // Then logout
+                    this.handleLogout();
                 });
-            });
-
-            // Bind logout button
-            const logoutBtn = document.getElementById('logoutBtn');
-            if (logoutBtn) {
-                logoutBtn.addEventListener('click', () => this.handleLogout());
             }
         },
 
