@@ -120,7 +120,7 @@
         }
 
         .nav-btn {
-            display: flex;
+            display: flex !important;
             align-items: center;
             justify-content: center;
             width: 36px;
@@ -128,10 +128,13 @@
             border-radius: 8px;
             background: #f8f9fa;
             border: 1px solid #e2e8f0;
-            cursor: pointer;
+            cursor: pointer !important;
             transition: all 0.2s ease;
             text-decoration: none;
             color: #555;
+            pointer-events: auto !important;
+            position: relative;
+            z-index: 10;
         }
 
         .nav-btn:hover {
