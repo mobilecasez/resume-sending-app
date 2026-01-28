@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Credit Packages - CVApplyr</title>
+    <!-- Razorpay Checkout SDK -->
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
     <style>
         * {
             margin: 0;
@@ -511,15 +513,136 @@
         }
 
         async function purchasePackage(packageId, packageName, price) {
-            // For now, show a message that payment is coming soon
-            showToast(`Payment integration coming soon! Package: ${packageName} - $${price}`, 'info');
-            
-            // TODO: Integrate with payment gateway (Razorpay, Stripe, PayPal, etc.)
-            // Example flow:
-            // 1. Create order on backend
-            // 2. Open payment gateway
-            // 3. Handle payment success/failure
-            // 4. Update credits on successful payment
+            try {
+                const button = event.target;
+                button.disabled = true;
+                button.textContent = 'Processing...';
+
+                // Get Razorpay config
+                const configResponse = await fetch('/api/payment/config');
+                if (!configResponse.ok) {
+                    throw new Error('Payment service not available');
+                }
+                const config = await configResponse.json();
+
+                // Create order on backend
+                const orderResponse = await fetch('/api/payment/create-order', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+                    },
+                    body: JSON.stringify({
+                        packageId: packageId,
+                        amount: price
+                    })
+                });
+
+                if (!orderResponse.ok) {
+                    const error = await orderResponse.json();
+                    throw new Error(error.error || 'Failed to create order');
+                }
+
+                const orderData = await orderResponse.json();
+
+                // Get user info for prefill
+                const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+
+                // Configure Razorpay checkout
+                const options = {
+                    key: config.keyId,
+                    amount: orderData.amount,
+                    currency: orderData.currency,
+                    name: 'CVApplyr',
+                    description: `${packageName} - ${price === Math.floor(price) ? price : price.toFixed(2)} Credits`,
+                    order_id: orderData.orderId,
+                    prefill: {
+                        name: userData.full_name || '',
+                        email: userData.email || '',
+                        contact: userData.phone_number || ''
+                    },
+                    theme: {
+                        color: '#6366F1'
+                    },
+                    handler: async function (response) {
+                        // Payment successful - verify on backend
+                        await verifyPayment(response, packageName);
+                    },
+                    modal: {
+                        ondismiss: function() {
+                            button.disabled = false;
+                            button.textContent = '💳 Buy Plan';
+                            showToast('Payment cancelled', 'info');
+                        }
+                    }
+                };
+
+                // Open Razorpay checkout
+                const razorpay = new Razorpay(options);
+                razorpay.open();
+
+                // Reset button if modal closes
+                button.disabled = false;
+                button.textContent = '💳 Buy Plan';
+
+            } catch (error) {
+                console.error('Payment error:', error);
+                showToast(error.message || 'Payment failed. Please try again.', 'error');
+                
+                // Reset button
+                const button = event.target;
+                button.disabled = false;
+                button.textContent = '💳 Buy Plan';
+            }
+        }
+
+        async function verifyPayment(response, packageName) {
+            try {
+                const verifyResponse = await fetch('/api/payment/verify', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+                    },
+                    body: JSON.stringify({
+                        razorpay_order_id: response.razorpay_order_id,
+                        razorpay_payment_id: response.razorpay_payment_id,
+                        razorpay_signature: response.razorpay_signature
+                    })
+                });
+
+                if (!verifyResponse.ok) {
+                    throw new Error('Payment verification failed');
+                }
+
+                const result = await verifyResponse.json();
+
+                if (result.success) {
+                    // Update displayed credits
+                    const creditsElement = document.querySelector('.credits-value');
+                    if (creditsElement) {
+                        creditsElement.textContent = result.credits;
+                    }
+
+                    // Update local storage
+                    const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+                    userData.credits = result.credits;
+                    localStorage.setItem('userData', JSON.stringify(userData));
+
+                    showToast(`🎉 Payment successful! ${result.creditsAdded} credits added to your account.`, 'success');
+                    
+                    // Reload packages to update UI
+                    setTimeout(() => {
+                        loadPackages();
+                    }, 2000);
+                } else {
+                    throw new Error('Payment verification failed');
+                }
+
+            } catch (error) {
+                console.error('Verification error:', error);
+                showToast('Payment verification failed. Please contact support if amount was deducted.', 'error');
+            }
         }
 
         function handleLogout() {

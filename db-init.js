@@ -42,6 +42,63 @@ async function initializePostgres() {
     await db.query(schema);
     
     console.log('✅ PostgreSQL schema created successfully');
+    
+    // Run migrations for existing databases
+    await runPostgresMigrations(db);
+}
+
+/**
+ * Run migrations for existing PostgreSQL databases
+ */
+async function runPostgresMigrations(db) {
+    console.log('🔄 Running PostgreSQL migrations...');
+    
+    try {
+        // Migration: Add is_popular and display_order columns to plans table if they don't exist
+        await db.query(`
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='plans' AND column_name='is_popular') THEN
+                    ALTER TABLE plans ADD COLUMN is_popular INTEGER DEFAULT 0;
+                    RAISE NOTICE 'Added is_popular column to plans table';
+                END IF;
+                
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='plans' AND column_name='display_order') THEN
+                    ALTER TABLE plans ADD COLUMN display_order INTEGER DEFAULT 0;
+                    RAISE NOTICE 'Added display_order column to plans table';
+                END IF;
+            END $$;
+        `);
+        
+        // Migration: Create payment_orders table if it doesn't exist
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS payment_orders (
+                id SERIAL PRIMARY KEY,
+                order_id TEXT NOT NULL UNIQUE,
+                payment_id TEXT,
+                signature TEXT,
+                user_id INTEGER NOT NULL,
+                package_id INTEGER NOT NULL,
+                amount NUMERIC(10, 2) NOT NULL,
+                currency TEXT DEFAULT 'INR',
+                status TEXT DEFAULT 'created',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (package_id) REFERENCES plans(id) ON DELETE CASCADE
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_payment_orders_user_id ON payment_orders(user_id);
+            CREATE INDEX IF NOT EXISTS idx_payment_orders_order_id ON payment_orders(order_id);
+        `);
+        
+        console.log('✅ PostgreSQL migrations completed successfully');
+    } catch (error) {
+        console.error('⚠️ Migration warning:', error.message);
+        // Don't fail if migrations have issues, just warn
+    }
 }
 
 /**
@@ -188,6 +245,8 @@ async function initializeSQLite() {
                 description TEXT,
                 features TEXT,
                 is_active INTEGER DEFAULT 1,
+                is_popular INTEGER DEFAULT 0,
+                display_order INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
@@ -252,6 +311,28 @@ async function initializeSQLite() {
         `, (err) => {
             if (err) console.error('Error creating credit_transactions table:', err);
             else console.log('✅ Credit transactions table ready');
+        });
+
+        // Payment orders table for Razorpay transactions
+        db.run(`
+            CREATE TABLE IF NOT EXISTS payment_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id TEXT NOT NULL UNIQUE,
+                payment_id TEXT,
+                signature TEXT,
+                user_id INTEGER NOT NULL,
+                package_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                currency TEXT DEFAULT 'INR',
+                status TEXT DEFAULT 'created',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (package_id) REFERENCES plans(id) ON DELETE CASCADE
+            )
+        `, (err) => {
+            if (err) console.error('Error creating payment_orders table:', err);
+            else console.log('✅ Payment orders table ready');
         });
 
         // Monthly usage stats table
