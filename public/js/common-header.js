@@ -60,7 +60,7 @@
                     </a>
                 </div>
                 
-                <button class="logout-btn" onclick="handleLogout()">Logout</button>
+                <button class="logout-btn" id="logoutBtn">Logout</button>
             </div>
         </nav>
     `;
@@ -164,6 +164,7 @@
                 transition: all 0.2s ease;
                 text-decoration: none;
                 color: #555;
+                pointer-events: auto;
             }
 
             .nav-btn:hover {
@@ -217,6 +218,7 @@
                 cursor: pointer;
                 transition: all 0.2s ease;
                 font-weight: 500;
+                pointer-events: auto;
             }
 
             .logout-btn:hover {
@@ -363,6 +365,7 @@
                     justify-content: flex-start;
                     padding: 0 16px;
                     gap: 12px;
+                    pointer-events: auto;
                 }
 
                 .nav-label {
@@ -376,6 +379,7 @@
                     padding: 12px;
                     font-size: 0.875rem;
                     margin-top: 8px;
+                    pointer-events: auto;
                 }
 
                 .navbar-brand h1 {
@@ -471,6 +475,12 @@
                     }
                 });
             });
+
+            // Bind logout button
+            const logoutBtn = document.getElementById('logoutBtn');
+            if (logoutBtn) {
+                logoutBtn.addEventListener('click', () => this.handleLogout());
+            }
         },
 
         // Load user information
