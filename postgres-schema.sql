@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS plans (
     description TEXT,
     features TEXT,
     is_active INTEGER DEFAULT 1,
+    is_popular INTEGER DEFAULT 0,
+    display_order INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -114,6 +116,23 @@ CREATE TABLE IF NOT EXISTS credit_transactions (
     metadata TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Payment orders table for Razorpay transactions
+CREATE TABLE IF NOT EXISTS payment_orders (
+    id SERIAL PRIMARY KEY,
+    order_id TEXT NOT NULL UNIQUE,
+    payment_id TEXT,
+    signature TEXT,
+    user_id INTEGER NOT NULL,
+    package_id INTEGER NOT NULL,
+    amount NUMERIC(10, 2) NOT NULL,
+    currency TEXT DEFAULT 'INR',
+    status TEXT DEFAULT 'created',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (package_id) REFERENCES plans(id) ON DELETE CASCADE
 );
 
 -- Monthly usage stats table
@@ -159,5 +178,7 @@ CREATE INDEX IF NOT EXISTS idx_recipients_user_id ON recipients(user_id);
 CREATE INDEX IF NOT EXISTS idx_application_history_user_id ON application_history(user_id);
 CREATE INDEX IF NOT EXISTS idx_review_cover_letters_user_id ON review_cover_letters(user_id);
 CREATE INDEX IF NOT EXISTS idx_credit_transactions_user_id ON credit_transactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_payment_orders_user_id ON payment_orders(user_id);
+CREATE INDEX IF NOT EXISTS idx_payment_orders_order_id ON payment_orders(order_id);
 CREATE INDEX IF NOT EXISTS idx_monthly_usage_stats_user_id ON monthly_usage_stats(user_id);
 CREATE INDEX IF NOT EXISTS idx_credit_usage_history_user_id ON credit_usage_history(user_id);

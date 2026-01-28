@@ -4,6 +4,7 @@ const { Pool } = require('pg');
 /**
  * Database Configuration
  * Supports both SQLite (local development) and PostgreSQL (production)
+ * Uses connection pooling with reuse for auth stability
  */
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -12,6 +13,9 @@ const DATABASE_URL = process.env.DATABASE_URL;
 let db;
 let dbType = 'sqlite'; // Default to SQLite
 
+// Reuse pool across requests (critical for serverless/auth routes)
+global.pgPool = global.pgPool || null;
+
 // Initialize database connection
 function initializeConnection() {
     if (DATABASE_URL && DATABASE_URL.startsWith('postgres')) {
@@ -19,10 +23,25 @@ function initializeConnection() {
         dbType = 'postgres';
         console.log('🐘 Using PostgreSQL database');
         
-        db = new Pool({
-            connectionString: DATABASE_URL,
-            ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : false
-        });
+        // Reuse existing pool if available
+        if (global.pgPool) {
+            console.log('♻️  Reusing existing PostgreSQL connection pool');
+            db = global.pgPool;
+        } else {
+            db = new Pool({
+                connectionString: DATABASE_URL,
+                ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : false,
+                connectionTimeoutMillis: 10000, // 10 seconds
+                idleTimeoutMillis: 30000,
+                max: 10, // Maximum pool size
+                min: 2, // Minimum pool size
+                keepAlive: true,
+                keepAliveInitialDelayMillis: 10000
+            });
+            
+            // Store for reuse
+            global.pgPool = db;
+        }
         
         // Test connection
         db.query('SELECT NOW()', (err, res) => {

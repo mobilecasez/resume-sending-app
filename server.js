@@ -25,6 +25,13 @@ const AICoverLetterGenerator = require('./ai-cover-letter-generator');
 const TemplateCoverLetterGenerator = require('./template-cover-letter-generator');
 const dbConfig = require('./db-config');
 const { initializeDatabase } = require('./db-init');
+const Razorpay = require('razorpay');
+
+// Load Razorpay credentials from separate env file
+const razorpayEnvPath = path.join(__dirname, '.env.razorpay');
+if (fsSync.existsSync(razorpayEnvPath)) {
+    require('dotenv').config({ path: razorpayEnvPath });
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -47,10 +54,14 @@ function decryptData(ciphertext) {
 
 // Gmail API Helper Functions
 function createOAuth2Client(user) {
+    const callbackUrl = process.env.NODE_ENV === 'production' 
+        ? 'https://cvapplyr.com/auth/google/callback'
+        : 'http://localhost:3000/auth/google/callback';
+    
     const oauth2Client = new google.auth.OAuth2(
         process.env.GOOGLE_CLIENT_ID,
         process.env.GOOGLE_CLIENT_SECRET,
-        'http://localhost:3000/auth/google/callback'
+        callbackUrl
     );
     
     // Set credentials
@@ -276,10 +287,14 @@ app.use(express.static('public'));
 app.use('/uploads', express.static('uploads'));
 
 // Passport Google OAuth Configuration
+const CALLBACK_URL = process.env.NODE_ENV === 'production' 
+    ? 'https://cvapplyr.com/auth/google/callback'
+    : 'http://localhost:3000/auth/google/callback';
+
 passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID || 'your-google-client-id',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || 'your-google-client-secret',
-    callbackURL: 'http://localhost:3000/auth/google/callback',
+    callbackURL: CALLBACK_URL,
     scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send'],
     accessType: 'offline', // Request refresh token
     prompt: 'consent' // Force consent screen to get refresh token
@@ -4247,10 +4262,10 @@ app.post('/api/send-single-application', authenticateToken, async (req, res) => 
 app.get('/api/packages', async (req, res) => {
     try {
         const packages = await dbConfig.query(`
-            SELECT id, name, credits as amount, credits, validity_days, description, price as currency, is_active as is_popular, id as display_order
+            SELECT id, name, price as amount, credits, validity_days, description, 'USD' as currency, is_popular, display_order
             FROM plans 
             WHERE is_active = 1
-            ORDER BY id ASC
+            ORDER BY display_order ASC, id ASC
         `, []);
         res.json({ packages });
     } catch (error) {
@@ -4275,8 +4290,8 @@ app.get('/api/admin/packages', authenticateAdmin, async (req, res) => {
         features,
         is_active,
         'USD' as currency,
-        0 as is_popular,
-        id as display_order,
+        is_popular,
+        display_order,
         created_at,
         updated_at
             FROM plans 
@@ -4305,8 +4320,8 @@ app.get('/api/admin/packages/:id', authenticateAdmin, async (req, res) => {
         features,
         is_active,
         'USD' as currency,
-        0 as is_popular,
-        id as display_order,
+        is_popular,
+        display_order,
         created_at,
         updated_at
             FROM plans 
@@ -4338,8 +4353,8 @@ app.post('/api/admin/packages', authenticateAdmin, async (req, res) => {
     
     try {
         const result = await dbConfig.run(`
-            INSERT INTO plans (name, price, credits, validity_days, description, is_active)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO plans (name, price, credits, validity_days, description, is_active, is_popular, display_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
         `, [
             name, 
@@ -4347,7 +4362,9 @@ app.post('/api/admin/packages', authenticateAdmin, async (req, res) => {
             credits, 
             validity_days, 
             description || null,
-            1
+            1,
+            is_popular !== undefined ? (is_popular ? 1 : 0) : 0,
+            display_order || 0
         ]);
         
         const packageId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
@@ -4386,6 +4403,8 @@ app.put('/api/admin/packages/:id', authenticateAdmin, async (req, res) => {
                 validity_days = ?, 
                 description = ?, 
                 is_active = ?,
+                is_popular = ?,
+                display_order = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
         `, [
@@ -4395,6 +4414,8 @@ app.put('/api/admin/packages/:id', authenticateAdmin, async (req, res) => {
             validity_days, 
             description || null,
             is_active !== undefined ? (is_active ? 1 : 0) : 1,
+            is_popular !== undefined ? (is_popular ? 1 : 0) : 0,
+            display_order || 0,
             id
         ]);
         
@@ -4467,6 +4488,253 @@ app.get('/api/user/is-admin', authenticateToken, async (req, res) => {
     } catch (error) {
         res.status(500).json({ error: 'Database error' });
     }
+});
+
+// ============================================
+// PAYMENT ENDPOINTS (RAZORPAY INTEGRATION)
+// ============================================
+
+// Initialize Razorpay instance
+let razorpayInstance = null;
+if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+    razorpayInstance = new Razorpay({
+        key_id: process.env.RAZORPAY_KEY_ID,
+        key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+    console.log('✅ Razorpay initialized successfully');
+} else {
+    console.warn('⚠️  Razorpay credentials not found. Payment endpoints will not work.');
+}
+
+// Create Razorpay order
+app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
+    const { packageId, amount } = req.body;
+    const userId = req.user.id;
+
+    try {
+        if (!razorpayInstance) {
+            return res.status(503).json({ 
+                error: 'Payment service not configured. Please contact support.' 
+            });
+        }
+
+        // Validate package exists and get details
+        const packageResult = await dbConfig.query(
+            'SELECT * FROM plans WHERE id = $1 AND is_active = 1',
+            [packageId]
+        );
+        const packageData = packageResult.rows[0];
+
+        if (!packageData) {
+            return res.status(404).json({ error: 'Package not found or inactive' });
+        }
+
+        // Verify amount matches package price
+        if (packageData.price !== amount) {
+            return res.status(400).json({ error: 'Invalid amount' });
+        }
+
+        // Create Razorpay order
+        const options = {
+            amount: amount * 100, // Amount in paise (Razorpay uses smallest currency unit)
+            currency: 'INR',
+            receipt: `rcpt_${Date.now()}_${userId}_${packageId}`,
+            notes: {
+                userId: userId,
+                packageId: packageId,
+                packageName: packageData.name,
+                credits: packageData.credits
+            }
+        };
+
+        const order = await razorpayInstance.orders.create(options);
+
+        // Store order in database for tracking
+        await dbConfig.query(`
+            INSERT INTO payment_orders (
+                order_id, user_id, package_id, amount, currency, 
+                status, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+        `, [
+            order.id,
+            userId,
+            packageId,
+            amount,
+            'INR',
+            'created'
+        ]);
+
+        res.json({
+            success: true,
+            orderId: order.id,
+            amount: order.amount,
+            currency: order.currency,
+            keyId: process.env.RAZORPAY_KEY_ID
+        });
+
+    } catch (error) {
+        console.error('Error creating Razorpay order:', error);
+        res.status(500).json({ 
+            error: 'Failed to create payment order',
+            message: error.message 
+        });
+    }
+});
+
+// Verify Razorpay payment signature
+app.post('/api/payment/verify', authenticateToken, async (req, res) => {
+    const { 
+        razorpay_order_id, 
+        razorpay_payment_id, 
+        razorpay_signature 
+    } = req.body;
+    const userId = req.user.id;
+
+    try {
+        if (!razorpayInstance) {
+            return res.status(503).json({ 
+                error: 'Payment service not configured' 
+            });
+        }
+
+        // Verify signature
+        const crypto = require('crypto');
+        const body = razorpay_order_id + '|' + razorpay_payment_id;
+        const expectedSignature = crypto
+            .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+            .update(body.toString())
+            .digest('hex');
+
+        const isValidSignature = expectedSignature === razorpay_signature;
+
+        if (!isValidSignature) {
+            // Update order status as failed
+            await dbConfig.query(`
+                UPDATE payment_orders 
+                SET status = 'failed', updated_at = CURRENT_TIMESTAMP
+                WHERE order_id = $1 AND user_id = $2
+            `, [razorpay_order_id, userId]);
+
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Payment verification failed' 
+            });
+        }
+
+        // Signature is valid - fetch order details
+        const orderResult = await dbConfig.query(`
+            SELECT po.*, p.credits, p.validity_days, p.name as package_name
+            FROM payment_orders po
+            JOIN plans p ON po.package_id = p.id
+            WHERE po.order_id = $1 AND po.user_id = $2
+        `, [razorpay_order_id, userId]);
+        const orderData = orderResult.rows[0];
+
+        if (!orderData) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+
+        // Update payment order status
+        await dbConfig.query(`
+            UPDATE payment_orders 
+            SET status = 'completed', 
+                payment_id = $1,
+                signature = $2,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE order_id = $3 AND user_id = $4
+        `, [razorpay_payment_id, razorpay_signature, razorpay_order_id, userId]);
+
+        // Add credits to user account
+        await dbConfig.query(`
+            UPDATE users 
+            SET credits = credits + $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+        `, [orderData.credits, userId]);
+
+        // Create transaction record
+        await dbConfig.query(`
+            INSERT INTO credit_transactions (
+                user_id, transaction_type, credits_change, description, 
+                balance_after, created_at
+            ) VALUES ($1, $2, $3, $4, 
+                (SELECT credits FROM users WHERE id = $5),
+                CURRENT_TIMESTAMP
+            )
+        `, [
+            userId,
+            'purchase',
+            orderData.credits,
+            `Purchased ${orderData.package_name} - Payment ID: ${razorpay_payment_id}`,
+            userId
+        ]);
+
+        // Fetch updated user data
+        const userResult = await dbConfig.query(
+            'SELECT credits FROM users WHERE id = $1',
+            [userId]
+        );
+        const userData = userResult.rows[0];
+
+        res.json({
+            success: true,
+            message: 'Payment successful!',
+            credits: userData.credits,
+            creditsAdded: orderData.credits,
+            orderId: razorpay_order_id,
+            paymentId: razorpay_payment_id
+        });
+
+    } catch (error) {
+        console.error('Error verifying payment:', error);
+        res.status(500).json({ 
+            error: 'Payment verification failed',
+            message: error.message 
+        });
+    }
+});
+
+// Get payment history for user
+app.get('/api/payment/history', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+
+    try {
+        const result = await dbConfig.query(`
+            SELECT 
+                po.order_id,
+                po.payment_id,
+                po.amount,
+                po.currency,
+                po.status,
+                po.created_at,
+                p.name as package_name,
+                p.credits
+            FROM payment_orders po
+            LEFT JOIN plans p ON po.package_id = p.id
+            WHERE po.user_id = $1
+            ORDER BY po.created_at DESC
+            LIMIT 50
+        `, [userId]);
+
+        res.json({ success: true, payments: result.rows });
+
+    } catch (error) {
+        console.error('Error fetching payment history:', error);
+        res.status(500).json({ error: 'Failed to fetch payment history' });
+    }
+});
+
+// Get Razorpay key for frontend (public key only)
+app.get('/api/payment/config', (req, res) => {
+    if (!process.env.RAZORPAY_KEY_ID) {
+        return res.status(503).json({ 
+            error: 'Payment service not configured' 
+        });
+    }
+    
+    res.json({
+        keyId: process.env.RAZORPAY_KEY_ID
+    });
 });
 
 // Start server
