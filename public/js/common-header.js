@@ -7,13 +7,26 @@
         <nav class="top-navbar">
             <div class="navbar-left">
                 <a href="/" class="navbar-brand">
-                    <img src="/icon_light_background.png" alt="CVApplyr" style="height: 45px;">
+                    <img src="/icon_light_background.png" alt="CVApplyr" style="height: 45px;" class="navbar-logo">
                 </a>
             </div>
             
-            <div class="navbar-right">
-                <!-- Credit Badge -->
-                <a href="/usage" class="credit-badge" id="creditBadge" title="View usage & credits">
+            <!-- Mobile Credit Badge (always visible on mobile) -->
+            <a href="/usage" class="credit-badge mobile-credit" id="mobileCreditBadge" title="View usage & credits">
+                <span class="credit-icon">💳</span>
+                <span class="credit-number" id="mobileCreditNumber">0</span>
+            </a>
+            
+            <!-- Mobile Menu Toggle -->
+            <button class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+            
+            <div class="navbar-right" id="navbarRight">
+                <!-- Credit Badge (desktop) -->
+                <a href="/usage" class="credit-badge desktop-credit" id="creditBadge" title="View usage & credits">
                     <span class="credit-icon">💳</span>
                     <span class="credit-number" id="creditBadgeNumber">0</span>
                 </a>
@@ -31,16 +44,19 @@
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                         </svg>
+                        <span class="nav-label">Admin</span>
                     </button>
                     <a href="/" class="nav-btn" title="Dashboard">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
                         </svg>
+                        <span class="nav-label">Dashboard</span>
                     </a>
                     <a href="/profile" class="nav-btn" title="Profile">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                         </svg>
+                        <span class="nav-label">Profile</span>
                     </a>
                 </div>
                 
@@ -208,17 +224,184 @@
                 border-color: #dc2626;
             }
 
+            /* Mobile Menu Toggle */
+            .mobile-menu-toggle {
+                display: none;
+                flex-direction: column;
+                gap: 4px;
+                background: transparent;
+                border: none;
+                cursor: pointer;
+                padding: 8px;
+                z-index: 1001;
+            }
+
+            .mobile-menu-toggle span {
+                width: 24px;
+                height: 3px;
+                background: #1e40af;
+                border-radius: 2px;
+                transition: all 0.3s ease;
+            }
+
+            .mobile-menu-toggle.active span:nth-child(1) {
+                transform: rotate(45deg) translate(6px, 6px);
+            }
+
+            .mobile-menu-toggle.active span:nth-child(2) {
+                opacity: 0;
+            }
+
+            .mobile-menu-toggle.active span:nth-child(3) {
+                transform: rotate(-45deg) translate(6px, -6px);
+            }
+
+            .mobile-credit {
+                display: none;
+            }
+
+            .desktop-credit {
+                display: flex;
+            }
+
+            .nav-label {
+                display: none;
+            }
+
             @media (max-width: 768px) {
                 .top-navbar {
                     padding: 10px 16px;
+                    position: relative;
+                }
+
+                .navbar-logo {
+                    height: 32px !important;
+                }
+
+                .mobile-menu-toggle {
+                    display: flex;
+                }
+
+                .mobile-credit {
+                    display: flex;
+                    padding: 6px 12px;
+                    margin-left: auto;
+                    margin-right: 12px;
+                }
+
+                .mobile-credit .credit-icon {
+                    font-size: 16px;
+                }
+
+                .mobile-credit .credit-number {
+                    font-size: 14px;
+                    font-weight: 700;
+                }
+
+                .desktop-credit {
+                    display: none;
+                }
+
+                .navbar-right {
+                    display: none;
+                    position: fixed;
+                    top: 0;
+                    right: 0;
+                    width: 280px;
+                    height: 100vh;
+                    background: white;
+                    box-shadow: -4px 0 20px rgba(0,0,0,0.15);
+                    flex-direction: column;
+                    align-items: stretch;
+                    padding: 80px 20px 20px;
+                    gap: 12px;
+                    z-index: 1000;
+                    overflow-y: auto;
+                }
+
+                .navbar-right.active {
+                    display: flex;
+                }
+
+                .user-section {
+                    flex-direction: column;
+                    padding: 16px;
+                    margin-bottom: 12px;
+                    border-bottom: 1px solid #e2e8f0;
+                }
+
+                .user-avatar {
+                    width: 48px;
+                    height: 48px;
+                    font-size: 1.125rem;
                 }
 
                 .user-details {
-                    display: none;
+                    display: flex;
+                    align-items: center;
+                    text-align: center;
+                    margin-top: 12px;
+                }
+
+                .user-name {
+                    font-size: 1rem;
+                }
+
+                .user-email {
+                    font-size: 0.8125rem;
+                }
+
+                .nav-actions {
+                    flex-direction: column;
+                    width: 100%;
+                    gap: 8px;
+                }
+
+                .nav-btn {
+                    width: 100%;
+                    height: 48px;
+                    justify-content: flex-start;
+                    padding: 0 16px;
+                    gap: 12px;
+                }
+
+                .nav-label {
+                    display: inline;
+                    font-size: 0.9375rem;
+                    font-weight: 500;
+                }
+
+                .logout-btn {
+                    width: 100%;
+                    padding: 12px;
+                    font-size: 0.875rem;
+                    margin-top: 8px;
                 }
 
                 .navbar-brand h1 {
                     font-size: 1rem;
+                }
+
+                /* Mobile overlay */
+                .mobile-overlay {
+                    display: none;
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: rgba(0, 0, 0, 0.5);
+                    z-index: 999;
+                }
+
+                .mobile-overlay.active {
+                    display: block;
+                }
+            }
+
+            @media (max-width: 480px) {
+                .navbar-right {
+                    width: 260px;
                 }
             }
         </style>
@@ -236,6 +419,15 @@
             // Inject header HTML at the beginning of body
             document.body.insertAdjacentHTML('afterbegin', headerHTML);
 
+            // Add mobile overlay
+            const overlay = document.createElement('div');
+            overlay.className = 'mobile-overlay';
+            overlay.id = 'mobileOverlay';
+            document.body.appendChild(overlay);
+
+            // Setup mobile menu toggle
+            this.setupMobileMenu();
+
             // Load user info
             this.loadUserInfo();
 
@@ -247,6 +439,38 @@
             if (!window.dashboardPage) {
                 this.loadCredits();
             }
+        },
+
+        // Setup mobile menu functionality
+        setupMobileMenu: function() {
+            const menuToggle = document.getElementById('mobileMenuToggle');
+            const navbarRight = document.getElementById('navbarRight');
+            const overlay = document.getElementById('mobileOverlay');
+
+            if (!menuToggle || !navbarRight || !overlay) return;
+
+            const toggleMenu = () => {
+                menuToggle.classList.toggle('active');
+                navbarRight.classList.toggle('active');
+                overlay.classList.toggle('active');
+                document.body.style.overflow = navbarRight.classList.contains('active') ? 'hidden' : '';
+            };
+
+            menuToggle.addEventListener('click', toggleMenu);
+            overlay.addEventListener('click', toggleMenu);
+
+            // Close menu when clicking nav links
+            const navLinks = navbarRight.querySelectorAll('a, button');
+            navLinks.forEach(link => {
+                link.addEventListener('click', () => {
+                    if (window.innerWidth <= 768) {
+                        menuToggle.classList.remove('active');
+                        navbarRight.classList.remove('active');
+                        overlay.classList.remove('active');
+                        document.body.style.overflow = '';
+                    }
+                });
+            });
         },
 
         // Load user information
@@ -312,10 +536,15 @@
                 const data = await response.json();
                 if (data.success) {
                     const creditBadgeNumber = document.getElementById('creditBadgeNumber');
+                    const mobileCreditNumber = document.getElementById('mobileCreditNumber');
+                    // Handle both old format (data.balance) and new format (data.credits.remaining)
+                    const credits = data.balance || (data.credits && typeof data.credits === 'object' ? data.credits.remaining : data.credits) || 0;
+                    
                     if (creditBadgeNumber) {
-                        // Handle both old format (data.balance) and new format (data.credits.remaining)
-                        const credits = data.balance || (data.credits && typeof data.credits === 'object' ? data.credits.remaining : data.credits) || 0;
                         creditBadgeNumber.textContent = credits;
+                    }
+                    if (mobileCreditNumber) {
+                        mobileCreditNumber.textContent = credits;
                     }
                 }
             } catch (error) {
@@ -326,8 +555,14 @@
         // Update credits display (can be called from pages)
         updateCredits: function(credits) {
             const creditBadgeNumber = document.getElementById('creditBadgeNumber');
+            const mobileCreditNumber = document.getElementById('mobileCreditNumber');
+            const creditsValue = credits || 0;
+            
             if (creditBadgeNumber) {
-                creditBadgeNumber.textContent = credits || 0;
+                creditBadgeNumber.textContent = creditsValue;
+            }
+            if (mobileCreditNumber) {
+                mobileCreditNumber.textContent = creditsValue;
             }
         },
 
