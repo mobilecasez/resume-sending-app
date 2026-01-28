@@ -40,12 +40,12 @@
                 </div>
                 
                 <div class="nav-actions">
-                    <button class="nav-btn" id="adminBtn" onclick="window.location.href='/admin-packages'" title="Admin Panel" style="display: none;">
+                    <a href="/admin-packages" class="nav-btn" id="adminBtn" title="Admin Panel" style="display: none;">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                         </svg>
                         <span class="nav-label">Admin</span>
-                    </button>
+                    </a>
                     <a href="/" class="nav-btn" title="Dashboard">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
@@ -152,7 +152,7 @@
             }
 
             .nav-btn {
-                display: flex;
+                display: flex !important;
                 align-items: center;
                 justify-content: center;
                 width: 36px;
@@ -160,11 +160,13 @@
                 border-radius: 8px;
                 background: #f8f9fa;
                 border: 1px solid #e2e8f0;
-                cursor: pointer;
+                cursor: pointer !important;
                 transition: all 0.2s ease;
                 text-decoration: none;
                 color: #555;
-                pointer-events: auto;
+                pointer-events: auto !important;
+                position: relative;
+                z-index: 10;
             }
 
             .nav-btn:hover {
@@ -215,10 +217,12 @@
                 border-radius: 6px;
                 font-size: 0.75rem;
                 color: #dc2626;
-                cursor: pointer;
+                cursor: pointer !important;
                 transition: all 0.2s ease;
                 font-weight: 500;
-                pointer-events: auto;
+                pointer-events: auto !important;
+                position: relative;
+                z-index: 10;
             }
 
             .logout-btn:hover {
@@ -319,6 +323,7 @@
                     gap: 12px;
                     z-index: 1000;
                     overflow-y: auto;
+                    pointer-events: auto !important;
                 }
 
                 .navbar-right.active {
@@ -365,7 +370,10 @@
                     justify-content: flex-start;
                     padding: 0 16px;
                     gap: 12px;
-                    pointer-events: auto;
+                    pointer-events: auto !important;
+                    cursor: pointer !important;
+                    position: relative;
+                    z-index: 10;
                 }
 
                 .nav-label {
@@ -379,7 +387,10 @@
                     padding: 12px;
                     font-size: 0.875rem;
                     margin-top: 8px;
-                    pointer-events: auto;
+                    pointer-events: auto !important;
+                    cursor: pointer !important;
+                    position: relative;
+                    z-index: 10;
                 }
 
                 .navbar-brand h1 {
@@ -396,6 +407,7 @@
                     height: 100%;
                     background: rgba(0, 0, 0, 0.5);
                     z-index: 999;
+                    pointer-events: auto;
                 }
 
                 .mobile-overlay.active {
