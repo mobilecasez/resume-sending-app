@@ -1,5 +1,5 @@
 const bcrypt = require('bcryptjs');
-const dbConfig = require('./db-config');
+const dbConfig = require('../db-config');
 
 /**
  * Initialize admin user if it doesn't exist

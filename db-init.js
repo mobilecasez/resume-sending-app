@@ -1,5 +1,5 @@
 const dbConfig = require('./db-config');
-const { initializeAdminUser } = require('./init-admin');
+const { initializeAdminUser } = require('./scripts/init-admin');
 const fs = require('fs').promises;
 
 /**
@@ -35,7 +35,7 @@ async function initializeDatabase() {
 async function initializePostgres() {
     console.log('📋 Creating PostgreSQL tables...');
     
-    const schema = await fs.readFile('./postgres-schema.sql', 'utf8');
+    const schema = await fs.readFile('./database/postgres-schema.sql', 'utf8');
     const db = dbConfig.rawDb();
     
     // Execute schema
