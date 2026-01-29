@@ -56,7 +56,7 @@ function initializeConnection() {
         dbType = 'sqlite';
         console.log('📁 Using SQLite database');
         
-        db = new sqlite3.Database('./database.db', (err) => {
+        db = new sqlite3.Database('./database/database.db', (err) => {
             if (err) {
                 console.error('❌ Error opening SQLite database:', err);
             } else {

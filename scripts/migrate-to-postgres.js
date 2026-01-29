@@ -28,7 +28,7 @@ if (!POSTGRES_URL) {
 }
 
 // Connect to SQLite
-const sqliteDb = new sqlite3.Database('./database.db', (err) => {
+const sqliteDb = new sqlite3.Database('./database/database.db', (err) => {
     if (err) {
         console.error('❌ SQLite connection error:', err);
         process.exit(1);

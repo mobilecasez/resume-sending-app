@@ -4,7 +4,7 @@ const fs = require('fs');
 require('dotenv').config();
 
 // SQLite database path
-const sqliteDb = new sqlite3.Database('./database.db');
+const sqliteDb = new sqlite3.Database('./database/database.db');
 
 // PostgreSQL client
 const pgClient = new Client({
