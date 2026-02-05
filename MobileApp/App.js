@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, ActionSheetIOS, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, ActionSheetIOS, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView } from 'react-native-webview';
 import * as WebBrowser from 'expo-web-browser';
@@ -9,12 +9,11 @@ import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { API_BASE } from './config';
 
 // Get your Google Client ID from Google Cloud Console
 const GOOGLE_CLIENT_ID = '832256639733-b0481qdpal17m1rcmmvq4nlnlvavgg59.apps.googleusercontent.com';
 
-// API Base - always use IP address (works for both web and mobile)
-const API_BASE = 'http://192.168.1.19:3000/api';
 const { width, height } = Dimensions.get('window');
 
 WebBrowser.maybeCompleteAuthSession();
@@ -398,6 +397,8 @@ export default function App() {
   const [reviewGeneratingAll, setReviewGeneratingAll] = useState(false);
   const [reviewSendingAll, setReviewSendingAll] = useState(false);
   const [reviewGeneratingAndSendingAll, setReviewGeneratingAndSendingAll] = useState(false);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [paymentUrl, setPaymentUrl] = useState('');
   const [selectedCoverLetterIndex, setSelectedCoverLetterIndex] = useState(null);
   const [showCoverLetterPreview, setShowCoverLetterPreview] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -496,6 +497,55 @@ export default function App() {
       // Don't clear existing cover letters - preserve sent/generated status
       setCurrentReviewTab(0);
       setScreen('review');
+    }
+  };
+
+  // Handle Razorpay payment
+  const handleBuyPackage = async (pkg) => {
+    console.log('💳 Buy package clicked:', pkg);
+    try {
+      // Create Razorpay order
+      console.log('📞 Calling create-order API...');
+      const orderResponse = await fetch(`${API_BASE}/payment/create-order`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user?.token || ''}`
+        },
+        body: JSON.stringify({
+          packageId: pkg.id,
+          amount: parseFloat(pkg.amount)
+        })
+      });
+
+      console.log('📦 Order response status:', orderResponse.status);
+      const orderData = await orderResponse.json();
+      console.log('📦 Order data:', orderData);
+
+      if (!orderResponse.ok) {
+        throw new Error(orderData.error || 'Failed to create order');
+      }
+
+      // 🔥 Use prefill data from backend (fetched from database)
+      const prefillData = orderData.prefill || {};
+      console.log('👤 Prefill data from backend:', prefillData);
+
+      // Open Razorpay payment page in WebView modal with prefill data
+      const url = `${API_BASE.replace('/api', '')}/payment.html?orderId=${orderData.orderId}&amount=${orderData.amount}&currency=${orderData.currency}&keyId=${orderData.keyId}&packageName=${encodeURIComponent(pkg.name)}&credits=${pkg.credits}&email=${encodeURIComponent(prefillData.email || '')}&name=${encodeURIComponent(prefillData.name || '')}&phone=${encodeURIComponent(prefillData.contact || '')}`;
+      
+      console.log('🌐 Opening payment URL with backend prefill data');
+      console.log('🔑 Key ID:', orderData.keyId);
+      console.log('📱 Current modal state before:', showPaymentModal);
+      setPaymentUrl(url);
+      setShowPaymentModal(true);
+      console.log('✅ Payment modal state updated');
+    } catch (error) {
+      console.error('❌ Payment error:', error);
+      Alert.alert(
+        'Payment Error',
+        error.message || 'Failed to initiate payment. Please try again.',
+        [{ text: 'OK' }]
+      );
     }
   };
 
@@ -3261,7 +3311,7 @@ export default function App() {
               {/* Buy More Credits Button */}
               <TouchableOpacity 
                 style={styles.buyCreditsButton}
-                onPress={() => setScreen('plans')}
+                onPress={() => setScreen('packages')}
               >
                 <Text style={styles.buyCreditsButtonText}>💎 Buy More Credits</Text>
               </TouchableOpacity>
@@ -3374,13 +3424,7 @@ export default function App() {
                         styles.packageBuyButton,
                         pkg.is_popular === 1 && styles.packageBuyButtonPopular
                       ]}
-                      onPress={() => {
-                        Alert.alert(
-                          'Purchase Credits',
-                          `Package: ${pkg.name}\nAmount: $${pkg.amount}\nCredits: ${pkg.credits}\n\nPayment integration coming soon!`,
-                          [{ text: 'OK' }]
-                        );
-                      }}
+                      onPress={() => handleBuyPackage(pkg)}
                     >
                       <Text style={styles.packageBuyButtonText}>💳 Buy Plan</Text>
                     </TouchableOpacity>
@@ -3398,6 +3442,117 @@ export default function App() {
             </View>
           )}
         </ScrollView>
+        
+        {/* Payment WebView Modal */}
+        <Modal
+          visible={showPaymentModal}
+          animationType="slide"
+          transparent={false}
+          onRequestClose={() => {
+            console.log('🚫 Payment modal closed');
+            setShowPaymentModal(false);
+            setPaymentUrl('');
+          }}
+        >
+          <SafeAreaView style={{flex: 1, backgroundColor: '#fff'}}>
+            <View style={{flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb', backgroundColor: '#fff'}}>
+              <TouchableOpacity 
+                onPress={() => {
+                  console.log('❌ Close button pressed');
+                  setShowPaymentModal(false);
+                  setPaymentUrl('');
+                }}
+                style={{padding: 8}}
+              >
+                <Text style={{fontSize: 18, color: '#3b82f6', fontWeight: '600'}}>✕ Close</Text>
+              </TouchableOpacity>
+              <Text style={{flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#1f2937'}}>Complete Payment</Text>
+              <View style={{width: 60}} />
+            </View>
+            {paymentUrl ? (
+              <WebView
+                source={{ uri: paymentUrl }}
+                style={{flex: 1}}
+                onNavigationStateChange={(navState) => {
+                  console.log('📱 Navigation:', navState.url);
+                  
+                  // Check if payment was successful
+                  if (navState.url.includes('/payment-success.html')) {
+                    // Extract payment details from URL (Razorpay returns payment_id, order_id, signature)
+                    const url = new URL(navState.url);
+                    const razorpay_payment_id = url.searchParams.get('payment_id');
+                    const razorpay_order_id = url.searchParams.get('order_id');
+                    const razorpay_signature = url.searchParams.get('signature');
+                    
+                    console.log('💳 Payment details:', { razorpay_payment_id, razorpay_order_id, razorpay_signature });
+                    
+                    // ✅ CLOSE MODAL IMMEDIATELY (non-blocking)
+                    setTimeout(async () => {
+                      setShowPaymentModal(false);
+                      setPaymentUrl('');
+                      
+                      try {
+                        // Verify payment with backend
+                        const verifyResponse = await fetch(`${API_BASE}/payment/verify`, {
+                          method: 'POST',
+                          headers: {
+                            'Authorization': `Bearer ${user.token}`,
+                            'Content-Type': 'application/json',
+                          },
+                          body: JSON.stringify({
+                            razorpay_order_id,
+                            razorpay_payment_id,
+                            razorpay_signature
+                          })
+                        });
+                        
+                        const verifyData = await verifyResponse.json();
+                        console.log('✅ Payment verification response:', verifyData);
+                        
+                        if (verifyData.success) {
+                          // Update credit balance
+                          setCreditBalance(verifyData.credits);
+                          
+                          // Close processing alert and show success
+                          Alert.alert(
+                            '🎉 Payment Successful!',
+                            `${verifyData.creditsAdded} credits have been added to your account!\n\nNew Balance: ${verifyData.credits} credits`,
+                            [{ text: 'Awesome!', onPress: () => setScreen('dashboard') }]
+                          );
+                        } else {
+                          throw new Error(verifyData.error || 'Verification failed');
+                        }
+                      } catch (error) {
+                        console.error('❌ Payment verification error:', error);
+                        Alert.alert(
+                          'Verification Pending',
+                          'Payment received! Credits will be added shortly. Please check your balance in a few minutes.',
+                          [{ text: 'OK', onPress: () => setScreen('dashboard') }]
+                        );
+                      }
+                    }, 10);
+                  } else if (navState.url.includes('/payment-failure.html')) {
+                    // Close modal immediately on failure too
+                    setTimeout(() => {
+                      setShowPaymentModal(false);
+                      setPaymentUrl('');
+                      Alert.alert('Payment Failed', 'Payment was not completed. Please try again.', [{ text: 'OK' }]);
+                    }, 10);
+                  }
+                }}
+                javaScriptEnabled={true}
+                domStorageEnabled={true}
+                startInLoadingState={true}
+                scalesPageToFit={true}
+              />
+            ) : (
+              <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}>
+                <ActivityIndicator size="large" color="#3b82f6" />
+                <Text style={{marginTop: 16, color: '#6b7280'}}>Loading payment...</Text>
+              </View>
+            )}
+          </SafeAreaView>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -4813,6 +4968,71 @@ export default function App() {
             </View>
           </View>
         )}
+
+        {/* Payment WebView Modal */}
+        <Modal
+          visible={showPaymentModal}
+          animationType="slide"
+          onRequestClose={() => {
+            setShowPaymentModal(false);
+            setPaymentUrl('');
+          }}
+        >
+          <SafeAreaView style={{flex: 1, backgroundColor: '#fff'}}>
+            <View style={{flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb'}}>
+              <TouchableOpacity 
+                onPress={() => {
+                  setShowPaymentModal(false);
+                  setPaymentUrl('');
+                }}
+                style={{padding: 8}}
+              >
+                <Text style={{fontSize: 16, color: '#3b82f6'}}>✕ Close</Text>
+              </TouchableOpacity>
+              <Text style={{flex: 1, textAlign: 'center', fontSize: 16, fontWeight: '600'}}>Complete Payment</Text>
+              <View style={{width: 50}} />
+            </View>
+            <WebView
+              source={{ uri: paymentUrl }}
+              style={{flex: 1}}
+              onNavigationStateChange={(navState) => {
+                // Check if payment was successful or failed
+                if (navState.url.includes('/payment-success.html')) {
+                  setTimeout(() => {
+                    setShowPaymentModal(false);
+                    setPaymentUrl('');
+                    // Reload credits
+                    fetch(`${API_BASE}/user/credits`, {
+                      method: 'GET',
+                      headers: {
+                        'Authorization': `Bearer ${user.token}`,
+                        'Content-Type': 'application/json',
+                      }
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                      if (data.success) {
+                        setCreditBalance(data.balance || 0);
+                        Alert.alert('Success', 'Payment completed! Your credits have been added.');
+                      }
+                    })
+                    .catch(err => console.error('Failed to reload credits:', err));
+                  }, 1000);
+                } else if (navState.url.includes('/payment-failure.html')) {
+                  setTimeout(() => {
+                    setShowPaymentModal(false);
+                    setPaymentUrl('');
+                    Alert.alert('Payment Failed', 'Payment was not completed. Please try again.');
+                  }, 1000);
+                }
+              }}
+              javaScriptEnabled={true}
+              domStorageEnabled={true}
+              startInLoadingState={true}
+              scalesPageToFit={true}
+            />
+          </SafeAreaView>
+        </Modal>
       </SafeAreaView>
     );
   }

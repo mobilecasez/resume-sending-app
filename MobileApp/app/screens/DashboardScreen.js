@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
-import { API_BASE } from '../config';
+import { API_BASE } from '../../config';
 
 export default function DashboardScreen({ navigation }) {
   const [user, setUser] = useState(null);

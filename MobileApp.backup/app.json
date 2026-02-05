@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Lettrico",
+    "slug": "lettrico-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "platforms": ["ios", "android", "web"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTabletMode": true,
+      "bundleIdentifier": "com.lettrico.mobile",
+      "buildNumber": "1.0.0",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera access required for resume upload",
+        "NSPhotoLibraryUsageDescription": "Photo library access required for resume upload"
+      }
+    },
+    "android": {
+      "package": "com.lettrico.mobile",
+      "versionCode": 1,
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "INTERNET"
+      ]
+    },
+    "web": {
+    },
+    "plugins": [],
+    "newArchEnabled": false
+  }
+}

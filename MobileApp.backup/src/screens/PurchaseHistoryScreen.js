@@ -8,7 +8,7 @@ import {
     RefreshControl
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_BASE } from '../../config';
+import { API_BASE } from '../config';
 
 export default function PurchaseHistoryScreen({ navigation }) {
     const [loading, setLoading] = useState(true);

@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Complete Payment</title>
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
+        }
+        .icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: #1f2937;
+            font-size: 28px;
+            margin-bottom: 12px;
+        }
+        .package-info {
+            background: #f3f4f6;
+            border-radius: 12px;
+            padding: 24px;
+            margin: 24px 0;
+        }
+        .package-name {
+            font-size: 20px;
+            font-weight: 600;
+            color: #3b82f6;
+            margin-bottom: 8px;
+        }
+        .credits {
+            font-size: 18px;
+            color: #6b7280;
+            margin-bottom: 16px;
+        }
+        .amount {
+            font-size: 32px;
+            font-weight: 700;
+            color: #1f2937;
+        }
+        .currency {
+            font-size: 18px;
+            color: #6b7280;
+        }
+        .pay-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 16px 48px;
+            font-size: 18px;
+            font-weight: 600;
+            border-radius: 12px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 24px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .pay-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.5);
+        }
+        .pay-button:active {
+            transform: translateY(0);
+        }
+        .secure-info {
+            margin-top: 20px;
+            color: #6b7280;
+            font-size: 14px;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .error {
+            background: #fef2f2;
+            color: #dc2626;
+            padding: 16px;
+            border-radius: 12px;
+            margin-top: 20px;
+            border-left: 4px solid #dc2626;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">💳</div>
+        <h1>Complete Your Purchase</h1>
+        
+        <div class="package-info">
+            <div class="package-name" id="packageName">Loading...</div>
+            <div class="credits" id="credits">Loading credits...</div>
+            <div>
+                <span class="currency">₹</span>
+                <span class="amount" id="amount">0</span>
+            </div>
+        </div>
+
+        <button class="pay-button" id="payButton" onclick="initiatePayment()">
+            Pay Now
+        </button>
+
+        <div class="secure-info">
+            🔒 Secure payment powered by Razorpay
+        </div>
+
+        <div id="errorMessage" class="error" style="display: none;"></div>
+    </div>
+
+    <script>
+        // Get URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        const orderId = urlParams.get('orderId');
+        const amount = urlParams.get('amount');
+        const currency = urlParams.get('currency') || 'INR';
+        const keyId = urlParams.get('keyId');
+        const packageName = urlParams.get('packageName');
+        const credits = urlParams.get('credits');
+        const userEmail = urlParams.get('email') || '';
+        const userName = urlParams.get('name') || '';
+        const userPhone = urlParams.get('phone') || '';
+
+        console.log('Payment page loaded with:', { orderId, amount, currency, keyId, packageName, credits });
+        console.log('🔍 Prefill data received:', { 
+            name: userName || '❌ MISSING', 
+            email: userEmail || '❌ MISSING', 
+            phone: userPhone || '❌ MISSING - RAZORPAY WILL ASK FOR IT' 
+        });
+
+        // Display package info
+        if (packageName) {
+            document.getElementById('packageName').textContent = packageName;
+        }
+        if (credits) {
+            document.getElementById('credits').textContent = `${credits} Credits`;
+        }
+        if (amount) {
+            document.getElementById('amount').textContent = amount;
+        }
+
+        // Check if all required parameters are present
+        if (!orderId || !amount || !keyId) {
+            showError('Missing payment parameters. Please try again.');
+            document.getElementById('payButton').disabled = true;
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+
+        function initiatePayment() {
+            const button = document.getElementById('payButton');
+            button.innerHTML = '<span class="loading"></span> Processing...';
+            button.disabled = true;
+
+            console.log('Prefill data:', { userName, userEmail, userPhone });
+
+            const options = {
+                key: keyId,
+                amount: Math.round(parseFloat(amount) * 100), // Convert to paise
+                currency: currency,
+                name: 'cvapplyr',
+                description: packageName || 'Credit Package',
+                order_id: orderId,
+                handler: function (response) {
+                    console.log('Payment successful:', response);
+                    // Redirect to success page
+                    window.location.href = `/payment-success.html?payment_id=${response.razorpay_payment_id}&order_id=${response.razorpay_order_id}&signature=${response.razorpay_signature}`;
+                },
+                prefill: {
+                    name: userName,
+                    email: userEmail,
+                    contact: userPhone
+                },
+                readonly: {
+                    name: userName ? true : false,
+                    email: userEmail ? true : false,
+                    contact: userPhone ? true : false
+                },
+                theme: {
+                    color: '#667eea'
+                },
+                modal: {
+                    ondismiss: function() {
+                        console.log('Payment cancelled by user');
+                        button.innerHTML = 'Pay Now';
+                        button.disabled = false;
+                        // Optionally redirect to failure page
+                        // window.location.href = '/payment-failure.html';
+                    }
+                }
+            };
+
+            try {
+                const rzp = new Razorpay(options);
+                rzp.on('payment.failed', function (response) {
+                    console.error('Payment failed:', response.error);
+                    window.location.href = `/payment-failure.html?code=${response.error.code}&description=${encodeURIComponent(response.error.description)}`;
+                });
+                rzp.open();
+            } catch (error) {
+                console.error('Error initializing Razorpay:', error);
+                showError('Failed to initialize payment. Please try again.');
+                button.innerHTML = 'Pay Now';
+                button.disabled = false;
+            }
+        }
+
+        // Auto-initiate payment after 1 second
+        setTimeout(() => {
+            if (orderId && amount && keyId) {
+                initiatePayment();
+            }
+        }, 1000);
+    </script>
+</body>
+</html>

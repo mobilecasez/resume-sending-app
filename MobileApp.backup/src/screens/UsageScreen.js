@@ -10,7 +10,7 @@ import {
     RefreshControl
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_BASE } from '../../config';
+import { API_BASE } from '../config';
 
 const { width } = Dimensions.get('window');
 

@@ -27,6 +27,9 @@ const dbConfig = require('./db-config');
 const { initializeDatabase } = require('./db-init');
 const Razorpay = require('razorpay');
 
+// Environment configuration
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
 // Load Razorpay credentials from separate env file
 const razorpayEnvPath = path.join(__dirname, '.env.razorpay');
 if (fsSync.existsSync(razorpayEnvPath)) {
@@ -3343,6 +3346,7 @@ app.post('/api/generate-cover-letter-details', authenticateToken, async (req, re
     console.log(`\n${'='.repeat(60)}`);
     console.log(`📨 [${requestId}] REQUEST RECEIVED at ${new Date().toISOString()}`);
     console.log(`   IP: ${req.ip}, UserAgent: ${req.get('user-agent')?.substring(0, 50)}...`);
+    console.log(`🔑 [${requestId}] GEMINI_API_KEY STATUS: ${process.env.GEMINI_API_KEY ? 'LOADED (length: ' + process.env.GEMINI_API_KEY.length + ')' : '❌ MISSING'}`);
     
     try {
         const userId = req.user.id;
@@ -3661,12 +3665,14 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
 
 // Helper function to generate hiring manager name and all company locations using AI
 async function generateAdditionalDetails(websiteUrl, companyName, position = 'Position') {
-    console.log(`🤖 Gemini AI: Starting location and hiring manager generation for ${companyName}...`);
+    console.log(`\n🤖 [GEMINI] Starting location and hiring manager generation for ${companyName}...`);
+    console.log(`🔑 [GEMINI] API Key Status: ${process.env.GEMINI_API_KEY ? '✅ LOADED (starts with: ' + process.env.GEMINI_API_KEY.substring(0, 10) + '...)' : '❌ MISSING'}`);
     const startTime = Date.now();
     const geminiKey = process.env.GEMINI_API_KEY;
     
-    if (!geminiKey) {
-        console.log(`⚠️  Gemini API key not found, returning defaults`);
+    if (!geminiKey || geminiKey === 'your_gemini_api_key_here') {
+        console.log(`❌ [GEMINI] API key not found or is placeholder, returning GENERIC defaults`);
+        console.log(`⚠️  [GEMINI] This is why you're getting generic content in 175ms!`);
         return {
             hiringManager: 'Hiring Manager',
             subject: `Application for ${position}`,
@@ -3678,9 +3684,13 @@ async function generateAdditionalDetails(websiteUrl, companyName, position = 'Po
             }]
         };
     }
+    
+    console.log(`✅ [GEMINI] Valid API key detected, proceeding with AI generation...`);
 
     try {
+        console.log(`📦 [GEMINI] Loading GoogleGenerativeAI package...`);
         const { GoogleGenerativeAI } = require('@google/generative-ai');
+        console.log(`🔧 [GEMINI] Initializing Gemini with key: ${geminiKey.substring(0, 15)}...`);
         const genAI = new GoogleGenerativeAI(geminiKey);
         const model = genAI.getGenerativeModel({ 
             model: 'gemini-2.0-flash-exp',
@@ -3688,6 +3698,7 @@ async function generateAdditionalDetails(websiteUrl, companyName, position = 'Po
         googleSearch: {}
             }]
         });
+        console.log(`✅ [GEMINI] Model initialized, preparing prompt...`);
 
         const prompt = `You are a research assistant. Find the ACTUAL headquarters location and address for the company "${companyName}" (website: ${websiteUrl}).
 
@@ -4261,13 +4272,13 @@ app.post('/api/send-single-application', authenticateToken, async (req, res) => 
 // Get all packages (public - for users to see available packages)
 app.get('/api/packages', async (req, res) => {
     try {
-        const packages = await dbConfig.query(`
+        const result = await dbConfig.query(`
             SELECT id, name, price as amount, credits, validity_days, description, 'USD' as currency, is_popular, display_order
             FROM plans 
             WHERE is_active = 1
             ORDER BY display_order ASC, id ASC
         `, []);
-        res.json({ packages });
+        res.json({ packages: result.rows || result });
     } catch (error) {
         console.error('Error fetching packages:', error);
         res.status(500).json({ error: 'Failed to fetch packages' });
@@ -4508,8 +4519,16 @@ if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
 
 // Create Razorpay order
 app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
-    const { packageId, amount } = req.body;
-    const userId = req.user.id;
+    // Support both planId (new) and packageId (legacy) for backward compatibility
+    const { planId, packageId, amount } = req.body;
+    
+    // 🔍 DEBUG: Log token payload to see what we have
+    console.log('🔑 Auth Token Payload:', req.user);
+    
+    const userId = req.user.id || req.user.userId; // Handle different token structures
+    const actualPlanId = planId || packageId; // Use planId if present, otherwise fall back to packageId
+
+    console.log(`💳 Processing Order for User ID: ${userId} | Plan: ${actualPlanId} | Amount: ${amount}`);
 
     try {
         if (!razorpayInstance) {
@@ -4518,62 +4537,179 @@ app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
             });
         }
 
+        // 1. 🔥 FETCH USER DETAILS FROM DATABASE (Source of Truth)
+        console.log('📋 Fetching user details for prefill from DB...');
+        
+        // Initialize fallback values from token
+        let userName = req.user.name || req.user.fullName || 'User';
+        let userEmail = req.user.email || '';
+        let cleanPhone = '';
+        
+        try {
+            const userResult = await dbConfig.get(
+                'SELECT email, phone_number, full_name FROM users WHERE id = ?',
+                [userId]
+            );
+        
+            if (userResult) {
+                // Override with DB values if present
+                userName = userResult.full_name || userName;
+                userEmail = userResult.email || userEmail;
+                cleanPhone = (userResult.phone_number || '').replace(/[^0-9]/g, '');
+                
+                console.log('✅ Found User in DB:', {
+                    name: userName,
+                    email: userEmail,
+                    phone: cleanPhone ? cleanPhone.substring(0, 3) + '***' : 'MISSING'
+                });
+            } else {
+                console.warn(`⚠️ User ID ${userId} not found in DB. Using Token data.`);
+            }
+        } catch (dbError) {
+            console.error('⚠️ DB User Lookup Failed:', dbError.message);
+            console.log('📋 Continuing with token data:', { userName, userEmail });
+        }
+        
+        // Warn if phone is missing (Razorpay will ask for it)
+        if (!cleanPhone) {
+            console.warn('⚠️⚠️ NO PHONE NUMBER - Razorpay will prompt user to enter it ⚠️⚠️');
+        }
+
         // Validate package exists and get details
         const packageResult = await dbConfig.query(
             'SELECT * FROM plans WHERE id = $1 AND is_active = 1',
-            [packageId]
+            [actualPlanId]
         );
-        const packageData = packageResult.rows[0];
+        const packageData = (packageResult.rows && packageResult.rows[0]) || packageResult[0];
 
         if (!packageData) {
             return res.status(404).json({ error: 'Package not found or inactive' });
         }
 
-        // Verify amount matches package price
-        if (packageData.price !== amount) {
+        // Verify amount matches package price (handle both string and number types)
+        const packagePrice = parseFloat(packageData.price);
+        const requestAmount = parseFloat(amount);
+        if (Math.abs(packagePrice - requestAmount) > 0.01) {
             return res.status(400).json({ error: 'Invalid amount' });
         }
 
         // Create Razorpay order
+        // Note: Razorpay test mode only supports INR, so we convert USD to INR
+        // In production, enable international payments on Razorpay dashboard for USD support
+        const USD_TO_INR_RATE = 83; // Approximate conversion rate
+        const amountInINR = Math.round(amount * USD_TO_INR_RATE);
+        
         const options = {
-            amount: amount * 100, // Amount in paise (Razorpay uses smallest currency unit)
-            currency: 'INR',
-            receipt: `rcpt_${Date.now()}_${userId}_${packageId}`,
+            amount: amountInINR * 100, // Amount in paise (Razorpay uses smallest currency unit)
+            currency: 'INR', // Razorpay test mode only supports INR
+            receipt: `rcpt_${Date.now()}_${userId}_${actualPlanId}`,
             notes: {
                 userId: userId,
-                packageId: packageId,
+                packageId: actualPlanId,
+                planId: actualPlanId,
                 packageName: packageData.name,
-                credits: packageData.credits
+                credits: packageData.credits,
+                originalAmount: amount,
+                originalCurrency: 'USD',
+                convertedAmount: amountInINR,
+                convertedCurrency: 'INR',
+                conversionRate: USD_TO_INR_RATE,
+                userEmail: userEmail,
+                userName: userName,
+                userPhone: cleanPhone
             }
         };
 
+        console.log('📋 Creating Razorpay order with notes:', options.notes);
         const order = await razorpayInstance.orders.create(options);
 
-        // Store order in database for tracking
-        await dbConfig.query(`
-            INSERT INTO payment_orders (
-                order_id, user_id, package_id, amount, currency, 
-                status, created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-        `, [
-            order.id,
-            userId,
-            packageId,
-            amount,
-            'INR',
-            'created'
-        ]);
+        console.log('✅ Razorpay order created:', order.id);
 
+        // 🔍 DEBUGGING BLOCK - Store order in database with detailed error handling
+        try {
+            console.log('📝 Attempting DB Insert with values:', {
+                order_id: order.id,
+                user_id: userId,
+                plan_id: actualPlanId,
+                amount: amount,
+                currency: 'INR'
+            });
+
+            const insertResult = await dbConfig.query(`
+                INSERT INTO payment_orders (
+                    order_id, user_id, package_id, plan_id, amount, currency,
+                    status, razorpay_order_id, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                RETURNING *
+            `, [
+                order.id,
+                userId,
+                actualPlanId,
+                actualPlanId,
+                amount,
+                'INR',
+                'created',
+                order.id
+            ]);
+
+            console.log('✅ Order saved to database successfully:', insertResult[0]);
+            console.log('✅ Inserted rows:', insertResult.length);
+            
+        } catch (dbError) {
+            console.error('❌❌❌ DATABASE INSERT FAILED ❌❌❌');
+            console.error('Full Error Object:', dbError);
+            console.error('Error Message:', dbError.message);
+            console.error('Error Name:', dbError.name);
+            console.error('Error Stack:', dbError.stack);
+            console.error('🔍 SQL Error Details:', {
+                code: dbError.code,
+                column: dbError.column,
+                constraint: dbError.constraint,
+                dataType: dbError.dataType,
+                hint: dbError.hint,
+                detail: dbError.detail,
+                where: dbError.where,
+                schema: dbError.schema,
+                table: dbError.table,
+                routine: dbError.routine
+            });
+            console.error('❌❌❌ END OF ERROR LOG ❌❌❌');
+            
+            // Return error immediately so frontend knows to stop
+            return res.status(500).json({ 
+                error: 'Database error: Unable to save order. Please contact support.',
+                debug: IS_PRODUCTION ? undefined : {
+                    message: dbError.message,
+                    code: dbError.code,
+                    detail: dbError.detail,
+                    hint: dbError.hint
+                }
+            });
+        }
+
+        // 3. 🔥 RETURN USER DETAILS FOR PREFILL
+        console.log('📤 Sending response with prefill data:', {
+            name: userName,
+            email: userEmail,
+            contact: cleanPhone ? '***' + cleanPhone.slice(-4) : 'NONE'
+        });
+        
         res.json({
             success: true,
             orderId: order.id,
             amount: order.amount,
             currency: order.currency,
-            keyId: process.env.RAZORPAY_KEY_ID
+            keyId: process.env.RAZORPAY_KEY_ID,
+            // Include user details for frontend to use in prefill
+            prefill: {
+                name: userName,
+                email: userEmail,
+                contact: cleanPhone
+            }
         });
 
     } catch (error) {
-        console.error('Error creating Razorpay order:', error);
+        console.error('❌ Create Order Fatal Error:', error);
         res.status(500).json({ 
             error: 'Failed to create payment order',
             message: error.message 
@@ -4609,10 +4745,10 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
 
         if (!isValidSignature) {
             // Update order status as failed
-            await dbConfig.query(`
+            await dbConfig.run(`
                 UPDATE payment_orders 
                 SET status = 'failed', updated_at = CURRENT_TIMESTAMP
-                WHERE order_id = $1 AND user_id = $2
+                WHERE order_id = ? AND user_id = ?
             `, [razorpay_order_id, userId]);
 
             return res.status(400).json({ 
@@ -4622,43 +4758,49 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
         }
 
         // Signature is valid - fetch order details
-        const orderResult = await dbConfig.query(`
+        console.log('✅ Signature verified, fetching order details...');
+        const orderResult = await dbConfig.get(`
             SELECT po.*, p.credits, p.validity_days, p.name as package_name
             FROM payment_orders po
             JOIN plans p ON po.package_id = p.id
-            WHERE po.order_id = $1 AND po.user_id = $2
+            WHERE po.order_id = ? AND po.user_id = ?
         `, [razorpay_order_id, userId]);
-        const orderData = orderResult.rows[0];
-
-        if (!orderData) {
+        
+        console.log('📦 Order result:', orderResult);
+        
+        if (!orderResult) {
+            console.error('❌ Order not found for:', { razorpay_order_id, userId });
             return res.status(404).json({ error: 'Order not found' });
         }
 
+        const orderData = orderResult;
+
         // Update payment order status
-        await dbConfig.query(`
+        await dbConfig.run(`
             UPDATE payment_orders 
             SET status = 'completed', 
-                payment_id = $1,
-                signature = $2,
+                payment_id = ?,
+                signature = ?,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE order_id = $3 AND user_id = $4
+            WHERE order_id = ? AND user_id = ?
         `, [razorpay_payment_id, razorpay_signature, razorpay_order_id, userId]);
 
         // Add credits to user account
-        await dbConfig.query(`
+        console.log('💳 Adding credits:', { credits: orderData.credits, userId });
+        await dbConfig.run(`
             UPDATE users 
-            SET credits = credits + $1,
+            SET credits = credits + ?,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = $2
+            WHERE id = ?
         `, [orderData.credits, userId]);
 
         // Create transaction record
-        await dbConfig.query(`
+        await dbConfig.run(`
             INSERT INTO credit_transactions (
                 user_id, transaction_type, credits_change, description, 
                 balance_after, created_at
-            ) VALUES ($1, $2, $3, $4, 
-                (SELECT credits FROM users WHERE id = $5),
+            ) VALUES (?, ?, ?, ?, 
+                (SELECT credits FROM users WHERE id = ?),
                 CURRENT_TIMESTAMP
             )
         `, [
@@ -4670,17 +4812,19 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
         ]);
 
         // Fetch updated user data
-        const userResult = await dbConfig.query(
-            'SELECT credits FROM users WHERE id = $1',
+        const userData = await dbConfig.get(
+            'SELECT credits FROM users WHERE id = ?',
             [userId]
         );
-        const userData = userResult.rows[0];
+        
+        console.log('✅ Credits added successfully! New balance:', userData?.credits);
 
         res.json({
             success: true,
             message: 'Payment successful!',
             credits: userData.credits,
             creditsAdded: orderData.credits,
+            packageName: orderData.package_name,
             orderId: razorpay_order_id,
             paymentId: razorpay_payment_id
         });
@@ -4691,6 +4835,165 @@ app.post('/api/payment/verify', authenticateToken, async (req, res) => {
             error: 'Payment verification failed',
             message: error.message 
         });
+    }
+});
+
+// Get payment order status
+app.get('/api/payment/status/:orderId', authenticateToken, async (req, res) => {
+    const { orderId } = req.params;
+    const userId = req.user.id;
+
+    try {
+        // First check our database
+        const result = await dbConfig.query(`
+            SELECT po.*, p.credits, p.name as package_name
+            FROM payment_orders po
+            JOIN plans p ON po.package_id = p.id
+            WHERE po.order_id = $1 AND po.user_id = $2
+        `, [orderId, userId]);
+
+        if (!result || result.length === 0) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+
+        const dbOrder = result[0];
+
+        // If already completed in our DB, return that
+        if (dbOrder.status === 'completed') {
+            return res.json({
+                status: 'completed',
+                payment_id: dbOrder.payment_id,
+                created_at: dbOrder.created_at,
+                updated_at: dbOrder.updated_at
+            });
+        }
+
+        // Otherwise, check with Razorpay to see if payment was made
+        if (razorpayInstance) {
+            try {
+                const razorpayOrder = await razorpayInstance.orders.fetch(orderId);
+                
+                console.log('🔍 Razorpay order fetch result:', {
+                    orderId,
+                    status: razorpayOrder.status,
+                    amount_paid: razorpayOrder.amount_paid,
+                    amount: razorpayOrder.amount,
+                    attempts: razorpayOrder.attempts,
+                    full_object: JSON.stringify(razorpayOrder, null, 2)
+                });
+                
+                // ⚡ TEST MODE AUTO-COMPLETE: Mark as completed if order exists (browser was closed)
+                // In test mode, payments are successful when user completes in Razorpay checkout
+                // The status might still be 'created' but payment was made
+                const isTestMode = !process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY_ID.startsWith('rzp_test_');
+                // Auto-complete if: test mode AND (status is created or paid) AND amount_paid > 0
+                const shouldAutoComplete = isTestMode && (razorpayOrder.status === 'created' || razorpayOrder.status === 'paid') && (razorpayOrder.amount_paid > 0 || razorpayOrder.attempts >= 1);
+                
+                console.log('🧪 Test mode check:', {
+                    isTestMode,
+                    razorpayStatus: razorpayOrder.status,
+                    amount_paid: razorpayOrder.amount_paid,
+                    attempts: razorpayOrder.attempts,
+                    shouldAutoComplete
+                });
+                
+                // If payment is captured OR test mode auto-complete
+                if (razorpayOrder.status === 'paid' || razorpayOrder.amount_paid > 0 || shouldAutoComplete) {
+                    // Try to fetch payments for this order
+                    let paymentId = `test_payment_${orderId}_${Date.now()}`;
+                    
+                    try {
+                        const payments = await razorpayInstance.orders.fetchPayments(orderId);
+                        if (payments.items && payments.items.length > 0) {
+                            const successfulPayment = payments.items.find(p => p.status === 'captured');
+                            if (successfulPayment) {
+                                paymentId = successfulPayment.id;
+                            }
+                        }
+                    } catch (paymentFetchError) {
+                        console.log('⚠️ Could not fetch payments (test mode), using generated ID');
+                    }
+                    
+                    // Complete the payment (works for both real and test payments)
+                    // Complete the payment (works for both real and test payments)
+                    console.log('✅ Completing payment with ID:', paymentId);
+                    
+                    // Update our database
+                    await dbConfig.query(`
+                        UPDATE payment_orders 
+                        SET status = 'completed', 
+                            payment_id = $1,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE order_id = $2 AND user_id = $3
+                    `, [paymentId, orderId, userId]);
+
+                    // Add credits to user account
+                    await dbConfig.query(`
+                        INSERT INTO user_credits (user_id, credits_remaining, credits_total, last_purchase_date, updated_at)
+                        VALUES ($1, $2, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ON CONFLICT (user_id) 
+                        DO UPDATE SET 
+                            credits_remaining = user_credits.credits_remaining + $2,
+                            credits_total = user_credits.credits_total + $2,
+                            last_purchase_date = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                    `, [userId, dbOrder.credits]);
+
+                    // Create transaction record
+                    await dbConfig.query(`
+                        INSERT INTO credit_transactions (
+                            user_id, transaction_type, credits_change, description, 
+                            balance_after, created_at
+                        ) VALUES ($1, $2, $3, $4, 
+                            (SELECT credits_remaining FROM user_credits WHERE user_id = $5),
+                            CURRENT_TIMESTAMP
+                        )
+                    `, [
+                        userId,
+                        'purchase',
+                        dbOrder.credits,
+                        `Purchased ${dbOrder.package_name} - Payment ID: ${paymentId}`,
+                        userId
+                    ]);
+
+                    console.log(`✅ Payment auto-verified for order ${orderId} - Added ${dbOrder.credits} credits to user ${userId}`);
+
+                    return res.json({
+                        status: 'completed',
+                        payment_id: paymentId,
+                        credits: dbOrder.credits,
+                        auto_verified: true
+                    });
+                }
+                
+                // Return Razorpay status
+                return res.json({
+                    status: razorpayOrder.status === 'paid' ? 'completed' : dbOrder.status,
+                    payment_id: dbOrder.payment_id,
+                    razorpay_status: razorpayOrder.status
+                });
+
+            } catch (razorpayError) {
+                console.error('Error fetching from Razorpay:', razorpayError);
+                // Fallback to DB status
+                return res.json({
+                    status: dbOrder.status,
+                    payment_id: dbOrder.payment_id
+                });
+            }
+        }
+
+        // No Razorpay instance, return DB status
+        res.json({
+            status: dbOrder.status,
+            payment_id: dbOrder.payment_id,
+            created_at: dbOrder.created_at,
+            updated_at: dbOrder.updated_at
+        });
+
+    } catch (error) {
+        console.error('Error fetching payment status:', error);
+        res.status(500).json({ error: 'Failed to fetch payment status' });
     }
 });
 
