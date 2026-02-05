@@ -3510,15 +3510,39 @@ export default function App() {
                         console.log('✅ Payment verification response:', verifyData);
                         
                         if (verifyData.success) {
-                          // Update credit balance
-                          setCreditBalance(verifyData.credits);
+                          // Update credit balance from verification response
+                          // Also reload from API to ensure sync
+                          try {
+                            const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
+                              method: 'GET',
+                              headers: {
+                                'Authorization': `Bearer ${user.token}`,
+                                'Content-Type': 'application/json',
+                              }
+                            });
+                            
+                            if (creditsResponse.ok) {
+                              const creditsData = await creditsResponse.json();
+                              if (creditsData.success) {
+                                setCreditBalance(creditsData.balance || 0);
+                                console.log('💳 Reloaded credits after payment:', creditsData.balance);
+                              }
+                            }
+                          } catch (reloadError) {
+                            console.log('Failed to reload credits, using verification response');
+                            setCreditBalance(verifyData.credits);
+                          }
                           
-                          // Close processing alert and show success
-                          Alert.alert(
-                            '🎉 Payment Successful!',
-                            `${verifyData.creditsAdded} credits have been added to your account!\n\nNew Balance: ${verifyData.credits} credits`,
-                            [{ text: 'Awesome!', onPress: () => setScreen('dashboard') }]
-                          );
+                          // Force screen refresh by navigating away and back
+                          setScreen('');
+                          setTimeout(() => {
+                            // Close processing alert and show success
+                            Alert.alert(
+                              '🎉 Payment Successful!',
+                              `${verifyData.creditsAdded} credits have been added to your account!\n\nNew Balance: ${verifyData.credits} credits`,
+                              [{ text: 'Awesome!', onPress: () => setScreen('dashboard') }]
+                            );
+                          }, 100);
                         } else {
                           throw new Error(verifyData.error || 'Verification failed');
                         }
