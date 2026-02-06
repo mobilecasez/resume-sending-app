@@ -1865,15 +1865,50 @@ export default function App() {
         return;
       }
       
-      const stored = await AsyncStorage.getItem(`applicationHistory_${user.email}`);
-      console.log('🔍 Attempting to load application history for:', user.email);
-      
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        setApplicationHistory(parsed);
-        console.log('📖 Application history loaded from AsyncStorage:', parsed.length, 'items');
-      } else {
-        console.log('ℹ️ No stored application history found');
+      // Try to load from backend API first
+      try {
+        const response = await fetch(`${API_BASE}/users/application-history`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${user.token}`,
+            'Content-Type': 'application/json',
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success && data.applicationHistory) {
+            setApplicationHistory(data.applicationHistory);
+            console.log('📖 Application history loaded from backend API:', data.applicationHistory.length, 'items');
+            
+            // Cache in AsyncStorage for offline access
+            await AsyncStorage.setItem(`applicationHistory_${user.email}`, JSON.stringify(data.applicationHistory));
+            // Continue to load counters and credits below
+          }
+        } else {
+          // Fallback to AsyncStorage if backend returns error
+          const stored = await AsyncStorage.getItem(`applicationHistory_${user.email}`);
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            setApplicationHistory(parsed);
+            console.log('📖 Application history loaded from AsyncStorage cache:', parsed.length, 'items');
+          } else {
+            console.log('ℹ️ No stored application history found');
+            setApplicationHistory([]); // Set to empty array
+          }
+        }
+      } catch (apiError) {
+        console.log('⚠️ Failed to load from backend, trying AsyncStorage cache:', apiError.message);
+        // Fallback to AsyncStorage if backend fails
+        const stored = await AsyncStorage.getItem(`applicationHistory_${user.email}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          setApplicationHistory(parsed);
+          console.log('📖 Application history loaded from AsyncStorage cache:', parsed.length, 'items');
+        } else {
+          console.log('ℹ️ No stored application history found');
+          setApplicationHistory([]); // Set to empty array
+        }
       }
       
       // Load cumulative counters from backend API first, fallback to AsyncStorage
