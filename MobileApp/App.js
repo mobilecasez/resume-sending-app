@@ -2194,6 +2194,7 @@ export default function App() {
     if (screen === 'usage' && user?.token) {
       const fetchUsageData = async () => {
         try {
+          console.log('📱 [USAGE] Fetching usage data from:', `${API_BASE}/user/usage-stats`);
           setLoadingUsage(true);
           const response = await fetch(`${API_BASE}/user/usage-stats`, {
             method: 'GET',
@@ -2203,14 +2204,31 @@ export default function App() {
             }
           });
           
+          console.log('📱 [USAGE] Response status:', response.status, response.ok ? 'OK' : 'ERROR');
+          
           if (response.ok) {
             const data = await response.json();
+            console.log('📱 [USAGE] Response data.success:', data.success);
+            console.log('📱 [USAGE] dateWiseActivity length:', data.dateWiseActivity?.length || 0);
+            
+            if (data.dateWiseActivity && data.dateWiseActivity.length > 0) {
+              const nonZero = data.dateWiseActivity.filter(d => d.generated > 0 || d.sent > 0 || d.creditsUsed > 0);
+              console.log('📱 [USAGE] Days with non-zero activity:', nonZero.length);
+              console.log('📱 [USAGE] Sample data (first 3 days):', JSON.stringify(data.dateWiseActivity.slice(0, 3)));
+              console.log('📱 [USAGE] Sample data (last 7 days):', JSON.stringify(data.dateWiseActivity.slice(-7)));
+            } else {
+              console.log('⚠️ [USAGE] No dateWiseActivity data received!');
+            }
+            
             if (data.success) {
               setUsageData(data);
+              console.log('✅ [USAGE] UsageData state updated');
             }
+          } else {
+            console.error('❌ [USAGE] Response not OK:', response.status);
           }
         } catch (error) {
-          console.error('Failed to load usage data:', error);
+          console.error('❌ [USAGE] Failed to load usage data:', error);
         } finally {
           setLoadingUsage(false);
         }
@@ -3260,15 +3278,32 @@ export default function App() {
               {/* 30-Day Activity Overview Chart */}
               {usageData?.dateWiseActivity && usageData.dateWiseActivity.length > 0 && (
                 <View style={styles.usageHistoryCard}>
-                  <Text style={styles.usageCardTitle}>📈 7-Day Activity Overview</Text>
+                  <Text style={styles.usageCardTitle}>📈 Activity Overview (Last 30 Days)</Text>
                   <View style={styles.chartContainer}>
                     {(() => {
-                      // Get last 7 days for chart
-                      const chartData = usageData.dateWiseActivity.slice(-7);
+                      // Get days with activity for chart (show all 30 days)
+                      const daysWithActivity = usageData.dateWiseActivity.filter(d => d.generated > 0 || d.sent > 0 || d.creditsUsed > 0);
+                      const chartData = daysWithActivity.length > 0 ? daysWithActivity : usageData.dateWiseActivity.slice(-7);
+                      console.log('📊 [CHART] Days with activity:', daysWithActivity.length);
+                      console.log('📊 [CHART] Rendering chart with data:', JSON.stringify(chartData));
+                      
+                      // If no activity at all, show a message
+                      if (daysWithActivity.length === 0) {
+                        return (
+                          <View style={{ padding: 20, alignItems: 'center' }}>
+                            <Text style={{ fontSize: 16, color: '#666', textAlign: 'center' }}>
+                              📊 No activity recorded yet.{'\n'}
+                              Generate and send cover letters to see your activity here!
+                            </Text>
+                          </View>
+                        );
+                      }
+                      
                       const maxValue = Math.max(
                         ...chartData.map(d => Math.max(d.generated || 0, d.sent || 0, d.creditsUsed || 0)),
                         5
                       );
+                      console.log('📊 [CHART] Max value for chart:', maxValue);
                       
                       // Generate Y-axis labels (0 to maxValue)
                       const yAxisLabels = [];
@@ -3302,7 +3337,7 @@ export default function App() {
                                       <View style={[styles.chartBar, { height: Math.max(usedHeight, 2), backgroundColor: '#EF4444', marginLeft: 2 }]} />
                                     </View>
                                     <Text style={styles.chartLabel}>
-                                      {new Date(day.date).toLocaleDateString('en-US', { day: 'numeric' })}
+                                      {new Date(day.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                     </Text>
                                   </View>
                                 );
@@ -3343,11 +3378,20 @@ export default function App() {
                     <Text style={[styles.activityTableHeaderText, { flex: 1, textAlign: 'center' }]}>Credits Available</Text>
                   </View>
                   <ScrollView style={{ maxHeight: 300 }}>
-                    {usageData.dateWiseActivity
-                      .filter(day => day.generated > 0 || day.sent > 0 || day.creditsUsed > 0)
-                      .reverse()
-                      .slice(0, 15)
-                      .map((day, index) => (
+                    {(() => {
+                      const activeDays = usageData.dateWiseActivity.filter(day => day.generated > 0 || day.sent > 0 || day.creditsUsed > 0);
+                      
+                      if (activeDays.length === 0) {
+                        return (
+                          <View style={{ padding: 20, alignItems: 'center' }}>
+                            <Text style={{ fontSize: 14, color: '#666', textAlign: 'center' }}>
+                              No activity recorded in the last 30 days.
+                            </Text>
+                          </View>
+                        );
+                      }
+                      
+                      return activeDays.reverse().map((day, index) => (
                         <View key={index} style={styles.activityTableRow}>
                           <Text style={[styles.activityTableCell, { flex: 2, fontWeight: '500' }]}>
                             {new Date(day.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
@@ -3365,7 +3409,8 @@ export default function App() {
                             {day.creditsAvailable}
                           </Text>
                         </View>
-                      ))}
+                      ));
+                    })()}
                   </ScrollView>
                 </View>
               )}

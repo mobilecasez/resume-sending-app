@@ -154,6 +154,10 @@ const purchaseCredits = async (req, res) => {
 const getUsageStats = async (req, res) => {
     const userId = req.user.id;
     
+    console.log('📊 ============ USAGE STATS REQUEST START ============');
+    console.log('📊 [USAGE STATS] User ID:', userId);
+    console.log('📊 [USAGE STATS] Request time:', new Date().toISOString());
+    
     const currentDate = new Date();
     const currentMonth = currentDate.getMonth() + 1; // 1-12
     const currentYear = currentDate.getFullYear();
@@ -161,6 +165,20 @@ const getUsageStats = async (req, res) => {
     const lastDayOfMonth = new Date(currentYear, currentMonth, 0);
     
     try {
+        // First, check what's in the application_history table for this user
+        const allHistory = await dbConfig.query('SELECT id, sent_date, company_name FROM application_history WHERE user_id = ? ORDER BY sent_date DESC LIMIT 10', [userId]);
+        console.log('📊 [DB CHECK] Application history records for user:', allHistory ? allHistory.length : 0);
+        if (allHistory && allHistory.length > 0) {
+            console.log('📊 [DB CHECK] Sample records:', JSON.stringify(allHistory, null, 2));
+            console.log('📊 [DB CHECK] Date range in records:');
+            allHistory.forEach(record => {
+                const date = new Date(record.sent_date);
+                console.log(`   - ID ${record.id}: ${date.toISOString()} (${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })})`);
+            });
+        } else {
+            console.log('⚠️ [DB CHECK] No application_history records found for this user!');
+        }
+        
         // Get user's credit info
         const credits = await dbConfig.get('SELECT credits_remaining as "creditsRemaining", credits_total as "creditsTotal", expiry_date as "expiryDate" FROM user_credits WHERE user_id = ?', [userId]);
         
@@ -232,37 +250,145 @@ const getUsageStats = async (req, res) => {
             const date = new Date();
             date.setDate(date.getDate() - i);
             const dateStr = date.toISOString().split('T')[0];
-            const dayData = activityMap[dateStr] || { creditsUsed: 0, creditsAvailable: creditBalance };
+            const dayData = activityMap[dateStr] || { creditsUsed: 0, creditsAvailable: 0 };
             
             dateWiseData.push({
         date: dateStr,
         dateFormatted: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        generated: 0, // Will be calculated from application_history
-        sent: 0, // Will be calculated from application_history
+        generated: 0,
+        sent: 0,
         creditsUsed: dayData.creditsUsed,
-        creditsAvailable: dayData.creditsAvailable
+        creditsAvailable: dayData.creditsAvailable // Will be filled from actual transaction balances
             });
         }
         
-        // Get generated/sent counts per day from application_history
-        const appStats = await dbConfig.query(`
-            SELECT 
-        DATE(sent_date) as date,
-        COUNT(*) as sent
-            FROM application_history
-            WHERE user_id = ? AND sent_date >= ?
-            GROUP BY DATE(sent_date)
-        `, [userId, thirtyDaysAgo.toISOString()]);
+        // Get balance history from all credit events (purchases + usages)
+        console.log('🔍 [USAGE STATS] Querying balance history from all credit events...');
         
-        // Merge app stats into dateWiseData
-        if (appStats && appStats.length > 0) {
-            appStats.forEach(stat => {
-        const dayIndex = dateWiseData.findIndex(d => d.date === stat.date);
+        // Get balance from credit_transactions (purchases, refunds) - has balance_after
+        const balanceFromPurchases = await dbConfig.query(
+          `SELECT DATE(created_at AT TIME ZONE 'UTC') as date, 
+                  MAX(balance_after) as balance_at_end_of_day
+           FROM credit_transactions
+           WHERE user_id = ? AND created_at >= ?
+           GROUP BY DATE(created_at AT TIME ZONE 'UTC')
+           ORDER BY date DESC`,
+          [userId, thirtyDaysAgo.toISOString()]
+        );
+        
+        // For credit_usage_history, we need to calculate balance by subtracting usage from current balance
+        // We'll get the total credits used per day, then work backwards from current balance
+        const usagePerDay = await dbConfig.query(
+          `SELECT DATE(created_at AT TIME ZONE 'UTC') as date,
+                  SUM(credits_used) as total_used
+           FROM credit_usage_history
+           WHERE user_id = ? AND created_at >= ?
+           GROUP BY DATE(created_at AT TIME ZONE 'UTC')
+           ORDER BY date ASC`,
+          [userId, thirtyDaysAgo.toISOString()]
+        );
+        
+        console.log('📊 [USAGE STATS] Balance from purchases:', balanceFromPurchases?.length || 0, 'days');
+        console.log('📊 [USAGE STATS] Usage per day:', usagePerDay?.length || 0, 'days');
+        
+        // Build balance map from purchases first
+        const balanceMap = {};
+        if (balanceFromPurchases) {
+          balanceFromPurchases.forEach(b => {
+            const dateStr = typeof b.date === 'string' ? b.date : new Date(b.date).toISOString().split('T')[0];
+            balanceMap[dateStr] = parseInt(b.balance_at_end_of_day) || 0;
+          });
+        }
+        
+        // For days with only usage (no purchase), we need to calculate backwards from current balance
+        // Sort dateWiseData chronologically and fill in balances
+        let runningBalance = creditBalance;
+        for (let i = dateWiseData.length - 1; i >= 0; i--) {
+          const day = dateWiseData[i];
+          
+          // If we have a recorded balance from purchase on this day, use it
+          if (balanceMap[day.date]) {
+            runningBalance = balanceMap[day.date];
+            day.creditsAvailable = runningBalance;
+          } else {
+            // Otherwise use the running balance from future days
+            day.creditsAvailable = runningBalance;
+            
+            // Find usage for this day
+            const dayUsage = usagePerDay?.find(u => {
+              const usageDate = typeof u.date === 'string' ? u.date : new Date(u.date).toISOString().split('T')[0];
+              return usageDate === day.date;
+            });
+            
+            if (dayUsage && dayUsage.total_used) {
+              // Subtract this day's usage to get balance at start of day
+              runningBalance += parseInt(dayUsage.total_used) || 0;
+            }
+          }
+        }
+        
+        console.log('📊 [USAGE STATS] Balance history calculated for all 30 days');
+        
+        // Get GENERATED counts per day from credit_usage_history
+        console.log('🔍 [USAGE STATS] Querying credit_usage_history for generations...');
+        
+    const generationStats = await dbConfig.query(
+      `SELECT DATE(created_at AT TIME ZONE 'UTC') as date, COUNT(*) as generated
+       FROM credit_usage_history
+       WHERE user_id = ? 
+         AND created_at >= ?
+         AND action_type = 'cover_letter_generation'
+       GROUP BY DATE(created_at AT TIME ZONE 'UTC')
+       ORDER BY date DESC`,
+      [userId, thirtyDaysAgo.toISOString()]
+    );
+        // Get SENT counts per day from application_history
+        console.log('🔍 [USAGE STATS] Querying application_history for sends...');
+        
+    const sendStats = await dbConfig.query(
+      `SELECT DATE(sent_date AT TIME ZONE 'UTC') as date, COUNT(*) as sent
+       FROM application_history
+       WHERE user_id = ? AND sent_date >= ?
+       GROUP BY DATE(sent_date AT TIME ZONE 'UTC')
+       ORDER BY date DESC`,
+      [userId, thirtyDaysAgo.toISOString()]
+    );
+        // Merge generation stats into dateWiseData
+        if (generationStats && generationStats.length > 0) {
+            console.log('✅ [USAGE STATS] Merging generation stats');
+            generationStats.forEach(stat => {
+        const statDate = typeof stat.date === 'string' ? stat.date : new Date(stat.date).toISOString().split('T')[0];
+        const dayIndex = dateWiseData.findIndex(d => d.date === statDate);
+        console.log(`   - Generated: Date ${statDate}, Count ${stat.generated}, Index ${dayIndex}`);
+        if (dayIndex >= 0) {
+            dateWiseData[dayIndex].generated = stat.generated || 0;
+        }
+            });
+        } else {
+            console.log('⚠️ [USAGE STATS] No generation data found!');
+        }
+        
+        // Merge send stats into dateWiseData
+        if (sendStats && sendStats.length > 0) {
+            console.log('✅ [USAGE STATS] Merging send stats');
+            sendStats.forEach(stat => {
+        const statDate = typeof stat.date === 'string' ? stat.date : new Date(stat.date).toISOString().split('T')[0];
+        const dayIndex = dateWiseData.findIndex(d => d.date === statDate);
+        console.log(`   - Sent: Date ${statDate}, Count ${stat.sent}, Index ${dayIndex}`);
         if (dayIndex >= 0) {
             dateWiseData[dayIndex].sent = stat.sent || 0;
-            dateWiseData[dayIndex].generated = stat.sent || 0; // For now, generated = sent
         }
             });
+        } else {
+            console.log('⚠️ [USAGE STATS] No send data found!');
+        }
+        
+        // Log final data before sending
+        console.log('📤 [USAGE STATS] Sending response with dateWiseActivity count:', dateWiseData.length);
+        const nonZeroDays = dateWiseData.filter(d => d.generated > 0 || d.sent > 0);
+        console.log('📤 [USAGE STATS] Days with activity (non-zero):', nonZeroDays.length);
+        if (nonZeroDays.length > 0) {
+            console.log('📤 [USAGE STATS] Sample activity days:', JSON.stringify(nonZeroDays.slice(0, 3), null, 2));
         }
         
         res.json({
@@ -273,14 +399,18 @@ const getUsageStats = async (req, res) => {
                 expiring: expiringCredits,
                 expiryDate: creditExpiryDate
             },
-            currentMonth: {
+            currentMonthUsage: {
                 month: currentMonth,
                 year: currentYear,
-                creditsUsed: creditTotal - creditBalance, // Credits used = total - remaining
+                creditsUsed: creditTotal - creditBalance,
+                monthlyGenerated: totalGenerated,
+                totalGenerated: totalGenerated,
+                monthlySent: totalSent,
+                totalSent: totalSent,
                 lettersGenerated: totalGenerated,
                 lettersSent: totalSent
             },
-            history: [], // Monthly history from monthly_usage_stats if needed
+            history: [],
             creditHistory: transactions || [],
             dateWiseActivity: dateWiseData
         });

@@ -2169,6 +2169,19 @@ app.post('/api/generate-cover-letters', authenticateToken, async (req, res) => {
 
         const successCount = results.filter(r => r.status === 'generated').length;
         
+        // Update total_generated counter
+        if (successCount > 0) {
+            try {
+                await dbConfig.run(
+                    'UPDATE users SET total_generated = total_generated + ? WHERE id = ?',
+                    [successCount, userId]
+                );
+                console.log(`📊 Updated total_generated counter: +${successCount}`);
+            } catch (error) {
+                console.error('⚠️ Failed to update counter:', error.message);
+            }
+        }
+        
         console.log(`\n✅ Generated: ${successCount}/${recipients.length} cover letters`);
         console.log(`💳 Total credits deducted: ${creditsDeducted}`);
         
@@ -2300,7 +2313,12 @@ app.post('/api/generate-cover-letter-details', authenticateToken, async (req, re
                 position: position,
                 recipientEmail: recipientEmail
             });
-            console.log(`💳 [${requestId}] Deducted 1 credit for generation`);
+            // Update total_generated counter
+            await dbConfig.run(
+                'UPDATE users SET total_generated = total_generated + 1 WHERE id = ?',
+                [userId]
+            );
+            console.log(`💳 [${requestId}] Deducted 1 credit and updated counter`);
         } catch (creditError) {
             console.error(`❌ [${requestId}] Failed to deduct credit:`, creditError);
             // Continue anyway - letter was generated
@@ -2715,6 +2733,11 @@ app.post('/api/send-applications', authenticateToken, async (req, res) => {
         const userId = req.user.id;
         const { recipients } = req.body;
 
+        console.log('\n📧 ============ SEND APPLICATIONS START ============');
+        console.log('📧 [SEND] User ID:', userId);
+        console.log('📧 [SEND] Recipients count:', recipients?.length || 0);
+        console.log('📧 [SEND] Timestamp:', new Date().toISOString());
+
         if (!recipients || recipients.length === 0) {
             return res.status(400).json({ error: 'No recipients provided' });
         }
@@ -2894,6 +2917,24 @@ app.post('/api/send-applications', authenticateToken, async (req, res) => {
                 // Clean up temp PDF file
                 await fs.unlink(filePath);
 
+                // Save to application history
+                console.log(`💾 [DB INSERT] Attempting to save to application_history...`);
+                console.log(`💾 [DB INSERT] Data: userId=${userId}, company=${companyName}, position=${position}, email=${recipient.email}`);
+                try {
+                    const insertResult = await dbConfig.run(
+                        'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date) VALUES (?, ?, ?, ?, ?)',
+                        [userId, companyName, position, recipient.email, new Date().toISOString()]
+                    );
+                    console.log(`✅ [DB INSERT] Saved to application history, result:`, insertResult);
+                    
+                    // Verify the insert
+                    const verify = await dbConfig.get('SELECT * FROM application_history WHERE user_id = ? ORDER BY sent_date DESC LIMIT 1', [userId]);
+                    console.log(`✅ [DB INSERT] Verification - Last record:`, verify);
+                } catch (dbError) {
+                    console.error(`❌ [DB INSERT] Failed to save to history:`, dbError.message);
+                    console.error(`❌ [DB INSERT] Error stack:`, dbError.stack);
+                }
+
                 results.push({
                     email: recipient.email,
                     company: companyName,
@@ -2914,6 +2955,19 @@ app.post('/api/send-applications', authenticateToken, async (req, res) => {
         }
 
         const successCount = results.filter(r => r.status === 'success').length;
+        
+        // Update total_sent counter
+        if (successCount > 0) {
+            try {
+                await dbConfig.run(
+                    'UPDATE users SET total_sent = total_sent + ? WHERE id = ?',
+                    [successCount, userId]
+                );
+                console.log(`📊 Updated total_sent counter: +${successCount}`);
+            } catch (error) {
+                console.error('⚠️ Failed to update counter:', error.message);
+            }
+        }
         
         console.log(`\n✅ Completed: ${successCount}/${recipients.length} successful`);
         
@@ -3032,6 +3086,22 @@ app.post('/api/send-single-application', authenticateToken, async (req, res) => 
                 );
 
                 console.log(`✅ Application sent via Gmail to ${recipientEmail}`);
+                
+                // Save to application history
+                try {
+                    await dbConfig.run(
+                        'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date) VALUES (?, ?, ?, ?, ?)',
+                        [userId, companyName, position, recipientEmail, new Date().toISOString()]
+                    );
+                    await dbConfig.run(
+                        'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
+                        [userId]
+                    );
+                    console.log(`💾 Saved to application history and updated counters`);
+                } catch (dbError) {
+                    console.error(`⚠️ Failed to save to history:`, dbError.message);
+                }
+                
                 return res.json({
                     success: true,
                     message: 'Application sent successfully via Gmail',
@@ -3113,6 +3183,21 @@ app.post('/api/send-single-application', authenticateToken, async (req, res) => 
         });
 
         console.log(`✅ Application sent via SMTP to ${recipientEmail}`);
+
+        // Save to application history
+        try {
+            await dbConfig.run(
+                'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date) VALUES (?, ?, ?, ?, ?)',
+                [userId, companyName, position, recipientEmail, new Date().toISOString()]
+            );
+            await dbConfig.run(
+                'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
+                [userId]
+            );
+            console.log(`💾 Saved to application history and updated counters`);
+        } catch (dbError) {
+            console.error(`⚠️ Failed to save to history:`, dbError.message);
+        }
 
         res.json({
             success: true,
