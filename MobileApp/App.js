@@ -2325,12 +2325,53 @@ export default function App() {
       });
       
       const data = await response.json();
+      console.log('Register Response Status:', response.status);
+      console.log('Register Response Data:', data);
       
       if (!response.ok) {
-        throw new Error(data.message || 'Registration failed');
+        // Backend returns 'error' field for error messages
+        throw new Error(data.error || data.message || 'Registration failed');
       }
       
-      setUser(data.user);
+      // Ensure user object has all required fields including token
+      const userData = {
+        id: data.user?.id,
+        email: data.user?.email,
+        fullName: data.user?.fullName || data.user?.name,
+        name: data.user?.name || data.user?.fullName,
+        token: data.token,
+        createdAt: data.user?.createdAt,
+        provider: data.user?.provider || 'email'
+      };
+      
+      console.log('Registered User:', userData);
+      
+      // Clear any cached data from previous sessions
+      try {
+        const allKeys = await AsyncStorage.getAllKeys();
+        const oldUserKeys = allKeys.filter(key => 
+          key.startsWith('appCounters_') || 
+          key.startsWith('applicationHistory_') || 
+          key.startsWith('reviewCoverLetters_') || 
+          key.startsWith('recipients_')
+        );
+        if (oldUserKeys.length > 0) {
+          await AsyncStorage.multiRemove(oldUserKeys);
+          console.log('🗑️ Cleared cached data from previous sessions');
+        }
+      } catch (error) {
+        console.error('Failed to clear old cache:', error);
+      }
+      
+      // Reset all state to fresh start
+      setTotalGenerated(0);
+      setTotalSent(0);
+      setCreditBalance(0);
+      setApplicationHistory([]);
+      setReviewCoverLetters({});
+      setRecipients([]);
+      
+      setUser(userData);
       setScreen('dashboard');
       setEmail('');
       setPassword('');
@@ -2343,13 +2384,33 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    // Clear all user-specific data from AsyncStorage
+    if (user?.email) {
+      try {
+        await AsyncStorage.removeItem(`appCounters_${user.email}`);
+        await AsyncStorage.removeItem(`applicationHistory_${user.email}`);
+        await AsyncStorage.removeItem(`reviewCoverLetters_${user.email}`);
+        await AsyncStorage.removeItem(`recipients_${user.email}`);
+        console.log('🗑️ Cleared user cache on logout');
+      } catch (error) {
+        console.error('Failed to clear cache:', error);
+      }
+    }
+    
+    // Reset all state
     setUser(null);
     setScreen('login');
     setEmail('');
     setPassword('');
     setFullName('');
     setError('');
+    setTotalGenerated(0);
+    setTotalSent(0);
+    setCreditBalance(0);
+    setApplicationHistory([]);
+    setReviewCoverLetters({});
+    setRecipients([]);
   };
 
   const handleGoogleAuthResponse = async (accessToken) => {

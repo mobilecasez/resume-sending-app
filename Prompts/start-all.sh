@@ -68,7 +68,7 @@ echo ""
 # Start Expo with the same IP
 echo "🚀 Starting Expo on $LOCAL_IP:8081..."
 cd "$PROJECT_ROOT/MobileApp"
-npx expo start --clear --host tunnel &
+npx expo start --clear --lan &
 EXPO_PID=$!
 echo "✅ Expo started (PID: $EXPO_PID)"
 echo ""
