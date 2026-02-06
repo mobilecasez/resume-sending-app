@@ -100,7 +100,6 @@ const createPackage = async (req, res) => {
         const result = await dbConfig.run(`
             INSERT INTO plans (name, price, credits, validity_days, description, is_active, is_popular, display_order)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            RETURNING id
         `, [
             name, 
             amount, 
@@ -112,7 +111,7 @@ const createPackage = async (req, res) => {
             display_order || 0
         ]);
         
-        const packageId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
+        const packageId = result.lastID;
         
         res.json({ 
             success: true, 
