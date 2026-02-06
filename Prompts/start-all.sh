@@ -48,8 +48,11 @@ echo ""
 # Start backend server
 echo "🚀 Starting backend server on $LOCAL_IP:3000..."
 cd "$PROJECT_ROOT"
-node server.js > /tmp/backend.log 2>&1 &
+echo "📋 Backend logs will appear below:"
+echo "========================================="
+node server.js 2>&1 &
 BACKEND_PID=$!
+echo ""
 echo "✅ Backend started (PID: $BACKEND_PID)"
 echo ""
 
@@ -83,9 +86,8 @@ echo ""
 echo "📋 Backend PID: $BACKEND_PID"
 echo "📋 Expo PID: $EXPO_PID"
 echo ""
-echo "📝 Logs:"
-echo "   Backend: tail -f /tmp/backend.log"
-echo "   Expo: (shown in terminal)"
+echo "📝 All logs are shown in this terminal"
+echo "   Watch for lines starting with 📊 [USAGE STATS] or 📧 [SEND]"
 echo ""
 echo "🛑 To stop servers: pkill -9 node; pkill -9 expo"
 echo "========================================="
