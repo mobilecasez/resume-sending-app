@@ -2170,9 +2170,29 @@ app.get('/api/download-cover-letter/:filename', authenticateToken, async (req, r
     }
 });
 
-// API endpoint to generate cover letter details with AI for review page
-app.post('/api/generate-cover-letter-details', authenticateToken, async (req, res) => {
-    const requestId = Date.now();
+// ============================================================================
+// COVER LETTER & EMAIL MODULES - Now properly separated into controllers
+// ============================================================================
+// All cover letter generation endpoints are now in:
+//   - server/controllers/coverLetterController.js
+//   - server/routes/coverLetterRoutes.js (mounted below)
+//
+// All email/application sending endpoints are now in:
+//   - server/controllers/emailController.js  
+//   - server/routes/emailRoutes.js (mounted below)
+//
+// These routes are mounted at lines ~3206-3207 with:
+//   app.use('/api', coverLetterRoutes);
+//   app.use('/api', emailRoutes);
+// ============================================================================
+
+// ============================================
+// ADMIN - CREDIT PACKAGE MANAGEMENT
+// ============================================
+
+// Get all packages (public - for users to see available packages)
+// Check if user is admin
+app.get('/api/user/is-admin', authenticateToken, async (req, res) => {
     const startTime = Date.now();
     console.log(`\n${'='.repeat(60)}`);
     console.log(`📨 [${requestId}] REQUEST RECEIVED at ${new Date().toISOString()}`);
@@ -2529,7 +2549,7 @@ async function generateAdditionalDetails(websiteUrl, companyName, position = 'Po
         console.log(`🔧 [GEMINI] Initializing Gemini with key: ${geminiKey.substring(0, 15)}...`);
         const genAI = new GoogleGenerativeAI(geminiKey);
         const model = genAI.getGenerativeModel({ 
-            model: 'gemini-1.5-flash'
+            model: 'gemini-2.5-flash'
         });
         console.log(`✅ [GEMINI] Model initialized, preparing prompt...`);
 
@@ -2628,7 +2648,12 @@ Return ONLY valid JSON, no additional text.`;
         return {
             hiringManager: data.hiringManager || 'Hiring Manager',
             subject: data.subject || `Application for ${position}`,
-            locations: data.locations && data.locations.length > 0 ? data.locations : [{
+            locations: data.locations && data.locations.length > 0 ? data.locations.map(loc => ({
+                country: loc.country || 'N/A',
+                city: loc.city || 'N/A',
+                address: loc.address || `${loc.city || 'N/A'}, ${loc.country || 'N/A'}`,
+                isHeadquarters: loc.isHeadquarters !== undefined ? loc.isHeadquarters : true
+            })) : [{
                 country: 'N/A',
                 city: 'N/A',
                 address: 'N/A',
@@ -3067,15 +3092,12 @@ app.post('/api/send-single-application', authenticateToken, async (req, res) => 
                 console.error('Error details:', gmailError);
                 console.error('Error stack:', gmailError.stack);
                 
-                // If OAuth token expired, inform user
-                if (gmailError.message?.includes('OAuth token expired')) {
-                    return res.status(401).json({
-                        error: 'Your Google authentication has expired. Please log out and log in again with Google.',
-                        requiresReauth: true
-                    });
+                // If OAuth token expired, log it but continue to SMTP fallback
+                if (gmailError.message?.includes('OAuth token expired') || gmailError.message?.includes('invalid_grant')) {
+                    console.log('⚠️ OAuth token expired/invalid - will try SMTP fallback');
                 }
                 
-                // Otherwise, fall through to SMTP
+                // Fall through to SMTP
                 console.log('⚠️ Gmail API failed, falling back to SMTP...');
             }
         }

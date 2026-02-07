@@ -121,9 +121,18 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
     } catch (error) {
         console.error('Error sending email via Gmail API:', error);
         
-        // If access token expired, try to refresh
-        if (error.code === 401 || error.message?.includes('invalid_grant')) {
-            throw new Error('OAuth token expired. Please log in again.');
+        // If refresh token is invalid, clear it from database
+        if (error.code === 401 || error.message?.includes('invalid_grant') || error.response?.data?.error === 'invalid_grant') {
+            console.log('❌ OAuth refresh token is invalid. Clearing tokens from database...');
+            
+            // Clear the invalid tokens
+            await dbConfig.run(
+                'UPDATE users SET google_access_token = NULL, google_refresh_token = NULL WHERE id = ?',
+                [user.id]
+            );
+            
+            console.log('✅ Cleared invalid OAuth tokens. User must re-authenticate.');
+            throw new Error('OAuth token expired. Please log out and log in again with Google.');
         }
         
         throw error;

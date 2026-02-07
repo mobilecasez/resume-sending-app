@@ -286,46 +286,58 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
 }
 
 // Helper function: Generate additional details (hiring manager, locations, subject)
-async function generateAdditionalDetails(websiteUrl, companyName, position = 'Position') {
+async function generateAdditionalDetails(websiteUrl, companyName, position = 'Position', userFullName = '') {
     const geminiKey = process.env.GEMINI_API_KEY;
     
     if (!geminiKey) {
         console.log('⚠️ No Gemini API key - using defaults');
+        const applicantName = userFullName || 'Applicant';
         return {
             hiringManager: 'Hiring Manager',
-            locations: [{ country: 'Not specified', city: 'Not specified', isHeadquarters: true }],
-            subject: `Application for ${position} at ${companyName}`
+            locations: [{ 
+                country: 'Not specified', 
+                city: 'Not specified', 
+                address: 'Not specified',
+                isHeadquarters: true 
+            }],
+            subject: `Application for ${position} - ${applicantName}`
         };
     }
 
     try {
         const { GoogleGenerativeAI } = require('@google/generative-ai');
         const genAI = new GoogleGenerativeAI(geminiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
+        const applicantName = userFullName || 'Applicant';
         const prompt = `You are extracting hiring manager information and company office locations from a company website.
 
 Company: ${companyName}
 Website: ${websiteUrl}
 Position: ${position}
+Applicant Name: ${applicantName}
 
 Extract the following information and return ONLY valid JSON:
 
 1. **Hiring Manager Name**: Look for HR contact, recruiter, or hiring manager name. If not found, return "Hiring Manager"
-2. **All Company Locations**: Extract ALL office locations (headquarters and branches) with city and country
-3. **Subject Line**: Generate a professional email subject line for this application
+2. **All Company Locations**: Extract ALL office locations (headquarters and branches) with complete street address, city, and country
+3. **Subject Line**: Generate a professional, concise email subject line for this job application using the applicant's name
 
 Return this EXACT JSON format (no markdown, no code blocks):
 {
   "hiringManager": "Name or 'Hiring Manager'",
   "locations": [
-    {"country": "Country", "city": "City", "isHeadquarters": true},
-    {"country": "Country2", "city": "City2", "isHeadquarters": false}
+    {"country": "Country", "city": "City", "address": "Complete Street Address with ZIP/Postal Code", "isHeadquarters": true},
+    {"country": "Country2", "city": "City2", "address": "Complete Street Address", "isHeadquarters": false}
   ],
-  "subject": "Application for Position - Your Name"
+  "subject": "Application for ${position} - ${applicantName}"
 }
 
-Research the website and extract real information. If locations not found, include at least one with "Not specified".`;
+IMPORTANT: 
+- For subject line, use the format: "Application for [Position] - [Applicant Name]" or "[Position] Application - [Applicant Name]"
+- For each location, include a complete street address with postal/ZIP code. If exact address is not available, use "City, State/Region" as the address field.
+
+Research the website and extract real information. If locations not found, include at least one with "Not specified" for address.`;
 
         const result = await model.generateContent({
             contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -342,10 +354,30 @@ Research the website and extract real information. If locations not found, inclu
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
             const data = JSON.parse(jsonMatch[0]);
+            
+            // Ensure each location has an address field
+            const locations = (data.locations || []).map(loc => {
+                const city = loc.city || 'Not specified';
+                const country = loc.country || 'Not specified';
+                const address = loc.address || `${city}, ${country}`;
+                return {
+                    ...loc,
+                    address: address,
+                    city: city,
+                    country: country,
+                    isHeadquarters: loc.isHeadquarters !== undefined ? loc.isHeadquarters : true
+                };
+            });
+            
             return {
                 hiringManager: data.hiringManager || 'Hiring Manager',
-                locations: data.locations || [{ country: 'Not specified', city: 'Not specified', isHeadquarters: true }],
-                subject: data.subject || `Application for ${position} at ${companyName}`
+                locations: locations.length > 0 ? locations : [{ 
+                    country: 'Not specified', 
+                    city: 'Not specified', 
+                    address: 'Not specified',
+                    isHeadquarters: true 
+                }],
+                subject: data.subject || `Application for ${position} - ${userFullName || 'Applicant'}`
             };
         }
         
@@ -353,10 +385,16 @@ Research the website and extract real information. If locations not found, inclu
         
     } catch (error) {
         console.error('Error generating additional details:', error.message);
+        const applicantName = userFullName || 'Applicant';
         return {
             hiringManager: 'Hiring Manager',
-            locations: [{ country: 'Not specified', city: 'Not specified', isHeadquarters: true }],
-            subject: `Application for ${position} at ${companyName}`
+            locations: [{ 
+                country: 'Not specified', 
+                city: 'Not specified', 
+                address: 'Not specified',
+                isHeadquarters: true 
+            }],
+            subject: `Application for ${position} - ${applicantName}`
         };
     }
 }
@@ -551,7 +589,7 @@ const generateCoverLetterDetails = async (req, res) => {
         // Generate hiring manager, locations, and subject
         const urlCompanyName = websiteUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0];
         const initialCompanyName = urlCompanyName.charAt(0).toUpperCase() + urlCompanyName.slice(1);
-        const { hiringManager, locations, subject } = await generateAdditionalDetails(websiteUrl, initialCompanyName, position);
+        const { hiringManager, locations, subject } = await generateAdditionalDetails(websiteUrl, initialCompanyName, position, userData.fullName);
         
         // Generate cover letter with AI
         const result = await templateGenerator.generateCoverLetter(

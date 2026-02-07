@@ -371,6 +371,8 @@
             line-height: 1.6;
             background: white;
             overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
         }
 
         .rich-text-editor.editable {
@@ -383,12 +385,37 @@
         }
 
         .rich-text-editor p {
-            margin-bottom: 15px;
+            margin: 0 0 15px 0;
         }
 
         .rich-text-editor strong {
             font-weight: 600;
             color: #333;
+        }
+
+        .rich-text-editor em {
+            font-style: italic;
+        }
+
+        .rich-text-editor u {
+            text-decoration: underline;
+        }
+
+        /* Preserve all formatting when contentEditable */
+        .rich-text-editor[contenteditable="true"] * {
+            font-family: inherit !important;
+            font-size: inherit !important;
+            line-height: inherit !important;
+        }
+
+        .rich-text-editor[contenteditable="true"] p {
+            margin: 0 0 15px 0 !important;
+        }
+
+        .rich-text-editor[contenteditable="true"] br {
+            display: block !important;
+            content: "" !important;
+            margin-top: 0 !important;
         }
 
         .buttons {
@@ -1595,8 +1622,10 @@
                     input.disabled = input.classList.contains('address-dropdown');
                 });
 
+                // Restore cover letter and disable editing
                 coverLetterDiv.contentEditable = false;
                 coverLetterDiv.classList.remove('editable');
+                coverLetterDiv.removeAttribute('contenteditable');
                 if (originalValues[`${index}-coverLetter`]) {
                     coverLetterDiv.innerHTML = originalValues[`${index}-coverLetter`];
                 }
@@ -1615,10 +1644,20 @@
                     input.disabled = false;
                 });
 
-                // Store original cover letter content
+                // Store original cover letter content (HTML to preserve formatting)
                 originalValues[`${index}-coverLetter`] = coverLetterDiv.innerHTML;
-                coverLetterDiv.contentEditable = true;
+                
+                // Enable contentEditable with formatting preservation
+                coverLetterDiv.setAttribute('contenteditable', 'true');
                 coverLetterDiv.classList.add('editable');
+                
+                // Prevent default paste to preserve formatting
+                coverLetterDiv.addEventListener('paste', function(e) {
+                    e.preventDefault();
+                    const text = (e.clipboardData || window.clipboardData).getData('text/html') || 
+                                 (e.clipboardData || window.clipboardData).getData('text/plain');
+                    document.execCommand('insertHTML', false, text);
+                }, { once: true });
 
                 editBtn.classList.add('editing');
                 editBtn.textContent = '✏️ Editing...';
@@ -1679,8 +1718,16 @@
                 document.getElementById(`position-${index}`).value = updatedRecipient.position || '';
                 document.getElementById(`subject-${index}`).value = updatedRecipient.subject || '';
 
+                // Update cover letter HTML with formatting preserved
+                coverLetterDiv.innerHTML = updatedRecipient.coverLetterHtml;
+
+                // Update reviewCoverLetters data
+                reviewCoverLetters[index] = updatedRecipient;
+
+                showToast('Changes saved successfully', 'success');
+
                 // Exit edit mode after saving
-                exitEditMode(index);
+                toggleEditMode(index);
             } catch (error) {
                 console.error('Error saving recipient:', error);
                 showToast('Failed to save changes', 'error');
