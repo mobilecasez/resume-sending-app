@@ -869,7 +869,7 @@ Be professional and factual. If you don't have specific information, make reason
             const { GoogleGenerativeAI } = require('@google/generative-ai');
             const genAI = new GoogleGenerativeAI(geminiKey);
             const model = genAI.getGenerativeModel({ 
-                model: 'gemini-2.0-flash-exp',
+                model: 'gemini-1.5-flash',
                 generationConfig: {
                     temperature: 0.7,
                     topP: 0.95,
@@ -1007,7 +1007,7 @@ Research ${websiteUrl} now and extract these details. Return ONLY the JSON, no o
             const { GoogleGenerativeAI } = require('@google/generative-ai');
             const genAI = new GoogleGenerativeAI(geminiKey);
             const model = genAI.getGenerativeModel({ 
-                model: 'gemini-2.0-flash-exp',
+                model: 'gemini-1.5-flash',
                 generationConfig: {
                     temperature: 1,
                     topP: 0.95,

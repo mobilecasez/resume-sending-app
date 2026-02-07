@@ -44,6 +44,8 @@ const profileRoutes = require('./server/routes/profileRoutes');
 const userDataRoutes = require('./server/routes/userDataRoutes');
 const creditsRoutes = require('./server/routes/creditsRoutes');
 const adminPackagesRoutes = require('./server/routes/adminPackagesRoutes');
+const coverLetterRoutes = require('./server/routes/coverLetterRoutes');
+const emailRoutes = require('./server/routes/emailRoutes');
 
 // Import authentication middleware
 const { authenticateToken, authenticateAdmin } = require('./server/middleware/auth');
@@ -584,8 +586,8 @@ async function deductCredits(userId, creditsToDeduct = 1, actionType = 'cover_le
             INSERT INTO monthly_usage_stats (user_id, month, year, credits_used, letters_generated)
             VALUES (?, ?, ?, ?, 1)
             ON CONFLICT(user_id, month, year) DO UPDATE SET
-        credits_used = credits_used + ?,
-        letters_generated = letters_generated + 1,
+        credits_used = monthly_usage_stats.credits_used + ?,
+        letters_generated = monthly_usage_stats.letters_generated + 1,
         updated_at = CURRENT_TIMESTAMP
         `, [userId, month, year, creditsToDeduct, creditsToDeduct]);
         
@@ -1986,8 +1988,8 @@ async function createCoverLetterPDF(userData, coverLetterText, companyName, phot
     return { filePath, fileName };
 }
 
-// API endpoint to generate cover letters only (no sending)
-app.post('/api/generate-cover-letters', authenticateToken, async (req, res) => {
+// API endpoint to download generated cover letter
+app.get('/api/download-cover-letter/:filename', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
         const { recipients } = req.body;
@@ -2527,10 +2529,7 @@ async function generateAdditionalDetails(websiteUrl, companyName, position = 'Po
         console.log(`🔧 [GEMINI] Initializing Gemini with key: ${geminiKey.substring(0, 15)}...`);
         const genAI = new GoogleGenerativeAI(geminiKey);
         const model = genAI.getGenerativeModel({ 
-            model: 'gemini-2.0-flash-exp',
-            tools: [{
-        googleSearch: {}
-            }]
+            model: 'gemini-1.5-flash'
         });
         console.log(`✅ [GEMINI] Model initialized, preparing prompt...`);
 
@@ -3204,6 +3203,8 @@ app.use('/api/users', authenticateToken, profileRoutes);
 app.use('/api/users', userDataRoutes);
 app.use('/api', creditsRoutes);
 app.use('/api', adminPackagesRoutes);
+app.use('/api', coverLetterRoutes);
+app.use('/api', emailRoutes);
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
