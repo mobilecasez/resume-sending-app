@@ -881,19 +881,29 @@ Be professional and factual. If you don't have specific information, make reason
             const researchPrompt = `Role: You are an expert Headhunter performing deep company research to extract SPECIFIC PROPER NOUNS.
 
 **Company to Research:**
-- URL/Domain: ${companyName}
-- Website: ${websiteUrl}
+- Domain/URL: ${websiteUrl}
+- URL-extracted name: ${companyName}
 
 **MOST CRITICAL - Company Name Extraction:**
 The first and MOST IMPORTANT task is to find the EXACT, OFFICIAL company name with proper spacing and capitalization.
-- Example: If URL is "disruptivetechsolutions.com", the company name might be "Disruptive Tech Solutions" (with spaces)
-- Search the website's title tag, meta tags, About Us page, footer, and Google search results
-- Return the OFFICIAL company name as it appears on their website/documents
-- This name MUST have proper spacing (e.g., "Tech Solutions" not "TechSolutions")
 
-**CRITICAL INSTRUCTIONS - Step 1: Deep Research & Entity Extraction**
+CRITICAL RULES FOR COMPANY NAME:
+1. The company name MUST be related to the domain "${companyName}"
+2. Search the website's <title> tag, <h1>, About Us page, footer copyright, and meta tags
+3. The name should be a properly spaced version of "${companyName}"
+   - Example: "disruptivetechsolutions" → "Disruptive Tech Solutions" (add spaces between words)
+   - Example: "techstack" → ONLY use this if it's actually the company name on the website
+4. DO NOT return a completely different company name unless it's absolutely clear from the website
+5. If unsure, use "${companyName}" with proper word spacing
 
-You MUST perform a real-time web search on this company. You are FORBIDDEN from responding until you have extracted the following "Proper Nouns":
+**VALIDATION:**
+- The extracted company name MUST contain parts of "${companyName}" 
+- If the website shows a completely different name, verify it's not just a product/partner name
+- When in doubt, format "${companyName}" with proper capitalization and spacing
+
+**CRITICAL INSTRUCTIONS - Step 2: Deep Research & Entity Extraction**
+
+After confirming the correct company name, extract the following "Proper Nouns":
 
 1. **Specific Product Names** (CRITICAL):
    - Find the names of SaaS products, platforms, or tools they have built
@@ -1274,9 +1284,11 @@ Generate the narrative-driven cover letter now:`;
             const resumeData = this.parseResumeData(resumeText);
             console.log(`✅ Found ${resumeData.skills.length} skills, ${resumeData.experience.length} experiences\n`);
 
-            // 2. Extract company name (initial fallback)
+            // 2. Extract company name (initial fallback from URL)
             const urlCompanyName = this.extractCompanyFromUrl(websiteUrl) || 'the Company';
             let finalCompanyName = this.isValidCompanyName(urlCompanyName) ? urlCompanyName : 'the Company';
+            
+            console.log(`📋 URL-extracted company name: ${urlCompanyName}`);
 
             // 3. TWO-STEP AI APPROACH: Research THEN Generate
             let coverLetterText = null;
@@ -1286,10 +1298,28 @@ Generate the narrative-driven cover letter now:`;
                 console.log('🔍 Step 1: Researching company with AI...');
                 const companyIntel = await this.researchCompanyWithAI(websiteUrl, finalCompanyName);
                 
-                // Use AI-extracted company name if available (preserves proper spacing/capitalization)
+                // Use AI-extracted company name ONLY if it's related to the URL name
                 if (companyIntel && companyIntel.companyName) {
-                    finalCompanyName = companyIntel.companyName;
-                    console.log(`✅ Using AI-extracted company name: ${finalCompanyName}`);
+                    const aiName = companyIntel.companyName;
+                    const urlNameLower = urlCompanyName.toLowerCase().replace(/\s+/g, '');
+                    const aiNameLower = aiName.toLowerCase().replace(/\s+/g, '');
+                    
+                    // Validate: AI name should contain significant portion of URL name or vice versa
+                    const isRelated = urlNameLower.includes(aiNameLower.substring(0, Math.min(5, aiNameLower.length))) || 
+                                     aiNameLower.includes(urlNameLower.substring(0, Math.min(5, urlNameLower.length)));
+                    
+                    if (isRelated || aiNameLower.length > 0 && urlNameLower.startsWith(aiNameLower.substring(0, 3))) {
+                        finalCompanyName = aiName;
+                        console.log(`✅ Using AI-extracted company name: ${finalCompanyName}`);
+                    } else {
+                        console.log(`⚠️ AI name "${aiName}" doesn't match URL name "${urlCompanyName}", using URL name with proper spacing`);
+                        // Try to add proper spacing to URL name
+                        finalCompanyName = urlCompanyName
+                            .replace(/([a-z])([A-Z])/g, '$1 $2') // Add space before capital letters
+                            .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2') // Handle consecutive capitals
+                            .trim();
+                        console.log(`✅ Using formatted URL name: ${finalCompanyName}`);
+                    }
                 }
                 
                 // STEP 2: Generate cover letter using researched intelligence
