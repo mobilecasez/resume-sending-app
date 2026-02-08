@@ -189,412 +189,166 @@ function formatCoverLetterWithHTML(coverLetterText, metadata) {
     return html;
 }
 
-async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyName, companyAddress, photoPath, signaturePath) {
-    console.log('\n');
-    console.log('═══════════════════════════════════════════════════════');
-    console.log('📄 createCoverLetterPDFFromHTML CALLED');
-    console.log('═══════════════════════════════════════════════════════');
-    console.log('companyName:', companyName);
-    console.log('companyAddress:', companyAddress);
-    console.log('companyAddress length:', companyAddress?.length);
-    console.log('companyAddress is empty?:', !companyAddress);
-    console.log('═══════════════════════════════════════════════════════\n');
-    
-    return new Promise(async (resolve, reject) => {
-        try {
-            const currentDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-            const timestamp = Date.now(); // Add millisecond timestamp for uniqueness
-            const sanitizedCompanyName = companyName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
-            const fileName = `Cover_Letter_${currentDate}_${sanitizedCompanyName}_${timestamp}.pdf`;
-            const filePath = path.join(__dirname, '../../temp', fileName);
-            
-            await fs.mkdir(path.join(__dirname, '../../temp'), { recursive: true });
-            
-            // First, calculate the required height by parsing content
-            const $ = cheerio.load(coverLetterHtml);
-            const bodyHtml = $('body').html() || coverLetterHtml;
-            const paragraphs = bodyHtml.split(/<br\s*\/?>/gi);
-            
-            // Estimate content height
-            const pageWidth = 595;
-            const sidebarWidth = 180;
-            const contentWidth = pageWidth - sidebarWidth - 80;
-            const lineHeight = 14;
-            const fontSize = 10;
-            
-            // Calculate approximate height needed for content
-            let estimatedContentHeight = 50; // Starting Y
-            estimatedContentHeight += 25; // Name
-            estimatedContentHeight += 25; // Designation
-            estimatedContentHeight += 30; // Separator
-            estimatedContentHeight += 30; // Cover Letter heading
-            estimatedContentHeight += 25; // Dear Hiring Manager
-            
-            // Estimate paragraph heights (rough calculation)
-            for (const paraHtml of paragraphs) {
-                const plainText = cheerio.load(`<div>${paraHtml}</div>`).text().trim();
-                if (!plainText) continue;
-                
-                // Estimate lines needed (approx 80 chars per line at font size 10)
-                const charsPerLine = 75;
-                const numLines = Math.ceil(plainText.length / charsPerLine);
-                estimatedContentHeight += (numLines * lineHeight) + 10; // + paragraph spacing
-            }
-            
-            estimatedContentHeight += 10; // Before closing
-            estimatedContentHeight += 30; // Best regards
-            if (signaturePath) estimatedContentHeight += 50; // Signature
-            estimatedContentHeight += 30; // Name
-            estimatedContentHeight += 50; // Bottom margin
-            
-            // Ensure minimum height for sidebar content
-            const minHeight = 600;
-            const pageHeight = Math.max(minHeight, estimatedContentHeight);
-            
-            // Create PDF with calculated size - autoFirstPage false to control page creation
-            const doc = new PDFKit({
-                size: [pageWidth, pageHeight],
-                margins: { top: 0, bottom: 0, left: 0, right: 0 },
-                autoFirstPage: false
-            });
-            
-            // Add single page with exact size
-            doc.addPage({ size: [pageWidth, pageHeight], margins: { top: 0, bottom: 0, left: 0, right: 0 } });
-            
-            const writeStream = fsSync.createWriteStream(filePath);
-            doc.pipe(writeStream);
-            
-            // Register fonts
-            const latoRegularPath = path.join(__dirname, '../../fonts', 'Lato-Regular.ttf');
-            const latoBoldPath = path.join(__dirname, '../../fonts', 'Lato-Bold.ttf');
-            
-            doc.registerFont('Lato', latoRegularPath);
-            doc.registerFont('Lato-Bold', latoBoldPath);
-            
-            // LEFT SIDEBAR (dark background) - full height
-            doc.rect(0, 0, sidebarWidth, pageHeight).fill('#262633');
-            
-            // Photo/Initials circle at top
-            const photoX = sidebarWidth / 2;
-            const photoY = 70;
-            const photoSize = 80;
-            
-            if (photoPath) {
-                try {
-                    doc.image(photoPath, photoX - photoSize/2, photoY - photoSize/2, {
-                        width: photoSize,
-                        height: photoSize
-                    });
-                } catch (e) {
-                    // Draw initials circle if photo fails
-                    doc.circle(photoX, photoY, photoSize/2).stroke('#ffffff');
-                    const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
-                    doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
-                    doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
-                }
-            } else {
-                doc.circle(photoX, photoY, photoSize/2).lineWidth(2).stroke('#ffffff');
-                const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
-                doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
-                doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
-            }
-            
-            let sidebarY = photoY + photoSize/2 + 40;
-            
-            // TO section
-            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
-            doc.text('TO', 20, sidebarY);
-            sidebarY += 20;
-            
-            doc.font('Lato').fontSize(10).fillColor('#ffffff');
-            doc.text('Hiring Manager,', 20, sidebarY);
-            sidebarY += 16;
-            
-            // Company name (bold)
-            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
-            doc.text(companyName, 20, sidebarY, { width: sidebarWidth - 40 });
-            sidebarY += doc.heightOfString(companyName, { width: sidebarWidth - 40 }) + 4;
-            
-            // Company address
-            if (companyAddress) {
-                doc.font('Lato').fontSize(10).fillColor('#ffffff');
-                doc.text(companyAddress, 20, sidebarY, { width: sidebarWidth - 40 });
-                sidebarY += doc.heightOfString(companyAddress, { width: sidebarWidth - 40 }) + 4;
-            }
-            
-            sidebarY += 10;
-            
-            // Separator line
-            doc.moveTo(20, sidebarY).lineTo(sidebarWidth - 20, sidebarY).lineWidth(0.5).stroke('#808080');
-            sidebarY += 20;
-            
-            // FROM section
-            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
-            doc.text('FROM', 20, sidebarY);
-            sidebarY += 20;
-            
-            doc.font('Lato').fontSize(10).fillColor('#ffffff');
-            doc.text((userData.fullName || 'Applicant').toUpperCase(), 20, sidebarY, { width: sidebarWidth - 40 });
-            sidebarY += 20;
-            
-            sidebarY += 10;
-            
-            // Separator line
-            doc.moveTo(20, sidebarY).lineTo(sidebarWidth - 20, sidebarY).lineWidth(0.5).stroke('#808080');
-            sidebarY += 20;
-            
-            // DATE section
-            const today = new Date();
-            const dateStr = today.toLocaleDateString('en-US', { 
-                month: 'short', 
-                day: '2-digit', 
-                year: 'numeric' 
-            }).replace(',', '');
-            
-            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
-            doc.text('DATE', 20, sidebarY);
-            sidebarY += 20;
-            
-            doc.font('Lato').fontSize(10).fillColor('#ffffff');
-            doc.text(dateStr, 20, sidebarY);
-            
-            // Contact info at bottom of sidebar (positioned relative to page height)
-            const contactY = pageHeight - 80;
-            doc.font('Lato').fontSize(8).fillColor('#ffffff');
-            if (userData.email) {
-                doc.text(userData.email, 20, contactY, { lineBreak: false });
-            }
-            if (userData.phoneNumber) {
-                doc.text(userData.phoneNumber, 20, contactY + 12, { lineBreak: false });
-            }
-            if (userData.city) {
-                doc.text(userData.city, 20, contactY + 24, { lineBreak: false });
-            }
-            if (userData.country) {
-                doc.text(userData.country, 20, contactY + 36, { lineBreak: false });
-            }
-            
-            // RIGHT CONTENT AREA
-            const contentX = sidebarWidth + 40;
-            let contentY = 50;
-            
-            // Header with name
-            doc.font('Lato-Bold').fontSize(18).fillColor('#000000');
-            doc.text((userData.fullName || 'APPLICANT').toUpperCase(), contentX, contentY, { lineBreak: false });
-            
-            // Contact details on right
-            doc.font('Lato').fontSize(9).fillColor('#4d4d4d');
-            const rightX = pageWidth - 40;
-            if (userData.city && userData.country) {
-                const locationText = `${userData.city}, ${userData.country}`;
-                doc.text(locationText, rightX - doc.widthOfString(locationText), contentY, { lineBreak: false });
-            }
-            if (userData.phoneNumber) {
-                doc.text(userData.phoneNumber, rightX - doc.widthOfString(userData.phoneNumber), contentY + 15, { lineBreak: false });
-            }
-            if (userData.email) {
-                doc.text(userData.email, rightX - doc.widthOfString(userData.email), contentY + 30, { lineBreak: false });
-            }
-            
-            contentY += 25;
-            
-            // Designation
-            doc.font('Lato').fontSize(11).fillColor('#666666');
-            doc.text('Project Manager', contentX, contentY, { lineBreak: false });
-            
-            contentY += 25;
-            
-            // Separator line
-            doc.moveTo(contentX, contentY).lineTo(pageWidth - 40, contentY).lineWidth(1).stroke('#cccccc');
-            
-            contentY += 30;
-            
-            // "Cover Letter" heading
-            doc.font('Lato-Bold').fontSize(14).fillColor('#333333');
-            doc.text('Cover Letter', contentX, contentY, { lineBreak: false });
-            
-            contentY += 30;
-            
-            // Opening
-            doc.font('Lato').fontSize(10).fillColor('#000000');
-            doc.text('Dear Hiring Manager,', contentX, contentY, { width: contentWidth });
-            contentY += 25;
-            
-            // Helper function to extract text segments with bold info
-            function extractTextSegments(node, segments, inheritBold = false) {
-                if (node.type === 'text') {
-                    const text = node.data;
-                    if (text) {
-                        segments.push({ text: text, bold: inheritBold });
-                    }
-                } else if (node.type === 'tag') {
-                    const isBold = inheritBold || node.name === 'strong' || node.name === 'b';
-                    if (node.children) {
-                        node.children.forEach(child => {
-                            extractTextSegments(child, segments, isBold);
-                        });
-                    }
-                }
-            }
-            
-            // Process paragraphs for rendering (already parsed above)
-            for (const paraHtml of paragraphs) {
-                // Parse this paragraph for bold/regular segments
-                const $para = cheerio.load(`<div>${paraHtml}</div>`);
-                const segments = [];
-                
-                $para('div').contents().each((i, elem) => {
-                    extractTextSegments(elem, segments, false);
-                });
-                
-                // If no segments found, try plain text
-                if (segments.length === 0) {
-                    const plainText = $para.text().trim();
-                    if (plainText) {
-                        segments.push({ text: plainText, bold: false });
-                    }
-                }
-                
-                if (segments.length === 0) continue;
-                
-                // Render segments with proper formatting
-                let currentX = contentX;
-                let lineStartY = contentY;
-                const maxX = contentX + contentWidth;
-                
-                for (const segment of segments) {
-                    const fontName = segment.bold ? 'Lato-Bold' : 'Lato';
-                    doc.font(fontName).fontSize(10).fillColor('#000000');
-                    
-                    // Split text into words
-                    const words = segment.text.split(/(\s+)/);
-                    
-                    for (const word of words) {
-                        if (!word) continue;
-                        
-                        // Skip leading spaces at the start of a new line
-                        if (currentX === contentX && /^\s+$/.test(word)) {
-                            continue;
-                        }
-                        
-                        const wordWidth = doc.widthOfString(word);
-                        
-                        // Check if word fits on current line
-                        if (currentX + wordWidth > maxX && currentX > contentX) {
-                            // Move to next line
-                            currentX = contentX;
-                            lineStartY += lineHeight;
-                            
-                            // Skip this word if it's just whitespace (don't render space at line start)
-                            if (/^\s+$/.test(word)) {
-                                continue;
-                            }
-                        }
-                        
-                        // Draw the word
-                        doc.text(word, currentX, lineStartY, { lineBreak: false, continued: false });
-                        currentX += wordWidth;
-                    }
-                }
-                
-                contentY = lineStartY + lineHeight + 10;
-            }
-            
-            // Closing
-            contentY += 10;
-            doc.font('Lato').fontSize(10).fillColor('#000000');
-            doc.text('Best regards,', contentX, contentY, { width: contentWidth });
-            contentY += 30;
-            
-            // Signature
-            if (signaturePath) {
-                try {
-                    doc.image(signaturePath, contentX, contentY, { width: 120, height: 40 });
-                    contentY += 50;
-                } catch (e) {
-                    console.log('Could not embed signature');
-                }
-            }
-            
-            // Name
-            doc.font('Lato-Bold').fontSize(10).fillColor('#000000');
-            doc.text((userData.fullName || 'APPLICANT').toUpperCase(), contentX, contentY);
-            
-            // Finalize PDF
-            doc.end();
-            
-            writeStream.on('finish', () => {
-                console.log(`✅ PDF created with PDFKit: ${fileName}`);
-                resolve({ filePath, fileName });
-            });
-            
-            writeStream.on('error', (err) => {
-                reject(err);
-            });
-            
-        } catch (error) {
-            reject(error);
-        }
-    });
-}
-
-// TWO-COLUMN cover letter PDF generator (like Cover_Letter_Google_New.pdf from Dec 4)
 async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, companyAddress = '') {
-    console.log('\n📄 [COMMON] Generating PDF with:');
-    console.log('  User:', user.email);
-    console.log('  Company:', companyName);
-    console.log('  Address:', companyAddress);
-    console.log('  Content length:', coverLetterHtmlOrText?.length);
-    console.log('  Content type:', coverLetterHtmlOrText?.includes('<') ? 'HTML' : 'TEXT');
+    const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
     
-    // Prepare user data
-    const userData = {
-        fullName: user.full_name,
-        email: user.email,
-        phoneNumber: user.phone_number,
-        city: user.city,
-        country: user.country
-    };
-
-    // Get photo and signature paths
-    const photoPath = user.photo_path ? path.join(__dirname, '../..', user.photo_path) : null;
-    const signaturePath = user.signature_path ? path.join(__dirname, '../..', user.signature_path) : null;
-
-    // CRITICAL FIX: Convert markdown **bold** to HTML <strong>bold</strong>
-    // Mobile sends plain text with **markdown**, web sends HTML
-    // Ensure consistent HTML format for PDF generation
-    let coverLetterHtml = coverLetterHtmlOrText;
+    // Determine if input is HTML or plain text
+    const isHtml = coverLetterHtmlOrText.includes('<') && coverLetterHtmlOrText.includes('>');
     
-    // If text contains **markdown** but no HTML tags, convert markdown to HTML
-    if (!coverLetterHtml.includes('<p>') && !coverLetterHtml.includes('<div>')) {
-        console.log('  📝 Converting plain text with markdown to HTML...');
-        
-        // Split by double newlines for paragraphs
-        const paragraphs = coverLetterHtml.split('\n\n').filter(p => p.trim());
-        
-        coverLetterHtml = paragraphs.map(para => {
-            // Convert **text** to <strong>text</strong>
-            let formatted = para.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-            // Wrap in paragraph tag
-            return `<p>${formatted}</p>`;
-        }).join('');
-        
-        console.log('  ✅ Converted to HTML with bold tags');
-    } else {
-        console.log('  ✅ Already HTML format');
+    // Extract plain text from HTML if needed
+    let coverLetterText = coverLetterHtmlOrText;
+    if (isHtml) {
+        coverLetterText = coverLetterHtmlOrText
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<\/p>/gi, '\n\n')
+            .replace(/<strong>/gi, '')
+            .replace(/<\/strong>/gi, '')
+            .replace(/<[^>]+>/g, '')
+            .replace(/&nbsp;/g, ' ')
+            .trim();
     }
-
-    // Generate PDF using HTML-based method (supports bold formatting)
-    const { filePath, fileName } = await createCoverLetterPDFFromHTML(
-        userData,
-        coverLetterHtml,
-        companyName,
-        companyAddress || '',
-        photoPath,
-        signaturePath
-    );
-
-    console.log(`✅ [COMMON] PDF generated: ${fileName} at ${filePath}\n`);
+    
+    // Create PDF
+    const pdfDoc = await PDFDocument.create();
+    const page = pdfDoc.addPage([595.28, 841.89]); // A4 size
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    
+    const fontSize = 11;
+    const lineHeight = 16;
+    const margin = 50;
+    let yPosition = page.getHeight() - margin;
+    
+    // Add header with user info
+    page.drawText(user.full_name, {
+        x: margin,
+        y: yPosition,
+        size: 14,
+        font: boldFont,
+        color: rgb(0, 0, 0)
+    });
+    yPosition -= 20;
+    
+    // Contact info
+    const contactInfo = [user.email, user.phone_number, user.city && user.country ? `${user.city}, ${user.country}` : ''].filter(Boolean).join(' | ');
+    page.drawText(contactInfo, {
+        x: margin,
+        y: yPosition,
+        size: 9,
+        font: font,
+        color: rgb(0.3, 0.3, 0.3)
+    });
+    yPosition -= 30;
+    
+    // Date
+    const date = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    page.drawText(date, {
+        x: margin,
+        y: yPosition,
+        size: 10,
+        font: font
+    });
+    yPosition -= 25;
+    
+    // Company address
+    if (companyAddress) {
+        page.drawText(companyName, {
+            x: margin,
+            y: yPosition,
+            size: 10,
+            font: boldFont
+        });
+        yPosition -= 15;
+        
+        page.drawText(companyAddress, {
+            x: margin,
+            y: yPosition,
+            size: 10,
+            font: font
+        });
+        yPosition -= 25;
+    }
+    
+    // Salutation
+    page.drawText('Dear Hiring Manager,', {
+        x: margin,
+        y: yPosition,
+        size: 11,
+        font: font
+    });
+    yPosition -= 25;
+    
+    // Body text with word wrapping
+    const maxWidth = page.getWidth() - (margin * 2);
+    const words = coverLetterText.split(/\s+/);
+    let line = '';
+    
+    for (const word of words) {
+        const testLine = line + (line ? ' ' : '') + word;
+        const width = font.widthOfTextAtSize(testLine, fontSize);
+        
+        if (width > maxWidth && line) {
+            page.drawText(line, {
+                x: margin,
+                y: yPosition,
+                size: fontSize,
+                font: font
+            });
+            yPosition -= lineHeight;
+            line = word;
+            
+            // Add new page if needed
+            if (yPosition < margin + 100) {
+                const newPage = pdfDoc.addPage([595.28, 841.89]);
+                yPosition = newPage.getHeight() - margin;
+            }
+        } else {
+            line = testLine;
+        }
+    }
+    
+    // Draw remaining line
+    if (line) {
+        page.drawText(line, {
+            x: margin,
+            y: yPosition,
+            size: fontSize,
+            font: font
+        });
+        yPosition -= 25;
+    }
+    
+    // Closing
+    if (yPosition < margin + 80) {
+        const newPage = pdfDoc.addPage([595.28, 841.89]);
+        yPosition = newPage.getHeight() - margin;
+    }
+    
+    yPosition -= 10;
+    page.drawText('Sincerely,', {
+        x: margin,
+        y: yPosition,
+        size: 11,
+        font: font
+    });
+    yPosition -= 20;
+    
+    page.drawText(user.full_name, {
+        x: margin,
+        y: yPosition,
+        size: 11,
+        font: boldFont
+    });
+    
+    // Save PDF
+    const pdfBytes = await pdfDoc.save();
+    const fileName = `Cover_Letter_${companyName.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.pdf`;
+    const filePath = path.join(__dirname, '../../temp', fileName);
+    
+    // Ensure temp directory exists
+    await fs.mkdir(path.join(__dirname, '../../temp'), { recursive: true });
+    
+    await fs.writeFile(filePath, pdfBytes);
     
     return { filePath, fileName };
 }
