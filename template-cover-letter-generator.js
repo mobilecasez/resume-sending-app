@@ -1136,10 +1136,20 @@ Reference specific company clients/partners from research. Bold all proper nouns
 Example: "As a Team Lead managing cross-functional Agile teams, I bring not just technical expertise but the ability to drive projects to completion. ${hasAIExperience ? 'My experience in **AI** and **Machine Learning** positions me to help ' + companyName + ' leverage intelligent automation and data-driven insights...' : ''} I see powerful synergy with your work for clients like **[specific client name]**..."
 
 **Paragraph 4 - Closing (MANDATORY):**
+Write a polite, professional closing paragraph that:
 ${hasLocation 
-  ? `End with: "I would be excited about the opportunity to contribute to **${companyName}** in ${locationText}. I believe my experience aligns well with your team's needs, and I would welcome the chance to discuss how I can add value to your organization. Thank you for considering my application."`
-  : `End with: "I would be excited about the opportunity to contribute to **${companyName}**. I believe my experience aligns well with your team's needs, and I would welcome the chance to discuss how I can add value to your organization. Thank you for considering my application."`
+  ? `- Expresses genuine interest in the opportunity at **${companyName}**
+- Mentions willingness/excitement to work in ${locationText}
+- Conveys that the candidate's experience fits the role
+- Thanks them for consideration
+- Keeps a humble, respectful tone (avoid: "I am confident", "I am certain", "excellent fit")`
+  : `- Expresses genuine interest in the opportunity at **${companyName}**
+- Conveys that the candidate's experience fits the role  
+- Thanks them for consideration
+- Keeps a humble, respectful tone (avoid: "I am confident", "I am certain", "excellent fit")`
 }
+
+IMPORTANT: Write this closing in your OWN WORDS - do NOT copy any template. Each closing should be unique and natural.
 
 **CRITICAL FORMATTING RULES:**
 **CRITICAL FORMATTING RULES:**
