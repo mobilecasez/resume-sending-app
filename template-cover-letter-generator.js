@@ -881,8 +881,15 @@ Be professional and factual. If you don't have specific information, make reason
             const researchPrompt = `Role: You are an expert Headhunter performing deep company research to extract SPECIFIC PROPER NOUNS.
 
 **Company to Research:**
-- Name: ${companyName}
+- URL/Domain: ${companyName}
 - Website: ${websiteUrl}
+
+**MOST CRITICAL - Company Name Extraction:**
+The first and MOST IMPORTANT task is to find the EXACT, OFFICIAL company name with proper spacing and capitalization.
+- Example: If URL is "disruptivetechsolutions.com", the company name might be "Disruptive Tech Solutions" (with spaces)
+- Search the website's title tag, meta tags, About Us page, footer, and Google search results
+- Return the OFFICIAL company name as it appears on their website/documents
+- This name MUST have proper spacing (e.g., "Tech Solutions" not "TechSolutions")
 
 **CRITICAL INSTRUCTIONS - Step 1: Deep Research & Entity Extraction**
 
