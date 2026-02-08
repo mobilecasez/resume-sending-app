@@ -619,16 +619,15 @@ const sendSingleApplication = async (req, res) => {
                 });
 
             } catch (gmailError) {
-                console.error('Gmail API error:', gmailError.message);
+                console.error('❌ Gmail API error:', gmailError.message);
+                console.log('⚠️ Gmail API failed, will try SMTP fallback...');
                 
-                if (gmailError.message.includes('OAuth token expired')) {
-                    return res.status(401).json({ 
-                        error: 'Your Gmail session has expired. Please log in again.',
-                        requiresReauth: true
-                    });
+                // Don't return error here - let it fall through to SMTP
+                // Only return if it's specifically asking for re-auth
+                if (gmailError.message.includes('invalid_grant') || gmailError.message.includes('OAuth token expired')) {
+                    console.log('⚠️ OAuth tokens expired, attempting SMTP fallback...');
                 }
-                
-                throw gmailError;
+                // Fall through to SMTP instead of throwing error
             }
         }
 
@@ -682,6 +681,59 @@ const sendSingleApplication = async (req, res) => {
 
             } catch (smtpError) {
                 console.error('SMTP error:', smtpError.message);
+                throw smtpError;
+            }
+        }
+
+        // Priority 3: Use default SMTP from .env if configured
+        if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+            try {
+                console.log('📧 Sending via default SMTP (.env)...');
+                
+                const transporter = createTransporter(process.env.SMTP_USER, process.env.SMTP_PASS);
+
+                const mailOptions = {
+                    from: `${user.sender_name || user.full_name} <${process.env.SMTP_USER}>`,
+                    to: recipientEmail,
+                    replyTo: user.email,
+                    subject: subject,
+                    text: emailBody,
+                    attachments: [
+                        {
+                            filename: fileName,
+                            path: filePath
+                        },
+                        {
+                            filename: path.basename(resumePath),
+                            path: resumePath
+                        }
+                    ]
+                };
+
+                await transporter.sendMail(mailOptions);
+
+                // Save to history
+                await dbConfig.run(
+                    'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date) VALUES (?, ?, ?, ?, ?)',
+                    [userId, companyName, position, recipientEmail, new Date().toISOString()]
+                );
+
+                await dbConfig.run(
+                    'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
+                    [userId]
+                );
+
+                // Clean up
+                await fs.unlink(filePath);
+
+                return res.json({ 
+                    success: true, 
+                    message: 'Application sent successfully via default SMTP',
+                    method: 'smtp-default'
+                });
+
+            } catch (smtpError) {
+                console.error('Default SMTP error:', smtpError.message);
                 throw smtpError;
             }
         }
