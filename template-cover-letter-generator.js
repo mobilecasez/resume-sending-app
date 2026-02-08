@@ -1136,20 +1136,30 @@ Reference specific company clients/partners from research. Bold all proper nouns
 Example: "As a Team Lead managing cross-functional Agile teams, I bring not just technical expertise but the ability to drive projects to completion. ${hasAIExperience ? 'My experience in **AI** and **Machine Learning** positions me to help ' + companyName + ' leverage intelligent automation and data-driven insights...' : ''} I see powerful synergy with your work for clients like **[specific client name]**..."
 
 **Paragraph 4 - Closing (MANDATORY):**
-Write a polite, professional closing paragraph that:
+Write a UNIQUE, VARIED closing paragraph (2-3 sentences) that conveys:
 ${hasLocation 
-  ? `- Expresses genuine interest in the opportunity at **${companyName}**
-- Mentions willingness/excitement to work in ${locationText}
-- Conveys that the candidate's experience fits the role
-- Thanks them for consideration
-- Keeps a humble, respectful tone (avoid: "I am confident", "I am certain", "excellent fit")`
-  : `- Expresses genuine interest in the opportunity at **${companyName}**
-- Conveys that the candidate's experience fits the role  
-- Thanks them for consideration
-- Keeps a humble, respectful tone (avoid: "I am confident", "I am certain", "excellent fit")`
+  ? `1. Interest in joining **${companyName}** 
+2. Willingness to work in/relocate to ${locationText} (mention the location naturally)
+3. Appreciation for their consideration`
+  : `1. Interest in joining **${companyName}**
+2. Appreciation for their consideration`
 }
 
-IMPORTANT: Write this closing in your OWN WORDS - do NOT copy any template. Each closing should be unique and natural.
+CRITICAL RULES FOR CLOSING:
+✅ MUST write it differently each time - vary sentence structure, word choice, and phrasing
+✅ Keep tone: polite, humble, professional (not arrogant or overconfident)
+✅ Use varied expressions like: "opportunity to contribute", "chance to be part of", "looking forward to", "excited about", "interested in discussing"
+${hasLocation ? `✅ Naturally mention ${locationText} (don't say "Not specified")` : ''}
+
+❌ FORBIDDEN PHRASES (will be rejected):
+- "I am eager to relocate to"
+- "excellent fit for [company]'s environment"
+- "I am keen to discuss how my expertise"
+- "I am confident that"
+- "proven track record"
+- Any exact repetition of previous closings
+
+IMPORTANT: Generate FRESH wording every time. Vary your sentence structures and vocabulary.
 
 **CRITICAL FORMATTING RULES:**
 **CRITICAL FORMATTING RULES:**
@@ -1244,7 +1254,11 @@ Generate the narrative-driven cover letter now:`;
                 const genericPhrases = [
                     'I am writing to express my profound interest',
                     'How My Experience Directly Matches Your Requirements',
-                    'My Value Proposition to'
+                    'My Value Proposition to',
+                    'I am eager to relocate to',
+                    'excellent fit for',
+                    'I am keen to discuss how my expertise',
+                    'Not specified' // Reject if location is "Not specified"
                 ];
                 
                 const foundGeneric = genericPhrases.filter(phrase => 
@@ -1252,7 +1266,7 @@ Generate the narrative-driven cover letter now:`;
                 );
                 
                 if (foundGeneric.length > 0) {
-                    console.log(`⚠️ Attempt ${attempt} contained generic phrases:`, foundGeneric);
+                    console.log(`⚠️ Attempt ${attempt} contained generic/forbidden phrases:`, foundGeneric);
                     if (attempt < 3) {
                         console.log('🔄 Retrying with stricter prompt...');
                         continue;
