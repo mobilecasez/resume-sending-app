@@ -1036,33 +1036,37 @@ Research ${websiteUrl} now and extract these details. Return ONLY the JSON, no o
             console.log('🤖 Step 2: Generating cover letter with research...');
 
             // Extract company location info
-            let locationText = 'your location';
+            let locationText = '';
             let continentText = '';
+            let hasLocation = false;
             
             if (companyLocations && companyLocations.length > 0) {
                 const headquarters = companyLocations.find(loc => loc.isHeadquarters) || companyLocations[0];
                 const country = headquarters.country;
                 const city = headquarters.city;
                 
-                console.log(`📍 Company location detected: ${city}, ${country}`);
-                
-                // Determine continent and relocation text
-                const europeanCountries = ['Switzerland', 'Germany', 'Austria', 'France', 'Italy', 'Spain', 'Netherlands', 'Belgium', 'Sweden', 'Norway', 'Denmark', 'Finland', 'Poland', 'Czech Republic', 'Hungary', 'Romania', 'Bulgaria', 'Greece', 'Portugal', 'Ireland', 'Luxembourg', 'Slovakia', 'Slovenia', 'Croatia', 'Estonia', 'Latvia', 'Lithuania', 'Malta', 'Cyprus', 'United Kingdom', 'UK'];
-                const asianCountries = ['China', 'Japan', 'India', 'Singapore', 'South Korea', 'Thailand', 'Vietnam', 'Malaysia', 'Indonesia', 'Philippines', 'Taiwan', 'Hong Kong'];
-                const northAmericanCountries = ['United States', 'USA', 'US', 'Canada', 'Mexico'];
-                
-                if (europeanCountries.includes(country)) {
-                    locationText = `${country}/Europe`;
-                    continentText = 'Europe';
-                } else if (asianCountries.includes(country)) {
-                    locationText = `${country}/Asia`;
-                    continentText = 'Asia';
-                } else if (northAmericanCountries.includes(country)) {
-                    locationText = country === 'United States' || country === 'USA' || country === 'US' ? 'the United States' : country;
-                    continentText = 'North America';
-                } else {
-                    locationText = country;
-                    continentText = country;
+                if (country && country !== 'Not specified') {
+                    hasLocation = true;
+                    console.log(`📍 Company location detected: ${city}, ${country}`);
+                    
+                    // Determine continent and relocation text
+                    const europeanCountries = ['Switzerland', 'Germany', 'Austria', 'France', 'Italy', 'Spain', 'Netherlands', 'Belgium', 'Sweden', 'Norway', 'Denmark', 'Finland', 'Poland', 'Czech Republic', 'Hungary', 'Romania', 'Bulgaria', 'Greece', 'Portugal', 'Ireland', 'Luxembourg', 'Slovakia', 'Slovenia', 'Croatia', 'Estonia', 'Latvia', 'Lithuania', 'Malta', 'Cyprus', 'United Kingdom', 'UK'];
+                    const asianCountries = ['China', 'Japan', 'India', 'Singapore', 'South Korea', 'Thailand', 'Vietnam', 'Malaysia', 'Indonesia', 'Philippines', 'Taiwan', 'Hong Kong'];
+                    const northAmericanCountries = ['United States', 'USA', 'US', 'Canada', 'Mexico'];
+                    
+                    if (europeanCountries.includes(country)) {
+                        locationText = `${country}/Europe`;
+                        continentText = 'Europe';
+                    } else if (asianCountries.includes(country)) {
+                        locationText = `${country}/Asia`;
+                        continentText = 'Asia';
+                    } else if (northAmericanCountries.includes(country)) {
+                        locationText = country === 'United States' || country === 'USA' || country === 'US' ? 'the United States' : country;
+                        continentText = 'North America';
+                    } else {
+                        locationText = country;
+                        continentText = country;
+                    }
                 }
             }
 
@@ -1132,7 +1136,10 @@ Reference specific company clients/partners from research. Bold all proper nouns
 Example: "As a Team Lead managing cross-functional Agile teams, I bring not just technical expertise but the ability to drive projects to completion. ${hasAIExperience ? 'My experience in **AI** and **Machine Learning** positions me to help ' + companyName + ' leverage intelligent automation and data-driven insights...' : ''} I see powerful synergy with your work for clients like **[specific client name]**..."
 
 **Paragraph 4 - Closing (MANDATORY):**
-End with: "I am eager to relocate to ${locationText} and believe my skills and experience are an excellent fit for **${companyName}**'s environment. I am keen to discuss how my expertise can contribute to your team's success. I look forward to hearing from you soon."
+${hasLocation 
+  ? `End with: "I would be excited about the opportunity to contribute to **${companyName}** in ${locationText}. I believe my experience aligns well with your team's needs, and I would welcome the chance to discuss how I can add value to your organization. Thank you for considering my application."`
+  : `End with: "I would be excited about the opportunity to contribute to **${companyName}**. I believe my experience aligns well with your team's needs, and I would welcome the chance to discuss how I can add value to your organization. Thank you for considering my application."`
+}
 
 **CRITICAL FORMATTING RULES:**
 **CRITICAL FORMATTING RULES:**
