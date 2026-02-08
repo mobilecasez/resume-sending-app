@@ -1200,9 +1200,9 @@ Generate the narrative-driven cover letter now:`;
 
             console.log('🤖 Using Gemini with Google Search + deep research prompt...');
             
-            // Try up to 2 times to get non-generic content
-            for (let attempt = 1; attempt <= 2; attempt++) {
-                console.log(`\n🔄 Attempt ${attempt}/2 to generate specific cover letter...`);
+            // Try up to 3 times to get non-generic content
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                console.log(`\n🔄 Attempt ${attempt}/3 to generate specific cover letter...`);
                 
                 const result = await model.generateContent({
                     contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -1227,8 +1227,7 @@ Generate the narrative-driven cover letter now:`;
                 const genericPhrases = [
                     'I am writing to express my profound interest',
                     'How My Experience Directly Matches Your Requirements',
-                    'My Value Proposition to',
-                    'I bring a proven track record'
+                    'My Value Proposition to'
                 ];
                 
                 const foundGeneric = genericPhrases.filter(phrase => 
@@ -1237,12 +1236,12 @@ Generate the narrative-driven cover letter now:`;
                 
                 if (foundGeneric.length > 0) {
                     console.log(`⚠️ Attempt ${attempt} contained generic phrases:`, foundGeneric);
-                    if (attempt < 2) {
+                    if (attempt < 3) {
                         console.log('🔄 Retrying with stricter prompt...');
                         continue;
                     } else {
-                        console.log('❌ Both attempts were generic, falling back to template');
-                        return null; // Force fallback to template
+                        console.log('❌ All 3 attempts were generic, returning null');
+                        return null; // Force fallback to simplified generation
                     }
                 }
                 
@@ -1336,9 +1335,38 @@ Generate the narrative-driven cover letter now:`;
                 }
             }
             
-            // 4. If AI generation failed, fall back to template generation
+            // 4. If AI generation failed, try simplified AI generation without deep research
+            if (!coverLetterText && process.env.GEMINI_API_KEY) {
+                console.log('⚠️  Detailed AI generation failed, trying simplified approach...');
+                try {
+                    const simplifiedIntel = {
+                        companyName: finalCompanyName,
+                        products: [],
+                        clients: [],
+                        technologies: [],
+                        partnerships: [],
+                        businessModel: 'Technology company',
+                        mission: '',
+                        uniqueDetails: [],
+                        industryFocus: ''
+                    };
+                    
+                    coverLetterText = await this.generateCoverLetterWithAI(
+                        resumeText,
+                        websiteUrl,
+                        position,
+                        finalCompanyName,
+                        simplifiedIntel,
+                        companyLocations
+                    );
+                } catch (error) {
+                    console.error('❌ Simplified AI generation also failed:', error.message);
+                }
+            }
+            
+            // 5. Last resort: Use template fallback (but this should rarely happen)
             if (!coverLetterText) {
-                console.log('✍️  AI unavailable, generating cover letter with template fallback...');
+                console.log('⚠️  All AI attempts failed, using basic template...');
                 // Create minimal companyData for template generation
                 const companyData = {
                     companyName: finalCompanyName,
