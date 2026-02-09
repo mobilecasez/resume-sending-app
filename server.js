@@ -2764,6 +2764,11 @@ app.use('/api', adminPackagesRoutes);
 app.use('/api', coverLetterRoutes);
 app.use('/api', emailRoutes);
 
+// Start email forwarding service
+const EmailForwardingService = require('./server/services/emailForwardingService');
+const emailForwarder = new EmailForwardingService();
+emailForwarder.start();
+
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`
@@ -2775,6 +2780,7 @@ app.listen(PORT, '0.0.0.0', () => {
 🌐 Local: http://localhost:${PORT}
 🌐 Network: http://192.168.1.14:${PORT}
 📧 Configure your email in Settings
+📬 Email forwarding: Active
 
 Open your browser and visit any of the above URLs
     `);
