@@ -144,11 +144,21 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
 // Helper function: Create SMTP transporter
 function createTransporter(smtpUser, smtpPass) {
     return nodemailer.createTransport({
-        service: 'gmail',
+        host: process.env.SMTP_HOST || 'smtp.gmail.com',
+        port: parseInt(process.env.SMTP_PORT || '587'),
+        secure: process.env.SMTP_PORT === '465', // Use SSL for port 465
         auth: {
             user: smtpUser,
             pass: smtpPass,
         },
+        // Anti-spam settings
+        tls: {
+            rejectUnauthorized: true,
+            minVersion: 'TLSv1.2'
+        },
+        pool: true, // Use connection pool for better reputation
+        maxConnections: 5,
+        maxMessages: 100,
     });
 }
 
@@ -706,7 +716,15 @@ const sendApplications = async (req, res) => {
                     from: `${emailSettings.name} <${emailSettings.email}>`,
                     to: recipient.email,
                     replyTo: user.email,
-                    subject: `Application for ${position}`,
+                    subject: `Application for ${position} - ${userData.fullName}`,
+                    // Anti-spam headers
+                    headers: {
+                        'X-Mailer': 'Lettrico Job Application System',
+                        'X-Priority': '3',
+                        'Importance': 'Normal',
+                        'List-Unsubscribe': `<mailto:${emailSettings.email}?subject=unsubscribe>`,
+                    },
+                    text: `Dear Hiring Manager at ${companyName},\n\nI'm excited to submit my application for the ${position} role. Please find attached my personalized cover letter and resume.\n\nI believe my background and skills align well with what ${companyName} is looking for.\n\nContact Information:\nEmail: ${user.email}\n${user.phone_number ? `Phone: ${user.phone_number}\n` : ''}${user.city && user.country ? `Location: ${user.city}, ${user.country}\n` : ''}\n\nI'm looking forward to hearing from you!\n\nBest regards,\n${userData.fullName}\n${user.email}`,
                     html: `
                         <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
                             <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Dear Hiring Manager at ${companyName},</h2>
@@ -908,6 +926,13 @@ const sendSingleApplication = async (req, res) => {
                     to: recipientEmail,
                     replyTo: user.email,
                     subject: subject,
+                    // Anti-spam headers
+                    headers: {
+                        'X-Mailer': 'Lettrico Job Application System',
+                        'X-Priority': '3',
+                        'Importance': 'Normal',
+                        'List-Unsubscribe': `<mailto:${user.smtp_email}?subject=unsubscribe>`,
+                    },
                     text: emailBody,
                     attachments: [
                         {
@@ -961,6 +986,13 @@ const sendSingleApplication = async (req, res) => {
                     to: recipientEmail,
                     replyTo: user.email,
                     subject: subject,
+                    // Anti-spam headers
+                    headers: {
+                        'X-Mailer': 'Lettrico Job Application System',
+                        'X-Priority': '3',
+                        'Importance': 'Normal',
+                        'List-Unsubscribe': `<mailto:${process.env.SMTP_USER}?subject=unsubscribe>`,
+                    },
                     text: emailBody,
                     attachments: [
                         {
