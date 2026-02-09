@@ -8,6 +8,16 @@ const TemplateCoverLetterGenerator = require('../../template-cover-letter-genera
 const PDFKit = require('pdfkit');
 const cheerio = require('cheerio');
 
+// Helper function to format DOB as YYYYMMDD for Reply-To email
+function formatDOBForEmail(dateOfBirth) {
+    if (!dateOfBirth) return null;
+    const date = new Date(dateOfBirth);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}${month}${day}`;
+}
+
 const templateGenerator = new TemplateCoverLetterGenerator();
 const JWT_SECRET = process.env.JWT_SECRET || 'default-secret-key';
 
@@ -712,8 +722,12 @@ const sendApplications = async (req, res) => {
                 const position = recipient.position || 'Position at your company';
 
                 // Send email
-                // Use plus addressing for Reply-To: cv+user123@cvapplyr.com routes to cv@cvapplyr.com but tracks user
-                const replyToEmail = `${emailSettings.email.split('@')[0]}+user${userId}@${emailSettings.email.split('@')[1]}`;
+                // Use plus addressing for Reply-To: cv+email.dob@cvapplyr.com routes to cv@cvapplyr.com but tracks user
+                const emailUsername = user.email.split('@')[0];
+                const dobFormatted = formatDOBForEmail(user.date_of_birth);
+                const replyToEmail = dobFormatted 
+                    ? `${emailSettings.email.split('@')[0]}+${emailUsername}.${dobFormatted}@${emailSettings.email.split('@')[1]}`
+                    : emailSettings.email; // Fallback if no DOB
                 const mailOptions = {
                     from: `${emailSettings.name} <${emailSettings.email}>`,
                     to: recipient.email,
@@ -928,7 +942,11 @@ const sendSingleApplication = async (req, res) => {
                 const transporter = createTransporter(user.smtp_email, smtpPassword);
 
                 // Use plus addressing for Reply-To tracking
-                const replyToEmail = `${user.smtp_email.split('@')[0]}+user${userId}@${user.smtp_email.split('@')[1]}`;
+                const emailUsername = user.email.split('@')[0];
+                const dobFormatted = formatDOBForEmail(user.date_of_birth);
+                const replyToEmail = dobFormatted 
+                    ? `${user.smtp_email.split('@')[0]}+${emailUsername}.${dobFormatted}@${user.smtp_email.split('@')[1]}`
+                    : user.smtp_email; // Fallback if no DOB
                 const mailOptions = {
                     from: `${user.sender_name || user.full_name} <${user.smtp_email}>`,
                     to: recipientEmail,
@@ -990,7 +1008,11 @@ const sendSingleApplication = async (req, res) => {
                 const transporter = createTransporter(process.env.SMTP_USER, process.env.SMTP_PASS);
 
                 // Use plus addressing for Reply-To tracking
-                const replyToEmail = `${process.env.SMTP_USER.split('@')[0]}+user${userId}@${process.env.SMTP_USER.split('@')[1]}`;
+                const emailUsername = user.email.split('@')[0];
+                const dobFormatted = formatDOBForEmail(user.date_of_birth);
+                const replyToEmail = dobFormatted 
+                    ? `${process.env.SMTP_USER.split('@')[0]}+${emailUsername}.${dobFormatted}@${process.env.SMTP_USER.split('@')[1]}`
+                    : process.env.SMTP_USER; // Fallback if no DOB
                 const mailOptions = {
                     from: `${user.sender_name || user.full_name} <${process.env.SMTP_USER}>`,
                     to: recipientEmail,

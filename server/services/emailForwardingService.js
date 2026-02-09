@@ -45,10 +45,15 @@ class EmailForwardingService {
         this.imap.connect();
     }
 
-    // Extract user ID from email address (cv+user123@domain.com -> 123)
-    extractUserId(emailAddress) {
-        const match = emailAddress.match(/\+user(\d+)@/);
-        return match ? parseInt(match[1]) : null;
+    // Extract user info from email address (cv+email.YYYYMMDD@domain.com -> {emailUsername, dob})
+    extractUserInfo(emailAddress) {
+        // Match pattern: +email.YYYYMMDD@
+        const match = emailAddress.match(/\+([^.]+)\.(\d{8})@/);
+        if (!match) return null;
+        return { 
+            emailUsername: match[1], 
+            dob: match[2] // YYYYMMDD format
+        };
     }
 
     // Check for new replies and forward them
@@ -62,8 +67,8 @@ class EmailForwardingService {
                     return;
                 }
 
-                // Search for unseen emails with +user in To: field
-                this.imap.search(['UNSEEN', ['HEADER', 'TO', '+user']], async (err, results) => {
+                // Search for unseen emails with + in To: field (matches cv+anything@domain.com)
+                this.imap.search(['UNSEEN', ['HEADER', 'TO', '+@']], async (err, results) => {
                     if (err) {
                         console.error('Error searching emails:', err);
                         return;
@@ -101,17 +106,23 @@ class EmailForwardingService {
     // Forward email to the correct user
     async forwardEmail(parsedEmail) {
         try {
-            // Extract user ID from To: header
+            // Extract user info from To: header
             const toHeader = parsedEmail.to.text || parsedEmail.to.value[0]?.address || '';
-            const userId = this.extractUserId(toHeader);
+            const userInfo = this.extractUserInfo(toHeader);
 
-            if (!userId) {
-                console.log('⚠️ Could not extract user ID from:', toHeader);
+            if (!userInfo) {
+                console.log('⚠️ Could not extract user info from:', toHeader);
                 return;
             }
 
-            // Get user from database
-            const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+            // Parse DOB from YYYYMMDD format to YYYY-MM-DD
+            const dobFormatted = `${userInfo.dob.slice(0,4)}-${userInfo.dob.slice(4,6)}-${userInfo.dob.slice(6,8)}`;
+
+            // Get user from database by matching email username and DOB
+            const user = await dbConfig.get(
+                `SELECT * FROM users WHERE email LIKE ? AND date_of_birth = ?`, 
+                [`%${userInfo.emailUsername}%`, dobFormatted]
+            );
 
             if (!user || !user.email) {
                 console.log(`⚠️ User ${userId} not found or no email configured`);
