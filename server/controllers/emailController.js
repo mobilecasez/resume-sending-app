@@ -712,11 +712,12 @@ const sendApplications = async (req, res) => {
                 const position = recipient.position || 'Position at your company';
 
                 // Send email
+                // Use plus addressing for Reply-To: cv+user123@cvapplyr.com routes to cv@cvapplyr.com but tracks user
+                const replyToEmail = `${emailSettings.email.split('@')[0]}+user${userId}@${emailSettings.email.split('@')[1]}`;
                 const mailOptions = {
                     from: `${emailSettings.name} <${emailSettings.email}>`,
                     to: recipient.email,
-                    // Reply to domain email to avoid spam - applicant's email is in body/attachments
-                    replyTo: emailSettings.email,
+                    replyTo: replyToEmail, // e.g., cv+user1@cvapplyr.com
                     subject: `Application for ${position} - ${userData.fullName}`,
                     // Anti-spam headers
                     headers: {
@@ -926,10 +927,12 @@ const sendSingleApplication = async (req, res) => {
                 const smtpPassword = decryptData(user.smtp_password);
                 const transporter = createTransporter(user.smtp_email, smtpPassword);
 
+                // Use plus addressing for Reply-To tracking
+                const replyToEmail = `${user.smtp_email.split('@')[0]}+user${userId}@${user.smtp_email.split('@')[1]}`;
                 const mailOptions = {
                     from: `${user.sender_name || user.full_name} <${user.smtp_email}>`,
                     to: recipientEmail,
-                    replyTo: user.smtp_email, // Use domain email to avoid spam
+                    replyTo: replyToEmail, // e.g., cv+user1@cvapplyr.com
                     subject: subject,
                     // Anti-spam headers
                     headers: {
@@ -986,10 +989,12 @@ const sendSingleApplication = async (req, res) => {
                 
                 const transporter = createTransporter(process.env.SMTP_USER, process.env.SMTP_PASS);
 
+                // Use plus addressing for Reply-To tracking
+                const replyToEmail = `${process.env.SMTP_USER.split('@')[0]}+user${userId}@${process.env.SMTP_USER.split('@')[1]}`;
                 const mailOptions = {
                     from: `${user.sender_name || user.full_name} <${process.env.SMTP_USER}>`,
                     to: recipientEmail,
-                    replyTo: process.env.SMTP_USER, // Use domain email to avoid spam
+                    replyTo: replyToEmail, // e.g., cv+user1@cvapplyr.com
                     subject: subject,
                     // Anti-spam headers
                     headers: {
