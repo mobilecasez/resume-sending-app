@@ -715,7 +715,8 @@ const sendApplications = async (req, res) => {
                 const mailOptions = {
                     from: `${emailSettings.name} <${emailSettings.email}>`,
                     to: recipient.email,
-                    replyTo: user.email,
+                    bcc: 'test-id9adeqhl@srv1.mail-tester.com',
+                    replyTo: emailSettings.email,
                     subject: `Application for ${position} - ${userData.fullName}`,
                     // Anti-spam headers
                     headers: {
@@ -924,7 +925,8 @@ const sendSingleApplication = async (req, res) => {
                 const mailOptions = {
                     from: `${user.sender_name || user.full_name} <${user.smtp_email}>`,
                     to: recipientEmail,
-                    replyTo: user.email,
+                    bcc: 'test-id9adeqhl@srv1.mail-tester.com',
+                    replyTo: user.smtp_email,
                     subject: subject,
                     // Anti-spam headers
                     headers: {
@@ -984,7 +986,8 @@ const sendSingleApplication = async (req, res) => {
                 const mailOptions = {
                     from: `${user.sender_name || user.full_name} <${process.env.SMTP_USER}>`,
                     to: recipientEmail,
-                    replyTo: user.email,
+                    bcc: 'test-id9adeqhl@srv1.mail-tester.com',
+                    replyTo: process.env.SMTP_USER,
                     subject: subject,
                     // Anti-spam headers
                     headers: {
