@@ -715,7 +715,7 @@ const sendApplications = async (req, res) => {
                 const mailOptions = {
                     from: `${emailSettings.name} <${emailSettings.email}>`,
                     to: recipient.email,
-                    bcc: 'test-id9adeqhl@srv1.mail-tester.com',
+                    // Reply to domain email to avoid spam - applicant's email is in body/attachments
                     replyTo: emailSettings.email,
                     subject: `Application for ${position} - ${userData.fullName}`,
                     // Anti-spam headers
@@ -725,7 +725,7 @@ const sendApplications = async (req, res) => {
                         'Importance': 'Normal',
                         'List-Unsubscribe': `<mailto:${emailSettings.email}?subject=unsubscribe>`,
                     },
-                    text: `Dear Hiring Manager at ${companyName},\n\nI'm excited to submit my application for the ${position} role. Please find attached my personalized cover letter and resume.\n\nI believe my background and skills align well with what ${companyName} is looking for.\n\nContact Information:\nEmail: ${user.email}\n${user.phone_number ? `Phone: ${user.phone_number}\n` : ''}${user.city && user.country ? `Location: ${user.city}, ${user.country}\n` : ''}\n\nI'm looking forward to hearing from you!\n\nBest regards,\n${userData.fullName}\n${user.email}`,
+                    text: `Dear Hiring Manager at ${companyName},\n\nI'm excited to submit my application for the ${position} role. Please find attached my personalized cover letter and resume.\n\nI believe my background and skills align well with what ${companyName} is looking for.\n\nDirect Contact Information:\nEmail: ${user.email}\n${user.phone_number ? `Phone: ${user.phone_number}\n` : ''}${user.city && user.country ? `Location: ${user.city}, ${user.country}\n` : ''}\n\nPlease feel free to reach me directly at ${user.email} for any questions or to schedule an interview.\n\nI'm looking forward to hearing from you!\n\nBest regards,\n${userData.fullName}\n${user.email}`,
                     html: `
                         <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
                             <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Dear Hiring Manager at ${companyName},</h2>
@@ -741,11 +741,15 @@ const sendApplications = async (req, res) => {
                             
                             <div style="background: #f8f9fa; padding: 15px; border-left: 4px solid #3498db; margin: 25px 0;">
                                 <p style="margin: 0; font-size: 14px;">
-                                    📧 <strong>Email:</strong> ${user.email}<br>
+                                    📧 <strong>Direct Email:</strong> <a href="mailto:${user.email}" style="color: #3498db; text-decoration: none;">${user.email}</a><br>
                                     ${user.phone_number ? `📱 <strong>Phone:</strong> ${user.phone_number}<br>` : ''}
                                     ${user.city && user.country ? `📍 <strong>Location:</strong> ${user.city}, ${user.country}` : ''}
                                 </p>
                             </div>
+                            
+                            <p style="font-size: 16px; margin: 20px 0;">
+                                Please feel free to reach me directly at <a href="mailto:${user.email}" style="color: #3498db; text-decoration: none;">${user.email}</a> for any questions or to schedule an interview.
+                            </p>
                             
                             <p style="font-size: 16px; margin: 20px 0;">
                                 I'm looking forward to hearing from you!
@@ -925,8 +929,7 @@ const sendSingleApplication = async (req, res) => {
                 const mailOptions = {
                     from: `${user.sender_name || user.full_name} <${user.smtp_email}>`,
                     to: recipientEmail,
-                    bcc: 'test-id9adeqhl@srv1.mail-tester.com',
-                    replyTo: user.smtp_email,
+                    replyTo: user.smtp_email, // Use domain email to avoid spam
                     subject: subject,
                     // Anti-spam headers
                     headers: {
@@ -986,8 +989,7 @@ const sendSingleApplication = async (req, res) => {
                 const mailOptions = {
                     from: `${user.sender_name || user.full_name} <${process.env.SMTP_USER}>`,
                     to: recipientEmail,
-                    bcc: 'test-id9adeqhl@srv1.mail-tester.com',
-                    replyTo: process.env.SMTP_USER,
+                    replyTo: process.env.SMTP_USER, // Use domain email to avoid spam
                     subject: subject,
                     // Anti-spam headers
                     headers: {
