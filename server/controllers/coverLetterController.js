@@ -607,18 +607,20 @@ const generateCoverLetterDetails = async (req, res) => {
 
         // DEDUCT CREDIT
         try {
+            console.log(`💳 Deducting 1 credit from user ${userId}...`);
             await deductCredits(userId, 1, 'cover_letter_generation', {
                 companyName: result.companyName,
                 position: position,
                 recipientEmail: recipientEmail
             });
+            console.log(`✅ Credit deducted successfully`);
             
             await dbConfig.run(
                 'UPDATE users SET total_generated = total_generated + 1 WHERE id = ?',
                 [userId]
             );
         } catch (creditError) {
-            console.error('Failed to deduct credit:', creditError);
+            console.error('❌ Failed to deduct credit:', creditError);
         }
 
         // Format cover letter
@@ -626,6 +628,7 @@ const generateCoverLetterDetails = async (req, res) => {
 
         // Get updated credits
         const creditCheck = await checkUserCredits(userId, 0);
+        console.log(`💰 User ${userId} now has ${creditCheck.remaining} credits remaining`);
 
         const duration = Date.now() - startTime;
         console.log(`✅ [${requestId}] Response sent in ${duration}ms`);

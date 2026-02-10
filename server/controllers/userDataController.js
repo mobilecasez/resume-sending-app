@@ -199,11 +199,18 @@ const saveReviewCoverLetters = async (req, res) => {
 const getReviewCoverLetters = async (req, res) => {
     try {
         const userId = req.user.id;
+        
+        console.log(`📥 Getting review cover letters for user ${userId}`);
 
         const letters = await dbConfig.query(
-            'SELECT letter_key, company_name as companyName, recipient_email as recipientEmail, cover_letter_html as coverLetterHtml, subject, address, date, position, locations, generated, sent, sent_date as sentDate, stored_recipient_email as storedRecipientEmail, stored_recipient_website as storedRecipientWebsite FROM review_cover_letters WHERE user_id = ?',
+            'SELECT letter_key, company_name as "companyName", recipient_email as "recipientEmail", cover_letter_html as "coverLetterHtml", subject, address, date, position, locations, generated, sent, sent_date as "sentDate", stored_recipient_email as "storedRecipientEmail", stored_recipient_website as "storedRecipientWebsite" FROM review_cover_letters WHERE user_id = ?',
             [userId]
         );
+        
+        console.log(`📊 Found ${letters.length} cover letters in database`);
+        letters.forEach((letter, idx) => {
+            console.log(`  Letter ${idx}: key=${letter.letter_key}, company=${letter.companyName}, hasHtml=${!!letter.coverLetterHtml}, htmlLength=${letter.coverLetterHtml?.length || 0}`);
+        });
 
         // Convert to object with letter_key as keys
         const reviewCoverLetters = {};
@@ -224,6 +231,8 @@ const getReviewCoverLetters = async (req, res) => {
                 storedRecipientWebsite: letter.storedRecipientWebsite
             };
         });
+        
+        console.log(`✅ Returning ${Object.keys(reviewCoverLetters).length} cover letters`);
 
         res.json({
             success: true,

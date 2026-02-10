@@ -1079,6 +1079,8 @@
                 if (response.ok) {
                     const data = await response.json();
                     console.log('📦 Loaded cover letters:', data);
+                    console.log('📦 Keys in reviewCoverLetters:', Object.keys(data.reviewCoverLetters));
+                    console.log('📦 Recipients count:', recipients.length);
                     
                     if (data.success && data.reviewCoverLetters && Object.keys(data.reviewCoverLetters).length > 0) {
                         // reviewCoverLetters is an object with letter_key as keys
@@ -1088,8 +1090,12 @@
                         Object.keys(data.reviewCoverLetters).forEach((key) => {
                             const letter = data.reviewCoverLetters[key];
                             const index = parseInt(key);
+                            console.log(`📝 Processing key: "${key}", index: ${index}, has coverLetterHtml: ${!!letter.coverLetterHtml}, recipientsLength: ${recipients.length}`);
                             
-                            if (index < recipients.length && letter.coverLetterHtml) {
+                            // Check if coverLetterHtml exists and is not empty
+                            const hasValidHtml = letter.coverLetterHtml && letter.coverLetterHtml.trim().length > 0;
+                            
+                            if (index < recipients.length && hasValidHtml) {
                                 const currentRecipient = recipients[index];
                                 
                                 // Only check for changes if we have stored recipient data to compare
@@ -1400,10 +1406,11 @@
                 
                 // Reload credit balance after successful generation
                 try {
+                    console.log('🔄 Reloading credits...');
                     const creditsResponse = await fetch('/api/user/credits', {
                         method: 'GET',
                         headers: {
-                            'Authorization': `Bearer ${authToken}`,
+                            'Authorization': `Bearer ${token}`,
                             'Content-Type': 'application/json',
                         }
                     });
@@ -1414,12 +1421,19 @@
                             const creditBadge = document.getElementById('creditBadgeNumber');
                             if (creditBadge) {
                                 creditBadge.textContent = creditsData.balance || 0;
+                                console.log('💳 Updated credit badge to:', creditsData.balance);
+                            } else {
+                                console.warn('⚠️ Credit badge element not found');
                             }
                             console.log('💳 Updated credits after generation:', creditsData.balance);
+                        } else {
+                            console.warn('⚠️ Credits response not successful:', creditsData);
                         }
+                    } else {
+                        console.error('❌ Failed to fetch credits, status:', creditsResponse.status);
                     }
                 } catch (creditsError) {
-                    console.log('Failed to reload credits:', creditsError);
+                    console.error('❌ Failed to reload credits:', creditsError);
                 }
 
                 loading.style.display = 'none';
@@ -1450,9 +1464,24 @@
                 return;
             }
             
-            if (!confirm('Are you sure you want to regenerate this cover letter?')) return;
+            // Get current credit count
+            const currentCredits = document.getElementById('creditBadgeNumber')?.textContent || '?';
+            console.log('💳 Credits before regeneration:', currentCredits);
+            
+            if (!confirm(`Regenerate this cover letter? This will use 1 credit. You have ${currentCredits} credit(s).`)) return;
+            
             await generateCoverLetter(index);
-            showToast('Cover letter regenerated successfully!', 'success');
+            
+            // Force reload credits after a brief delay to ensure backend has updated
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await loadCredits();
+            
+            // Wait a bit more and check credits again
+            await new Promise(resolve => setTimeout(resolve, 500));
+            const newCredits = document.getElementById('creditBadgeNumber')?.textContent || '?';
+            console.log('💳 Credits after regeneration:', newCredits);
+            
+            showToast(`Cover letter regenerated! Credits: ${currentCredits} → ${newCredits}`, 'success');
         }
 
         async function sendApplication(index, skipConfirm = false, skipLoadingUI = false) {
