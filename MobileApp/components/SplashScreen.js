@@ -9,7 +9,7 @@ export default function SplashScreen({ onFinish }) {
   const videoRef = useRef(null);
 
   useEffect(() => {
-    // Start fade out after video finishes (8 seconds)
+    // Start fade out after video finishes (3.7 seconds)
     const timer = setTimeout(() => {
       Animated.timing(fadeAnim, {
         toValue: 0,
@@ -20,7 +20,7 @@ export default function SplashScreen({ onFinish }) {
           onFinish();
         }
       });
-    }, 7500); // Start fade at 7.5s (before 8s video ends)
+    }, 3200); // Start fade at 3.2s (before 3.7s video ends)
 
     return () => clearTimeout(timer);
   }, []);
