@@ -705,7 +705,8 @@ const sendApplications = async (req, res) => {
                     }
 
                     companyName = coverLetterResult.companyName;
-                    const companyAddress = coverLetterResult.companyAddress || '';
+                    // Use address from recipient if provided (from web/mobile dropdown), otherwise empty
+                    const companyAddress = recipient.companyAddress || '';
                     const coverLetterText = coverLetterResult.coverLetter;
                     
                     const coverLetterHtml = formatCoverLetterWithHTML(coverLetterText, coverLetterResult.metadata);

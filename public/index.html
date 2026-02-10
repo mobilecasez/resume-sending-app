@@ -2015,6 +2015,7 @@
         async function generateCoverLetters(recipients) {
             // Check if email settings are configured in database
             const authToken = localStorage.getItem('authToken');
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
             
             // Verify profile is complete
             try {
@@ -2110,6 +2111,10 @@
                             });
                             break; // Stop generating for remaining recipients
                         } else if (response.ok && data.success) {
+                            // Extract address from locations (same as mobile app)
+                            const headquarterLocation = data.locations?.find(loc => loc.isHeadquarters) || data.locations?.[0];
+                            const defaultAddress = headquarterLocation ? `${headquarterLocation.address}, ${headquarterLocation.city}, ${headquarterLocation.country}` : '';
+                            
                             results.push({
                                 status: 'generated',
                                 email: recipient.email,
@@ -2117,6 +2122,7 @@
                                 position: recipient.position,
                                 website: recipient.website,
                                 coverLetterHtml: data.coverLetterHtml,
+                                companyAddress: defaultAddress, // Store the extracted address
                                 metadata: data.metadata
                             });
                             
@@ -2157,6 +2163,44 @@
                             email: recipient.email,
                             error: error.message
                         });
+                    }
+                }
+                
+                // Save generated cover letters to database (sync with mobile app)
+                if (results.filter(r => r.status === 'generated').length > 0) {
+                    try {
+                        const reviewCoverLetters = {};
+                        results.forEach((result, index) => {
+                            if (result.status === 'generated') {
+                                reviewCoverLetters[index] = {
+                                    companyName: result.company,
+                                    recipientEmail: result.email,
+                                    coverLetterHtml: result.coverLetterHtml,
+                                    subject: `Application for ${result.position} - ${userData.fullName}`,
+                                    address: result.companyAddress || '',
+                                    date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+                                    position: result.position,
+                                    locations: null, // Web version doesn't have locations dropdown yet
+                                    generated: true,
+                                    sent: false,
+                                    sentDate: null,
+                                    storedRecipientEmail: result.email,
+                                    storedRecipientWebsite: result.website
+                                };
+                            }
+                        });
+                        
+                        await fetch('/api/user-data/review-cover-letters', {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${authToken}`,
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ reviewCoverLetters })
+                        });
+                        console.log('✅ Saved cover letters to database');
+                    } catch (saveError) {
+                        console.error('Failed to save cover letters to database:', saveError);
                     }
                 }
                 
@@ -2324,11 +2368,12 @@
             showToast('Sending emails...', 'info');
 
             try {
-                // Convert cover letters to recipients format (no fileName - PDFs will be generated when sending)
+                // Convert cover letters to recipients format with address
                 const recipients = coverLetters.map(cl => ({
                     email: cl.email,
                     website: cl.website,
-                    position: cl.position
+                    position: cl.position,
+                    companyAddress: cl.companyAddress || '' // Pass the address from dropdown/generation
                 }));
 
                 // Send emails
