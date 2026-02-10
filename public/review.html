@@ -778,29 +778,34 @@
         }
 
         // Load review cover letters from localStorage
-        function loadReviewCoverLetters() {
-            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
-            if (userData.email) {
-                const stored = localStorage.getItem(`reviewCoverLetters_${userData.email}`);
-                if (stored) {
-                    reviewCoverLetters = JSON.parse(stored);
-                    console.log('📖 Loaded review cover letters:', Object.keys(reviewCoverLetters).length, 'items');
-                }
-            }
-        }
+        // Note: loadReviewCoverLetters is now handled by loadExistingCoverLetters() from database
 
-        // Save review cover letters to localStorage
-        function saveReviewCoverLetters() {
-            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
-            if (userData.email) {
-                localStorage.setItem(`reviewCoverLetters_${userData.email}`, JSON.stringify(reviewCoverLetters));
-                console.log('💾 Saved review cover letters:', Object.keys(reviewCoverLetters).length, 'items');
+        // Save review cover letters to database
+        async function saveReviewCoverLetters() {
+            try {
+                // Save to database API (sync with mobile app)
+                const response = await fetch('/api/user-data/review-cover-letters', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ reviewCoverLetters })
+                });
+                
+                if (response.ok) {
+                    console.log('💾 Saved review cover letters to database:', Object.keys(reviewCoverLetters).length, 'items');
+                } else {
+                    console.error('Failed to save cover letters to database');
+                }
+            } catch (error) {
+                console.error('Error saving cover letters:', error);
             }
         }
 
         // Load data on page load
         loadApplicationHistory();
-        loadReviewCoverLetters();
+        // Note: Cover letters are loaded from database via loadExistingCoverLetters() in DOMContentLoaded
 
         // Loading overlay functions
         function showLoading(message = 'Processing...') {
@@ -1111,26 +1116,29 @@
                         });
                         
                         if (needsRegeneration) {
-                            console.log('🔄 Recipient data changed - regenerating all cover letters...');
-                            await generateAllCoverLetters();
+                            console.log('🔄 Recipient data changed - prompting user for regeneration...');
+                            const confirmed = confirm('Recipient data has changed. Would you like to regenerate cover letters? This will use credits.');
+                            if (confirmed) {
+                                await generateAllCoverLetters();
+                            }
                         } else if (hasValidData) {
                             console.log('✅ Populated forms with existing cover letters');
+                            showToast('Loaded saved cover letters', 'success');
                         } else {
-                            console.log('ℹ️ No valid cover letters found, starting automatic generation...');
-                            await generateAllCoverLetters();
+                            console.log('ℹ️ No valid cover letters found');
+                            showToast('No saved cover letters. Click "🔄 Generate Cover Letters" to create them.', 'info');
                         }
                     } else {
-                        console.log('ℹ️ No existing cover letters found, starting automatic generation...');
-                        await generateAllCoverLetters();
+                        console.log('ℹ️ No existing cover letters found');
+                        showToast('No saved cover letters. Click "🔄 Generate Cover Letters" to create them.', 'info');
                     }
                 } else {
-                    console.log('ℹ️ No existing cover letters, starting automatic generation...');
-                    await generateAllCoverLetters();
+                    console.log('ℹ️ No existing cover letters');
+                    showToast('No saved cover letters. Click "🔄 Generate Cover Letters" to create them.', 'info');
                 }
             } catch (error) {
                 console.error('⚠️ Error loading existing cover letters:', error);
-                console.log('ℹ️ Starting automatic generation...');
-                await generateAllCoverLetters();
+                showToast('Click "🔄 Generate Cover Letters" to create cover letters.', 'info');
             }
         }
 
@@ -1209,9 +1217,46 @@
         }
 
         async function generateAllCoverLetters() {
+            // Check credits first
+            try {
+                const creditsResponse = await fetch('/api/user/credits', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                
+                if (creditsResponse.ok) {
+                    const creditsData = await creditsResponse.json();
+                    const availableCredits = creditsData.balance || 0;
+                    const requiredCredits = recipients.length;
+                    
+                    if (availableCredits < requiredCredits) {
+                        showToast(`Insufficient credits! You need ${requiredCredits} credit(s) but only have ${availableCredits}. Visit the Usage page to purchase more.`, 'error');
+                        return;
+                    }
+                    
+                    // Confirm with user
+                    const confirmed = confirm(`Generate cover letters for ${recipients.length} recipient(s)? This will use ${requiredCredits} credit(s). You have ${availableCredits} credit(s) available.`);
+                    if (!confirmed) {
+                        return;
+                    }
+                } else {
+                    showToast('Unable to verify credit balance', 'error');
+                    return;
+                }
+            } catch (error) {
+                console.error('Error checking credits:', error);
+                showToast('Unable to verify credit balance', 'error');
+                return;
+            }
+            
+            // Generate all cover letters
             for (let i = 0; i < recipients.length; i++) {
                 await generateCoverLetter(i);
             }
+            
+            // Reload credits after generation
+            await loadCredits();
         }
 
         async function generateCoverLetter(index) {
