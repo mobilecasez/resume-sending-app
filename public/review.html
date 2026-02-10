@@ -784,7 +784,7 @@
         async function saveReviewCoverLetters() {
             try {
                 // Save to database API (sync with mobile app)
-                const response = await fetch('/api/user-data/review-cover-letters', {
+                const response = await fetch('/api/users/review-cover-letters', {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${token}`,
@@ -1125,20 +1125,44 @@
                             console.log('✅ Populated forms with existing cover letters');
                             showToast('Loaded saved cover letters', 'success');
                         } else {
-                            console.log('ℹ️ No valid cover letters found');
-                            showToast('No saved cover letters. Click "🔄 Generate Cover Letters" to create them.', 'info');
+                            console.log('ℹ️ No valid cover letters found - prompting to generate');
+                            showToast('No saved cover letters found', 'info');
+                            setTimeout(() => {
+                                const confirmed = confirm('No saved cover letters found. Would you like to generate them now? This will use credits.');
+                                if (confirmed) {
+                                    generateAllCoverLetters();
+                                }
+                            }, 1000);
                         }
                     } else {
-                        console.log('ℹ️ No existing cover letters found');
-                        showToast('No saved cover letters. Click "🔄 Generate Cover Letters" to create them.', 'info');
+                        console.log('ℹ️ No existing cover letters found - prompting to generate');
+                        showToast('No saved cover letters found', 'info');
+                        setTimeout(() => {
+                            const confirmed = confirm('No saved cover letters found. Would you like to generate them now? This will use credits.');
+                            if (confirmed) {
+                                generateAllCoverLetters();
+                            }
+                        }, 1000);
                     }
                 } else {
-                    console.log('ℹ️ No existing cover letters');
-                    showToast('No saved cover letters. Click "🔄 Generate Cover Letters" to create them.', 'info');
+                    console.log('ℹ️ No existing cover letters - prompting to generate');
+                    showToast('No saved cover letters found', 'info');
+                    setTimeout(() => {
+                        const confirmed = confirm('No saved cover letters found. Would you like to generate them now? This will use credits.');
+                        if (confirmed) {
+                            generateAllCoverLetters();
+                        }
+                    }, 1000);
                 }
             } catch (error) {
                 console.error('⚠️ Error loading existing cover letters:', error);
-                showToast('Click "🔄 Generate Cover Letters" to create cover letters.', 'info');
+                showToast('Failed to load cover letters', 'error');
+                setTimeout(() => {
+                    const confirmed = confirm('Would you like to generate cover letters? This will use credits.');
+                    if (confirmed) {
+                        generateAllCoverLetters();
+                    }
+                }, 1000);
             }
         }
 
