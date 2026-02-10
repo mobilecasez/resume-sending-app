@@ -10,6 +10,7 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { API_BASE } from './config';
+import SplashScreen from './components/SplashScreen';
 
 // Get your Google Client ID from Google Cloud Console
 const GOOGLE_CLIENT_ID = '832256639733-b0481qdpal17m1rcmmvq4nlnlvavgg59.apps.googleusercontent.com';
@@ -326,6 +327,7 @@ const FormattedCoverLetterPreview = ({ htmlContent, style }) => {
 };
 
 export default function App() {
+  const [showSplash, setShowSplash] = useState(true);
   const [screen, setScreen] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -2515,6 +2517,11 @@ export default function App() {
       Alert.alert('Error', 'Google login failed: ' + err.message);
     }
   };
+
+  // Show splash screen while loading
+  if (showSplash) {
+    return <SplashScreen onFinish={() => setShowSplash(false)} />;
+  }
 
   // LOGIN SCREEN
   if (screen === 'login') {
