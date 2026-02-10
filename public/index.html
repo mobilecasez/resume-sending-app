@@ -2116,8 +2116,8 @@
                                 company: data.companyName,
                                 position: recipient.position,
                                 website: recipient.website,
-                                fileName: data.fileName,
-                                downloadUrl: data.downloadUrl
+                                coverLetterHtml: data.coverLetterHtml,
+                                metadata: data.metadata
                             });
                             
                             // Reload credit balance after successful generation
@@ -2217,7 +2217,7 @@
                     </div>
                     <div class="modal-body">
                         <p style="color: #666; margin-bottom: 20px;">
-                            Review your personalized cover letters below. Download to preview before sending.
+                            Cover letters generated successfully! Review the list below and click "Send All Emails" to proceed.
                         </p>
                         <div class="results-list">
                             ${results.map((result, index) => `
@@ -2256,12 +2256,6 @@
                                         </div>
                                         <div style="display: flex; gap: 10px; align-items: center;">
                                             ${result.status === 'generated' ? `
-                                                <a href="${result.downloadUrl}" 
-                                                   class="btn btn-primary" 
-                                                   style="padding: 8px 16px; font-size: 14px; text-decoration: none; display: inline-block;"
-                                                   download="${result.fileName}">
-                                                    📥 Download
-                                                </a>
                                                 <span style="color: #28a745; font-size: 20px;">✓</span>
                                             ` : `
                                                 <span style="color: #dc3545; font-size: 14px;">❌ ${result.error}</span>
@@ -2330,12 +2324,11 @@
             showToast('Sending emails...', 'info');
 
             try {
-                // Convert cover letters to recipients format
+                // Convert cover letters to recipients format (no fileName - PDFs will be generated when sending)
                 const recipients = coverLetters.map(cl => ({
                     email: cl.email,
                     website: cl.website,
-                    position: cl.position,
-                    fileName: cl.fileName
+                    position: cl.position
                 }));
 
                 // Send emails
