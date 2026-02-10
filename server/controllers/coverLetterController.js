@@ -624,6 +624,17 @@ const generateCoverLetterDetails = async (req, res) => {
         // Format cover letter
         const coverLetterHtml = formatCoverLetterWithHTML(result.coverLetter, result.metadata);
 
+        // Generate PDF for web version download
+        const { filePath, fileName } = await generateCoverLetterPDF(
+            user,
+            coverLetterHtml,
+            result.companyName,
+            result.companyAddress || ''
+        );
+
+        // Create download URL
+        const downloadUrl = `/temp/${fileName}`;
+
         // Get updated credits
         const creditCheck = await checkUserCredits(userId, 0);
 
@@ -638,6 +649,8 @@ const generateCoverLetterDetails = async (req, res) => {
             locations: locations,
             coverLetterHtml: coverLetterHtml,
             metadata: result.metadata,
+            fileName: fileName,
+            downloadUrl: downloadUrl,
             creditsUsed: 1,
             creditsRemaining: creditCheck.remaining
         });
