@@ -1415,6 +1415,7 @@ Generate the narrative-driven cover letter now:`;
             return {
                 success: true,
                 companyName: finalCompanyName,
+                companyAddress: companyData?.contact?.address || '',
                 coverLetter: coverLetterText, // TEXT format for createCoverLetterPDF()
                 metadata: {
                     techMatches: resumeData.skills || [],

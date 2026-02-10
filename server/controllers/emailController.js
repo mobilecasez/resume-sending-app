@@ -705,6 +705,7 @@ const sendApplications = async (req, res) => {
                     }
 
                     companyName = coverLetterResult.companyName;
+                    const companyAddress = coverLetterResult.companyAddress || '';
                     const coverLetterText = coverLetterResult.coverLetter;
                     
                     const coverLetterHtml = formatCoverLetterWithHTML(coverLetterText, coverLetterResult.metadata);
@@ -712,7 +713,7 @@ const sendApplications = async (req, res) => {
                         user,
                         coverLetterHtml,
                         companyName,
-                        ''
+                        companyAddress
                     );
                     
                     filePath = pdfResult.filePath;
