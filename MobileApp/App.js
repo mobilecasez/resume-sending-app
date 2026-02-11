@@ -1175,51 +1175,6 @@ export default function App() {
     setProgressiveLoadingProgress(0);
   };
 
-  // Progressive loading functions
-  const startProgressiveLoading = (companyUrl) => {
-    const companyName = companyUrl ? companyUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0] : 'the company';
-    const steps = [
-      { time: 0, message: '🔍 Fetching your profile details...', progress: 0 },
-      { time: 3000, message: `🌐 Researching about ${companyName}...`, progress: 15 },
-      { time: 8000, message: '🏢 Analyzing company culture and requirements...', progress: 30 },
-      { time: 15000, message: '🤝 Matching your skills with job requirements...', progress: 50 },
-      { time: 22000, message: '✍️ Crafting your personalized cover letter...', progress: 70 },
-      { time: 30000, message: '✨ Adding final touches and formatting...', progress: 85 },
-      { time: 40000, message: '⏳ Almost done, finalizing content...', progress: 95 }
-    ];
-
-    // Clear any existing interval
-    if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-    }
-
-    // Set initial message
-    setProgressiveLoadingMessage(steps[0].message);
-    setProgressiveLoadingProgress(steps[0].progress);
-    console.log('📊', steps[0].message);
-
-    let currentStep = 0;
-    progressIntervalRef.current = setInterval(() => {
-      currentStep++;
-      if (currentStep < steps.length && !isCancelledRef.current) {
-        setProgressiveLoadingMessage(steps[currentStep].message);
-        setProgressiveLoadingProgress(steps[currentStep].progress);
-        console.log('📊', steps[currentStep].message);
-      } else if (currentStep >= steps.length) {
-        clearInterval(progressIntervalRef.current);
-      }
-    }, 5000); // Update every 5 seconds
-  };
-
-  const stopProgressiveLoading = () => {
-    if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-      progressIntervalRef.current = null;
-    }
-    setProgressiveLoadingMessage('');
-    setProgressiveLoadingProgress(0);
-  };
-
   const generateCoverLetterForReview = async (recipientIndex, retryCount = 0) => {
     const recipient = recipients[recipientIndex];
     if (!recipient.email || !recipient.website) {
