@@ -5190,20 +5190,11 @@ export default function App() {
               {/* Progress bar - shown only during single generation with progressive loading */}
               {progressiveLoadingMessage && reviewGeneratingIndex !== null && !reviewGeneratingAll && (
                 <View style={styles.progressBarContainer}>
-                  {Platform.OS === 'ios' ? (
-                    <ProgressViewIOS 
-                      progress={progressiveLoadingProgress / 100} 
-                      progressTintColor="#0d9488"
-                      trackTintColor="#e5e7eb"
-                      style={styles.progressBar}
-                    />
-                  ) : (
-                    <View style={styles.progressBarWrapper}>
-                      <View style={styles.progressBarTrack}>
-                        <View style={[styles.progressBarFill, { width: `${progressiveLoadingProgress}%` }]} />
-                      </View>
+                  <View style={styles.progressBarWrapper}>
+                    <View style={styles.progressBarTrack}>
+                      <View style={[styles.progressBarFill, { width: `${progressiveLoadingProgress}%` }]} />
                     </View>
-                  )}
+                  </View>
                   <Text style={styles.progressText}>{progressiveLoadingProgress}%</Text>
                 </View>
               )}
