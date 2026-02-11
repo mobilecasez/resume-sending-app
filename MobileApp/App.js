@@ -401,6 +401,7 @@ export default function App() {
   const [reviewGeneratingAndSendingAll, setReviewGeneratingAndSendingAll] = useState(false);
   const [progressiveLoadingMessage, setProgressiveLoadingMessage] = useState('');
   const [progressiveLoadingProgress, setProgressiveLoadingProgress] = useState(0);
+  const progressAnimValue = useRef(new Animated.Value(0)).current;
   const progressIntervalRef = useRef(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState('');
@@ -1148,22 +1149,77 @@ export default function App() {
       clearInterval(progressIntervalRef.current);
     }
 
-    // Set initial message
+    // Reset animation value
+    progressAnimValue.setValue(0);
+
+    // Set initial message and progress
     setProgressiveLoadingMessage(steps[0].message);
-    setProgressiveLoadingProgress(steps[0].progress);
+    setProgressiveLoadingProgress(0);
     console.log('📊', steps[0].message);
 
-    let currentStep = 0;
+    let currentStepIndex = 0;
+    const startTime = Date.now();
+
     progressIntervalRef.current = setInterval(() => {
-      currentStep++;
-      if (currentStep < steps.length && !isCancelledRef.current) {
-        setProgressiveLoadingMessage(steps[currentStep].message);
-        setProgressiveLoadingProgress(steps[currentStep].progress);
-        console.log('📊', steps[currentStep].message);
-      } else if (currentStep >= steps.length) {
+      if (isCancelledRef.current) {
         clearInterval(progressIntervalRef.current);
+        return;
       }
-    }, 5000); // Update every 5 seconds
+
+      const elapsedTime = Date.now() - startTime;
+      
+      // Find the current step based on elapsed time
+      let newStepIndex = 0;
+      for (let i = steps.length - 1; i >= 0; i--) {
+        if (elapsedTime >= steps[i].time) {
+          newStepIndex = i;
+          break;
+        }
+      }
+
+      // Update message only when we enter a new step (prevents flickering)
+      if (newStepIndex !== currentStepIndex) {
+        currentStepIndex = newStepIndex;
+        setProgressiveLoadingMessage(steps[currentStepIndex].message);
+        console.log('📊', steps[currentStepIndex].message);
+      }
+
+      // Calculate smooth progress within current step
+      const currentStep = steps[currentStepIndex];
+      const nextStep = steps[currentStepIndex + 1];
+      
+      if (nextStep) {
+        // We're in a step that has a next step - smoothly transition
+        const stepStartTime = currentStep.time;
+        const stepEndTime = nextStep.time;
+        const stepDuration = stepEndTime - stepStartTime;
+        const timeIntoStep = elapsedTime - stepStartTime;
+        const stepProgress = Math.min(timeIntoStep / stepDuration, 1);
+        
+        // Interpolate between current and next progress
+        const startProgress = currentStep.progress;
+        const endProgress = nextStep.progress;
+        const progressRange = endProgress - startProgress;
+        const smoothProgress = startProgress + (progressRange * stepProgress);
+        
+        setProgressiveLoadingProgress(Math.floor(smoothProgress));
+        
+        // Animate to the smooth progress value
+        Animated.timing(progressAnimValue, {
+          toValue: smoothProgress,
+          duration: 100,
+          useNativeDriver: false
+        }).start();
+      } else {
+        // We're at the final step - stay at its progress
+        setProgressiveLoadingProgress(currentStep.progress);
+        Animated.timing(progressAnimValue, {
+          toValue: currentStep.progress,
+          duration: 100,
+          useNativeDriver: false
+        }).start();
+      }
+    }, 100); // Update every 100ms for smooth animation
   };
 
   const stopProgressiveLoading = () => {
@@ -1173,6 +1229,7 @@ export default function App() {
     }
     setProgressiveLoadingMessage('');
     setProgressiveLoadingProgress(0);
+    progressAnimValue.setValue(0);
   };
 
   const generateCoverLetterForReview = async (recipientIndex, retryCount = 0) => {
@@ -5176,11 +5233,36 @@ export default function App() {
           transparent={true}
           animationType="fade"
         >
-          <View style={styles.loadingOverlay}>
-            <View style={styles.loadingContainer}>
+          <View style={{
+            flex: 1,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            justifyContent: 'center',
+            alignItems: 'center'
+          }}>
+            <View style={{
+              backgroundColor: '#ffffff',
+              borderRadius: 20,
+              padding: 30,
+              alignItems: 'center',
+              width: '85%',
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 8 },
+              shadowOpacity: 0.4,
+              shadowRadius: 12,
+              elevation: 15,
+              borderWidth: 2,
+              borderColor: '#e5e7eb'
+            }}>
               <ActivityIndicator size="large" color="#0d9488" />
               
-              <Text style={styles.loadingText}>
+              <Text style={{
+                marginTop: 16,
+                fontSize: 15,
+                fontWeight: '600',
+                color: '#374151',
+                textAlign: 'center',
+                marginBottom: 10
+              }}>
                 {progressiveLoadingMessage ? progressiveLoadingMessage :
                  reviewGeneratingAll ? 'Generating all cover letters...' :
                  reviewSendingAll ? 'Sending all applications...' :
@@ -5191,21 +5273,60 @@ export default function App() {
               </Text>
               
               {progressiveLoadingMessage && reviewGeneratingIndex !== null && !reviewGeneratingAll && (
-                <View style={styles.progressBarContainer}>
-                  <View style={styles.progressBarWrapper}>
-                    <View style={styles.progressBarTrack}>
-                      <View style={[styles.progressBarFill, { width: `${progressiveLoadingProgress}%` }]} />
+                <View style={{ width: '100%', marginTop: 15, marginBottom: 10 }}>
+                  <View style={{ width: '100%', marginBottom: 8 }}>
+                    <View style={{
+                      width: '100%',
+                      height: 8,
+                      backgroundColor: '#e5e7eb',
+                      borderRadius: 4,
+                      overflow: 'hidden'
+                    }}>
+                      <Animated.View style={{
+                        height: '100%',
+                        width: progressAnimValue.interpolate({
+                          inputRange: [0, 100],
+                          outputRange: ['0%', '100%']
+                        }),
+                        backgroundColor: '#0d9488',
+                        borderRadius: 4
+                      }} />
                     </View>
                   </View>
-                  <Text style={styles.progressText}>{progressiveLoadingProgress}%</Text>
+                  <Text style={{
+                    fontSize: 12,
+                    color: '#666',
+                    textAlign: 'center',
+                    marginTop: 5
+                  }}>
+                    {progressiveLoadingProgress}%
+                  </Text>
                 </View>
               )}
               
               <TouchableOpacity 
-                style={styles.cancelButton}
+                style={{
+                  marginTop: 20,
+                  backgroundColor: '#ef4444',
+                  paddingHorizontal: 24,
+                  paddingVertical: 12,
+                  borderRadius: 10,
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.2,
+                  shadowRadius: 4,
+                  elevation: 3
+                }}
                 onPress={cancelOperation}
               >
-                <Text style={styles.cancelButtonText}>✕ Cancel</Text>
+                <Text style={{
+                  color: '#ffffff',
+                  fontSize: 14,
+                  fontWeight: '700',
+                  textAlign: 'center'
+                }}>
+                  ✕ Cancel
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
