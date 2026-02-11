@@ -5310,8 +5310,8 @@ const styles = StyleSheet.create({
     elevation: 15,
     minWidth: 300,
     maxWidth: '85%',
-    borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.1)',
+    borderWidth: 2,
+    borderColor: '#e5e7eb',
   },
   loadingText: {
     marginTop: 16,
