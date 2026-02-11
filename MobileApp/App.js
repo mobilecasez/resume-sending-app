@@ -5171,12 +5171,15 @@ export default function App() {
         </ScrollView>
         
         {/* Full Screen Loading Overlay */}
-        {isAnyLoadingActive && (
+        <Modal
+          visible={isAnyLoadingActive}
+          transparent={true}
+          animationType="fade"
+        >
           <View style={styles.loadingOverlay}>
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color="#0d9488" />
               
-              {/* Progressive loading message or default message */}
               <Text style={styles.loadingText}>
                 {progressiveLoadingMessage ? progressiveLoadingMessage :
                  reviewGeneratingAll ? 'Generating all cover letters...' :
@@ -5187,7 +5190,6 @@ export default function App() {
                  'Processing...'}
               </Text>
               
-              {/* Progress bar - shown only during single generation with progressive loading */}
               {progressiveLoadingMessage && reviewGeneratingIndex !== null && !reviewGeneratingAll && (
                 <View style={styles.progressBarContainer}>
                   <View style={styles.progressBarWrapper}>
@@ -5207,7 +5209,7 @@ export default function App() {
               </TouchableOpacity>
             </View>
           </View>
-        )}
+        </Modal>
 
         {/* Payment WebView Modal */}
         <Modal
