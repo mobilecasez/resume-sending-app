@@ -808,14 +808,63 @@
         // Note: Cover letters are loaded from database via loadExistingCoverLetters() in DOMContentLoaded
 
         // Loading overlay functions
+        let progressInterval = null;
+        
         function showLoading(message = 'Processing...') {
             const overlay = document.getElementById('loadingOverlay');
             const messageEl = document.getElementById('loadingMessage');
             messageEl.textContent = message;
             overlay.classList.add('active');
         }
+        
+        function updateLoadingMessage(message) {
+            const messageEl = document.getElementById('loadingMessage');
+            if (messageEl) {
+                messageEl.textContent = message;
+                console.log('📊', message);
+            }
+        }
+        
+        function showProgressiveLoading(companyUrl) {
+            const companyName = companyUrl ? new URL(companyUrl).hostname.replace('www.', '').split('.')[0] : 'the company';
+            const steps = [
+                { time: 0, message: '🔍 Fetching your profile details...' },
+                { time: 3000, message: `🌐 Researching about ${companyName}...` },
+                { time: 8000, message: `🏢 Analyzing company culture and requirements...` },
+                { time: 15000, message: '🤝 Matching your skills with job requirements...' },
+                { time: 22000, message: '✍️ Crafting your personalized cover letter...' },
+                { time: 30000, message: '✨ Adding final touches and formatting...' },
+                { time: 40000, message: '⏳ Almost done, finalizing content...' }
+            ];
+            
+            // Clear any existing interval
+            if (progressInterval) {
+                clearInterval(progressInterval);
+            }
+            
+            // Show initial message
+            showLoading(steps[0].message);
+            
+            let currentStep = 0;
+            progressInterval = setInterval(() => {
+                currentStep++;
+                if (currentStep < steps.length && !isCancelled) {
+                    updateLoadingMessage(steps[currentStep].message);
+                } else if (currentStep >= steps.length) {
+                    clearInterval(progressInterval);
+                }
+            }, 5000); // Update every 5 seconds
+        }
+        
+        function stopProgressiveLoading() {
+            if (progressInterval) {
+                clearInterval(progressInterval);
+                progressInterval = null;
+            }
+        }
 
         function hideLoading() {
+            stopProgressiveLoading();
             const overlay = document.getElementById('loadingOverlay');
             overlay.classList.remove('active');
         }
@@ -1300,7 +1349,7 @@
                 
                 loading.style.display = 'block';
                 formContent.style.display = 'none';
-                showLoading('Generating cover letter with AI...');
+                showProgressiveLoading(recipient.website || recipient.companyUrl);
 
                 const response = await fetch('/api/generate-cover-letter-details', {
                     method: 'POST',

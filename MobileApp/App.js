@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, ActionSheetIOS, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, ActionSheetIOS, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking, ProgressBarAndroid, ProgressViewIOS } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView } from 'react-native-webview';
 import * as WebBrowser from 'expo-web-browser';
@@ -399,6 +399,9 @@ export default function App() {
   const [reviewGeneratingAll, setReviewGeneratingAll] = useState(false);
   const [reviewSendingAll, setReviewSendingAll] = useState(false);
   const [reviewGeneratingAndSendingAll, setReviewGeneratingAndSendingAll] = useState(false);
+  const [progressiveLoadingMessage, setProgressiveLoadingMessage] = useState('');
+  const [progressiveLoadingProgress, setProgressiveLoadingProgress] = useState(0);
+  const progressIntervalRef = useRef(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState('');
   const [selectedCoverLetterIndex, setSelectedCoverLetterIndex] = useState(null);
@@ -1127,6 +1130,96 @@ export default function App() {
   }, [screen]);
 
   // REVIEW SCREEN HANDLERS
+  // Progressive loading functions
+  const startProgressiveLoading = (companyUrl) => {
+    const companyName = companyUrl ? companyUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0] : 'the company';
+    const steps = [
+      { time: 0, message: '🔍 Fetching your profile details...', progress: 0 },
+      { time: 3000, message: `🌐 Researching about ${companyName}...`, progress: 15 },
+      { time: 8000, message: '🏢 Analyzing company culture and requirements...', progress: 30 },
+      { time: 15000, message: '🤝 Matching your skills with job requirements...', progress: 50 },
+      { time: 22000, message: '✍️ Crafting your personalized cover letter...', progress: 70 },
+      { time: 30000, message: '✨ Adding final touches and formatting...', progress: 85 },
+      { time: 40000, message: '⏳ Almost done, finalizing content...', progress: 95 }
+    ];
+
+    // Clear any existing interval
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+    }
+
+    // Set initial message
+    setProgressiveLoadingMessage(steps[0].message);
+    setProgressiveLoadingProgress(steps[0].progress);
+    console.log('📊', steps[0].message);
+
+    let currentStep = 0;
+    progressIntervalRef.current = setInterval(() => {
+      currentStep++;
+      if (currentStep < steps.length && !isCancelledRef.current) {
+        setProgressiveLoadingMessage(steps[currentStep].message);
+        setProgressiveLoadingProgress(steps[currentStep].progress);
+        console.log('📊', steps[currentStep].message);
+      } else if (currentStep >= steps.length) {
+        clearInterval(progressIntervalRef.current);
+      }
+    }, 5000); // Update every 5 seconds
+  };
+
+  const stopProgressiveLoading = () => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+    setProgressiveLoadingMessage('');
+    setProgressiveLoadingProgress(0);
+  };
+
+  // Progressive loading functions
+  const startProgressiveLoading = (companyUrl) => {
+    const companyName = companyUrl ? companyUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0] : 'the company';
+    const steps = [
+      { time: 0, message: '🔍 Fetching your profile details...', progress: 0 },
+      { time: 3000, message: `🌐 Researching about ${companyName}...`, progress: 15 },
+      { time: 8000, message: '🏢 Analyzing company culture and requirements...', progress: 30 },
+      { time: 15000, message: '🤝 Matching your skills with job requirements...', progress: 50 },
+      { time: 22000, message: '✍️ Crafting your personalized cover letter...', progress: 70 },
+      { time: 30000, message: '✨ Adding final touches and formatting...', progress: 85 },
+      { time: 40000, message: '⏳ Almost done, finalizing content...', progress: 95 }
+    ];
+
+    // Clear any existing interval
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+    }
+
+    // Set initial message
+    setProgressiveLoadingMessage(steps[0].message);
+    setProgressiveLoadingProgress(steps[0].progress);
+    console.log('📊', steps[0].message);
+
+    let currentStep = 0;
+    progressIntervalRef.current = setInterval(() => {
+      currentStep++;
+      if (currentStep < steps.length && !isCancelledRef.current) {
+        setProgressiveLoadingMessage(steps[currentStep].message);
+        setProgressiveLoadingProgress(steps[currentStep].progress);
+        console.log('📊', steps[currentStep].message);
+      } else if (currentStep >= steps.length) {
+        clearInterval(progressIntervalRef.current);
+      }
+    }, 5000); // Update every 5 seconds
+  };
+
+  const stopProgressiveLoading = () => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+    setProgressiveLoadingMessage('');
+    setProgressiveLoadingProgress(0);
+  };
+
   const generateCoverLetterForReview = async (recipientIndex, retryCount = 0) => {
     const recipient = recipients[recipientIndex];
     if (!recipient.email || !recipient.website) {
@@ -1142,6 +1235,9 @@ export default function App() {
       }
       
       setReviewGeneratingIndex(recipientIndex);
+      
+      // Start progressive loading
+      startProgressiveLoading(recipient.website);
       
       // Keep the app awake during the request (prevents background suspension)
       await activateKeepAwakeAsync();
@@ -1326,6 +1422,7 @@ export default function App() {
       // Always deactivate keep-awake when done
       deactivateKeepAwake();
       console.log('🔓 Keep-awake deactivated - app can sleep normally');
+      stopProgressiveLoading();
       setReviewGeneratingIndex(null);
     }
   };
@@ -5123,14 +5220,39 @@ export default function App() {
           <View style={styles.loadingOverlay}>
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color="#0d9488" />
+              
+              {/* Progressive loading message or default message */}
               <Text style={styles.loadingText}>
-                {reviewGeneratingAll ? 'Generating all cover letters...' :
+                {progressiveLoadingMessage ? progressiveLoadingMessage :
+                 reviewGeneratingAll ? 'Generating all cover letters...' :
                  reviewSendingAll ? 'Sending all applications...' :
                  reviewGeneratingAndSendingAll ? 'Generating & sending all...' :
                  reviewDownloading ? 'Downloading PDF...' :
                  reviewLoading ? 'Sending application...' :
                  'Processing...'}
               </Text>
+              
+              {/* Progress bar - shown only during single generation with progressive loading */}
+              {progressiveLoadingMessage && reviewGeneratingIndex !== null && !reviewGeneratingAll && (
+                <View style={styles.progressBarContainer}>
+                  {Platform.OS === 'ios' ? (
+                    <ProgressViewIOS 
+                      progress={progressiveLoadingProgress / 100} 
+                      progressTintColor="#0d9488"
+                      trackTintColor="#e5e7eb"
+                      style={styles.progressBar}
+                    />
+                  ) : (
+                    <View style={styles.progressBarWrapper}>
+                      <View style={styles.progressBarTrack}>
+                        <View style={[styles.progressBarFill, { width: `${progressiveLoadingProgress}%` }]} />
+                      </View>
+                    </View>
+                  )}
+                  <Text style={styles.progressText}>{progressiveLoadingProgress}%</Text>
+                </View>
+              )}
+              
               <TouchableOpacity 
                 style={styles.cancelButton}
                 onPress={cancelOperation}
@@ -5240,7 +5362,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 10,
-    minWidth: 200,
+    minWidth: 300,
   },
   loadingText: {
     marginTop: 16,
@@ -5248,6 +5370,38 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#374151',
     textAlign: 'center',
+    marginBottom: 10,
+  },
+  progressBarContainer: {
+    width: '100%',
+    marginTop: 15,
+    marginBottom: 10,
+  },
+  progressBar: {
+    width: '100%',
+    height: 8,
+  },
+  progressBarWrapper: {
+    width: '100%',
+    marginBottom: 8,
+  },
+  progressBarTrack: {
+    width: '100%',
+    height: 8,
+    backgroundColor: '#e5e7eb',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#0d9488',
+    borderRadius: 4,
+  },
+  progressText: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 5,
   },
   cancelButton: {
     marginTop: 20,
