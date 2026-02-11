@@ -2248,7 +2248,10 @@ export default function App() {
       }
     };
     
-    saveCounters();
+    // Only save if counters have been loaded (don't save initial 0 values)
+    if (countersLoaded) {
+      saveCounters();
+    }
   }, [totalGenerated, totalSent, user?.email, countersLoaded]);
 
   // Load recipients when user is set
@@ -2642,7 +2645,7 @@ export default function App() {
           <View style={styles.gradientHeader}>
             <View style={styles.logoContainer}>
               <Image 
-                source={require('./assets/images/icon_dark_background_small.png')} 
+                source={require('./assets/images/logo_hd_no_background_white_small.png')} 
                 style={{ width: 200, height: 60 }}
                 resizeMode="contain"
               />
@@ -2720,8 +2723,30 @@ export default function App() {
               onPress={() => promptAsync()}
               disabled={loading || !request}
             >
-              <Text style={styles.googleButtonIcon}>🔐</Text>
+              <Image 
+                source={require('./assets/images/google.png')} 
+                style={{ width: 20, height: 20, marginRight: 10 }}
+                resizeMode="contain"
+              />
               <Text style={styles.googleButtonText}>Sign in with Google</Text>
+            </TouchableOpacity>
+
+            {/* Microsoft Login Button */}
+            <TouchableOpacity
+              style={[styles.googleButton, { 
+                backgroundColor: '#ffffff', 
+                borderWidth: 1, 
+                borderColor: '#8C8C8C',
+                marginTop: 6 
+              }]}
+              onPress={() => Alert.alert('Coming Soon', 'Microsoft sign-in will be available soon!')}
+            >
+              <Image 
+                source={require('./assets/images/microsoft.png')} 
+                style={{ width: 20, height: 20, marginRight: 10 }}
+                resizeMode="contain"
+              />
+              <Text style={[styles.googleButtonText, { color: '#5E5E5E' }]}>Sign in with Microsoft</Text>
             </TouchableOpacity>
 
             {/* Register Link */}
@@ -2747,7 +2772,7 @@ export default function App() {
           <View style={[styles.gradientHeader, { backgroundColor: '#059669' }]}>
             <View style={styles.logoContainer}>
               <Image 
-                source={require('./assets/images/icon_dark_background_small.png')} 
+                source={require('./assets/images/logo_hd_no_background_white_small.png')} 
                 style={{ width: 200, height: 60 }}
                 resizeMode="contain"
               />
@@ -2870,11 +2895,10 @@ export default function App() {
             <View style={styles.headerContent}>
               <View style={styles.logoSection}>
                 <Image 
-                  source={require('./assets/images/icon_light_background.png')} 
+                  source={require('./assets/images/logo_hd_no_background_small.png')} 
                   style={{ width: 180, height: 50 }}
                   resizeMode="contain"
                 />
-                <Text style={styles.headerBrandSubtext}>Turn Applications into Opportunities</Text>
               </View>
               <View style={styles.headerRightSection}>
                 <TouchableOpacity 
@@ -5642,15 +5666,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#fff',
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
+    borderWidth: 1,
+    borderColor: '#8C8C8C',
     borderRadius: 10,
     paddingVertical: 12,
     marginBottom: 16,
   },
   googleButtonIcon: {
-    fontSize: 20,
+    fontSize: 22,
     marginRight: 10,
+    fontWeight: '700',
   },
   googleButtonText: {
     fontSize: 15,
@@ -6052,7 +6077,7 @@ const styles = StyleSheet.create({
 
   welcomeSection: {
     paddingHorizontal: 20,
-    paddingVertical: 16.2,
+    paddingVertical: 8.2,
   },
   welcomeTitle: {
     fontSize: 21,
@@ -7467,16 +7492,21 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#f3f4f6',
+    alignItems: 'flex-start',
   },
   reviewDetailLabel: {
     fontSize: 14,
     fontWeight: '600',
     color: '#666',
+    width: '30%',
+    flexShrink: 0,
   },
   reviewDetailValue: {
     fontSize: 14,
     fontWeight: '500',
     color: '#1f2937',
+    width: '68%',
+    flexWrap: 'wrap',
   },
   reviewCoverLetterCard: {
     marginHorizontal: 16,

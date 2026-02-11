@@ -250,10 +250,15 @@ const getCounters = async (req, res) => {
     try {
         const userId = req.user.id;
         
+        console.log('🔍 [COUNTERS] Getting counters for user ID:', userId);
+        
         const row = await dbConfig.get(
             'SELECT total_generated, total_sent FROM users WHERE id = ?',
             [userId]
         );
+        
+        console.log('📊 [COUNTERS] Database row:', row);
+        console.log('📊 [COUNTERS] Returning - Generated:', row?.total_generated || 0, 'Sent:', row?.total_sent || 0);
         
         res.json({
             totalGenerated: row?.total_generated || 0,

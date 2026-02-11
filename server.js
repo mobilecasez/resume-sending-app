@@ -2757,8 +2757,9 @@ app.use('/auth', authRoutes);
 // Set up profile routes with authentication
 app.use('/api/users', authenticateToken, profileRoutes);
 
-// Set up user data routes
+// Set up user data routes (both /api/users and /users for backward compatibility)
 app.use('/api/users', userDataRoutes);
+app.use('/users', userDataRoutes);
 app.use('/api', creditsRoutes);
 app.use('/api', adminPackagesRoutes);
 app.use('/api', coverLetterRoutes);
