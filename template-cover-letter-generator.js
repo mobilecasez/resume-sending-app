@@ -583,7 +583,13 @@ Company name:`;
             
             const result = await model.generateContent(prompt);
             const response = await result.response;
-            const companyName = response.text().trim();
+            const text = response.text();
+            
+            if (!text || text.trim() === '') {
+                throw new Error('Gemini returned empty response');
+            }
+            
+            const companyName = text.trim();
             
             if (companyName && companyName !== 'UNKNOWN' && this.isValidCompanyName(companyName)) {
                 console.log(`🤖 AI extracted company name: ${companyName}`);
@@ -824,6 +830,10 @@ Be professional and factual. If you don't have specific information, make reason
             const response = await result.response;
             const text = response.text();
             
+            if (!text || text.trim() === '') {
+                throw new Error('Gemini returned empty response for research');
+            }
+            
             // Extract JSON from response
             const jsonMatch = text.match(/\{[\s\S]*\}/);
             if (!jsonMatch) {
@@ -968,6 +978,10 @@ Research ${websiteUrl} now and extract these details. Return ONLY the JSON, no o
             });
             const response = await result.response;
             let researchText = response.text();
+            
+            if (!researchText || researchText.trim() === '') {
+                throw new Error('Gemini returned empty research response');
+            }
             
             // Clean up the response (remove markdown code fences if present)
             researchText = researchText.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
@@ -1237,6 +1251,12 @@ Generate the narrative-driven cover letter now:`;
                 });
                 const response = await result.response;
                 let coverLetterText = response.text();
+                
+                if (!coverLetterText || coverLetterText.trim() === '') {
+                    console.warn(`⚠️ Attempt ${attempt}: Gemini returned empty response`);
+                    if (attempt < 3) continue;
+                    throw new Error('Gemini returned empty cover letter after 3 attempts');
+                }
                 
                 // Clean up any meta commentary the AI might have added
                 coverLetterText = coverLetterText

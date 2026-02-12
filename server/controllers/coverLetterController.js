@@ -347,6 +347,12 @@ Research the website and extract real information. If locations not found, inclu
         const response = await result.response;
         let text = response.text();
         
+        // Check if response is null or empty
+        if (!text || text.trim() === '') {
+            console.warn('⚠️ Gemini returned empty response, using defaults');
+            throw new Error('Gemini returned empty response');
+        }
+        
         // Clean up response
         text = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
         
