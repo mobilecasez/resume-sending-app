@@ -1081,17 +1081,36 @@ const sendSingleApplication = async (req, res) => {
 
             } catch (smtpError) {
                 console.error('Default SMTP error:', smtpError.message);
+                console.error('SMTP Error Code:', smtpError.code);
+                
+                // Provide helpful error message for common issues
+                if (smtpError.code === 'ETIMEDOUT' || smtpError.command === 'CONN') {
+                    return res.status(503).json({ 
+                        error: 'Unable to connect to email server. Railway may be blocking SMTP connections. Please contact support or use Gmail login instead.',
+                        details: 'Connection timeout - SMTP port may be blocked'
+                    });
+                }
+                
                 throw smtpError;
             }
         }
 
         // No sending method available
         return res.status(400).json({ 
-            error: 'No email sending method configured. Please set up SMTP or log in with Google.' 
+            error: 'No email sending method configured. Please log in with Google to send emails.' 
         });
 
     } catch (error) {
         console.error('Send single application error:', error);
+        
+        // Return helpful error messages
+        if (error.code === 'ETIMEDOUT') {
+            return res.status(503).json({ 
+                error: 'Unable to connect to email server. Please try logging in with Google instead.',
+                details: error.message
+            });
+        }
+        
         res.status(500).json({ error: error.message || 'Failed to send application' });
     }
 };
