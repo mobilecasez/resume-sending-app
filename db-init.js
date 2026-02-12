@@ -94,6 +94,24 @@ async function runPostgresMigrations(db) {
             CREATE INDEX IF NOT EXISTS idx_payment_orders_order_id ON payment_orders(order_id);
         `);
         
+        // Migration: Add plan_id and razorpay_order_id columns to payment_orders if they don't exist
+        await db.query(`
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='payment_orders' AND column_name='plan_id') THEN
+                    ALTER TABLE payment_orders ADD COLUMN plan_id INTEGER;
+                    RAISE NOTICE 'Added plan_id column to payment_orders table';
+                END IF;
+                
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='payment_orders' AND column_name='razorpay_order_id') THEN
+                    ALTER TABLE payment_orders ADD COLUMN razorpay_order_id TEXT;
+                    RAISE NOTICE 'Added razorpay_order_id column to payment_orders table';
+                END IF;
+            END $$;
+        `);
+        
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);
