@@ -545,8 +545,9 @@
 
                 const orderData = await orderResponse.json();
 
-                // Get user info for prefill
-                const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+                // Use prefill data from backend (already fetched from database)
+                const prefillData = orderData.prefill || {};
+                console.log('Using backend prefill data:', prefillData);
 
                 // Configure Razorpay checkout
                 const options = {
@@ -557,9 +558,9 @@
                     description: `${packageName} - ${price === Math.floor(price) ? price : price.toFixed(2)} Credits`,
                     order_id: orderData.orderId,
                     prefill: {
-                        name: userData.full_name || '',
-                        email: userData.email || '',
-                        contact: userData.phone_number || ''
+                        name: prefillData.name || '',
+                        email: prefillData.email || '',
+                        contact: prefillData.contact || ''
                     },
                     theme: {
                         color: '#6366F1'
