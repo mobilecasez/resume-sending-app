@@ -8,9 +8,11 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import * as Clipboard from 'expo-clipboard';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { API_BASE } from './config';
 import SplashScreen from './components/SplashScreen';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 // Get your Google Client ID from Google Cloud Console
 const GOOGLE_CLIENT_ID = '832256639733-b0481qdpal17m1rcmmvq4nlnlvavgg59.apps.googleusercontent.com';
@@ -374,6 +376,7 @@ export default function App() {
     createdAt: new Date(),
   });
   const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -3990,33 +3993,73 @@ export default function App() {
                 </View>
                 <View style={styles.editFormGroup}>
                   <Text style={styles.formLabel}>Date of Birth</Text>
-                  <TextInput 
-                    style={styles.formInput}
-                    placeholder="MM/DD/YYYY"
-                    placeholderTextColor="#9CA3AF"
-                    value={profileData?.dateOfBirth || ''}
-                    onChangeText={(text) => setProfileData({ ...profileData, dateOfBirth: text })}
-                  />
+                  <TouchableOpacity 
+                    style={styles.datePickerButton}
+                    onPress={() => setShowDatePicker(true)}
+                  >
+                    <Text style={styles.datePickerText}>
+                      {profileData?.dateOfBirth || 'Select Date'}
+                    </Text>
+                  </TouchableOpacity>
+                  {showDatePicker && (
+                    <DateTimePicker
+                      value={profileData?.dateOfBirth ? new Date(profileData.dateOfBirth) : new Date()}
+                      mode="date"
+                      display="spinner"
+                      onChange={(event, selectedDate) => {
+                        setShowDatePicker(false);
+                        if (selectedDate) {
+                          // Format date as YYYY-MM-DD
+                          const formattedDate = selectedDate.toLocaleDateString('en-CA');
+                          setProfileData({ ...profileData, dateOfBirth: formattedDate });
+                        }
+                      }}
+                    />
+                  )}
                 </View>
               </>
             ) : (
               <>
-                <View style={styles.detailRow}>
+                <TouchableOpacity 
+                  style={styles.detailRow}
+                  onLongPress={() => {
+                    Clipboard.setStringAsync(profileData?.fullName || '');
+                    Alert.alert('Copied', 'Full name copied to clipboard');
+                  }}
+                >
                   <Text style={styles.detailLabel}>Full Name</Text>
                   <Text style={styles.detailValue}>{profileData?.fullName || 'Not provided'}</Text>
-                </View>
-                <View style={styles.detailRow}>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.detailRow}
+                  onLongPress={() => {
+                    Clipboard.setStringAsync(profileData?.phone || '');
+                    Alert.alert('Copied', 'Phone number copied to clipboard');
+                  }}
+                >
                   <Text style={styles.detailLabel}>Phone Number</Text>
                   <Text style={styles.detailValue}>{profileData?.phone || 'Not provided'}</Text>
-                </View>
-                <View style={styles.detailRow}>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.detailRow}
+                  onLongPress={() => {
+                    Clipboard.setStringAsync(profileData?.address || '');
+                    Alert.alert('Copied', 'Address copied to clipboard');
+                  }}
+                >
                   <Text style={styles.detailLabel}>Address</Text>
                   <Text style={styles.detailValue}>{profileData?.address || 'Not provided'}</Text>
-                </View>
-                <View style={styles.detailRow}>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.detailRow}
+                  onLongPress={() => {
+                    Clipboard.setStringAsync(profileData?.dateOfBirth || '');
+                    Alert.alert('Copied', 'Date of birth copied to clipboard');
+                  }}
+                >
                   <Text style={styles.detailLabel}>Date of Birth</Text>
                   <Text style={styles.detailValue}>{profileData?.dateOfBirth || 'Not provided'}</Text>
-                </View>
+                </TouchableOpacity>
                 <View style={styles.detailRow}>
                   <Text style={styles.detailLabel}>Account Type</Text>
                   <Text style={styles.detailValue}>{user?.provider === 'google' ? 'Google' : 'Email'}</Text>
@@ -6556,6 +6599,20 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
+    fontSize: 14,
+    color: '#1F2937',
+  },
+  datePickerButton: {
+    backgroundColor: '#f9fafb',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 42,
+    justifyContent: 'center',
+  },
+  datePickerText: {
     fontSize: 14,
     color: '#1F2937',
   },
