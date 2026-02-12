@@ -170,7 +170,21 @@ function createTransporter(smtpUser, smtpPass) {
         pool: true, // Use connection pool for better reputation
         maxConnections: 5,
         maxMessages: 100,
+        // Add timeouts to prevent hanging
+        connectionTimeout: 30000, // 30 seconds
+        greetingTimeout: 30000,
+        socketTimeout: 60000, // 60 seconds
     });
+}
+
+// Helper function: Send email with timeout
+async function sendEmailWithTimeout(transporter, mailOptions, timeoutMs = 60000) {
+    return Promise.race([
+        transporter.sendMail(mailOptions),
+        new Promise((_, reject) => 
+            setTimeout(() => reject(new Error(`Email sending timeout after ${timeoutMs/1000} seconds`)), timeoutMs)
+        )
+    ]);
 }
 
 // Helper function: Decrypt data
@@ -791,7 +805,7 @@ const sendApplications = async (req, res) => {
                     ],
                 };
 
-                await transporter.sendMail(mailOptions);
+                await sendEmailWithTimeout(transporter, mailOptions);
 
                 // Clean up temp PDF
                 await fs.unlink(filePath);
@@ -975,7 +989,7 @@ const sendSingleApplication = async (req, res) => {
                     ]
                 };
 
-                await transporter.sendMail(mailOptions);
+                await sendEmailWithTimeout(transporter, mailOptions);
 
                 // Save to history
                 await dbConfig.run(
@@ -1041,7 +1055,7 @@ const sendSingleApplication = async (req, res) => {
                     ]
                 };
 
-                await transporter.sendMail(mailOptions);
+                await sendEmailWithTimeout(transporter, mailOptions);
 
                 // Save to history
                 await dbConfig.run(
