@@ -224,12 +224,12 @@ const getUsageStats = async (req, res) => {
         
         const dailyActivity = await dbConfig.query(`
             SELECT 
-        DATE(created_at) as date,
+        to_char(created_at + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD') as date,
         SUM(CASE WHEN transaction_type = 'deduction' THEN ABS(credits_change) ELSE 0 END) as "creditsUsed",
         MAX(balance_after) as "creditsAvailable"
             FROM credit_transactions
             WHERE user_id = ? AND created_at >= ?
-            GROUP BY DATE(created_at)
+            GROUP BY to_char(created_at + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD')
             ORDER BY date DESC
         `, [userId, thirtyDaysAgo.toISOString()]);
         
@@ -333,12 +333,12 @@ const getUsageStats = async (req, res) => {
         console.log('🔍 [USAGE STATS] Querying credit_usage_history for generations...');
         
     const generationStats = await dbConfig.query(
-      `SELECT DATE(created_at AT TIME ZONE 'UTC') as date, COUNT(*) as generated
+      `SELECT to_char(created_at + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD') as date, COUNT(*) as generated
        FROM credit_usage_history
        WHERE user_id = ? 
          AND created_at >= ?
          AND action_type = 'cover_letter_generation'
-       GROUP BY DATE(created_at AT TIME ZONE 'UTC')
+       GROUP BY to_char(created_at + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD')
        ORDER BY date DESC`,
       [userId, thirtyDaysAgo.toISOString()]
     );
@@ -346,10 +346,10 @@ const getUsageStats = async (req, res) => {
         console.log('🔍 [USAGE STATS] Querying application_history for sends...');
         
     const sendStats = await dbConfig.query(
-      `SELECT DATE(sent_date AT TIME ZONE 'UTC') as date, COUNT(*) as sent
+      `SELECT to_char(sent_date + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD') as date, COUNT(*) as sent
        FROM application_history
        WHERE user_id = ? AND sent_date >= ?
-       GROUP BY DATE(sent_date AT TIME ZONE 'UTC')
+       GROUP BY to_char(sent_date + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD')
        ORDER BY date DESC`,
       [userId, thirtyDaysAgo.toISOString()]
     );

@@ -11,12 +11,20 @@ const getProfile = async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
         
+        // Format DOB as date-only string using toLocaleDateString to avoid timezone shifts
+        let formattedDOB = null;
+        if (user.dateOfBirth) {
+            const date = new Date(user.dateOfBirth);
+            // 'en-CA' gives YYYY-MM-DD format without timezone conversion
+            formattedDOB = date.toLocaleDateString('en-CA');
+        }
+        
         res.json({
             fullName: user.fullName,
             email: user.email,
             phone: user.phoneNumber,
             address: user.address,
-            dateOfBirth: user.dateOfBirth,
+            dateOfBirth: formattedDOB,
             profileImage: user.photoPath ? `http://${req.get('host')}/${user.photoPath}` : null,
             resume: user.resumePath ? `http://${req.get('host')}/${user.resumePath}` : null,
             signature: user.signaturePath ? `http://${req.get('host')}/${user.signaturePath}` : null,
@@ -121,8 +129,17 @@ const updateProfile = async (req, res) => {
             params.push(address);
         }
         if (dateOfBirth) {
+            // THE NOON TRICK: Set time to 12:00 PM to prevent midnight timezone shifts
+            const date = new Date(dateOfBirth);
+            date.setHours(12, 0, 0, 0);
+            
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const dateOnly = `${year}-${month}-${day}`;
+            
             updates.push('date_of_birth = ?');
-            params.push(dateOfBirth);
+            params.push(dateOnly);
         }
 
         if (updates.length === 0) {

@@ -17,7 +17,6 @@ const multer = require('multer');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const CryptoJS = require('crypto-js');
-const sqlite3 = require('sqlite3').verbose();
 const { Pool } = require('pg');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
@@ -193,7 +192,7 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
     }
 }
 
-// Initialize database (supports both SQLite and PostgreSQL)
+// Initialize database (PostgreSQL only)
 const db = dbConfig.initializeConnection();
 
 // Initialize database schema
@@ -772,6 +771,14 @@ app.get('/api/user-profile', authenticateToken, async (req, res) => {
         // Decrypt SMTP password before sending (only send masked version to frontend)
         const decryptedPassword = user.smtpPassword ? '********' : '';
 
+        // Format DOB as date-only string using toLocaleDateString to avoid timezone shifts
+        let formattedDOB = null;
+        if (user.dateOfBirth) {
+            const date = new Date(user.dateOfBirth);
+            // 'en-CA' gives YYYY-MM-DD format without timezone conversion
+            formattedDOB = date.toLocaleDateString('en-CA');
+        }
+
         res.json({
             success: true,
             profile: {
@@ -783,7 +790,7 @@ app.get('/api/user-profile', authenticateToken, async (req, res) => {
         smtpEmail: user.smtpEmail,
         smtpPassword: decryptedPassword, // Send masked password
         senderName: user.senderName,
-        dateOfBirth: user.dateOfBirth,
+        dateOfBirth: formattedDOB,
         phoneNumber: user.phoneNumber,
         address: user.address,
         createdAt: user.createdAt,
@@ -833,9 +840,21 @@ app.post('/api/update-user-details', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'Full name is required' });
         }
 
+        // THE NOON TRICK: Set time to 12:00 PM to prevent midnight timezone shifts
+        let dateOnly = null;
+        if (dateOfBirth) {
+            const date = new Date(dateOfBirth);
+            date.setHours(12, 0, 0, 0);
+            
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            dateOnly = `${year}-${month}-${day}`;
+        }
+
         await dbConfig.run(
             'UPDATE users SET full_name = ?, date_of_birth = ?, phone_number = ?, address = ? WHERE id = ?',
-            [fullName, dateOfBirth || null, phoneNumber || null, address || null, userId]
+            [fullName, dateOnly, phoneNumber || null, address || null, userId]
         );
 
         res.json({

@@ -122,13 +122,31 @@
         </style>
     `;
 
+    let initialized = false;
+
     window.commonFooter = {
         init: function() {
+            // Prevent double initialization
+            if (initialized) {
+                console.log('Footer already initialized, skipping');
+                return;
+            }
+            
+            // Check if footer already exists in DOM
+            if (document.getElementById('common-footer')) {
+                console.log('Footer already exists in DOM, skipping');
+                initialized = true;
+                return;
+            }
+            
             // Add styles
             document.head.insertAdjacentHTML('beforeend', footerStyles);
             
             // Add footer HTML before closing body tag
             document.body.insertAdjacentHTML('beforeend', footerHTML);
+            
+            initialized = true;
+            console.log('Footer initialized successfully');
         }
     };
 
