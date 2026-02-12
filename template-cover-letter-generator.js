@@ -58,6 +58,12 @@ class TemplateCoverLetterGenerator {
             return data.text;
         } catch (error) {
             console.error('Error extracting resume:', error.message);
+            
+            // If file not found, throw user-friendly error
+            if (error.code === 'ENOENT') {
+                throw new Error('Please upload your resume to generate cover letters');
+            }
+            
             return null;
         }
     }
