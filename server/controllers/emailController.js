@@ -162,9 +162,9 @@ function createTransporter(smtpUser, smtpPass) {
             user: smtpUser,
             pass: smtpPass,
         },
-        // Anti-spam settings
+        // Anti-spam settings - relaxed for Railway
         tls: {
-            rejectUnauthorized: true,
+            rejectUnauthorized: false, // Allow self-signed certificates for cloud platforms
             minVersion: 'TLSv1.2'
         },
         pool: true, // Use connection pool for better reputation
@@ -174,6 +174,8 @@ function createTransporter(smtpUser, smtpPass) {
         connectionTimeout: 30000, // 30 seconds
         greetingTimeout: 30000,
         socketTimeout: 60000, // 60 seconds
+        debug: true, // Enable debug logging
+        logger: true // Enable logging
     });
 }
 
