@@ -810,19 +810,24 @@
 
         // Loading overlay functions
         let progressInterval = null;
-        
+        let lastProgressMessage = '';
+
         function showLoading(message = 'Processing...') {
             const overlay = document.getElementById('loadingOverlay');
             const messageEl = document.getElementById('loadingMessage');
             messageEl.textContent = message;
+            lastProgressMessage = message;
             overlay.classList.add('active');
         }
         
         function updateLoadingMessage(message) {
+            // Only update if message has changed to prevent flickering
+            if (message === lastProgressMessage) return;
+            
             const messageEl = document.getElementById('loadingMessage');
             if (messageEl) {
                 messageEl.textContent = message;
-                console.log('📊', message);
+                lastProgressMessage = message;
             }
         }
         
