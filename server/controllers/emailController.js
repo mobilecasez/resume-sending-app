@@ -7,6 +7,7 @@ const { google } = require('googleapis');
 const TemplateCoverLetterGenerator = require('../../template-cover-letter-generator');
 const PDFKit = require('pdfkit');
 const cheerio = require('cheerio');
+const { sendEmailViaZeptoMail } = require('../services/zeptomailService');
 
 // Helper function to format DOB as YYYYMMDD for Reply-To email
 function formatDOBForEmail(dateOfBirth) {
@@ -1083,15 +1084,74 @@ const sendSingleApplication = async (req, res) => {
                 console.error('Default SMTP error:', smtpError.message);
                 console.error('SMTP Error Code:', smtpError.code);
                 
-                // Provide helpful error message for common issues
-                if (smtpError.code === 'ETIMEDOUT' || smtpError.command === 'CONN') {
-                    return res.status(503).json({ 
-                        error: 'Unable to connect to email server. Railway may be blocking SMTP connections. Please contact support or use Gmail login instead.',
-                        details: 'Connection timeout - SMTP port may be blocked'
-                    });
-                }
+                // Don't fail immediately - try ZeptoMail next
+                console.log('⚠️ SMTP failed, will try ZeptoMail API...');
+            }
+        }
+
+        // Priority 4: Use ZeptoMail API (Zoho's transactional email service)
+        if (process.env.ZEPTOMAIL_TOKEN) {
+            try {
+                console.log('📧 Sending via ZeptoMail API...');
                 
-                throw smtpError;
+                // Read files and convert to base64
+                const coverLetterBuffer = await fs.readFile(filePath);
+                const resumeBuffer = await fs.readFile(resumePath);
+                
+                const fileName = `CoverLetter_${companyName.replace(/[^a-zA-Z0-9]/g, '_')}_${position.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
+                
+                // Use plus addressing for Reply-To tracking
+                const emailUsername = user.email.split('@')[0];
+                const dobFormatted = formatDOBForEmail(user.date_of_birth);
+                const replyToEmail = dobFormatted 
+                    ? `${process.env.SMTP_USER.split('@')[0]}+${emailUsername}.${dobFormatted}@${process.env.SMTP_USER.split('@')[1]}`
+                    : process.env.SMTP_USER;
+
+                await sendEmailViaZeptoMail({
+                    fromEmail: process.env.SMTP_USER || 'cv@cvapplyr.com',
+                    fromName: user.sender_name || user.full_name,
+                    toEmail: recipientEmail,
+                    replyTo: replyToEmail,
+                    subject: subject,
+                    textBody: emailBody,
+                    attachments: [
+                        {
+                            filename: fileName,
+                            content: coverLetterBuffer.toString('base64'),
+                            contentType: 'application/pdf'
+                        },
+                        {
+                            filename: path.basename(resumePath),
+                            content: resumeBuffer.toString('base64'),
+                            contentType: 'application/pdf'
+                        }
+                    ]
+                });
+
+                // Save to history
+                await dbConfig.run(
+                    'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date) VALUES (?, ?, ?, ?, ?)',
+                    [userId, companyName, position, recipientEmail, new Date().toISOString()]
+                );
+
+                await dbConfig.run(
+                    'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
+                    [userId]
+                );
+
+                // Clean up
+                await fs.unlink(filePath);
+
+                return res.json({ 
+                    success: true, 
+                    message: 'Application sent successfully via ZeptoMail',
+                    method: 'zeptomail'
+                });
+
+            } catch (zeptoError) {
+                console.error('ZeptoMail error:', zeptoError.message);
+                // Fall through to error message
+            }
             }
         }
 
