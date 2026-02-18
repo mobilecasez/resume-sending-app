@@ -5484,38 +5484,70 @@ export default function App() {
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
         
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {/* Header with Credit Badge and User Info */}
-          <View style={styles.reviewHeaderEnhanced}>
-            <TouchableOpacity onPress={() => setScreen('dashboard')} style={styles.backButton}>
-              <Text style={styles.backIcon}>← Back</Text>
-            </TouchableOpacity>
-            <View style={styles.reviewHeaderCenter}>
-              <Text style={styles.reviewTitle}>📋 Review Applications</Text>
-            </View>
-            <View style={styles.reviewHeaderRight}>
+          {/* Header with Gradient Design */}
+          <View style={styles.reviewHeaderCard}>
+            <LinearGradient
+              colors={['#667eea', '#764ba2']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.reviewHeaderGradient}
+            >
               <TouchableOpacity 
-                style={styles.compactCreditBadge}
-                onPress={() => setScreen('usage')}
-                activeOpacity={0.7}
+                onPress={() => setScreen('dashboard')} 
+                style={styles.reviewBackButton}
               >
-                <Text style={styles.creditIcon}>💎</Text>
-                <Text style={styles.creditNumber}>{creditBalance}</Text>
+                <Text style={styles.reviewBackIcon}>←</Text>
+                <Text style={styles.reviewBackText}>Back</Text>
               </TouchableOpacity>
-            </View>
+              
+              <View style={styles.reviewHeaderContent}>
+                <Text style={styles.reviewHeaderTitle}>Review Applications</Text>
+                <Text style={styles.reviewHeaderSubtitle}>Review and send your cover letters</Text>
+              </View>
+              
+              <TouchableOpacity 
+                style={styles.reviewCreditBadge}
+                onPress={() => setScreen('usage')}
+                activeOpacity={0.8}
+              >
+                <View style={styles.reviewCreditIconBox}>
+                  <View style={styles.reviewDiamondIcon}>
+                    <View style={styles.reviewDiamondTop} />
+                    <View style={styles.reviewDiamondBottom} />
+                  </View>
+                </View>
+                <Text style={styles.reviewCreditText}>{creditBalance}</Text>
+              </TouchableOpacity>
+            </LinearGradient>
           </View>
 
           {/* Tab Navigation */}
-          <View style={styles.reviewTabsContainer}>
+          <View style={styles.reviewTabsWrapper}>
+            <Text style={styles.reviewTabsLabel}>Select Recipient</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.reviewTabsScroll}>
               {recipients.map((recipient, index) => (
                 <TouchableOpacity
                   key={index}
                   style={[styles.reviewTab, currentReviewTab === index && styles.reviewTabActive]}
                   onPress={() => setCurrentReviewTab(index)}
+                  activeOpacity={0.8}
                 >
-                  <Text style={[styles.reviewTabText, currentReviewTab === index && styles.reviewTabTextActive]}>
-                    {index + 1}. {recipient.email}
-                  </Text>
+                  {currentReviewTab === index ? (
+                    <LinearGradient
+                      colors={['#667eea', '#764ba2']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.reviewTabGradient}
+                    >
+                      <Text style={styles.reviewTabTextActive}>
+                        {index + 1}. {recipient.email}
+                      </Text>
+                    </LinearGradient>
+                  ) : (
+                    <Text style={styles.reviewTabText}>
+                      {index + 1}. {recipient.email}
+                    </Text>
+                  )}
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -5523,19 +5555,39 @@ export default function App() {
 
           {/* Recipient Information Card */}
           {recipients[currentReviewTab] && (
-            <View style={styles.reviewDetailCard}>
-              <Text style={styles.reviewDetailTitle}>Recipient #{currentReviewTab + 1}</Text>
-              <View style={styles.reviewDetailRow}>
-                <Text style={styles.reviewDetailLabel}>📧 Email:</Text>
-                <Text style={styles.reviewDetailValue}>{recipients[currentReviewTab].email}</Text>
+            <View style={styles.reviewDetailCardModern}>
+              <View style={styles.reviewDetailHeader}>
+                <View style={styles.reviewDetailAccent} />
+                <Text style={styles.reviewDetailTitleModern}>Recipient #{currentReviewTab + 1}</Text>
               </View>
-              <View style={styles.reviewDetailRow}>
-                <Text style={styles.reviewDetailLabel}>🌐 Website:</Text>
-                <Text style={styles.reviewDetailValue}>{recipients[currentReviewTab].website}</Text>
-              </View>
-              <View style={[styles.reviewDetailRow, { borderBottomWidth: 0 }]}>
-                <Text style={styles.reviewDetailLabel}>💼 Position:</Text>
-                <Text style={styles.reviewDetailValue}>{recipients[currentReviewTab].position}</Text>
+              <View style={styles.reviewDetailContent}>
+                <View style={styles.reviewDetailItem}>
+                  <View style={styles.reviewDetailIconBox}>
+                    <Text style={styles.reviewDetailIconText}>✉</Text>
+                  </View>
+                  <View style={styles.reviewDetailInfo}>
+                    <Text style={styles.reviewDetailLabelModern}>Email</Text>
+                    <Text style={styles.reviewDetailValueModern}>{recipients[currentReviewTab].email}</Text>
+                  </View>
+                </View>
+                <View style={styles.reviewDetailItem}>
+                  <View style={styles.reviewDetailIconBox}>
+                    <Text style={styles.reviewDetailIconText}>🌐</Text>
+                  </View>
+                  <View style={styles.reviewDetailInfo}>
+                    <Text style={styles.reviewDetailLabelModern}>Website</Text>
+                    <Text style={styles.reviewDetailValueModern}>{recipients[currentReviewTab].website}</Text>
+                  </View>
+                </View>
+                <View style={[styles.reviewDetailItem, { borderBottomWidth: 0 }]}>
+                  <View style={styles.reviewDetailIconBox}>
+                    <Text style={styles.reviewDetailIconText}>💼</Text>
+                  </View>
+                  <View style={styles.reviewDetailInfo}>
+                    <Text style={styles.reviewDetailLabelModern}>Position</Text>
+                    <Text style={styles.reviewDetailValueModern}>{recipients[currentReviewTab].position}</Text>
+                  </View>
+                </View>
               </View>
             </View>
           )}
@@ -5763,16 +5815,21 @@ export default function App() {
                     </View>
 
                     {/* Action Buttons */}
-                    <View style={styles.reviewActionButtons}>
+                    <View style={styles.reviewModernActionButtons}>
                       <TouchableOpacity
-                        style={[styles.reviewActionBtn, styles.regenerateBtn]}
+                        style={styles.reviewModernActionBtn}
                         onPress={() => generateCoverLetterForReview(currentReviewTab)}
                         disabled={reviewGeneratingIndex === currentReviewTab || reviewLoading || reviewGeneratingAll || reviewGeneratingAndSendingAll}
+                        activeOpacity={0.8}
                       >
-                        <Text style={styles.reviewActionBtnText}>🔄 Regenerate</Text>
+                        <View style={styles.reviewActionIconBox}>
+                          <Text style={styles.reviewActionIcon}>🔄</Text>
+                        </View>
+                        <Text style={styles.reviewModernActionBtnText}>Regenerate</Text>
                       </TouchableOpacity>
+                      
                       <TouchableOpacity
-                        style={[styles.reviewActionBtn, styles.downloadBtn]}
+                        style={styles.reviewModernActionBtn}
                         onPress={() => {
                           if (creditBalance <= 0) {
                             Alert.alert(
@@ -5788,11 +5845,16 @@ export default function App() {
                           downloadCoverLetterPDFFromReview(currentReviewTab);
                         }}
                         disabled={reviewDownloading}
+                        activeOpacity={0.8}
                       >
-                        <Text style={styles.reviewActionBtnText}>📥 Download</Text>
+                        <View style={styles.reviewActionIconBox}>
+                          <Text style={styles.reviewActionIcon}>📥</Text>
+                        </View>
+                        <Text style={styles.reviewModernActionBtnText}>Download PDF</Text>
                       </TouchableOpacity>
+                      
                       <TouchableOpacity
-                        style={[styles.reviewActionBtn, styles.sendBtn, reviewCoverLetters[currentReviewTab].sent && styles.sentBtn]}
+                        style={[styles.reviewModernActionBtnPrimary, reviewCoverLetters[currentReviewTab].sent && styles.reviewActionBtnSent]}
                         onPress={() => {
                           if (creditBalance <= 0) {
                             Alert.alert(
@@ -5808,10 +5870,24 @@ export default function App() {
                           sendApplicationFromReview(currentReviewTab);
                         }}
                         disabled={reviewLoading || reviewSendingAll || reviewGeneratingAndSendingAll || reviewCoverLetters[currentReviewTab].sent}
+                        activeOpacity={0.8}
                       >
-                        <Text style={styles.reviewActionBtnText}>
-                          {reviewCoverLetters[currentReviewTab].sent ? '✓ Sent' : '📧 Send'}
-                        </Text>
+                        {!reviewCoverLetters[currentReviewTab].sent ? (
+                          <LinearGradient
+                            colors={['#667eea', '#764ba2']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.reviewActionGradient}
+                          >
+                            <Text style={styles.reviewActionIcon}>📧</Text>
+                            <Text style={styles.reviewModernActionBtnPrimaryText}>Send Application</Text>
+                          </LinearGradient>
+                        ) : (
+                          <View style={styles.reviewActionGradient}>
+                            <Text style={styles.reviewActionIcon}>✓</Text>
+                            <Text style={styles.reviewModernActionBtnSentText}>Application Sent</Text>
+                          </View>
+                        )}
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -5819,12 +5895,14 @@ export default function App() {
               )}
             </View>
           ) : (
-            <View style={styles.reviewEmptyCard}>
-              <Text style={styles.emptyIcon}>📝</Text>
-              <Text style={styles.emptyTitle}>No Cover Letter Generated</Text>
-              <Text style={styles.emptySubtitle}>Generate a cover letter to view and send</Text>
+            <View style={styles.reviewEmptyCardModern}>
+              <View style={styles.reviewEmptyIconBox}>
+                <Text style={styles.reviewEmptyIcon}>📝</Text>
+              </View>
+              <Text style={styles.reviewEmptyTitle}>No Cover Letter Generated</Text>
+              <Text style={styles.reviewEmptySubtitle}>Generate a professional cover letter to review and send to this recipient</Text>
               <TouchableOpacity
-                style={styles.generateBtn}
+                style={styles.reviewEmptyActionBtn}
                 onPress={() => {
                   if (creditBalance <= 0) {
                     Alert.alert(
@@ -5840,37 +5918,88 @@ export default function App() {
                   generateCoverLetterForReview(currentReviewTab);
                 }}
                 disabled={reviewGeneratingIndex === currentReviewTab || reviewGeneratingAll || reviewGeneratingAndSendingAll}
+                activeOpacity={0.8}
               >
-                <Text style={styles.generateBtnText}>✨ Generate Cover Letter</Text>
+                <LinearGradient
+                  colors={['#667eea', '#764ba2']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.reviewEmptyActionGradient}
+                >
+                  <Text style={styles.reviewEmptyActionIcon}>✨</Text>
+                  <Text style={styles.reviewEmptyActionText}>Generate Cover Letter</Text>
+                </LinearGradient>
               </TouchableOpacity>
             </View>
           )}
 
           {/* Generate All Button */}
           <TouchableOpacity
-            style={styles.generateAllBtn}
+            style={styles.reviewBulkActionBtn}
             onPress={generateAllCoverLettersForReview}
             disabled={reviewGeneratingAll}
+            activeOpacity={0.8}
           >
-            <Text style={styles.generateAllBtnText}>🚀 Generate All Cover Letters</Text>
+            <LinearGradient
+              colors={['#10b981', '#059669']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.reviewBulkActionGradient}
+            >
+              <Text style={styles.reviewBulkActionIcon}>🚀</Text>
+              <Text style={styles.reviewBulkActionText}>Generate All Cover Letters</Text>
+            </LinearGradient>
           </TouchableOpacity>
 
           {/* Send All Button */}
           <TouchableOpacity
-            style={[styles.generateAllBtn, { backgroundColor: allApplicationsSent ? '#9ca3af' : '#3b82f6', marginTop: 8 }]}
+            style={styles.reviewBulkActionBtn}
             onPress={sendAllApplicationsFromReview}
             disabled={reviewSendingAll || allApplicationsSent}
+            activeOpacity={0.8}
           >
-            <Text style={styles.generateAllBtnText}>{allApplicationsSent ? '✓ All Sent' : '📧 Send to All'}</Text>
+            {allApplicationsSent ? (
+              <View style={[styles.reviewBulkActionGradient, { backgroundColor: '#9ca3af' }]}>
+                <Text style={styles.reviewBulkActionIcon}>✓</Text>
+                <Text style={styles.reviewBulkActionText}>All Applications Sent</Text>
+              </View>
+            ) : (
+              <LinearGradient
+                colors={['#3b82f6', '#2563eb']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.reviewBulkActionGradient}
+              >
+                <Text style={styles.reviewBulkActionIcon}>📧</Text>
+                <Text style={styles.reviewBulkActionText}>Send to All Recipients</Text>
+              </LinearGradient>
+            )}
           </TouchableOpacity>
 
           {/* Generate and Send All Button */}
           <TouchableOpacity
-            style={[styles.generateAllBtn, { backgroundColor: allApplicationsSent ? '#9ca3af' : '#10b981', marginTop: 8 }]}
+            style={styles.reviewBulkActionBtn}
             onPress={generateAndSendAllApplications}
             disabled={reviewGeneratingAndSendingAll || allApplicationsSent}
+            activeOpacity={0.8}
           >
-            <Text style={styles.generateAllBtnText}>{allApplicationsSent ? '✓ All Generated & Sent' : '🚀📧 Generate & Send to All'}</Text>
+            {allApplicationsSent ? (
+              <View style={[styles.reviewBulkActionGradient, { backgroundColor: '#9ca3af' }]}>
+                <Text style={styles.reviewBulkActionIcon}>✓</Text>
+                <Text style={styles.reviewBulkActionText}>All Generated & Sent</Text>
+              </View>
+            ) : (
+              <LinearGradient
+                colors={['#667eea', '#764ba2']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.reviewBulkActionGradient}
+              >
+                <Text style={styles.reviewBulkActionIcon}>🚀</Text>
+                <Text style={styles.reviewBulkActionIcon}>📧</Text>
+                <Text style={styles.reviewBulkActionText}>Generate & Send to All</Text>
+              </LinearGradient>
+            )}
           </TouchableOpacity>
 
           <View style={{ height: 30 }} />
@@ -9413,6 +9542,366 @@ const styles = StyleSheet.create({
     backgroundColor: '#dc3545',
     flex: 1,
   },
+  
+  // ===== MODERN REVIEW PAGE STYLES =====
+  reviewHeaderCard: {
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 12,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  reviewHeaderGradient: {
+    padding: 20,
+    position: 'relative',
+  },
+  reviewBackButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    alignSelf: 'flex-start',
+  },
+  reviewBackIcon: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '700',
+    marginRight: 6,
+  },
+  reviewBackText: {
+    fontSize: 15,
+    color: '#ffffff',
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  reviewHeaderContent: {
+    marginBottom: 8,
+  },
+  reviewHeaderTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#ffffff',
+    marginBottom: 4,
+    letterSpacing: 0.5,
+  },
+  reviewHeaderSubtitle: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontWeight: '500',
+  },
+  reviewCreditBadge: {
+    position: 'absolute',
+    top: 20,
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    borderRadius: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  reviewCreditIconBox: {
+    marginRight: 6,
+  },
+  reviewDiamondIcon: {
+    width: 16,
+    height: 16,
+  },
+  reviewDiamondTop: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 8,
+    borderRightWidth: 8,
+    borderBottomWidth: 8,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: '#ffffff',
+  },
+  reviewDiamondBottom: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 8,
+    borderRightWidth: 8,
+    borderTopWidth: 8,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor: '#ffffff',
+  },
+  reviewCreditText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  reviewTabsWrapper: {
+    backgroundColor: '#ffffff',
+    paddingTop: 16,
+    paddingBottom: 12,
+    marginBottom: 16,
+  },
+  reviewTabsLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#6b7280',
+    marginBottom: 12,
+    marginHorizontal: 20,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  reviewTabsScroll: {
+    paddingHorizontal: 20,
+  },
+  reviewTab: {
+    marginRight: 10,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  reviewTabGradient: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  reviewTabText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#6b7280',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#f3f4f6',
+    borderRadius: 12,
+  },
+  reviewTabTextActive: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  reviewDetailCardModern: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  reviewDetailHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+  },
+  reviewDetailAccent: {
+    width: 4,
+    height: 24,
+    borderRadius: 2,
+    marginRight: 12,
+    background: 'linear-gradient(180deg, #667eea 0%, #764ba2 100%)',
+    backgroundColor: '#667eea',
+  },
+  reviewDetailTitleModern: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1f2937',
+    letterSpacing: 0.3,
+  },
+  reviewDetailContent: {
+    padding: 20,
+  },
+  reviewDetailItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+  },
+  reviewDetailIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f3f4f6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  reviewDetailIconText: {
+    fontSize: 18,
+  },
+  reviewDetailInfo: {
+    flex: 1,
+  },
+  reviewDetailLabelModern: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#9ca3af',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  reviewDetailValueModern: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1f2937',
+    lineHeight: 22,
+  },
+  reviewModernActionButtons: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 20,
+  },
+  reviewModernActionBtn: {
+    flex: 1,
+    backgroundColor: '#f9fafb',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  reviewActionIconBox: {
+    marginBottom: 6,
+  },
+  reviewActionIcon: {
+    fontSize: 20,
+  },
+  reviewModernActionBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#4b5563',
+    textAlign: 'center',
+    letterSpacing: 0.3,
+  },
+  reviewModernActionBtnPrimary: {
+    flex: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  reviewActionBtnSent: {
+    opacity: 0.7,
+  },
+  reviewActionGradient: {
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  reviewModernActionBtnPrimaryText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  reviewModernActionBtnSentText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#6b7280',
+    letterSpacing: 0.3,
+  },
+  reviewEmptyCardModern: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 32,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  reviewEmptyIconBox: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#f3f4f6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  reviewEmptyIcon: {
+    fontSize: 40,
+  },
+  reviewEmptyTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1f2937',
+    marginBottom: 8,
+    letterSpacing: 0.3,
+  },
+  reviewEmptySubtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 24,
+    paddingHorizontal: 12,
+  },
+  reviewEmptyActionBtn: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  reviewEmptyActionGradient: {
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  reviewEmptyActionIcon: {
+    fontSize: 18,
+  },
+  reviewEmptyActionText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  reviewBulkActionBtn: {
+    marginHorizontal: 16,
+    marginBottom: 10,
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  reviewBulkActionGradient: {
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  reviewBulkActionIcon: {
+    fontSize: 18,
+  },
+  reviewBulkActionText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  
   fieldDisplayRow: {
     flexDirection: 'row',
     marginBottom: 12,
