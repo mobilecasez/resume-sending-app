@@ -373,6 +373,34 @@ async function initializeSQLite() {
             else console.log('✅ Monthly usage stats table ready');
         });
 
+        // Notifications table
+        db.run(`
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                type VARCHAR(50) NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                message TEXT NOT NULL,
+                details TEXT,
+                metadata TEXT,
+                is_read INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        `, (err) => {
+            if (err) console.error('Error creating notifications table:', err);
+            else console.log('✅ Notifications table ready');
+        });
+
+        // Create index for notifications
+        db.run(`CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id)`, (err) => {
+            if (err) console.error('Error creating notifications user_id index:', err);
+        });
+
+        db.run(`CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at DESC)`, (err) => {
+            if (err) console.error('Error creating notifications created_at index:', err);
+        });
+
         // Credit usage history table
         db.run(`
             CREATE TABLE IF NOT EXISTS credit_usage_history (

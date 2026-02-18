@@ -1,4 +1,5 @@
 const dbConfig = require('../../db-config');
+const { notifyProfileUpdated } = require('./notificationsController');
 
 // Get user profile data
 const getProfile = async (req, res) => {
@@ -150,6 +151,18 @@ const updateProfile = async (req, res) => {
         const sql = `UPDATE users SET ${updates.join(', ')} WHERE id = ?`;
 
         await dbConfig.run(sql, params);
+
+        // Create notification for profile update
+        try {
+            const fieldsUpdated = [];
+            if (fullName) fieldsUpdated.push('Name');
+            if (phone) fieldsUpdated.push('Phone');
+            if (address) fieldsUpdated.push('Address');
+            if (dateOfBirth) fieldsUpdated.push('Date of Birth');
+            await notifyProfileUpdated(userId, fieldsUpdated);
+        } catch (notifError) {
+            console.error('Failed to create notification:', notifError);
+        }
 
         res.json({
             success: true,

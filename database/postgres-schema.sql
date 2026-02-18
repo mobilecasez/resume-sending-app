@@ -165,6 +165,20 @@ CREATE TABLE IF NOT EXISTS credit_usage_history (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- Notifications table
+CREATE TABLE IF NOT EXISTS notifications (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    type VARCHAR(50) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    details TEXT,
+    metadata TEXT,
+    is_read INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- Insert default plans
 INSERT INTO plans (name, credits, price, validity_days, description, features)
 VALUES 
@@ -184,3 +198,5 @@ CREATE INDEX IF NOT EXISTS idx_payment_orders_user_id ON payment_orders(user_id)
 CREATE INDEX IF NOT EXISTS idx_payment_orders_order_id ON payment_orders(order_id);
 CREATE INDEX IF NOT EXISTS idx_monthly_usage_stats_user_id ON monthly_usage_stats(user_id);
 CREATE INDEX IF NOT EXISTS idx_credit_usage_history_user_id ON credit_usage_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at DESC);

@@ -4,6 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Credit Packages - CVApplyr</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    
+    <!-- Bootstrap & Landing Styles -->
+    <link rel="stylesheet" href="../bootstrap-4.1.1-dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <link rel="stylesheet" href="../css/animate.css">
+    <!-- PRELOADER -->
+    <link rel="stylesheet" href="../css/preloader.css">
+    <link rel="stylesheet" href="../css/style.css">
+    
     <!-- Razorpay Checkout SDK -->
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
     <style>
@@ -23,18 +33,39 @@
             --border-color: #E5E7EB;
         }
 
+        /* Apply gradient to entire page */
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%) !important;
+            background-attachment: fixed !important;
             min-height: 100vh;
-            padding: 0;
-            padding-bottom: 40px;
+        }
+
+        /* Override navbar to make it transparent */
+        .navbar,
+        .navbar-light,
+        #home .navbar {
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+
+        /* Ensure navbar stays transparent on mobile */
+        @media (max-width: 991px) {
+            #home .navbar {
+                background: transparent !important;
+            }
+        }
+
+        /* Packages Section Styles */
+        .packages-section {
+            padding: 40px 0 80px 0;
+            min-height: calc(100vh - 70px);
+            background: transparent;
         }
 
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            padding: 24px 20px;
+            padding: 0 20px;
         }
 
         .page-header {
@@ -365,10 +396,32 @@
             border-left-color: #3B82F6;
         }
     </style>
-    <script src="/js/common-header.js"></script>
-    <script src="/js/common-footer.js"></script>
 </head>
-<body>
+<body data-spy="scroll" data-target=".navbar">
+    <!-- PRELOADER -->
+    <div class="preloader-holder">
+        <div class="loading">
+            <div class="finger finger-1">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-2">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-3">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-4">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="last-finger">
+                <div class="last-finger-item"><i></i></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Landing Header -->
+    <div id="app-header"></div>
+    
     <div class="container">
         <!-- Page Header -->
         <div class="page-header">
@@ -663,5 +716,35 @@
             }, 3000);
         }
     </script>
+    
+    <!-- Landing Footer -->
+    <div id="landing-footer"></div>
+    
+    <!-- jQuery (required for Bootstrap) -->
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js"></script>
+    <!-- Popper.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.3/umd/popper.min.js"></script>
+    <!-- Bootstrap JS -->
+    <script src="../bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
+    <!-- Icons -->
+    <script src="https://cdn.jsdelivr.net/npm/vivid-icons"></script>
+    <script src="https://unpkg.com/vivid-icons"></script>
+    <!-- WOW Animation -->
+    <script src="../js/plugins/wow/wow.min.js"></script>
+    <!-- Easing -->
+    <script src="../js/plugins/jquery.easing.min.js"></script>
+    <!-- Main JS -->
+    <script src="../js/main.js"></script>
+    <script>
+        new WOW().init();
+        // Preloader
+        $(window).on('load', function() {
+            $('.preloader-holder').fadeOut('slow');
+        });
+    </script>
+    
+    <!-- App Header Component -->
+    <script src="/js/app-header.js"></script>
+    <script src="/js/landing-footer.js"></script>
 </body>
 </html>

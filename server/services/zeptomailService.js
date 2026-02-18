@@ -20,7 +20,7 @@ async function sendEmailViaZeptoMail(options) {
         throw new Error('ZEPTOMAIL_TOKEN not configured');
     }
 
-    const url = 'api.zeptomail.com/';
+    const url = 'api.zeptomail.in/';
     const token = process.env.ZEPTOMAIL_TOKEN;
 
     let client = new SendMailClient({ url, token });

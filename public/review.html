@@ -1,246 +1,170 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
     <title>Review Applications - CVApplyr</title>
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icon_light_background.png">
+
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css" integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
+    <!-- ANIMATE CSS -->
+    <link rel="stylesheet" href="/css/animate.css">
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="/css/style.css">
+
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --primary-color: #1e40af;
+            --primary-hover: #1e3a8a;
+            --secondary-color: #059669;
+            --secondary-hover: #047857;
+            --danger-color: #dc2626;
+            --bg-color: #f8fafc;
+            --card-bg: #FFFFFF;
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --border-color: #e2e8f0;
+            --accent-color: #3b82f6;
+            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+            --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
         }
 
+        /* Apply gradient to entire page */
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%) !important;
+            background-attachment: fixed !important;
             min-height: 100vh;
+            margin: 0;
             padding: 0;
         }
 
-        /* Top Navigation Bar */
-        .top-navbar {
-            background: white;
-            padding: 12px 24px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            position: sticky;
-            top: 0;
-            z-index: 100;
+        /* Override navbar to make it transparent */
+        .navbar,
+        .navbar-light,
+        #home .navbar {
+            background: transparent !important;
+            box-shadow: none !important;
         }
 
-        .navbar-left {
-            display: flex;
-            align-items: center;
-            gap: 16px;
+        /* Ensure navbar stays transparent on mobile */
+        @media (max-width: 991px) {
+            #home .navbar {
+                background: transparent !important;
+            }
         }
 
-        .navbar-brand {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            text-decoration: none;
+        /* Review Section */
+        .review-section {
+            padding: 40px 0 80px 0;
+            min-height: calc(100vh - 70px);
         }
 
-        .navbar-brand h1 {
-            color: #667eea;
-            font-size: 1.25rem;
-            font-weight: 700;
-            margin: 0;
-        }
-
-        .navbar-right {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
-
-        /* Credit Badge Styles */
-        .credit-badge {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 16px;
-            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
-            border-radius: 12px;
-            text-decoration: none;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
-            cursor: pointer;
-        }
-
-        .credit-badge:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 16px rgba(139, 92, 246, 0.4);
-        }
-
-        .credit-icon {
-            font-size: 20px;
-        }
-
-        .credit-number {
-            font-size: 18px;
-            font-weight: 700;
-            color: white;
-            min-width: 24px;
-            text-align: center;
-        }
-
-        .user-section {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 6px 12px;
-            background: #f8f9fa;
-            border-radius: 8px;
-        }
-
-        .user-avatar {
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: 600;
-            font-size: 0.75rem;
-        }
-
-        .user-details {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .user-name {
-            font-size: 0.8125rem;
-            font-weight: 600;
-            color: #333;
-            line-height: 1.2;
-        }
-
-        .user-email {
-            font-size: 0.6875rem;
-            color: #666;
-        }
-
-        .nav-actions {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .nav-btn {
-            display: flex !important;
-            align-items: center;
-            justify-content: center;
-            width: 36px;
-            height: 36px;
-            border-radius: 8px;
-            background: #f8f9fa;
-            border: 1px solid #e2e8f0;
-            cursor: pointer !important;
-            transition: all 0.2s ease;
-            text-decoration: none;
-            color: #555;
-            pointer-events: auto !important;
-            position: relative;
-            z-index: 10;
-        }
-
-        .nav-btn:hover {
-            background: #667eea;
-            border-color: #667eea;
-            color: white;
-        }
-
-        .nav-btn svg {
-            width: 18px;
-            height: 18px;
-        }
-
-        .logout-btn {
-            padding: 8px 14px;
-            background: transparent;
-            border: 1px solid #fecaca;
-            border-radius: 6px;
-            font-size: 0.75rem;
-            color: #dc2626;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            font-weight: 500;
-        }
-
-        .logout-btn:hover {
-            background: #fee2e2;
-            border-color: #dc2626;
-        }
-
-        .container {
+        .review-container {
             max-width: 1200px;
             margin: 0 auto;
-            padding: 20px;
+            padding: 0 20px;
         }
 
-        .page-header {
-            margin-bottom: 20px;
+        /* Welcome Section */
+        .app-header {
+            text-align: center;
+            margin-bottom: 32px;
+            animation: fadeInDown 0.6s ease-out;
         }
 
-        .page-title {
-            color: white;
-            font-size: 1.75rem;
+        .app-title {
+            font-size: 2rem;
             font-weight: 700;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            color: white;
+            margin-bottom: 8px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
 
+        .app-subtitle {
+            font-size: 1rem;
+            color: rgba(255, 255, 255, 0.95);
+            font-weight: 400;
+        }
+
+        /* Card Styles */
+        .card {
+            background: white;
+            border-radius: 16px;
+            padding: 32px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            margin-bottom: 24px;
+            border: none;
+            animation: fadeInUp 0.6s ease-out;
+        }
+
+        /* Compact Modern Tabs - Pills Style */
         .tabs-container {
             background: white;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            margin-bottom: 24px;
+            width: 100%;
             overflow: hidden;
         }
 
         .tabs {
             display: flex;
-            background: #f8f9fa;
-            border-bottom: 2px solid #e0e0e0;
+            gap: 8px;
+            padding: 16px;
+            background: transparent;
+            border-bottom: none;
             overflow-x: auto;
+            flex-wrap: wrap;
         }
 
+        /* Compact pill-style tabs */
         .tab {
-            padding: 15px 25px;
+            padding: 8px 16px;
             cursor: pointer;
-            border: none;
-            background: none;
-            font-size: 15px;
+            border: 1px solid #e0e0e0;
+            background: #f8f9fa;
+            font-size: 13px;
             color: #666;
             white-space: nowrap;
-            transition: all 0.3s;
-            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+            border-radius: 20px;
+            font-weight: 500;
         }
 
         .tab:hover {
             background: #e9ecef;
+            border-color: #667eea;
         }
 
         .tab.active {
-            color: #667eea;
-            border-bottom-color: #667eea;
-            background: white;
+            color: white;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-color: transparent;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
         }
 
         .tab-content {
             display: none;
-            padding: 30px;
+            padding: 24px;
+            min-width: 0;
+            width: 100%;
         }
 
         .tab-content.active {
             display: block;
         }
 
+        /* Edit Mode Controls */
         .edit-mode-control {
             display: flex;
             gap: 10px;
@@ -251,32 +175,52 @@
         .btn-edit {
             background: #17a2b8;
             color: white;
+            font-size: 13px;
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
         }
 
         .btn-edit:hover {
             background: #138496;
+            transform: translateY(-1px);
         }
 
         .btn-save {
             background: #28a745;
             color: white;
-            font-size: 14px;
-            padding: 10px 20px;
+            font-size: 13px;
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
         }
 
         .btn-save:hover {
             background: #218838;
+            transform: translateY(-1px);
         }
 
         .btn-cancel {
             background: #dc3545;
             color: white;
-            font-size: 14px;
-            padding: 10px 20px;
+            font-size: 13px;
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
         }
 
         .btn-cancel:hover {
             background: #c82333;
+            transform: translateY(-1px);
         }
 
         .edit-actions {
@@ -311,19 +255,23 @@
 
         .form-grid {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
             gap: 20px;
             margin-bottom: 25px;
+            width: 100%;
         }
 
         .form-group {
             display: flex;
             flex-direction: column;
+            min-width: 0;
         }
 
         .form-group.full-width {
             grid-column: 1 / -1;
             margin-bottom: 20px;
+            width: 100%;
+            min-width: 0;
         }
 
         .form-group label {
@@ -336,12 +284,14 @@
         .form-group input,
         .form-group textarea,
         .form-group select {
+            width: 100%;
             padding: 12px;
             border: 1px solid #ddd;
             border-radius: 5px;
             font-size: 14px;
             font-family: inherit;
             height: 44px;
+            box-sizing: border-box;
         }
 
         .form-group select.address-dropdown {
@@ -363,6 +313,7 @@
         }
 
         .rich-text-editor {
+            width: 100%;
             min-height: 600px;
             border: 1px solid #ddd;
             border-radius: 5px;
@@ -373,6 +324,7 @@
             overflow-y: auto;
             white-space: pre-wrap;
             word-wrap: break-word;
+            box-sizing: border-box;
         }
 
         .rich-text-editor.editable {
@@ -420,50 +372,93 @@
 
         .buttons {
             display: flex;
-            gap: 15px;
-            margin-top: 25px;
+            gap: 12px;
+            margin-top: 24px;
+            flex-wrap: wrap;
+            width: 100%;
         }
 
         .btn {
-            padding: 12px 30px;
+            padding: 10px 20px;
             border: none;
-            border-radius: 5px;
-            font-size: 15px;
+            border-radius: 8px;
+            font-size: 14px;
             cursor: pointer;
-            transition: all 0.3s;
+            transition: all 0.2s;
             font-weight: 500;
         }
 
         .btn-primary {
-            background: #667eea;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
         }
 
         .btn-primary:hover {
-            background: #5568d3;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            transform: translateY(-1px);
         }
 
         .btn-success {
             background: #28a745;
             color: white;
+            box-shadow: 0 2px 8px rgba(40, 167, 69, 0.3);
         }
 
         .btn-success:hover {
             background: #218838;
+            box-shadow: 0 4px 12px rgba(40, 167, 69, 0.4);
+            transform: translateY(-1px);
         }
 
         .btn-secondary {
             background: #6c757d;
             color: white;
+            box-shadow: 0 2px 8px rgba(108, 117, 125, 0.3);
         }
 
         .btn-secondary:hover {
             background: #5a6268;
+            box-shadow: 0 4px 12px rgba(108, 117, 125, 0.4);
+            transform: translateY(-1px);
         }
 
         .btn:disabled {
             opacity: 0.6;
             cursor: not-allowed;
+            transform: none !important;
+        }
+
+        /* Action Buttons Container - Compact Row Layout */
+        #parent-actions {
+            margin-top: 0;
+        }
+
+        .action-buttons-row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .action-buttons-row .btn {
+            flex: 1;
+            min-width: 200px;
+            max-width: 280px;
+            padding: 12px 20px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        @media (max-width: 768px) {
+            .action-buttons-row {
+                flex-direction: column;
+            }
+
+            .action-buttons-row .btn {
+                width: 100%;
+                max-width: 100%;
+            }
         }
 
         .loading {
@@ -491,6 +486,28 @@
             100% { transform: rotate(360deg); }
         }
 
+        @keyframes fadeInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
         .toast {
             position: fixed;
             top: 20px;
@@ -510,6 +527,10 @@
 
         .toast.error {
             border-left: 4px solid #dc3545;
+        }
+
+        .toast.info {
+            border-left: 4px solid #17a2b8;
         }
 
         .toast.active {
@@ -565,10 +586,6 @@
             margin: 0 auto 20px;
         }
 
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
         .loading-message {
             font-size: 1rem;
             font-weight: 600;
@@ -593,57 +610,236 @@
             background: #dc2626;
         }
 
+        /* Action Buttons Container - Compact Row Layout */
+        #parent-actions {
+            margin-top: 0;
+        }
+
+        .action-buttons-row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .action-buttons-row .btn {
+            flex: 1;
+            min-width: 200px;
+            max-width: 280px;
+            padding: 12px 20px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
         @media (max-width: 768px) {
+            .action-buttons-row {
+                flex-direction: column;
+            }
+
+            .action-buttons-row .btn {
+                width: 100%;
+                max-width: 100%;
+            }
+
             .form-grid {
                 grid-template-columns: 1fr;
             }
 
             .tabs {
-                flex-direction: column;
-            }
-            
-            .top-navbar {
-                padding: 10px 16px;
+                flex-direction: row;
+                gap: 6px;
+                padding: 12px;
             }
 
-            .user-details {
-                display: none;
+            .tab {
+                font-size: 12px;
+                padding: 6px 12px;
             }
 
-            .navbar-brand h1 {
-                font-size: 1rem;
+            .app-title {
+                font-size: 1.5rem;
             }
 
-            .page-title {
-                font-size: 1.25rem;
+            .card {
+                padding: 20px;
+            }
+        }
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            animation: fadeIn 0.2s ease-out;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            max-height: 85vh;
+            overflow-y: auto;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            animation: slideInModal 0.3s ease-out;
+        }
+
+        .modal-header {
+            padding: 24px 28px;
+            border-bottom: 1px solid #e5e7eb;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #1f2937;
+        }
+
+        .close-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+            font-size: 1.5rem;
+            color: #6b7280;
+        }
+
+        .close-btn:hover {
+            background: #f3f4f6;
+            color: #1f2937;
+        }
+
+        .modal-body {
+            padding: 24px 28px;
+        }
+
+        .modal-message {
+            color: #374151;
+            font-size: 1rem;
+            line-height: 1.5;
+            margin-bottom: 0;
+        }
+
+        .modal-footer {
+            padding: 20px 28px;
+            border-top: 1px solid #e5e7eb;
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        .btn-modal-cancel {
+            background: white;
+            color: #374151;
+            border: 1px solid #d1d5db;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-modal-cancel:hover {
+            background: #f3f4f6;
+        }
+
+        .btn-modal-confirm {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 4px 6px -1px rgba(102, 126, 234, 0.3);
+            transition: all 0.2s ease;
+        }
+
+        .btn-modal-confirm:hover {
+            box-shadow: 0 10px 15px -3px rgba(102, 126, 234, 0.4);
+            transform: translateY(-1px);
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes slideInModal {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
             }
         }
     </style>
-    <script src="/js/common-header.js?v=3"></script>
+    <script src="/js/app-header.js"></script>
     <script src="/js/credit-validation.js"></script>
-    <script src="/js/common-footer.js"></script>
+    <script src="/js/app-footer.js"></script>
 </head>
+
 <body>
-    <div class="container">
+    <div id="app-header"></div>
+    
+    <section id="home">
+        <!-- Page content -->
+        <div class="review-section">
+            <div class="review-container">
+                <!-- App Header -->
+                <div class="app-header">
+                    <h1 class="app-title">Review Applications</h1>
+                    <p class="app-subtitle">Review and send your applications</p>
+                </div>
 
-        <div class="tabs-container">
-            <div class="tabs" id="tabs"></div>
-            <div id="tab-contents"></div>
-        </div>
+                <!-- Tabs Card -->
+                <div class="tabs-container">
+                    <div class="tabs" id="tabs"></div>
+                    <div id="tab-contents"></div>
+                </div>
 
-        <!-- Parent-Level Action Buttons -->
-        <div id="parent-actions" style="margin-top: 20px; padding: 0 20px;">
-            <button id="generateAllBtn" class="btn btn-primary" style="width: 100%; padding: 16px; margin-bottom: 10px; font-size: 16px;" onclick="generateAllCoverLetters()">
-                🚀 Generate All Cover Letters
-            </button>
-            <button id="sendAllBtn" class="btn btn-success" style="width: 100%; padding: 16px; margin-bottom: 10px; font-size: 16px;" onclick="sendAllApplications()">
-                📧 Send to All
-            </button>
-            <button id="generateAndSendAllBtn" class="btn" style="width: 100%; padding: 16px; background: #10b981; color: white; font-size: 16px;" onclick="generateAndSendAll()">
-                🚀📧 Generate & Send to All
-            </button>
+                <!-- Parent-Level Action Buttons - Compact Row -->
+                <div id="parent-actions" class="card">
+                    <div class="action-buttons-row">
+                        <button id="generateAllBtn" class="btn btn-primary" onclick="generateAllCoverLetters()">
+                            🚀 Generate All Cover Letters
+                        </button>
+                        <button id="sendAllBtn" class="btn btn-success" onclick="sendAllApplications()">
+                            📧 Send to All
+                        </button>
+                        <button id="generateAndSendAllBtn" class="btn" style="background: #10b981; color: white;" onclick="generateAndSendAll()">
+                            🚀📧 Generate & Send All
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
-    </div>
+    </section>
 
     <!-- Loading Overlay -->
     <div id="loadingOverlay" class="loading-overlay">
@@ -656,6 +852,23 @@
 
     <div class="toast" id="toast"></div>
 
+    <!-- Confirmation Modal -->
+    <div id="confirmModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title" id="confirmModalTitle">Confirm Action</h2>
+                <button class="close-btn" onclick="closeConfirmModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-message" id="confirmModalMessage"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-modal-cancel" onclick="closeConfirmModal()">Cancel</button>
+                <button class="btn-modal-confirm" id="confirmModalBtn" onclick="handleConfirm()">Confirm</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         console.log('Review page script loaded');
         
@@ -667,33 +880,42 @@
             window.location.href = '/login';
         }
 
-        // Load user info
-        async function loadUserInfo() {
-            try {
-                const response = await fetch('/api/user', {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                if (response.ok) {
-                    const user = await response.json();
-                    const initials = (user.fullName || user.email || 'U').split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
-                    document.getElementById('userAvatar').textContent = initials;
-                    document.getElementById('userName').textContent = user.fullName || 'User';
-                    document.getElementById('userEmail').textContent = user.email || '';
-                }
-            } catch (error) {
-                console.error('Error loading user info:', error);
+        // Custom Modal Management
+        let confirmCallback = null;
+        
+        function showConfirmModal(message, title = 'Confirm Action', confirmText = 'Confirm') {
+            return new Promise((resolve) => {
+                const modal = document.getElementById('confirmModal');
+                const messageEl = document.getElementById('confirmModalMessage');
+                const titleEl = document.getElementById('confirmModalTitle');
+                const confirmBtn = document.getElementById('confirmModalBtn');
+                
+                messageEl.textContent = message;
+                titleEl.textContent = title;
+                confirmBtn.textContent = confirmText;
+                
+                confirmCallback = resolve;
+                modal.classList.add('active');
+            });
+        }
+        
+        function closeConfirmModal() {
+            const modal = document.getElementById('confirmModal');
+            modal.classList.remove('active');
+            if (confirmCallback) {
+                confirmCallback(false);
+                confirmCallback = null;
             }
         }
-
-        // Logout function
-        function handleLogout() {
-            localStorage.removeItem('authToken');
-            sessionStorage.clear();
-            window.location.href = '/login';
+        
+        function handleConfirm() {
+            const modal = document.getElementById('confirmModal');
+            modal.classList.remove('active');
+            if (confirmCallback) {
+                confirmCallback(true);
+                confirmCallback = null;
+            }
         }
-
-        // Load user info on page load
-        loadUserInfo();
 
         let recipients = [];
         let currentTab = 0;
@@ -778,9 +1000,6 @@
             }
         }
 
-        // Load review cover letters from localStorage
-        // Note: loadReviewCoverLetters is now handled by loadExistingCoverLetters() from database
-
         // Save review cover letters to database
         async function saveReviewCoverLetters() {
             try {
@@ -806,7 +1025,6 @@
 
         // Load data on page load
         loadApplicationHistory();
-        // Note: Cover letters are loaded from database via loadExistingCoverLetters() in DOMContentLoaded
 
         // Loading overlay functions
         let progressInterval = null;
@@ -818,6 +1036,8 @@
             messageEl.textContent = message;
             lastProgressMessage = message;
             overlay.classList.add('active');
+            // Scroll to top when showing loading overlay
+            window.scrollTo({ top: 0, behavior: 'smooth' });
         }
         
         function updateLoadingMessage(message) {
@@ -862,15 +1082,26 @@
                 
                 const elapsedTime = Date.now() - startTime;
                 
-                // Update message based on elapsed time
-                for (let i = steps.length - 1; i >= 0; i--) {
-                    if (elapsedTime >= steps[i].time && currentStepIndex !== i) {
-                        currentStepIndex = i;
-                        updateLoadingMessage(steps[i].message);
-                        break;
+                // Find the right step - only update if we've moved to a new step
+                for (let i = 0; i < steps.length; i++) {
+                    if (i < steps.length - 1) {
+                        // Check if we're at this step but not yet at the next one
+                        if (elapsedTime >= steps[i].time && elapsedTime < steps[i + 1].time) {
+                            if (currentStepIndex !== i) {
+                                currentStepIndex = i;
+                                updateLoadingMessage(steps[i].message);
+                            }
+                            break;
+                        }
+                    } else {
+                        // Last step
+                        if (elapsedTime >= steps[i].time && currentStepIndex !== i) {
+                            currentStepIndex = i;
+                            updateLoadingMessage(steps[i].message);
+                        }
                     }
                 }
-            }, 420); // Check for message updates every 420ms
+            }, 500); // Check for message updates every 500ms
         }
         
         function stopProgressiveLoading() {
@@ -936,37 +1167,35 @@
             }
         }
 
-        // Load user profile data
-        async function loadUserProfile() {
+        // Get current credit balance from API
+        async function getCredits() {
             try {
-                const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+                const authToken = localStorage.getItem('authToken');
+                if (!authToken) return 0;
                 
-                // Set user avatar and details
-                const userAvatar = document.getElementById('userAvatar');
-                const userName = document.getElementById('userName');
-                const userEmail = document.getElementById('userEmail');
+                const response = await fetch('/api/user/credits', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
                 
-                if (userAvatar && userData.fullName) {
-                    const initials = userData.fullName
-                        .split(' ')
-                        .map(n => n[0])
-                        .join('')
-                        .toUpperCase()
-                        .substring(0, 2);
-                    userAvatar.textContent = initials;
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success) {
+                        // Update badge
+                        const creditBadge = document.getElementById('creditBadgeNumber');
+                        if (creditBadge) {
+                            creditBadge.textContent = data.balance || 0;
+                        }
+                        return data.balance || 0;
+                    }
                 }
-                
-                if (userName && userData.fullName) {
-                    userName.textContent = userData.fullName;
-                }
-                
-                if (userEmail && userData.email) {
-                    userEmail.textContent = userData.email;
-                }
-                
-                console.log('👤 Loaded user profile:', userData.fullName);
+                return 0;
             } catch (error) {
-                console.error('Error loading user profile:', error);
+                console.error('Error getting credits:', error);
+                return 0;
             }
         }
 
@@ -974,8 +1203,7 @@
         window.addEventListener('DOMContentLoaded', async () => {
             console.log('🔍 DOMContentLoaded event fired');
             
-            // Load user profile and credits first
-            await loadUserProfile();
+            // Load credits first
             await loadCredits();
             
             const authToken = localStorage.getItem('authToken');
@@ -1189,7 +1417,7 @@
                         
                         if (needsRegeneration) {
                             console.log('🔄 Recipient data changed - prompting user for regeneration...');
-                            const confirmed = confirm('Recipient data has changed. Would you like to regenerate cover letters? This will use credits.');
+                            const confirmed = await showConfirmModal('Recipient data has changed. Would you like to regenerate cover letters? This will use credits.', 'Regenerate Cover Letters', 'Regenerate');
                             if (confirmed) {
                                 await generateAllCoverLetters();
                             }
@@ -1199,8 +1427,8 @@
                         } else {
                             console.log('ℹ️ No valid cover letters found - prompting to generate');
                             showToast('No saved cover letters found', 'info');
-                            setTimeout(() => {
-                                const confirmed = confirm('No saved cover letters found. Would you like to generate them now? This will use credits.');
+                            setTimeout(async () => {
+                                const confirmed = await showConfirmModal('No saved cover letters found. Would you like to generate them now? This will use credits.', 'Generate Cover Letters', 'Generate');
                                 if (confirmed) {
                                     generateAllCoverLetters();
                                 }
@@ -1209,8 +1437,8 @@
                     } else {
                         console.log('ℹ️ No existing cover letters found - prompting to generate');
                         showToast('No saved cover letters found', 'info');
-                        setTimeout(() => {
-                            const confirmed = confirm('No saved cover letters found. Would you like to generate them now? This will use credits.');
+                        setTimeout(async () => {
+                            const confirmed = await showConfirmModal('No saved cover letters found. Would you like to generate them now? This will use credits.', 'Generate Cover Letters', 'Generate');
                             if (confirmed) {
                                 generateAllCoverLetters();
                             }
@@ -1219,8 +1447,8 @@
                 } else {
                     console.log('ℹ️ No existing cover letters - prompting to generate');
                     showToast('No saved cover letters found', 'info');
-                    setTimeout(() => {
-                        const confirmed = confirm('No saved cover letters found. Would you like to generate them now? This will use credits.');
+                    setTimeout(async () => {
+                        const confirmed = await showConfirmModal('No saved cover letters found. Would you like to generate them now? This will use credits.', 'Generate Cover Letters', 'Generate');
                         if (confirmed) {
                             generateAllCoverLetters();
                         }
@@ -1229,8 +1457,8 @@
             } catch (error) {
                 console.error('⚠️ Error loading existing cover letters:', error);
                 showToast('Failed to load cover letters', 'error');
-                setTimeout(() => {
-                    const confirmed = confirm('Would you like to generate cover letters? This will use credits.');
+                setTimeout(async () => {
+                    const confirmed = await showConfirmModal('Would you like to generate cover letters? This will use credits.', 'Generate Cover Letters', 'Generate');
                     if (confirmed) {
                         generateAllCoverLetters();
                     }
@@ -1312,50 +1540,7 @@
             }
         }
 
-        async function generateAllCoverLetters() {
-            // Check credits first
-            try {
-                const creditsResponse = await fetch('/api/user/credits', {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-                
-                if (creditsResponse.ok) {
-                    const creditsData = await creditsResponse.json();
-                    const availableCredits = creditsData.balance || 0;
-                    const requiredCredits = recipients.length;
-                    
-                    if (availableCredits < requiredCredits) {
-                        showToast(`Insufficient credits! You need ${requiredCredits} credit(s) but only have ${availableCredits}. Visit the Usage page to purchase more.`, 'error');
-                        return;
-                    }
-                    
-                    // Confirm with user
-                    const confirmed = confirm(`Generate cover letters for ${recipients.length} recipient(s)? This will use ${requiredCredits} credit(s). You have ${availableCredits} credit(s) available.`);
-                    if (!confirmed) {
-                        return;
-                    }
-                } else {
-                    showToast('Unable to verify credit balance', 'error');
-                    return;
-                }
-            } catch (error) {
-                console.error('Error checking credits:', error);
-                showToast('Unable to verify credit balance', 'error');
-                return;
-            }
-            
-            // Generate all cover letters
-            for (let i = 0; i < recipients.length; i++) {
-                await generateCoverLetter(i);
-            }
-            
-            // Reload credits after generation
-            await loadCredits();
-        }
-
-        async function generateCoverLetter(index) {
+        async function generateCoverLetter(index, isRegenerate = false) {
             const recipient = recipients[index];
             const loading = document.querySelector(`#tab-${index} .loading`);
             const formContent = document.querySelector(`#tab-${index} .form-content`);
@@ -1364,9 +1549,15 @@
                 isCancelled = false;
                 abortController = new AbortController();
                 
-                loading.style.display = 'block';
-                formContent.style.display = 'none';
-                showProgressiveLoading(recipient.website || recipient.companyUrl);
+                // For regenerate, only show the global loading overlay without hiding content
+                if (isRegenerate) {
+                    showProgressiveLoading(recipient.website || recipient.companyUrl);
+                } else {
+                    // For initial generation, show the tab-level loading
+                    loading.style.display = 'block';
+                    formContent.style.display = 'none';
+                    showProgressiveLoading(recipient.website || recipient.companyUrl);
+                }
 
                 const response = await fetch('/api/generate-cover-letter-details', {
                     method: 'POST',
@@ -1408,6 +1599,9 @@
 
                 const data = await response.json();
 
+                console.log('📦 API Response data:', data);
+                console.log('📍 Locations in response:', data.locations?.length || 0);
+
                 // Populate fields
                 document.getElementById(`to-${index}`).value = 'The Hiring Manager';
                 document.getElementById(`employer-${index}`).value = data.companyName || 'Company';
@@ -1417,8 +1611,16 @@
                 const addressDropdown = document.getElementById(`address-${index}`);
                 addressDropdown.innerHTML = ''; // Clear loading message
                 
-                if (data.locations && data.locations.length > 0) {
-                    data.locations.forEach((location, locIndex) => {
+                // Use locations from API response, or fallback to existing data if regenerating
+                let locationsToUse = data.locations;
+                if ((!locationsToUse || locationsToUse.length === 0) && isRegenerate && reviewCoverLetters[index]?.locations) {
+                    // When regenerating, preserve existing locations if API doesn't return them
+                    locationsToUse = reviewCoverLetters[index].locations;
+                    console.log('📍 Using existing locations from previous generation');
+                }
+                
+                if (locationsToUse && locationsToUse.length > 0) {
+                    locationsToUse.forEach((location, locIndex) => {
                         const option = document.createElement('option');
                         
                         // Format: Full Address, Country (if country not in address)
@@ -1437,8 +1639,13 @@
                         option.dataset.city = location.city;
                         option.dataset.address = location.address;
                         
-                        // Set headquarters as default selected
-                        if (location.isHeadquarters) {
+                        // Set headquarters as default selected or preserve previous selection
+                        if (isRegenerate && reviewCoverLetters[index]?.address) {
+                            // Preserve the previously selected address
+                            if (displayText === reviewCoverLetters[index].address) {
+                                option.selected = true;
+                            }
+                        } else if (location.isHeadquarters) {
                             option.selected = true;
                         }
                         
@@ -1456,9 +1663,13 @@
                 coverLetterDiv.innerHTML = data.coverLetterHtml;
                 coverLetterDiv.contentEditable = false; // Not editable until edit mode is toggled
 
+                // Get the selected address from dropdown
+                const selectedAddress = addressDropdown.value;
+
                 // Store in reviewCoverLetters
                 reviewCoverLetters[index] = {
                     ...data,
+                    address: selectedAddress, // Store the selected address
                     generated: true,
                     sent: false,
                     recipientEmail: recipient.email,
@@ -1471,45 +1682,21 @@
                 incrementGenerated();
                 
                 // Reload credit balance after successful generation
-                try {
-                    console.log('🔄 Reloading credits...');
-                    const creditsResponse = await fetch('/api/user/credits', {
-                        method: 'GET',
-                        headers: {
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': 'application/json',
-                        }
-                    });
-                    
-                    if (creditsResponse.ok) {
-                        const creditsData = await creditsResponse.json();
-                        if (creditsData.success) {
-                            const creditBadge = document.getElementById('creditBadgeNumber');
-                            if (creditBadge) {
-                                creditBadge.textContent = creditsData.balance || 0;
-                                console.log('💳 Updated credit badge to:', creditsData.balance);
-                            } else {
-                                console.warn('⚠️ Credit badge element not found');
-                            }
-                            console.log('💳 Updated credits after generation:', creditsData.balance);
-                        } else {
-                            console.warn('⚠️ Credits response not successful:', creditsData);
-                        }
-                    } else {
-                        console.error('❌ Failed to fetch credits, status:', creditsResponse.status);
-                    }
-                } catch (creditsError) {
-                    console.error('❌ Failed to reload credits:', creditsError);
-                }
+                await getCredits();
 
-                loading.style.display = 'none';
-                formContent.style.display = 'block';
+                // Only toggle loading/content display for initial generation
+                if (!isRegenerate) {
+                    loading.style.display = 'none';
+                    formContent.style.display = 'block';
+                }
                 hideLoading();
 
             } catch (error) {
                 if (error.name === 'AbortError') {
                     console.log('🛑 Generation aborted');
-                    loading.style.display = 'none';
+                    if (!isRegenerate) {
+                        loading.style.display = 'none';
+                    }
                     hideLoading();
                     return;
                 }
@@ -1518,7 +1705,9 @@
                 if (!isCancelled) {
                     showToast('Failed to generate cover letter for ' + recipient.email, 'error');
                 }
-                loading.style.display = 'none';
+                if (!isRegenerate) {
+                    loading.style.display = 'none';
+                }
             }
         }
 
@@ -1530,21 +1719,18 @@
                 return;
             }
             
-            // Get current credit count
-            const currentCredits = document.getElementById('creditBadgeNumber')?.textContent || '?';
+            // Get current credit count from API
+            const currentCredits = await getCredits();
             console.log('💳 Credits before regeneration:', currentCredits);
             
-            if (!confirm(`Regenerate this cover letter? This will use 1 credit. You have ${currentCredits} credit(s).`)) return;
+            const confirmed = await showConfirmModal(`Regenerate this cover letter? This will use 1 credit. You have ${currentCredits} credit(s).`, 'Regenerate Cover Letter', 'Regenerate');
+            if (!confirmed) return;
             
-            await generateCoverLetter(index);
+            await generateCoverLetter(index, true); // Pass true to indicate regeneration
             
             // Force reload credits after a brief delay to ensure backend has updated
-            await new Promise(resolve => setTimeout(resolve, 500));
-            await loadCredits();
-            
-            // Wait a bit more and check credits again
-            await new Promise(resolve => setTimeout(resolve, 500));
-            const newCredits = document.getElementById('creditBadgeNumber')?.textContent || '?';
+            await new Promise(resolve => setTimeout(resolve, 800));
+            const newCredits = await getCredits();
             console.log('💳 Credits after regeneration:', newCredits);
             
             showToast(`Cover letter regenerated! Credits: ${currentCredits} → ${newCredits}`, 'success');
@@ -1567,7 +1753,10 @@
             const addressDropdown = document.getElementById(`address-${index}`);
             const companyAddress = addressDropdown ? addressDropdown.value : '';
 
-            if (!skipConfirm && !confirm(`Send application to ${recipient.email}?`)) return;
+            if (!skipConfirm) {
+                const confirmed = await showConfirmModal(`Send application to ${recipient.email}?`, 'Send Application', 'Send');
+                if (!confirmed) return;
+            }
 
             try {
                 if (!skipLoadingUI) {
@@ -1595,9 +1784,9 @@
                         recipientEmail: recipient.email,
                         websiteUrl: recipient.website,
                         position: recipient.position,
-                        coverLetterText: coverLetterHtml,  // Send HTML with <strong> tags, not plain text
+                        coverLetterText: coverLetterHtml,
                         companyName: companyName,
-                        companyAddress: companyAddress  // Include address
+                        companyAddress: companyAddress
                     })
                 });
 
@@ -1702,7 +1891,7 @@
             
             const recipient = recipients[index];
             const coverLetterDiv = document.getElementById(`cover-letter-${index}`);
-            const coverLetterHtml = coverLetterDiv.innerHTML; // Use HTML to preserve formatting
+            const coverLetterHtml = coverLetterDiv.innerHTML;
             const companyName = document.getElementById(`employer-${index}`).value;
             
             // Get selected company address from dropdown
@@ -1754,11 +1943,6 @@
                 console.error('Error generating PDF:', error);
                 showToast('Failed to generate PDF', 'error');
             }
-        }
-
-        function goBackToDashboard() {
-            // Recipients are already in sessionStorage, they will be restored on index.html
-            window.location.href = '/';
         }
 
         // Store original values for cancel functionality
@@ -1901,44 +2085,39 @@
         // Parent-level action functions
         async function generateAllCoverLetters() {
             // Check credits first
-            const hasCredits = await creditValidation.checkCredits();
-            if (!hasCredits) {
-                creditValidation.showModal();
+            try {
+                const availableCredits = await getCredits();
+                const requiredCredits = recipients.length;
+                
+                if (availableCredits < requiredCredits) {
+                    showToast(`Insufficient credits! You need ${requiredCredits} credit(s) but only have ${availableCredits}. Visit the Usage page to purchase more.`, 'error');
+                    return;
+                }
+                
+                // Confirm with user
+                const confirmed = await showConfirmModal(`Generate cover letters for ${recipients.length} recipient(s)? This will use ${requiredCredits} credit(s). You have ${availableCredits} credit(s) available.`, 'Generate All Cover Letters', 'Generate All');
+                if (!confirmed) {
+                    return;
+                }
+            } catch (error) {
+                console.error('Error checking credits:', error);
+                showToast('Unable to verify credit balance', 'error');
                 return;
             }
             
-            if (recipients.length === 0) {
-                showToast('No recipients to generate cover letters for', 'error');
-                return;
-            }
-
-            showLoading('Generating all cover letters...');
-            let successCount = 0;
-            let errorCount = 0;
-
+            // Get credits before generation
+            const creditsBefore = await getCredits();
+            
+            // Generate all cover letters
             for (let i = 0; i < recipients.length; i++) {
-                try {
-                    await regenerateCoverLetter(i);
-                    successCount++;
-                } catch (error) {
-                    console.error(`Error generating cover letter for recipient ${i}:`, error);
-                    errorCount++;
-                }
+                await generateCoverLetter(i);
             }
-
-            hideLoading();
-            if (errorCount === 0) {
-                showToast(`Successfully generated ${successCount} cover letter(s)!`, 'success');
-                // Re-enable Send to All button
-                const sendAllBtn = document.getElementById('sendAllBtn');
-                if (sendAllBtn) {
-                    sendAllBtn.disabled = false;
-                    sendAllBtn.innerHTML = '📧 Send to All';
-                    sendAllBtn.style.opacity = '1';
-                }
-            } else {
-                showToast(`Generated ${successCount} cover letter(s), ${errorCount} failed`, 'error');
-            }
+            
+            // Reload credits after generation
+            await new Promise(resolve => setTimeout(resolve, 800));
+            const creditsAfter = await getCredits();
+            
+            showToast(`All cover letters generated! Credits: ${creditsBefore} → ${creditsAfter}`, 'success');
         }
 
         async function sendAllApplications() {
@@ -1954,7 +2133,7 @@
                 return;
             }
 
-            const confirmed = confirm(`Are you sure you want to send applications to all ${recipients.length} recipient(s)?`);
+            const confirmed = await showConfirmModal(`Are you sure you want to send applications to all ${recipients.length} recipient(s)?`, 'Send All Applications', 'Send All');
             if (!confirmed) return;
 
             showLoading('Sending all applications...');
@@ -1999,7 +2178,7 @@
                 return;
             }
 
-            const confirmed = confirm(`Generate and send applications to all ${recipients.length} recipient(s)?`);
+            const confirmed = await showConfirmModal(`Generate and send applications to all ${recipients.length} recipient(s)?`, 'Generate & Send All', 'Generate & Send All');
             if (!confirmed) return;
 
             await generateAllCoverLetters();
@@ -2017,5 +2196,12 @@
         }
     </script>
 
+    <!-- Bootstrap and other scripts -->
+    <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js" integrity="sha384-q8i/X+965DzO0rT7abK41JStQIAqVgRVzpbzo5smXKp4YfRvH+8abtTE1Pi6jizo" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.3/umd/popper.min.js" integrity="sha384-ZMP7rVo3mIykV+2+9J3UJ46jBk0WLaUAdn689aCwoqbBJiSnjAK/l8WvCWPIPm49" crossorigin="anonymous"></script>
+    <script src="/bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
+
+    <div id="app-footer"></div>
 </body>
+
 </html>

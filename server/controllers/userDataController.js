@@ -330,6 +330,44 @@ const incrementSent = async (req, res) => {
     }
 };
 
+// Update application status (mark as replied)
+const updateApplicationStatus = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const id = req.params.id; // Get ID from URL parameter
+        const { replyReceived, replyDate } = req.body;
+
+        console.log('🔄 [UPDATE STATUS] Request received:', { userId, id, replyReceived, replyDate });
+
+        if (!id) {
+            console.error('❌ [UPDATE STATUS] No ID provided');
+            return res.status(400).json({ error: 'Application ID is required' });
+        }
+
+        // Properly handle null values for PostgreSQL
+        const replyReceivedValue = replyReceived ? 1 : 0;
+        const replyDateValue = replyDate && replyDate !== 'null' && replyDate !== '' ? replyDate : null;
+
+        console.log('🔄 [UPDATE STATUS] Values to update:', { replyReceivedValue, replyDateValue });
+
+        // Update only the specific application that belongs to this user
+        const result = await dbConfig.run(
+            'UPDATE application_history SET reply_received = ?, reply_date = ? WHERE id = ? AND user_id = ?',
+            [replyReceivedValue, replyDateValue, id, userId]
+        );
+
+        console.log('✅ [UPDATE STATUS] Database updated successfully', result);
+
+        res.json({
+            success: true,
+            message: 'Application status updated'
+        });
+    } catch (error) {
+        console.error('❌ [UPDATE STATUS] Error:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
 module.exports = {
     saveRecipients,
     getRecipients,
@@ -340,5 +378,6 @@ module.exports = {
     getCounters,
     updateCounters,
     incrementGenerated,
-    incrementSent
+    incrementSent,
+    updateApplicationStatus
 };

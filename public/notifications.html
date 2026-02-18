@@ -1,0 +1,866 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+    <title>Notifications - CVApplyr</title>
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icon_light_background.png">
+
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css" integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
+    <!-- ANIMATE CSS -->
+    <link rel="stylesheet" href="/css/animate.css">
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="/css/style.css">
+
+    <style>
+        :root {
+            --primary-color: #1e40af;
+            --primary-hover: #1e3a8a;
+            --secondary-color: #059669;
+            --secondary-hover: #047857;
+            --danger-color: #dc2626;
+            --bg-color: #f8fafc;
+            --card-bg: #FFFFFF;
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --border-color: #e2e8f0;
+            --accent-color: #3b82f6;
+            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+            --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        }
+
+        /* Apply gradient to entire page */
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%) !important;
+            background-attachment: fixed !important;
+            min-height: 100vh;
+            margin: 0;
+            padding: 0;
+        }
+
+        /* Override navbar to make it transparent */
+        .navbar,
+        .navbar-light,
+        #home .navbar {
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+
+        /* Ensure navbar stays transparent on mobile */
+        @media (max-width: 991px) {
+            #home .navbar {
+                background: transparent !important;
+            }
+        }
+
+        /* Notifications Section */
+        .notifications-section {
+            padding: 40px 0 80px 0;
+            min-height: calc(100vh - 70px);
+        }
+
+        .notifications-container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        /* Page Header */
+        .page-header {
+            background: white;
+            padding: 32px;
+            border-radius: 16px;
+            margin-bottom: 24px;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            animation: fadeInDown 0.6s ease-out;
+        }
+
+        .page-header h1 {
+            font-size: 2rem;
+            margin-bottom: 8px;
+            font-weight: 700;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+        }
+
+        .page-header h1 i {
+            font-size: 2rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .page-header p {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        /* Actions Bar */
+        .actions-bar {
+            background: white;
+            padding: 16px 24px;
+            border-radius: 12px;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            animation: fadeInUp 0.6s ease-out;
+        }
+
+        .actions-bar .unread-count {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .actions-bar .unread-count .count {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-weight: 600;
+            margin-left: 6px;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 12px;
+        }
+
+        .btn-action {
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-mark-read {
+            background: #f0f9ff;
+            color: #0369a1;
+        }
+
+        .btn-mark-read:hover {
+            background: #e0f2fe;
+            transform: translateY(-1px);
+        }
+
+        .btn-clear-read {
+            background: #fef2f2;
+            color: #dc2626;
+        }
+
+        .btn-clear-read:hover {
+            background: #fee2e2;
+            transform: translateY(-1px);
+        }
+
+        /* Notifications List */
+        .notifications-list {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .notification-card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            transition: all 0.3s ease;
+            animation: fadeInUp 0.6s ease-out;
+            border-left: 4px solid transparent;
+            position: relative;
+        }
+
+        .notification-card.unread {
+            border-left-color: #667eea;
+            background: linear-gradient(to right, #f8f9ff 0%, white 100%);
+        }
+
+        .notification-card:hover {
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+            transform: translateY(-2px);
+        }
+
+        .notification-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+
+        .notification-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+            margin-right: 16px;
+            flex-shrink: 0;
+        }
+
+        .notification-icon.cover-letter {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+            color: white;
+        }
+
+        .notification-icon.email {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            color: white;
+        }
+
+        .notification-icon.credits {
+            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+            color: white;
+        }
+
+        .notification-icon.profile {
+            background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+            color: white;
+        }
+
+        .notification-content {
+            flex: 1;
+        }
+
+        .notification-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .notification-message {
+            font-size: 0.9375rem;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .notification-details {
+            font-size: 0.875rem;
+            color: #64748b;
+            line-height: 1.5;
+            padding: 12px;
+            background: #f8fafc;
+            border-radius: 8px;
+            margin-top: 8px;
+        }
+
+        .notification-time {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 0.8125rem;
+            color: #94a3b8;
+            margin-top: 8px;
+        }
+
+        .notification-time i {
+            font-size: 0.875rem;
+        }
+
+        .notification-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn-notification {
+            padding: 4px;
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            color: #94a3b8;
+            transition: all 0.2s ease;
+            border-radius: 4px;
+        }
+
+        .btn-notification:hover {
+            background: #f1f5f9;
+            color: var(--text-primary);
+        }
+
+        .btn-notification.delete:hover {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+
+        .notification-metadata {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .metadata-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            background: #f1f5f9;
+            border-radius: 6px;
+            font-size: 0.8125rem;
+            color: #475569;
+        }
+
+        .metadata-tag i {
+            font-size: 0.875rem;
+        }
+
+        /* Empty State */
+        .empty-state {
+            background: white;
+            border-radius: 16px;
+            padding: 60px 32px;
+            text-align: center;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        .empty-state i {
+            font-size: 4rem;
+            color: #cbd5e1;
+            margin-bottom: 16px;
+        }
+
+        .empty-state h3 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+
+        .empty-state p {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        /* Loading Spinner */
+        .loading-spinner {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 60px;
+        }
+
+        .spinner {
+            width: 48px;
+            height: 48px;
+            border: 4px solid #e2e8f0;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes fadeInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Toast Notification */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: white;
+            padding: 16px 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+            display: none;
+            align-items: center;
+            gap: 12px;
+            z-index: 1000;
+            animation: slideInRight 0.3s ease-out;
+        }
+
+        .toast.show {
+            display: flex;
+        }
+
+        .toast.success {
+            border-left: 4px solid #22c55e;
+        }
+
+        .toast.error {
+            border-left: 4px solid #dc2626;
+        }
+
+        @keyframes slideInRight {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .page-header h1 {
+                font-size: 1.5rem;
+            }
+
+            .actions-bar {
+                flex-direction: column;
+                gap: 12px;
+                align-items: flex-start;
+            }
+
+            .action-buttons {
+                width: 100%;
+                justify-content: space-between;
+            }
+
+            .notification-card {
+                padding: 16px;
+            }
+
+            .notification-icon {
+                width: 40px;
+                height: 40px;
+                font-size: 1rem;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Header Component -->
+    <div id="app-header"></div>
+
+    <!-- Notifications Section -->
+    <section class="notifications-section">
+        <div class="notifications-container">
+            <!-- Page Header -->
+            <div class="page-header">
+                <h1>
+                    <i class="fas fa-bell"></i>
+                    Notifications
+                </h1>
+                <p>Stay updated with all your activities</p>
+            </div>
+
+            <!-- Actions Bar -->
+            <div class="actions-bar">
+                <div class="unread-count">
+                    Unread: <span class="count" id="unreadCount">0</span>
+                </div>
+                <div class="action-buttons">
+                    <button class="btn-action btn-mark-read" onclick="markAllAsRead()">
+                        <i class="fas fa-check-double"></i>
+                        Mark All Read
+                    </button>
+                    <button class="btn-action btn-clear-read" onclick="clearAllRead()">
+                        <i class="fas fa-trash"></i>
+                        Clear Read
+                    </button>
+                </div>
+            </div>
+
+            <!-- Notifications List -->
+            <div id="notificationsList" class="notifications-list">
+                <!-- Loading spinner -->
+                <div class="loading-spinner">
+                    <div class="spinner"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer Component -->
+    <div id="app-footer"></div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast"></div>
+
+    <!-- Scripts -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="/bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
+    <script src="/js/app-header.js"></script>
+    <script src="/js/app-footer.js"></script>
+    <script src="/js/credit-validation.js"></script>
+
+    <script>
+        console.log('🔔 Notifications page loaded');
+        
+        const authToken = localStorage.getItem('authToken');
+        if (!authToken) {
+            console.log('⚠️ No auth token found, redirecting to login');
+            window.location.href = '/login';
+        }
+
+        let notifications = [];
+
+        // Load notifications
+        async function loadNotifications() {
+            try {
+                console.log('📡 Fetching notifications...');
+                
+                const response = await fetch('/api/notifications', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch notifications');
+                }
+
+                const data = await response.json();
+                console.log('✅ Notifications loaded:', data);
+
+                notifications = data.notifications || [];
+                updateUnreadCount(data.unreadCount || 0);
+                renderNotifications();
+            } catch (error) {
+                console.error('❌ Error loading notifications:', error);
+                showToast('Failed to load notifications', 'error');
+                renderEmptyState('error');
+            }
+        }
+
+        // Render notifications
+        function renderNotifications() {
+            const container = document.getElementById('notificationsList');
+
+            if (notifications.length === 0) {
+                renderEmptyState('empty');
+                return;
+            }
+
+            container.innerHTML = notifications.map(notif => {
+                const metadata = notif.metadata ? JSON.parse(notif.metadata) : {};
+                const icon = getNotificationIcon(notif.type);
+                const unreadClass = notif.is_read ? '' : 'unread';
+
+                return `
+                    <div class="notification-card ${unreadClass}" data-id="${notif.id}">
+                        <div style="display: flex; gap: 16px;">
+                            <div class="notification-icon ${notif.type}">
+                                ${icon}
+                            </div>
+                            <div class="notification-content">
+                                <div class="notification-header">
+                                    <div style="flex: 1;">
+                                        <div class="notification-title">${notif.title}</div>
+                                        <div class="notification-message">${notif.message}</div>
+                                    </div>
+                                    <div class="notification-actions">
+                                        ${!notif.is_read ? `
+                                            <button class="btn-notification" onclick="markAsRead(${notif.id})" title="Mark as read">
+                                                <i class="fas fa-check"></i>
+                                            </button>
+                                        ` : ''}
+                                        <button class="btn-notification delete" onclick="deleteNotification(${notif.id})" title="Delete">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                ${notif.details ? `
+                                    <div class="notification-details">${notif.details}</div>
+                                ` : ''}
+                                ${renderMetadata(metadata, notif.type)}
+                                <div class="notification-time">
+                                    <i class="far fa-clock"></i>
+                                    ${formatTime(notif.created_at)}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Get notification icon
+        function getNotificationIcon(type) {
+            const icons = {
+                'cover_letter': '<i class="fas fa-file-alt"></i>',
+                'email': '<i class="fas fa-envelope"></i>',
+                'credits': '<i class="fas fa-coins"></i>',
+                'profile': '<i class="fas fa-user"></i>'
+            };
+            return icons[type] || '<i class="fas fa-bell"></i>';
+        }
+
+        // Render metadata tags
+        function renderMetadata(metadata, type) {
+            if (!metadata || Object.keys(metadata).length === 0) return '';
+
+            let tags = [];
+
+            if (type === 'cover_letter' || type === 'email') {
+                if (metadata.position) {
+                    tags.push(`<div class="metadata-tag"><i class="fas fa-briefcase"></i>${metadata.position}</div>`);
+                }
+                if (metadata.employerEmail) {
+                    tags.push(`<div class="metadata-tag"><i class="fas fa-envelope"></i>${metadata.employerEmail}</div>`);
+                }
+            }
+
+            if (type === 'credits') {
+                if (metadata.previousBalance !== undefined && metadata.newBalance !== undefined) {
+                    tags.push(`<div class="metadata-tag"><i class="fas fa-exchange-alt"></i>${metadata.previousBalance} → ${metadata.newBalance} credits</div>`);
+                }
+            }
+
+            if (tags.length === 0) return '';
+
+            return `<div class="notification-metadata">${tags.join('')}</div>`;
+        }
+
+        // Format time
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            const now = new Date();
+            const diff = now - date;
+            const seconds = Math.floor(diff / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            const days = Math.floor(hours / 24);
+
+            if (seconds < 60) return 'Just now';
+            if (minutes < 60) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
+            if (hours < 24) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+            if (days < 7) return `${days} day${days > 1 ? 's' : ''} ago`;
+
+            return date.toLocaleDateString('en-US', { 
+                month: 'short', 
+                day: 'numeric', 
+                year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        // Render empty state
+        function renderEmptyState(type = 'empty') {
+            const container = document.getElementById('notificationsList');
+            
+            if (type === 'error') {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <h3>Error Loading Notifications</h3>
+                        <p>Please try refreshing the page</p>
+                    </div>
+                `;
+            } else {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <i class="far fa-bell-slash"></i>
+                        <h3>No Notifications</h3>
+                        <p>You're all caught up! New notifications will appear here.</p>
+                    </div>
+                `;
+            }
+        }
+
+        // Update unread count
+        function updateUnreadCount(count) {
+            document.getElementById('unreadCount').textContent = count;
+        }
+
+        // Mark notification as read
+        async function markAsRead(notificationId) {
+            try {
+                const response = await fetch(`/api/notifications/${notificationId}/read`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                if (!response.ok) throw new Error('Failed to mark as read');
+
+                // Update local state
+                const notif = notifications.find(n => n.id === notificationId);
+                if (notif) notif.is_read = 1;
+
+                // Update UI
+                const card = document.querySelector(`[data-id="${notificationId}"]`);
+                if (card) {
+                    card.classList.remove('unread');
+                    card.querySelector('.notification-actions').innerHTML = `
+                        <button class="btn-notification delete" onclick="deleteNotification(${notificationId})" title="Delete">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    `;
+                }
+
+                // Update unread count
+                const unreadCount = notifications.filter(n => !n.is_read).length;
+                updateUnreadCount(unreadCount);
+
+                showToast('Marked as read', 'success');
+            } catch (error) {
+                console.error('Error marking as read:', error);
+                showToast('Failed to mark as read', 'error');
+            }
+        }
+
+        // Mark all as read
+        async function markAllAsRead() {
+            try {
+                const response = await fetch('/api/notifications/mark-all-read', {
+                    method: 'PATCH',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                if (!response.ok) throw new Error('Failed to mark all as read');
+
+                // Reload notifications
+                await loadNotifications();
+                showToast('All notifications marked as read', 'success');
+            } catch (error) {
+                console.error('Error marking all as read:', error);
+                showToast('Failed to mark all as read', 'error');
+            }
+        }
+
+        // Delete notification
+        async function deleteNotification(notificationId) {
+            if (!confirm('Delete this notification?')) return;
+
+            try {
+                const response = await fetch(`/api/notifications/${notificationId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                if (!response.ok) throw new Error('Failed to delete notification');
+
+                // Remove from local state
+                notifications = notifications.filter(n => n.id !== notificationId);
+
+                // Update UI
+                const card = document.querySelector(`[data-id="${notificationId}"]`);
+                if (card) {
+                    card.style.animation = 'fadeInUp 0.3s ease-out reverse';
+                    setTimeout(() => card.remove(), 300);
+                }
+
+                // Update unread count
+                const unreadCount = notifications.filter(n => !n.is_read).length;
+                updateUnreadCount(unreadCount);
+
+                // Check if empty
+                if (notifications.length === 0) {
+                    setTimeout(() => renderEmptyState(), 300);
+                }
+
+                showToast('Notification deleted', 'success');
+            } catch (error) {
+                console.error('Error deleting notification:', error);
+                showToast('Failed to delete notification', 'error');
+            }
+        }
+
+        // Clear all read notifications
+        async function clearAllRead() {
+            const readCount = notifications.filter(n => n.is_read).length;
+            
+            if (readCount === 0) {
+                showToast('No read notifications to clear', 'error');
+                return;
+            }
+
+            if (!confirm(`Delete all ${readCount} read notification(s)?`)) return;
+
+            try {
+                const response = await fetch('/api/notifications/read/all', {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                if (!response.ok) throw new Error('Failed to clear read notifications');
+
+                // Reload notifications
+                await loadNotifications();
+                showToast('Read notifications cleared', 'success');
+            } catch (error) {
+                console.error('Error clearing read notifications:', error);
+                showToast('Failed to clear read notifications', 'error');
+            }
+        }
+
+        // Show toast notification
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            const icon = type === 'success' ? '✓' : '✕';
+            
+            toast.innerHTML = `<span style="font-size: 1.25rem;">${icon}</span><span>${message}</span>`;
+            toast.className = `toast ${type} show`;
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // Load notifications on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            loadNotifications();
+        });
+    </script>
+</body>
+
+</html>

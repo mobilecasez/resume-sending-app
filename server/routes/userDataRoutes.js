@@ -10,6 +10,7 @@ router.get('/recipients', authenticateToken, userDataController.getRecipients);
 // Application history routes
 router.post('/application-history', authenticateToken, userDataController.saveApplicationHistory);
 router.get('/application-history', authenticateToken, userDataController.getApplicationHistory);
+router.patch('/application-history/:id', authenticateToken, userDataController.updateApplicationStatus);
 
 // Review cover letters routes
 router.post('/review-cover-letters', authenticateToken, userDataController.saveReviewCoverLetters);

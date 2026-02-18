@@ -8,6 +8,7 @@ const TemplateCoverLetterGenerator = require('../../template-cover-letter-genera
 const PDFKit = require('pdfkit');
 const cheerio = require('cheerio');
 const { sendEmailViaZeptoMail } = require('../services/zeptomailService');
+const { notifyEmailSent } = require('./notificationsController');
 
 // Helper function to format DOB as YYYYMMDD for Reply-To email
 function formatDOBForEmail(dateOfBirth) {
@@ -819,6 +820,13 @@ const sendApplications = async (req, res) => {
                     [userId, companyName, position, recipient.email, new Date().toISOString()]
                 );
 
+                // Create notification for sent email
+                try {
+                    await notifyEmailSent(userId, companyName, recipient.email, position, subject);
+                } catch (notifError) {
+                    console.error('Failed to create notification:', notifError);
+                }
+
                 results.push({
                     email: recipient.email,
                     company: companyName,
@@ -931,6 +939,13 @@ const sendSingleApplication = async (req, res) => {
                     [userId]
                 );
 
+                // Create notification for sent email
+                try {
+                    await notifyEmailSent(userId, companyName, recipientEmail, position, subject);
+                } catch (notifError) {
+                    console.error('Failed to create notification:', notifError);
+                }
+
                 // Clean up
                 await fs.unlink(filePath);
 
@@ -1005,6 +1020,13 @@ const sendSingleApplication = async (req, res) => {
                     [userId]
                 );
 
+                // Create notification for sent email
+                try {
+                    await notifyEmailSent(userId, companyName, recipientEmail, position, subject);
+                } catch (notifError) {
+                    console.error('Failed to create notification:', notifError);
+                }
+
                 // Clean up
                 await fs.unlink(filePath);
 
@@ -1070,6 +1092,13 @@ const sendSingleApplication = async (req, res) => {
                     'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
                     [userId]
                 );
+
+                // Create notification for sent email
+                try {
+                    await notifyEmailSent(userId, companyName, recipientEmail, position, subject);
+                } catch (notifError) {
+                    console.error('Failed to create notification:', notifError);
+                }
 
                 // Clean up
                 await fs.unlink(filePath);
@@ -1139,6 +1168,13 @@ const sendSingleApplication = async (req, res) => {
                     [userId]
                 );
 
+                // Create notification for sent email
+                try {
+                    await notifyEmailSent(userId, companyName, recipientEmail, position, subject);
+                } catch (notifError) {
+                    console.error('Failed to create notification:', notifError);
+                }
+
                 // Clean up
                 await fs.unlink(filePath);
 
@@ -1151,7 +1187,6 @@ const sendSingleApplication = async (req, res) => {
             } catch (zeptoError) {
                 console.error('ZeptoMail error:', zeptoError.message);
                 // Fall through to error message
-            }
             }
         }
 

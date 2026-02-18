@@ -198,11 +198,31 @@ const getUsageStats = async (req, res) => {
             }
         }
         
-        // Get user's total generated and sent from users table
-        const userStats = await dbConfig.get('SELECT total_generated as "totalGenerated", total_sent as "totalSent" FROM users WHERE id = ?', [userId]);
+        // Get current month's generated count from credit_usage_history
+        const currentMonthGenerated = await dbConfig.get(`
+            SELECT COUNT(*) as count
+            FROM credit_usage_history
+            WHERE user_id = ?
+            AND action_type = 'cover_letter_generation'
+            AND EXTRACT(MONTH FROM created_at) = ?
+            AND EXTRACT(YEAR FROM created_at) = ?
+        `, [userId, currentMonth, currentYear]);
         
-        const totalGenerated = userStats?.totalGenerated || 0;
-        const totalSent = userStats?.totalSent || 0;
+        // Get current month's sent count from application_history
+        const currentMonthSent = await dbConfig.get(`
+            SELECT COUNT(*) as count
+            FROM application_history
+            WHERE user_id = ?
+            AND EXTRACT(MONTH FROM sent_date) = ?
+            AND EXTRACT(YEAR FROM sent_date) = ?
+        `, [userId, currentMonth, currentYear]);
+        
+        const monthlyGenerated = currentMonthGenerated?.count || 0;
+        const monthlySent = currentMonthSent?.count || 0;
+        
+        console.log('📊 [CURRENT MONTH] Month:', currentMonth, 'Year:', currentYear);
+        console.log('📊 [CURRENT MONTH] Generated:', monthlyGenerated);
+        console.log('📊 [CURRENT MONTH] Sent:', monthlySent);
         
         // Get credit history (transactions)
         const transactions = await dbConfig.query(`
@@ -399,16 +419,11 @@ const getUsageStats = async (req, res) => {
                 expiring: expiringCredits,
                 expiryDate: creditExpiryDate
             },
-            currentMonthUsage: {
+            currentMonth: {
                 month: currentMonth,
                 year: currentYear,
-                creditsUsed: creditTotal - creditBalance,
-                monthlyGenerated: totalGenerated,
-                totalGenerated: totalGenerated,
-                monthlySent: totalSent,
-                totalSent: totalSent,
-                lettersGenerated: totalGenerated,
-                lettersSent: totalSent
+                lettersGenerated: monthlyGenerated,
+                lettersSent: monthlySent
             },
             history: [],
             creditHistory: transactions || [],

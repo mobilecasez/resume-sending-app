@@ -45,6 +45,7 @@ const creditsRoutes = require('./server/routes/creditsRoutes');
 const adminPackagesRoutes = require('./server/routes/adminPackagesRoutes');
 const coverLetterRoutes = require('./server/routes/coverLetterRoutes');
 const emailRoutes = require('./server/routes/emailRoutes');
+const notificationsRoutes = require('./server/routes/notificationsRoutes');
 
 // Import authentication middleware
 const { authenticateToken, authenticateAdmin } = require('./server/middleware/auth');
@@ -297,6 +298,25 @@ app.use((req, res, next) => {
 app.get('/admin-packages', serveAdminPageOnly, (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'admin-packages.html'));
 });
+
+// Favicon route with proper headers
+app.get('/favicon.ico', (req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // 1 year cache
+    res.setHeader('Content-Type', 'image/x-icon');
+    res.sendFile(path.join(__dirname, 'public', 'favicon.ico'));
+});
+
+// About page route
+app.get('/about', (req, res) => {
+    res.sendFile(path.join(__dirname, 'about.html'));
+});
+
+// Static files for landing page resources
+app.use('/bootstrap-4.1.1-dist', express.static('bootstrap-4.1.1-dist'));
+app.use('/css', express.static('css'));
+app.use('/js', express.static('js'));
+app.use('/imgs', express.static('imgs'));
+app.use('/Screenshots', express.static('Screenshots'));
 
 // Static files for public access
 app.use(express.static('public'));
@@ -2210,11 +2230,16 @@ app.get('/api/download-cover-letter/:filename', authenticateToken, async (req, r
 // ============================================
 // ADMIN - CREDIT PACKAGE MANAGEMENT
 // ============================================
+// Note: Admin package management endpoints would go here
+// The is-admin check endpoint is defined later in the file
 
-// Get all packages (public - for users to see available packages)
-// Check if user is admin
-app.get('/api/user/is-admin', authenticateToken, async (req, res) => {
-    const startTime = Date.now();
+// Skipped duplicate/incorrect cover letter generation endpoint
+// (was mislabeled as /api/generate-cover-letter-pdf but had different implementation)
+
+/* COMMENTED OUT DUPLICATE ENDPOINT - START
+// API endpoint to generate cover letter PDF for download
+app.post('/api/generate-cover-letter-pdf', authenticateToken, async (req, res) => {
+    try {
     console.log(`\n${'='.repeat(60)}`);
     console.log(`📨 [${requestId}] REQUEST RECEIVED at ${new Date().toISOString()}`);
     console.log(`   IP: ${req.ip}, UserAgent: ${req.get('user-agent')?.substring(0, 50)}...`);
@@ -2380,6 +2405,7 @@ app.get('/api/user/is-admin', authenticateToken, async (req, res) => {
         return res.status(500).json({ error: error.message || 'Server error' });
     }
 });
+COMMENTED OUT DUPLICATE ENDPOINT - END */
 
 // API endpoint to generate cover letter PDF for download
 app.post('/api/generate-cover-letter-pdf', authenticateToken, async (req, res) => {
@@ -2783,6 +2809,7 @@ app.use('/api', creditsRoutes);
 app.use('/api', adminPackagesRoutes);
 app.use('/api', coverLetterRoutes);
 app.use('/api', emailRoutes);
+app.use('/api', notificationsRoutes);
 
 // Start email forwarding service
 const EmailForwardingService = require('./server/services/emailForwardingService');

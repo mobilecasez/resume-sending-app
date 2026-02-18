@@ -1,16 +1,28 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CVApplyr - Turn Applications into Opportunities</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
 
+<head>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+    <title>CVApplyr - Dashboard</title>
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icon_light_background.png">
+
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css" integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
+    <!-- ANIMATE CSS -->
+    <link rel="stylesheet" href="/css/animate.css">
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="/css/style.css">
+
+    <style>
         :root {
             --primary-color: #1e40af;
             --primary-hover: #1e3a8a;
@@ -27,174 +39,82 @@
             --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
         }
 
+        /* Apply gradient to entire page */
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 50%, #3b82f6 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%) !important;
+            background-attachment: fixed !important;
             min-height: 100vh;
-            padding: 0;
-            color: var(--text-primary);
-        }
-
-        /* Top Navigation Bar */
-        .top-navbar {
-            background: white;
-            padding: 12px 24px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            position: sticky;
-            top: 0;
-            z-index: 100;
-        }
-
-        .navbar-left {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
-
-        .navbar-brand {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            text-decoration: none;
-        }
-
-        .navbar-brand h1 {
-            color: var(--primary-color);
-            font-size: 1.25rem;
-            font-weight: 700;
             margin: 0;
+            padding: 0;
         }
 
-        .navbar-right {
-            display: flex;
-            align-items: center;
-            gap: 16px;
+        /* Override navbar to make it transparent */
+        .navbar,
+        .navbar-light,
+        #home .navbar {
+            background: transparent !important;
+            box-shadow: none !important;
         }
 
-        /* Credit Badge Styles */
-        .credit-badge {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 16px;
-            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
-            border-radius: 12px;
-            text-decoration: none;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
-            cursor: pointer;
+        /* Ensure navbar stays transparent on mobile */
+        @media (max-width: 991px) {
+            #home .navbar {
+                background: transparent !important;
+            }
         }
 
-        .credit-badge:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 16px rgba(139, 92, 246, 0.4);
+        /* Dashboard Section */
+        .dashboard-section {
+            padding: 40px 0 80px 0;
+            min-height: calc(100vh - 70px);
         }
 
-        .credit-icon {
-            font-size: 20px;
-        }
-
-        .credit-number {
-            font-size: 18px;
-            font-weight: 700;
-            color: white;
-            min-width: 24px;
-            text-align: center;
-        }
-
-        .user-section {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 6px 12px;
-            background: #f8f9fa;
-            border-radius: 8px;
-        }
-
-        .nav-actions {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .nav-btn {
-            display: flex !important;
-            align-items: center;
-            justify-content: center;
-            width: 36px;
-            height: 36px;
-            border-radius: 8px;
-            background: #f8f9fa;
-            border: 1px solid #e2e8f0;
-            cursor: pointer !important;
-            transition: all 0.2s ease;
-            text-decoration: none;
-            color: #555;
-            pointer-events: auto !important;
-            position: relative;
-            z-index: 10;
-        }
-
-        .nav-btn:hover {
-            background: var(--primary-color);
-            border-color: var(--primary-color);
-            color: white;
-        }
-
-        .nav-btn svg {
-            width: 18px;
-            height: 18px;
-        }
-
-        .container {
+        .dashboard-container {
             max-width: 800px;
             margin: 0 auto;
-            padding: 20px;
+            padding: 0 20px;
         }
 
+        /* Welcome Section */
         .app-header {
             text-align: center;
-            margin-bottom: 40px;
+            margin-bottom: 32px;
             animation: fadeInDown 0.6s ease-out;
         }
 
         .app-title {
-            font-size: 2.25rem;
+            font-size: 2rem;
             font-weight: 700;
             color: white;
             margin-bottom: 8px;
             text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            letter-spacing: -0.5px;
         }
 
         .app-subtitle {
             font-size: 1rem;
             color: rgba(255, 255, 255, 0.95);
             font-weight: 400;
-            letter-spacing: 0.3px;
         }
 
+        /* Card Styles */
         .card {
-            background: var(--card-bg);
-            border-radius: 12px;
-            padding: 40px;
-            box-shadow: var(--shadow-lg);
+            background: white;
+            border-radius: 16px;
+            padding: 32px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            margin-bottom: 24px;
+            border: none;
             animation: fadeInUp 0.6s ease-out;
-            border: 1px solid rgba(0, 0, 0, 0.05);
         }
 
         .section-title {
-            font-size: 1.125rem;
+            font-size: 1.25rem;
             font-weight: 600;
             color: var(--text-primary);
-            margin-bottom: 28px;
+            margin-bottom: 24px;
             display: flex;
             align-items: center;
             gap: 10px;
-            letter-spacing: -0.2px;
         }
 
         .section-title::before {
@@ -205,6 +125,40 @@
             border-radius: 1.5px;
         }
 
+        /* Stats Grid */
+        .stats-grid-dashboard {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0;
+            background: white;
+        }
+
+        .stat-card-dashboard {
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+
+        .stat-card-dashboard:last-child {
+            border-left: 1px solid #E5E7EB;
+        }
+
+        .stat-value-dashboard {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #1e293b;
+            margin-bottom: 8px;
+        }
+
+        .stat-label-dashboard {
+            font-size: 0.875rem;
+            color: #64748b;
+            font-weight: 500;
+        }
+
+        /* Recipients Section */
         .recipient-list {
             display: flex;
             flex-direction: column;
@@ -224,7 +178,7 @@
 
         .recipient-item:hover {
             border-color: #cbd5e1;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
             background: white;
         }
 
@@ -270,6 +224,7 @@
             color: var(--danger-color);
         }
 
+        /* Form Styles */
         .form-group {
             margin-bottom: 16px;
         }
@@ -280,7 +235,6 @@
             font-weight: 600;
             color: var(--text-primary);
             margin-bottom: 8px;
-            letter-spacing: 0.2px;
         }
 
         .form-label .required {
@@ -295,7 +249,6 @@
             border-radius: 7px;
             font-size: 0.9375rem;
             transition: all 0.2s ease;
-            font-family: inherit;
             background: white;
         }
 
@@ -310,6 +263,7 @@
             color: #9CA3AF;
         }
 
+        /* Button Styles */
         .add-recipient-btn {
             width: 100%;
             padding: 12px 24px;
@@ -334,12 +288,6 @@
             color: var(--primary-color);
         }
 
-        .button-group {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 16px;
-        }
-
         .btn {
             padding: 13px 28px;
             border: none;
@@ -352,28 +300,16 @@
             align-items: center;
             justify-content: center;
             gap: 8px;
-            letter-spacing: 0.2px;
         }
 
         .btn-primary {
             background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
             color: white;
-            box-shadow: 0 4px 6px -1px rgba(30, 64, 175, 0.3), 0 2px 4px -1px rgba(30, 64, 175, 0.2);
+            box-shadow: 0 4px 6px -1px rgba(30, 64, 175, 0.3);
         }
 
         .btn-primary:hover {
-            box-shadow: 0 10px 15px -3px rgba(30, 64, 175, 0.4), 0 4px 6px -2px rgba(30, 64, 175, 0.3);
-            transform: translateY(-1px);
-        }
-
-        .btn-secondary {
-            background: linear-gradient(135deg, #059669 0%, #047857 100%);
-            color: white;
-            box-shadow: 0 4px 6px -1px rgba(5, 150, 105, 0.3), 0 2px 4px -1px rgba(5, 150, 105, 0.2);
-        }
-
-        .btn-secondary:hover {
-            box-shadow: 0 10px 15px -3px rgba(5, 150, 105, 0.4), 0 4px 6px -2px rgba(5, 150, 105, 0.3);
+            box-shadow: 0 10px 15px -3px rgba(30, 64, 175, 0.4);
             transform: translateY(-1px);
         }
 
@@ -383,564 +319,7 @@
             transform: none !important;
         }
 
-        .empty-state {
-            text-align: center;
-            padding: 40px 20px;
-            color: var(--text-secondary);
-        }
-
-        .empty-state-icon {
-            font-size: 3rem;
-            margin-bottom: 16px;
-        }
-
-        @keyframes fadeInDown {
-            from {
-                opacity: 0;
-                transform: translateY(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        @keyframes slideIn {
-            from {
-                opacity: 0;
-                transform: translateX(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateX(0);
-            }
-        }
-
-        /* Mobile responsive */
-        @media (max-width: 640px) {
-            body {
-                padding: 12px;
-            }
-
-            .app-title {
-                font-size: 1.75rem;
-            }
-
-            .app-subtitle {
-                font-size: 0.95rem;
-            }
-
-            .card {
-                padding: 20px;
-            }
-
-            .recipient-item {
-                padding: 16px;
-            }
-
-            .button-group {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        /* Loading spinner */
-        .spinner {
-            border: 3px solid rgba(255, 255, 255, 0.3);
-            border-top: 3px solid white;
-            border-radius: 50%;
-            width: 20px;
-            height: 20px;
-            animation: spin 0.8s linear infinite;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        .toast {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            background: white;
-            padding: 16px 24px;
-            border-radius: 12px;
-            box-shadow: var(--shadow-lg);
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            animation: slideInRight 0.3s ease-out;
-            z-index: 1000;
-        }
-
-        .toast.success {
-            border-left: 4px solid var(--secondary-color);
-        }
-
-        .toast.error {
-            border-left: 4px solid var(--danger-color);
-        }
-
-        @keyframes slideInRight {
-            from {
-                transform: translateX(400px);
-                opacity: 0;
-            }
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
-
-        /* Modal Styles */
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.6);
-            backdrop-filter: blur(4px);
-            z-index: 1000;
-            align-items: center;
-            justify-content: center;
-            animation: fadeIn 0.2s ease-out;
-        }
-
-        .modal.active {
-            display: flex;
-        }
-
-        .modal-content {
-            background: white;
-            border-radius: 12px;
-            width: 90%;
-            max-width: 600px;
-            max-height: 85vh;
-            overflow-y: auto;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-            animation: slideInModal 0.3s ease-out;
-        }
-
-        #profileModal .modal-content {
-            max-width: 450px;
-        }
-
-        .profile-grid {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .profile-grid .settings-section {
-            max-width: 100%;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
-
-        @keyframes slideInModal {
-            from {
-                transform: translateY(-50px);
-                opacity: 0;
-            }
-            to {
-                transform: translateY(0);
-                opacity: 1;
-            }
-        }
-
-        .modal-header {
-            padding: 24px 28px;
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .modal-title {
-            font-size: 1.25rem;
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-
-        .close-btn {
-            width: 32px;
-            height: 32px;
-            border-radius: 6px;
-            background: transparent;
-            border: none;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: all 0.2s ease;
-            font-size: 1.5rem;
-            color: var(--text-secondary);
-        }
-
-        .close-btn:hover {
-            background: var(--bg-color);
-            color: var(--text-primary);
-        }
-
-        .modal-body {
-            padding: 16px;
-        }
-
-        .settings-section {
-            margin-bottom: 16px;
-        }
-
-        .settings-section:last-child {
-            margin-bottom: 0;
-        }
-
-        .section-header {
-            font-size: 0.75rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 8px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .upload-area {
-            border: 2px dashed var(--border-color);
-            border-radius: 8px;
-            padding: 16px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            background: var(--bg-color);
-            position: relative;
-            min-height: 80px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .upload-area:hover {
-            border-color: var(--primary-color);
-            background: white;
-        }
-
-        .upload-area.has-file {
-            border-style: solid;
-            border-color: var(--secondary-color);
-            background: #f0fdf4;
-        }
-
-        .upload-area.has-preview {
-            padding: 0;
-            overflow: hidden;
-        }
-
-        .image-preview {
-            width: 100%;
-            height: 100%;
-            display: none;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-        }
-
-        .image-preview.active {
-            display: flex;
-        }
-
-        .preview-photo {
-            width: 80px;
-            height: 80px;
-            border-radius: 50%;
-            object-fit: cover;
-            border: 3px solid white;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-            background: white;
-        }
-
-        .preview-signature {
-            max-width: 100%;
-            max-height: 60px;
-            object-fit: contain;
-            padding: 8px;
-            background: white;
-            border-radius: 8px;
-        }
-
-        .preview-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.5);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            opacity: 0;
-            transition: opacity 0.2s ease;
-        }
-
-        .upload-area:hover .preview-overlay {
-            opacity: 1;
-        }
-
-        .change-photo-btn {
-            background: white;
-            color: var(--text-primary);
-            padding: 8px 16px;
-            border-radius: 6px;
-            font-size: 0.875rem;
-            font-weight: 600;
-            border: none;
-            cursor: pointer;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-
-        .upload-content {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .upload-content.hidden {
-            display: none;
-        }
-
-        .upload-icon {
-            font-size: 1.5rem;
-            margin-bottom: 6px;
-            color: var(--text-secondary);
-        }
-
-        .upload-text {
-            font-size: 0.8125rem;
-            color: var(--text-primary);
-            font-weight: 500;
-            margin-bottom: 4px;
-        }
-
-        .upload-subtext {
-            font-size: 0.6875rem;
-            color: var(--text-secondary);
-        }
-
-        .file-info {
-            display: none !important;
-        }
-
-        #resumeFileInfo {
-            display: none;
-            margin-top: 8px;
-            padding: 8px 12px;
-            background: #f0fdf4;
-            border-radius: 6px;
-            border: 1px solid #86efac;
-        }
-
-        #resumeFileInfo.active {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-        }
-
-        .resume-info {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex: 1;
-            min-width: 0;
-        }
-
-        .resume-icon {
-            font-size: 1.25rem;
-            flex-shrink: 0;
-        }
-
-        .resume-details {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .resume-name {
-            font-size: 0.75rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .resume-date {
-            font-size: 0.6875rem;
-            color: var(--text-secondary);
-        }
-
-        .resume-download {
-            background: var(--primary-color);
-            color: white;
-            padding: 4px 10px;
-            border-radius: 4px;
-            font-size: 0.6875rem;
-            font-weight: 600;
-            border: none;
-            cursor: pointer;
-            text-decoration: none;
-            display: inline-block;
-            flex-shrink: 0;
-            transition: background 0.2s ease;
-        }
-
-        .resume-download:hover {
-            background: var(--primary-hover);
-        }
-
-        .file-name {
-            font-size: 0.875rem;
-            color: var(--text-primary);
-            font-weight: 500;
-        }
-
-        .remove-file-btn {
-            background: transparent;
-            border: none;
-            color: var(--danger-color);
-            cursor: pointer;
-            font-size: 0.875rem;
-            padding: 4px 8px;
-            border-radius: 4px;
-            transition: all 0.2s ease;
-        }
-
-        .remove-file-btn:hover {
-            background: #fee;
-        }
-
-        .modal-footer {
-            padding: 20px 28px;
-            border-top: 1px solid var(--border-color);
-            display: flex;
-            justify-content: flex-end;
-            gap: 12px;
-        }
-
-        .btn-cancel {
-            background: white;
-            color: var(--text-primary);
-            border: 1px solid var(--border-color);
-        }
-
-        .btn-cancel:hover {
-            background: var(--bg-color);
-        }
-
-        .btn-save {
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
-            color: white;
-            box-shadow: 0 4px 6px -1px rgba(30, 64, 175, 0.3);
-        }
-
-        .btn-save:hover {
-            box-shadow: 0 10px 15px -3px rgba(30, 64, 175, 0.4);
-            transform: translateY(-1px);
-        }
-
-        /* User Info Display */
-        .user-avatar {
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: 600;
-            font-size: 0.75rem;
-        }
-
-        .user-details {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .user-name {
-            font-size: 0.8125rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            line-height: 1.2;
-        }
-
-        .user-email {
-            font-size: 0.6875rem;
-            color: var(--text-secondary);
-        }
-
-        .logout-btn {
-            padding: 8px 14px;
-            background: transparent;
-            border: 1px solid #fecaca;
-            border-radius: 6px;
-            font-size: 0.75rem;
-            color: #dc2626;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            font-weight: 500;
-        }
-
-        .logout-btn:hover {
-            background: #fee2e2;
-            border-color: #dc2626;
-        }
-
-        /* Dashboard Statistics */
-        .stats-grid-dashboard {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 0;
-            background: white;
-        }
-
-        .stat-card-dashboard {
-            padding: 24px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            text-align: center;
-        }
-
-        .stat-value-dashboard {
-            font-size: 2.5rem;
-            font-weight: 700;
-            color: #1e293b;
-            margin-bottom: 8px;
-        }
-
-        .stat-label-dashboard {
-            font-size: 0.875rem;
-            color: #64748b;
-            font-weight: 500;
-        }
-
-        /* Last 5 Employers Section */
+        /* Recent Applications */
         .employers-section-header {
             display: flex;
             justify-content: space-between;
@@ -1097,142 +476,600 @@
 
         .employer-dates {
             display: flex;
+            justify-content: space-between;
+            align-items: center;
             gap: 16px;
             padding-top: 12px;
             border-top: 1px solid var(--border-color);
         }
 
         .employer-date-item {
-            flex: 1;
+            min-width: 0;
         }
 
         .employer-date-label {
             font-size: 0.75rem;
             color: var(--text-secondary);
             margin-bottom: 4px;
+            white-space: nowrap;
         }
 
         .employer-date-value {
             font-size: 0.875rem;
             font-weight: 600;
             color: var(--text-primary);
+            white-space: nowrap;
         }
 
-        @media (max-width: 768px) {
-            .top-navbar {
-                padding: 10px 16px;
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            animation: fadeIn 0.2s ease-out;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 85vh;
+            overflow-y: auto;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            animation: slideInModal 0.3s ease-out;
+        }
+
+        #profileModal .modal-content {
+            max-width: 450px;
+        }
+
+        .modal-header {
+            padding: 24px 28px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .close-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+            font-size: 1.5rem;
+            color: var(--text-secondary);
+        }
+
+        .close-btn:hover {
+            background: var(--bg-color);
+            color: var(--text-primary);
+        }
+
+        .modal-body {
+            padding: 16px;
+        }
+
+        .settings-section {
+            margin-bottom: 16px;
+        }
+
+        .settings-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .section-header {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .profile-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        /* Upload Area Styles */
+        .upload-area {
+            border: 2px dashed var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: var(--bg-color);
+            position: relative;
+            min-height: 80px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .upload-area:hover {
+            border-color: var(--primary-color);
+            background: white;
+        }
+
+        .upload-area.has-file {
+            border-style: solid;
+            border-color: var(--secondary-color);
+            background: #f0fdf4;
+        }
+
+        .upload-area.has-preview {
+            padding: 0;
+            overflow: hidden;
+        }
+
+        .image-preview {
+            width: 100%;
+            height: 100%;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .image-preview.active {
+            display: flex;
+        }
+
+        .preview-photo {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 3px solid white;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            background: white;
+        }
+
+        .preview-signature {
+            max-width: 100%;
+            max-height: 60px;
+            object-fit: contain;
+            padding: 8px;
+            background: white;
+            border-radius: 8px;
+        }
+
+        .preview-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .upload-area:hover .preview-overlay {
+            opacity: 1;
+        }
+
+        .change-photo-btn {
+            background: white;
+            color: var(--text-primary);
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .upload-content {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .upload-content.hidden {
+            display: none;
+        }
+
+        .upload-icon {
+            font-size: 1.5rem;
+            margin-bottom: 6px;
+            color: var(--text-secondary);
+        }
+
+        .upload-text {
+            font-size: 0.8125rem;
+            color: var(--text-primary);
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+
+        .upload-subtext {
+            font-size: 0.6875rem;
+            color: var(--text-secondary);
+        }
+
+        #resumeFileInfo {
+            display: none;
+            margin-top: 8px;
+            padding: 8px 12px;
+            background: #f0fdf4;
+            border-radius: 6px;
+            border: 1px solid #86efac;
+        }
+
+        #resumeFileInfo.active {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .resume-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .resume-icon {
+            font-size: 1.25rem;
+            flex-shrink: 0;
+        }
+
+        .resume-details {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .resume-name {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .resume-date {
+            font-size: 0.6875rem;
+            color: var(--text-secondary);
+        }
+
+        .resume-download {
+            background: var(--primary-color);
+            color: white;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.6875rem;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            flex-shrink: 0;
+            transition: background 0.2s ease;
+        }
+
+        .resume-download:hover {
+            background: var(--primary-hover);
+        }
+
+        .file-info {
+            display: none !important;
+        }
+
+        .file-name {
+            font-size: 0.875rem;
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .remove-file-btn {
+            background: transparent;
+            border: none;
+            color: var(--danger-color);
+            cursor: pointer;
+            font-size: 0.875rem;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: all 0.2s ease;
+        }
+
+        .remove-file-btn:hover {
+            background: #fee;
+        }
+
+        .modal-footer {
+            padding: 20px 28px;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        .btn-cancel {
+            background: white;
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-cancel:hover {
+            background: var(--bg-color);
+        }
+
+        .btn-save {
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
+            color: white;
+            box-shadow: 0 4px 6px -1px rgba(30, 64, 175, 0.3);
+        }
+
+        .btn-save:hover {
+            box-shadow: 0 10px 15px -3px rgba(30, 64, 175, 0.4);
+            transform: translateY(-1px);
+        }
+
+        /* Toast Notification */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: white;
+            padding: 16px 24px;
+            border-radius: 12px;
+            box-shadow: var(--shadow-lg);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            animation: slideInRight 0.3s ease-out;
+            z-index: 1000;
+        }
+
+        .toast.success {
+            border-left: 4px solid var(--secondary-color);
+        }
+
+        .toast.error {
+            border-left: 4px solid var(--danger-color);
+        }
+
+        /* Animations */
+        @keyframes fadeInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes slideInModal {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes slideInRight {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Loading Spinner */
+        .spinner {
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-top: 3px solid white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 0.8s linear infinite;
+        }
+
+        /* Mobile Responsive */
+        @media (max-width: 640px) {
+            .dashboard-container {
+                padding: 0 12px;
             }
 
-            .user-details {
-                display: none;
+            .app-title {
+                font-size: 1.75rem;
             }
 
-            .navbar-brand h1 {
-                font-size: 1rem;
+            .app-subtitle {
+                font-size: 0.95rem;
+            }
+
+            .card {
+                padding: 20px;
+            }
+
+            .recipient-item {
+                padding: 16px;
             }
         }
     </style>
-    <script src="/js/common-header.js?v=3"></script>
-    <script src="/js/credit-validation.js"></script>
-    <script src="/js/common-footer.js"></script>
 </head>
+
 <body>
-    <div class="container">
-        <!-- Welcome Section -->
-        <div class="app-header">
-            <h1 class="app-title">Welcome, <span id="dashboardUserName">User</span>!</h1>
-            <p class="app-subtitle">Send Applications with AI Generated Cover Letter</p>
-        </div>
+    <!-- Header Component -->
+    <div id="app-header"></div>
 
-        <!-- Stats Card - 2 columns like mobile -->
-        <div class="card" style="margin-bottom: 24px;">
-            <div class="stats-grid-dashboard">
-                <div class="stat-card-dashboard">
-                    <div class="stat-value-dashboard" id="dashboardTotalSent">0</div>
-                    <div class="stat-label-dashboard">Total Application Sent</div>
-                </div>
-                <div class="stat-card-dashboard" style="border-left: 1px solid #E5E7EB;">
-                    <div class="stat-value-dashboard" id="dashboardTotalGenerated">0</div>
-                    <div class="stat-label-dashboard">Generated</div>
-                </div>
+    <!-- Dashboard Section -->
+    <section class="dashboard-section">
+        <div class="dashboard-container">
+            <!-- Welcome Section -->
+            <div class="app-header">
+                <h1 class="app-title">Welcome, <span id="dashboardUserName">User</span>!</h1>
+                <p class="app-subtitle">Send Applications with AI Generated Cover Letter</p>
             </div>
-        </div>
 
-        <!-- Recipients Section -->
-        <div class="card" style="margin-bottom: 24px;">
-            <h2 class="section-title">📬 Recipients</h2>
-
-            <!-- Recipients List -->
-            <div id="recipientList" class="recipient-list">
-                <!-- Initial recipient -->
-                <div class="recipient-item" data-index="0">
-                    <div class="recipient-header">
-                        <div class="recipient-number">1</div>
-                        <button class="remove-btn" onclick="removeRecipient(0)" style="display: none;">
-                            × Remove
-                        </button>
+            <!-- Stats Card -->
+            <div class="card">
+                <div class="stats-grid-dashboard">
+                    <div class="stat-card-dashboard">
+                        <div class="stat-value-dashboard" id="dashboardTotalSent">0</div>
+                        <div class="stat-label-dashboard">Total Application Sent</div>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">Hiring Manager's Email <span class="required">*</span></label>
-                        <input 
-                            type="email" 
-                            class="form-input" 
-                            placeholder="hiring@company.com"
-                            name="email"
-                            required
-                        >
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Company Website <span class="required">*</span></label>
-                        <input 
-                            type="url" 
-                            class="form-input" 
-                            placeholder="https://www.company.com"
-                            name="website"
-                            required
-                        >
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Position/Job Title</label>
-                        <input 
-                            type="text" 
-                            class="form-input" 
-                            placeholder="Software Engineer, Marketing Manager, etc."
-                            name="position"
-                        >
+                    <div class="stat-card-dashboard">
+                        <div class="stat-value-dashboard" id="dashboardTotalGenerated">0</div>
+                        <div class="stat-label-dashboard">Generated</div>
                     </div>
                 </div>
             </div>
 
-            <!-- Add Recipient Button -->
-            <button class="add-recipient-btn" onclick="addRecipient()">
-                <span style="font-size: 1.5rem;">+</span>
-                Add Another Recipient
-            </button>
+            <!-- Recipients Section -->
+            <div class="card">
+                <h2 class="section-title">📬 Recipients</h2>
 
-            <!-- Action Button (Single like mobile) -->
-            <button class="btn btn-primary" style="width: 100%; padding: 16px; font-size: 1rem; display: flex; align-items: center; justify-content: center; gap: 8px;" onclick="reviewAndSend()">
-                <span style="font-size: 1.25rem;">🚀</span>
-                <span>Review & Generate</span>
-            </button>
-        </div>
+                <!-- Recipients List -->
+                <div id="recipientList" class="recipient-list">
+                    <!-- Initial recipient -->
+                    <div class="recipient-item" data-index="0">
+                        <div class="recipient-header">
+                            <div class="recipient-number">1</div>
+                            <button class="remove-btn" onclick="removeRecipient(0)" style="display: none;">
+                                × Remove
+                            </button>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Hiring Manager's Email <span class="required">*</span></label>
+                            <input 
+                                type="email" 
+                                class="form-input" 
+                                placeholder="hiring@company.com"
+                                name="email"
+                                required
+                            >
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Company Website <span class="required">*</span></label>
+                            <input 
+                                type="url" 
+                                class="form-input" 
+                                placeholder="https://www.company.com"
+                                name="website"
+                                required
+                            >
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Position/Job Title</label>
+                            <input 
+                                type="text" 
+                                class="form-input" 
+                                placeholder="Software Engineer, Marketing Manager, etc."
+                                name="position"
+                            >
+                        </div>
+                    </div>
+                </div>
 
-        <!-- Recent Applications Section -->
-        <div class="card" id="employersSection" style="margin-bottom: 24px;">
-            <div class="employers-section-header">
-                <h2 class="section-title">Recent Applications</h2>
-                <span class="employers-badge" id="employersBadge">0</span>
+                <!-- Add Recipient Button -->
+                <button class="add-recipient-btn" onclick="addRecipient()">
+                    <span style="font-size: 1.5rem;">+</span>
+                    Add Another Recipient
+                </button>
+
+                <!-- Action Button -->
+                <button class="btn btn-primary" style="width: 100%; padding: 16px; font-size: 1rem;" onclick="reviewAndSend()">
+                    <span style="font-size: 1.25rem;">🚀</span>
+                    <span>Review & Generate</span>
+                </button>
             </div>
-            
-            <div id="employersContainer" class="employers-container">
-                <div class="empty-state">
-                    <div class="empty-icon">📭</div>
-                    <div class="empty-title">No Applications Yet</div>
-                    <div class="empty-subtitle">Your recent job applications will appear here</div>
+
+            <!-- Recent Applications Section -->
+            <div class="card" id="employersSection">
+                <div class="employers-section-header">
+                    <h2 class="section-title">Recent Applications</h2>
+                    <span class="employers-badge" id="employersBadge">0</span>
+                </div>
+                
+                <div id="employersContainer" class="employers-container">
+                    <div class="empty-state">
+                        <div class="empty-icon">📭</div>
+                        <div class="empty-title">No Applications Yet</div>
+                        <div class="empty-subtitle">Your recent job applications will appear here</div>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
+    </section>
 
     <!-- Settings Modal -->
     <div id="settingsModal" class="modal">
@@ -1361,358 +1198,90 @@
         </div>
     </div>
 
+    <!-- Mark as Replied Modal -->
+    <div id="replyModal" class="modal">
+        <div class="modal-content" style="max-width: 450px;">
+            <div class="modal-header">
+                <h2 class="modal-title">Mark as Replied</h2>
+                <button class="close-btn" onclick="closeReplyModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div style="margin-bottom: 20px;">
+                    <p style="color: var(--text-primary); font-size: 1rem; margin-bottom: 16px;">
+                        Did you receive a reply from <strong id="replyCompanyName"></strong>?
+                    </p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Reply Date <span class="required">*</span></label>
+                    <input 
+                        type="date" 
+                        id="replyDateInput"
+                        class="form-input" 
+                        style="cursor: pointer;"
+                    >
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-cancel" onclick="closeReplyModal()">Cancel</button>
+                <button class="btn btn-save" onclick="confirmMarkAsReplied()" style="background: linear-gradient(135deg, #059669 0%, #10b981 100%);">
+                    Mark as Replied
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer Component -->
+    <div id="app-footer"></div>
+
+    <!-- Scripts -->
+    <!-- jQuery from CDN -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <!-- Bootstrap JS -->
+    <script src="/bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
+    <!-- WOW.js -->
+    <script src="/js/plugins/wow/wow.min.js"></script>
+    <!-- App Components -->
+    <script src="/js/app-header.js"></script>
+    <script src="/js/app-footer.js"></script>
+    <script src="/js/credit-validation.js"></script>
+
     <script>
-        // Flag to tell common header this is dashboard page (handles its own credit loading)
+        // Flag to tell app header this is dashboard page
         window.dashboardPage = true;
+        
+        console.log('🔧 Initializing dashboard page...');
         
         // Authentication check
         const authToken = localStorage.getItem('authToken');
         if (!authToken) {
+            console.log('⚠️ No auth token found, redirecting to login');
             window.location.href = '/login';
+        } else {
+            console.log('✅ Auth token found');
         }
 
-        // Load user info from header (already loaded by common-header.js)
-        const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+        // Load user info
+        let userData = JSON.parse(localStorage.getItem('userData') || '{}');
+        console.log('👤 User data loaded:', userData);
 
-        // Load and render application history from backend API
-        async function loadApplicationHistory() {
-            if (!userData.email) return;
-            
-            try {
-                const authToken = localStorage.getItem('authToken');
-                const response = await fetch('/api/users/application-history', {
-                    method: 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                    }
-                });
+        // File storage
+        let resumeFile = null;
+        let photoFile = null;
+        let signatureFile = null;
 
-                if (!response.ok) {
-                    console.log('No application history found in backend');
-                    return;
-                }
-
-                const data = await response.json();
-                if (data.success && data.applicationHistory && data.applicationHistory.length > 0) {
-                    const applicationHistory = data.applicationHistory;
-                    console.log('📖 Loaded application history from backend:', applicationHistory.length, 'items');
-                    console.log('🔍 First item:', JSON.stringify(applicationHistory[0], null, 2));
-                    
-                    // Update badge
-                    const badge = document.getElementById('employersBadge');
-                    badge.textContent = Math.min(applicationHistory.length, 5);
-                    
-                    // Render employers
-                    renderEmployers(applicationHistory.slice(0, 5));
-                } else {
-                    console.log('No application history found');
-                }
-            } catch (error) {
-                console.error('Error loading application history:', error);
-            }
-        }
-
-        async function loadCredits() {
-            try {
-                const authToken = localStorage.getItem('authToken');
-                if (!authToken) return;
-                
-                const response = await fetch('/api/user/credits', {
-                    method: 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                    }
-                });
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.success) {
-                        const creditBadge = document.getElementById('creditBadgeNumber');
-                        if (creditBadge) {
-                            creditBadge.textContent = data.balance || 0;
-                        }
-                        console.log('💳 Loaded credits:', data.balance);
-                    }
-                }
-            } catch (error) {
-                console.error('Error loading credits:', error);
-            }
-        }
-
-        async function loadDashboardStatistics() {
-            // Load userData from localStorage
-            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
-            if (!userData.email) return;
-            
-            // Set welcome message with user name
-            const userName = userData.fullName || userData.name || 'User';
-            document.getElementById('dashboardUserName').textContent = userName;
-            
-            try {
-                const authToken = localStorage.getItem('authToken');
-                
-                // Load cumulative counters from backend API
-                const countersResponse = await fetch('/api/users/counters', {
-                    method: 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                    }
-                });
-
-                let totalSent = 0, totalGenerated = 0;
-                
-                if (countersResponse.ok) {
-                    const countersData = await countersResponse.json();
-                    totalSent = countersData.totalSent || 0;
-                    totalGenerated = countersData.totalGenerated || 0;
-                    console.log('📊 Loaded counters from backend API - Generated:', totalGenerated, 'Sent:', totalSent);
-                    
-                    // Also cache in localStorage
-                    localStorage.setItem(`appCounters_${userData.email}`, JSON.stringify({
-                        totalGenerated,
-                        totalSent
-                    }));
-                } else {
-                    console.log('⚠️ Failed to load counters from backend, using localStorage cache');
-                    // Fallback to localStorage
-                    const stored = localStorage.getItem(`appCounters_${userData.email}`);
-                    if (stored) {
-                        const counters = JSON.parse(stored);
-                        totalSent = counters.totalSent || 0;
-                        totalGenerated = counters.totalGenerated || 0;
-                    }
-                }
-
-                // Update UI (only 2 stats like mobile)
-                document.getElementById('dashboardTotalSent').textContent = totalSent;
-                document.getElementById('dashboardTotalGenerated').textContent = totalGenerated;
-                
-                console.log('📊 Dashboard stats loaded - Sent:', totalSent, 'Generated:', totalGenerated);
-            } catch (error) {
-                console.error('Error loading dashboard statistics:', error);
-                // Set defaults on error
-                document.getElementById('dashboardTotalSent').textContent = '0';
-                document.getElementById('dashboardTotalGenerated').textContent = '0';
-            }
-            
-            // Load credit balance
-            await loadCreditBalance();
-        }
-
-        async function loadCreditBalance() {
-            try {
-                const authToken = localStorage.getItem('authToken');
-                if (!authToken) return;
-                
-                const response = await fetch('/api/user/credits', {
-                    method: 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                    }
-                });
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.success) {
-                        const creditBalance = data.balance || 0;
-                        const creditBadgeNumber = document.getElementById('creditBadgeNumber');
-                        if (creditBadgeNumber) {
-                            creditBadgeNumber.textContent = creditBalance;
-                        }
-                        console.log('💳 Loaded credits:', creditBalance);
-                    }
-                }
-            } catch (error) {
-                console.error('Error loading credits:', error);
-            }
-        }
-
-        async function openUsageScreen() {
-            window.location.href = '/usage';
-        }
-        
-        function closeUsageScreen() {
-            // Not needed for separate page
-        }
-
-        function renderEmployers(employers) {
-            const container = document.getElementById('employersContainer');
-            
-            if (!employers || employers.length === 0) {
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-icon">📭</div>
-                        <div class="empty-title">No Applications Yet</div>
-                        <div class="empty-subtitle">Your recent job applications will appear here</div>
-                    </div>
-                `;
-                return;
-            }
-
-            console.log('🎨 Rendering employers:', employers.length, 'First employer:', JSON.stringify(employers[0], null, 2));
-
-            container.innerHTML = employers.map((employer, index) => {
-                // Format sentDate with null check
-                let sentDate = 'N/A';
-                if (employer.sentDate) {
-                    try {
-                        const date = new Date(employer.sentDate);
-                        if (!isNaN(date.getTime())) {
-                            sentDate = date.toLocaleDateString('en-US', { 
-                                month: 'short', 
-                                day: 'numeric', 
-                                year: 'numeric' 
-                            });
-                        }
-                    } catch (e) {
-                        console.error('Error parsing sentDate:', e);
-                    }
-                }
-                
-                // Format replyDate with null check
-                const replyDate = employer.replyReceived && employer.replyDate 
-                    ? (() => {
-                        try {
-                            const date = new Date(employer.replyDate);
-                            return !isNaN(date.getTime()) ? date.toLocaleDateString('en-US', { 
-                                month: 'short', 
-                                day: 'numeric', 
-                                year: 'numeric' 
-                            }) : null;
-                        } catch (e) {
-                            return null;
-                        }
-                    })()
-                    : null;
-
-                const isClickable = !employer.replyReceived;
-                const clickableClass = isClickable ? 'employer-card-clickable' : '';
-
-                return `
-                    <div class="employer-card ${clickableClass}" data-app-id="${employer.id}" onclick="${isClickable ? `markAsReplied(${employer.id}, '${employer.companyName}')` : ''}">
-                        <div class="status-indicator ${employer.replyReceived ? 'status-replied' : 'status-pending'}"></div>
-                        <div class="employer-card-content">
-                            <div class="employer-header">
-                                <div style="display: flex; align-items: start;">
-                                    <span class="employer-number-badge">${index + 1}</span>
-                                    <div class="employer-info">
-                                        <div class="employer-company-name">${employer.companyName}</div>
-                                        <div class="employer-job-position">${employer.position}</div>
-                                    </div>
-                                </div>
-                                <span class="status-badge ${employer.replyReceived ? 'status-badge-replied' : 'status-badge-pending'}">
-                                    ${employer.replyReceived ? '✓ Replied' : '⏳ Pending'}
-                                </span>
-                            </div>
-                            <div class="employer-dates">
-                                <div class="employer-date-item">
-                                    <div class="employer-date-label">Sent</div>
-                                    <div class="employer-date-value">${sentDate}</div>
-                                </div>
-                                ${employer.replyReceived && replyDate ? `
-                                    <div class="employer-date-item">
-                                        <div class="employer-date-label">Reply</div>
-                                        <div class="employer-date-value">${replyDate}</div>
-                                    </div>
-                                ` : ''}
-                            </div>
-                            ${!employer.replyReceived ? `
-                                <div class="action-hint">
-                                    <span style="font-size: 0.875rem; color: #059669;">✓ Tap to mark as replied</span>
-                                </div>
-                            ` : ''}
-                        </div>
-                    </div>
-                `;
-            }).join('');
-        }
-
-        // Function to mark application as replied
-        async function markAsReplied(appId, companyName) {
-            const confirmed = confirm(`Did you receive a reply from ${companyName}?`);
-            if (!confirmed) return;
-
-            const replyDate = prompt('Enter the date you received the reply (YYYY-MM-DD):', new Date().toISOString().split('T')[0]);
-            if (!replyDate) return;
-
-            try {
-                // Load current application history
-                const authToken = localStorage.getItem('authToken');
-                const response = await fetch('/api/users/application-history', {
-                    method: 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                    }
-                });
-
-                if (response.ok) {
-                    const data = await response.json();
-                    const applicationHistory = data.applicationHistory || [];
-                    
-                    // Update the specific application
-                    const updatedHistory = applicationHistory.map(app => {
-                        if (app.id === appId) {
-                            return {
-                                ...app,
-                                replyReceived: true,
-                                replyDate: replyDate
-                            };
-                        }
-                        return app;
-                    });
-
-                    // Save back to backend
-                    const saveResponse = await fetch('/api/users/application-history', {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${authToken}`,
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({ applicationHistory: updatedHistory })
-                    });
-
-                    if (saveResponse.ok) {
-                        showToast('Application marked as replied!', 'success');
-                        // Reload the application history to reflect changes
-                        loadApplicationHistory();
-                    } else {
-                        showToast('Failed to save changes', 'error');
-                    }
-                }
-            } catch (error) {
-                console.error('Error marking as replied:', error);
-                showToast('Failed to update application', 'error');
-            }
-        }
-
-        // Logout function
-        function handleLogout() {
-            if (confirm('Are you sure you want to logout?')) {
-                localStorage.removeItem('authToken');
-                localStorage.removeItem('userData');
-                window.location.href = '/login';
-            }
-        }
-
+        // Recipients management
         let recipientCount = 1;
 
         function addRecipient() {
             const recipientList = document.getElementById('recipientList');
-            const currentItems = recipientList.querySelectorAll('.recipient-item');
-            const newIndex = recipientCount;
+            const newRecipient = document.createElement('div');
+            newRecipient.className = 'recipient-item';
+            newRecipient.setAttribute('data-index', recipientCount);
             
-            const recipientItem = document.createElement('div');
-            recipientItem.className = 'recipient-item';
-            recipientItem.setAttribute('data-index', newIndex);
-            recipientItem.innerHTML = `
+            newRecipient.innerHTML = `
                 <div class="recipient-header">
-                    <div class="recipient-number">${currentItems.length + 1}</div>
-                    <button class="remove-btn" onclick="removeRecipient(${newIndex})">
+                    <div class="recipient-number">${recipientCount + 1}</div>
+                    <button class="remove-btn" onclick="removeRecipient(${recipientCount})">
                         × Remove
                     </button>
                 </div>
@@ -1747,147 +1316,52 @@
                 </div>
             `;
             
-            recipientList.appendChild(recipientItem);
+            recipientList.appendChild(newRecipient);
             recipientCount++;
             
-            // Show remove button on first item if more than one
+            // Update first recipient's remove button visibility
             updateRemoveButtons();
         }
 
         function removeRecipient(index) {
-            const item = document.querySelector(`[data-index="${index}"]`);
-            if (item) {
-                item.style.animation = 'slideOut 0.3s ease-out';
-                setTimeout(() => {
-                    item.remove();
-                    updateRecipientNumbers();
-                    updateRemoveButtons();
-                }, 300);
+            const recipient = document.querySelector(`[data-index="${index}"]`);
+            if (recipient) {
+                recipient.remove();
+                // Renumber remaining recipients
+                renumberRecipients();
+                updateRemoveButtons();
             }
         }
 
-        function updateRecipientNumbers() {
-            const items = document.querySelectorAll('.recipient-item');
-            items.forEach((item, index) => {
-                const numberEl = item.querySelector('.recipient-number');
-                if (numberEl) {
-                    numberEl.textContent = index + 1;
+        function renumberRecipients() {
+            const recipients = document.querySelectorAll('.recipient-item');
+            recipients.forEach((recipient, index) => {
+                const number = recipient.querySelector('.recipient-number');
+                if (number) {
+                    number.textContent = index + 1;
+                }
+                recipient.setAttribute('data-index', index);
+                
+                // Update remove button onclick
+                const removeBtn = recipient.querySelector('.remove-btn');
+                if (removeBtn) {
+                    removeBtn.setAttribute('onclick', `removeRecipient(${index})`);
                 }
             });
+            recipientCount = recipients.length;
         }
 
         function updateRemoveButtons() {
-            const items = document.querySelectorAll('.recipient-item');
-            const removeButtons = document.querySelectorAll('.remove-btn');
-            
-            if (items.length > 1) {
-                removeButtons.forEach(btn => btn.style.display = 'flex');
-            } else {
-                removeButtons.forEach(btn => btn.style.display = 'none');
-            }
-        }
-
-        function getRecipients() {
-            const items = document.querySelectorAll('.recipient-item');
-            const recipients = [];
-            
-            items.forEach(item => {
-                const email = item.querySelector('input[name="email"]').value;
-                const website = item.querySelector('input[name="website"]').value;
-                const position = item.querySelector('input[name="position"]').value || 'a position';
-                
-                if (email && website) {
-                    recipients.push({ email, website, position });
+            const recipients = document.querySelectorAll('.recipient-item');
+            recipients.forEach((recipient, index) => {
+                const removeBtn = recipient.querySelector('.remove-btn');
+                if (removeBtn) {
+                    removeBtn.style.display = recipients.length > 1 ? 'flex' : 'none';
                 }
             });
-            
-            return recipients;
         }
 
-        function validateForm() {
-            const items = document.querySelectorAll('.recipient-item');
-            
-            // Check if all fields are filled
-            for (let item of items) {
-                const email = item.querySelector('input[name="email"]').value.trim();
-                const website = item.querySelector('input[name="website"]').value.trim();
-                
-                if (!email || !website) {
-                    showToast('Please fill in all required fields', 'error');
-                    return false;
-                }
-            }
-            
-            const recipients = getRecipients();
-            
-            if (recipients.length === 0) {
-                showToast('Please add at least one recipient', 'error');
-                return false;
-            }
-            
-            // Validate email format
-            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-            const urlRegex = /^https?:\/\/.+|^www\..+|^[a-zA-Z0-9][a-zA-Z0-9-]+\.[a-zA-Z]{2,}/;
-            
-            for (let recipient of recipients) {
-                if (!emailRegex.test(recipient.email)) {
-                    showToast('Please enter valid email addresses', 'error');
-                    return false;
-                }
-                if (!urlRegex.test(recipient.website)) {
-                    showToast('Please enter valid website URLs', 'error');
-                    return false;
-                }
-            }
-            
-            return true;
-        }
-
-        async function reviewAndSend() {
-            console.log('Review and Send clicked');
-            
-            // Check credits first
-            const hasCredits = await creditValidation.checkCredits();
-            if (!hasCredits) {
-                creditValidation.showModal();
-                return;
-            }
-            
-            if (!validateForm()) {
-                console.log('Validation failed');
-                return;
-            }
-            
-            const recipients = getRecipients();
-            console.log('Recipients:', recipients);
-            
-            // Store recipients to backend API
-            const authToken = localStorage.getItem('authToken');
-            if (authToken) {
-                try {
-                    const response = await fetch('/api/users/recipients', {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${authToken}`,
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({ recipients })
-                    });
-
-                    if (response.ok) {
-                        const data = await response.json();
-                        console.log(`✅ Saved ${data.recipientsCount} recipients before review`);
-                    }
-                } catch (error) {
-                    console.error('Error saving recipients:', error);
-                }
-            }
-            
-            // Redirect to review page
-            window.location.href = '/review';
-        }
-
-        // Restore form values from API when page loads
+        // Restore form values from backend API
         async function restoreFormValues() {
             const userData = JSON.parse(localStorage.getItem('userData') || '{}');
             if (!userData.email) return;
@@ -1924,15 +1398,15 @@
                             }
                         });
                         
-                        console.log('Form values restored from backend API');
+                        console.log('✅ Form values restored from backend API');
                     } else {
                         console.log('ℹ️ No stored recipients found');
                     }
                 } else {
-                    console.log('Failed to load recipients from backend');
+                    console.log('⚠️ Failed to load recipients from backend');
                 }
             } catch (error) {
-                console.error('Error loading recipients:', error);
+                console.error('❌ Error loading recipients:', error);
             }
         }
 
@@ -1944,8 +1418,20 @@
                 const authToken = localStorage.getItem('authToken');
                 if (!authToken) return;
                 
-                const recipients = getRecipients();
-                if (recipients.length > 0 && recipients.some(r => r.email || r.website)) {
+                const recipients = [];
+                const recipientItems = document.querySelectorAll('.recipient-item');
+                
+                recipientItems.forEach(item => {
+                    const email = item.querySelector('input[name="email"]').value.trim();
+                    const website = item.querySelector('input[name="website"]').value.trim();
+                    const position = item.querySelector('input[name="position"]').value.trim();
+                    
+                    if (email || website) {
+                        recipients.push({ email, website, position });
+                    }
+                });
+                
+                if (recipients.length > 0) {
                     try {
                         const response = await fetch('/api/users/recipients', {
                             method: 'POST',
@@ -1960,13 +1446,13 @@
                             const data = await response.json();
                             console.log(`✅ Auto-saved ${data.recipientsCount} recipients to backend`);
                         } else {
-                            console.log('Failed to auto-save recipients');
+                            console.log('⚠️ Failed to auto-save recipients');
                         }
                     } catch (error) {
-                        console.error('Error auto-saving recipients:', error);
+                        console.error('❌ Error auto-saving recipients:', error);
                     }
                 }
-            }, 2000); // 2 second debounce (same as mobile)
+            }, 2000); // 2 second debounce
         }
 
         // Add event listeners for auto-save
@@ -1976,764 +1462,94 @@
             }
         });
 
-        // Call functions when page loads
-        window.addEventListener('DOMContentLoaded', () => {
-            restoreFormValues();
-            loadCredits();
-            loadDashboardStatistics();
-            loadApplicationHistory();
-            checkAdminStatus();
-        });
-
-        // Check if user is admin and show admin button
-        async function checkAdminStatus() {
-            const token = localStorage.getItem('authToken');
-            if (!token) return;
+        function reviewAndSend() {
+            console.log('🚀 Review and Send clicked');
             
-            try {
-                const response = await fetch('/api/user/is-admin', {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-                const data = await response.json();
-                if (data.isAdmin) {
-                    document.getElementById('adminBtn').style.display = 'block';
-                }
-            } catch (error) {
-                console.error('Error checking admin status:', error);
-            }
-        }
-
-        async function sendNow() {
-            if (!validateForm()) return;
+            // Collect recipient data
+            const recipients = [];
+            const recipientItems = document.querySelectorAll('.recipient-item');
             
-            const recipients = getRecipients();
-            await generateCoverLetters(recipients);
-        }
-
-        async function generateCoverLetters(recipients) {
-            // Check if email settings are configured in database
-            const authToken = localStorage.getItem('authToken');
-            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
-            
-            // Verify profile is complete
-            try {
-                const profileResponse = await fetch('/api/user-profile', {
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`
-                    }
-                });
-
-                if (profileResponse.ok) {
-                    const profileData = await profileResponse.json();
-                    if (!profileData.profile.resumePath) {
-                        showToast('Please upload your resume in the Profile page first', 'error');
-                        return;
-                    }
-                } else {
-                    showToast('Failed to verify profile', 'error');
-                    return;
-                }
-            } catch (error) {
-                console.error('Error checking profile:', error);
-                showToast('Failed to verify profile', 'error');
-                return;
-            }
-            
-            // Check if user has enough credits
-            try {
-                const creditsResponse = await fetch('/api/user/credits', {
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`
-                    }
-                });
+            let hasError = false;
+            recipientItems.forEach(item => {
+                const email = item.querySelector('input[name="email"]').value.trim();
+                const website = item.querySelector('input[name="website"]').value.trim();
+                const position = item.querySelector('input[name="position"]').value.trim();
                 
-                if (creditsResponse.ok) {
-                    const creditsData = await creditsResponse.json();
-                    const availableCredits = creditsData.balance || 0;
-                    const requiredCredits = recipients.length;
-                    
-                    if (availableCredits < requiredCredits) {
-                        showToast(`Insufficient credits! You need ${requiredCredits} credit(s) but only have ${availableCredits}. Visit the Usage page to purchase more.`, 'error');
-                        return;
-                    }
-                } else {
-                    showToast('Unable to verify credit balance', 'error');
+                if (!email || !website) {
+                    hasError = true;
                     return;
                 }
-            } catch (error) {
-                console.error('Error checking credits:', error);
-                showToast('Unable to verify credit balance', 'error');
-                return;
-            }
-
-            // Disable buttons and show generating state
-            const buttons = document.querySelectorAll('.btn');
-            buttons.forEach(btn => {
-                btn.disabled = true;
-                btn.innerHTML = '<div class="spinner"></div> Generating Cover Letters...';
+                
+                recipients.push({ email, website, position });
             });
             
-            try {
-                // Use SAME endpoint as mobile - call it for each recipient
-                const results = [];
-                
-                for (let i = 0; i < recipients.length; i++) {
-                    const recipient = recipients[i];
-                    
-                    try {
-                        console.log(`Generating ${i + 1}/${recipients.length}: ${recipient.email}`);
-                        
-                        // Call MOBILE endpoint (same as mobile app uses)
-                        const response = await fetch('/api/generate-cover-letter-details', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${authToken}`
-                            },
-                            body: JSON.stringify({
-                                recipientEmail: recipient.email,
-                                websiteUrl: recipient.website,
-                                position: recipient.position || 'Position'
-                            }),
-                        });
-                        
-                        const data = await response.json();
-                        
-                        if (response.status === 402) {
-                            // Insufficient credits
-                            showToast(data.message || 'Insufficient credits to generate cover letter', 'error');
-                            results.push({
-                                status: 'failed',
-                                email: recipient.email,
-                                error: 'Insufficient credits'
-                            });
-                            break; // Stop generating for remaining recipients
-                        } else if (response.ok && data.success) {
-                            // Extract address from locations (same as mobile app)
-                            const headquarterLocation = data.locations?.find(loc => loc.isHeadquarters) || data.locations?.[0];
-                            const defaultAddress = headquarterLocation ? `${headquarterLocation.address}, ${headquarterLocation.city}, ${headquarterLocation.country}` : '';
-                            
-                            results.push({
-                                status: 'generated',
-                                email: recipient.email,
-                                company: data.companyName,
-                                position: recipient.position,
-                                website: recipient.website,
-                                coverLetterHtml: data.coverLetterHtml,
-                                companyAddress: defaultAddress, // Store the extracted address
-                                metadata: data.metadata
-                            });
-                            
-                            // Reload credit balance after successful generation
-                            try {
-                                const creditsResponse = await fetch('/api/user/credits', {
-                                    method: 'GET',
-                                    headers: {
-                                        'Authorization': `Bearer ${authToken}`,
-                                        'Content-Type': 'application/json',
-                                    }
-                                });
-                                
-                                if (creditsResponse.ok) {
-                                    const creditsData = await creditsResponse.json();
-                                    if (creditsData.success) {
-                                        const creditBadge = document.getElementById('creditBadgeNumber');
-                                        if (creditBadge) {
-                                            creditBadge.textContent = creditsData.balance || 0;
-                                        }
-                                        console.log('💳 Updated credits after generation:', creditsData.balance);
-                                    }
-                                }
-                            } catch (creditsError) {
-                                console.log('Failed to reload credits:', creditsError);
-                            }
-                        } else {
-                            results.push({
-                                status: 'failed',
-                                email: recipient.email,
-                                error: data.error || 'Generation failed'
-                            });
-                        }
-                    } catch (error) {
-                        console.error(`Error generating for ${recipient.email}:`, error);
-                        results.push({
-                            status: 'failed',
-                            email: recipient.email,
-                            error: error.message
-                        });
-                    }
-                }
-                
-                // Save generated cover letters to database (sync with mobile app)
-                if (results.filter(r => r.status === 'generated').length > 0) {
-                    try {
-                        const reviewCoverLetters = {};
-                        results.forEach((result, index) => {
-                            if (result.status === 'generated') {
-                                reviewCoverLetters[index] = {
-                                    companyName: result.company,
-                                    recipientEmail: result.email,
-                                    coverLetterHtml: result.coverLetterHtml,
-                                    subject: `Application for ${result.position} - ${userData.fullName}`,
-                                    address: result.companyAddress || '',
-                                    date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
-                                    position: result.position,
-                                    locations: null, // Web version doesn't have locations dropdown yet
-                                    generated: true,
-                                    sent: false,
-                                    sentDate: null,
-                                    storedRecipientEmail: result.email,
-                                    storedRecipientWebsite: result.website
-                                };
-                            }
-                        });
-                        
-                        await fetch('/api/users/review-cover-letters', {
-                            method: 'POST',
-                            headers: {
-                                'Authorization': `Bearer ${authToken}`,
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({ reviewCoverLetters })
-                        });
-                        console.log('✅ Saved cover letters to database');
-                    } catch (saveError) {
-                        console.error('Failed to save cover letters to database:', saveError);
-                    }
-                }
-                
-                // Show results with download links
-                showCoverLetterResults(results);
-                const successCount = results.filter(r => r.status === 'generated').length;
-                showToast(`✅ Generated ${successCount} cover letter(s)!`, 'success');
-                
-                // Final credit reload to ensure badge is updated
-                if (successCount > 0) {
-                    try {
-                        const finalCreditsResponse = await fetch('/api/user/credits', {
-                            method: 'GET',
-                            headers: {
-                                'Authorization': `Bearer ${authToken}`,
-                                'Content-Type': 'application/json',
-                            }
-                        });
-                        
-                        if (finalCreditsResponse.ok) {
-                            const finalCreditsData = await finalCreditsResponse.json();
-                            if (finalCreditsData.success) {
-                                const creditBadge = document.getElementById('creditBadgeNumber');
-                                if (creditBadge) {
-                                    creditBadge.textContent = finalCreditsData.balance || 0;
-                                }
-                                console.log('💳 Final credit update:', finalCreditsData.balance);
-                            }
-                        }
-                    } catch (finalCreditsError) {
-                        console.log('Failed to reload final credits:', finalCreditsError);
-                    }
-                }
-                
-            } catch (error) {
-                console.error('Error:', error);
-                showToast('Failed to generate cover letters. Please try again.', 'error');
-            } finally {
-                // Re-enable buttons
-                buttons.forEach(btn => {
-                    btn.disabled = false;
-                    btn.innerHTML = btn.classList.contains('send-now-btn') 
-                        ? '⚡ Send Now' 
-                        : '📧 Review & Send';
-                });
-            }
-        }
-
-        function showCoverLetterResults(results) {
-            // Create results modal
-            const modal = document.createElement('div');
-            modal.className = 'modal-overlay';
-            modal.innerHTML = `
-                <div class="modal-content" style="max-width: 800px; max-height: 80vh; overflow-y: auto;">
-                    <div class="modal-header">
-                        <h2 style="margin: 0; color: #2c3e50;">📄 Generated Cover Letters</h2>
-                        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">×</button>
-                    </div>
-                    <div class="modal-body">
-                        <p style="color: #666; margin-bottom: 20px;">
-                            Cover letters generated successfully! Review the list below and click "Send All Emails" to proceed.
-                        </p>
-                        <div class="results-list">
-                            ${results.map((result, index) => `
-                                <div class="result-item" style="
-                                    border: 1px solid ${result.status === 'generated' ? '#d4edda' : '#f8d7da'};
-                                    background: ${result.status === 'generated' ? '#d4edda' : '#f8d7da'};
-                                    padding: 15px;
-                                    border-radius: 8px;
-                                    margin-bottom: 15px;
-                                ">
-                                    <div style="display: flex; justify-content: space-between; align-items: start;">
-                                        <div style="flex: 1;">
-                                            <h3 style="margin: 0 0 5px 0; color: #2c3e50; font-size: 16px;">
-                                                ${index + 1}. ${result.company || 'Company'}
-                                            </h3>
-                                            <p style="margin: 5px 0; color: #666; font-size: 14px;">
-                                                📧 ${result.email}
-                                            </p>
-                                            ${result.position ? `
-                                                <p style="margin: 5px 0; color: #666; font-size: 14px;">
-                                                    💼 ${result.position}
-                                                </p>
-                                            ` : ''}
-                                            ${result.website ? `
-                                                <p style="margin: 5px 0; color: #666; font-size: 14px;">
-                                                    🌐 ${result.website}
-                                                </p>
-                                            ` : ''}
-                                            ${result.metadata ? `
-                                                <p style="margin: 5px 0; color: #999; font-size: 12px;">
-                                                    ℹ️ Generated using ${result.metadata.generationMethod === 'ai' ? 'AI (GPT-4)' : 'Smart Template'} • 
-                                                    ${result.metadata.skillsFound} skills found • 
-                                                    ${result.metadata.experienceCount} experiences
-                                                </p>
-                                            ` : ''}
-                                        </div>
-                                        <div style="display: flex; gap: 10px; align-items: center;">
-                                            ${result.status === 'generated' ? `
-                                                <span style="color: #28a745; font-size: 20px;">✓</span>
-                                            ` : `
-                                                <span style="color: #dc3545; font-size: 14px;">❌ ${result.error}</span>
-                                            `}
-                                        </div>
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
-                        <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd; display: flex; gap: 10px; justify-content: flex-end;">
-                            <button class="btn" onclick="this.closest('.modal-overlay').remove()" style="background: #6c757d;">
-                                Close
-                            </button>
-                            <button class="btn btn-primary" onclick="proceedToSend()" 
-                                    ${results.filter(r => r.status === 'generated').length === 0 ? 'disabled' : ''}>
-                                ✉️ Send All Emails
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            document.body.appendChild(modal);
-            
-            // Store results for sending
-            window.generatedCoverLetters = results.filter(r => r.status === 'generated');
-        }
-
-        async function proceedToSend() {
-            const confirmed = confirm(`Send cover letters to ${window.generatedCoverLetters.length} recipient(s)?`);
-            
-            if (!confirmed) return;
-
-            // Close the results modal
-            document.querySelector('.modal-overlay')?.remove();
-
-            await sendEmailsWithCoverLetters(window.generatedCoverLetters);
-        }
-
-        async function sendEmailsWithCoverLetters(coverLetters) {
-            const authToken = localStorage.getItem('authToken');
-
-            // Check SMTP settings
-            try {
-                const profileResponse = await fetch('/api/user-profile', {
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`
-                    }
-                });
-
-                if (profileResponse.ok) {
-                    const profileData = await profileResponse.json();
-                    if (!profileData.profile.smtpEmail || !profileData.profile.smtpPassword) {
-                        showToast('Please configure your email settings first', 'error');
-                        setTimeout(() => openSettings(), 1000);
-                        return;
-                    }
-                }
-            } catch (error) {
-                console.error('Error checking settings:', error);
-                showToast('Failed to verify email settings', 'error');
+            if (hasError) {
+                showToast('Please fill in all required fields (Email and Website)', 'error');
                 return;
             }
-
-            // Show sending state
-            showToast('Sending emails...', 'info');
-
-            try {
-                // Convert cover letters to recipients format with address
-                const recipients = coverLetters.map(cl => ({
-                    email: cl.email,
-                    website: cl.website,
-                    position: cl.position,
-                    companyAddress: cl.companyAddress || '' // Pass the address from dropdown/generation
-                }));
-
-                // Send emails
-                const response = await fetch('/api/send-applications', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${authToken}`
-                    },
-                    body: JSON.stringify({ recipients }),
-                });
-                
-                const result = await response.json();
-                
-                if (response.ok) {
-                    showToast(`✅ Successfully sent to ${result.results.filter(r => r.status === 'success').length} recipient(s)!`, 'success');
-                    
-                    // Show detailed results
-                    setTimeout(() => {
-                        alert(result.results.map((r, i) => 
-                            `${i + 1}. ${r.email}: ${r.status === 'success' ? '✅ Sent' : '❌ Failed'}`
-                        ).join('\n'));
-                    }, 1000);
-                } else {
-                    showToast(result.error || 'Some emails failed to send', 'error');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showToast('Failed to send emails. Please try again.', 'error');
-            }
-        }
-
-        async function sendEmails(recipients) {
-            // Check if email settings are configured in database
-            const authToken = localStorage.getItem('authToken');
             
-            // Verify settings exist in database
-            try {
-                const profileResponse = await fetch('/api/user-profile', {
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`
-                    }
-                });
-
-                if (profileResponse.ok) {
-                    const profileData = await profileResponse.json();
-                    if (!profileData.profile.smtpEmail || !profileData.profile.smtpPassword) {
-                        showToast('Please configure your email settings first', 'error');
-                        setTimeout(() => openSettings(), 1000);
-                        return;
-                    }
-                } else {
-                    showToast('Failed to verify email settings', 'error');
-                    return;
-                }
-            } catch (error) {
-                console.error('Error checking settings:', error);
-                showToast('Failed to verify email settings', 'error');
+            if (recipients.length === 0) {
+                showToast('Please add at least one recipient', 'error');
                 return;
             }
-
-            // Disable buttons
-            const buttons = document.querySelectorAll('.btn');
-            buttons.forEach(btn => {
-                btn.disabled = true;
-                btn.innerHTML = '<div class="spinner"></div> Sending...';
-            });
             
-            try {
-                // Send to backend API with authentication
-                const response = await fetch('/api/send-applications', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${authToken}`
-                    },
-                    body: JSON.stringify({ recipients }),
-                });
-                
-                const result = await response.json();
-                
-                if (response.ok) {
-                    showToast(`✅ Successfully sent to ${recipients.length} recipient(s)!`, 'success');
-                    
-                    // Clear form after success
-                    setTimeout(() => {
-                        location.reload();
-                    }, 2000);
-                } else {
-                    showToast(result.error || 'Failed to send emails', 'error');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showToast('Failed to send emails. Please try again.', 'error');
-            } finally {
-                // Re-enable buttons
-                buttons.forEach(btn => {
-                    btn.disabled = false;
-                });
-                document.querySelector('.btn-primary').innerHTML = '<span>Send Applications</span>';
-                document.querySelector('.btn-secondary').innerHTML = 'Review Before Sending';
-            }
+            console.log('✅ Collected recipients:', recipients.length);
+            
+            // Store recipients and redirect to review page
+            localStorage.setItem('pendingRecipients', JSON.stringify(recipients));
+            console.log('✅ Stored recipients in localStorage');
+            window.location.href = '/review';
         }
-
-        function showToast(message, type = 'success') {
-            const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-            toast.innerHTML = `
-                <span style="font-size: 1.25rem; font-weight: 600;">${type === 'success' ? '✓' : '✕'}</span>
-                <span style="font-size: 0.9375rem;">${message}</span>
-            `;
-            
-            document.body.appendChild(toast);
-            
-            setTimeout(() => {
-                toast.style.animation = 'slideOutRight 0.3s ease-out';
-                setTimeout(() => toast.remove(), 300);
-            }, 3000);
-        }
-
-        // Add CSS for slide out animation
-        const style = document.createElement('style');
-        style.textContent = `
-            @keyframes slideOut {
-                to {
-                    opacity: 0;
-                    transform: translateX(-20px);
-                }
-            }
-            @keyframes slideOutRight {
-                to {
-                    transform: translateX(400px);
-                    opacity: 0;
-                }
-            }
-        `;
-        document.head.appendChild(style);
 
         // Modal functions
-        function openSettings() {
-            document.getElementById('settingsModal').classList.add('active');
-            loadSettings();
-        }
-
         function closeSettings() {
             document.getElementById('settingsModal').classList.remove('active');
-        }
-
-        function openProfile() {
-            document.getElementById('profileModal').classList.add('active');
-            updateProfileLabels();
-            loadProfile();
         }
 
         function closeProfile() {
             document.getElementById('profileModal').classList.remove('active');
         }
 
-        // Update profile labels with user's name
-        function updateProfileLabels() {
-            document.getElementById('resumeLabel').textContent = 'Resume';
-            document.getElementById('photoLabel').textContent = 'Photo';
-            document.getElementById('signatureLabel').textContent = 'Signature';
-        }
-
-        // Close modal on outside click
-        document.querySelectorAll('.modal').forEach(modal => {
-            modal.addEventListener('click', (e) => {
-                if (e.target === modal) {
-                    modal.classList.remove('active');
-                }
-            });
-        });
-
-        // Settings functions
-        async function loadSettings() {
-            try {
-                const token = localStorage.getItem('authToken');
-                const response = await fetch('/api/user-profile', {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-
-                if (response.ok) {
-                    const data = await response.json();
-                    const profile = data.profile;
-                    
-                    document.getElementById('smtpEmail').value = profile.smtpEmail || '';
-                    document.getElementById('smtpPassword').value = profile.smtpPassword || '';
-                    document.getElementById('senderName').value = profile.senderName || '';
-                }
-            } catch (error) {
-                console.error('Error loading settings:', error);
-            }
-        }
-
         async function saveSettings() {
             const email = document.getElementById('smtpEmail').value.trim();
             const password = document.getElementById('smtpPassword').value.trim();
             const name = document.getElementById('senderName').value.trim();
-
+            
             if (!email || !password || !name) {
-                showToast('Please fill in all required fields', 'error');
+                showToast('Please fill in all fields', 'error');
                 return;
             }
-
-            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-            if (!emailRegex.test(email)) {
-                showToast('Please enter a valid email address', 'error');
-                return;
-            }
-
+            
             try {
-                const token = localStorage.getItem('authToken');
-                const response = await fetch('/api/save-settings', {
+                const response = await fetch('/api/smtp/config', {
                     method: 'POST',
                     headers: {
+                        'Authorization': `Bearer ${authToken}`,
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
                     },
-                    body: JSON.stringify({ email, password, name })
+                    body: JSON.stringify({ email, password, name }),
                 });
-
-                const data = await response.json();
-
+                
+                const result = await response.json();
+                
                 if (response.ok) {
                     showToast('Settings saved successfully!', 'success');
                     closeSettings();
                 } else {
-                    showToast(data.error || 'Failed to save settings', 'error');
+                    showToast(result.error || 'Failed to save settings', 'error');
                 }
             } catch (error) {
-                console.error('Error saving settings:', error);
+                console.error('Error:', error);
                 showToast('Failed to save settings. Please try again.', 'error');
             }
         }
 
-        // Profile functions
-        let resumeFile = null;
-        let photoFile = null;
-        let signatureFile = null;
-
-        async function loadProfile() {
-            try {
-                const token = localStorage.getItem('authToken');
-                const response = await fetch('/api/user-profile', {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-
-                if (response.ok) {
-                    const data = await response.json();
-                    const profile = data.profile;
-                    
-                    console.log('Profile data loaded:', profile);
-                    
-                    if (profile.resumePath) {
-                        const fileName = profile.resumePath.split('/').pop();
-                        const userName = document.getElementById('userName').textContent || 'Resume';
-                        
-                        // Extract date from filename or use current date
-                        const dateMatch = fileName.match(/(\d{13})/);
-                        let date;
-                        if (dateMatch) {
-                            date = new Date(parseInt(dateMatch[1])).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-                        } else {
-                            date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-                        }
-                        
-                        const shortName = `${userName.replace(/\s+/g, '_')}_${date.replace(/\s+/g, '_')}.pdf`;
-                        
-                        document.getElementById('resumeName').textContent = shortName;
-                        document.getElementById('resumeDate').textContent = `Uploaded: ${date}`;
-                        document.getElementById('resumeFileInfo').classList.add('active');
-                        document.getElementById('resumeUpload').classList.add('has-file');
-                        
-                        // Set download link
-                        const resumePath = '/' + profile.resumePath;
-                        document.getElementById('resumeDownload').href = resumePath;
-                        document.getElementById('resumeDownload').download = shortName;
-                    }
-                    if (profile.photoPath) {
-                        const fileName = profile.photoPath.split('/').pop();
-                        const photoPath = profile.photoPath.replace('uploads/', '/uploads/');
-                        
-                        console.log('Loading photo from:', photoPath);
-                        
-                        // Fetch image with authentication and convert to data URL
-                        const imageResponse = await fetch(photoPath, {
-                            headers: {
-                                'Authorization': `Bearer ${token}`
-                            }
-                        });
-                        
-                        if (imageResponse.ok) {
-                            const blob = await imageResponse.blob();
-                            const dataUrl = await blobToDataURL(blob);
-                            
-                            // Show preview for existing photo
-                            const photoPreview = document.getElementById('photoPreview');
-                            const photoPreviewImg = document.getElementById('photoPreviewImg');
-                            const photoUploadContent = document.getElementById('photoUploadContent');
-                            const photoUploadArea = document.getElementById('photoUpload');
-                            
-                            photoPreviewImg.src = dataUrl;
-                            photoUploadContent.classList.add('hidden');
-                            photoPreview.classList.add('active');
-                            photoUploadArea.classList.add('has-file', 'has-preview');
-                            
-                            showFileInfo('photoFileInfo', fileName, 'photo');
-                        } else {
-                            console.error('Failed to load photo:', imageResponse.status, imageResponse.statusText);
-                        }
-                    }
-                    if (profile.signaturePath) {
-                        const fileName = profile.signaturePath.split('/').pop();
-                        const signaturePath = profile.signaturePath.replace('uploads/', '/uploads/');
-                        
-                        console.log('Loading signature from:', signaturePath);
-                        
-                        // Fetch image with authentication and convert to data URL
-                        const imageResponse = await fetch(signaturePath, {
-                            headers: {
-                                'Authorization': `Bearer ${token}`
-                            }
-                        });
-                        
-                        if (imageResponse.ok) {
-                            const blob = await imageResponse.blob();
-                            const dataUrl = await blobToDataURL(blob);
-                            
-                            // Show preview for existing signature
-                            const signaturePreview = document.getElementById('signaturePreview');
-                            const signaturePreviewImg = document.getElementById('signaturePreviewImg');
-                            const signatureUploadContent = document.getElementById('signatureUploadContent');
-                            const signatureUploadArea = document.getElementById('signatureUpload');
-                            
-                            signaturePreviewImg.src = dataUrl;
-                            signatureUploadContent.classList.add('hidden');
-                            signaturePreview.classList.add('active');
-                            signatureUploadArea.classList.add('has-file', 'has-preview');
-                            
-                            showFileInfo('signatureFileInfo', fileName, 'signature');
-                        } else {
-                            console.error('Failed to load signature:', imageResponse.status, imageResponse.statusText);
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error('Error loading profile:', error);
-            }
-        }
-
+        // File upload handlers
         function handleResumeUpload(event) {
             const file = event.target.files[0];
             if (file) {
                 resumeFile = file;
-                const userName = document.getElementById('userName').textContent || 'Resume';
+                const userName = userData.fullName || userData.name || 'Resume';
                 const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                 const shortName = `${userName.replace(/\s+/g, '_')}_${date.replace(/\s+/g, '_')}.pdf`;
                 
@@ -2742,7 +1558,6 @@
                 document.getElementById('resumeFileInfo').classList.add('active');
                 document.getElementById('resumeUpload').classList.add('has-file');
                 
-                // Create blob URL for download
                 const blobUrl = URL.createObjectURL(file);
                 document.getElementById('resumeDownload').href = blobUrl;
                 document.getElementById('resumeDownload').download = shortName;
@@ -2754,7 +1569,6 @@
             if (file) {
                 photoFile = file;
                 
-                // Show preview
                 const reader = new FileReader();
                 reader.onload = function(e) {
                     const photoPreview = document.getElementById('photoPreview');
@@ -2769,7 +1583,6 @@
                 };
                 reader.readAsDataURL(file);
                 
-                showFileInfo('photoFileInfo', file.name, 'photo');
                 document.getElementById('photoUpload').classList.add('has-file');
             }
         }
@@ -2779,7 +1592,6 @@
             if (file) {
                 signatureFile = file;
                 
-                // Show preview
                 const reader = new FileReader();
                 reader.onload = function(e) {
                     const signaturePreview = document.getElementById('signaturePreview');
@@ -2794,41 +1606,18 @@
                 };
                 reader.readAsDataURL(file);
                 
-                showFileInfo('signatureFileInfo', file.name, 'signature');
                 document.getElementById('signatureUpload').classList.add('has-file');
             }
-        }
-
-        function showFileInfo(elementId, fileName, type) {
-            const infoDiv = document.getElementById(elementId);
-            infoDiv.style.display = 'block';
-            infoDiv.innerHTML = `
-                <div class="file-info">
-                    <span class="file-name">${fileName}</span>
-                    <button class="remove-file-btn" onclick="removeFile('${type}')">Remove</button>
-                </div>
-            `;
-        }
-
-        // Helper function to convert blob to data URL
-        function blobToDataURL(blob) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(reader.result);
-                reader.onerror = reject;
-                reader.readAsDataURL(blob);
-            });
         }
 
         function removeFile(type) {
             if (type === 'resume') {
                 resumeFile = null;
-                document.getElementById('resumeFileInfo').style.display = 'none';
+                document.getElementById('resumeFileInfo').classList.remove('active');
                 document.getElementById('resumeUpload').classList.remove('has-file');
                 document.getElementById('resumeFile').value = '';
             } else if (type === 'photo') {
                 photoFile = null;
-                document.getElementById('photoFileInfo').style.display = 'none';
                 document.getElementById('photoUpload').classList.remove('has-file', 'has-preview');
                 document.getElementById('photoFile').value = '';
                 document.getElementById('photoPreview').classList.remove('active');
@@ -2836,7 +1625,6 @@
                 document.getElementById('photoPreviewImg').src = '';
             } else if (type === 'signature') {
                 signatureFile = null;
-                document.getElementById('signatureFileInfo').style.display = 'none';
                 document.getElementById('signatureUpload').classList.remove('has-file', 'has-preview');
                 document.getElementById('signatureFile').value = '';
                 document.getElementById('signaturePreview').classList.remove('active');
@@ -2848,12 +1636,6 @@
         async function saveProfile() {
             const formData = new FormData();
             
-            console.log('Saving profile with files:', {
-                resume: resumeFile ? resumeFile.name : null,
-                photo: photoFile ? photoFile.name : null,
-                signature: signatureFile ? signatureFile.name : null
-            });
-            
             if (resumeFile) formData.append('resume', resumeFile);
             if (photoFile) formData.append('photo', photoFile);
             if (signatureFile) formData.append('signature', signatureFile);
@@ -2864,11 +1646,10 @@
             }
 
             try {
-                const token = localStorage.getItem('authToken');
                 const response = await fetch('/api/upload-profile', {
                     method: 'POST',
                     headers: {
-                        'Authorization': `Bearer ${token}`
+                        'Authorization': `Bearer ${authToken}`
                     },
                     body: formData,
                 });
@@ -2877,9 +1658,7 @@
 
                 if (response.ok) {
                     showToast('Profile updated successfully!', 'success');
-                    console.log('Save successful:', result);
                     
-                    // Reset file selections and input fields
                     resumeFile = null;
                     photoFile = null;
                     signatureFile = null;
@@ -2888,9 +1667,7 @@
                     document.getElementById('photoFile').value = '';
                     document.getElementById('signatureFile').value = '';
                     
-                    // Reload profile to show updated files
                     await loadProfile();
-                    
                     closeProfile();
                 } else {
                     showToast(result.error || 'Failed to upload files', 'error');
@@ -2900,7 +1677,475 @@
                 showToast('Failed to upload files. Please try again.', 'error');
             }
         }
-    </script>
 
+        async function loadProfile() {
+            try {
+                const token = localStorage.getItem('authToken');
+                const response = await fetch('/api/user-profile', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    const profile = result.profile;
+                    
+                    if (profile.resumePath) {
+                        const fileName = profile.resumePath.split('/').pop();
+                        const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                        
+                        document.getElementById('resumeName').textContent = fileName;
+                        document.getElementById('resumeDate').textContent = `Uploaded: ${date}`;
+                        document.getElementById('resumeFileInfo').classList.add('active');
+                        document.getElementById('resumeUpload').classList.add('has-file');
+                        
+                        const resumePath = profile.resumePath.replace('uploads/', '/uploads/');
+                        document.getElementById('resumeDownload').href = resumePath;
+                        document.getElementById('resumeDownload').download = fileName;
+                    }
+                    
+                    if (profile.photoPath) {
+                        const photoPath = profile.photoPath.replace('uploads/', '/uploads/');
+                        
+                        const imageResponse = await fetch(photoPath, {
+                            headers: { 'Authorization': `Bearer ${token}` }
+                        });
+                        
+                        if (imageResponse.ok) {
+                            const blob = await imageResponse.blob();
+                            const dataUrl = await blobToDataURL(blob);
+                            
+                            const photoPreview = document.getElementById('photoPreview');
+                            const photoPreviewImg = document.getElementById('photoPreviewImg');
+                            const photoUploadContent = document.getElementById('photoUploadContent');
+                            const photoUploadArea = document.getElementById('photoUpload');
+                            
+                            photoPreviewImg.src = dataUrl;
+                            photoUploadContent.classList.add('hidden');
+                            photoPreview.classList.add('active');
+                            photoUploadArea.classList.add('has-file', 'has-preview');
+                        }
+                    }
+                    
+                    if (profile.signaturePath) {
+                        const signaturePath = profile.signaturePath.replace('uploads/', '/uploads/');
+                        
+                        const imageResponse = await fetch(signaturePath, {
+                            headers: { 'Authorization': `Bearer ${token}` }
+                        });
+                        
+                        if (imageResponse.ok) {
+                            const blob = await imageResponse.blob();
+                            const dataUrl = await blobToDataURL(blob);
+                            
+                            const signaturePreview = document.getElementById('signaturePreview');
+                            const signaturePreviewImg = document.getElementById('signaturePreviewImg');
+                            const signatureUploadContent = document.getElementById('signatureUploadContent');
+                            const signatureUploadArea = document.getElementById('signatureUpload');
+                            
+                            signaturePreviewImg.src = dataUrl;
+                            signatureUploadContent.classList.add('hidden');
+                            signaturePreview.classList.add('active');
+                            signatureUploadArea.classList.add('has-file', 'has-preview');
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading profile:', error);
+            }
+        }
+
+        function blobToDataURL(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        // Load application history
+        async function loadApplicationHistory() {
+            console.log('📖 Loading application history...');
+            
+            // Refresh user data
+            userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            
+            if (!userData.email) {
+                console.log('⚠️ No user email found, skipping application history');
+                return;
+            }
+            
+            console.log('👤 Loading history for user:', userData.email);
+            
+            try {
+                console.log('🔄 Fetching from /api/users/application-history...');
+                const response = await fetch('/api/users/application-history', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                console.log('📡 Application history response status:', response.status);
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.log('⚠️ No application history found:', response.status, errorText);
+                    return;
+                }
+
+                const data = await response.json();
+                console.log('📦 Application history data received:', data);
+                
+                if (data.success && data.applicationHistory && data.applicationHistory.length > 0) {
+                    const applicationHistory = data.applicationHistory;
+                    console.log('✅ Loaded application history:', applicationHistory.length, 'items');
+                    console.log('📋 First application:', applicationHistory[0]);
+                    
+                    const badge = document.getElementById('employersBadge');
+                    const count = Math.min(applicationHistory.length, 5);
+                    badge.textContent = count;
+                    console.log('🔢 Updated badge count:', count);
+                    
+                    renderEmployers(applicationHistory.slice(0, 5));
+                    console.log('✅ Rendered employers');
+                } else {
+                    console.log('ℹ️ No application history found or empty array');
+                }
+            } catch (error) {
+                console.error('❌ Error loading application history:', error);
+            }
+        }
+
+        // Mark application as replied - Global variables for modal
+        let currentReplyAppId = null;
+        let currentReplyCompanyName = '';
+
+        function markAsReplied(appId, companyName) {
+            currentReplyAppId = appId;
+            currentReplyCompanyName = companyName;
+            
+            // Set the company name in the modal
+            document.getElementById('replyCompanyName').textContent = companyName;
+            
+            // Set default date to today
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('replyDateInput').value = today;
+            
+            // Show the modal
+            document.getElementById('replyModal').classList.add('active');
+        }
+
+        function closeReplyModal() {
+            document.getElementById('replyModal').classList.remove('active');
+            currentReplyAppId = null;
+            currentReplyCompanyName = '';
+        }
+
+        async function confirmMarkAsReplied() {
+            const replyDate = document.getElementById('replyDateInput').value;
+            
+            if (!replyDate) {
+                showToast('Please select a reply date', 'error');
+                return;
+            }
+
+            // Save the ID before closing the modal (which resets it to null)
+            const appId = currentReplyAppId;
+            
+            if (!appId) {
+                showToast('Error: Application ID not found', 'error');
+                return;
+            }
+
+            try {
+                // Close the modal
+                closeReplyModal();
+                
+                const authToken = localStorage.getItem('authToken');
+                
+                console.log('🔄 Marking as replied:', { id: appId, replyDate });
+                
+                // Update the specific application using PATCH
+                const response = await fetch(`/api/users/application-history/${appId}`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        replyReceived: true,
+                        replyDate: replyDate
+                    })
+                });
+
+                console.log('📡 Response status:', response.status, response.statusText);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('✅ Success:', data);
+                    showToast('Application marked as replied!', 'success');
+                    // Reload the application history to reflect changes
+                    loadApplicationHistory();
+                } else {
+                    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+                    console.error('❌ Error response:', response.status, errorData);
+                    showToast('Failed to save changes: ' + (errorData.error || 'Unknown error'), 'error');
+                }
+            } catch (error) {
+                console.error('❌ Error marking as replied:', error);
+                showToast('Failed to update application: ' + error.message, 'error');
+            }
+        }
+
+        function renderEmployers(employers) {
+            console.log('🎨 Rendering employers...', employers ? employers.length : 0);
+            const container = document.getElementById('employersContainer');
+            
+            if (!container) {
+                console.error('❌ employersContainer element not found!');
+                return;
+            }
+            
+            if (!employers || employers.length === 0) {
+                console.log('📭 No employers to display, showing empty state');
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">📭</div>
+                        <div class="empty-title">No Applications Yet</div>
+                        <div class="empty-subtitle">Your recent job applications will appear here</div>
+                    </div>
+                `;
+                return;
+            }
+
+            console.log('📊 Processing', employers.length, 'employers');
+            
+            const html = employers.map((employer, index) => {
+                console.log(`  Processing employer ${index + 1}:`, employer);
+                
+                // Format sentDate
+                let sentDate = 'N/A';
+                if (employer.sentDate) {
+                    try {
+                        const date = new Date(employer.sentDate);
+                        if (!isNaN(date.getTime())) {
+                            sentDate = date.toLocaleDateString('en-US', { 
+                                month: 'short', 
+                                day: 'numeric', 
+                                year: 'numeric' 
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Error parsing sentDate:', e);
+                    }
+                }
+                
+                // Format replyDate
+                const replyDate = employer.replyReceived && employer.replyDate 
+                    ? (() => {
+                        try {
+                            const date = new Date(employer.replyDate);
+                            return !isNaN(date.getTime()) ? date.toLocaleDateString('en-US', { 
+                                month: 'short', 
+                                day: 'numeric', 
+                                year: 'numeric' 
+                            }) : null;
+                        } catch (e) {
+                            return null;
+                        }
+                    })()
+                    : null;
+                
+                const isClickable = !employer.replyReceived;
+                const clickableClass = isClickable ? 'employer-card-clickable' : '';
+                
+                return `
+                    <div class="employer-card ${clickableClass}" data-app-id="${employer.id}" onclick="${isClickable ? `markAsReplied(${employer.id}, '${employer.companyName}')` : ''}">
+                        <div class="status-indicator ${employer.replyReceived ? 'status-replied' : 'status-pending'}"></div>
+                        <div class="employer-card-content">
+                            <div class="employer-header">
+                                <div style="display: flex; align-items: start;">
+                                    <span class="employer-number-badge">${index + 1}</span>
+                                    <div class="employer-info">
+                                        <div class="employer-company-name">${employer.companyName}</div>
+                                        <div class="employer-job-position">${employer.position}</div>
+                                    </div>
+                                </div>
+                                <span class="status-badge ${employer.replyReceived ? 'status-badge-replied' : 'status-badge-pending'}">
+                                    ${employer.replyReceived ? '✓ Replied' : '⏳ Pending'}
+                                </span>
+                            </div>
+                            <div class="employer-dates">
+                                <div style="display: flex; gap: 12px; flex-wrap: nowrap;">
+                                    <div class="employer-date-item">
+                                        <div class="employer-date-label">Sent</div>
+                                        <div class="employer-date-value">${sentDate}</div>
+                                    </div>
+                                    ${employer.replyReceived && replyDate ? `
+                                        <div class="employer-date-item">
+                                            <div class="employer-date-label">Reply</div>
+                                            <div class="employer-date-value">${replyDate}</div>
+                                        </div>
+                                    ` : ''}
+                                </div>
+                                ${!employer.replyReceived ? `
+                                    <div style="font-size: 0.875rem; color: #059669; font-weight: 500; white-space: nowrap;">
+                                        ✓ Tap to mark as replied
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            console.log('📝 Setting innerHTML for employers');
+            container.innerHTML = html;
+            console.log('✅ Employers rendered successfully');
+        }
+
+        // Load statistics
+        async function loadDashboardStatistics() {
+            console.log('📊 Loading dashboard statistics...');
+            
+            // Refresh user data from localStorage
+            userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            
+            const userName = userData.fullName || userData.name || userData.email || 'User';
+            console.log('👤 Setting welcome message for:', userName);
+            document.getElementById('dashboardUserName').textContent = userName;
+            
+            try {
+                console.log('🔄 Fetching counters from /api/users/counters...');
+                const countersResponse = await fetch('/api/users/counters', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                let totalSent = 0, totalGenerated = 0;
+                
+                console.log('📡 Counters response status:', countersResponse.status);
+                
+                if (countersResponse.ok) {
+                    const countersData = await countersResponse.json();
+                    console.log('📊 Counters data received:', countersData);
+                    
+                    totalSent = countersData.totalSent || 0;
+                    totalGenerated = countersData.totalGenerated || 0;
+                    console.log('✅ Loaded counters - Sent:', totalSent, 'Generated:', totalGenerated);
+                } else {
+                    const errorText = await countersResponse.text();
+                    console.log('⚠️ Failed to load counters:', countersResponse.status, errorText);
+                }
+                
+                console.log('📝 Setting dashboard values - Sent:', totalSent, 'Generated:', totalGenerated);
+                document.getElementById('dashboardTotalSent').textContent = totalSent;
+                document.getElementById('dashboardTotalGenerated').textContent = totalGenerated;
+                console.log('✅ Dashboard statistics updated');
+            } catch (error) {
+                console.error('❌ Error loading statistics:', error);
+                document.getElementById('dashboardTotalSent').textContent = '0';
+                document.getElementById('dashboardTotalGenerated').textContent = '0';
+            }
+        }
+
+        // Toast notification
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `
+                <span>${type === 'success' ? '✓' : '✗'}</span>
+                <span>${message}</span>
+            `;
+            
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.animation = 'slideInRight 0.3s ease-out reverse';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('🚀 ========================================');
+            console.log('🚀 Initializing dashboard...');
+            console.log('🚀 ========================================');
+            
+            // Check all required elements
+            const requiredElements = {
+                'dashboardUserName': document.getElementById('dashboardUserName'),
+                'dashboardTotalSent': document.getElementById('dashboardTotalSent'),
+                'dashboardTotalGenerated': document.getElementById('dashboardTotalGenerated'),
+                'employersContainer': document.getElementById('employersContainer'),
+                'employersBadge': document.getElementById('employersBadge'),
+            };
+            
+            console.log('🔍 Checking required elements:');
+            Object.entries(requiredElements).forEach(([name, element]) => {
+                if (element) {
+                    console.log(`  ✅ ${name} found`);
+                } else {
+                    console.error(`  ❌ ${name} NOT FOUND!`);
+                }
+            });
+            
+            // Initialize WOW.js for animations
+            console.log('✨ Initializing WOW.js animations');
+            new WOW().init();
+            
+            // Load all data
+            console.log('📊 Loading dashboard data...');
+            Promise.all([
+                restoreFormValues(),
+                loadDashboardStatistics(),
+                loadApplicationHistory(),
+                loadProfile()
+            ]).then(() => {
+                console.log('✅ All data loaded successfully');
+                console.log('🚀 ========================================');
+            }).catch(error => {
+                console.error('❌ Error loading data:', error);
+            });
+            
+            // Close modals on click outside
+            const settingsModal = document.getElementById('settingsModal');
+            const profileModal = document.getElementById('profileModal');
+            const replyModal = document.getElementById('replyModal');
+            
+            if (settingsModal) {
+                settingsModal.addEventListener('click', function(e) {
+                    if (e.target === this) closeSettings();
+                });
+                console.log('✅ Settings modal event listener added');
+            }
+            
+            if (profileModal) {
+                profileModal.addEventListener('click', function(e) {
+                    if (e.target === this) closeProfile();
+                });
+                console.log('✅ Profile modal event listener added');
+            }
+            
+            if (replyModal) {
+                replyModal.addEventListener('click', function(e) {
+                    if (e.target === this) closeReplyModal();
+                });
+                console.log('✅ Reply modal event listener added');
+            }
+            
+            console.log('✅ Dashboard initialized');
+            console.log('🚀 ========================================');
+        });
+    </script>
 </body>
 </html>

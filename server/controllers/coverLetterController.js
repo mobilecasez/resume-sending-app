@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
 const TemplateCoverLetterGenerator = require('../../template-cover-letter-generator');
+const { notifyCoverLetterGenerated } = require('./notificationsController');
 
 const templateGenerator = new TemplateCoverLetterGenerator();
 
@@ -635,6 +636,13 @@ const generateCoverLetterDetails = async (req, res) => {
         // Get updated credits
         const creditCheck = await checkUserCredits(userId, 0);
         console.log(`💰 User ${userId} now has ${creditCheck.remaining} credits remaining`);
+
+        // Create notification for cover letter generation
+        try {
+            await notifyCoverLetterGenerated(userId, result.companyName, position, websiteUrl);
+        } catch (notifError) {
+            console.error('Failed to create notification:', notifError);
+        }
 
         const duration = Date.now() - startTime;
         console.log(`✅ [${requestId}] Response sent in ${duration}ms`);
