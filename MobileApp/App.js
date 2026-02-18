@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, ActionSheetIOS, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView } from 'react-native-webview';
+import { LinearGradient } from 'expo-linear-gradient';
+import { BlurView } from 'expo-blur';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
 import * as DocumentPicker from 'expo-document-picker';
@@ -436,6 +438,23 @@ export default function App() {
   const [userPackages, setUserPackages] = useState([]);
   const [loadingUserPackages, setLoadingUserPackages] = useState(false);
   
+  // Stat tile flip animation state
+  const flipAnimSent = useRef(new Animated.Value(0)).current;
+  const flipAnimGenerated = useRef(new Animated.Value(0)).current;
+  const flipAnimPending = useRef(new Animated.Value(0)).current;
+  const flipAnimReply = useRef(new Animated.Value(0)).current;
+  
+  // Reply date picker state
+  const [showReplyDatePicker, setShowReplyDatePicker] = useState(false);
+  const [selectedReplyDate, setSelectedReplyDate] = useState(new Date());
+  const [replyAppId, setReplyAppId] = useState(null);
+  
+  // Notification state
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [loadingNotifications, setLoadingNotifications] = useState(false);
+  
   // Validation functions
   const isValidEmail = (email) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -449,6 +468,34 @@ export default function App() {
     } catch {
       return false;
     }
+  };
+
+  // Flip tile animation handler
+  const handleTileFlip = (animValue) => {
+    // Check current value and toggle
+    const currentValue = animValue._value;
+    const toValue = currentValue >= 90 ? 0 : 180;
+    
+    Animated.spring(animValue, {
+      toValue,
+      friction: 8,
+      tension: 10,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  // Reset all flipped tiles back to front
+  const resetAllFlips = () => {
+    [flipAnimSent, flipAnimGenerated, flipAnimPending, flipAnimReply].forEach(animValue => {
+      if (animValue._value > 0) {
+        Animated.spring(animValue, {
+          toValue: 0,
+          friction: 8,
+          tension: 10,
+          useNativeDriver: true,
+        }).start();
+      }
+    });
   };
 
   const addRecipient = () => {
@@ -1950,6 +1997,49 @@ export default function App() {
     }
   };
 
+  // Load notifications from backend
+  const loadNotifications = async () => {
+    if (!user?.token) return;
+    
+    setLoadingNotifications(true);
+    try {
+      const response = await fetch(`${API_BASE}/notifications?limit=5`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json',
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          setNotifications(data.notifications || []);
+          setUnreadCount(data.unreadCount || 0);
+        }
+      } else {
+        console.log('Failed to load notifications:', response.status);
+      }
+    } catch (err) {
+      console.log('Error loading notifications:', err.message);
+    } finally {
+      setLoadingNotifications(false);
+    }
+  };
+
+  // Get time ago for notifications
+  const getTimeAgo = (timestamp) => {
+    const now = new Date();
+    const then = new Date(timestamp);
+    const seconds = Math.floor((now - then) / 1000);
+    
+    if (seconds < 60) return 'Just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+    return `${Math.floor(seconds / 604800)}w ago`;
+  };
+
   const loadReviewCoverLettersFromStorage = async () => {
     try {
       if (!user?.email) {
@@ -2264,6 +2354,7 @@ export default function App() {
       loadRecipientsFromBackend(user.token);
       loadReviewCoverLettersFromStorage();
       loadApplicationHistoryFromStorage();
+      loadNotifications(); // Load notifications
     }
   }, [user?.token, user?.email]);
 
@@ -2889,38 +2980,89 @@ export default function App() {
   // DASHBOARD/RECIPIENTS SCREEN
   if (screen === 'dashboard' || !screen || screen === '') {
     return (
-      <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
+      <SafeAreaView style={styles.modernContainer}>
+        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
         
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {/* Premium Header - now part of content */}
-          <View style={styles.premiumHeader}>
-            <View style={styles.headerContent}>
-              <View style={styles.logoSection}>
+        <ScrollView 
+          contentContainerStyle={styles.scrollContent} 
+          showsVerticalScrollIndicator={false}
+          onScroll={resetAllFlips}
+          scrollEventThrottle={16}
+        >
+          {/* Modern Header Card */}
+          <TouchableWithoutFeedback onPress={resetAllFlips}>
+            <View>
+              <LinearGradient
+                colors={['#667eea', '#764ba2']}
+                style={styles.modernHeaderCard}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+              >
+            <View style={styles.headerTop}>
+              <View style={styles.headerLeft}>
                 <Image 
-                  source={require('./assets/images/logo_hd_no_background_small.png')} 
-                  style={{ width: 180, height: 50 }}
+                  source={require('./assets/images/logo_hd_no_background_white_small.png')} 
+                  style={{ width: 140, height: 40 }}
                   resizeMode="contain"
                 />
               </View>
-              <View style={styles.headerRightSection}>
+              <View style={styles.headerRightActions}>
                 <TouchableOpacity 
-                  style={styles.compactCreditBadge}
-                  onPress={() => setScreen('usage')}
-                  activeOpacity={0.7}
+                  style={styles.notificationButton}
+                  onPress={async () => {
+                    setShowNotifications(!showNotifications);
+                    if (!showNotifications) {
+                      await loadNotifications();
+                    }
+                  }}
                 >
-                  <Text style={styles.creditIcon}>💎</Text>
-                  <Text style={styles.creditNumber}>{creditBalance}</Text>
+                  <View style={styles.notificationIconWrapper}>
+                    <View style={styles.bellIconContainer}>
+                      <View style={styles.bellHandle} />
+                      <View style={styles.bellBody} />
+                      <View style={styles.bellOpening} />
+                    </View>
+                    {unreadCount > 0 && (
+                      <View style={styles.notificationBadge}>
+                        <Text style={styles.notificationBadgeText}>
+                          {unreadCount > 99 ? '99+' : unreadCount}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
                 </TouchableOpacity>
                 <TouchableOpacity 
-                  style={styles.menuIconButton}
+                  style={styles.modernMenuButton}
                   onPress={() => setShowSettings(!showSettings)}
                 >
-                  <Text style={styles.menuIcon}>☰</Text>
+                  <Text style={styles.modernMenuIcon}>☰</Text>
                 </TouchableOpacity>
               </View>
             </View>
-          </View>
+            
+            <View style={styles.headerGreeting}>
+              <Text style={styles.modernGreeting}>Welcome back,</Text>
+              <Text style={styles.modernUserName}>{user?.fullName || user?.name || 'User'}</Text>
+            </View>
+
+            {/* Credits Display */}
+            <TouchableOpacity 
+              style={styles.headerCreditsBadge}
+              onPress={() => setScreen('usage')}
+              activeOpacity={0.8}
+            >
+              <View style={styles.creditsIconBox}>
+                <Text style={styles.creditsIcon}>◆</Text>
+              </View>
+              <View style={styles.creditsInfo}>
+                <Text style={styles.creditsLabel}>Available Credits</Text>
+                <Text style={styles.creditsValue}>{creditBalance}</Text>
+              </View>
+              <Text style={styles.creditsArrow}>→</Text>
+            </TouchableOpacity>
+          </LinearGradient>
+            </View>
+          </TouchableWithoutFeedback>
 
           {/* Side Menu Modal - slides in from right */}
           <Modal
@@ -2965,7 +3107,9 @@ export default function App() {
                         setScreen('profile');
                       }}
                     >
-                      <Text style={styles.sideMenuItemIcon}>⚙️</Text>
+                      <View style={styles.sideMenuItemIconBox}>
+                        <Text style={styles.sideMenuItemIconText}>⚙</Text>
+                      </View>
                       <View style={styles.sideMenuItemContent}>
                         <Text style={styles.sideMenuItemTitle}>Account Settings</Text>
                         <Text style={styles.sideMenuItemDesc}>View your profile</Text>
@@ -2980,7 +3124,9 @@ export default function App() {
                           setScreen('admin');
                         }}
                       >
-                        <Text style={styles.sideMenuItemIcon}>🛡️</Text>
+                        <View style={styles.sideMenuItemIconBox}>
+                          <Text style={styles.sideMenuItemIconText}>★</Text>
+                        </View>
                         <View style={styles.sideMenuItemContent}>
                           <Text style={styles.sideMenuItemTitle}>Admin Panel</Text>
                           <Text style={styles.sideMenuItemDesc}>Manage credit packages</Text>
@@ -2997,7 +3143,9 @@ export default function App() {
                         setScreen('terms');
                       }}
                     >
-                      <Text style={styles.sideMenuItemIcon}>📄</Text>
+                      <View style={styles.sideMenuItemIconBox}>
+                        <Text style={styles.sideMenuItemIconText}>§</Text>
+                      </View>
                       <View style={styles.sideMenuItemContent}>
                         <Text style={styles.sideMenuItemTitle}>Terms & Conditions</Text>
                         <Text style={styles.sideMenuItemDesc}>View terms of service</Text>
@@ -3011,7 +3159,9 @@ export default function App() {
                         setScreen('privacy');
                       }}
                     >
-                      <Text style={styles.sideMenuItemIcon}>🔒</Text>
+                      <View style={styles.sideMenuItemIconBox}>
+                        <Text style={styles.sideMenuItemIconText}>◈</Text>
+                      </View>
                       <View style={styles.sideMenuItemContent}>
                         <Text style={styles.sideMenuItemTitle}>Privacy Policy</Text>
                         <Text style={styles.sideMenuItemDesc}>How we protect your data</Text>
@@ -3025,7 +3175,9 @@ export default function App() {
                         setScreen('refund');
                       }}
                     >
-                      <Text style={styles.sideMenuItemIcon}>💰</Text>
+                      <View style={styles.sideMenuItemIconBox}>
+                        <Text style={styles.sideMenuItemIconText}>$</Text>
+                      </View>
                       <View style={styles.sideMenuItemContent}>
                         <Text style={styles.sideMenuItemTitle}>Refund Policy</Text>
                         <Text style={styles.sideMenuItemDesc}>Credit refund information</Text>
@@ -3041,7 +3193,9 @@ export default function App() {
                         handleLogout();
                       }}
                     >
-                      <Text style={styles.sideMenuItemIcon}>🚪</Text>
+                      <View style={styles.sideMenuItemIconBox}>
+                        <Text style={styles.sideMenuItemIconText}>→</Text>
+                      </View>
                       <View style={styles.sideMenuItemContent}>
                         <Text style={styles.sideMenuItemTitle}>Sign Out</Text>
                         <Text style={styles.sideMenuItemDesc}>Logout from your account</Text>
@@ -3053,66 +3207,306 @@ export default function App() {
             </View>
           </Modal>
 
-
-          {/* Welcome Section */}
-          <View style={styles.welcomeSection}>
-            <Text style={styles.welcomeTitle}>Welcome, {user?.fullName || user?.name || 'User'}!</Text>
-            <Text style={styles.welcomeSubtitle}>Send Applications with AI Generated Cover Letter</Text>
-          </View>
-
-          {/* Stats Card Only */}
-          <View style={styles.statsOnlySection}>
-            {/* Main Stats Card */}
-            <View style={styles.statsCard}>
-              <View style={styles.statsRow}>
-                <View style={styles.statBox}>
-                  <Text style={styles.statNumber}>
-                    {totalSent}
-                  </Text>
-                  <Text style={styles.statLabel}>Total Application Sent</Text>
+          {/* Stats Grid */}
+          <View style={styles.statsGridContainer}>
+            <View style={styles.statsRow}>
+              {/* Applications Sent Tile */}
+              <TouchableOpacity 
+                style={styles.statTileWrapper}
+                activeOpacity={0.9}
+                onPress={() => handleTileFlip(flipAnimSent)}
+              >
+                <View style={{ position: 'relative' }}>
+                  {/* Front side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimSent.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['0deg', '180deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileTop}>
+                      <View style={styles.statIconBox}>
+                        <Text style={styles.statIconText}>↑</Text>
+                      </View>
+                      <Text style={styles.statValue}>{totalSent}</Text>
+                    </View>
+                    <Text style={styles.statLabel}>Applications Sent</Text>
+                  </Animated.View>
+                  
+                  {/* Back side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    styles.statTileBackContainer,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimSent.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['180deg', '360deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileBack}>
+                      <Text style={styles.statBackTitle}>Last Application</Text>
+                      {applicationHistory.length > 0 && applicationHistory[0] ? (
+                        <>
+                          <Text style={styles.statBackDate}>
+                            {new Date(applicationHistory[0].sentDate).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric'
+                            })}
+                          </Text>
+                          <Text style={styles.statBackCompany} numberOfLines={2}>
+                            {applicationHistory[0].companyName}
+                          </Text>
+                        </>
+                      ) : (
+                        <Text style={styles.statBackEmpty}>No applications yet</Text>
+                      )}
+                    </View>
+                  </Animated.View>
                 </View>
-                <View style={[styles.statBox, { borderLeftWidth: 1, borderLeftColor: '#E5E7EB' }]}>
-                  <Text style={styles.statNumber}>
-                    {totalGenerated}
-                  </Text>
-                  <Text style={styles.statLabel}>Generated</Text>
+              </TouchableOpacity>
+
+              {/* Letters Generated Tile */}
+              <TouchableOpacity 
+                style={styles.statTileWrapper}
+                activeOpacity={0.9}
+                onPress={() => handleTileFlip(flipAnimGenerated)}
+              >
+                <View style={{ position: 'relative' }}>
+                  {/* Front side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimGenerated.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['0deg', '180deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileTop}>
+                      <View style={styles.statIconBox}>
+                        <Text style={styles.statIconText}>✎</Text>
+                      </View>
+                      <Text style={styles.statValue}>{totalGenerated}</Text>
+                    </View>
+                    <Text style={styles.statLabel}>Letters Generated</Text>
+                  </Animated.View>
+                  
+                  {/* Back side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    styles.statTileBackContainer,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimGenerated.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['180deg', '360deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileBack}>
+                      <Text style={styles.statBackTitle}>Total Letters</Text>
+                      <Text style={styles.statBackValue}>{totalGenerated}</Text>
+                      <Text style={styles.statBackLabel}>
+                        {totalGenerated === totalSent ? 'All letters sent' : `${totalGenerated - totalSent} pending`}
+                      </Text>
+                    </View>
+                  </Animated.View>
                 </View>
-              </View>
+              </TouchableOpacity>
+            </View>
+
+            <View style={[styles.statsRow, { marginTop: -26 }]}>
+              {/* Pending Response Tile */}
+              <TouchableOpacity 
+                style={styles.statTileWrapper}
+                activeOpacity={0.9}
+                onPress={() => handleTileFlip(flipAnimPending)}
+              >
+                <View style={{ position: 'relative' }}>
+                  {/* Front side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimPending.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['0deg', '180deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileTop}>
+                      <View style={styles.statIconBox}>
+                        <Text style={styles.statIconText}>○</Text>
+                      </View>
+                      <Text style={styles.statValue}>
+                        {totalSent - applicationHistory.filter(app => app.replyReceived).length}
+                      </Text>
+                    </View>
+                    <Text style={styles.statLabel}>Pending Response</Text>
+                  </Animated.View>
+                  
+                  {/* Back side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    styles.statTileBackContainer,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimPending.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['180deg', '360deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileBack}>
+                      <Text style={styles.statBackTitle}>Awaiting Reply</Text>
+                      <Text style={styles.statBackValue}>
+                        {totalSent - applicationHistory.filter(app => app.replyReceived).length}
+                      </Text>
+                      <Text style={styles.statBackLabel}>
+                        applications pending
+                      </Text>
+                    </View>
+                  </Animated.View>
+                </View>
+              </TouchableOpacity>
+
+              {/* Reply Rate Tile */}
+              <TouchableOpacity 
+                style={styles.statTileWrapper}
+                activeOpacity={0.9}
+                onPress={() => handleTileFlip(flipAnimReply)}
+              >
+                <View style={{ position: 'relative' }}>
+                  {/* Front side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimReply.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['0deg', '180deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileTop}>
+                      <View style={styles.statIconBox}>
+                        <Text style={styles.statIconText}>✓</Text>
+                      </View>
+                      <Text style={styles.statValue}>
+                        {totalSent > 0 
+                          ? Math.round((applicationHistory.filter(app => app.replyReceived).length / totalSent) * 100)
+                          : 0}%
+                      </Text>
+                    </View>
+                    <Text style={styles.statLabel}>Reply Rate</Text>
+                  </Animated.View>
+                  
+                  {/* Back side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    styles.statTileBackContainer,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimReply.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['180deg', '360deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileBack}>
+                      <Text style={styles.statBackTitle}>Success Rate</Text>
+                      <Text style={styles.statBackValue}>
+                        {applicationHistory.filter(app => app.replyReceived).length}/{totalSent}
+                      </Text>
+                      <Text style={styles.statBackLabel}>
+                        replies received
+                      </Text>
+                    </View>
+                  </Animated.View>
+                </View>
+              </TouchableOpacity>
             </View>
           </View>
 
           {/* Recipients Section */}
-          <View style={styles.recipientsSection}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>📬 Recipients</Text>
-            </View>
+          <View style={styles.modernRecipientsSection}>
+            <TouchableWithoutFeedback onPress={resetAllFlips}>
+              <View style={styles.modernSectionHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.modernSectionTitle}>Companies</Text>
+                  <Text style={styles.modernSectionSubtitle}>Manage your application recipients</Text>
+                </View>
+                <View style={styles.modernCountBadge}>
+                  <Text style={styles.modernCountBadgeIcon}>◆</Text>
+                  <Text style={styles.modernCountBadgeText}>{recipients.length}</Text>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
 
             {/* Render all recipient forms */}
             {recipients.map((recipient, index) => (
-              <View key={recipient.id} style={styles.recipientFormCard}>
-                <View style={styles.formHeaderBar}>
-                  <Text style={styles.formHeaderNumber}>{index + 1}</Text>
-                  <Text style={styles.formHeaderTitle}>Recipient Details</Text>
+              <View key={recipient.id} style={styles.modernRecipientCard}>
+                <View style={styles.modernFormHeader}>
+                  <View style={styles.recipientNumberBadge}>
+                    <Text style={styles.recipientNumberText}>{index + 1}</Text>
+                  </View>
+                  <View style={styles.recipientHeaderInfo}>
+                    <Text style={styles.modernFormTitle}>
+                      {recipient.website 
+                        ? recipient.website.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].substring(0, 25)
+                        : recipient.email
+                        ? recipient.email.split('@')[1] || 'New Company'
+                        : 'New Company'}
+                    </Text>
+                    <Text style={styles.recipientSubtitle}>
+                      {recipient.position || 'No position specified'}
+                    </Text>
+                  </View>
                   {recipients.length > 1 && (
                     <TouchableOpacity 
-                      style={styles.removeRecipientBtn}
+                      style={styles.modernRemoveBtn}
                       onPress={() => removeRecipient(recipient.id)}
                     >
-                      <Text style={styles.removeRecipientIcon}>✕</Text>
+                      <Text style={styles.modernRemoveIcon}>×</Text>
                     </TouchableOpacity>
                   )}
                 </View>
 
                 {/* Email Field */}
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>
-                    Hiring Manager's Email <Text style={styles.required}>*</Text>
+                <View style={styles.modernFormGroup}>
+                  <Text style={styles.modernFormLabel}>
+                    Hiring Manager Email <Text style={styles.required}>*</Text>
                   </Text>
                   <TextInput
-                    style={[styles.formInput, recipient.error && recipient.email && !isValidEmail(recipient.email) ? styles.formInputError : {}]}
+                    style={[styles.modernFormInput, recipient.error && recipient.email && !isValidEmail(recipient.email) ? styles.modernFormInputError : {}]}
                     placeholder="hiring@company.com"
                     placeholderTextColor="#9CA3AF"
                     keyboardType="email-address"
+                    autoCapitalize="none"
                     value={recipient.email}
                     onChangeText={(text) => updateRecipient(recipient.id, 'email', text)}
                   />
@@ -3122,29 +3516,30 @@ export default function App() {
                 </View>
 
                 {/* Website Field */}
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>
+                <View style={styles.modernFormGroup}>
+                  <Text style={styles.modernFormLabel}>
                     Company Website <Text style={styles.required}>*</Text>
                   </Text>
                   <TextInput
-                    style={[styles.formInput, recipient.error && recipient.website && !isValidURL(recipient.website) ? styles.formInputError : {}]}
+                    style={[styles.modernFormInput, recipient.error && recipient.website && !isValidURL(recipient.website) ? styles.modernFormInputError : {}]}
                     placeholder="https://www.company.com"
                     placeholderTextColor="#9CA3AF"
                     keyboardType="url"
+                    autoCapitalize="none"
                     value={recipient.website}
                     onChangeText={(text) => updateRecipient(recipient.id, 'website', text)}
                   />
                   {recipient.error && recipient.website && !isValidURL(recipient.website) && (
-                    <Text style={styles.errorMessage}>{recipient.error}</Text>
+                    <Text style={styles.modernErrorMessage}>{recipient.error}</Text>
                   )}
                 </View>
 
                 {/* Position Field */}
-                <View style={[styles.formGroup, { borderBottomWidth: 0 }]}>
-                  <Text style={styles.formLabel}>Position/Job Title</Text>
+                <View style={styles.modernFormGroup}>
+                  <Text style={styles.modernFormLabel}>Position / Job Title</Text>
                   <TextInput
-                    style={styles.formInput}
-                    placeholder="Software Engineer, Marketing Manager, etc."
+                    style={styles.modernFormInput}
+                    placeholder="e.g., Software Engineer, Marketing Manager"
                     placeholderTextColor="#9CA3AF"
                     value={recipient.position}
                     onChangeText={(text) => updateRecipient(recipient.id, 'position', text)}
@@ -3154,137 +3549,135 @@ export default function App() {
             ))}
 
             {/* Add Another Button */}
-            <TouchableOpacity style={styles.addRecipientBtn} onPress={addRecipient}>
-              <Text style={styles.addRecipientIcon}>+</Text>
-              <Text style={styles.addRecipientText}>Add Another Recipient</Text>
+            <TouchableOpacity style={styles.modernAddRecipientBtn} onPress={addRecipient}>
+              <View style={styles.addBtnIconBox}>
+                <Text style={styles.modernAddIcon}>+</Text>
+              </View>
+              <Text style={styles.modernAddText}>Add Company</Text>
             </TouchableOpacity>
 
             {/* Action Button */}
-            <TouchableOpacity style={styles.fullWidthActionBtn} onPress={handleReview}>
-              <Text style={styles.fullWidthActionBtnIcon}>🚀</Text>
-              <Text style={styles.fullWidthActionBtnText}>Review & Generate</Text>
+            <TouchableOpacity 
+              onPress={handleReview}
+              activeOpacity={0.85}
+            >
+              <LinearGradient
+                colors={['#667eea', '#764ba2']}
+                style={styles.modernActionBtn}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                <Text style={styles.modernActionBtnIcon}>✎</Text>
+                <Text style={styles.modernActionBtnText}>Generate Cover Letters</Text>
+                <Text style={styles.modernActionBtnArrow}>→</Text>
+              </LinearGradient>
             </TouchableOpacity>
           </View>
 
-          {/* Last 5 Employers Section */}
-          <View style={styles.employersSection}>
-            <View style={styles.employersSectionHeader}>
-              <Text style={styles.employersSectionTitle}>Recent Applications</Text>
-              <View style={styles.employersBadge}>
-                <Text style={styles.employersBadgeText}>{applicationHistory.length}</Text>
+          {/* Recent Applications Section */}
+          <View style={styles.modernRecentSection}>
+            <View style={styles.modernSectionHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modernSectionTitle}>Recent Applications</Text>
+                <Text style={styles.modernSectionSubtitle}>
+                  {applicationHistory.length > 0 
+                    ? `Showing ${Math.min(5, applicationHistory.length)} of ${totalSent} total sent`
+                    : 'Your latest job applications'}
+                </Text>
+              </View>
+              <View style={styles.modernCountBadge}>
+                <Text style={styles.modernCountBadgeIcon}>◆</Text>
+                <Text style={styles.modernCountBadgeText}>{Math.min(5, applicationHistory.length)}</Text>
               </View>
             </View>
             
             {applicationHistory.length === 0 ? (
-              <View style={styles.emptyStateContainer}>
-                <Text style={styles.emptyStateIcon}>📭</Text>
-                <Text style={styles.emptyStateTitle}>No Applications Yet</Text>
-                <Text style={styles.emptyStateSubtitle}>Your recent job applications will appear here</Text>
+              <View style={styles.modernEmptyState}>
+                <View style={styles.emptyStateIconBox}>
+                  <Text style={styles.modernEmptyIcon}>—</Text>
+                </View>
+                <Text style={styles.modernEmptyTitle}>No Applications Yet</Text>
+                <Text style={styles.modernEmptySubtitle}>Your recent job applications will appear here</Text>
               </View>
             ) : (
-              <View style={styles.employersListContainer}>
+              <View style={styles.modernApplicationsList}>
                 {applicationHistory.slice(0, 5).map((app, index) => (
                   <TouchableOpacity 
                     key={app.id}
-                    style={styles.employerCard}
+                    style={styles.modernApplicationCard}
                     disabled={user.provider === 'google' || app.replyReceived}
                     activeOpacity={user.provider === 'email' && !app.replyReceived ? 0.7 : 1}
                     onPress={() => {
                       if (user.provider === 'email' && !app.replyReceived) {
-                        Alert.alert(
-                          'Mark Reply Received',
-                          `Did you receive a reply from ${app.companyName}?`,
-                          [
-                            {
-                              text: 'Cancel',
-                              style: 'cancel'
-                            },
-                            {
-                              text: 'Yes, Received',
-                              onPress: () => {
-                                Alert.prompt(
-                                  'Reply Date',
-                                  'Enter the date you received the reply (YYYY-MM-DD):',
-                                  (text) => {
-                                    setApplicationHistory(prev =>
-                                      prev.map(item =>
-                                        item.id === app.id
-                                          ? { ...item, replyReceived: true, replyDate: text || new Date().toISOString() }
-                                          : item
-                                      )
-                                    );
-                                  }
-                                );
-                              }
-                            }
-                          ]
-                        );
+                        setReplyAppId(app.id);
+                        setSelectedReplyDate(new Date());
+                        setShowReplyDatePicker(true);
                       }
                     }}
                   >
-                    {/* Status Indicator */}
+                    {/* Left accent bar */}
                     <View style={[
-                      styles.statusIndicator,
-                      app.replyReceived ? styles.statusReplied : styles.statusPending
+                      styles.applicationAccentBar,
+                      app.replyReceived ? styles.accentBarReplied : styles.accentBarPending
                     ]} />
                     
-                    {/* Card Content */}
-                    <View style={styles.employerCardContent}>
-                      <View style={styles.employerMainInfo}>
-                        <View style={styles.employerNumberBadge}>
-                          <Text style={styles.employerNumber}>{index + 1}</Text>
+                    {/* Content Container */}
+                    <View style={styles.applicationCardInner}>
+                      {/* Header Row: Number + Company + Status */}
+                      <View style={styles.applicationTopRow}>
+                        <View style={styles.applicationNumberBadge}>
+                          <Text style={styles.applicationNumberText}>{index + 1}</Text>
                         </View>
-                        <View style={styles.employerDetails}>
-                          <Text style={styles.employerCompanyName} numberOfLines={1}>{app.companyName}</Text>
-                          <Text style={styles.employerJobPosition} numberOfLines={1}>{app.position}</Text>
-                        </View>
-                      </View>
-                      
-                      {/* Status & Dates Row */}
-                      <View style={styles.employerMetaRow}>
-                        <View style={[
-                          styles.statusBadge,
-                          app.replyReceived ? styles.statusBadgeReplied : styles.statusBadgePending
-                        ]}>
-                          <Text style={[
-                            styles.statusBadgeText,
-                            app.replyReceived ? styles.statusBadgeTextReplied : styles.statusBadgeTextPending
-                          ]}>
-                            {app.replyReceived ? '✓ Replied' : '⏳ Pending'}
+                        
+                        <View style={styles.applicationMainInfo}>
+                          <Text style={styles.applicationCompany} numberOfLines={1}>{app.companyName}</Text>
+                          <Text style={styles.applicationPosition} numberOfLines={1}>
+                            {app.position || 'Position not specified'}
                           </Text>
                         </View>
                         
-                        <View style={styles.datesContainer}>
-                          <View style={styles.dateItem}>
-                            <Text style={styles.dateLabelSmall}>Sent</Text>
-                            <Text style={styles.dateValueSmall}>
-                              {new Date(app.sentDate).toLocaleDateString('en-US', { 
-                                month: 'short', 
-                                day: 'numeric' 
-                              })}
-                            </Text>
-                          </View>
-                          {app.replyReceived && (
-                            <>
-                              <Text style={styles.dateSeparator}>→</Text>
-                              <View style={styles.dateItem}>
-                                <Text style={styles.dateLabelSmall}>Reply</Text>
-                                <Text style={styles.dateValueReplied}>
-                                  {new Date(app.replyDate).toLocaleDateString('en-US', { 
-                                    month: 'short', 
-                                    day: 'numeric' 
-                                  })}
-                                </Text>
-                              </View>
-                            </>
+                        <View style={[
+                          styles.modernStatusBadge,
+                          app.replyReceived ? styles.modernStatusReplied : styles.modernStatusPending
+                        ]}>
+                          {app.replyReceived ? (
+                            <Text style={[styles.modernStatusText, styles.statusTextReplied]}>✓</Text>
+                          ) : (
+                            <View style={styles.clockIcon}>
+                              <View style={styles.clockCircle} />
+                              <View style={styles.clockHourHand} />
+                              <View style={styles.clockMinuteHand} />
+                            </View>
                           )}
                         </View>
                       </View>
                       
-                      {/* Action hint for email users */}
+                      {/* Dates Row */}
+                      <View style={styles.applicationDatesRow}>
+                        <View style={styles.dateItem}>
+                          <Text style={styles.dateLabel}>Sent</Text>
+                          <Text style={styles.dateValue}>
+                            {new Date(app.sentDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                          </Text>
+                        </View>
+                        
+                        {app.replyReceived && (
+                          <>
+                            <View style={styles.dateSeparator} />
+                            <View style={styles.dateItem}>
+                              <Text style={styles.dateLabel}>Reply</Text>
+                              <Text style={[styles.dateValue, styles.dateValueReplied]}>
+                                {new Date(app.replyDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                              </Text>
+                            </View>
+                          </>
+                        )}
+                      </View>
+                      
+                      {/* Action hint */}
                       {user.provider === 'email' && !app.replyReceived && (
-                        <View style={styles.actionHintContainer}>
-                          <Text style={styles.actionHintText}>✓ Tap to mark as replied</Text>
+                        <View style={styles.modernActionHint}>
+                          <Text style={styles.modernActionHintText}>✓ Tap to mark as replied</Text>
                         </View>
                       )}
                     </View>
@@ -3323,6 +3716,195 @@ export default function App() {
             </View>
           )}
         </ScrollView>
+
+        {/* Reply Date Picker Modal */}
+        <Modal
+          transparent={true}
+          visible={showReplyDatePicker}
+          animationType="slide"
+          onRequestClose={() => setShowReplyDatePicker(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowReplyDatePicker(false)}>
+            <View style={styles.modalOverlay}>
+              <TouchableWithoutFeedback>
+                <SafeAreaView style={styles.datePickerModalWrapper}>
+                  <View style={styles.datePickerModal}>
+                    {/* Header */}
+                    <View style={styles.datePickerHeader}>
+                      <View style={styles.datePickerHeaderLine} />
+                      <Text style={styles.datePickerTitle}>Reply Date</Text>
+                    </View>
+                    
+                    {/* Date Picker Container */}
+                    <View style={styles.datePickerContainer}>
+                      <DateTimePicker
+                        value={selectedReplyDate}
+                        mode="date"
+                        display="spinner"
+                        onChange={(event, date) => {
+                          if (date) setSelectedReplyDate(date);
+                        }}
+                        maximumDate={new Date()}
+                        textColor="#1f2937"
+                      />
+                    </View>
+                    
+                    {/* Buttons */}
+                    <View style={styles.modalButtons}>
+                      <TouchableOpacity
+                        style={styles.modalCancelButton}
+                        onPress={() => setShowReplyDatePicker(false)}
+                      >
+                        <Text style={styles.modalCancelText}>Cancel</Text>
+                      </TouchableOpacity>
+                      
+                      <TouchableOpacity
+                        style={styles.modalConfirmButton}
+                        onPress={() => {
+                          setApplicationHistory(prev =>
+                            prev.map(item =>
+                              item.id === replyAppId
+                                ? { ...item, replyReceived: true, replyDate: selectedReplyDate.toISOString() }
+                                : item
+                            )
+                          );
+                          setShowReplyDatePicker(false);
+                        }}
+                      >
+                        <View style={styles.confirmButtonWrapper}>
+                          <LinearGradient
+                            colors={['#667eea', '#764ba2']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.modalConfirmGradient}
+                          >
+                            <Text style={styles.modalConfirmText}>Confirm</Text>
+                          </LinearGradient>
+                        </View>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </SafeAreaView>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
+
+        {/* Notifications Modal */}
+        <Modal
+          transparent={true}
+          visible={showNotifications}
+          animationType="slide"
+          onRequestClose={() => setShowNotifications(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowNotifications(false)}>
+            <View style={styles.notificationModalOverlay}>
+              <TouchableWithoutFeedback>
+                <SafeAreaView style={styles.notificationModalWrapper}>
+                  <View style={styles.notificationModal}>
+                    {/* Header */}
+                    <View style={styles.notificationHeader}>
+                      <View style={styles.notificationHeaderLine} />
+                      <Text style={styles.notificationTitle}>Notifications</Text>
+                      {unreadCount > 0 && (
+                        <View style={styles.notificationHeaderBadge}>
+                          <Text style={styles.notificationHeaderBadgeText}>{unreadCount}</Text>
+                        </View>
+                      )}
+                    </View>
+                    
+                    {/* Body */}
+                    <ScrollView 
+                      style={styles.notificationBody}
+                      showsVerticalScrollIndicator={false}
+                    >
+                      {loadingNotifications ? (
+                        <View style={styles.notificationLoading}>
+                          <ActivityIndicator size="large" color="#667eea" />
+                          <Text style={styles.notificationLoadingText}>Loading notifications...</Text>
+                        </View>
+                      ) : notifications.length === 0 ? (
+                        <View style={styles.notificationEmpty}>
+                          <View style={styles.emptyBellContainer}>
+                            <View style={styles.emptyBellHandle} />
+                            <View style={styles.emptyBellBody} />
+                            <View style={styles.emptyBellOpening} />
+                          </View>
+                          <Text style={styles.notificationEmptyTitle}>No notifications yet</Text>
+                          <Text style={styles.notificationEmptyText}>You'll be notified when something important happens</Text>
+                        </View>
+                      ) : (
+                        notifications.map((notif, index) => (
+                          <View 
+                            key={notif.id || index} 
+                            style={[
+                              styles.notificationItem,
+                              !notif.is_read && styles.notificationItemUnread,
+                              index === notifications.length - 1 && styles.notificationItemLast
+                            ]}
+                          >
+                            <View style={[
+                              styles.notificationIconBox,
+                              notif.type === 'email' && styles.notificationIconEmail,
+                              notif.type === 'cover_letter' && styles.notificationIconLetter,
+                              notif.type === 'credits' && styles.notificationIconCredits,
+                              notif.type === 'profile' && styles.notificationIconProfile,
+                            ]}>
+                              <Text style={styles.notificationItemIcon}>
+                                {notif.type === 'email' ? '✉' : 
+                                 notif.type === 'cover_letter' ? '📄' : 
+                                 notif.type === 'credits' ? '◆' : 
+                                 notif.type === 'profile' ? '👤' : '🔔'}
+                              </Text>
+                            </View>
+                            <View style={styles.notificationContent}>
+                              <View style={styles.notificationTopRow}>
+                                <Text style={styles.notificationItemTitle} numberOfLines={1}>
+                                  {notif.title}
+                                </Text>
+                                <Text style={styles.notificationTime}>
+                                  {getTimeAgo(notif.created_at)}
+                                </Text>
+                              </View>
+                              <Text style={styles.notificationMessage} numberOfLines={2}>
+                                {notif.message}
+                              </Text>
+                              {!notif.is_read && (
+                                <View style={styles.notificationUnreadDot} />
+                              )}
+                            </View>
+                          </View>
+                        ))
+                      )}
+                    </ScrollView>
+                    
+                    {/* Footer */}
+                    {notifications.length > 0 && (
+                      <View style={styles.notificationFooter}>
+                        <TouchableOpacity 
+                          style={styles.viewAllButton}
+                          onPress={() => {
+                            setShowNotifications(false);
+                            Alert.alert('Notifications', 'Full notifications page coming soon');
+                          }}
+                        >
+                          <LinearGradient
+                            colors={['#667eea', '#764ba2']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.viewAllGradient}
+                          >
+                            <Text style={styles.viewAllText}>View All Notifications</Text>
+                          </LinearGradient>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                </SafeAreaView>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -5472,8 +6054,874 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f8fafc',
   },
+  modernContainer: {
+    flex: 1,
+    backgroundColor: '#f5f7fa',
+  },
+  gradientContainer: {
+    flex: 1,
+  },
   scrollContent: {
     paddingBottom: 40,
+  },
+
+  // ===== MODERN HEADER CARD =====
+  modernHeaderCard: {
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 20,
+    borderRadius: 24,
+    padding: 20,
+    paddingTop: 24,
+    paddingBottom: 24,
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  headerLeft: {
+    flex: 1,
+  },
+  headerRightActions: {
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'center',
+  },
+  notificationButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  notificationIconWrapper: {
+    position: 'relative',
+  },
+  bellIconContainer: {
+    width: 20,
+    height: 20,
+    position: 'relative',
+    alignItems: 'center',
+  },
+  bellHandle: {
+    width: 4,
+    height: 2,
+    backgroundColor: '#ffffff',
+    borderRadius: 2,
+    marginBottom: 1,
+  },
+  bellBody: {
+    width: 16,
+    height: 14,
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
+    borderBottomLeftRadius: 2,
+    borderBottomRightRadius: 2,
+  },
+  bellOpening: {
+    width: 18,
+    height: 2,
+    backgroundColor: '#ffffff',
+    borderRadius: 1,
+    marginTop: 1,
+  },
+  notificationBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    backgroundColor: '#ef4444',
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#ef4444',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 3,
+    elevation: 4,
+  },
+  notificationBadgeText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  modernMenuButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modernMenuIcon: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  headerGreeting: {
+    marginBottom: 20,
+  },
+  modernGreeting: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontWeight: '500',
+    marginBottom: 4,
+    letterSpacing: 0.3,
+  },
+  modernUserName: {
+    fontSize: 26,
+    color: '#ffffff',
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  modernCreditBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 16,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  creditBadgeContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  creditBadgeIcon: {
+    fontSize: 28,
+  },
+  creditBadgeLabel: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontWeight: '500',
+    marginBottom: 2,
+  },
+  creditBadgeAmount: {
+    fontSize: 24,
+    color: '#ffffff',
+    fontWeight: '800',
+  },
+  creditBadgeArrow: {
+    fontSize: 24,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontWeight: '300',
+  },
+  
+  // ===== HEADER CREDITS BADGE =====
+  headerCreditsBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 16,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.35)',
+  },
+  creditsIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  creditsIcon: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  creditsInfo: {
+    flex: 1,
+  },
+  creditsLabel: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontWeight: '600',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  creditsValue: {
+    fontSize: 26,
+    color: '#ffffff',
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  creditsArrow: {
+    fontSize: 20,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontWeight: '600',
+  },
+
+  // ===== STATS GRID =====
+  statsGridContainer: {
+    paddingHorizontal: 0,
+    marginTop: -24,
+    marginBottom: 20,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 0,
+  },
+  statTileWrapper: {
+    width: '48.5%',
+    height: 130,
+    overflow: 'hidden',
+  },
+  statTile: {
+    width: '100%',
+    height: 130,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+    overflow: 'hidden',
+  },
+  statTileBackContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 130,
+  },
+  statTileBack: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 98,
+  },
+  statBackTitle: {
+    fontSize: 10,
+    color: '#6b7280',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  },
+  statBackDate: {
+    fontSize: 12,
+    color: '#667eea',
+    fontWeight: '600',
+    marginBottom: 3,
+  },
+  statBackCompany: {
+    fontSize: 13,
+    color: '#1a1a2e',
+    fontWeight: '700',
+    textAlign: 'center',
+    letterSpacing: 0.2,
+    lineHeight: 18,
+  },
+  statBackValue: {
+    fontSize: 28,
+    color: '#667eea',
+    fontWeight: '900',
+    marginBottom: 3,
+    lineHeight: 32,
+  },
+  statBackLabel: {
+    fontSize: 11,
+    color: '#6b7280',
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 15,
+  },
+  statBackEmpty: {
+    fontSize: 12,
+    color: '#9ca3af',
+    fontWeight: '500',
+    fontStyle: 'italic',
+    marginTop: 4,
+  },
+  statTileTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  statIconBox: {
+    width: 54,
+    height: 54,
+    borderRadius: 15,
+    backgroundColor: '#f5f7ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statIconText: {
+    fontSize: 27,
+    color: '#667eea',
+    fontWeight: '600',
+  },
+  statValue: {
+    fontSize: 24,
+    fontWeight: '900',
+    color: '#1a1a2e',
+    letterSpacing: 0.5,
+  },
+  statLabel: {
+    fontSize: 10,
+    color: '#6b7280',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    lineHeight: 14,
+  },
+
+  // ===== MODERN PAGE HEADER =====
+  modernPageHeader: {
+    paddingHorizontal: 20,
+    marginBottom: 24,
+  },
+  modernPageTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#1a1a2e',
+    letterSpacing: 0.3,
+    marginBottom: 6,
+  },
+  modernPageSubtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    fontWeight: '500',
+    letterSpacing: 0.2,
+    lineHeight: 20,
+  },
+
+  // ===== MODERN WELCOME SECTION =====
+  modernWelcomeSection: {
+    paddingHorizontal: 20,
+    marginBottom: 20,
+  },
+  modernWelcomeTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1a1a2e',
+    marginBottom: 6,
+  },
+  modernWelcomeSubtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    fontWeight: '400',
+  },
+
+  // ===== MODERN STATS GRID =====
+  modernStatsGrid: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    gap: 12,
+    marginBottom: 24,
+  },
+  modernStatCard: {
+    flex: 1,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 20,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+  },
+  statCardIconContainer: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: '#f5f7ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  statCardIcon: {
+    fontSize: 28,
+  },
+  statCardNumber: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#667eea',
+    marginBottom: 4,
+  },
+  statCardLabel: {
+    fontSize: 12,
+    color: '#6b7280',
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+
+  // ===== MODERN RECIPIENTS SECTION =====
+  modernRecipientsSection: {
+    paddingHorizontal: 16,
+    marginBottom: 24,
+  },
+  modernSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingBottom: 12,
+  },
+  modernSectionTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#1a1a2e',
+    marginBottom: 4,
+    letterSpacing: 0.5,
+  },
+  modernSectionSubtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    fontWeight: '500',
+    letterSpacing: 0.2,
+    lineHeight: 20,
+  },
+  modernCountBadge: {
+    flexDirection: 'row',
+    backgroundColor: '#667eea',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    alignItems: 'center',
+    gap: 6,
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  modernCountBadgeIcon: {
+    fontSize: 12,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  modernCountBadgeText: {
+    fontSize: 15,
+    color: '#ffffff',
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  
+  // ===== MODERN RECIPIENT CARD =====
+  modernRecipientCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+  },
+  modernFormHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  recipientNumberBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#667eea',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  recipientNumberText: {
+    fontSize: 18,
+    color: '#ffffff',
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  recipientHeaderInfo: {
+    flex: 1,
+  },
+  recipientHeaderTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1a1a2e',
+  },
+  modernFormTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#1a1a2e',
+    letterSpacing: 0.3,
+    marginBottom: 2,
+  },
+  recipientSubtitle: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#6b7280',
+    letterSpacing: 0.2,
+  },
+  modernRemoveBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#fee2e2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+  },
+  modernRemoveIcon: {
+    fontSize: 22,
+    color: '#dc2626',
+    fontWeight: '700',
+  },
+  modernFormGroup: {
+    marginBottom: 18,
+  },
+  modernFormLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 10,
+    letterSpacing: 0.2,
+  },
+  required: {
+    color: '#ef4444',
+  },
+  modernFormInput: {
+    backgroundColor: '#f9fafb',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    fontSize: 15,
+    color: '#1a1a2e',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    letterSpacing: 0.2,
+  },
+  modernFormInputError: {
+    borderColor: '#ef4444',
+    borderWidth: 1.5,
+  },
+  modernErrorMessage: {
+    fontSize: 12,
+    color: '#ef4444',
+    marginTop: 6,
+    fontWeight: '500',
+  },
+  
+  // ===== MODERN BUTTONS =====
+  modernAddRecipientBtn: {
+    backgroundColor: '#f9fafb',
+    borderRadius: 16,
+    padding: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    borderColor: '#d1d5db',
+  },
+  addBtnIconBox: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#667eea',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  modernAddIcon: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  modernAddText: {
+    fontSize: 15,
+    color: '#374151',
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  modernActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 16,
+    paddingVertical: 18,
+    paddingHorizontal: 24,
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 6,
+    gap: 12,
+  },
+  modernActionBtnIcon: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '600',
+  },
+  modernActionBtnText: {
+    fontSize: 16,
+    color: '#ffffff',
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    textAlign: 'center',
+  },
+  modernActionBtnArrow: {
+    fontSize: 18,
+    color: '#ffffff',
+    fontWeight: '800',
+  },
+  
+  // ===== MODERN RECENT APPLICATIONS =====
+  modernRecentSection: {
+    paddingHorizontal: 16,
+    marginTop: 20,
+    marginBottom: 24,
+  },
+  modernEmptyState: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 40,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+  },
+  emptyStateIconBox: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#f5f7fa',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  modernEmptyIcon: {
+    fontSize: 32,
+    color: '#9ca3af',
+    fontWeight: '300',
+  },
+  modernEmptyTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#374151',
+    marginBottom: 6,
+    letterSpacing: 0.3,
+  },
+  modernEmptySubtitle: {
+    fontSize: 13,
+    color: '#9ca3af',
+    textAlign: 'center',
+    letterSpacing: 0.2,
+    lineHeight: 18,
+  },
+  modernApplicationsList: {
+    gap: 14,
+  },
+  modernApplicationCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 18,
+    overflow: 'hidden',
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+    marginBottom: 2,
+  },
+  applicationAccentBar: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+  },
+  accentBarPending: {
+    backgroundColor: '#f59e0b',
+  },
+  accentBarReplied: {
+    backgroundColor: '#10b981',
+  },
+  applicationCardInner: {
+    paddingLeft: 16,
+    paddingRight: 16,
+    paddingTop: 16,
+    paddingBottom: 14,
+  },
+  applicationTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  applicationNumberBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f5f7ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    borderWidth: 2,
+    borderColor: '#e0e7ff',
+  },
+  applicationNumberText: {
+    fontSize: 15,
+    color: '#667eea',
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  applicationMainInfo: {
+    flex: 1,
+    marginRight: 10,
+  },
+  applicationCompany: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#1a1a2e',
+    marginBottom: 4,
+    letterSpacing: 0.3,
+  },
+  applicationPosition: {
+    fontSize: 13,
+    color: '#6b7280',
+    fontWeight: '500',
+    letterSpacing: 0.2,
+  },
+  modernStatusBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modernStatusPending: {
+    backgroundColor: '#fef3c7',
+  },
+  modernStatusReplied: {
+    backgroundColor: '#d1fae5',
+  },
+  modernStatusText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  statusTextPending: {
+    color: '#f59e0b',
+  },
+  statusTextReplied: {
+    color: '#10b981',
+  },
+  clockIcon: {
+    width: 16,
+    height: 16,
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clockCircle: {
+    position: 'absolute',
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: '#f59e0b',
+  },
+  clockHourHand: {
+    position: 'absolute',
+    width: 2,
+    height: 5,
+    backgroundColor: '#f59e0b',
+    borderRadius: 1,
+    top: 3,
+  },
+  clockMinuteHand: {
+    position: 'absolute',
+    width: 2,
+    height: 7,
+    backgroundColor: '#f59e0b',
+    borderRadius: 1,
+    top: 1,
+    transform: [{ rotate: '90deg' }],
+  },
+  applicationDatesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f9fafb',
+    borderRadius: 12,
+    padding: 12,
+    gap: 16,
+  },
+  dateItem: {
+    flex: 1,
+  },
+  dateLabel: {
+    fontSize: 10,
+    color: '#9ca3af',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  dateValue: {
+    fontSize: 13,
+    color: '#374151',
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  dateValueReplied: {
+    color: '#10b981',
+  },
+  dateSeparator: {
+    width: 1,
+    height: 24,
+    backgroundColor: '#e5e7eb',
+  },
+  modernActionHint: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+  },
+  modernActionHintText: {
+    fontSize: 11,
+    color: '#667eea',
+    fontWeight: '600',
+    textAlign: 'center',
+    letterSpacing: 0.3,
   },
   
   // ===== LOADING OVERLAY =====
@@ -5910,6 +7358,48 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     borderBottomWidth: 0,
   },
+  premiumGradientHeader: {
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    paddingTop: 50,
+  },
+  compactCreditBadgeGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+    gap: 6,
+  },
+  creditNumberWhite: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  menuIconButtonGradient: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: -19,
+  },
+  menuIconWhite: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
   headerContent: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -6078,6 +7568,20 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     paddingHorizontal: 16,
   },
+  sideMenuItemIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#f5f7ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+  },
+  sideMenuItemIconText: {
+    fontSize: 18,
+    color: '#667eea',
+    fontWeight: '600',
+  },
   sideMenuItemIcon: {
     fontSize: 28,
     marginRight: 14,
@@ -6090,10 +7594,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#1F2937',
     marginBottom: 2,
+    letterSpacing: 0.2,
   },
   sideMenuItemDesc: {
     fontSize: 13,
     color: '#9CA3AF',
+    letterSpacing: 0.1,
   },
   sideMenuDivider: {
     height: 1,
@@ -6122,15 +7628,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 8.2,
   },
+  welcomeSectionGradient: {
+    paddingHorizontal: 20,
+    paddingVertical: 8.2,
+  },
   welcomeTitle: {
     fontSize: 21,
     fontWeight: '700',
     color: '#1F2937',
     marginBottom: 4,
   },
+  welcomeTitleWhite: {
+    fontSize: 21,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 4,
+  },
   welcomeSubtitle: {
     fontSize: 11,
     color: '#6B7280',
+  },
+  welcomeSubtitleWhite: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.9)',
   },
 
   recipientsSection: {
@@ -6227,6 +7747,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     marginBottom: 8,
   },
+  statsOnlySectionGradient: {
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
   statisticsSection: {
     paddingHorizontal: 16,
     marginBottom: 24,
@@ -6243,6 +7767,19 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 3,
     elevation: 2,
+  },
+  statsCardGradient: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    marginBottom: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
   },
   statsRow: {
     flexDirection: 'row',
@@ -6261,10 +7798,21 @@ const styles = StyleSheet.create({
     color: '#0d9488',
     marginBottom: 6.12,
   },
+  statNumberWhite: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#ffffff',
+    marginBottom: 4,
+  },
   statLabel: {
     fontSize: 9.945,
     color: '#6B7280',
     fontWeight: '500',
+  },
+  statLabelWhite: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.9)',
+    textAlign: 'center',
   },
   countriesCard: {
     backgroundColor: '#fff',
@@ -8770,5 +10318,311 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#78350F',
     lineHeight: 20,
+  },
+  
+  // Reply Date Picker Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    justifyContent: 'flex-end',
+  },
+  datePickerModalWrapper: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+  },
+  datePickerModal: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 20,
+  },
+  datePickerHeader: {
+    alignItems: 'center',
+    paddingTop: 8,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+  },
+  datePickerHeaderLine: {
+    width: 40,
+    height: 4,
+    backgroundColor: '#d1d5db',
+    borderRadius: 2,
+    marginBottom: 12,
+  },
+  datePickerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1f2937',
+    letterSpacing: 0.3,
+  },
+  datePickerContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 12,
+    backgroundColor: '#fff',
+  },
+  modalCancelButton: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#fff',
+  },
+  modalCancelText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#6b7280',
+    textAlign: 'center',
+  },
+  modalConfirmButton: {
+    flex: 1,
+  },
+  confirmButtonWrapper: {
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  modalConfirmGradient: {
+    paddingVertical: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalConfirmText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    textAlign: 'center',
+  },
+  
+  // Notification Modal Styles
+  notificationModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  notificationModalWrapper: {
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '85%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -5 },
+    shadowOpacity: 0.15,
+    shadowRadius: 25,
+    elevation: 20,
+  },
+  notificationModal: {
+    maxHeight: '100%',
+  },
+  notificationHeader: {
+    alignItems: 'center',
+    paddingTop: 8,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+    position: 'relative',
+  },
+  notificationHeaderLine: {
+    width: 40,
+    height: 4,
+    backgroundColor: '#d1d5db',
+    borderRadius: 2,
+    marginBottom: 12,
+  },
+  notificationTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1f2937',
+    letterSpacing: 0.3,
+  },
+  notificationHeaderBadge: {
+    position: 'absolute',
+    top: 30,
+    right: 20,
+    backgroundColor: '#ef4444',
+    borderRadius: 12,
+    minWidth: 24,
+    height: 24,
+    paddingHorizontal: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  notificationHeaderBadgeText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  notificationBody: {
+    maxHeight: 450,
+  },
+  notificationLoading: {
+    paddingVertical: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationLoadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#6b7280',
+    fontWeight: '500',
+  },
+  notificationEmpty: {
+    paddingVertical: 60,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyBellContainer: {
+    width: 56,
+    height: 56,
+    marginBottom: 16,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    opacity: 0.3,
+  },
+  emptyBellHandle: {
+    width: 6,
+    height: 3,
+    backgroundColor: '#9ca3af',
+    borderRadius: 2,
+    marginBottom: 1,
+  },
+  emptyBellBody: {
+    width: 24,
+    height: 22,
+    backgroundColor: '#9ca3af',
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    marginBottom: 1,
+  },
+  emptyBellOpening: {
+    width: 28,
+    height: 3,
+    backgroundColor: '#9ca3af',
+    borderRadius: 2,
+  },
+  notificationEmptyTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1f2937',
+    marginBottom: 8,
+    letterSpacing: 0.2,
+  },
+  notificationEmptyText: {
+    fontSize: 14,
+    color: '#6b7280',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  notificationItem: {
+    flexDirection: 'row',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+    backgroundColor: '#ffffff',
+  },
+  notificationItemUnread: {
+    backgroundColor: '#f0f9ff',
+  },
+  notificationItemLast: {
+    borderBottomWidth: 0,
+  },
+  notificationIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#e5e7eb',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  notificationIconEmail: {
+    backgroundColor: '#dbeafe',
+  },
+  notificationIconLetter: {
+    backgroundColor: '#fce7f3',
+  },
+  notificationIconCredits: {
+    backgroundColor: '#fef3c7',
+  },
+  notificationIconProfile: {
+    backgroundColor: '#e0e7ff',
+  },
+  notificationItemIcon: {
+    fontSize: 20,
+  },
+  notificationContent: {
+    flex: 1,
+    position: 'relative',
+  },
+  notificationTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 4,
+  },
+  notificationItemTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111827',
+    flex: 1,
+    marginRight: 8,
+    letterSpacing: 0.2,
+  },
+  notificationTime: {
+    fontSize: 12,
+    color: '#9ca3af',
+    fontWeight: '500',
+  },
+  notificationMessage: {
+    fontSize: 14,
+    color: '#6b7280',
+    lineHeight: 20,
+    marginBottom: 4,
+  },
+  notificationUnreadDot: {
+    position: 'absolute',
+    top: 4,
+    right: 0,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#3b82f6',
+  },
+  notificationFooter: {
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#f3f4f6',
+    backgroundColor: '#ffffff',
+  },
+  viewAllButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  viewAllGradient: {
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewAllText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
 });
