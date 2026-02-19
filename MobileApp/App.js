@@ -444,6 +444,17 @@ export default function App() {
   const flipAnimPending = useRef(new Animated.Value(0)).current;
   const flipAnimReply = useRef(new Animated.Value(0)).current;
   
+  // Recipient card flip animation state (one for each recipient)
+  const recipientFlipAnims = useRef({}).current;
+  
+  // Initialize flip animations for each recipient
+  const getRecipientFlipAnim = (index) => {
+    if (!recipientFlipAnims[index]) {
+      recipientFlipAnims[index] = new Animated.Value(0);
+    }
+    return recipientFlipAnims[index];
+  };
+  
   // Reply date picker state
   const [showReplyDatePicker, setShowReplyDatePicker] = useState(false);
   const [selectedReplyDate, setSelectedReplyDate] = useState(new Date());
@@ -477,6 +488,20 @@ export default function App() {
     const toValue = currentValue >= 90 ? 0 : 180;
     
     Animated.spring(animValue, {
+      toValue,
+      friction: 8,
+      tension: 10,
+      useNativeDriver: true,
+    }).start();
+  };
+  
+  // Flip recipient card handler
+  const handleRecipientFlip = (index) => {
+    const flipAnim = getRecipientFlipAnim(index);
+    const currentValue = flipAnim._value;
+    const toValue = currentValue >= 90 ? 0 : 180;
+    
+    Animated.spring(flipAnim, {
       toValue,
       friction: 8,
       tension: 10,
@@ -5521,76 +5546,176 @@ export default function App() {
             </LinearGradient>
           </View>
 
-          {/* Tab Navigation */}
-          <View style={styles.reviewTabsWrapper}>
-            <Text style={styles.reviewTabsLabel}>Select Recipient</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.reviewTabsScroll}>
-              {recipients.map((recipient, index) => (
-                <TouchableOpacity
-                  key={index}
-                  style={[styles.reviewTab, currentReviewTab === index && styles.reviewTabActive]}
-                  onPress={() => setCurrentReviewTab(index)}
-                  activeOpacity={0.8}
-                >
-                  {currentReviewTab === index ? (
-                    <LinearGradient
-                      colors={['#667eea', '#764ba2']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
-                      style={styles.reviewTabGradient}
+          {/* Recipients Horizontal Scrollable Cards */}
+          <View style={styles.recipientsCardsSection}>
+            <Text style={styles.recipientsCardsSectionLabel}>Recipients ({recipients.length})</Text>
+            <ScrollView 
+              horizontal 
+              showsHorizontalScrollIndicator={false} 
+              style={styles.recipientsCardsScroll}
+              contentContainerStyle={styles.recipientsCardsContent}
+              snapToInterval={280}
+              decelerationRate="fast"
+            >
+              {recipients.map((recipient, index) => {
+                const flipAnim = getRecipientFlipAnim(index);
+                const isActive = currentReviewTab === index;
+                const companyName = recipient.website 
+                  ? recipient.website.replace(/^https?:\/\/(www\.)?/, '').split('/')[0]
+                  : recipient.email.split('@')[1] || 'Company';
+                
+                const frontRotate = flipAnim.interpolate({
+                  inputRange: [0, 180],
+                  outputRange: ['0deg', '180deg']
+                });
+                
+                const backRotate = flipAnim.interpolate({
+                  inputRange: [0, 180],
+                  outputRange: ['180deg', '360deg']
+                });
+                
+                // Color palettes for variety - all light shades with dark text
+                const colorSets = [
+                  { front: ['#fffbeb', '#fef3c7', '#fde68a'], back: ['#fde68a', '#fef3c7', '#fffbeb'] }, // Yellow
+                  { front: ['#f0f9ff', '#e0f2fe', '#bae6fd'], back: ['#bae6fd', '#e0f2fe', '#f0f9ff'] }, // Blue
+                  { front: ['#fdf2f8', '#fce7f3', '#fbcfe8'], back: ['#fbcfe8', '#fce7f3', '#fdf2f8'] }, // Pink
+                  { front: ['#f0fdf4', '#dcfce7', '#bbf7d0'], back: ['#bbf7d0', '#dcfce7', '#f0fdf4'] }, // Green
+                  { front: ['#faf5ff', '#f3e8ff', '#e9d5ff'], back: ['#e9d5ff', '#f3e8ff', '#faf5ff'] }, // Purple
+                ];
+                const colorSet = colorSets[index % colorSets.length];
+                
+                // Calculate narrative text length for dynamic sizing
+                const narrativeText = `You are applying for the position of ${recipient.position || 'Not specified'} at ${companyName.toUpperCase()} with the email address ${recipient.email}`;
+                const narrativeFontSize = narrativeText.length > 120 ? 11 : narrativeText.length > 100 ? 12 : 13;
+                
+                return (
+                  <View key={index} style={styles.recipientCardWrapper}>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        if (isActive) {
+                          // If already selected, flip the card
+                          handleRecipientFlip(index);
+                        } else {
+                          // If not selected, select it first
+                          setCurrentReviewTab(index);
+                        }
+                      }}
+                      style={styles.recipientCardTouchable}
                     >
-                      <Text style={styles.reviewTabTextActive}>
-                        {index + 1}. {recipient.email}
-                      </Text>
-                    </LinearGradient>
-                  ) : (
-                    <Text style={styles.reviewTabText}>
-                      {index + 1}. {recipient.email}
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              ))}
+                      {/* Front Side - iOS Widget Style */}
+                      <Animated.View style={[
+                        styles.recipientCardAnimated,
+                        {
+                          backfaceVisibility: 'hidden',
+                          transform: [{ rotateY: frontRotate }]
+                        }
+                      ]}>
+                        <LinearGradient
+                          colors={colorSet.front}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={styles.recipientCardGradient}
+                        >
+                          {/* Number Badge */}
+                          <View style={styles.recipientCardBadge}>
+                            <Text style={styles.recipientCardBadgeText}>
+                              {index + 1}
+                            </Text>
+                          </View>
+                          
+                          {/* Content */}
+                          <View style={styles.recipientCardContent}>
+                            <View style={styles.recipientCardSection}>
+                              <Text style={styles.recipientCardLabel}>Position:</Text>
+                              <Text style={styles.recipientCardPosition} numberOfLines={1} ellipsizeMode="tail">
+                                {recipient.position || 'No position specified'}
+                              </Text>
+                            </View>
+                            
+                            <View style={styles.recipientCardSection}>
+                              <Text style={styles.recipientCardLabel}>Employer:</Text>
+                              <Text style={styles.recipientCardCompany} numberOfLines={1} ellipsizeMode="tail">
+                                {companyName.toUpperCase()}
+                              </Text>
+                            </View>
+                            
+                            <View style={styles.recipientCardSection}>
+                              <Text style={styles.recipientCardLabel}>Email:</Text>
+                              <Text style={styles.recipientCardEmail} numberOfLines={1} ellipsizeMode="tail">
+                                {recipient.email}
+                              </Text>
+                            </View>
+                          </View>
+                          
+                          {/* Footer Hint */}
+                          <Text style={styles.recipientCardFlipHint}>Tap to see details</Text>
+                        </LinearGradient>
+                        
+                        {/* Bottom Selection Indicator */}
+                        {isActive && (
+                          <View style={styles.recipientCardBottomIndicator} />
+                        )}
+                      </Animated.View>
+                      
+                      {/* Back Side - iOS Widget Style */}
+                      <Animated.View style={[
+                        styles.recipientCardAnimated,
+                        styles.recipientCardBackPosition,
+                        {
+                          backfaceVisibility: 'hidden',
+                          transform: [{ rotateY: backRotate }]
+                        }
+                      ]}>
+                        <LinearGradient
+                          colors={colorSet.back}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={styles.recipientCardGradient}
+                        >
+                          {/* Number Badge */}
+                          <View style={styles.recipientCardBadge}>
+                            <Text style={styles.recipientCardBadgeText}>
+                              {index + 1}
+                            </Text>
+                          </View>
+                          
+                          {/* Details Content - Narrative Style */}
+                          <View style={styles.recipientCardContent}>
+                            <Text style={[
+                              styles.recipientCardNarrative,
+                              { fontSize: narrativeFontSize, lineHeight: narrativeFontSize * 1.6 }
+                            ]}>
+                              You are applying for the position of{' '}
+                              <Text style={styles.recipientCardNarrativeBold}>
+                                {recipient.position || 'Not specified'}
+                              </Text>
+                              {' '}at{' '}
+                              <Text style={styles.recipientCardNarrativeBold}>
+                                {companyName.toUpperCase()}
+                              </Text>
+                              {' '}with the email address{' '}
+                              <Text style={styles.recipientCardNarrativeBold}>
+                                {recipient.email}
+                              </Text>
+                            </Text>
+                          </View>
+                          
+                          {/* Footer Hint */}
+                          <Text style={styles.recipientCardFlipHint}>Tap to return</Text>
+                        </LinearGradient>
+                        
+                        {/* Bottom Selection Indicator */}
+                        {isActive && (
+                          <View style={styles.recipientCardBottomIndicator} />
+                        )}
+                      </Animated.View>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
             </ScrollView>
           </View>
-
-          {/* Recipient Information Card */}
-          {recipients[currentReviewTab] && (
-            <View style={styles.reviewDetailCardModern}>
-              <View style={styles.reviewDetailHeader}>
-                <View style={styles.reviewDetailAccent} />
-                <Text style={styles.reviewDetailTitleModern}>Recipient #{currentReviewTab + 1}</Text>
-              </View>
-              <View style={styles.reviewDetailContent}>
-                <View style={styles.reviewDetailItem}>
-                  <View style={styles.reviewDetailIconBox}>
-                    <Text style={styles.reviewDetailIconText}>✉</Text>
-                  </View>
-                  <View style={styles.reviewDetailInfo}>
-                    <Text style={styles.reviewDetailLabelModern}>Email</Text>
-                    <Text style={styles.reviewDetailValueModern}>{recipients[currentReviewTab].email}</Text>
-                  </View>
-                </View>
-                <View style={styles.reviewDetailItem}>
-                  <View style={styles.reviewDetailIconBox}>
-                    <Text style={styles.reviewDetailIconText}>🌐</Text>
-                  </View>
-                  <View style={styles.reviewDetailInfo}>
-                    <Text style={styles.reviewDetailLabelModern}>Website</Text>
-                    <Text style={styles.reviewDetailValueModern}>{recipients[currentReviewTab].website}</Text>
-                  </View>
-                </View>
-                <View style={[styles.reviewDetailItem, { borderBottomWidth: 0 }]}>
-                  <View style={styles.reviewDetailIconBox}>
-                    <Text style={styles.reviewDetailIconText}>💼</Text>
-                  </View>
-                  <View style={styles.reviewDetailInfo}>
-                    <Text style={styles.reviewDetailLabelModern}>Position</Text>
-                    <Text style={styles.reviewDetailValueModern}>{recipients[currentReviewTab].position}</Text>
-                  </View>
-                </View>
-              </View>
-            </View>
-          )}
 
           {/* Cover Letter Generation Section */}
           {reviewCoverLetters[currentReviewTab] ? (
@@ -9639,6 +9764,151 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     letterSpacing: 0.3,
   },
+  
+  // ===== NEW RECIPIENTS CARDS SECTION =====
+  recipientsCardsSection: {
+    paddingTop: 12,
+    paddingBottom: 16,
+    marginBottom: 16,
+  },
+  recipientsCardsSectionLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#6b7280',
+    marginBottom: 14,
+    marginHorizontal: 20,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  recipientsCardsScroll: {
+    paddingLeft: 16,
+  },
+  recipientsCardsContent: {
+    paddingRight: 16,
+  },
+  recipientCardWrapper: {
+    marginRight: 16,
+  },
+  recipientCardTouchable: {
+    width: 260,
+    height: 180,
+  },
+  recipientCardAnimated: {
+    width: 260,
+    height: 180,
+    borderRadius: 24,
+    overflow: 'visible',
+    shadowColor: '#94a3b8',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  recipientCardBackPosition: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+  },
+  recipientCardGradient: {
+    flex: 1,
+    padding: 20,
+    paddingTop: 16,
+    paddingBottom: 14,
+    justifyContent: 'space-between',
+    borderRadius: 24,
+    overflow: 'hidden',
+  },
+  recipientCardBottomIndicator: {
+    position: 'absolute',
+    bottom: 0,
+    left: '20%',
+    right: '20%',
+    height: 4,
+    backgroundColor: '#3b82f6',
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 4,
+    shadowColor: '#3b82f6',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+  },
+  recipientCardBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  recipientCardBadgeText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#78350f',
+  },
+  recipientCardContent: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingRight: 16,
+  },
+  recipientCardSection: {
+    marginBottom: 10,
+  },
+  recipientCardLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#92400e',
+    marginBottom: 3,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  recipientCardPosition: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#78350f',
+    lineHeight: 20,
+  },
+  recipientCardCompany: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#422006',
+    lineHeight: 19,
+    letterSpacing: 0.3,
+  },
+  recipientCardEmail: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#78350f',
+    lineHeight: 18,
+  },
+  recipientCardFlipHint: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: 'rgba(66, 32, 6, 0.35)',
+    textAlign: 'center',
+    fontStyle: 'italic',
+    letterSpacing: 0.3,
+  },
+  recipientCardNarrative: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#78350f',
+    lineHeight: 20,
+    textAlign: 'left',
+  },
+  recipientCardNarrativeBold: {
+    fontWeight: '800',
+    color: '#422006',
+  },
+  
+  // ===== OLD REVIEW TAB STYLES (KEPT FOR COMPATIBILITY) =====
   reviewTabsWrapper: {
     backgroundColor: '#ffffff',
     paddingTop: 16,
