@@ -72,7 +72,7 @@ const HTMLContentViewer = ({ htmlContent, onEdit }) => {
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
           line-height: 1.7;
           margin: 0;
-          padding: 16px;
+          padding: 0px 12px 12px 12px;
           font-size: 15px;
           color: #333;
           background: white;
@@ -122,7 +122,7 @@ const HTMLContentViewer = ({ htmlContent, onEdit }) => {
   `;
 
   return (
-    <View style={{ flex: 1, borderRadius: 6, borderWidth: 1, borderColor: '#17a2b8', overflow: 'hidden' }}>
+    <View style={{ flex: 1, borderRadius: 12, borderWidth: 1.5, borderColor: '#e2e8f0', overflow: 'hidden', backgroundColor: '#f8fafc' }}>
       <WebView
         ref={webViewRef}
         source={{ html: htmlTemplate }}
@@ -131,6 +131,7 @@ const HTMLContentViewer = ({ htmlContent, onEdit }) => {
         style={{ flex: 1, backgroundColor: 'white' }}
         originWhitelist={['*']}
         javaScriptEnabled={true}
+        contentInset={{ top: 0, left: 0, bottom: 0, right: 0 }}
       />
       {onEdit && (
         <TouchableOpacity
@@ -169,7 +170,7 @@ const RichTextEditorWebView = ({ initialHtml, onContentChange, height = 400 }) =
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-          padding: 12px;
+          padding: 2px;
           background: white;
         }
         .toolbar {
@@ -197,7 +198,7 @@ const RichTextEditorWebView = ({ initialHtml, onContentChange, height = 400 }) =
         }
         .editor {
           min-height: ${height - 60}px;
-          padding: 16px;
+          padding: 6px;
           outline: none;
           line-height: 1.7;
           font-size: 15px;
@@ -431,6 +432,7 @@ export default function App() {
   });
   const [editedCoverLetterData, setEditedCoverLetterData] = useState({});
   const [showAddressDropdown, setShowAddressDropdown] = useState(false);
+  const [showReviewDatePicker, setShowReviewDatePicker] = useState(false);
   const abortControllerRef = useRef(null);
   const isCancelledRef = useRef(false);
   
@@ -459,6 +461,9 @@ export default function App() {
   const [showReplyDatePicker, setShowReplyDatePicker] = useState(false);
   const [selectedReplyDate, setSelectedReplyDate] = useState(new Date());
   const [replyAppId, setReplyAppId] = useState(null);
+  
+  // Review date picker state
+  const [selectedReviewDate, setSelectedReviewDate] = useState(new Date());
   
   // Notification state
   const [showNotifications, setShowNotifications] = useState(false);
@@ -5720,30 +5725,49 @@ export default function App() {
           {/* Cover Letter Generation Section */}
           {reviewCoverLetters[currentReviewTab] ? (
             <View style={styles.reviewCoverLetterCard}>
-              {/* Header with Edit Button */}
-              <View style={styles.sectionHeader}>
-                <Text style={styles.coverLetterTitle}>✓ Recipient #{currentReviewTab + 1}</Text>
+              <LinearGradient
+                colors={['#f0f9ff', '#e0f2fe', '#dbeafe']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.reviewCoverLetterGradient}
+              >
+                {/* Header with Edit Button */}
+                <View style={styles.sectionHeader}>
+                <View style={styles.reviewRecipientHeaderLeft}>
+                  <Text style={styles.reviewRecipientNumberBadge}>#{currentReviewTab + 1}</Text>
+                  <Text style={styles.reviewCoverLetterTitle}>Recipient Details</Text>
+                </View>
                 {editingReviewIndex !== currentReviewTab && (
                   <TouchableOpacity 
                     style={styles.editButton}
                     onPress={() => toggleReviewEditMode(currentReviewTab)}
                   >
-                    <Text style={styles.editButtonText}>✏️ Edit Details</Text>
+                    <LinearGradient
+                      colors={['#3b82f6', '#2563eb']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.editButtonGradient}
+                    >
+                      <Text style={styles.editButtonText}>Edit</Text>
+                    </LinearGradient>
                   </TouchableOpacity>
                 )}
               </View>
 
               {/* Edit/View Mode Combined */}
               {editingReviewIndex === currentReviewTab ? (
-                <View style={styles.editModeContainer}>
+                <View style={styles.viewModeContainer}>
                   {/* To (Hiring Manager) - Label Only */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>To (Hiring Manager)</Text>
+                    <Text style={styles.fieldDisplayLabel}>To (Hiring Manager)</Text>
+                    <View style={styles.fieldDisplay}>
+                      <Text style={styles.fieldDisplayValue}>The Hiring Manager</Text>
+                    </View>
                   </View>
 
                   {/* Employer Field */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Employer</Text>
+                    <Text style={styles.fieldDisplayLabel}>Employer</Text>
                     <TextInput
                       style={styles.editFieldInput}
                       value={editedCoverLetterData.companyName}
@@ -5754,7 +5778,7 @@ export default function App() {
 
                   {/* Email Field - Read Only */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Email</Text>
+                    <Text style={styles.fieldDisplayLabel}>Email</Text>
                     <TextInput
                       style={[styles.editFieldInput, styles.readOnlyField]}
                       value={editedCoverLetterData.email}
@@ -5764,7 +5788,7 @@ export default function App() {
 
                   {/* Address Dropdown */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Address</Text>
+                    <Text style={styles.fieldDisplayLabel}>Address</Text>
                     {reviewCoverLetters[currentReviewTab].locations && reviewCoverLetters[currentReviewTab].locations.length > 0 ? (
                       <View>
                         <TouchableOpacity 
@@ -5821,18 +5845,34 @@ export default function App() {
 
                   {/* Date Field */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Date</Text>
-                    <TextInput
-                      style={styles.editFieldInput}
-                      value={editedCoverLetterData.date}
-                      onChangeText={(text) => setEditedCoverLetterData({ ...editedCoverLetterData, date: text })}
-                      placeholder="Date"
-                    />
+                    <Text style={styles.fieldDisplayLabel}>Date</Text>
+                    <TouchableOpacity 
+                      style={styles.dropdownButton}
+                      onPress={() => {
+                        // Parse the current date string to Date object, or use current date
+                        if (editedCoverLetterData.date) {
+                          try {
+                            const parsedDate = new Date(editedCoverLetterData.date);
+                            setSelectedReviewDate(isNaN(parsedDate.getTime()) ? new Date() : parsedDate);
+                          } catch (e) {
+                            setSelectedReviewDate(new Date());
+                          }
+                        } else {
+                          setSelectedReviewDate(new Date());
+                        }
+                        setShowReviewDatePicker(true);
+                      }}
+                    >
+                      <Text style={styles.dropdownButtonText}>
+                        {editedCoverLetterData.date || 'Select Date'}
+                      </Text>
+                      <Text style={styles.dropdownArrow}>▼</Text>
+                    </TouchableOpacity>
                   </View>
 
                   {/* Position Field */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Position</Text>
+                    <Text style={styles.fieldDisplayLabel}>Position</Text>
                     <TextInput
                       style={styles.editFieldInput}
                       value={editedCoverLetterData.position}
@@ -5843,7 +5883,7 @@ export default function App() {
 
                   {/* Subject Field */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Subject</Text>
+                    <Text style={styles.fieldDisplayLabel}>Subject</Text>
                     <TextInput
                       style={styles.editFieldInput}
                       value={editedCoverLetterData.subject}
@@ -5854,7 +5894,7 @@ export default function App() {
 
                   {/* Rich Text Editor for Cover Letter */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Cover Letter - Rich Text Editor</Text>
+                    <Text style={styles.fieldDisplayLabel}>Cover Letter - Rich Text Editor</Text>
                     
                     {/* Quill.js Rich Text Editor - Full Width */}
                     <RichTextEditorWebView 
@@ -5872,16 +5912,30 @@ export default function App() {
                   {/* Save and Cancel Buttons */}
                   <View style={styles.editButtonGroup}>
                     <TouchableOpacity
-                      style={[styles.reviewActionBtn, styles.saveBtnStyle]}
+                      style={styles.editActionBtn}
                       onPress={() => saveReviewEdits(currentReviewTab)}
                     >
-                      <Text style={styles.reviewActionBtnText}>💾 Save</Text>
+                      <LinearGradient
+                        colors={['#10b981', '#059669']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.editActionGradient}
+                      >
+                        <Text style={styles.editActionBtnText}>Save</Text>
+                      </LinearGradient>
                     </TouchableOpacity>
                     <TouchableOpacity
-                      style={[styles.reviewActionBtn, styles.cancelBtnStyle]}
+                      style={styles.editActionBtn}
                       onPress={() => toggleReviewEditMode(currentReviewTab)}
                     >
-                      <Text style={styles.reviewActionBtnText}>❌ Cancel</Text>
+                      <LinearGradient
+                        colors={['#64748b', '#475569']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.editActionGradient}
+                      >
+                        <Text style={styles.editActionBtnText}>Cancel</Text>
+                      </LinearGradient>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -5904,12 +5958,12 @@ export default function App() {
                       </View>
                     </View>
 
-                    <View style={styles.fieldDisplayRow}>
-                      <View style={[styles.fieldDisplay, { flex: 1 }]}>
+                    <View style={styles.fieldDisplayRowDouble}>
+                      <View style={styles.fieldDisplayHalf}>
                         <Text style={styles.fieldDisplayLabel}>Position</Text>
                         <Text style={styles.fieldDisplayValue}>{recipients[currentReviewTab]?.position}</Text>
                       </View>
-                      <View style={[styles.fieldDisplay, { flex: 1, marginLeft: 12 }]}>
+                      <View style={styles.fieldDisplayHalf}>
                         <Text style={styles.fieldDisplayLabel}>Date</Text>
                         <Text style={styles.fieldDisplayValue}>{reviewCoverLetters[currentReviewTab].date}</Text>
                       </View>
@@ -5941,20 +5995,31 @@ export default function App() {
 
                     {/* Action Buttons */}
                     <View style={styles.reviewModernActionButtons}>
+                      {/* Regenerate Button */}
                       <TouchableOpacity
-                        style={styles.reviewModernActionBtn}
+                        style={styles.reviewActionButtonFull}
                         onPress={() => generateCoverLetterForReview(currentReviewTab)}
                         disabled={reviewGeneratingIndex === currentReviewTab || reviewLoading || reviewGeneratingAll || reviewGeneratingAndSendingAll}
                         activeOpacity={0.8}
                       >
-                        <View style={styles.reviewActionIconBox}>
-                          <Text style={styles.reviewActionIcon}>🔄</Text>
-                        </View>
-                        <Text style={styles.reviewModernActionBtnText}>Regenerate</Text>
+                        <LinearGradient
+                          colors={['#fb923c', '#f97316']}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 0, y: 1 }}
+                          style={styles.reviewActionButtonGradient}
+                        >
+                          <View style={styles.reviewActionButtonContent}>
+                            <View style={styles.reviewActionIconCircle}>
+                              <Text style={styles.reviewActionButtonIcon}>⟳</Text>
+                            </View>
+                            <Text style={styles.reviewActionButtonText} numberOfLines={1}>Regenerate</Text>
+                          </View>
+                        </LinearGradient>
                       </TouchableOpacity>
                       
+                      {/* Download Button */}
                       <TouchableOpacity
-                        style={styles.reviewModernActionBtn}
+                        style={styles.reviewActionButtonFull}
                         onPress={() => {
                           if (creditBalance <= 0) {
                             Alert.alert(
@@ -5962,7 +6027,7 @@ export default function App() {
                               'Remaining credits are 0. Please recharge to continue downloading PDFs.',
                               [
                                 { text: 'Cancel', style: 'cancel' },
-                                { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+                                { text: 'Recharge Now', onPress: () => setScreen('packages') }
                               ]
                             );
                             return;
@@ -5972,14 +6037,24 @@ export default function App() {
                         disabled={reviewDownloading}
                         activeOpacity={0.8}
                       >
-                        <View style={styles.reviewActionIconBox}>
-                          <Text style={styles.reviewActionIcon}>📥</Text>
-                        </View>
-                        <Text style={styles.reviewModernActionBtnText}>Download PDF</Text>
+                        <LinearGradient
+                          colors={['#06b6d4', '#0891b2']}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 0, y: 1 }}
+                          style={styles.reviewActionButtonGradient}
+                        >
+                          <View style={styles.reviewActionButtonContent}>
+                            <View style={styles.reviewActionIconCircle}>
+                              <Text style={styles.reviewActionButtonIcon}>↓</Text>
+                            </View>
+                            <Text style={styles.reviewActionButtonText} numberOfLines={1}>Download</Text>
+                          </View>
+                        </LinearGradient>
                       </TouchableOpacity>
                       
+                      {/* Send Button */}
                       <TouchableOpacity
-                        style={[styles.reviewModernActionBtnPrimary, reviewCoverLetters[currentReviewTab].sent && styles.reviewActionBtnSent]}
+                        style={styles.reviewActionButtonFull}
                         onPress={() => {
                           if (creditBalance <= 0) {
                             Alert.alert(
@@ -5987,7 +6062,7 @@ export default function App() {
                               'Remaining credits are 0. Please recharge to continue sending applications.',
                               [
                                 { text: 'Cancel', style: 'cancel' },
-                                { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+                                { text: 'Recharge Now', onPress: () => setScreen('packages') }
                               ]
                             );
                             return;
@@ -5999,18 +6074,26 @@ export default function App() {
                       >
                         {!reviewCoverLetters[currentReviewTab].sent ? (
                           <LinearGradient
-                            colors={['#667eea', '#764ba2']}
+                            colors={['#a78bfa', '#8b5cf6']}
                             start={{ x: 0, y: 0 }}
-                            end={{ x: 1, y: 0 }}
-                            style={styles.reviewActionGradient}
+                            end={{ x: 0, y: 1 }}
+                            style={styles.reviewActionButtonGradient}
                           >
-                            <Text style={styles.reviewActionIcon}>📧</Text>
-                            <Text style={styles.reviewModernActionBtnPrimaryText}>Send Application</Text>
+                            <View style={styles.reviewActionButtonContent}>
+                              <View style={styles.reviewActionIconCircle}>
+                                <Text style={styles.reviewActionButtonIcon}>✉</Text>
+                              </View>
+                              <Text style={styles.reviewActionButtonText} numberOfLines={1}>Send</Text>
+                            </View>
                           </LinearGradient>
                         ) : (
-                          <View style={styles.reviewActionGradient}>
-                            <Text style={styles.reviewActionIcon}>✓</Text>
-                            <Text style={styles.reviewModernActionBtnSentText}>Application Sent</Text>
+                          <View style={styles.reviewActionButtonSentGradient}>
+                            <View style={styles.reviewActionButtonContent}>
+                              <View style={styles.reviewActionIconCircle}>
+                                <Text style={styles.reviewActionButtonIcon}>✓</Text>
+                              </View>
+                              <Text style={styles.reviewActionButtonText} numberOfLines={1}>Sent</Text>
+                            </View>
                           </View>
                         )}
                       </TouchableOpacity>
@@ -6018,11 +6101,12 @@ export default function App() {
                   </View>
                 </>
               )}
+              </LinearGradient>
             </View>
           ) : (
             <View style={styles.reviewEmptyCardModern}>
               <View style={styles.reviewEmptyIconBox}>
-                <Text style={styles.reviewEmptyIcon}>📝</Text>
+                <Text style={styles.reviewEmptyIconText}>CL</Text>
               </View>
               <Text style={styles.reviewEmptyTitle}>No Cover Letter Generated</Text>
               <Text style={styles.reviewEmptySubtitle}>Generate a professional cover letter to review and send to this recipient</Text>
@@ -6035,7 +6119,7 @@ export default function App() {
                       'Remaining credits are 0. Please recharge to continue generating cover letters.',
                       [
                         { text: 'Cancel', style: 'cancel' },
-                        { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+                        { text: 'Recharge Now', onPress: () => setScreen('packages') }
                       ]
                     );
                     return;
@@ -6051,186 +6135,228 @@ export default function App() {
                   end={{ x: 1, y: 0 }}
                   style={styles.reviewEmptyActionGradient}
                 >
-                  <Text style={styles.reviewEmptyActionIcon}>✨</Text>
                   <Text style={styles.reviewEmptyActionText}>Generate Cover Letter</Text>
                 </LinearGradient>
               </TouchableOpacity>
             </View>
           )}
 
-          {/* Generate All Button */}
-          <TouchableOpacity
-            style={styles.reviewBulkActionBtn}
-            onPress={generateAllCoverLettersForReview}
-            disabled={reviewGeneratingAll}
-            activeOpacity={0.8}
-          >
+          {/* Bulk Actions Card - Modern Design */}
+          <View style={styles.reviewBulkActionsCard}>
             <LinearGradient
-              colors={['#10b981', '#059669']}
+              colors={['#1e293b', '#334155', '#475569']}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.reviewBulkActionGradient}
+              end={{ x: 1, y: 1 }}
+              style={styles.reviewBulkActionsGradient}
             >
-              <Text style={styles.reviewBulkActionIcon}>🚀</Text>
-              <Text style={styles.reviewBulkActionText}>Generate All Cover Letters</Text>
+              {/* Header Section */}
+              <View style={styles.reviewBulkActionsHeaderSection}>
+                <View>
+                  <Text style={styles.reviewBulkActionsTitle}>Batch Operations</Text>
+                  <Text style={styles.reviewBulkActionsSubtitle}>Manage all {recipients.length} applications at once</Text>
+                </View>
+                <View style={styles.reviewBulkActionsStatusBadge}>
+                  <View style={styles.reviewBulkActionsStatusDot} />
+                  <Text style={styles.reviewBulkActionsStatusText}>Ready</Text>
+                </View>
+              </View>
+
+              {/* Action Grid */}
+              <View style={styles.reviewBulkActionsGrid}>
+                {/* Generate All Button */}
+                <TouchableOpacity
+                  onPress={generateAllCoverLettersForReview}
+                  disabled={reviewGeneratingAll}
+                  activeOpacity={0.85}
+                  style={styles.reviewBulkActionCard}
+                >
+                  <LinearGradient
+                    colors={['#10b981', '#059669', '#047857']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.reviewBulkActionCardGradient}
+                  >
+                    <View style={styles.reviewBulkActionIconContainer}>
+                      <View style={styles.reviewBulkActionIconOuter}>
+                        <Text style={styles.reviewBulkActionIconSymbol}>↻</Text>
+                      </View>
+                    </View>
+                    <View style={styles.reviewBulkActionTextContainer}>
+                      <Text style={styles.reviewBulkActionTitle}>Generate All</Text>
+                      <Text style={styles.reviewBulkActionDesc}>Create cover letters</Text>
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                {/* Send All Button */}
+                <TouchableOpacity
+                  onPress={sendAllApplicationsFromReview}
+                  disabled={reviewSendingAll || allApplicationsSent}
+                  activeOpacity={0.85}
+                  style={styles.reviewBulkActionCard}
+                >
+                  {allApplicationsSent ? (
+                    <View style={styles.reviewBulkActionCardCompleted}>
+                      <View style={styles.reviewBulkActionIconContainer}>
+                        <View style={styles.reviewBulkActionIconOuter}>
+                          <Text style={styles.reviewBulkActionIconSymbol}>✓</Text>
+                        </View>
+                      </View>
+                      <View style={styles.reviewBulkActionTextContainer}>
+                        <Text style={styles.reviewBulkActionTitle}>All Sent</Text>
+                        <Text style={styles.reviewBulkActionDesc}>Task completed</Text>
+                      </View>
+                    </View>
+                  ) : (
+                    <LinearGradient
+                      colors={['#3b82f6', '#2563eb', '#1d4ed8']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.reviewBulkActionCardGradient}
+                    >
+                      <View style={styles.reviewBulkActionIconContainer}>
+                        <View style={styles.reviewBulkActionIconOuter}>
+                          <Text style={styles.reviewBulkActionIconSymbol}>↑</Text>
+                        </View>
+                      </View>
+                      <View style={styles.reviewBulkActionTextContainer}>
+                        <Text style={styles.reviewBulkActionTitle}>Send All</Text>
+                        <Text style={styles.reviewBulkActionDesc}>Email applications</Text>
+                      </View>
+                    </LinearGradient>
+                  )}
+                </TouchableOpacity>
+
+                {/* Generate & Send All Button */}
+                <TouchableOpacity
+                  onPress={generateAndSendAllApplications}
+                  disabled={reviewGeneratingAndSendingAll || allApplicationsSent}
+                  activeOpacity={0.85}
+                  style={styles.reviewBulkActionCard}
+                >
+                  {allApplicationsSent ? (
+                    <View style={styles.reviewBulkActionCardCompleted}>
+                      <View style={styles.reviewBulkActionIconContainer}>
+                        <View style={styles.reviewBulkActionIconOuter}>
+                          <Text style={styles.reviewBulkActionIconSymbol}>✓</Text>
+                        </View>
+                      </View>
+                      <View style={styles.reviewBulkActionTextContainer}>
+                        <Text style={styles.reviewBulkActionTitle}>Completed</Text>
+                        <Text style={styles.reviewBulkActionDesc}>All processed</Text>
+                      </View>
+                    </View>
+                  ) : (
+                    <LinearGradient
+                      colors={['#8b5cf6', '#7c3aed', '#6d28d9']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.reviewBulkActionCardGradient}
+                    >
+                      <View style={styles.reviewBulkActionIconContainer}>
+                        <View style={styles.reviewBulkActionIconOuter}>
+                          <Text style={styles.reviewBulkActionIconSymbol}>▶</Text>
+                        </View>
+                      </View>
+                      <View style={styles.reviewBulkActionTextContainer}>
+                        <Text style={styles.reviewBulkActionTitle}>Auto Process</Text>
+                        <Text style={styles.reviewBulkActionDesc}>Generate & send</Text>
+                      </View>
+                    </LinearGradient>
+                  )}
+                </TouchableOpacity>
+              </View>
             </LinearGradient>
-          </TouchableOpacity>
-
-          {/* Send All Button */}
-          <TouchableOpacity
-            style={styles.reviewBulkActionBtn}
-            onPress={sendAllApplicationsFromReview}
-            disabled={reviewSendingAll || allApplicationsSent}
-            activeOpacity={0.8}
-          >
-            {allApplicationsSent ? (
-              <View style={[styles.reviewBulkActionGradient, { backgroundColor: '#9ca3af' }]}>
-                <Text style={styles.reviewBulkActionIcon}>✓</Text>
-                <Text style={styles.reviewBulkActionText}>All Applications Sent</Text>
-              </View>
-            ) : (
-              <LinearGradient
-                colors={['#3b82f6', '#2563eb']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.reviewBulkActionGradient}
-              >
-                <Text style={styles.reviewBulkActionIcon}>📧</Text>
-                <Text style={styles.reviewBulkActionText}>Send to All Recipients</Text>
-              </LinearGradient>
-            )}
-          </TouchableOpacity>
-
-          {/* Generate and Send All Button */}
-          <TouchableOpacity
-            style={styles.reviewBulkActionBtn}
-            onPress={generateAndSendAllApplications}
-            disabled={reviewGeneratingAndSendingAll || allApplicationsSent}
-            activeOpacity={0.8}
-          >
-            {allApplicationsSent ? (
-              <View style={[styles.reviewBulkActionGradient, { backgroundColor: '#9ca3af' }]}>
-                <Text style={styles.reviewBulkActionIcon}>✓</Text>
-                <Text style={styles.reviewBulkActionText}>All Generated & Sent</Text>
-              </View>
-            ) : (
-              <LinearGradient
-                colors={['#667eea', '#764ba2']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.reviewBulkActionGradient}
-              >
-                <Text style={styles.reviewBulkActionIcon}>🚀</Text>
-                <Text style={styles.reviewBulkActionIcon}>📧</Text>
-                <Text style={styles.reviewBulkActionText}>Generate & Send to All</Text>
-              </LinearGradient>
-            )}
-          </TouchableOpacity>
+          </View>
 
           <View style={{ height: 30 }} />
         </ScrollView>
         
-        {/* Full Screen Loading Overlay */}
+        {/* Full Screen Loading Overlay - Modern Design */}
         <Modal
           visible={isAnyLoadingActive}
           transparent={true}
           animationType="fade"
         >
-          <View style={{
-            flex: 1,
-            backgroundColor: 'rgba(0, 0, 0, 0.5)',
-            justifyContent: 'center',
-            alignItems: 'center'
-          }}>
-            <View style={{
-              backgroundColor: '#ffffff',
-              borderRadius: 20,
-              padding: 30,
-              alignItems: 'center',
-              width: '85%',
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: 8 },
-              shadowOpacity: 0.4,
-              shadowRadius: 12,
-              elevation: 15,
-              borderWidth: 2,
-              borderColor: '#e5e7eb'
-            }}>
-              <ActivityIndicator size="large" color="#0d9488" />
-              
-              <Text style={{
-                marginTop: 16,
-                fontSize: 15,
-                fontWeight: '600',
-                color: '#374151',
-                textAlign: 'center',
-                marginBottom: 10
-              }}>
-                {progressiveLoadingMessage ? progressiveLoadingMessage :
-                 reviewGeneratingAll ? 'Generating all cover letters...' :
-                 reviewSendingAll ? 'Sending all applications...' :
-                 reviewGeneratingAndSendingAll ? 'Generating & sending all...' :
-                 reviewDownloading ? 'Downloading PDF...' :
-                 reviewLoading ? 'Sending application...' :
-                 'Processing...'}
-              </Text>
-              
-              {progressiveLoadingMessage && reviewGeneratingIndex !== null && !reviewGeneratingAll && (
-                <View style={{ width: '100%', marginTop: 15, marginBottom: 10 }}>
-                  <View style={{ width: '100%', marginBottom: 8 }}>
-                    <View style={{
-                      width: '100%',
-                      height: 8,
-                      backgroundColor: '#e5e7eb',
-                      borderRadius: 4,
-                      overflow: 'hidden'
-                    }}>
-                      <Animated.View style={{
-                        height: '100%',
-                        width: progressAnimValue.interpolate({
-                          inputRange: [0, 100],
-                          outputRange: ['0%', '100%']
-                        }),
-                        backgroundColor: '#0d9488',
-                        borderRadius: 4
-                      }} />
-                    </View>
+          <View style={styles.loadingModalOverlay}>
+            <View style={styles.loadingModalContainer}>
+              <LinearGradient
+                colors={['#1e293b', '#334155', '#475569']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.loadingModalGradient}
+              >
+                {/* Animated Loader */}
+                <View style={styles.loadingAnimationContainer}>
+                  <View style={styles.loadingSpinnerOuter}>
+                    <ActivityIndicator size="large" color="#ffffff" />
                   </View>
-                  <Text style={{
-                    fontSize: 12,
-                    color: '#666',
-                    textAlign: 'center',
-                    marginTop: 5
-                  }}>
-                    {progressiveLoadingProgress}%
+                  <View style={styles.loadingGlowEffect} />
+                </View>
+                
+                {/* Status Text */}
+                <View style={styles.loadingTextContainer}>
+                  <Text style={styles.loadingTitleText}>
+                    {reviewGeneratingAll ? 'Generating Cover Letters' :
+                     reviewSendingAll ? 'Sending Applications' :
+                     reviewGeneratingAndSendingAll ? 'Auto Processing' :
+                     reviewDownloading ? 'Preparing Download' :
+                     reviewLoading ? 'Sending Application' :
+                     'Processing Request'}
+                  </Text>
+                  <Text style={styles.loadingSubtitleText}>
+                    {progressiveLoadingMessage ? progressiveLoadingMessage :
+                     reviewGeneratingAll ? 'Creating professional cover letters for all recipients' :
+                     reviewSendingAll ? 'Delivering applications to all recipients' :
+                     reviewGeneratingAndSendingAll ? 'Generating and sending to all recipients' :
+                     reviewDownloading ? 'Generating your PDF document' :
+                     reviewLoading ? 'Delivering your application via email' :
+                     'Please wait while we process your request'}
                   </Text>
                 </View>
-              )}
-              
-              <TouchableOpacity 
-                style={{
-                  marginTop: 20,
-                  backgroundColor: '#ef4444',
-                  paddingHorizontal: 24,
-                  paddingVertical: 12,
-                  borderRadius: 10,
-                  shadowColor: '#000',
-                  shadowOffset: { width: 0, height: 2 },
-                  shadowOpacity: 0.2,
-                  shadowRadius: 4,
-                  elevation: 3
-                }}
-                onPress={cancelOperation}
-              >
-                <Text style={{
-                  color: '#ffffff',
-                  fontSize: 14,
-                  fontWeight: '700',
-                  textAlign: 'center'
-                }}>
-                  ✕ Cancel
-                </Text>
-              </TouchableOpacity>
+                
+                {/* Progress Bar */}
+                {progressiveLoadingMessage && reviewGeneratingIndex !== null && !reviewGeneratingAll && (
+                  <View style={styles.loadingProgressSection}>
+                    <View style={styles.loadingProgressBarContainer}>
+                      <View style={styles.loadingProgressBarBackground}>
+                        <Animated.View style={[
+                          styles.loadingProgressBarFill,
+                          {
+                            width: progressAnimValue.interpolate({
+                              inputRange: [0, 100],
+                              outputRange: ['0%', '100%']
+                            })
+                          }
+                        ]}>
+                          <LinearGradient
+                            colors={['#10b981', '#059669', '#047857']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.loadingProgressGradient}
+                          />
+                        </Animated.View>
+                      </View>
+                    </View>
+                    <View style={styles.loadingProgressTextContainer}>
+                      <Text style={styles.loadingProgressPercentage}>{progressiveLoadingProgress}%</Text>
+                      <Text style={styles.loadingProgressLabel}>Complete</Text>
+                    </View>
+                  </View>
+                )}
+                
+                {/* Cancel Button */}
+                <TouchableOpacity 
+                  style={styles.loadingCancelButton}
+                  onPress={cancelOperation}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.loadingCancelButtonInner}>
+                    <Text style={styles.loadingCancelIcon}>✕</Text>
+                    <Text style={styles.loadingCancelText}>Cancel Operation</Text>
+                  </View>
+                </TouchableOpacity>
+              </LinearGradient>
             </View>
           </View>
         </Modal>
@@ -6298,6 +6424,81 @@ export default function App() {
               scalesPageToFit={true}
             />
           </SafeAreaView>
+        </Modal>
+
+        {/* Review Date Picker Modal */}
+        <Modal
+          transparent={true}
+          visible={showReviewDatePicker}
+          animationType="slide"
+          onRequestClose={() => setShowReviewDatePicker(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowReviewDatePicker(false)}>
+            <View style={styles.modalOverlay}>
+              <TouchableWithoutFeedback>
+                <SafeAreaView style={styles.datePickerModalWrapper}>
+                  <View style={styles.datePickerModal}>
+                    {/* Header */}
+                    <View style={styles.datePickerHeader}>
+                      <View style={styles.datePickerHeaderLine} />
+                      <Text style={styles.datePickerTitle}>Cover Letter Date</Text>
+                    </View>
+                    
+                    {/* Date Picker Container */}
+                    <View style={styles.datePickerContainer}>
+                      <DateTimePicker
+                        value={selectedReviewDate}
+                        mode="date"
+                        display="spinner"
+                        onChange={(event, date) => {
+                          if (date) setSelectedReviewDate(date);
+                        }}
+                        textColor="#1f2937"
+                      />
+                    </View>
+                    
+                    {/* Buttons */}
+                    <View style={styles.modalButtons}>
+                      <TouchableOpacity
+                        style={styles.modalCancelButton}
+                        onPress={() => setShowReviewDatePicker(false)}
+                      >
+                        <Text style={styles.modalCancelText}>Cancel</Text>
+                      </TouchableOpacity>
+                      
+                      <TouchableOpacity
+                        style={styles.modalConfirmButton}
+                        onPress={() => {
+                          // Format the date to match the expected format
+                          const formattedDate = selectedReviewDate.toLocaleDateString('en-US', { 
+                            month: 'long', 
+                            day: 'numeric', 
+                            year: 'numeric' 
+                          });
+                          setEditedCoverLetterData({ 
+                            ...editedCoverLetterData, 
+                            date: formattedDate 
+                          });
+                          setShowReviewDatePicker(false);
+                        }}
+                      >
+                        <View style={styles.confirmButtonWrapper}>
+                          <LinearGradient
+                            colors={['#667eea', '#764ba2']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.modalConfirmGradient}
+                          >
+                            <Text style={styles.modalConfirmText}>Confirm</Text>
+                          </LinearGradient>
+                        </View>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </SafeAreaView>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
         </Modal>
       </SafeAreaView>
     );
@@ -9369,23 +9570,25 @@ const styles = StyleSheet.create({
   },
   reviewCoverLetterCard: {
     marginHorizontal: 16,
-    marginVertical: 16,
-    padding: 16,
-    backgroundColor: '#fff',
-    borderRadius: 12,
+    marginBottom: 16,
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: '#3b82f6',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 8,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderColor: '#bae6fd',
+  },
+  reviewCoverLetterGradient: {
+    paddingTop: 0,
   },
   coverLetterHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
-  },
-  coverLetterTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#059669',
   },
   sentBadge: {
     backgroundColor: '#d1fae5',
@@ -9535,50 +9738,77 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 16,
+    backgroundColor: 'transparent',
   },
-  editLink: {
-    color: '#17a2b8',
+  reviewRecipientHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  reviewRecipientNumberBadge: {
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '800',
+    color: '#ffffff',
+    backgroundColor: '#3b82f6',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    overflow: 'hidden',
+    letterSpacing: 0.5,
+  },
+  reviewCoverLetterTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#1e293b',
+    letterSpacing: 0.3,
   },
   editButton: {
-    backgroundColor: '#17a2b8',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    elevation: 2,
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: '#3b82f6',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  editButtonGradient: {
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   editButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
   editModeContainer: {
-    backgroundColor: '#fffbf0',
-    borderRadius: 8,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#17a2b8',
+    backgroundColor: '#f8fafc',
+    borderRadius: 16,
+    padding: 20,
+    marginHorizontal: 16,
+    marginBottom: 16,
   },
   viewModeContainer: {
-    padding: 12,
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    paddingTop: 4,
   },
   editFieldSection: {
     marginBottom: 16,
   },
   editFieldLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 8,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#475569',
+    marginBottom: 10,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   hirngManagerName: {
     fontSize: 16,
@@ -9590,17 +9820,24 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   editFieldInput: {
-    borderWidth: 1,
-    borderColor: '#17a2b8',
-    borderRadius: 6,
-    padding: 12,
-    fontSize: 14,
-    color: '#333',
-    backgroundColor: '#fff',
+    borderWidth: 1.5,
+    borderColor: '#cbd5e1',
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 15,
+    color: '#1e293b',
+    backgroundColor: '#ffffff',
+    fontWeight: '500',
+    shadowColor: '#94a3b8',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
   },
   readOnlyField: {
-    backgroundColor: '#f5f5f5',
-    color: '#666',
+    backgroundColor: '#f1f5f9',
+    borderColor: '#e2e8f0',
+    color: '#64748b',
   },
   addressDropdown: {
     borderWidth: 1,
@@ -9656,16 +9893,30 @@ const styles = StyleSheet.create({
   },
   editButtonGroup: {
     flexDirection: 'row',
-    gap: 8,
-    marginTop: 16,
+    gap: 12,
+    marginTop: 20,
   },
-  saveBtnStyle: {
-    backgroundColor: '#28a745',
+  editActionBtn: {
     flex: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: '#64748b',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 4,
   },
-  cancelBtnStyle: {
-    backgroundColor: '#dc3545',
-    flex: 1,
+  editActionGradient: {
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editActionBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
   },
   
   // ===== MODERN REVIEW PAGE STYLES =====
@@ -10025,61 +10276,57 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   reviewModernActionButtons: {
+    marginTop: 24,
+    paddingBottom: 28,
     flexDirection: 'row',
     gap: 10,
-    marginTop: 20,
   },
-  reviewModernActionBtn: {
+  reviewActionButtonFull: {
     flex: 1,
-    backgroundColor: '#f9fafb',
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-  },
-  reviewActionIconBox: {
-    marginBottom: 6,
-  },
-  reviewActionIcon: {
-    fontSize: 20,
-  },
-  reviewModernActionBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#4b5563',
-    textAlign: 'center',
-    letterSpacing: 0.3,
-  },
-  reviewModernActionBtnPrimary: {
-    flex: 1,
-    borderRadius: 12,
+    borderRadius: 14,
     overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6,
   },
-  reviewActionBtnSent: {
-    opacity: 0.7,
+  reviewActionButtonGradient: {
+    paddingVertical: 16,
+    paddingHorizontal: 6,
   },
-  reviewActionGradient: {
-    paddingVertical: 14,
-    paddingHorizontal: 12,
+  reviewActionButtonSentGradient: {
+    paddingVertical: 16,
+    paddingHorizontal: 6,
+    backgroundColor: '#9ca3af',
+  },
+  reviewActionButtonContent: {
     alignItems: 'center',
     justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 8,
+    gap: 6,
   },
-  reviewModernActionBtnPrimaryText: {
-    fontSize: 13,
-    fontWeight: '700',
+  reviewActionIconCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.5)',
+  },
+  reviewActionButtonIcon: {
+    fontSize: 17,
     color: '#ffffff',
-    letterSpacing: 0.3,
-  },
-  reviewModernActionBtnSentText: {
-    fontSize: 13,
     fontWeight: '700',
-    color: '#6b7280',
-    letterSpacing: 0.3,
+  },
+  reviewActionButtonText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    textAlign: 'center',
   },
   reviewEmptyCardModern: {
     marginHorizontal: 16,
@@ -10098,13 +10345,16 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: '#f3f4f6',
+    backgroundColor: '#e0e7ff',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 20,
   },
-  reviewEmptyIcon: {
-    fontSize: 40,
+  reviewEmptyIconText: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#4f46e5',
+    letterSpacing: 1,
   },
   reviewEmptyTitle: {
     fontSize: 18,
@@ -10143,101 +10393,362 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     letterSpacing: 0.3,
   },
-  reviewBulkActionBtn: {
+  reviewBulkActionsCard: {
     marginHorizontal: 16,
-    marginBottom: 10,
-    borderRadius: 12,
+    marginBottom: 16,
+    borderRadius: 24,
     overflow: 'hidden',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 6,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
   },
-  reviewBulkActionGradient: {
-    paddingVertical: 16,
-    paddingHorizontal: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
+  reviewBulkActionsGradient: {
+    padding: 24,
+  },
+  reviewBulkActionsHeaderSection: {
     flexDirection: 'row',
-    gap: 8,
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 24,
   },
-  reviewBulkActionIcon: {
-    fontSize: 18,
+  reviewBulkActionsTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.5,
+    marginBottom: 4,
   },
-  reviewBulkActionText: {
-    fontSize: 15,
+  reviewBulkActionsSubtitle: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#cbd5e1',
+    letterSpacing: 0.2,
+  },
+  reviewBulkActionsStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 6,
+  },
+  reviewBulkActionsStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10b981',
+  },
+  reviewBulkActionsStatusText: {
+    fontSize: 12,
     fontWeight: '700',
     color: '#ffffff',
+  },
+  reviewBulkActionsGrid: {
+    gap: 14,
+  },
+  reviewBulkActionCard: {
+    borderRadius: 18,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  reviewBulkActionCardGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 20,
+    paddingHorizontal: 20,
+    gap: 16,
+  },
+  reviewBulkActionCardCompleted: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 20,
+    paddingHorizontal: 20,
+    gap: 16,
+    backgroundColor: '#64748b',
+  },
+  reviewBulkActionIconContainer: {
+    position: 'relative',
+  },
+  reviewBulkActionIconOuter: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderWidth: 3,
+    borderColor: 'rgba(255, 255, 255, 0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewBulkActionIconSymbol: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  reviewBulkActionTextContainer: {
+    flex: 1,
+  },
+  reviewBulkActionTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.4,
+    marginBottom: 2,
+  },
+  reviewBulkActionDesc: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.85)',
+    letterSpacing: 0.2,
+  },
+  
+  // Loading Modal Styles
+  loadingModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  loadingModalContainer: {
+    width: '100%',
+    maxWidth: 400,
+    borderRadius: 28,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.5,
+    shadowRadius: 30,
+    elevation: 20,
+  },
+  loadingModalGradient: {
+    paddingVertical: 40,
+    paddingHorizontal: 32,
+    alignItems: 'center',
+  },
+  loadingAnimationContainer: {
+    position: 'relative',
+    width: 100,
+    height: 100,
+    marginBottom: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingSpinnerOuter: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 3,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    zIndex: 2,
+  },
+  loadingGlowEffect: {
+    position: 'absolute',
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    top: 0,
+    left: 0,
+    zIndex: 1,
+  },
+  loadingTextContainer: {
+    width: '100%',
+    marginBottom: 32,
+    alignItems: 'center',
+  },
+  loadingTitleText: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#ffffff',
+    textAlign: 'center',
+    marginBottom: 8,
+    letterSpacing: 0.5,
+  },
+  loadingSubtitleText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: 'rgba(255, 255, 255, 0.75)',
+    textAlign: 'center',
+    lineHeight: 20,
+    letterSpacing: 0.2,
+  },
+  loadingProgressSection: {
+    width: '100%',
+    marginBottom: 28,
+  },
+  loadingProgressBarContainer: {
+    width: '100%',
+    marginBottom: 12,
+  },
+  loadingProgressBarBackground: {
+    width: '100%',
+    height: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  loadingProgressBarFill: {
+    height: '100%',
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  loadingProgressGradient: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+  },
+  loadingProgressTextContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  loadingProgressPercentage: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.5,
+  },
+  loadingProgressLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.7)',
     letterSpacing: 0.3,
+  },
+  loadingCancelButton: {
+    width: '100%',
+    borderRadius: 16,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: 'rgba(239, 68, 68, 0.5)',
+    shadowColor: '#ef4444',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  loadingCancelButtonInner: {
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  loadingCancelIcon: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#fca5a5',
+  },
+  loadingCancelText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.5,
   },
   
   fieldDisplayRow: {
+    marginBottom: 14,
+  },
+  fieldDisplayRowDouble: {
     flexDirection: 'row',
-    marginBottom: 12,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    gap: 12,
+    marginBottom: 14,
   },
   fieldDisplay: {
-    backgroundColor: '#f8f9fa',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 6,
+    backgroundColor: '#f8fafc',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  fieldDisplayHalf: {
+    flex: 1,
+    backgroundColor: '#f8fafc',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
   },
   fieldDisplayLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#666',
-    marginBottom: 4,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#64748b',
+    marginBottom: 6,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   fieldDisplayValue: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#1a1a1a',
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1e293b',
+    lineHeight: 22,
   },
   coverLetterPreviewContainer: {
-    marginTop: 12,
-    marginBottom: 16,
+    marginTop: 16,
+    marginBottom: 20,
   },
   coverLetterPreviewLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 8,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#475569',
+    marginBottom: 12,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   coverLetterPreviewBox: {
-    backgroundColor: '#fafafa',
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    borderRadius: 6,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
     height: 200,
-    padding: 12,
+    padding: 16,
   },
   coverLetterPreviewText: {
     fontSize: 14,
-    lineHeight: 20,
-    color: '#333',
+    lineHeight: 22,
+    color: '#1e293b',
+    fontWeight: '400',
   },
   dropdownButton: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#17a2b8',
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    backgroundColor: '#fff',
+    borderWidth: 1.5,
+    borderColor: '#cbd5e1',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    backgroundColor: '#ffffff',
+    shadowColor: '#94a3b8',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
   },
   dropdownButtonText: {
-    fontSize: 14,
-    color: '#333',
+    fontSize: 15,
+    color: '#1e293b',
+    fontWeight: '500',
     flex: 1,
   },
   dropdownArrow: {
-    fontSize: 12,
-    color: '#17a2b8',
+    fontSize: 14,
+    color: '#64748b',
     marginLeft: 8,
   },
   dropdownOverlay: {
@@ -10247,25 +10758,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   dropdownMenu: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
     width: '85%',
     maxHeight: 300,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    elevation: 8,
+    overflow: 'hidden',
   },
   dropdownItem: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: '#f1f5f9',
   },
   dropdownItemText: {
-    fontSize: 14,
-    color: '#333',
+    fontSize: 15,
+    color: '#1e293b',
+    fontWeight: '500',
+    lineHeight: 22,
   },
   // ==================== ADMIN PANEL STYLES ====================
   adminModalContainer: {
@@ -11089,6 +11603,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
+  },
+  datePickerModalWrapper2: {
+    justifyContent: 'flex-end',
+    backgroundColor: 'transparent',
   },
   datePickerModal: {
     backgroundColor: '#fff',
