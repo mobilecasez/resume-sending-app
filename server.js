@@ -311,6 +311,21 @@ app.get('/about', (req, res) => {
     res.sendFile(path.join(__dirname, 'about.html'));
 });
 
+// Login and Register routes with no-cache headers
+app.get('/login', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+app.get('/register', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.sendFile(path.join(__dirname, 'public', 'register.html'));
+});
+
 // Static files for landing page resources
 app.use('/bootstrap-4.1.1-dist', express.static('bootstrap-4.1.1-dist'));
 app.use('/css', express.static('css'));
