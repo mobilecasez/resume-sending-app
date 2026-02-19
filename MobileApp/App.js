@@ -470,6 +470,7 @@ export default function App() {
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loadingNotifications, setLoadingNotifications] = useState(false);
+  const [notificationFilter, setNotificationFilter] = useState('all'); // all, unread, read
   
   // Validation functions
   const isValidEmail = (email) => {
@@ -2031,6 +2032,9 @@ export default function App() {
   const loadNotifications = async () => {
     if (!user?.token) return;
     
+    console.log('📥 loadNotifications() called - Loading 5 recent notifications');
+    console.trace('Called from:');
+    
     setLoadingNotifications(true);
     try {
       const response = await fetch(`${API_BASE}/notifications?limit=5`, {
@@ -2044,16 +2048,139 @@ export default function App() {
       if (response.ok) {
         const data = await response.json();
         if (data.success) {
+          console.log('✅ Loaded notifications:', data.notifications?.length, 'items');
+          console.log('  Unread count:', data.unreadCount);
+          console.log('  First 3:', data.notifications?.slice(0, 3).map(n => ({id: n.id, is_read: n.is_read})));
           setNotifications(data.notifications || []);
           setUnreadCount(data.unreadCount || 0);
         }
       } else {
-        console.log('Failed to load notifications:', response.status);
+        console.log('❌ Failed to load notifications:', response.status);
       }
     } catch (err) {
-      console.log('Error loading notifications:', err.message);
+      console.log('❌ Error loading notifications:', err.message);
     } finally {
       setLoadingNotifications(false);
+    }
+  };
+
+  // Load all notifications for notifications page
+  const loadAllNotifications = async () => {
+    if (!user?.token) return;
+    
+    console.log('📥 loadAllNotifications() called - Loading ALL notifications');
+    console.trace('Called from:');
+    
+    setLoadingNotifications(true);
+    try {
+      const response = await fetch(`${API_BASE}/notifications`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json',
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          console.log('✅ Loaded ALL notifications:', data.notifications?.length, 'items');
+          console.log('  Unread count:', data.unreadCount);
+          setNotifications(data.notifications || []);
+          setUnreadCount(data.unreadCount || 0);
+        }
+      } else {
+        console.log('❌ Failed to load all notifications:', response.status);
+      }
+    } catch (err) {
+      console.log('❌ Error loading all notifications:', err.message);
+    } finally {
+      setLoadingNotifications(false);
+    }
+  };
+
+  // Mark all notifications as read
+  const markAllNotificationsRead = async () => {
+    if (!user?.token) return;
+    
+    // Optimistically update UI immediately
+    setNotifications(prevNotifications => 
+      prevNotifications.map(n => ({ ...n, is_read: true }))
+    );
+    setUnreadCount(0);
+    
+    // Make API call in background
+    try {
+      await fetch(`${API_BASE}/notifications/mark-all-read`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json',
+        }
+      });
+    } catch (err) {
+      console.log('Error marking all notifications as read (silent):', err.message);
+      // Don't revert - keep optimistic update
+    }
+  };
+
+  // Mark single notification as read
+  const markNotificationAsRead = async (notificationId) => {
+    if (!user?.token) {
+      console.log('❌ Cannot mark notification as read - no token');
+      return;
+    }
+    
+    // Check if already marked
+    const notification = notifications.find(n => n.id === notificationId);
+    if (!notification) {
+      console.log('❌ Notification not found:', notificationId);
+      return;
+    }
+    if (notification.is_read) {
+      console.log('ℹ️ Notification already marked as read:', notificationId);
+      return;
+    }
+    
+    console.log('📝 Marking notification as read:', notificationId);
+    
+    // Optimistically update UI immediately
+    setNotifications(prevNotifications => {
+      const updated = prevNotifications.map(n => 
+        n.id === notificationId ? { ...n, is_read: true } : n
+      );
+      console.log('✅ Local state updated for notification:', notificationId);
+      return updated;
+    });
+    setUnreadCount(prevCount => {
+      const newCount = Math.max(0, prevCount - 1);
+      console.log('📊 Unread count updated:', prevCount, '→', newCount);
+      return newCount;
+    });
+    
+    // Make API call in background
+    try {
+      console.log('🌐 Calling API to mark as read:', notificationId);
+      const response = await fetch(`${API_BASE}/notifications/${notificationId}/read`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json',
+        }
+      });
+      
+      console.log('📡 API Response status:', response.status);
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('✅ Notification marked as read on backend:', data);
+      } else {
+        const errorText = await response.text();
+        console.log('⚠️ Backend failed to mark as read:', response.status, errorText);
+      }
+    } catch (err) {
+      console.log('❌ Error marking notification as read:', err.message);
+      // Don't revert - keep optimistic update
     }
   };
 
@@ -2475,6 +2602,14 @@ export default function App() {
     }
   }, [screen, user?.token]);
 
+  // Load all notifications when opening notifications screen
+  useEffect(() => {
+    if (screen === 'notifications' && user?.token) {
+      console.log('🔔 Loading all notifications...');
+      loadAllNotifications();
+    }
+  }, [screen, user?.token]);
+
   // Check for recipient data changes when entering review screen (runs only once per entry)
   const lastReviewCheckRef = useRef(null);
   
@@ -2762,126 +2897,162 @@ export default function App() {
   // LOGIN SCREEN
   if (screen === 'login') {
     return (
-      <View style={styles.container}>
-        <StatusBar barStyle="light-content" backgroundColor="#1E40AF" />
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {/* Header with gradient effect */}
-          <View style={styles.gradientHeader}>
-            <View style={styles.logoContainer}>
-              <Image 
-                source={require('./assets/images/logo_hd_no_background_white_small.png')} 
-                style={{ width: 200, height: 60 }}
-                resizeMode="contain"
-              />
-            </View>
-            <Text style={styles.headerSubtitle}>Turn applications into opportunities</Text>
-          </View>
-
-          {/* Main Content Card */}
-          <View style={styles.mainCard}>
-            <Text style={styles.cardTitle}>Welcome Back</Text>
-            <Text style={styles.cardSubtitle}>Sign in to your account</Text>
-
-            {error ? (
-              <View style={styles.errorContainer}>
-                <Text style={styles.errorIcon}>⚠️</Text>
-                <Text style={styles.errorText}>{error}</Text>
-              </View>
-            ) : null}
-
-            {/* Email Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Email Address</Text>
-              <View style={styles.inputWrapper}>
-                <Text style={styles.inputIcon}>📧</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="you@example.com"
-                  value={email}
-                  onChangeText={setEmail}
-                  editable={!loading}
-                  keyboardType="email-address"
-                  placeholderTextColor="#a0aec0"
+      <View style={styles.loginContainer}>
+        <StatusBar barStyle="light-content" />
+        <LinearGradient
+          colors={['#1e293b', '#334155', '#475569']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.loginGradientBg}
+        >
+          <ScrollView 
+            contentContainerStyle={styles.loginScrollContent} 
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Logo Section */}
+            <View style={styles.loginLogoSection}>
+              <View style={styles.loginLogoGlow}>
+                <Image 
+                  source={require('./assets/images/logo_hd_no_background_white_small.png')} 
+                  style={styles.loginLogoImage}
+                  resizeMode="contain"
                 />
               </View>
+              <Text style={styles.loginTagline}>Turn applications into opportunities</Text>
             </View>
 
-            {/* Password Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Password</Text>
-              <View style={styles.inputWrapper}>
-                <Text style={styles.inputIcon}>🔐</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="••••••••"
-                  value={password}
-                  onChangeText={setPassword}
-                  editable={!loading}
-                  secureTextEntry
-                  placeholderTextColor="#a0aec0"
-                />
-              </View>
+            {/* Main Login Card */}
+            <View style={styles.loginCard}>
+              <LinearGradient
+                colors={['rgba(255, 255, 255, 0.15)', 'rgba(255, 255, 255, 0.1)']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.loginCardGradient}
+              >
+                {/* Header */}
+                <View style={styles.loginCardHeader}>
+                  <Text style={styles.loginCardTitle}>Welcome Back</Text>
+                  <Text style={styles.loginCardSubtitle}>Sign in to continue your journey</Text>
+                </View>
+
+                {/* Error Message */}
+                {error ? (
+                  <View style={styles.loginErrorContainer}>
+                    <View style={styles.loginErrorIconBox}>
+                      <Text style={styles.loginErrorIconText}>!</Text>
+                    </View>
+                    <Text style={styles.loginErrorText}>{error}</Text>
+                  </View>
+                ) : null}
+
+                {/* Email Input */}
+                <View style={styles.loginInputGroup}>
+                  <Text style={styles.loginInputLabel}>EMAIL ADDRESS</Text>
+                  <View style={styles.loginInputContainer}>
+                    <TextInput
+                      style={styles.loginInput}
+                      placeholder="you@example.com"
+                      value={email}
+                      onChangeText={setEmail}
+                      editable={!loading}
+                      keyboardType="email-address"
+                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      autoCapitalize="none"
+                    />
+                  </View>
+                </View>
+
+                {/* Password Input */}
+                <View style={styles.loginInputGroup}>
+                  <Text style={styles.loginInputLabel}>PASSWORD</Text>
+                  <View style={styles.loginInputContainer}>
+                    <TextInput
+                      style={styles.loginInput}
+                      placeholder="Enter your password"
+                      value={password}
+                      onChangeText={setPassword}
+                      editable={!loading}
+                      secureTextEntry
+                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      autoCapitalize="none"
+                    />
+                  </View>
+                </View>
+
+                {/* Sign In Button */}
+                <TouchableOpacity
+                  style={[styles.loginSignInButton, loading && styles.loginButtonDisabled]}
+                  onPress={handleLogin}
+                  disabled={loading}
+                  activeOpacity={0.85}
+                >
+                  <LinearGradient
+                    colors={loading ? ['#64748b', '#475569'] : ['#8b5cf6', '#7c3aed', '#6d28d9']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.loginSignInGradient}
+                  >
+                    <Text style={styles.loginSignInText}>
+                      {loading ? 'Signing in...' : 'Sign In'}
+                    </Text>
+                    {!loading && <Text style={styles.loginSignInArrow}>→</Text>}
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                {/* Divider */}
+                <View style={styles.loginDividerContainer}>
+                  <View style={styles.loginDividerLine} />
+                  <Text style={styles.loginDividerText}>OR CONTINUE WITH</Text>
+                  <View style={styles.loginDividerLine} />
+                </View>
+
+                {/* Social Login Buttons */}
+                <View style={styles.loginSocialButtonsContainer}>
+                  {/* Google Login */}
+                  <TouchableOpacity
+                    style={[styles.loginSocialButton, (loading || !request) && styles.loginSocialButtonDisabled]}
+                    onPress={() => promptAsync()}
+                    disabled={loading || !request}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.loginSocialButtonInner}>
+                      <Image 
+                        source={require('./assets/images/google.png')} 
+                        style={styles.loginSocialIcon}
+                        resizeMode="contain"
+                      />
+                      <Text style={styles.loginSocialButtonText}>Google</Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Microsoft Login */}
+                  <TouchableOpacity
+                    style={styles.loginSocialButton}
+                    onPress={() => Alert.alert('Coming Soon', 'Microsoft sign-in will be available soon!')}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.loginSocialButtonInner}>
+                      <Image 
+                        source={require('./assets/images/microsoft.png')} 
+                        style={styles.loginSocialIcon}
+                        resizeMode="contain"
+                      />
+                      <Text style={styles.loginSocialButtonText}>Microsoft</Text>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Register Link */}
+                <View style={styles.loginFooter}>
+                  <Text style={styles.loginFooterText}>Don't have an account? </Text>
+                  <TouchableOpacity onPress={() => { setScreen('register'); setError(''); }}>
+                    <Text style={styles.loginFooterLink}>Create one</Text>
+                  </TouchableOpacity>
+                </View>
+              </LinearGradient>
             </View>
-
-            {/* Sign In Button */}
-            <TouchableOpacity
-              style={[styles.primaryButton, loading && styles.buttonDisabled]}
-              onPress={handleLogin}
-              disabled={loading}
-            >
-              <Text style={styles.primaryButtonText}>
-                {loading ? '⏳ Signing in...' : '→ Sign In'}
-              </Text>
-            </TouchableOpacity>
-
-            {/* Divider */}
-            <View style={styles.dividerContainer}>
-              <View style={styles.dividerLine} />
-              <Text style={styles.dividerText}>or continue with</Text>
-              <View style={styles.dividerLine} />
-            </View>
-
-            {/* Google Login Button */}
-            <TouchableOpacity
-              style={styles.googleButton}
-              onPress={() => promptAsync()}
-              disabled={loading || !request}
-            >
-              <Image 
-                source={require('./assets/images/google.png')} 
-                style={{ width: 20, height: 20, marginRight: 10 }}
-                resizeMode="contain"
-              />
-              <Text style={styles.googleButtonText}>Sign in with Google</Text>
-            </TouchableOpacity>
-
-            {/* Microsoft Login Button */}
-            <TouchableOpacity
-              style={[styles.googleButton, { 
-                backgroundColor: '#ffffff', 
-                borderWidth: 1, 
-                borderColor: '#8C8C8C',
-                marginTop: 6 
-              }]}
-              onPress={() => Alert.alert('Coming Soon', 'Microsoft sign-in will be available soon!')}
-            >
-              <Image 
-                source={require('./assets/images/microsoft.png')} 
-                style={{ width: 20, height: 20, marginRight: 10 }}
-                resizeMode="contain"
-              />
-              <Text style={[styles.googleButtonText, { color: '#5E5E5E' }]}>Sign in with Microsoft</Text>
-            </TouchableOpacity>
-
-            {/* Register Link */}
-            <View style={styles.footerText}>
-              <Text style={styles.footerLabel}>Don't have an account? </Text>
-              <TouchableOpacity onPress={() => { setScreen('register'); setError(''); }}>
-                <Text style={styles.footerLink}>Create one</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </ScrollView>
+          </ScrollView>
+        </LinearGradient>
       </View>
     );
   }
@@ -3039,11 +3210,13 @@ export default function App() {
               <View style={styles.headerRightActions}>
                 <TouchableOpacity 
                   style={styles.notificationButton}
-                  onPress={async () => {
+                  onPress={() => {
+                    console.log('🔔 Bell icon clicked');
+                    console.log('  Current showNotifications:', showNotifications);
+                    console.log('  Notifications count:', notifications.length);
+                    console.log('  Unread count:', unreadCount);
+                    console.log('  First 3 notifications:', notifications.slice(0, 3).map(n => ({id: n.id, is_read: n.is_read})));
                     setShowNotifications(!showNotifications);
-                    if (!showNotifications) {
-                      await loadNotifications();
-                    }
                   }}
                 >
                   <View style={styles.notificationIconWrapper}>
@@ -3865,8 +4038,14 @@ export default function App() {
                         </View>
                       ) : (
                         notifications.map((notif, index) => (
-                          <View 
-                            key={notif.id || index} 
+                          <TouchableOpacity
+                            key={notif.id || index}
+                            activeOpacity={0.7}
+                            onPress={() => {
+                              if (!notif.is_read) {
+                                markNotificationAsRead(notif.id);
+                              }
+                            }}
                             style={[
                               styles.notificationItem,
                               !notif.is_read && styles.notificationItemUnread,
@@ -3903,7 +4082,7 @@ export default function App() {
                                 <View style={styles.notificationUnreadDot} />
                               )}
                             </View>
-                          </View>
+                          </TouchableOpacity>
                         ))
                       )}
                     </ScrollView>
@@ -3915,7 +4094,7 @@ export default function App() {
                           style={styles.viewAllButton}
                           onPress={() => {
                             setShowNotifications(false);
-                            Alert.alert('Notifications', 'Full notifications page coming soon');
+                            setScreen('notifications');
                           }}
                         >
                           <LinearGradient
@@ -4212,6 +4391,183 @@ export default function App() {
                 <Text style={styles.buyCreditsButtonText}>💎 Buy More Credits</Text>
               </TouchableOpacity>
             </>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // NOTIFICATIONS SCREEN
+  if (screen === 'notifications') {
+    // Filter notifications based on selected filter
+    const filteredNotifications = notifications.filter(notif => {
+      if (notificationFilter === 'unread') return !notif.is_read;
+      if (notificationFilter === 'read') return notif.is_read;
+      return true; // 'all'
+    });
+
+    return (
+      <SafeAreaView style={styles.notificationsPageContainer}>
+        <StatusBar barStyle="light-content" />
+        
+        {/* Header with Gradient */}
+        <LinearGradient
+          colors={['#667eea', '#764ba2']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.notificationsHeader}
+        >
+          <View style={styles.notificationsHeaderTop}>
+            <TouchableOpacity 
+              style={styles.notificationsBackButton}
+              onPress={() => setScreen('dashboard')}
+            >
+              <Text style={styles.notificationsBackIcon}>←</Text>
+            </TouchableOpacity>
+            <View style={styles.notificationsHeaderCenter}>
+              <Text style={styles.notificationsHeaderTitle}>Notifications</Text>
+              {unreadCount > 0 && (
+                <View style={styles.notificationsHeaderBadge}>
+                  <Text style={styles.notificationsHeaderBadgeText}>{unreadCount}</Text>
+                </View>
+              )}
+            </View>
+            {unreadCount > 0 && (
+              <TouchableOpacity 
+                style={styles.notificationsMarkReadButton}
+                onPress={markAllNotificationsRead}
+              >
+                <Text style={styles.notificationsMarkReadText}>✓</Text>
+              </TouchableOpacity>
+            )}
+            {unreadCount === 0 && <View style={{ width: 44 }} />}
+          </View>
+        </LinearGradient>
+
+        {/* Filter Tabs */}
+        <View style={styles.notificationsFilters}>
+          <TouchableOpacity
+            style={[
+              styles.notificationsFilterTab,
+              notificationFilter === 'all' && styles.notificationsFilterTabActive
+            ]}
+            onPress={() => setNotificationFilter('all')}
+          >
+            <Text style={[
+              styles.notificationsFilterText,
+              notificationFilter === 'all' && styles.notificationsFilterTextActive
+            ]}>
+              All ({notifications.length})
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.notificationsFilterTab,
+              notificationFilter === 'unread' && styles.notificationsFilterTabActive
+            ]}
+            onPress={() => setNotificationFilter('unread')}
+          >
+            <Text style={[
+              styles.notificationsFilterText,
+              notificationFilter === 'unread' && styles.notificationsFilterTextActive
+            ]}>
+              Unread ({unreadCount})
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.notificationsFilterTab,
+              notificationFilter === 'read' && styles.notificationsFilterTabActive
+            ]}
+            onPress={() => setNotificationFilter('read')}
+          >
+            <Text style={[
+              styles.notificationsFilterText,
+              notificationFilter === 'read' && styles.notificationsFilterTextActive
+            ]}>
+              Read ({notifications.length - unreadCount})
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Notifications List */}
+        <ScrollView 
+          style={styles.notificationsScrollView}
+          contentContainerStyle={styles.notificationsScrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {loadingNotifications ? (
+            <View style={styles.notificationsLoading}>
+              <ActivityIndicator size="large" color="#667eea" />
+              <Text style={styles.notificationsLoadingText}>Loading notifications...</Text>
+            </View>
+          ) : filteredNotifications.length === 0 ? (
+            <View style={styles.notificationsEmpty}>
+              <View style={styles.notificationsEmptyIconBox}>
+                <Text style={styles.notificationsEmptyIcon}>🔔</Text>
+              </View>
+              <Text style={styles.notificationsEmptyTitle}>
+                {notificationFilter === 'unread' ? 'No unread notifications' :
+                 notificationFilter === 'read' ? 'No read notifications' :
+                 'No notifications yet'}
+              </Text>
+              <Text style={styles.notificationsEmptySubtitle}>
+                {notificationFilter === 'all' 
+                  ? "You'll be notified when something important happens"
+                  : 'Check back later for updates'}
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.notificationsListContainer}>
+              {filteredNotifications.map((notif, index) => (
+                <TouchableOpacity
+                  key={notif.id || index}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    if (!notif.is_read) {
+                      markNotificationAsRead(notif.id);
+                    }
+                  }}
+                  style={[
+                    styles.notificationsPageItem,
+                    !notif.is_read && styles.notificationsPageItemUnread
+                  ]}
+                >
+                  <View style={[
+                    styles.notificationsPageIconBox,
+                    notif.type === 'email' && styles.notificationsIconTypeEmail,
+                    notif.type === 'cover_letter' && styles.notificationsIconTypeLetter,
+                    notif.type === 'credits' && styles.notificationsIconTypeCredits,
+                    notif.type === 'profile' && styles.notificationsIconTypeProfile,
+                  ]}>
+                    <Text style={styles.notificationsPageIcon}>
+                      {notif.type === 'email' ? '✉' : 
+                       notif.type === 'cover_letter' ? '📄' : 
+                       notif.type === 'credits' ? '◆' : 
+                       notif.type === 'profile' ? '👤' : '🔔'}
+                    </Text>
+                  </View>
+                  <View style={styles.notificationsPageContent}>
+                    <View style={styles.notificationsPageTopRow}>
+                      <Text style={styles.notificationsPageTitle} numberOfLines={2}>
+                        {notif.title}
+                      </Text>
+                      {!notif.is_read && (
+                        <View style={styles.notificationsPageUnreadBadge}>
+                          <View style={styles.notificationsPageUnreadDot} />
+                        </View>
+                      )}
+                    </View>
+                    <Text style={styles.notificationsPageMessage}>
+                      {notif.message}
+                    </Text>
+                    <Text style={styles.notificationsPageTime}>
+                      {getTimeAgo(notif.created_at)}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
           )}
         </ScrollView>
       </SafeAreaView>
@@ -10659,6 +11015,234 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   
+  // Login Screen Styles
+  loginContainer: {
+    flex: 1,
+  },
+  loginGradientBg: {
+    flex: 1,
+  },
+  loginScrollContent: {
+    flexGrow: 1,
+    paddingVertical: 40,
+    paddingHorizontal: 20,
+    justifyContent: 'center',
+  },
+  loginLogoSection: {
+    alignItems: 'center',
+    marginBottom: 40,
+  },
+  loginLogoGlow: {
+    marginBottom: 16,
+    shadowColor: '#a78bfa',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  loginLogoImage: {
+    width: 220,
+    height: 66,
+  },
+  loginTagline: {
+    fontSize: 15,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    textAlign: 'center',
+  },
+  loginCard: {
+    borderRadius: 28,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.4,
+    shadowRadius: 24,
+    elevation: 15,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  loginCardGradient: {
+    padding: 32,
+  },
+  loginCardHeader: {
+    marginBottom: 28,
+    alignItems: 'center',
+  },
+  loginCardTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#ffffff',
+    marginBottom: 8,
+    letterSpacing: 0.5,
+  },
+  loginCardSubtitle: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: 'rgba(255, 255, 255, 0.75)',
+    letterSpacing: 0.3,
+  },
+  loginErrorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+  },
+  loginErrorIconBox: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(239, 68, 68, 0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  loginErrorIconText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#fca5a5',
+  },
+  loginErrorText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#fecaca',
+    fontWeight: '600',
+    lineHeight: 18,
+  },
+  loginInputGroup: {
+    marginBottom: 20,
+  },
+  loginInputLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginBottom: 10,
+    letterSpacing: 1.2,
+  },
+  loginInputContainer: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    overflow: 'hidden',
+  },
+  loginInput: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    fontSize: 16,
+    color: '#ffffff',
+    fontWeight: '500',
+  },
+  loginSignInButton: {
+    marginTop: 8,
+    marginBottom: 28,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#8b5cf6',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  loginButtonDisabled: {
+    opacity: 0.6,
+  },
+  loginSignInGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 18,
+    paddingHorizontal: 24,
+    gap: 12,
+  },
+  loginSignInText: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.5,
+  },
+  loginSignInArrow: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  loginDividerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  loginDividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  loginDividerText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.5)',
+    marginHorizontal: 16,
+    letterSpacing: 1,
+  },
+  loginSocialButtonsContainer: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 28,
+  },
+  loginSocialButton: {
+    flex: 1,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  loginSocialButtonDisabled: {
+    opacity: 0.5,
+  },
+  loginSocialButtonInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    gap: 8,
+  },
+  loginSocialIcon: {
+    width: 20,
+    height: 20,
+  },
+  loginSocialButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  loginFooter: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loginFooterText: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontWeight: '500',
+  },
+  loginFooterLink: {
+    fontSize: 14,
+    color: '#c4b5fd',
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  
   fieldDisplayRow: {
     marginBottom: 14,
   },
@@ -11900,6 +12484,249 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 16,
     fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  
+  // Notifications Page Styles
+  notificationsPageContainer: {
+    flex: 1,
+    backgroundColor: '#f8fafc',
+  },
+  notificationsHeader: {
+    paddingTop: 16,
+    paddingBottom: 20,
+    paddingHorizontal: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  notificationsHeaderTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  notificationsBackButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationsBackIcon: {
+    fontSize: 24,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  notificationsHeaderCenter: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  notificationsHeaderTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.5,
+  },
+  notificationsHeaderBadge: {
+    backgroundColor: 'rgba(239, 68, 68, 0.9)',
+    borderRadius: 12,
+    minWidth: 24,
+    height: 24,
+    paddingHorizontal: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  notificationsHeaderBadgeText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  notificationsMarkReadButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationsMarkReadText: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  notificationsFilters: {
+    flexDirection: 'row',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  notificationsFilterTab: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: '#f8fafc',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  notificationsFilterTabActive: {
+    backgroundColor: '#667eea',
+    borderColor: '#667eea',
+  },
+  notificationsFilterText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#64748b',
+    letterSpacing: 0.3,
+  },
+  notificationsFilterTextActive: {
+    color: '#ffffff',
+  },
+  notificationsScrollView: {
+    flex: 1,
+  },
+  notificationsScrollContent: {
+    paddingBottom: 20,
+  },
+  notificationsLoading: {
+    paddingVertical: 80,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationsLoadingText: {
+    marginTop: 16,
+    fontSize: 15,
+    color: '#64748b',
+    fontWeight: '600',
+  },
+  notificationsEmpty: {
+    paddingVertical: 100,
+    paddingHorizontal: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationsEmptyIconBox: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  notificationsEmptyIcon: {
+    fontSize: 40,
+    opacity: 0.4,
+  },
+  notificationsEmptyTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#1e293b',
+    marginBottom: 8,
+    letterSpacing: 0.3,
+  },
+  notificationsEmptySubtitle: {
+    fontSize: 14,
+    color: '#64748b',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  notificationsListContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    gap: 12,
+  },
+  notificationsPageItem: {
+    flexDirection: 'row',
+    backgroundColor: '#ffffff',
+    borderRadius: 18,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+  },
+  notificationsPageItemUnread: {
+    backgroundColor: '#f0f9ff',
+    borderColor: '#bae6fd',
+    borderWidth: 1.5,
+  },
+  notificationsPageIconBox: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#e5e7eb',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+  },
+  notificationsIconTypeEmail: {
+    backgroundColor: '#dbeafe',
+  },
+  notificationsIconTypeLetter: {
+    backgroundColor: '#fce7f3',
+  },
+  notificationsIconTypeCredits: {
+    backgroundColor: '#fef3c7',
+  },
+  notificationsIconTypeProfile: {
+    backgroundColor: '#e0e7ff',
+  },
+  notificationsPageIcon: {
+    fontSize: 24,
+  },
+  notificationsPageContent: {
+    flex: 1,
+  },
+  notificationsPageTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  notificationsPageTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#1e293b',
+    marginRight: 8,
+    letterSpacing: 0.2,
+    lineHeight: 22,
+  },
+  notificationsPageUnreadBadge: {
+    marginLeft: 8,
+  },
+  notificationsPageUnreadDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#3b82f6',
+  },
+  notificationsPageMessage: {
+    fontSize: 14,
+    color: '#64748b',
+    lineHeight: 20,
+    marginBottom: 8,
+  },
+  notificationsPageTime: {
+    fontSize: 12,
+    color: '#94a3b8',
+    fontWeight: '600',
     letterSpacing: 0.3,
   },
 });
