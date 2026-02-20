@@ -6,10 +6,12 @@ const { authenticateToken } = require('../middleware/auth');
 // Get all notifications for logged-in user
 router.get('/notifications', authenticateToken, notificationsController.getUserNotifications);
 
-// Mark notification as read
+// Mark notification as read (support both POST and PATCH)
+router.post('/notifications/:notificationId/read', authenticateToken, notificationsController.markAsRead);
 router.patch('/notifications/:notificationId/read', authenticateToken, notificationsController.markAsRead);
 
-// Mark all notifications as read
+// Mark all notifications as read (support both POST and PATCH)
+router.post('/notifications/mark-all-read', authenticateToken, notificationsController.markAllAsRead);
 router.patch('/notifications/mark-all-read', authenticateToken, notificationsController.markAllAsRead);
 
 // Delete single notification

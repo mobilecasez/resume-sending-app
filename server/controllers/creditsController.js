@@ -3,7 +3,7 @@ const dbConfig = require('../../db-config');
 // Get all plans
 const getPlans = async (req, res) => {
     try {
-        const plans = await dbConfig.query('SELECT * FROM plans WHERE is_active = 1 ORDER BY price ASC', []);
+        const plans = await dbConfig.query('SELECT * FROM plans WHERE is_active = 1 AND deleted_at IS NULL ORDER BY price ASC', []);
         
         // Parse features JSON string back to array
         const plansWithFeatures = plans.map(plan => ({
@@ -84,7 +84,7 @@ const purchaseCredits = async (req, res) => {
     
     try {
         // Get plan details
-        const plan = await dbConfig.get('SELECT * FROM plans WHERE id = ? AND is_active = 1', [planId]);
+        const plan = await dbConfig.get('SELECT * FROM plans WHERE id = ? AND is_active = 1 AND deleted_at IS NULL', [planId]);
         
         if (!plan) {
             return res.status(404).json({ error: 'Plan not found' });
@@ -166,7 +166,7 @@ const getUsageStats = async (req, res) => {
     
     try {
         // First, check what's in the application_history table for this user
-        const allHistory = await dbConfig.query('SELECT id, sent_date, company_name FROM application_history WHERE user_id = ? ORDER BY sent_date DESC LIMIT 10', [userId]);
+        const allHistory = await dbConfig.query('SELECT id, sent_date, company_name FROM application_history WHERE user_id = ? AND deleted_at IS NULL ORDER BY sent_date DESC LIMIT 10', [userId]);
         console.log('📊 [DB CHECK] Application history records for user:', allHistory ? allHistory.length : 0);
         if (allHistory && allHistory.length > 0) {
             console.log('📊 [DB CHECK] Sample records:', JSON.stringify(allHistory, null, 2));
@@ -211,8 +211,7 @@ const getUsageStats = async (req, res) => {
         // Get current month's sent count from application_history
         const currentMonthSent = await dbConfig.get(`
             SELECT COUNT(*) as count
-            FROM application_history
-            WHERE user_id = ?
+            FROM application_history            WHERE deleted_at IS NULL AND user_id = ?            WHERE user_id = ?
             AND EXTRACT(MONTH FROM sent_date) = ?
             AND EXTRACT(YEAR FROM sent_date) = ?
         `, [userId, currentMonth, currentYear]);

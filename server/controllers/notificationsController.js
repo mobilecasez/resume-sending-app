@@ -1,4 +1,5 @@
 const dbConfig = require('../../db-config');
+const auditUtils = require('../utils/auditUtils');
 
 // Helper function to create notification
 const createNotification = async (userId, type, title, message, details = null, metadata = null) => {
@@ -23,10 +24,13 @@ const createNotification = async (userId, type, title, message, details = null, 
 };
 
 // Get all notifications for a user
+// Get all notifications for a user
 const getUserNotifications = async (req, res) => {
     try {
         const userId = req.user.id;
         const { limit = 50, offset = 0, unreadOnly = false } = req.query;
+        
+        console.log(`📥 Fetching notifications for user ${userId}, limit: ${limit}`);
         
         let query = `
             SELECT * FROM notifications 
@@ -44,11 +48,15 @@ const getUserNotifications = async (req, res) => {
         
         const notifications = await dbConfig.query(query, params);
         
+        console.log(`📊 Found ${notifications.length} notifications`);
+        
         // Get unread count
         const unreadCount = await dbConfig.get(
             'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0',
             [userId]
         );
+        
+        console.log(`🔔 Unread count: ${unreadCount?.count || 0}`);
         
         res.json({
             success: true,
@@ -57,7 +65,7 @@ const getUserNotifications = async (req, res) => {
             total: notifications.length
         });
     } catch (error) {
-        console.error('Error fetching notifications:', error);
+        console.error('❌ Error fetching notifications:', error);
         res.status(500).json({ error: 'Failed to fetch notifications' });
     }
 };
@@ -68,10 +76,14 @@ const markAsRead = async (req, res) => {
         const userId = req.user.id;
         const { notificationId } = req.params;
         
-        await dbConfig.run(
+        console.log(`📝 Marking notification ${notificationId} as read for user ${userId}`);
+        
+        const result = await dbConfig.run(
             'UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?',
             [notificationId, userId]
         );
+        
+        console.log(`✅ Notification marked as read. Rows affected: ${result.changes}`);
         
         res.json({ success: true, message: 'Notification marked as read' });
     } catch (error) {
@@ -85,10 +97,14 @@ const markAllAsRead = async (req, res) => {
     try {
         const userId = req.user.id;
         
-        await dbConfig.run(
+        console.log(`📝 Marking ALL notifications as read for user ${userId}`);
+        
+        const result = await dbConfig.run(
             'UPDATE notifications SET is_read = 1 WHERE user_id = ?',
             [userId]
         );
+        
+        console.log(`✅ All notifications marked as read. Rows affected: ${result.changes}`);
         
         res.json({ success: true, message: 'All notifications marked as read' });
     } catch (error) {
@@ -97,16 +113,24 @@ const markAllAsRead = async (req, res) => {
     }
 };
 
-// Delete notification
+// Delete notification - SOFT DELETE
 const deleteNotification = async (req, res) => {
     try {
         const userId = req.user.id;
         const { notificationId } = req.params;
         
-        await dbConfig.run(
-            'DELETE FROM notifications WHERE id = ? AND user_id = ?',
+        // Get the notification before soft-deleting for audit trail
+        const notificationData = await dbConfig.get(
+            'SELECT * FROM notifications WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
             [notificationId, userId]
         );
+        
+        if (!notificationData) {
+            return res.status(404).json({ error: 'Notification not found or already deleted' });
+        }
+        
+        // Perform soft delete
+        await auditUtils.softDelete('notifications', notificationId, userId, notificationData);
         
         res.json({ success: true, message: 'Notification deleted' });
     } catch (error) {
@@ -115,15 +139,13 @@ const deleteNotification = async (req, res) => {
     }
 };
 
-// Delete all read notifications
+// Delete all read notifications - SOFT DELETE
 const deleteAllRead = async (req, res) => {
     try {
         const userId = req.user.id;
         
-        await dbConfig.run(
-            'DELETE FROM notifications WHERE user_id = ? AND is_read = 1',
-            [userId]
-        );
+        // Soft delete all read notifications
+        await auditUtils.bulkSoftDelete('notifications', 'user_id = ? AND is_read = 1', [userId], userId);
         
         res.json({ success: true, message: 'All read notifications deleted' });
     } catch (error) {

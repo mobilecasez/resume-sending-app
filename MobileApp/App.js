@@ -471,6 +471,7 @@ export default function App() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [loadingNotifications, setLoadingNotifications] = useState(false);
   const [notificationFilter, setNotificationFilter] = useState('all'); // all, unread, read
+  const lastNotificationUpdateRef = useRef(null); // Track when notifications were last modified locally
   
   // Validation functions
   const isValidEmail = (email) => {
@@ -2029,12 +2030,20 @@ export default function App() {
   };
 
   // Load notifications from backend
-  const loadNotifications = async () => {
+  const loadNotifications = async (force = false) => {
     if (!user?.token) return;
     
-    console.log('📥 loadNotifications() called - Loading 5 recent notifications');
-    console.trace('Called from:');
+    // Don't fetch if we just updated locally (within last 5 seconds) unless forced
+    const now = Date.now();
+    const timeSinceLastUpdate = lastNotificationUpdateRef.current ? now - lastNotificationUpdateRef.current : Infinity;
     
+    if (!force && timeSinceLastUpdate < 5000) {
+      console.log('⏭️  Skipping fetch - notifications were just updated locally', timeSinceLastUpdate, 'ms ago');
+      console.log('💡 Using local state to preserve recent mark-as-read updates');
+      return;
+    }
+    
+    console.log('📥 Loading notifications (limit 5)... Force:', force, 'Time since last update:', timeSinceLastUpdate);
     setLoadingNotifications(true);
     try {
       const response = await fetch(`${API_BASE}/notifications?limit=5`, {
@@ -2047,10 +2056,8 @@ export default function App() {
 
       if (response.ok) {
         const data = await response.json();
+        console.log('✅ Notifications loaded:', data.notifications?.length || 0, 'unread:', data.unreadCount);
         if (data.success) {
-          console.log('✅ Loaded notifications:', data.notifications?.length, 'items');
-          console.log('  Unread count:', data.unreadCount);
-          console.log('  First 3:', data.notifications?.slice(0, 3).map(n => ({id: n.id, is_read: n.is_read})));
           setNotifications(data.notifications || []);
           setUnreadCount(data.unreadCount || 0);
         }
@@ -2064,13 +2071,21 @@ export default function App() {
     }
   };
 
-  // Load all notifications for notifications page
-  const loadAllNotifications = async () => {
+  // Load all notifications for notifications page  
+  const loadAllNotifications = async (force = false) => {
     if (!user?.token) return;
     
-    console.log('📥 loadAllNotifications() called - Loading ALL notifications');
-    console.trace('Called from:');
+    // Don't fetch if we just updated locally (within last 5 seconds) unless forced
+    const now = Date.now();
+    const timeSinceLastUpdate = lastNotificationUpdateRef.current ? now - lastNotificationUpdateRef.current : Infinity;
     
+    if (!force && timeSinceLastUpdate < 5000) {
+      console.log('⏭️  Skipping fetch (all) - notifications were just updated locally', timeSinceLastUpdate, 'ms ago');
+      console.log('💡 Using local state to preserve recent mark-as-read updates');
+      return;
+    }
+    
+    console.log('📥 Loading ALL notifications... Force:', force, 'Time since last update:', timeSinceLastUpdate);
     setLoadingNotifications(true);
     try {
       const response = await fetch(`${API_BASE}/notifications`, {
@@ -2083,9 +2098,8 @@ export default function App() {
 
       if (response.ok) {
         const data = await response.json();
+        console.log('✅ All notifications loaded:', data.notifications?.length || 0, 'unread:', data.unreadCount);
         if (data.success) {
-          console.log('✅ Loaded ALL notifications:', data.notifications?.length, 'items');
-          console.log('  Unread count:', data.unreadCount);
           setNotifications(data.notifications || []);
           setUnreadCount(data.unreadCount || 0);
         }
@@ -2093,7 +2107,7 @@ export default function App() {
         console.log('❌ Failed to load all notifications:', response.status);
       }
     } catch (err) {
-      console.log('❌ Error loading all notifications:', err.message);
+      console.log('Error loading all notifications:', err.message);
     } finally {
       setLoadingNotifications(false);
     }
@@ -2103,11 +2117,17 @@ export default function App() {
   const markAllNotificationsRead = async () => {
     if (!user?.token) return;
     
+    console.log('📝 Marking ALL notifications as read');
+    
     // Optimistically update UI immediately
     setNotifications(prevNotifications => 
       prevNotifications.map(n => ({ ...n, is_read: true }))
     );
     setUnreadCount(0);
+    
+    // Mark timestamp of local update to prevent immediate refetch
+    lastNotificationUpdateRef.current = Date.now();
+    console.log('⏰ Set last notification update timestamp:', lastNotificationUpdateRef.current);
     
     // Make API call in background
     try {
@@ -2126,30 +2146,26 @@ export default function App() {
 
   // Mark single notification as read
   const markNotificationAsRead = async (notificationId) => {
-    if (!user?.token) {
-      console.log('❌ Cannot mark notification as read - no token');
-      return;
-    }
+    if (!user?.token) return;
     
     // Check if already marked
     const notification = notifications.find(n => n.id === notificationId);
-    if (!notification) {
-      console.log('❌ Notification not found:', notificationId);
-      return;
-    }
-    if (notification.is_read) {
-      console.log('ℹ️ Notification already marked as read:', notificationId);
+    console.log('🔍 Checking notification:', { id: notificationId, found: !!notification, is_read: notification?.is_read });
+    
+    if (!notification || notification.is_read) {
+      console.log('⏭️  Notification already read or not found:', notificationId);
       return;
     }
     
-    console.log('📝 Marking notification as read:', notificationId);
+    console.log('📝 Marking notification as read:', notificationId, 'API_BASE:', API_BASE);
+    console.log('🔑 Using token:', user.token ? 'Token exists' : 'No token');
     
     // Optimistically update UI immediately
     setNotifications(prevNotifications => {
       const updated = prevNotifications.map(n => 
         n.id === notificationId ? { ...n, is_read: true } : n
       );
-      console.log('✅ Local state updated for notification:', notificationId);
+      console.log('✅ Optimistically updated state. Unread before:', prevNotifications.filter(n => !n.is_read).length);
       return updated;
     });
     setUnreadCount(prevCount => {
@@ -2158,10 +2174,16 @@ export default function App() {
       return newCount;
     });
     
+    // Mark timestamp of local update to prevent immediate refetch
+    lastNotificationUpdateRef.current = Date.now();
+    console.log('⏰ Set last notification update timestamp:', lastNotificationUpdateRef.current);
+    
     // Make API call in background
     try {
-      console.log('🌐 Calling API to mark as read:', notificationId);
-      const response = await fetch(`${API_BASE}/notifications/${notificationId}/read`, {
+      const url = `${API_BASE}/notifications/${notificationId}/read`;
+      console.log('🌐 Making API call to:', url);
+      
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${user.token}`,
@@ -2169,17 +2191,17 @@ export default function App() {
         }
       });
       
-      console.log('📡 API Response status:', response.status);
+      console.log('📡 API Response status:', response.status, response.statusText);
       
       if (response.ok) {
         const data = await response.json();
-        console.log('✅ Notification marked as read on backend:', data);
+        console.log('✅ Notification marked as read on server:', data);
       } else {
         const errorText = await response.text();
-        console.log('⚠️ Backend failed to mark as read:', response.status, errorText);
+        console.log('❌ Failed to mark notification as read on server:', response.status, errorText);
       }
     } catch (err) {
-      console.log('❌ Error marking notification as read:', err.message);
+      console.log('❌ Error marking notification as read:', err.message, err.stack);
       // Don't revert - keep optimistic update
     }
   };
@@ -2605,8 +2627,10 @@ export default function App() {
   // Load all notifications when opening notifications screen
   useEffect(() => {
     if (screen === 'notifications' && user?.token) {
-      console.log('🔔 Loading all notifications...');
-      loadAllNotifications();
+      console.log('🔔 Navigated to notifications screen - checking if fetch needed...');
+      // Don't force fetch - let the smart fetching mechanism decide based on timestamp
+      // This prevents overwriting recently marked-as-read notifications
+      loadAllNotifications(); // Will skip if recently updated (within 5 seconds)
     }
   }, [screen, user?.token]);
 
@@ -3210,13 +3234,11 @@ export default function App() {
               <View style={styles.headerRightActions}>
                 <TouchableOpacity 
                   style={styles.notificationButton}
-                  onPress={() => {
-                    console.log('🔔 Bell icon clicked');
-                    console.log('  Current showNotifications:', showNotifications);
-                    console.log('  Notifications count:', notifications.length);
-                    console.log('  Unread count:', unreadCount);
-                    console.log('  First 3 notifications:', notifications.slice(0, 3).map(n => ({id: n.id, is_read: n.is_read})));
+                  onPress={async () => {
                     setShowNotifications(!showNotifications);
+                    if (!showNotifications) {
+                      await loadNotifications();
+                    }
                   }}
                 >
                   <View style={styles.notificationIconWrapper}>

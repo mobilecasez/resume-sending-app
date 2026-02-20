@@ -1,4 +1,5 @@
 const dbConfig = require('../../db-config');
+const auditUtils = require('../utils/auditUtils');
 
 // Save recipients for a user
 const saveRecipients = async (req, res) => {
@@ -10,8 +11,9 @@ const saveRecipients = async (req, res) => {
             return res.status(400).json({ error: 'Recipients must be an array' });
         }
 
-        // Clear existing recipients for this user
-        await dbConfig.run('DELETE FROM recipients WHERE user_id = ?', [userId]);
+        // SOFT DELETE existing recipients for this user (instead of hard delete)
+        // This preserves data for audit trails and potential recovery
+        await auditUtils.bulkSoftDelete('recipients', 'user_id = ?', [userId], userId);
 
         // Insert new recipients
         const validRecipients = recipients.filter(r => r.email && r.website);
@@ -58,8 +60,9 @@ const getRecipients = async (req, res) => {
     try {
         const userId = req.user.id;
 
+        // Only get active (non-deleted) recipients
         const recipients = await dbConfig.query(
-            'SELECT id, email, website, position FROM recipients WHERE user_id = ? ORDER BY created_at ASC',
+            'SELECT id, email, website, position FROM recipients WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at ASC',
             [userId]
         );
 
@@ -84,8 +87,9 @@ const saveApplicationHistory = async (req, res) => {
             return res.status(400).json({ error: 'Application history must be an array' });
         }
 
-        // Delete existing history for this user
-        await dbConfig.run('DELETE FROM application_history WHERE user_id = ?', [userId]);
+        // SOFT DELETE existing history for this user (instead of hard delete)
+        // This preserves historical data for analytics and audit purposes
+        await auditUtils.bulkSoftDelete('application_history', 'user_id = ?', [userId], userId);
 
         // Insert new history
         let inserted = 0;
@@ -117,8 +121,9 @@ const getApplicationHistory = async (req, res) => {
     try {
         const userId = req.user.id;
 
+        // Only get active (non-deleted) application history
         const history = await dbConfig.query(
-            'SELECT id, company_name as "companyName", position, recipient_email as "recipientEmail", sent_date as "sentDate", reply_received as "replyReceived", reply_date as "replyDate" FROM application_history WHERE user_id = ? ORDER BY sent_date DESC',
+            'SELECT id, company_name as "companyName", position, recipient_email as "recipientEmail", sent_date as "sentDate", reply_received as "replyReceived", reply_date as "replyDate" FROM application_history WHERE user_id = ? AND deleted_at IS NULL ORDER BY sent_date DESC',
             [userId]
         );
 
@@ -149,8 +154,9 @@ const saveReviewCoverLetters = async (req, res) => {
             return res.status(400).json({ error: 'Review cover letters must be an object' });
         }
 
-        // Delete existing cover letters for this user
-        await dbConfig.run('DELETE FROM review_cover_letters WHERE user_id = ?', [userId]);
+        // SOFT DELETE existing cover letters for this user (instead of hard delete)
+        // This preserves cover letter drafts for potential recovery and audit
+        await auditUtils.bulkSoftDelete('review_cover_letters', 'user_id = ?', [userId], userId);
 
         // Insert new cover letters
         let inserted = 0;
@@ -202,8 +208,9 @@ const getReviewCoverLetters = async (req, res) => {
         
         console.log(`📥 Getting review cover letters for user ${userId}`);
 
+        // Only get active (non-deleted) cover letters
         const letters = await dbConfig.query(
-            'SELECT letter_key, company_name as "companyName", recipient_email as "recipientEmail", cover_letter_html as "coverLetterHtml", subject, address, date, position, locations, generated, sent, sent_date as "sentDate", stored_recipient_email as "storedRecipientEmail", stored_recipient_website as "storedRecipientWebsite" FROM review_cover_letters WHERE user_id = ?',
+            'SELECT letter_key, company_name as "companyName", recipient_email as "recipientEmail", cover_letter_html as "coverLetterHtml", subject, address, date, position, locations, generated, sent, sent_date as "sentDate", stored_recipient_email as "storedRecipientEmail", stored_recipient_website as "storedRecipientWebsite" FROM review_cover_letters WHERE user_id = ? AND deleted_at IS NULL',
             [userId]
         );
         

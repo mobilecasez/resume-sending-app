@@ -58,11 +58,11 @@ function initializeConnection() {
 }
 
 /**
- * Execute query (convert SQLite ? placeholders to PostgreSQL $1, $2, etc.)
+ * Execute query with automatic parameter conversion
  */
 function query(sql, params = []) {
     return new Promise((resolve, reject) => {
-        // Convert SQLite placeholders (?) to PostgreSQL ($1, $2, etc.)
+        // Convert question mark placeholders (?) to PostgreSQL ($1, $2, etc.)
         let pgSql = sql;
         let paramIndex = 1;
         pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);

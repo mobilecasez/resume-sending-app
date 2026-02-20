@@ -1,4 +1,5 @@
 const dbConfig = require('../../db-config');
+const auditUtils = require('../utils/auditUtils');
 
 /**
  * Admin/Packages Controller
@@ -11,7 +12,7 @@ const getActivePackages = async (req, res) => {
         const result = await dbConfig.query(`
             SELECT id, name, price as amount, credits, validity_days, description, 'USD' as currency, is_popular, display_order
             FROM plans 
-            WHERE is_active = 1
+            WHERE is_active = 1 AND deleted_at IS NULL
             ORDER BY display_order ASC, id ASC
         `, []);
         res.json({ packages: result.rows || result });
@@ -40,6 +41,7 @@ const getAllPackages = async (req, res) => {
                 created_at,
                 updated_at
             FROM plans 
+            WHERE deleted_at IS NULL
             ORDER BY id ASC
         `, []);
         res.json({ packages });
@@ -69,7 +71,7 @@ const getPackageById = async (req, res) => {
                 display_order,
                 created_at,
                 updated_at
-            FROM plans 
+            FROM plans  AND deleted_at IS NULL
             WHERE id = ?
         `, [id]);
         
@@ -177,20 +179,25 @@ const updatePackage = async (req, res) => {
     }
 };
 
-// Delete package (admin only)
+// Delete package (admin only) - SOFT DELETE
 const deletePackage = async (req, res) => {
     const { id } = req.params;
     
     try {
-        const result = await dbConfig.run('DELETE FROM plans WHERE id = ?', [id]);
+        // Get the package before soft-deleting for audit trail
+        const packageData = await dbConfig.get('SELECT * FROM plans WHERE id = ? AND deleted_at IS NULL', [id]);
         
-        if (result.rowCount === 0) {
-            return res.status(404).json({ error: 'Package not found' });
+        if (!packageData) {
+            return res.status(404).json({ error: 'Package not found or already deleted' });
         }
+        
+        // Perform soft delete
+        const userId = req.user ? req.user.id : null; // Admin user ID
+        await auditUtils.softDelete('plans', id, userId, packageData);
         
         res.json({ 
             success: true, 
-            message: 'Package deleted successfully'
+            message: 'Package deleted successfully (soft delete - recoverable)'
         });
     } catch (error) {
         console.error('Error deleting package:', error);
