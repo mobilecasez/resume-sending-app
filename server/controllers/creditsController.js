@@ -180,11 +180,15 @@ const getUsageStats = async (req, res) => {
         }
         
         // Get user's credit info
+        console.log('📊 [DB QUERY] Fetching user_credits for user_id:', userId);
         const credits = await dbConfig.get('SELECT credits_remaining as "creditsRemaining", credits_total as "creditsTotal", expiry_date as "expiryDate" FROM user_credits WHERE user_id = ?', [userId]);
+        console.log('📊 [DB RESULT] Credits query result:', JSON.stringify(credits, null, 2));
         
-        const creditBalance = credits?.creditsRemaining || 0;
-        const creditTotal = credits?.creditsTotal || 0;
-        const expiryDate = credits?.expiryDate;
+        const creditBalance = credits?.creditsRemaining || credits?.credits_remaining || 0;
+        const creditTotal = credits?.creditsTotal || credits?.credits_total || 0;
+        const expiryDate = credits?.expiryDate || credits?.expiry_date;
+        
+        console.log('📊 [CREDITS] Balance:', creditBalance, 'Total:', creditTotal, 'Expiry:', expiryDate);
         
         // Calculate expiring credits (credits expiring within 30 days)
         let expiringCredits = 0;
