@@ -1133,9 +1133,11 @@
             const toast = document.getElementById('toast');
             toast.textContent = message;
             toast.className = `toast ${type} active`;
+            // Show error messages for 4s, success messages for 3s
+            const duration = type === 'error' ? 4000 : 3000;
             setTimeout(() => {
                 toast.classList.remove('active');
-            }, 3000);
+            }, duration);
         }
 
         // Load user credits
@@ -1216,6 +1218,36 @@
                 return;
             }
 
+            // Check if there are pending recipients from the dashboard
+            const pendingRecipientsStr = localStorage.getItem('pendingRecipients');
+            if (pendingRecipientsStr) {
+                console.log('📦 Found pending recipients in localStorage, saving to backend...');
+                try {
+                    const pendingRecipients = JSON.parse(pendingRecipientsStr);
+                    console.log('📧 Pending recipients:', pendingRecipients);
+                    
+                    // Save to backend
+                    const saveResponse = await fetch('/api/users/recipients', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${authToken}`,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ recipients: pendingRecipients })
+                    });
+                    
+                    if (saveResponse.ok) {
+                        console.log('✅ Successfully saved pending recipients to backend');
+                        // Clear pending recipients from localStorage after successful save
+                        localStorage.removeItem('pendingRecipients');
+                    } else {
+                        console.error('❌ Failed to save pending recipients to backend');
+                    }
+                } catch (error) {
+                    console.error('❌ Error saving pending recipients:', error);
+                }
+            }
+
             try {
                 console.log('📡 Fetching recipients from /api/users/recipients');
                 const response = await fetch('/api/users/recipients', {
@@ -1231,7 +1263,7 @@
                 if (!response.ok) {
                     console.log('❌ Failed to load recipients from backend');
                     showToast('No recipients found. Please go back and add recipients.', 'error');
-                    setTimeout(() => window.location.href = '/', 2000);
+                    setTimeout(() => window.location.href = '/dashboard', 2000);
                     return;
                 }
 
@@ -1241,7 +1273,7 @@
                 if (!data.success || !data.recipients || data.recipients.length === 0) {
                     console.log('❌ No recipients in data');
                     showToast('No recipients found. Please go back and add recipients.', 'error');
-                    setTimeout(() => window.location.href = '/', 2000);
+                    setTimeout(() => window.location.href = '/dashboard', 2000);
                     return;
                 }
 
@@ -1252,7 +1284,7 @@
                 if (!recipients || recipients.length === 0) {
                     console.log('❌ Empty recipients array');
                     showToast('No recipients found', 'error');
-                    setTimeout(() => window.location.href = '/', 2000);
+                    setTimeout(() => window.location.href = '/dashboard', 2000);
                     return;
                 }
                 
@@ -1265,7 +1297,7 @@
             } catch (error) {
                 console.error('❌ Error parsing recipients:', error);
                 showToast('Error loading recipients', 'error');
-                setTimeout(() => window.location.href = '/', 2000);
+                setTimeout(() => window.location.href = '/dashboard', 2000);
             }
         });
 
@@ -1594,7 +1626,7 @@
                         return;
                     }
                     
-                    throw new Error(errorData.error || 'Failed to generate cover letter');
+                    throw new Error(errorData.message || errorData.error || 'Failed to generate cover letter');
                 }
 
                 const data = await response.json();
@@ -1690,6 +1722,7 @@
                     formContent.style.display = 'block';
                 }
                 hideLoading();
+                return true; // Indicate success
 
             } catch (error) {
                 if (error.name === 'AbortError') {
@@ -1698,16 +1731,17 @@
                         loading.style.display = 'none';
                     }
                     hideLoading();
-                    return;
+                    return false; // Indicate cancellation
                 }
                 console.error('Error generating cover letter:', error);
                 hideLoading();
                 if (!isCancelled) {
-                    showToast('Failed to generate cover letter for ' + recipient.email, 'error');
+                    showToast(error.message || 'Failed to generate cover letter for ' + recipient.email, 'error');
                 }
                 if (!isRegenerate) {
                     loading.style.display = 'none';
                 }
+                return false; // Indicate failure
             }
         }
 
@@ -1726,14 +1760,17 @@
             const confirmed = await showConfirmModal(`Regenerate this cover letter? This will use 1 credit. You have ${currentCredits} credit(s).`, 'Regenerate Cover Letter', 'Regenerate');
             if (!confirmed) return;
             
-            await generateCoverLetter(index, true); // Pass true to indicate regeneration
+            const success = await generateCoverLetter(index, true); // Pass true to indicate regeneration
             
-            // Force reload credits after a brief delay to ensure backend has updated
-            await new Promise(resolve => setTimeout(resolve, 800));
-            const newCredits = await getCredits();
-            console.log('💳 Credits after regeneration:', newCredits);
-            
-            showToast(`Cover letter regenerated! Credits: ${currentCredits} → ${newCredits}`, 'success');
+            // Only show success toast if generation succeeded
+            if (success) {
+                // Force reload credits after a brief delay to ensure backend has updated
+                await new Promise(resolve => setTimeout(resolve, 800));
+                const newCredits = await getCredits();
+                console.log('💳 Credits after regeneration:', newCredits);
+                
+                showToast(`Cover letter regenerated! Credits: ${currentCredits} → ${newCredits}`, 'success');
+            }
         }
 
         async function sendApplication(index, skipConfirm = false, skipLoadingUI = false) {
@@ -2108,16 +2145,25 @@
             // Get credits before generation
             const creditsBefore = await getCredits();
             
-            // Generate all cover letters
+            // Generate all cover letters and track successes
+            let successCount = 0;
             for (let i = 0; i < recipients.length; i++) {
-                await generateCoverLetter(i);
+                const success = await generateCoverLetter(i);
+                if (success) successCount++;
             }
             
             // Reload credits after generation
             await new Promise(resolve => setTimeout(resolve, 800));
             const creditsAfter = await getCredits();
             
-            showToast(`All cover letters generated! Credits: ${creditsBefore} → ${creditsAfter}`, 'success');
+            // Show appropriate message based on results
+            if (successCount === recipients.length) {
+                showToast(`All cover letters generated! Credits: ${creditsBefore} → ${creditsAfter}`, 'success');
+            } else if (successCount > 0) {
+                showToast(`${successCount} of ${recipients.length} cover letters generated. Credits: ${creditsBefore} → ${creditsAfter}`, 'success');
+            } else {
+                showToast('Failed to generate cover letters. Please check errors above.', 'error');
+            }
         }
 
         async function sendAllApplications() {

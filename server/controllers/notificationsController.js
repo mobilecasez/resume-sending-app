@@ -233,6 +233,19 @@ const notifyProfileUpdated = async (userId, fieldsUpdated) => {
     await createNotification(userId, 'profile', title, message, details, metadata);
 };
 
+// Error Notification
+const notifyError = async (userId, errorTitle, errorMessage, action = null) => {
+    const title = errorTitle || 'Error';
+    const message = errorMessage;
+    const details = action ? `Action required: ${action}` : null;
+    const metadata = {
+        action: action || 'error_occurred',
+        timestamp: new Date().toISOString()
+    };
+    
+    await createNotification(userId, 'error', title, message, details, metadata);
+};
+
 module.exports = {
     getUserNotifications,
     markAsRead,
@@ -245,5 +258,6 @@ module.exports = {
     notifyCreditsAdded,
     notifyCreditsUsed,
     notifyProfileUpdated,
+    notifyError,
     createNotification
 };

@@ -3,7 +3,7 @@ const dbConfig = require('../../db-config');
 // Get all plans
 const getPlans = async (req, res) => {
     try {
-        const plans = await dbConfig.query('SELECT * FROM plans WHERE is_active = 1 AND deleted_at IS NULL ORDER BY price ASC', []);
+        const plans = await dbConfig.query('SELECT * FROM plans WHERE is_active = 1 ORDER BY price ASC', []);
         
         // Parse features JSON string back to array
         const plansWithFeatures = plans.map(plan => ({
@@ -84,7 +84,7 @@ const purchaseCredits = async (req, res) => {
     
     try {
         // Get plan details
-        const plan = await dbConfig.get('SELECT * FROM plans WHERE id = ? AND is_active = 1 AND deleted_at IS NULL', [planId]);
+        const plan = await dbConfig.get('SELECT * FROM plans WHERE id = ? AND is_active = 1', [planId]);
         
         if (!plan) {
             return res.status(404).json({ error: 'Plan not found' });
@@ -166,7 +166,7 @@ const getUsageStats = async (req, res) => {
     
     try {
         // First, check what's in the application_history table for this user
-        const allHistory = await dbConfig.query('SELECT id, sent_date, company_name FROM application_history WHERE user_id = ? AND deleted_at IS NULL ORDER BY sent_date DESC LIMIT 10', [userId]);
+        const allHistory = await dbConfig.query('SELECT id, sent_date, company_name FROM application_history WHERE user_id = ? ORDER BY sent_date DESC LIMIT 10', [userId]);
         console.log('📊 [DB CHECK] Application history records for user:', allHistory ? allHistory.length : 0);
         if (allHistory && allHistory.length > 0) {
             console.log('📊 [DB CHECK] Sample records:', JSON.stringify(allHistory, null, 2));
@@ -211,7 +211,8 @@ const getUsageStats = async (req, res) => {
         // Get current month's sent count from application_history
         const currentMonthSent = await dbConfig.get(`
             SELECT COUNT(*) as count
-            FROM application_history            WHERE deleted_at IS NULL AND user_id = ?            WHERE user_id = ?
+            FROM application_history
+            WHERE user_id = ?
             AND EXTRACT(MONTH FROM sent_date) = ?
             AND EXTRACT(YEAR FROM sent_date) = ?
         `, [userId, currentMonth, currentYear]);
@@ -241,25 +242,64 @@ const getUsageStats = async (req, res) => {
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
         
-        const dailyActivity = await dbConfig.query(`
+        // Get credits USED from credit_usage_history (actual usage)
+        const dailyUsage = await dbConfig.query(`
             SELECT 
-        to_char(created_at + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD') as date,
-        SUM(CASE WHEN transaction_type = 'deduction' THEN ABS(credits_change) ELSE 0 END) as "creditsUsed",
+        DATE(created_at) as date,
+        SUM(credits_used) as "creditsUsed"
+            FROM credit_usage_history
+            WHERE user_id = ? AND created_at >= ?
+            GROUP BY DATE(created_at)
+            ORDER BY date DESC
+        `, [userId, thirtyDaysAgo.toISOString()]);
+        
+        // Get credits AVAILABLE from credit_transactions (balance)
+        const dailyBalance = await dbConfig.query(`
+            SELECT 
+        DATE(created_at) as date,
         MAX(balance_after) as "creditsAvailable"
             FROM credit_transactions
             WHERE user_id = ? AND created_at >= ?
-            GROUP BY to_char(created_at + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD')
+            GROUP BY DATE(created_at)
             ORDER BY date DESC
         `, [userId, thirtyDaysAgo.toISOString()]);
         
         // Create a map for quick lookup
         const activityMap = {};
-        if (dailyActivity && dailyActivity.length > 0) {
-            dailyActivity.forEach(day => {
-        activityMap[day.date] = {
-            creditsUsed: day.creditsUsed || 0,
-            creditsAvailable: day.creditsAvailable || 0
-        };
+        
+        // Merge usage data
+        if (dailyUsage && dailyUsage.length > 0) {
+            dailyUsage.forEach(day => {
+        // Keep date as-is from database
+        let dateStr;
+        if (typeof day.date === 'string') {
+            dateStr = day.date;
+        } else if (day.date instanceof Date) {
+            const year = day.date.getFullYear();
+            const month = String(day.date.getMonth() + 1).padStart(2, '0');
+            const dayNum = String(day.date.getDate()).padStart(2, '0');
+            dateStr = `${year}-${month}-${dayNum}`;
+        }
+        if (!activityMap[dateStr]) activityMap[dateStr] = { creditsUsed: 0, creditsAvailable: 0 };
+        activityMap[dateStr].creditsUsed = day.creditsUsed || 0;
+            });
+        }
+        
+        // Merge balance data
+        if (dailyBalance && dailyBalance.length > 0) {
+            dailyBalance.forEach(day => {
+        // Keep date as-is from database
+        let dateStr;
+        if (typeof day.date === 'string') {
+            dateStr = day.date;
+        } else if (day.date instanceof Date) {
+            const year = day.date.getFullYear();
+            const month = String(day.date.getMonth() + 1).padStart(2, '0');
+            const dayNum = String(day.date.getDate()).padStart(2, '0');
+            dateStr = `${year}-${month}-${dayNum}`;
+        }
+        if (!activityMap[dateStr]) activityMap[dateStr] = { creditsUsed: 0, creditsAvailable: 0 };
+        activityMap[dateStr].creditsAvailable = day.creditsAvailable || 0;
             });
         }
         
@@ -268,7 +308,11 @@ const getUsageStats = async (req, res) => {
         for (let i = 29; i >= 0; i--) {
             const date = new Date();
             date.setDate(date.getDate() - i);
-            const dateStr = date.toISOString().split('T')[0];
+            // Use local date components to match database DATE(created_at) which uses server timezone
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const dateStr = `${year}-${month}-${day}`;
             const dayData = activityMap[dateStr] || { creditsUsed: 0, creditsAvailable: 0 };
             
             dateWiseData.push({
@@ -286,11 +330,11 @@ const getUsageStats = async (req, res) => {
         
         // Get balance from credit_transactions (purchases, refunds) - has balance_after
         const balanceFromPurchases = await dbConfig.query(
-          `SELECT DATE(created_at AT TIME ZONE 'UTC') as date, 
+          `SELECT DATE(created_at) as date, 
                   MAX(balance_after) as balance_at_end_of_day
            FROM credit_transactions
            WHERE user_id = ? AND created_at >= ?
-           GROUP BY DATE(created_at AT TIME ZONE 'UTC')
+           GROUP BY DATE(created_at)
            ORDER BY date DESC`,
           [userId, thirtyDaysAgo.toISOString()]
         );
@@ -298,11 +342,11 @@ const getUsageStats = async (req, res) => {
         // For credit_usage_history, we need to calculate balance by subtracting usage from current balance
         // We'll get the total credits used per day, then work backwards from current balance
         const usagePerDay = await dbConfig.query(
-          `SELECT DATE(created_at AT TIME ZONE 'UTC') as date,
+          `SELECT DATE(created_at) as date,
                   SUM(credits_used) as total_used
            FROM credit_usage_history
            WHERE user_id = ? AND created_at >= ?
-           GROUP BY DATE(created_at AT TIME ZONE 'UTC')
+           GROUP BY DATE(created_at)
            ORDER BY date ASC`,
           [userId, thirtyDaysAgo.toISOString()]
         );
@@ -314,7 +358,16 @@ const getUsageStats = async (req, res) => {
         const balanceMap = {};
         if (balanceFromPurchases) {
           balanceFromPurchases.forEach(b => {
-            const dateStr = typeof b.date === 'string' ? b.date : new Date(b.date).toISOString().split('T')[0];
+            // Keep date as-is from database (don't convert to UTC)
+            let dateStr;
+            if (typeof b.date === 'string') {
+                dateStr = b.date;
+            } else if (b.date instanceof Date) {
+                const year = b.date.getFullYear();
+                const month = String(b.date.getMonth() + 1).padStart(2, '0');
+                const day = String(b.date.getDate()).padStart(2, '0');
+                dateStr = `${year}-${month}-${day}`;
+            }
             balanceMap[dateStr] = parseInt(b.balance_at_end_of_day) || 0;
           });
         }
@@ -335,7 +388,16 @@ const getUsageStats = async (req, res) => {
             
             // Find usage for this day
             const dayUsage = usagePerDay?.find(u => {
-              const usageDate = typeof u.date === 'string' ? u.date : new Date(u.date).toISOString().split('T')[0];
+              // Keep date as-is from database (don't convert to UTC)
+              let usageDate;
+              if (typeof u.date === 'string') {
+                  usageDate = u.date;
+              } else if (u.date instanceof Date) {
+                  const year = u.date.getFullYear();
+                  const month = String(u.date.getMonth() + 1).padStart(2, '0');
+                  const day = String(u.date.getDate()).padStart(2, '0');
+                  usageDate = `${year}-${month}-${day}`;
+              }
               return usageDate === day.date;
             });
             
@@ -352,12 +414,12 @@ const getUsageStats = async (req, res) => {
         console.log('🔍 [USAGE STATS] Querying credit_usage_history for generations...');
         
     const generationStats = await dbConfig.query(
-      `SELECT to_char(created_at + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD') as date, COUNT(*) as generated
+      `SELECT DATE(created_at) as date, COUNT(*) as generated
        FROM credit_usage_history
        WHERE user_id = ? 
          AND created_at >= ?
          AND action_type = 'cover_letter_generation'
-       GROUP BY to_char(created_at + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD')
+       GROUP BY DATE(created_at)
        ORDER BY date DESC`,
       [userId, thirtyDaysAgo.toISOString()]
     );
@@ -365,10 +427,10 @@ const getUsageStats = async (req, res) => {
         console.log('🔍 [USAGE STATS] Querying application_history for sends...');
         
     const sendStats = await dbConfig.query(
-      `SELECT to_char(sent_date + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD') as date, COUNT(*) as sent
+      `SELECT DATE(sent_date) as date, COUNT(*) as sent
        FROM application_history
-       WHERE user_id = ? AND sent_date >= ?
-       GROUP BY to_char(sent_date + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD')
+       WHERE user_id = ? AND sent_date >= ? AND deleted_at IS NULL
+       GROUP BY DATE(sent_date)
        ORDER BY date DESC`,
       [userId, thirtyDaysAgo.toISOString()]
     );
@@ -376,7 +438,17 @@ const getUsageStats = async (req, res) => {
         if (generationStats && generationStats.length > 0) {
             console.log('✅ [USAGE STATS] Merging generation stats');
             generationStats.forEach(stat => {
-        const statDate = typeof stat.date === 'string' ? stat.date : new Date(stat.date).toISOString().split('T')[0];
+        // Keep date as-is from database (already in correct format YYYY-MM-DD)
+        let statDate;
+        if (typeof stat.date === 'string') {
+            statDate = stat.date;
+        } else if (stat.date instanceof Date) {
+            // Format date using local timezone components (don't use toISOString!)
+            const year = stat.date.getFullYear();
+            const month = String(stat.date.getMonth() + 1).padStart(2, '0');
+            const day = String(stat.date.getDate()).padStart(2, '0');
+            statDate = `${year}-${month}-${day}`;
+        }
         const dayIndex = dateWiseData.findIndex(d => d.date === statDate);
         console.log(`   - Generated: Date ${statDate}, Count ${stat.generated}, Index ${dayIndex}`);
         if (dayIndex >= 0) {
@@ -391,7 +463,17 @@ const getUsageStats = async (req, res) => {
         if (sendStats && sendStats.length > 0) {
             console.log('✅ [USAGE STATS] Merging send stats');
             sendStats.forEach(stat => {
-        const statDate = typeof stat.date === 'string' ? stat.date : new Date(stat.date).toISOString().split('T')[0];
+        // Keep date as-is from database (already in correct format YYYY-MM-DD)
+        let statDate;
+        if (typeof stat.date === 'string') {
+            statDate = stat.date;
+        } else if (stat.date instanceof Date) {
+            // Format date using local timezone components (don't use toISOString!)
+            const year = stat.date.getFullYear();
+            const month = String(stat.date.getMonth() + 1).padStart(2, '0');
+            const day = String(stat.date.getDate()).padStart(2, '0');
+            statDate = `${year}-${month}-${day}`;
+        }
         const dayIndex = dateWiseData.findIndex(d => d.date === statDate);
         console.log(`   - Sent: Date ${statDate}, Count ${stat.sent}, Index ${dayIndex}`);
         if (dayIndex >= 0) {

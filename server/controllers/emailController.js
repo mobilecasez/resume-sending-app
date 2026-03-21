@@ -8,7 +8,7 @@ const TemplateCoverLetterGenerator = require('../../template-cover-letter-genera
 const PDFKit = require('pdfkit');
 const cheerio = require('cheerio');
 const { sendEmailViaZeptoMail } = require('../services/zeptomailService');
-const { notifyEmailSent } = require('./notificationsController');
+const { notifyEmailSent, notifyError } = require('./notificationsController');
 
 // Helper function to format DOB as YYYYMMDD for Reply-To email
 function formatDOBForEmail(dateOfBirth) {
@@ -655,8 +655,24 @@ const sendApplications = async (req, res) => {
         // Get user profile
         const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
         
-        if (!user || !user.resume_path) {
-            return res.status(400).json({ error: 'Resume is required' });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        if (!user.resume_path || user.resume_path.trim() === '') {
+            // Create notification for missing resume
+            await notifyError(
+                userId,
+                'Resume Required',
+                'Please upload your resume before sending applications. Go to Profile (top right) to upload your resume.',
+                'upload_resume'
+            );
+            
+            return res.status(400).json({ 
+                error: 'Resume required',
+                message: 'Please upload your resume before sending applications. Go to Profile (top right) to upload your resume.',
+                action: 'upload_resume'
+            });
         }
 
         // Check if user has SMTP or use default from .env
@@ -814,11 +830,22 @@ const sendApplications = async (req, res) => {
                 // Clean up temp PDF
                 await fs.unlink(filePath);
 
-                // Save to application history
+                // Update counter only (history is managed by web app locally)
+                // Web app doesn't sync to backend like mobile, but we still track counter
                 await dbConfig.run(
-                    'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date) VALUES (?, ?, ?, ?, ?)',
-                    [userId, companyName, position, recipient.email, new Date().toISOString()]
+                    'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
+                    [userId]
                 );
+
+                // Record in application_history for usage stats (web sends need this)
+                try {
+                    await dbConfig.run(
+                        'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                        [userId, companyName || '', position || '', recipient.email || '', new Date().toISOString(), 0, null]
+                    );
+                } catch (historyError) {
+                    console.error('Failed to save to application_history:', historyError);
+                }
 
                 // Create notification for sent email
                 try {
@@ -877,8 +904,36 @@ const sendSingleApplication = async (req, res) => {
     console.log('User ID:', userId);
     console.log('Recipient:', recipientEmail);
     console.log('Company:', companyName);
+    console.log('Company Address:', companyAddress);
+    console.log('Cover Letter Length:', coverLetterText?.length);
+    console.log('Cover Letter (first 200 chars):', coverLetterText?.substring(0, 200));
 
     try {
+        // CRITICAL VALIDATION: Ensure cover letter text is not empty or generic
+        if (!coverLetterText || coverLetterText.trim().length < 100) {
+            console.error('❌ CRITICAL: Cover letter text is missing or too short!');
+            return res.status(400).json({ error: 'Cover letter is required. Please generate a cover letter first.' });
+        }
+
+        // CRITICAL VALIDATION: Check for generic/template content that indicates generation failure
+        const bannedPhrases = [
+            'I am writing to express my profound interest',
+            'How My Experience Directly Matches Your Requirements',
+            'My Value Proposition to',
+            '0 years of dedicated experience',
+            'With over 0 years'
+        ];
+        
+        for (const phrase of bannedPhrases) {
+            if (coverLetterText.toLowerCase().includes(phrase.toLowerCase())) {
+                console.error(`❌ CRITICAL: Cover letter contains banned generic phrase: "${phrase}"`);
+                console.error('This indicates AI generation failed and fell back to a template.');
+                return res.status(400).json({ 
+                    error: `Cover letter quality check failed. The letter appears to be generated from a template rather than personalized AI content. Please regenerate the cover letter. Detected phrase: "${phrase}"` 
+                });
+            }
+        }
+
         // Get user profile
         const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
         
@@ -891,12 +946,28 @@ const sendSingleApplication = async (req, res) => {
         console.log('ENV SMTP_PASS:', process.env.SMTP_PASS ? 'SET' : 'NOT SET');
         console.log('=====================================\n');
         
-        if (!user || !user.resume_path) {
-            return res.status(400).json({ error: 'Resume is required' });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        if (!user.resume_path || user.resume_path.trim() === '') {
+            // Create notification for missing resume
+            await notifyError(
+                userId,
+                'Resume Required',
+                'Please upload your resume before sending applications. Go to Profile (top right) to upload your resume.',
+                'upload_resume'
+            );
+            
+            return res.status(400).json({ 
+                error: 'Resume required',
+                message: 'Please upload your resume before sending applications. Go to Profile (top right) to upload your resume.',
+                action: 'upload_resume'
+            });
         }
 
         // Generate PDF
-        console.log('📄 Generating PDF...');
+        console.log('📄 Generating PDF with address:', companyAddress || 'NO ADDRESS PROVIDED');
         const { filePath, fileName } = await generateCoverLetterPDF(
             user,
             coverLetterText,
@@ -928,16 +999,21 @@ const sendSingleApplication = async (req, res) => {
 
                 console.log(`✅ Application sent via Gmail to ${recipientEmail}`);
                 
-                // Save to history
-                await dbConfig.run(
-                    'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date) VALUES (?, ?, ?, ?, ?)',
-                    [userId, companyName, position, recipientEmail, new Date().toISOString()]
-                );
-
+                // Update counter only (history is managed by mobile app)
                 await dbConfig.run(
                     'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
                     [userId]
                 );
+
+                // Record in application_history for usage stats (web sends need this)
+                try {
+                    await dbConfig.run(
+                        'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                        [userId, companyName || '', position || '', recipientEmail || '', new Date().toISOString(), 0, null]
+                    );
+                } catch (historyError) {
+                    console.error('Failed to save to application_history:', historyError);
+                }
 
                 // Create notification for sent email
                 try {
@@ -1009,16 +1085,21 @@ const sendSingleApplication = async (req, res) => {
 
                 await sendEmailWithTimeout(transporter, mailOptions);
 
-                // Save to history
-                await dbConfig.run(
-                    'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date) VALUES (?, ?, ?, ?, ?)',
-                    [userId, companyName, position, recipientEmail, new Date().toISOString()]
-                );
-
+                // Update counter only (history is managed by mobile app)
                 await dbConfig.run(
                     'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
                     [userId]
                 );
+
+                // Record in application_history for usage stats (web sends need this)
+                try {
+                    await dbConfig.run(
+                        'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                        [userId, companyName || '', position || '', recipientEmail || '', new Date().toISOString(), 0, null]
+                    );
+                } catch (historyError) {
+                    console.error('Failed to save to application_history:', historyError);
+                }
 
                 // Create notification for sent email
                 try {
@@ -1082,16 +1163,21 @@ const sendSingleApplication = async (req, res) => {
 
                 await sendEmailWithTimeout(transporter, mailOptions);
 
-                // Save to history
-                await dbConfig.run(
-                    'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date) VALUES (?, ?, ?, ?, ?)',
-                    [userId, companyName, position, recipientEmail, new Date().toISOString()]
-                );
-
+                // Update counter only (history is managed by mobile app)
                 await dbConfig.run(
                     'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
                     [userId]
                 );
+
+                // Record in application_history for usage stats (web sends need this)
+                try {
+                    await dbConfig.run(
+                        'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                        [userId, companyName || '', position || '', recipientEmail || '', new Date().toISOString(), 0, null]
+                    );
+                } catch (historyError) {
+                    console.error('Failed to save to application_history:', historyError);
+                }
 
                 // Create notification for sent email
                 try {
@@ -1157,16 +1243,21 @@ const sendSingleApplication = async (req, res) => {
                     ]
                 });
 
-                // Save to history
-                await dbConfig.run(
-                    'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date) VALUES (?, ?, ?, ?, ?)',
-                    [userId, companyName, position, recipientEmail, new Date().toISOString()]
-                );
-
+                // Update counter only (history is managed by mobile app)
                 await dbConfig.run(
                     'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
                     [userId]
                 );
+
+                // Record in application_history for usage stats (web sends need this)
+                try {
+                    await dbConfig.run(
+                        'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                        [userId, companyName || '', position || '', recipientEmail || '', new Date().toISOString(), 0, null]
+                    );
+                } catch (historyError) {
+                    console.error('Failed to save to application_history:', historyError);
+                }
 
                 // Create notification for sent email
                 try {

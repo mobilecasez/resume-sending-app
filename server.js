@@ -46,6 +46,7 @@ const adminPackagesRoutes = require('./server/routes/adminPackagesRoutes');
 const coverLetterRoutes = require('./server/routes/coverLetterRoutes');
 const emailRoutes = require('./server/routes/emailRoutes');
 const notificationsRoutes = require('./server/routes/notificationsRoutes');
+const usageRoutes = require('./server/routes/usageRoutes');
 
 // Import authentication middleware
 const { authenticateToken, authenticateAdmin } = require('./server/middleware/auth');
@@ -224,8 +225,8 @@ const upload = multer({
 });
 
 // Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser());
 
 // CORS Middleware - Allow requests from localhost variants and IP address
@@ -306,9 +307,44 @@ app.get('/favicon.ico', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'favicon.ico'));
 });
 
+// Root route - serve about page as home page
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'about.html'));
+});
+
 // About page route
 app.get('/about', (req, res) => {
     res.sendFile(path.join(__dirname, 'about.html'));
+});
+
+// Dashboard route - serve index.html
+app.get('/dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Legal pages routes
+app.get('/privacy', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'privacy-policy.html'));
+});
+
+app.get('/privacy-policy', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'privacy-policy.html'));
+});
+
+app.get('/terms', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'terms-of-service.html'));
+});
+
+app.get('/terms-of-service', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'terms-of-service.html'));
+});
+
+app.get('/refund', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'refund-policy.html'));
+});
+
+app.get('/refund-policy', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'refund-policy.html'));
 });
 
 // Static files for landing page resources
@@ -2805,6 +2841,7 @@ app.use('/api/users', authenticateToken, profileRoutes);
 // Set up user data routes (both /api/users and /users for backward compatibility)
 app.use('/api/users', userDataRoutes);
 app.use('/users', userDataRoutes);
+// app.use('/api/user', usageRoutes);  // Commented out - using creditsRoutes instead for /api/user/usage-stats
 app.use('/api', creditsRoutes);
 app.use('/api', adminPackagesRoutes);
 app.use('/api', coverLetterRoutes);

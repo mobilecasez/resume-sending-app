@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
 const TemplateCoverLetterGenerator = require('../../template-cover-letter-generator');
-const { notifyCoverLetterGenerated } = require('./notificationsController');
+const { notifyCoverLetterGenerated, notifyError } = require('./notificationsController');
 
 const templateGenerator = new TemplateCoverLetterGenerator();
 
@@ -296,9 +296,9 @@ async function generateAdditionalDetails(websiteUrl, companyName, position = 'Po
         return {
             hiringManager: 'Hiring Manager',
             locations: [{ 
-                country: 'Not specified', 
-                city: 'Not specified', 
-                address: 'Not specified',
+                country: '', 
+                city: '', 
+                address: 'Address not available online',
                 isHeadquarters: true 
             }],
             subject: `Application for ${position} - ${applicantName}`
@@ -321,7 +321,7 @@ Applicant Name: ${applicantName}
 Extract the following information and return ONLY valid JSON:
 
 1. **Hiring Manager Name**: Look for HR contact, recruiter, or hiring manager name. If not found, return "Hiring Manager"
-2. **All Company Locations**: Extract ALL office locations (headquarters and branches) with complete street address, city, and country
+2. **All Company Locations**: Extract ALL office locations (headquarters and branches) with complete street address, city, and country. Try multiple sources: About page, Contact page, footer, headquarters section.
 3. **Subject Line**: Generate a professional, concise email subject line for this job application using the applicant's name
 
 Return this EXACT JSON format (no markdown, no code blocks):
@@ -336,9 +336,16 @@ Return this EXACT JSON format (no markdown, no code blocks):
 
 IMPORTANT: 
 - For subject line, use the format: "Application for [Position] - [Applicant Name]" or "[Position] Application - [Applicant Name]"
-- For each location, include a complete street address with postal/ZIP code. If exact address is not available, use "City, State/Region" as the address field.
+- For each location, provide the MOST COMPLETE address you can find:
+  * First priority: Full street address with number, street name, city, state/province, ZIP/postal code, country
+  * Second priority: Building/Office name, city, state/province, country  
+  * Third priority: City, state/province, country
+  * Last resort: City, country
+- Search thoroughly: check Contact page, About page, footer, "Locations" page, "Find Us" page
+- If you cannot find ANY location information on the website, search Google for "${companyName} headquarters address" or "${companyName} office location"
+- DO NOT return "Not specified" unless you've exhausted all options including Google search
 
-Research the website and extract real information. If locations not found, include at least one with "Not specified" for address.`;
+Research thoroughly and extract real information.`;
 
         const result = await model.generateContent({
             contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -364,14 +371,24 @@ Research the website and extract real information. If locations not found, inclu
             
             // Ensure each location has an address field
             const locations = (data.locations || []).map(loc => {
-                const city = loc.city || 'Not specified';
-                const country = loc.country || 'Not specified';
-                const address = loc.address || `${city}, ${country}`;
+                const city = loc.city || '';
+                const country = loc.country || '';
+                let address = loc.address || '';
+                
+                // If no address provided, construct from city and country
+                if (!address && city && country) {
+                    address = `${city}, ${country}`;
+                } else if (!address && (city || country)) {
+                    address = city || country;
+                } else if (!address) {
+                    address = 'Address not available online';
+                }
+                
                 return {
                     ...loc,
                     address: address,
-                    city: city,
-                    country: country,
+                    city: city || 'Not specified',
+                    country: country || 'Not specified',
                     isHeadquarters: loc.isHeadquarters !== undefined ? loc.isHeadquarters : true
                 };
             });
@@ -379,9 +396,9 @@ Research the website and extract real information. If locations not found, inclu
             return {
                 hiringManager: data.hiringManager || 'Hiring Manager',
                 locations: locations.length > 0 ? locations : [{ 
-                    country: 'Not specified', 
-                    city: 'Not specified', 
-                    address: 'Not specified',
+                    country: '', 
+                    city: '', 
+                    address: 'Address not available online',
                     isHeadquarters: true 
                 }],
                 subject: data.subject || `Application for ${position} - ${userFullName || 'Applicant'}`
@@ -396,9 +413,9 @@ Research the website and extract real information. If locations not found, inclu
         return {
             hiringManager: 'Hiring Manager',
             locations: [{ 
-                country: 'Not specified', 
-                city: 'Not specified', 
-                address: 'Not specified',
+                country: '', 
+                city: '', 
+                address: 'Address not available online',
                 isHeadquarters: true 
             }],
             subject: `Application for ${position} - ${applicantName}`
@@ -438,8 +455,24 @@ const generateCoverLetters = async (req, res) => {
         try {
             const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
             
-            if (!user || !user.resume_path) {
-                return res.status(400).json({ error: 'Resume is required' });
+            if (!user) {
+                return res.status(404).json({ error: 'User not found' });
+            }
+            
+            if (!user.resume_path || user.resume_path.trim() === '') {
+                // Create notification for missing resume
+                await notifyError(
+                    userId,
+                    'Resume Required',
+                    'Please upload your resume before generating cover letters. Go to Profile (top right) to upload your resume.',
+                    'upload_resume'
+                );
+                
+                return res.status(400).json({ 
+                    error: 'Resume required',
+                    message: 'Please upload your resume before generating cover letters. Go to Profile (top right) to upload your resume.',
+                    action: 'upload_resume'
+                });
             }
 
             const userData = {
@@ -579,8 +612,24 @@ const generateCoverLetterDetails = async (req, res) => {
         // Get user profile
         const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
         
-        if (!user || !user.resume_path) {
-            return res.status(400).json({ error: 'Resume is required' });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        if (!user.resume_path || user.resume_path.trim() === '') {
+            // Create notification for missing resume
+            await notifyError(
+                userId,
+                'Resume Required',
+                'Please upload your resume before generating cover letters. Go to Profile (top right) to upload your resume.',
+                'upload_resume'
+            );
+            
+            return res.status(400).json({ 
+                error: 'Resume required',
+                message: 'Please upload your resume before generating cover letters. Go to Profile (top right) to upload your resume.',
+                action: 'upload_resume'
+            });
         }
 
         const userData = {

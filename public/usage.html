@@ -732,8 +732,9 @@
                     if (data.creditHistory && data.creditHistory.length > 0) {
                         const historyList = document.getElementById('historyList');
                         historyList.innerHTML = data.creditHistory.slice(0, 15).map(item => {
-                            const typeClass = item.transactionType === 'deduction' ? 'negative' : 'positive';
-                            const typeSymbol = item.transactionType === 'deduction' ? '−' : '+';
+                            const isNegative = item.creditsChange < 0;
+                            const typeClass = isNegative ? 'negative' : 'positive';
+                            const typeSymbol = isNegative ? '−' : '+';
                             const date = new Date(item.transactionDate).toLocaleDateString();
 
                             return `
@@ -865,7 +866,7 @@
                 tableBody.innerHTML = `
                     <tr>
                         <td colspan="5" style="text-align: center; padding: 20px;">
-                            <div style="color: var(--text-secondary);">No activity in the last 30 days</div>
+                            <div style="color: var(--text-secondary);">No activity in the last 7 days</div>
                         </td>
                     </tr>
                 `;
