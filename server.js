@@ -22,6 +22,7 @@ const session = require('express-session');
 const cookieParser = require('cookie-parser');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const MicrosoftStrategy = require('passport-microsoft').Strategy;
 const { google } = require('googleapis');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 const fontkit = require('@pdf-lib/fontkit');
@@ -354,6 +355,9 @@ app.use('/js', express.static('js'));
 app.use('/imgs', express.static('imgs'));
 app.use('/Screenshots', express.static('Screenshots'));
 
+// Serve .well-known directory for domain verification (Microsoft, Apple, etc.)
+app.use('/.well-known', express.static('.well-known'));
+
 // Static files for public access
 app.use(express.static('public'));
 app.use('/uploads', express.static('uploads'));
@@ -373,6 +377,22 @@ passport.use(new GoogleStrategy({
 }, (accessToken, refreshToken, profile, done) => {
     // Handle Google OAuth callback with tokens
     handleOAuthUser(profile, 'google', accessToken, refreshToken, done);
+}));
+
+// Microsoft OAuth Configuration
+const MICROSOFT_CALLBACK_URL = IS_PRODUCTION
+    ? 'https://cvapplyr.com/auth/microsoft/callback'
+    : 'http://localhost:3000/auth/microsoft/callback';
+
+passport.use(new MicrosoftStrategy({
+    clientID: process.env.MICROSOFT_CLIENT_ID || 'your-microsoft-client-id',
+    clientSecret: process.env.MICROSOFT_CLIENT_SECRET || 'your-microsoft-client-secret',
+    callbackURL: MICROSOFT_CALLBACK_URL,
+    scope: ['user.read', 'mail.send', 'offline_access'],
+    tenant: 'common' // Supports personal Microsoft accounts and work/school accounts
+}, (accessToken, refreshToken, profile, done) => {
+    // Handle Microsoft OAuth callback with tokens
+    handleOAuthUser(profile, 'microsoft', accessToken, refreshToken, done);
 }));
 
 // Passport LinkedIn OAuth Configuration (Disabled due to API compatibility)
@@ -418,18 +438,33 @@ async function handleOAuthUser(profile, provider, accessToken, refreshToken, cal
 
         if (user) {
             // User exists, update OAuth tokens
-            await dbConfig.run(
-        'UPDATE users SET oauth_provider = ?, google_access_token = ?, google_refresh_token = ? WHERE id = ?',
-        [provider, accessToken, refreshToken, user.id]
-            );
+            if (provider === 'google') {
+                await dbConfig.run(
+                    'UPDATE users SET oauth_provider = ?, google_access_token = ?, google_refresh_token = ? WHERE id = ?',
+                    [provider, accessToken, refreshToken, user.id]
+                );
+            } else if (provider === 'microsoft') {
+                await dbConfig.run(
+                    'UPDATE users SET oauth_provider = ?, microsoft_access_token = ?, microsoft_refresh_token = ? WHERE id = ?',
+                    [provider, accessToken, refreshToken, user.id]
+                );
+            }
             return callback(null, user);
         } else {
             // Create new user
             const hashedPassword = jwt.sign({ provider, email }, JWT_SECRET);
-            const result = await dbConfig.run(
-        'INSERT INTO users (full_name, email, password, oauth_provider, google_access_token, google_refresh_token) VALUES (?, ?, ?, ?, ?, ?)',
-        [fullName, email, hashedPassword, provider, accessToken, refreshToken]
-            );
+            let result;
+            if (provider === 'google') {
+                result = await dbConfig.run(
+                    'INSERT INTO users (full_name, email, password, oauth_provider, google_access_token, google_refresh_token) VALUES (?, ?, ?, ?, ?, ?)',
+                    [fullName, email, hashedPassword, provider, accessToken, refreshToken]
+                );
+            } else if (provider === 'microsoft') {
+                result = await dbConfig.run(
+                    'INSERT INTO users (full_name, email, password, oauth_provider, microsoft_access_token, microsoft_refresh_token) VALUES (?, ?, ?, ?, ?, ?)',
+                    [fullName, email, hashedPassword, provider, accessToken, refreshToken]
+                );
+            }
             
             const newUser = await dbConfig.get('SELECT * FROM users WHERE id = ?', [result.lastID || result.id]);
             return callback(null, newUser);
