@@ -665,6 +665,99 @@
                 padding: 24px 20px;
             }
         }
+
+        /* Modal Overlay */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.75);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+            backdrop-filter: blur(4px);
+            animation: fadeIn 0.2s ease-out;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+            max-width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            animation: slideUp 0.3s ease-out;
+        }
+
+        .modal-header {
+            padding: 24px 32px;
+            border-radius: 16px 16px 0 0;
+        }
+
+        .modal-body {
+            padding: 32px;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+            to {
+                opacity: 1;
+            }
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Button hover effects */
+        .btn-danger:hover:not(:disabled) {
+            background: #b91c1c !important;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(220, 38, 38, 0.4);
+        }
+
+        .btn-secondary:hover {
+            background: #e5e7eb;
+            transform: translateY(-1px);
+        }
+
+        #confirmDeleteBtn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        @media (max-width: 640px) {
+            .modal-content {
+                max-width: 95%;
+                margin: 20px;
+            }
+
+            .modal-header {
+                padding: 20px;
+            }
+
+            .modal-body {
+                padding: 20px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -856,8 +949,100 @@
                     <button class="btn-secondary" onclick="window.location.href='/'">Cancel</button>
                 </div>
             </div>
+
+            <!-- Danger Zone -->
+            <div class="card danger-zone" style="margin-top: 32px;">
+                <h2 class="card-title" style="color: var(--danger-color);">
+                    <span class="card-icon">⚠️</span>
+                    Danger Zone
+                </h2>
+                <div style="padding: 20px; background: #fef2f2; border-radius: 8px; margin-bottom: 16px;">
+                    <h3 style="color: #991b1b; margin: 0 0 12px 0; font-size: 1rem;">Delete Account</h3>
+                    <p style="color: #7f1d1d; margin: 0 0 8px 0; line-height: 1.6;">
+                        Once you delete your account, there is no going back. This action is <strong>permanent</strong> and <strong>cannot be undone</strong>.
+                    </p>
+                    <p style="color: #991b1b; margin: 0; font-size: 0.875rem;">
+                        <strong>The following data will be permanently deleted:</strong>
+                    </p>
+                    <ul style="color: #7f1d1d; margin: 8px 0 0 0; padding-left: 20px; font-size: 0.875rem;">
+                        <li>Your profile information and account credentials</li>
+                        <li>All job applications and cover letters</li>
+                        <li>Uploaded resumes, photos, and signatures</li>
+                        <li>Payment history and transaction records</li>
+                        <li>All notifications and activity logs</li>
+                        <li>OAuth connections (Google, Microsoft)</li>
+                    </ul>
+                </div>
+                <button class="btn-danger" onclick="showDeleteAccountModal()" style="width: 100%; background: #dc2626; color: white; border: none; padding: 12px 24px; font-size: 1rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: background 0.2s;">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px; vertical-align: middle;">
+                        <path d="M2 4h12M5.333 4V2.667a1.333 1.333 0 011.334-1.334h2.666a1.333 1.333 0 011.334 1.334V4m2 0v9.333a1.333 1.333 0 01-1.334 1.334H4.667a1.333 1.333 0 01-1.334-1.334V4h9.334z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Delete My Account Permanently
+                </button>
+            </div>
         </div>
     </section>
+
+    <!-- Delete Account Confirmation Modal -->
+    <div id="deleteAccountModal" class="modal-overlay" style="display: none;">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header" style="background: #dc2626; color: white;">
+                <h2 style="margin: 0; font-size: 1.5rem;">
+                    ⚠️ Delete Account - Final Warning
+                </h2>
+            </div>
+            <div class="modal-body">
+                <div style="background: #fef2f2; border: 2px solid #dc2626; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+                    <p style="color: #991b1b; font-weight: 600; margin: 0 0 12px 0;">
+                        ❗ This action is PERMANENT and CANNOT be undone!
+                    </p>
+                    <p style="color: #7f1d1d; margin: 0; font-size: 0.937rem;">
+                        All your data will be immediately and permanently deleted from our servers. You will not be able to recover:
+                    </p>
+                    <ul style="color: #7f1d1d; margin: 8px 0 0 0; padding-left: 20px; font-size: 0.875rem;">
+                        <li>Account credentials and login access</li>
+                        <li>Job applications and cover letters</li>
+                        <li>Uploaded documents and files</li>
+                        <li>Purchase history and credits</li>
+                        <li>OAuth connections</li>
+                    </ul>
+                </div>
+
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #374151;">
+                        To confirm, type <span style="color: #dc2626; font-family: monospace; background: #fef2f2; padding: 2px 6px; border-radius: 4px;">DELETE</span> in the box below:
+                    </label>
+                    <input 
+                        type="text" 
+                        id="deleteConfirmInput" 
+                        placeholder="Type DELETE to confirm"
+                        style="width: 100%; padding: 12px; border: 2px solid #e5e7eb; border-radius: 8px; font-size: 1rem; font-family: monospace;"
+                        autocomplete="off"
+                    >
+                    <p id="deleteConfirmError" style="color: #dc2626; margin: 8px 0 0 0; font-size: 0.875rem; display: none;">
+                        Please type DELETE exactly as shown above.
+                    </p>
+                </div>
+
+                <div style="display: flex; gap: 12px;">
+                    <button 
+                        class="btn-secondary" 
+                        onclick="closeDeleteAccountModal()"
+                        style="flex: 1; padding: 12px 24px; font-size: 1rem; font-weight: 600; border-radius: 8px;">
+                        Cancel
+                    </button>
+                    <button 
+                        id="confirmDeleteBtn"
+                        class="btn-danger" 
+                        onclick="confirmDeleteAccount()"
+                        style="flex: 1; background: #dc2626; color: white; border: none; padding: 12px 24px; font-size: 1rem; font-weight: 600; border-radius: 8px; cursor: pointer;"
+                        disabled>
+                        Delete Forever
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Footer Component -->
     <div id="app-footer"></div>
@@ -1245,6 +1430,105 @@
                 setTimeout(() => toast.remove(), 400);
             }, 3000);
         }
+
+        // Account deletion functions
+        function showDeleteAccountModal() {
+            const modal = document.getElementById('deleteAccountModal');
+            const confirmInput = document.getElementById('deleteConfirmInput');
+            const confirmBtn = document.getElementById('confirmDeleteBtn');
+            const errorMsg = document.getElementById('deleteConfirmError');
+            
+            // Reset modal state
+            confirmInput.value = '';
+            confirmBtn.disabled = true;
+            errorMsg.style.display = 'none';
+            
+            // Show modal
+            modal.style.display = 'flex';
+            document.body.style.overflow = 'hidden';
+            
+            // Enable/disable confirm button based on input
+            confirmInput.addEventListener('input', function() {
+                if (this.value === 'DELETE') {
+                    confirmBtn.disabled = false;
+                    confirmBtn.style.opacity = '1';
+                    confirmBtn.style.cursor = 'pointer';
+                    errorMsg.style.display = 'none';
+                } else {
+                    confirmBtn.disabled = true;
+                    confirmBtn.style.opacity = '0.5';
+                    confirmBtn.style.cursor = 'not-allowed';
+                }
+            });
+        }
+
+        function closeDeleteAccountModal() {
+            const modal = document.getElementById('deleteAccountModal');
+            modal.style.display = 'none';
+            document.body.style.overflow = 'auto';
+        }
+
+        async function confirmDeleteAccount() {
+            const confirmInput = document.getElementById('deleteConfirmInput');
+            const confirmBtn = document.getElementById('confirmDeleteBtn');
+            const errorMsg = document.getElementById('deleteConfirmError');
+            
+            // Validate confirmation text
+            if (confirmInput.value !== 'DELETE') {
+                errorMsg.style.display = 'block';
+                confirmInput.style.borderColor = '#dc2626';
+                return;
+            }
+            
+            // Disable button and show loading
+            confirmBtn.disabled = true;
+            confirmBtn.innerHTML = '<span style=\"display: inline-block; width: 16px; height: 16px; border: 2px solid #fff; border-radius: 50%; border-top-color: transparent; animation: spin 1s linear infinite;\"></span> Deleting...';
+            
+            try {
+                const authToken = localStorage.getItem('authToken');
+                const response = await fetch('/api/account/delete', {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        confirmText: 'DELETE'
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    // Clear all local data
+                    localStorage.clear();
+                    sessionStorage.clear();
+                    
+                    // Show success message
+                    alert('Your account has been successfully deleted. You will now be redirected to the homepage.');
+                    
+                    // Redirect to homepage
+                    window.location.href = '/';
+                } else {
+                    throw new Error(result.error || 'Failed to delete account');
+                }
+            } catch (error) {
+                console.error('Delete account error:', error);
+                showToast(error.message || 'Failed to delete account. Please try again or contact support.', 'error');
+                
+                // Re-enable button
+                confirmBtn.disabled = false;
+                confirmBtn.innerHTML = 'Delete Forever';
+            }
+        }
+
+        // Close modal when clicking outside
+        document.addEventListener('click', function(event) {
+            const modal = document.getElementById('deleteAccountModal');
+            if (event.target === modal) {
+                closeDeleteAccountModal();
+            }
+        });
     </script>
 </body>
 </html>
