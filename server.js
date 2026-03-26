@@ -371,7 +371,12 @@ passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID || 'your-google-client-id',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || 'your-google-client-secret',
     callbackURL: CALLBACK_URL,
-    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send'],
+    scope: [
+        'profile', 
+        'email', 
+        'https://www.googleapis.com/auth/gmail.send',
+        'https://www.googleapis.com/auth/gmail.metadata'  // Added for reply detection
+    ],
     accessType: 'offline', // Request refresh token
     prompt: 'consent' // Force consent screen to get refresh token
 }, (accessToken, refreshToken, profile, done) => {
@@ -388,7 +393,12 @@ passport.use(new MicrosoftStrategy({
     clientID: process.env.MICROSOFT_CLIENT_ID || 'your-microsoft-client-id',
     clientSecret: process.env.MICROSOFT_CLIENT_SECRET || 'your-microsoft-client-secret',
     callbackURL: MICROSOFT_CALLBACK_URL,
-    scope: ['user.read', 'mail.send', 'offline_access'],
+    scope: [
+        'user.read',
+        'Mail.Read',      // Added for reply detection
+        'Mail.Send',      // Fixed capitalization
+        'offline_access'
+    ],
     tenant: 'common' // Supports personal Microsoft accounts and work/school accounts
 }, (accessToken, refreshToken, profile, done) => {
     // Handle Microsoft OAuth callback with tokens
