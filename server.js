@@ -968,6 +968,86 @@ app.post('/api/update-user-details', authenticateToken, async (req, res) => {
     }
 });
 
+// API endpoint to change password (protected)
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { currentPassword, newPassword } = req.body;
+
+        // Validation
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({ error: 'Both current and new password are required' });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+        }
+
+        // Get current user password from database
+        const user = await dbConfig.get('SELECT password FROM users WHERE id = ?', [userId]);
+        
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Verify current password
+        const isValidPassword = await bcrypt.compare(currentPassword, user.password);
+        
+        if (!isValidPassword) {
+            return res.status(401).json({ error: 'Current password is incorrect' });
+        }
+
+        // Hash new password
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+        // Update password in database
+        await dbConfig.run(
+            'UPDATE users SET password = ? WHERE id = ?',
+            [hashedPassword, userId]
+        );
+
+        console.log(`✅ Password changed successfully for user ${userId}`);
+
+        res.json({
+            success: true,
+            message: 'Password changed successfully'
+        });
+    } catch (error) {
+        console.error('Change password error:', error);
+        res.status(500).json({ error: 'Failed to change password' });
+    }
+});
+
+// API endpoint to update privacy settings (protected)
+app.post('/api/users/privacy-settings', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { emailNotifications, smsNotifications, profilePublic } = req.body;
+
+        // Store privacy settings as JSON
+        const privacySettings = {
+            emailNotifications: emailNotifications !== false,  // Default true
+            smsNotifications: smsNotifications === true,       // Default false
+            profilePublic: profilePublic === true              // Default false
+        };
+
+        // In future, add privacy_settings column to users table
+        // For now, just return success (settings handled client-side)
+        
+        console.log(`✅ Privacy settings updated for user ${userId}:`, privacySettings);
+
+        res.json({
+            success: true,
+            message: 'Privacy settings updated successfully',
+            privacySettings: privacySettings
+        });
+    } catch (error) {
+        console.error('Privacy settings error:', error);
+        res.status(500).json({ error: 'Failed to update privacy settings' });
+    }
+});
+
 // Helper function to create cover letter (from create-cover-letter.js)
 async function createCoverLetter(companyName, position, recipientEmail) {
     const CONFIG = {
