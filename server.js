@@ -2880,6 +2880,78 @@ app.use('/api/payment', paymentRoutes.router);
 app.use('/api/auth', authRoutes);
 app.use('/auth', authRoutes);
 
+// Account deletion endpoint (GDPR/CCPA compliance)
+app.delete('/api/account/delete', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { confirmText } = req.body;
+
+        // Require explicit confirmation
+        if (confirmText !== 'DELETE') {
+            return res.status(400).json({ 
+                error: 'Invalid confirmation. Please type DELETE to confirm.' 
+            });
+        }
+
+        console.log(`🗑️ [ACCOUNT DELETE] Starting deletion process for user ${userId}`);
+
+        // Get user data before deletion for logging
+        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // TODO: Revoke OAuth tokens with providers (future enhancement)
+        // For Google: Call https://oauth2.googleapis.com/revoke
+        // For Microsoft: Call https://graph.microsoft.com/v1.0/me/revokeSignInSessions
+
+        // Delete user data in correct order (foreign key constraints)
+        await dbConfig.run('DELETE FROM notifications WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted notifications for user ${userId}`);
+
+        await dbConfig.run('DELETE FROM applications WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted applications for user ${userId}`);
+
+        await dbConfig.run('DELETE FROM payments WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted payments for user ${userId}`);
+
+        await dbConfig.run('DELETE FROM cover_letters WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted cover letters for user ${userId}`);
+
+        // Delete user files from disk
+        const userUploadPath = path.join(__dirname, 'uploads', `user_${userId}`);
+        try {
+            await fs.rm(userUploadPath, { recursive: true, force: true });
+            console.log(`🗑️ [ACCOUNT DELETE] Deleted user files at ${userUploadPath}`);
+        } catch (err) {
+            console.error('Error deleting user files:', err);
+            // Continue with deletion even if file deletion fails
+        }
+
+        // Finally, delete the user account
+        await dbConfig.run('DELETE FROM users WHERE id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted user account ${userId} (${user.email})`);
+
+        // Clear auth cookie if it exists
+        res.clearCookie('authToken');
+
+        res.json({ 
+            success: true, 
+            message: 'Your account and all associated data have been permanently deleted.' 
+        });
+
+        console.log(`✅ [ACCOUNT DELETE] Successfully deleted user ${userId} (${user.email})`);
+
+    } catch (error) {
+        console.error('❌ [ACCOUNT DELETE] Error:', error);
+        res.status(500).json({ 
+            error: 'Failed to delete account. Please contact support if the issue persists.',
+            details: error.message 
+        });
+    }
+});
+
 // Set up profile routes with authentication
 app.use('/api/users', authenticateToken, profileRoutes);
 
