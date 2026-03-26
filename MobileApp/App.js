@@ -5488,118 +5488,138 @@ export default function App() {
         {/* Change Password Modal */}
         {showChangePassword && (
           <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Change Password</Text>
-                <TouchableOpacity onPress={() => setShowChangePassword(false)}>
-                  <Text style={styles.modalCloseBtn}>✕</Text>
+            <KeyboardAvoidingView 
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              style={styles.modalKeyboardView}
+            >
+              <View style={styles.modalContentScrollable}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Change Password</Text>
+                  <TouchableOpacity onPress={() => setShowChangePassword(false)}>
+                    <Text style={styles.modalCloseBtn}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <ScrollView 
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.modalScrollContent}
+                >
+                  <TextInput
+                    style={styles.modalInput}
+                    placeholder="Current Password"
+                    placeholderTextColor="#999"
+                    secureTextEntry
+                    value={currentPassword}
+                    onChangeText={setCurrentPassword}
+                  />
+                  <TextInput
+                    style={styles.modalInput}
+                    placeholder="New Password"
+                    placeholderTextColor="#999"
+                    secureTextEntry
+                    value={newPassword}
+                    onChangeText={setNewPassword}
+                  />
+                  <TextInput
+                    style={styles.modalInput}
+                    placeholder="Confirm New Password"
+                    placeholderTextColor="#999"
+                    secureTextEntry
+                    value={confirmPassword}
+                    onChangeText={setConfirmPassword}
+                  />
+                </ScrollView>
+
+                <TouchableOpacity 
+                  style={styles.modalButton}
+                  onPress={handleChangePassword}
+                >
+                  <Text style={styles.modalButtonText}>Change Password</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[styles.modalButton, { backgroundColor: '#e5e7eb' }]}
+                  onPress={() => setShowChangePassword(false)}
+                >
+                  <Text style={[styles.modalButtonText, { color: '#333' }]}>Cancel</Text>
                 </TouchableOpacity>
               </View>
-
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Current Password"
-                placeholderTextColor="#999"
-                secureTextEntry
-                value={currentPassword}
-                onChangeText={setCurrentPassword}
-              />
-              <TextInput
-                style={styles.modalInput}
-                placeholder="New Password"
-                placeholderTextColor="#999"
-                secureTextEntry
-                value={newPassword}
-                onChangeText={setNewPassword}
-              />
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Confirm New Password"
-                placeholderTextColor="#999"
-                secureTextEntry
-                value={confirmPassword}
-                onChangeText={setConfirmPassword}
-              />
-
-              <TouchableOpacity 
-                style={styles.modalButton}
-                onPress={handleChangePassword}
-              >
-                <Text style={styles.modalButtonText}>Change Password</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.modalButton, { backgroundColor: '#e5e7eb' }]}
-                onPress={() => setShowChangePassword(false)}
-              >
-                <Text style={[styles.modalButtonText, { color: '#333' }]}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
+            </KeyboardAvoidingView>
           </View>
         )}
 
         {/* Privacy Settings Modal */}
         {showPrivacySettings && (
           <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Privacy Settings</Text>
-                <TouchableOpacity onPress={() => setShowPrivacySettings(false)}>
-                  <Text style={styles.modalCloseBtn}>✕</Text>
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.settingRow}>
-                <View>
-                  <Text style={styles.settingLabel}>Email Notifications</Text>
-                  <Text style={styles.settingDescription}>Receive updates via email</Text>
+            <KeyboardAvoidingView 
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              style={styles.modalKeyboardView}
+            >
+              <View style={styles.modalContentScrollable}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Privacy Settings</Text>
+                  <TouchableOpacity onPress={() => setShowPrivacySettings(false)}>
+                    <Text style={styles.modalCloseBtn}>✕</Text>
+                  </TouchableOpacity>
                 </View>
-                <TouchableOpacity 
-                  style={[styles.toggle, privacySettings.emailNotifications && styles.toggleActive]}
-                  onPress={() => setPrivacySettings({ ...privacySettings, emailNotifications: !privacySettings.emailNotifications })}
+
+                <ScrollView 
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.modalScrollContent}
                 >
-                  <View style={[styles.toggleCircle, privacySettings.emailNotifications && styles.toggleCircleActive]} />
+                  <View style={styles.settingRow}>
+                    <View style={styles.settingTextContainer}>
+                      <Text style={styles.settingLabel}>Email Notifications</Text>
+                      <Text style={styles.settingDescription}>Receive updates via email</Text>
+                    </View>
+                    <TouchableOpacity 
+                      style={[styles.toggle, privacySettings.emailNotifications && styles.toggleActive]}
+                      onPress={() => setPrivacySettings({ ...privacySettings, emailNotifications: !privacySettings.emailNotifications })}
+                    >
+                      <View style={[styles.toggleCircle, privacySettings.emailNotifications && styles.toggleCircleActive]} />
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={styles.settingRow}>
+                    <View style={styles.settingTextContainer}>
+                      <Text style={styles.settingLabel}>SMS Notifications</Text>
+                      <Text style={styles.settingDescription}>Receive updates via SMS</Text>
+                    </View>
+                    <TouchableOpacity 
+                      style={[styles.toggle, privacySettings.smsNotifications && styles.toggleActive]}
+                      onPress={() => setPrivacySettings({ ...privacySettings, smsNotifications: !privacySettings.smsNotifications })}
+                    >
+                      <View style={[styles.toggleCircle, privacySettings.smsNotifications && styles.toggleCircleActive]} />
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={styles.settingRow}>
+                    <View style={styles.settingTextContainer}>
+                      <Text style={styles.settingLabel}>Public Profile</Text>
+                      <Text style={styles.settingDescription}>Allow others to view your profile</Text>
+                    </View>
+                    <TouchableOpacity 
+                      style={[styles.toggle, privacySettings.profilePublic && styles.toggleActive]}
+                      onPress={() => setPrivacySettings({ ...privacySettings, profilePublic: !privacySettings.profilePublic })}
+                    >
+                      <View style={[styles.toggleCircle, privacySettings.profilePublic && styles.toggleCircleActive]} />
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+
+                <TouchableOpacity 
+                  style={styles.modalButton}
+                  onPress={handleUpdatePrivacySettings}
+                >
+                  <Text style={styles.modalButtonText}>Save Settings</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[styles.modalButton, { backgroundColor: '#e5e7eb' }]}
+                  onPress={() => setShowPrivacySettings(false)}
+                >
+                  <Text style={[styles.modalButtonText, { color: '#333' }]}>Cancel</Text>
                 </TouchableOpacity>
               </View>
-
-              <View style={styles.settingRow}>
-                <View>
-                  <Text style={styles.settingLabel}>SMS Notifications</Text>
-                  <Text style={styles.settingDescription}>Receive updates via SMS</Text>
-                </View>
-                <TouchableOpacity 
-                  style={[styles.toggle, privacySettings.smsNotifications && styles.toggleActive]}
-                  onPress={() => setPrivacySettings({ ...privacySettings, smsNotifications: !privacySettings.smsNotifications })}
-                >
-                  <View style={[styles.toggleCircle, privacySettings.smsNotifications && styles.toggleCircleActive]} />
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.settingRow}>
-                <View>
-                  <Text style={styles.settingLabel}>Public Profile</Text>
-                  <Text style={styles.settingDescription}>Allow others to view your profile</Text>
-                </View>
-                <TouchableOpacity 
-                  style={[styles.toggle, privacySettings.profilePublic && styles.toggleActive]}
-                  onPress={() => setPrivacySettings({ ...privacySettings, profilePublic: !privacySettings.profilePublic })}
-                >
-                  <View style={[styles.toggleCircle, privacySettings.profilePublic && styles.toggleCircleActive]} />
-                </TouchableOpacity>
-              </View>
-
-              <TouchableOpacity 
-                style={styles.modalButton}
-                onPress={handleUpdatePrivacySettings}
-              >
-                <Text style={styles.modalButtonText}>Save Settings</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.modalButton, { backgroundColor: '#e5e7eb' }]}
-                onPress={() => setShowPrivacySettings(false)}
-              >
-                <Text style={[styles.modalButtonText, { color: '#333' }]}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
+            </KeyboardAvoidingView>
           </View>
         )}
       </SafeAreaView>
@@ -10110,6 +10130,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 1000,
+    padding: 20,
+  },
+  modalKeyboardView: {
+    width: '100%',
+    maxWidth: 400,
+    justifyContent: 'center',
   },
   modalContent: {
     backgroundColor: '#fff',
@@ -10117,43 +10143,70 @@ const styles = StyleSheet.create({
     padding: 20,
     width: '85%',
     maxWidth: 400,
+    maxHeight: '80%',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
     elevation: 5,
   },
+  modalContentScrollable: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    width: '100%',
+    maxHeight: Dimensions.get('window').height * 0.75,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  modalScrollContent: {
+    paddingBottom: 10,
+  },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 20,
+    paddingBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#000',
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1f2937',
   },
   modalCloseBtn: {
-    fontSize: 24,
-    color: '#666',
+    fontSize: 28,
+    color: '#9ca3af',
     padding: 5,
+    fontWeight: '300',
   },
   modalInput: {
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-    fontSize: 14,
-    color: '#000',
+    borderColor: '#e5e7eb',
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 14,
+    fontSize: 15,
+    color: '#1f2937',
+    backgroundColor: '#f9fafb',
   },
   modalButton: {
     backgroundColor: '#6366f1',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 10,
+    borderRadius: 10,
+    padding: 14,
+    marginTop: 8,
+    marginBottom: 8,
     alignItems: 'center',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
   },
   modalButtonText: {
     color: '#fff',
@@ -10164,29 +10217,34 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
-    marginBottom: 12,
+    marginBottom: 8,
+  },
+  settingTextContainer: {
+    flex: 1,
+    marginRight: 12,
   },
   settingLabel: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#000',
+    color: '#1f2937',
     marginBottom: 4,
   },
   settingDescription: {
     fontSize: 13,
-    color: '#666',
+    color: '#6b7280',
+    lineHeight: 18,
   },
   toggle: {
-    width: 50,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#e5e7eb',
+    width: 52,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#d1d5db',
     justifyContent: 'center',
     alignItems: 'flex-start',
-    paddingHorizontal: 2,
+    paddingHorizontal: 3,
   },
   toggleActive: {
     backgroundColor: '#6366f1',
@@ -10197,6 +10255,11 @@ const styles = StyleSheet.create({
     height: 24,
     borderRadius: 12,
     backgroundColor: '#fff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
   },
   toggleCircleActive: {
     backgroundColor: '#fff',
