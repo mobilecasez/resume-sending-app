@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, ActionSheetIOS, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView } from 'react-native-webview';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -19,7 +19,10 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 // Get your Google Client ID from Google Cloud Console
 const GOOGLE_CLIENT_ID = '832256639733-b0481qdpal17m1rcmmvq4nlnlvavgg59.apps.googleusercontent.com';
 
-const { width, height } = Dimensions.get('window');
+// Microsoft OAuth Client ID from Azure Portal
+const MICROSOFT_CLIENT_ID = '9205782b-1a57-4c2f-bbfd-8136b5378e96';
+
+const { width, height} = Dimensions.get('window');
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -461,6 +464,7 @@ export default function App() {
   const [showReplyDatePicker, setShowReplyDatePicker] = useState(false);
   const [selectedReplyDate, setSelectedReplyDate] = useState(new Date());
   const [replyAppId, setReplyAppId] = useState(null);
+  const [isCheckingReplies, setIsCheckingReplies] = useState(false);
   
   // Review date picker state
   const [selectedReviewDate, setSelectedReviewDate] = useState(new Date());
@@ -708,43 +712,50 @@ export default function App() {
 
   // Pick and upload profile image
   const pickProfileImage = async () => {
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options: ['Cancel', 'Choose from Files', 'Choose from Photos'],
-        cancelButtonIndex: 0,
-      },
-      async (buttonIndex) => {
-        if (buttonIndex === 1) {
-          // Choose from Files
-          try {
-            const result = await DocumentPicker.getDocumentAsync({
-              type: 'image/*',
-            });
+    Alert.alert(
+      'Choose Profile Image',
+      'Select an option',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel'
+        },
+        {
+          text: 'Choose from Files',
+          onPress: async () => {
+            try {
+              const result = await DocumentPicker.getDocumentAsync({
+                type: 'image/*',
+              });
 
-            if (result.assets && result.assets.length > 0) {
-              await uploadProfileImage(result.assets[0]);
+              if (result.assets && result.assets.length > 0) {
+                await uploadProfileImage(result.assets[0]);
+              }
+            } catch (error) {
+              console.log('Error:', error);
             }
-          } catch (error) {
-            console.log('Error:', error);
           }
-        } else if (buttonIndex === 2) {
-          // Choose from Photos
-          try {
-            const result = await ImagePicker.launchImageLibraryAsync({
-              mediaTypes: ImagePicker.MediaTypeOptions.Images,
-              allowsEditing: true,
-              aspect: [1, 1],
-              quality: 0.8,
-            });
+        },
+        {
+          text: 'Choose from Photos',
+          onPress: async () => {
+            try {
+              const result = await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                allowsEditing: true,
+                aspect: [1, 1],
+                quality: 0.8,
+              });
 
-            if (!result.canceled) {
-              await uploadProfileImage(result.assets[0]);
+              if (!result.canceled) {
+                await uploadProfileImage(result.assets[0]);
+              }
+            } catch (error) {
+              console.log('Error:', error);
             }
-          } catch (error) {
-            console.log('Error:', error);
           }
         }
-      }
+      ]
     );
   };
 
@@ -792,27 +803,20 @@ export default function App() {
 
   // Pick and upload resume
   const pickResume = async () => {
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options: ['Cancel', 'Choose PDF File'],
-        cancelButtonIndex: 0,
-      },
-      async (buttonIndex) => {
-        if (buttonIndex === 1) {
-          try {
-            const result = await DocumentPicker.getDocumentAsync({
-              type: 'application/pdf',
-            });
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+      });
 
-            if (result.assets && result.assets.length > 0) {
-              await uploadResume(result.assets[0]);
-            }
-          } catch (error) {
-            console.log('Error:', error);
-          }
-        }
+      if (result.assets && result.assets.length > 0) {
+        await uploadResume(result.assets[0]);
       }
-    );
+    } catch (error) {
+      console.log('Error picking resume:', error);
+      if (error.message !== 'User cancelled document picker') {
+        Alert.alert('Error', 'Failed to pick resume. Please try again.');
+      }
+    }
   };
 
   // Upload resume
@@ -858,41 +862,48 @@ export default function App() {
 
   // Pick and upload signature
   const pickSignature = async () => {
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options: ['Cancel', 'Choose from Files', 'Choose from Photos'],
-        cancelButtonIndex: 0,
-      },
-      async (buttonIndex) => {
-        if (buttonIndex === 1) {
-          // Choose from Files
-          try {
-            const result = await DocumentPicker.getDocumentAsync({
-              type: 'image/*',
-            });
+    Alert.alert(
+      'Choose Signature',
+      'Select an option',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel'
+        },
+        {
+          text: 'Choose from Files',
+          onPress: async () => {
+            try {
+              const result = await DocumentPicker.getDocumentAsync({
+                type: 'image/*',
+              });
 
-            if (result.assets && result.assets.length > 0) {
-              await uploadSignature(result.assets[0]);
+              if (result.assets && result.assets.length > 0) {
+                await uploadSignature(result.assets[0]);
+              }
+            } catch (error) {
+              console.log('Error:', error);
             }
-          } catch (error) {
-            console.log('Error:', error);
           }
-        } else if (buttonIndex === 2) {
-          // Choose from Photos
-          try {
-            const result = await ImagePicker.launchImageLibraryAsync({
-              mediaTypes: ImagePicker.MediaTypeOptions.Images,
-              quality: 0.8,
-            });
+        },
+        {
+          text: 'Choose from Photos',
+          onPress: async () => {
+            try {
+              const result = await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                quality: 0.8,
+              });
 
-            if (!result.canceled) {
-              await uploadSignature(result.assets[0]);
+              if (!result.canceled) {
+                await uploadSignature(result.assets[0]);
+              }
+            } catch (error) {
+              console.log('Error:', error);
             }
-          } catch (error) {
-            console.log('Error:', error);
           }
         }
-      }
+      ]
     );
   };
 
@@ -972,7 +983,7 @@ export default function App() {
     }
 
     try {
-      const response = await fetch(`${API_BASE}/auth/change-password`, {
+      const response = await fetch(`${API_BASE.replace('/api', '')}/api/auth/change-password`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${user?.token}`,
@@ -1004,7 +1015,7 @@ export default function App() {
   // Handle privacy settings update
   const handleUpdatePrivacySettings = async () => {
     try {
-      const response = await fetch(`${API_BASE}/users/privacy-settings`, {
+      const response = await fetch(`${API_BASE.replace('/api', '')}/api/users/privacy-settings`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${user?.token}`,
@@ -1419,14 +1430,53 @@ export default function App() {
         return;
       }
       
-      // Get headquarter address as default
+      // Get headquarter address as default - construct properly without duplicates
       const headquarterLocation = data.locations?.find(loc => loc.isHeadquarters) || data.locations?.[0];
-      const defaultAddress = headquarterLocation ? `${headquarterLocation.address}, ${headquarterLocation.city}, ${headquarterLocation.country}` : '';
+      let defaultAddress = '';
+      if (headquarterLocation) {
+        let address = headquarterLocation.address || '';
+        const city = headquarterLocation.city || '';
+        const country = headquarterLocation.country || '';
+        
+        // Check if address is empty or placeholder
+        if (!address || address === 'Address not available online') {
+          // Construct from city and country if available
+          const parts = [];
+          if (city && city !== 'Not specified') parts.push(city);
+          if (country && country !== 'Not specified') parts.push(country);
+          defaultAddress = parts.join(', ') || '';
+        } else {
+          // Address exists - check if we need to append city/country
+          const addressLower = address.toLowerCase();
+          const cityLower = city.toLowerCase();
+          const countryLower = country.toLowerCase();
+          
+          // Only add city if it's not already in the address
+          const cityInAddress = cityLower && addressLower.includes(cityLower);
+          // Only add country if it's not already in the address
+          const countryInAddress = countryLower && addressLower.includes(countryLower);
+          
+          // Start with the address
+          defaultAddress = address;
+          
+          // Append city if valid and not already present
+          if (city && city !== 'Not specified' && !cityInAddress) {
+            defaultAddress += `, ${city}`;
+          }
+          
+          // Append country if valid and not already present
+          if (country && country !== 'Not specified' && !countryInAddress) {
+            defaultAddress += `, ${country}`;
+          }
+        }
+      }
       
-      console.log(`💾 [${requestId}] Storing in state...`);
+      console.log(`💾 [${requestId}] Storing in state with address: ${defaultAddress}...`);
+      
+      // Use functional setState to avoid race conditions when generating in parallel
+      let updatedCoverLetters = {};
       setReviewCoverLetters(prev => {
-        console.log(`   State update callback triggered`);
-        return {
+        updatedCoverLetters = {
           ...prev,
           [recipientIndex]: {
             ...data,
@@ -1439,7 +1489,17 @@ export default function App() {
             storedRecipientWebsite: recipient.website
           }
         };
+        return updatedCoverLetters;
       });
+      console.log(`   State update callback triggered`);
+      
+      // Save to backend database (sync with web) - wait a bit for state to settle
+      setTimeout(() => {
+        setReviewCoverLetters(current => {
+          saveReviewCoverLettersToBackend(current);
+          return current;
+        });
+      }, 100);
       
       // Increment total generated counter
       setTotalGenerated(prev => prev + 1);
@@ -1599,7 +1659,7 @@ export default function App() {
       const promises = recipients
         .map((recipient, index) => {
           const coverLetter = reviewCoverLetters[index];
-          if (recipient.email && recipient.website && coverLetter && !coverLetter.sent) {
+          if (recipient.email && recipient.website && coverLetter) {
             return sendApplicationFromReview(index, true);
           }
           return Promise.resolve();
@@ -2219,6 +2279,39 @@ export default function App() {
     return `${Math.floor(seconds / 604800)}w ago`;
   };
 
+  // Save review cover letters to backend database
+  const saveReviewCoverLettersToBackend = async (lettersToSave = null) => {
+    try {
+      if (!user?.token) {
+        console.log('⚠️ Cannot save review cover letters - no user token');
+        return;
+      }
+
+      const dataToSave = lettersToSave || reviewCoverLetters;
+      
+      console.log('💾 Saving review cover letters to backend:', Object.keys(dataToSave).length, 'items');
+      
+      const response = await fetch(`${API_BASE}/users/review-cover-letters`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ reviewCoverLetters: dataToSave })
+      });
+      
+      if (response.ok) {
+        console.log('✅ Review cover letters saved to backend database');
+        // Also save to AsyncStorage for offline access
+        await AsyncStorage.setItem(`reviewCoverLetters_${user.email}`, JSON.stringify(dataToSave));
+      } else {
+        console.error('❌ Failed to save cover letters to backend:', response.status);
+      }
+    } catch (error) {
+      console.error('Failed to save review cover letters to backend:', error);
+    }
+  };
+
   const loadReviewCoverLettersFromStorage = async () => {
     try {
       if (!user?.email) {
@@ -2226,13 +2319,41 @@ export default function App() {
         return;
       }
       
+      // Try to load from backend API first (sync with web)
+      try {
+        const response = await fetch(`${API_BASE}/users/review-cover-letters`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${user.token}`,
+            'Content-Type': 'application/json',
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success && data.reviewCoverLetters) {
+            setReviewCoverLetters(data.reviewCoverLetters);
+            console.log('📖 Review cover letters loaded from backend database:', Object.keys(data.reviewCoverLetters).length, 'items');
+            
+            // Cache in AsyncStorage for offline access
+            await AsyncStorage.setItem(`reviewCoverLetters_${user.email}`, JSON.stringify(data.reviewCoverLetters));
+            return;
+          }
+        } else {
+          console.log('⚠️ Backend returned error for cover letters, trying AsyncStorage fallback');
+        }
+      } catch (apiError) {
+        console.log('⚠️ Backend API error, trying AsyncStorage fallback:', apiError.message);
+      }
+      
+      // Fallback to AsyncStorage if backend is unavailable
       const stored = await AsyncStorage.getItem(`reviewCoverLetters_${user.email}`);
-      console.log('🔍 Attempting to load review cover letters for:', user.email);
+      console.log('🔍 Attempting to load review cover letters from AsyncStorage for:', user.email);
       
       if (stored) {
         const parsed = JSON.parse(stored);
         setReviewCoverLetters(parsed);
-        console.log('📖 Review cover letters loaded from AsyncStorage:', Object.keys(parsed).length, 'items');
+        console.log('📖 Review cover letters loaded from AsyncStorage (offline):', Object.keys(parsed).length, 'items');
       } else {
         console.log('ℹ️ No stored review cover letters found');
       }
@@ -2306,8 +2427,13 @@ export default function App() {
         
         if (response.ok) {
           const data = await response.json();
-          setTotalGenerated(data.totalGenerated || 0);
-          setTotalSent(data.totalSent || 0);
+          // Only update if backend returns actual data (not null/undefined)
+          if (data.totalGenerated !== null && data.totalGenerated !== undefined) {
+            setTotalGenerated(data.totalGenerated);
+          }
+          if (data.totalSent !== null && data.totalSent !== undefined) {
+            setTotalSent(data.totalSent);
+          }
           console.log('📊 Loaded counters from backend API - Generated:', data.totalGenerated, 'Sent:', data.totalSent);
 
           // Also load credit balance
@@ -2333,31 +2459,47 @@ export default function App() {
             console.log('⚠️ Could not load credits:', creditsError);
           }
           
-          // Also cache in AsyncStorage
-          await AsyncStorage.setItem(`appCounters_${user.email}`, JSON.stringify({
-            totalGenerated: data.totalGenerated || 0,
-            totalSent: data.totalSent || 0
-          }));
+          // Only cache in AsyncStorage if we got valid data from backend
+          if (data.totalGenerated !== null || data.totalSent !== null) {
+            await AsyncStorage.setItem(`appCounters_${user.email}`, JSON.stringify({
+              totalGenerated: data.totalGenerated || 0,
+              totalSent: data.totalSent || 0
+            }));
+          }
         } else {
           // Fallback to AsyncStorage
           console.log('⚠️ Failed to load from backend, using AsyncStorage cache');
           const countersStored = await AsyncStorage.getItem(`appCounters_${user.email}`);
           if (countersStored) {
             const counters = JSON.parse(countersStored);
-            setTotalGenerated(counters.totalGenerated || 0);
-            setTotalSent(counters.totalSent || 0);
+            // Only update if we have valid cached data - don't override with 0
+            if (counters.totalGenerated !== null && counters.totalGenerated !== undefined) {
+              setTotalGenerated(counters.totalGenerated);
+            }
+            if (counters.totalSent !== null && counters.totalSent !== undefined) {
+              setTotalSent(counters.totalSent);
+            }
             console.log('📊 Loaded counters from AsyncStorage - Generated:', counters.totalGenerated, 'Sent:', counters.totalSent);
+          } else {
+            console.log('ℹ️ No cached counters - keeping current values');
           }
         }
       } catch (error) {
         console.error('Failed to load counters from backend:', error);
-        // Fallback to AsyncStorage
+        // Fallback to AsyncStorage - don't override with 0
         const countersStored = await AsyncStorage.getItem(`appCounters_${user.email}`);
         if (countersStored) {
           const counters = JSON.parse(countersStored);
-          setTotalGenerated(counters.totalGenerated || 0);
-          setTotalSent(counters.totalSent || 0);
+          // Only update if we have valid cached data
+          if (counters.totalGenerated !== null && counters.totalGenerated !== undefined) {
+            setTotalGenerated(counters.totalGenerated);
+          }
+          if (counters.totalSent !== null && counters.totalSent !== undefined) {
+            setTotalSent(counters.totalSent);
+          }
           console.log('📊 Loaded counters from AsyncStorage (fallback) - Generated:', counters.totalGenerated, 'Sent:', counters.totalSent);
+        } else {
+          console.log('ℹ️ No cached counters - keeping current values');
         }
       }
       
@@ -2758,6 +2900,65 @@ export default function App() {
     }
   };
 
+  // Check for email replies
+  const checkEmailReplies = async () => {
+    try {
+      setIsCheckingReplies(true);
+
+      const response = await fetch(`${API_BASE}/check-replies`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        }
+      });
+
+      // Log response details for debugging
+      console.log('Check replies response status:', response.status);
+      console.log('Check replies response headers:', response.headers);
+      
+      // Get response text first to handle non-JSON responses
+      const responseText = await response.text();
+      console.log('Check replies response text (first 200 chars):', responseText.substring(0, 200));
+
+      // Try to parse as JSON
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('Failed to parse response as JSON:', parseError);
+        throw new Error(`Server returned invalid response. Status: ${response.status}. Response: ${responseText.substring(0, 100)}`);
+      }
+
+      if (response.ok) {
+        if (data.repliesFound > 0) {
+          // Refresh application history from backend
+          await loadApplicationHistoryFromStorage();
+          
+          Alert.alert(
+            '✅ Replies Found!',
+            data.message,
+            [{ text: 'OK' }]
+          );
+        } else {
+          Alert.alert(
+            'No New Replies',
+            'No replies found yet. Keep checking!',
+            [{ text: 'OK' }]
+          );
+        }
+      } else {
+        Alert.alert('Error', data.message || data.error || 'Failed to check replies');
+      }
+
+    } catch (error) {
+      console.error('Check replies error:', error);
+      Alert.alert('Error', error.message || 'Failed to check email replies. Please try again.');
+    } finally {
+      setIsCheckingReplies(false);
+    }
+  };
+
   const handleRegister = async () => {
     if (!fullName || !email || !password) {
       setError('Please fill in all fields');
@@ -2871,7 +3072,7 @@ export default function App() {
       console.log('API Base:', API_BASE);
       
       // Send access token to backend
-      const response = await fetch(`${API_BASE}/api/auth/google`, {
+      const response = await fetch(`${API_BASE}/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ accessToken })
@@ -2901,6 +3102,44 @@ export default function App() {
     }
   };
 
+  const handleMicrosoftAuthResponse = async (accessToken) => {
+    setLoading(true);
+    setError('');
+    try {
+      console.log('Microsoft Auth Response - Token length:', accessToken?.length || 0);
+      console.log('API Base:', API_BASE);
+      
+      // Send access token to backend
+      const response = await fetch(`${API_BASE}/auth/microsoft`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessToken })
+      });
+
+      console.log('Backend Response Status:', response.status);
+      const data = await response.json();
+      console.log('Backend Response Data:', data);
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Microsoft login failed');
+      }
+
+      // Store user data with token
+      setUser({
+        ...data.user,
+        token: data.token
+      });
+      setScreen('dashboard');
+      Alert.alert('Success', `Welcome ${data.user.fullName}!`);
+    } catch (err) {
+      console.log('Microsoft Login Error:', err.message);
+      setError(err.message || 'Microsoft login failed');
+      Alert.alert('Error', err.message || 'Microsoft login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleGoogleLogin = async () => {
     try {
       const result = await promptAsync();
@@ -2910,6 +3149,47 @@ export default function App() {
     } catch (err) {
       setError('Google login failed: ' + err.message);
       Alert.alert('Error', 'Google login failed: ' + err.message);
+    }
+  };
+
+  const handleMicrosoftLogin = async () => {
+    setLoading(true);
+    try {
+      // Microsoft OAuth URL for mobile
+      const redirectUri = `msauth://com.cvapplyr.app/callback`;
+      const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
+        `client_id=${MICROSOFT_CLIENT_ID}` +
+        `&response_type=token` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&scope=${encodeURIComponent('user.read Mail.Read Mail.Send offline_access')}` +
+        `&response_mode=fragment`;
+      
+      console.log('Opening Microsoft auth URL...');
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+      
+      console.log('Microsoft auth result:', result);
+      
+      if (result.type === 'success') {
+        // Extract access token from URL fragment
+        const url = result.url;
+        const accessTokenMatch = url.match(/access_token=([^&]+)/);
+        
+        if (accessTokenMatch && accessTokenMatch[1]) {
+          const accessToken = accessTokenMatch[1];
+          console.log('Microsoft access token received');
+          await handleMicrosoftAuthResponse(accessToken);
+        } else {
+          throw new Error('No access token received from Microsoft');
+        }
+      } else if (result.type === 'cancel') {
+        setError('Microsoft login cancelled');
+      }
+    } catch (err) {
+      console.error('Microsoft login error:', err);
+      setError('Microsoft login failed: ' + err.message);
+      Alert.alert('Error', 'Microsoft login failed: ' + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -3051,8 +3331,9 @@ export default function App() {
 
                   {/* Microsoft Login */}
                   <TouchableOpacity
-                    style={styles.loginSocialButton}
-                    onPress={() => Alert.alert('Coming Soon', 'Microsoft sign-in will be available soon!')}
+                    style={[styles.loginSocialButton, loading && styles.loginSocialButtonDisabled]}
+                    onPress={() => handleMicrosoftLogin()}
+                    disabled={loading}
                     activeOpacity={0.8}
                   >
                     <View style={styles.loginSocialButtonInner}>
@@ -3810,10 +4091,20 @@ export default function App() {
                     : 'Your latest job applications'}
                 </Text>
               </View>
-              <View style={styles.modernCountBadge}>
-                <Text style={styles.modernCountBadgeIcon}>◆</Text>
-                <Text style={styles.modernCountBadgeText}>{Math.min(5, applicationHistory.length)}</Text>
-              </View>
+              {applicationHistory.length > 0 && (user.provider === 'google' || user.provider === 'microsoft') && (
+                <TouchableOpacity 
+                  style={styles.refreshButton}
+                  onPress={checkEmailReplies}
+                  disabled={isCheckingReplies}
+                >
+                  <Text style={[styles.refreshButtonIcon, isCheckingReplies && styles.refreshButtonIconSpinning]}>
+                    ↻
+                  </Text>
+                  <Text style={styles.refreshButtonText}>
+                    {isCheckingReplies ? 'Checking...' : 'Check Replies'}
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
             
             {applicationHistory.length === 0 ? (
@@ -3830,10 +4121,10 @@ export default function App() {
                   <TouchableOpacity 
                     key={app.id}
                     style={styles.modernApplicationCard}
-                    disabled={user.provider === 'google' || app.replyReceived}
-                    activeOpacity={user.provider === 'email' && !app.replyReceived ? 0.7 : 1}
+                    disabled={app.replyReceived}
+                    activeOpacity={!app.replyReceived ? 0.7 : 1}
                     onPress={() => {
-                      if (user.provider === 'email' && !app.replyReceived) {
+                      if (!app.replyReceived) {
                         setReplyAppId(app.id);
                         setSelectedReplyDate(new Date());
                         setShowReplyDatePicker(true);
@@ -3900,7 +4191,7 @@ export default function App() {
                       </View>
                       
                       {/* Action hint */}
-                      {user.provider === 'email' && !app.replyReceived && (
+                      {!app.replyReceived && (
                         <View style={styles.modernActionHint}>
                           <Text style={styles.modernActionHintText}>✓ Tap to mark as replied</Text>
                         </View>
@@ -4234,7 +4525,7 @@ export default function App() {
               {/* 30-Day Activity Overview Chart */}
               {usageData?.dateWiseActivity && usageData.dateWiseActivity.length > 0 && (
                 <View style={styles.usageHistoryCard}>
-                  <Text style={styles.usageCardTitle}>📈 Activity Overview (Last 30 Days)</Text>
+                  <Text style={styles.usageCardTitle}>📈 Activity Overview (Last 7 Days)</Text>
                   <View style={styles.chartContainer}>
                     {(() => {
                       // Get days with activity for chart (show all 30 days)
@@ -4285,12 +4576,14 @@ export default function App() {
                                 const sentHeight = ((day.sent || 0) / maxValue) * 120;
                                 const usedHeight = ((day.creditsUsed || 0) / maxValue) * 120;
                                 
+                                console.log(`📊 [BAR ${index}] ${day.date}: Gen=${day.generated}(${genHeight.toFixed(1)}px), Sent=${day.sent}(${sentHeight.toFixed(1)}px), Used=${day.creditsUsed}(${usedHeight.toFixed(1)}px)`);
+                                
                                 return (
                                   <View key={index} style={styles.chartBarGroup}>
                                     <View style={styles.chartBarContainer}>
                                       <View style={[styles.chartBar, { height: Math.max(genHeight, 2), backgroundColor: '#8B5CF6' }]} />
-                                      <View style={[styles.chartBar, { height: Math.max(sentHeight, 2), backgroundColor: '#10B981', marginLeft: 2 }]} />
-                                      <View style={[styles.chartBar, { height: Math.max(usedHeight, 2), backgroundColor: '#EF4444', marginLeft: 2 }]} />
+                                      <View style={[styles.chartBar, { height: Math.max(sentHeight, 2), backgroundColor: '#10B981', marginLeft: 3 }]} />
+                                      <View style={[styles.chartBar, { height: Math.max(usedHeight, 2), backgroundColor: '#EF4444', marginLeft: 3 }]} />
                                     </View>
                                     <Text style={styles.chartLabel}>
                                       {new Date(day.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
@@ -4325,7 +4618,7 @@ export default function App() {
               {/* Date-wise Activity Table */}
               {usageData?.dateWiseActivity && usageData.dateWiseActivity.length > 0 && (
                 <View style={styles.usageHistoryCard}>
-                  <Text style={styles.usageCardTitle}>📅 Date-wise Activity (Last 30 Days)</Text>
+                  <Text style={styles.usageCardTitle}>📅 Date-wise Activity (Last 7 Days)</Text>
                   <View style={styles.activityTableHeader}>
                     <Text style={[styles.activityTableHeaderText, { flex: 2 }]}>Date</Text>
                     <Text style={[styles.activityTableHeaderText, { flex: 1, textAlign: 'center' }]}>Generated</Text>
@@ -4341,7 +4634,7 @@ export default function App() {
                         return (
                           <View style={{ padding: 20, alignItems: 'center' }}>
                             <Text style={{ fontSize: 14, color: '#666', textAlign: 'center' }}>
-                              No activity recorded in the last 30 days.
+                              No activity recorded in the last 7 days.
                             </Text>
                           </View>
                         );
@@ -4882,7 +5175,7 @@ export default function App() {
               style={styles.editButton}
               onPress={() => setIsEditingProfile(!isEditingProfile)}
             >
-              <Text style={styles.editButtonText}>{isEditingProfile ? 'Cancel' : 'Edit'}</Text>
+              <Text style={[styles.editButtonText, { color: '#0d9488' }]}>{isEditingProfile ? 'Cancel' : 'Edit'}</Text>
             </TouchableOpacity>
           </View>
 
@@ -4890,7 +5183,9 @@ export default function App() {
           <View style={styles.profileCardHeader}>
             <TouchableOpacity 
               style={styles.profileAvatarLarge}
-              onPress={isEditingProfile ? pickProfileImage : null}
+              onPress={pickProfileImage}
+              disabled={!isEditingProfile}
+              activeOpacity={isEditingProfile ? 0.7 : 1}
             >
               {profileData?.profileImage ? (
                 <Image 
@@ -4900,7 +5195,11 @@ export default function App() {
               ) : (
                 <Text style={styles.profileAvatarText}>{displayName.charAt(0).toUpperCase()}</Text>
               )}
-              {isEditingProfile && <View style={styles.editOverlay} />}
+              {isEditingProfile && (
+                <View style={styles.editOverlay}>
+                  <Text style={styles.editOverlayText}>📷</Text>
+                </View>
+              )}
             </TouchableOpacity>
             <View style={styles.profileBasicInfo}>
               <Text style={styles.profileNameLarge}>{displayName}</Text>
@@ -4916,8 +5215,9 @@ export default function App() {
             <View style={styles.profileDetailCard}>
               <Text style={styles.cardTitleProfile}>📷 Profile Photo</Text>
               <TouchableOpacity 
-                style={styles.uploadZone}
+                style={[styles.uploadZone, styles.uploadZoneActive]}
                 onPress={pickProfileImage}
+                activeOpacity={0.7}
               >
                 {profileData?.profileImage ? (
                   <Image 
@@ -4931,6 +5231,7 @@ export default function App() {
                   </View>
                 )}
               </TouchableOpacity>
+              <Text style={styles.uploadHint}>Tap to change from files or photos</Text>
             </View>
           )}
 
@@ -5066,13 +5367,19 @@ export default function App() {
           <View style={styles.profileDetailCard}>
             <Text style={styles.cardTitleProfile}>📄 Resume</Text>
             <TouchableOpacity 
-              style={styles.uploadZone}
-              onPress={isEditingProfile ? pickResume : null}
+              style={[
+                styles.uploadZone,
+                isEditingProfile && styles.uploadZoneActive
+              ]}
+              onPress={pickResume}
+              disabled={!isEditingProfile}
+              activeOpacity={isEditingProfile ? 0.7 : 1}
             >
               {profileData?.resume ? (
                 <View style={styles.uploadPlaceholder}>
                   <Text style={styles.uploadIcon}>✓</Text>
                   <Text style={styles.uploadText}>{profileData.resume}</Text>
+                  {isEditingProfile && <Text style={styles.uploadHint}>Tap to change</Text>}
                 </View>
               ) : (
                 <View style={styles.uploadPlaceholder}>
@@ -5087,8 +5394,13 @@ export default function App() {
           <View style={styles.profileDetailCard}>
             <Text style={styles.cardTitleProfile}>✍️ Signature</Text>
             <TouchableOpacity 
-              style={styles.uploadZone}
-              onPress={isEditingProfile ? pickSignature : null}
+              style={[
+                styles.uploadZone,
+                isEditingProfile && styles.uploadZoneActive
+              ]}
+              onPress={pickSignature}
+              disabled={!isEditingProfile}
+              activeOpacity={isEditingProfile ? 0.7 : 1}
             >
               {profileData?.signature ? (
                 <Image 
@@ -5860,13 +6172,18 @@ export default function App() {
   };
 
   const saveReviewEdits = (index) => {
-    // Update cover letter with edited data
-    setReviewCoverLetters({
-      ...reviewCoverLetters,
-      [index]: {
-        ...reviewCoverLetters[index],
-        ...editedCoverLetterData
-      }
+    // Update cover letter with edited data - use functional setState
+    setReviewCoverLetters(prev => {
+      const updated = {
+        ...prev,
+        [index]: {
+          ...prev[index],
+          ...editedCoverLetterData
+        }
+      };
+      // Save to backend after state update
+      saveReviewCoverLettersToBackend(updated);
+      return updated;
     });
     
     // Exit edit mode
@@ -6544,7 +6861,7 @@ export default function App() {
                 {/* Generate All Button */}
                 <TouchableOpacity
                   onPress={generateAllCoverLettersForReview}
-                  disabled={reviewGeneratingAll}
+                  disabled={false}
                   activeOpacity={0.85}
                   style={styles.reviewBulkActionCard}
                 >
@@ -6569,7 +6886,7 @@ export default function App() {
                 {/* Send All Button */}
                 <TouchableOpacity
                   onPress={sendAllApplicationsFromReview}
-                  disabled={reviewSendingAll || allApplicationsSent}
+                  disabled={false}
                   activeOpacity={0.85}
                   style={styles.reviewBulkActionCard}
                 >
@@ -6608,7 +6925,7 @@ export default function App() {
                 {/* Generate & Send All Button */}
                 <TouchableOpacity
                   onPress={generateAndSendAllApplications}
-                  disabled={reviewGeneratingAndSendingAll || allApplicationsSent}
+                  disabled={false}
                   activeOpacity={0.85}
                   style={styles.reviewBulkActionCard}
                 >
@@ -7355,6 +7672,36 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontWeight: '800',
     letterSpacing: 0.5,
+  },
+  
+  // Refresh button styles
+  refreshButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#10b981',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    gap: 8,
+    shadowColor: '#10b981',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  refreshButtonIcon: {
+    fontSize: 18,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  refreshButtonIconSpinning: {
+    opacity: 0.7,
+  },
+  refreshButtonText: {
+    fontSize: 14,
+    color: '#ffffff',
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
   
   // ===== MODERN RECIPIENT CARD =====
@@ -9328,9 +9675,9 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   chartBar: {
-    width: 3,
-    borderRadius: 2,
-    minHeight: 2,
+    width: 8,
+    borderRadius: 3,
+    minHeight: 3,
   },
   chartLabel: {
     fontSize: 9,
@@ -9529,15 +9876,6 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: 'center',
   },
-  editButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  editButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#0d9488',
-  },
   profileCardHeader: {
     backgroundColor: '#fff',
     borderRadius: 14,
@@ -9566,6 +9904,21 @@ const styles = StyleSheet.create({
   profileAvatarText: {
     fontSize: 32,
     fontWeight: '700',
+    color: '#fff',
+  },
+  editOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderRadius: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editOverlayText: {
+    fontSize: 24,
     color: '#fff',
   },
   profileImageContent: {
@@ -9680,6 +10033,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     backgroundColor: '#F9FAFB',
   },
+  uploadZoneActive: {
+    borderColor: '#0d9488',
+    backgroundColor: '#e0f2f1',
+  },
   uploadPreview: {
     width: '100%',
     height: 150,
@@ -9698,6 +10055,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '500',
     color: '#6B7280',
+  },
+  uploadHint: {
+    fontSize: 11,
+    fontWeight: '400',
+    color: '#0d9488',
+    marginTop: 4,
   },
   statsGrid: {
     flexDirection: 'row',
@@ -10144,13 +10507,18 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   editButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#e0f2f1',
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#0d9488',
     overflow: 'hidden',
-    shadowColor: '#3b82f6',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
-    elevation: 4,
+    shadowColor: '#0d9488',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
   editButtonGradient: {
     paddingHorizontal: 18,
