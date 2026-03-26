@@ -3095,18 +3095,22 @@ export default function App() {
     setRecipients([]);
   };
 
-  const handleGoogleAuthResponse = async (accessToken) => {
+  const handleGoogleAuthResponse = async (code) => {
     setLoading(true);
     setError('');
     try {
-      console.log('Google Auth Response - Token length:', accessToken?.length || 0);
+      console.log('Google Auth Response - Code length:', code?.length || 0);
       console.log('API Base:', API_BASE);
       
-      // Send access token to backend
+      // Send authorization code to backend for token exchange
       const response = await fetch(`${API_BASE}/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accessToken })
+        body: JSON.stringify({ 
+          code, 
+          isMobile: true,
+          platform: Platform.OS 
+        })
       });
 
       console.log('Backend Response Status:', response.status);
@@ -3174,7 +3178,7 @@ export default function App() {
   const handleGoogleLogin = async () => {
     setLoading(true);
     try {
-      // Google OAuth URL for mobile
+      // Google OAuth URL for mobile - using authorization code flow (not implicit flow)
       // iOS: use reverse domain format that Google generates (full client ID prefix)
       // Android: use package name format
       const clientIdPrefix = GOOGLE_CLIENT_ID.split('.apps.googleusercontent.com')[0];
@@ -3185,7 +3189,7 @@ export default function App() {
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
         `client_id=${GOOGLE_CLIENT_ID}` +
         `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-        `&response_type=token` +
+        `&response_type=code` +
         `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send')}`;
       
       console.log('Opening Google auth URL...', { platform: Platform.OS, redirectUri });
@@ -3194,16 +3198,16 @@ export default function App() {
       console.log('Google auth result:', result);
       
       if (result.type === 'success') {
-        // Extract access token from URL fragment
+        // Extract authorization code from URL query parameters
         const url = result.url;
-        const accessTokenMatch = url.match(/access_token=([^&]+)/);
+        const codeMatch = url.match(/code=([^&]+)/);
         
-        if (accessTokenMatch && accessTokenMatch[1]) {
-          const accessToken = accessTokenMatch[1];
-          console.log('Google access token received');
-          await handleGoogleAuthResponse(accessToken);
+        if (codeMatch && codeMatch[1]) {
+          const code = codeMatch[1];
+          console.log('Google authorization code received');
+          await handleGoogleAuthResponse(code);
         } else {
-          throw new Error('No access token received from Google');
+          throw new Error('No authorization code received from Google');
         }
       } else if (result.type === 'cancel') {
         setError('Google login cancelled');

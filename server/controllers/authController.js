@@ -120,7 +120,9 @@ const login = async (req, res) => {
             user: {
                 id: user.id,
                 fullName: user.full_name,
-                email: user.email
+                email: user.email,
+                oauth_provider: user.oauth_provider || null,
+                provider: user.oauth_provider || 'email' // alias for mobile app
             }
         });
     } catch (error) {
@@ -170,17 +172,73 @@ const googleCallback = (req, res) => {
 const googleAuth = async (req, res) => {
     try {
         console.log('Google OAuth Request Body:', req.body);
-        const { accessToken } = req.body;
+        const { accessToken, code, isMobile, platform } = req.body;
         
-        if (!accessToken) {
-            console.log('Missing accessToken in request');
-            return res.status(400).json({ error: 'Access token is required' });
+        let finalAccessToken = accessToken;
+        
+        // If authorization code is provided (mobile flow), exchange it for access token
+        if (code) {
+            console.log('Authorization code provided, exchanging for access token...');
+            console.log('Platform:', platform || 'not specified');
+            
+            const clientId = process.env.GOOGLE_CLIENT_ID;
+            const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+            
+            if (!clientId || !clientSecret) {
+                console.error('Google OAuth credentials not configured');
+                return res.status(500).json({ error: 'Server configuration error' });
+            }
+            
+            // Determine redirect URI based on platform
+            const clientIdPrefix = clientId.split('.apps.googleusercontent.com')[0];
+            let redirectUri;
+            
+            if (platform === 'ios') {
+                redirectUri = `com.googleusercontent.apps.${clientIdPrefix}:/oauth2redirect/google`;
+            } else if (platform === 'android') {
+                redirectUri = 'com.cvapplyr.mobile:/oauth2redirect/google';
+            } else {
+                // Default for web or unspecified
+                redirectUri = process.env.NODE_ENV === 'production'
+                    ? 'https://cvapplyr.com/auth/google/callback'
+                    : 'http://localhost:3000/auth/google/callback';
+            }
+            
+            console.log('Using redirect URI:', redirectUri);
+            
+            // Exchange authorization code for access token
+            const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    code: code,
+                    client_id: clientId,
+                    client_secret: clientSecret,
+                    redirect_uri: redirectUri,
+                    grant_type: 'authorization_code'
+                })
+            });
+            
+            if (!tokenResponse.ok) {
+                const errorData = await tokenResponse.json();
+                console.error('Google token exchange error:', errorData);
+                return res.status(401).json({ error: 'Failed to exchange authorization code', details: errorData });
+            }
+            
+            const tokenData = await tokenResponse.json();
+            finalAccessToken = tokenData.access_token;
+            console.log('Successfully exchanged code for access token');
+        }
+        
+        if (!finalAccessToken) {
+            console.log('Missing accessToken and code in request');
+            return res.status(400).json({ error: 'Access token or authorization code is required' });
         }
 
         console.log('Verifying access token with Google API...');
         // Get user info from Google
         const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
-            headers: { Authorization: `Bearer ${accessToken}` }
+            headers: { Authorization: `Bearer ${finalAccessToken}` }
         });
 
         if (!userInfoResponse.ok) {
@@ -200,10 +258,27 @@ const googleAuth = async (req, res) => {
                 const hashedPassword = await bcrypt.hash('google-oauth-' + googleUser.id, 10);
                 const result = await dbConfig.run(
                     'INSERT INTO users (email, full_name, password, oauth_provider, google_access_token) VALUES (?, ?, ?, ?, ?) RETURNING id',
-                    [googleUser.email, googleUser.name, hashedPassword, 'google', accessToken]
+                    [googleUser.email, googleUser.name, hashedPassword, 'google', finalAccessToken]
                 );
 
                 const newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
+                
+                // Give 2 free credits to new user
+                try {
+                    await dbConfig.run(
+                        'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
+                        [newUserId, 2, 2]
+                    );
+                    
+                    await dbConfig.run(
+                        `INSERT INTO credit_transactions 
+                        (user_id, transaction_type, credits_change, balance_after, description) 
+                        VALUES (?, ?, ?, ?, ?)`,
+                        [newUserId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                    );
+                } catch (creditErr) {
+                    console.error('Failed to add welcome credits:', creditErr);
+                }
 
                 // Generate JWT
                 const token = jwt.sign(
@@ -218,14 +293,16 @@ const googleAuth = async (req, res) => {
                     user: {
                         id: newUserId,
                         fullName: googleUser.name,
-                        email: googleUser.email
+                        email: googleUser.email,
+                        oauth_provider: 'google',
+                        provider: 'google' // alias for mobile app
                     }
                 });
             } else {
                 // User exists, update OAuth tokens
                 await dbConfig.run(
                     'UPDATE users SET oauth_provider = ?, google_access_token = ? WHERE id = ?',
-                    ['google', accessToken, user.id]
+                    ['google', finalAccessToken, user.id]
                 );
                 
                 // Generate JWT
@@ -241,7 +318,9 @@ const googleAuth = async (req, res) => {
                     user: {
                         id: user.id,
                         fullName: user.full_name,
-                        email: user.email
+                        email: user.email,
+                        oauth_provider: 'google',
+                        provider: 'google' // alias for mobile app
                     }
                 });
             }
@@ -251,7 +330,131 @@ const googleAuth = async (req, res) => {
         }
     } catch (error) {
         console.error('Google OAuth error:', error);
-        res.status(500).json({ error: 'Server error' });
+        res.status(500).json({ error: 'Server error', details: error.message });
+    }
+};
+
+// Microsoft OAuth callback handler
+const microsoftCallback = (req, res) => {
+    // Check if this is a mobile request
+    const isMobile = req.query.mobile === 'true' || req.headers['user-agent']?.includes('Expo');
+    
+    // Generate JWT token for the user
+    const token = jwt.sign(
+        { id: req.user.id, email: req.user.email },
+        JWT_SECRET,
+        { expiresIn: '24h' }
+    );
+
+    const userData = {
+        id: req.user.id,
+        fullName: req.user.full_name,
+        email: req.user.email
+    };
+
+    // For mobile apps, return JSON instead of HTML redirect
+    if (isMobile) {
+        res.json({
+            success: true,
+            token,
+            user: userData
+        });
+    } else {
+        // For web, redirect to success page
+        res.redirect(`/auth-success.html?token=${token}&user=${encodeURIComponent(JSON.stringify(userData))}`);
+    }
+};
+
+// Microsoft OAuth API endpoint for mobile (returns JSON)
+const microsoftAuth = async (req, res) => {
+    try {
+        console.log('Microsoft OAuth Request Body:', req.body);
+        const { accessToken } = req.body;
+        
+        if (!accessToken) {
+            console.log('Missing accessToken in request');
+            return res.status(400).json({ error: 'Access token is required' });
+        }
+
+        console.log('Verifying access token with Microsoft Graph API...');
+        
+        // Verify the access token with Microsoft Graph API
+        const response = await fetch('https://graph.microsoft.com/v1.0/me', {
+            headers: {
+                'Authorization': `Bearer ${accessToken}`
+            }
+        });
+
+        if (!response.ok) {
+            console.log('Microsoft Graph API error:', response.status, response.statusText);
+            return res.status(401).json({ error: 'Invalid access token' });
+        }
+
+        const microsoftUser = await response.json();
+        console.log('Microsoft user profile:', microsoftUser);
+
+        // Check if user exists in database
+        const user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [microsoftUser.mail || microsoftUser.userPrincipalName]);
+
+        if (!user) {
+            // Create new user
+            console.log('Creating new user from Microsoft OAuth...');
+
+            const hashedPassword = await bcrypt.hash('microsoft-oauth-' + microsoftUser.id, 10);
+            const result = await dbConfig.run(
+                'INSERT INTO users (email, full_name, password, oauth_provider, microsoft_access_token) VALUES (?, ?, ?, ?, ?) RETURNING id',
+                [microsoftUser.mail || microsoftUser.userPrincipalName, microsoftUser.displayName, hashedPassword, 'microsoft', accessToken]
+            );
+
+            const newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
+
+            // Generate JWT
+            const token = jwt.sign(
+                { id: newUserId, email: microsoftUser.mail || microsoftUser.userPrincipalName },
+                JWT_SECRET,
+                { expiresIn: '24h' }
+            );
+
+            return res.json({
+                success: true,
+                token,
+                user: {
+                    id: newUserId,
+                    fullName: microsoftUser.displayName,
+                    email: microsoftUser.mail || microsoftUser.userPrincipalName,
+                    oauth_provider: 'microsoft',
+                    provider: 'microsoft' // alias for mobile app
+                }
+            });
+        } else {
+            // User exists, update OAuth tokens
+            await dbConfig.run(
+                'UPDATE users SET oauth_provider = ?, microsoft_access_token = ? WHERE id = ?',
+                ['microsoft', accessToken, user.id]
+            );
+            
+            // Generate JWT
+            const token = jwt.sign(
+                { id: user.id, email: user.email },
+                JWT_SECRET,
+                { expiresIn: '24h' }
+            );
+
+            return res.json({
+                success: true,
+                token,
+                user: {
+                    id: user.id,
+                    fullName: user.full_name,
+                    email: user.email,
+                    oauth_provider: 'microsoft',
+                    provider: 'microsoft' // alias for mobile app
+                }
+            });
+        }
+    } catch (error) {
+        console.error('Microsoft OAuth error:', error);
+        return res.status(500).json({ error: 'Authentication failed' });
     }
 };
 
@@ -320,6 +523,8 @@ module.exports = {
     logout,
     googleCallback,
     googleAuth,
+    microsoftCallback,
+    microsoftAuth,
     linkedinCallback,
     changePassword
 };
