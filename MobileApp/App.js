@@ -3175,10 +3175,11 @@ export default function App() {
     setLoading(true);
     try {
       // Google OAuth URL for mobile
-      // iOS: use reverse domain format that Google accepts
+      // iOS: use reverse domain format that Google generates (full client ID prefix)
       // Android: use package name format
+      const clientIdPrefix = GOOGLE_CLIENT_ID.split('.apps.googleusercontent.com')[0];
       const redirectUri = Platform.OS === 'ios' 
-        ? `com.googleusercontent.apps.${GOOGLE_CLIENT_ID.split('-')[0]}:/oauth2redirect/google`
+        ? `com.googleusercontent.apps.${clientIdPrefix}:/oauth2redirect/google`
         : `com.cvapplyr.mobile:/oauth2redirect/google`;
       
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
