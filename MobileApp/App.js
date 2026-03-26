@@ -393,6 +393,8 @@ export default function App() {
     smsNotifications: false,
     profilePublic: false,
   });
+  const [showDeleteAccount, setShowDeleteAccount] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [reviewCoverLetters, setReviewCoverLetters] = useState({});
   const [applicationHistory, setApplicationHistory] = useState([]);
   const [totalGenerated, setTotalGenerated] = useState(0);
@@ -1033,6 +1035,50 @@ export default function App() {
 
       Alert.alert('Success', 'Privacy settings updated successfully');
       setShowPrivacySettings(false);
+    } catch (error) {
+      Alert.alert('Error', error.message);
+    }
+  };
+
+  // Handle delete account
+  const handleDeleteAccount = async () => {
+    if (deleteConfirmText !== 'DELETE') {
+      Alert.alert('Error', 'Please type DELETE to confirm account deletion');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE.replace('/api', '')}/api/account/delete`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${user?.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          confirmText: deleteConfirmText
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        Alert.alert('Error', data.error || 'Failed to delete account');
+        return;
+      }
+
+      Alert.alert('Account Deleted', 'Your account has been permanently deleted', [
+        {
+          text: 'OK',
+          onPress: async () => {
+            // Clear all local data
+            await AsyncStorage.clear();
+            setUser(null);
+            setShowDeleteAccount(false);
+            setDeleteConfirmText('');
+            setScreen('login');
+          }
+        }
+      ]);
     } catch (error) {
       Alert.alert('Error', error.message);
     }
@@ -5469,6 +5515,13 @@ export default function App() {
               <Text style={styles.actionButtonIcon}>→</Text>
             </TouchableOpacity>
             <TouchableOpacity 
+              style={styles.actionButton}
+              onPress={() => setShowDeleteAccount(true)}
+            >
+              <Text style={[styles.actionButtonText, { color: '#ef4444' }]}>Delete Account Permanently</Text>
+              <Text style={styles.actionButtonIcon}>→</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
               style={[styles.actionButton, { borderBottomWidth: 0 }]}
               onPress={() => {
                 Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
@@ -5477,7 +5530,7 @@ export default function App() {
                 ]);
               }}
             >
-              <Text style={[styles.actionButtonText, { color: '#ef4444' }]}>Sign Out</Text>
+              <Text style={[styles.actionButtonText, { color: '#6b7280' }]}>Sign Out</Text>
               <Text style={styles.actionButtonIcon}>→</Text>
             </TouchableOpacity>
           </View>
@@ -5486,142 +5539,220 @@ export default function App() {
         </ScrollView>
 
         {/* Change Password Modal */}
-        {showChangePassword && (
-          <View style={styles.modalOverlay}>
-            <KeyboardAvoidingView 
-              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-              style={styles.modalKeyboardView}
-            >
-              <View style={styles.modalContentScrollable}>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Change Password</Text>
-                  <TouchableOpacity onPress={() => setShowChangePassword(false)}>
-                    <Text style={styles.modalCloseBtn}>✕</Text>
-                  </TouchableOpacity>
-                </View>
+        <Modal
+          transparent={true}
+          visible={showChangePassword}
+          animationType="slide"
+          onRequestClose={() => setShowChangePassword(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowChangePassword(false)}>
+            <View style={styles.accountModalOverlay}>
+              <TouchableWithoutFeedback>
+                <KeyboardAvoidingView 
+                  behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                  style={styles.accountModalKeyboardView}
+                >
+                  <View style={styles.accountModalContent}>
+                    <View style={styles.accountModalHeader}>
+                      <Text style={styles.accountModalTitle}>🔒 Change Password</Text>
+                      <TouchableOpacity onPress={() => setShowChangePassword(false)}>
+                        <Text style={styles.accountModalCloseBtn}>✕</Text>
+                      </TouchableOpacity>
+                    </View>
 
-                <ScrollView 
-                  showsVerticalScrollIndicator={false}
-                  contentContainerStyle={styles.modalScrollContent}
-                >
-                  <TextInput
-                    style={styles.modalInput}
-                    placeholder="Current Password"
-                    placeholderTextColor="#999"
-                    secureTextEntry
-                    value={currentPassword}
-                    onChangeText={setCurrentPassword}
-                  />
-                  <TextInput
-                    style={styles.modalInput}
-                    placeholder="New Password"
-                    placeholderTextColor="#999"
-                    secureTextEntry
-                    value={newPassword}
-                    onChangeText={setNewPassword}
-                  />
-                  <TextInput
-                    style={styles.modalInput}
-                    placeholder="Confirm New Password"
-                    placeholderTextColor="#999"
-                    secureTextEntry
-                    value={confirmPassword}
-                    onChangeText={setConfirmPassword}
-                  />
-                </ScrollView>
+                    <ScrollView 
+                      showsVerticalScrollIndicator={false}
+                      contentContainerStyle={styles.accountModalScrollContent}
+                    >
+                      <TextInput
+                        style={styles.accountModalInput}
+                        placeholder="Current Password"
+                        placeholderTextColor="#9ca3af"
+                        secureTextEntry
+                        value={currentPassword}
+                        onChangeText={setCurrentPassword}
+                      />
+                      <TextInput
+                        style={styles.accountModalInput}
+                        placeholder="New Password"
+                        placeholderTextColor="#9ca3af"
+                        secureTextEntry
+                        value={newPassword}
+                        onChangeText={setNewPassword}
+                      />
+                      <TextInput
+                        style={styles.accountModalInput}
+                        placeholder="Confirm New Password"
+                        placeholderTextColor="#9ca3af"
+                        secureTextEntry
+                        value={confirmPassword}
+                        onChangeText={setConfirmPassword}
+                      />
+                    </ScrollView>
 
-                <TouchableOpacity 
-                  style={styles.modalButton}
-                  onPress={handleChangePassword}
-                >
-                  <Text style={styles.modalButtonText}>Change Password</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={[styles.modalButton, { backgroundColor: '#e5e7eb' }]}
-                  onPress={() => setShowChangePassword(false)}
-                >
-                  <Text style={[styles.modalButtonText, { color: '#333' }]}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
-            </KeyboardAvoidingView>
-          </View>
-        )}
+                    <TouchableOpacity 
+                      style={styles.accountModalButton}
+                      onPress={handleChangePassword}
+                    >
+                      <Text style={styles.accountModalButtonText}>Change Password</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity 
+                      style={styles.accountModalButtonSecondary}
+                      onPress={() => setShowChangePassword(false)}
+                    >
+                      <Text style={styles.accountModalButtonSecondaryText}>Cancel</Text>
+                    </TouchableOpacity>
+                  </View>
+                </KeyboardAvoidingView>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
 
         {/* Privacy Settings Modal */}
-        {showPrivacySettings && (
-          <View style={styles.modalOverlay}>
-            <KeyboardAvoidingView 
-              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-              style={styles.modalKeyboardView}
-            >
-              <View style={styles.modalContentScrollable}>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Privacy Settings</Text>
-                  <TouchableOpacity onPress={() => setShowPrivacySettings(false)}>
-                    <Text style={styles.modalCloseBtn}>✕</Text>
+        <Modal
+          transparent={true}
+          visible={showPrivacySettings}
+          animationType="slide"
+          onRequestClose={() => setShowPrivacySettings(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowPrivacySettings(false)}>
+            <View style={styles.accountModalOverlay}>
+              <TouchableWithoutFeedback>
+                <View style={styles.accountModalContent}>
+                  <View style={styles.accountModalHeader}>
+                    <Text style={styles.accountModalTitle}>🔐 Privacy Settings</Text>
+                    <TouchableOpacity onPress={() => setShowPrivacySettings(false)}>
+                      <Text style={styles.accountModalCloseBtn}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <ScrollView 
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={styles.accountModalScrollContent}
+                  >
+                    <View style={styles.settingRow}>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Email Notifications</Text>
+                        <Text style={styles.settingDescription}>Receive updates via email</Text>
+                      </View>
+                      <TouchableOpacity 
+                        style={[styles.toggle, privacySettings.emailNotifications && styles.toggleActive]}
+                        onPress={() => setPrivacySettings({ ...privacySettings, emailNotifications: !privacySettings.emailNotifications })}
+                      >
+                        <View style={[styles.toggleCircle, privacySettings.emailNotifications && styles.toggleCircleActive]} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.settingRow}>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>SMS Notifications</Text>
+                        <Text style={styles.settingDescription}>Receive updates via SMS</Text>
+                      </View>
+                      <TouchableOpacity 
+                        style={[styles.toggle, privacySettings.smsNotifications && styles.toggleActive]}
+                        onPress={() => setPrivacySettings({ ...privacySettings, smsNotifications: !privacySettings.smsNotifications })}
+                      >
+                        <View style={[styles.toggleCircle, privacySettings.smsNotifications && styles.toggleCircleActive]} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.settingRow}>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Public Profile</Text>
+                        <Text style={styles.settingDescription}>Allow others to view your profile</Text>
+                      </View>
+                      <TouchableOpacity 
+                        style={[styles.toggle, privacySettings.profilePublic && styles.toggleActive]}
+                        onPress={() => setPrivacySettings({ ...privacySettings, profilePublic: !privacySettings.profilePublic })}
+                      >
+                        <View style={[styles.toggleCircle, privacySettings.profilePublic && styles.toggleCircleActive]} />
+                      </TouchableOpacity>
+                    </View>
+                  </ScrollView>
+
+                  <TouchableOpacity 
+                    style={styles.accountModalButton}
+                    onPress={handleUpdatePrivacySettings}
+                  >
+                    <Text style={styles.accountModalButtonText}>Save Settings</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={styles.accountModalButtonSecondary}
+                    onPress={() => setShowPrivacySettings(false)}
+                  >
+                    <Text style={styles.accountModalButtonSecondaryText}>Cancel</Text>
                   </TouchableOpacity>
                 </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
 
-                <ScrollView 
-                  showsVerticalScrollIndicator={false}
-                  contentContainerStyle={styles.modalScrollContent}
-                >
-                  <View style={styles.settingRow}>
-                    <View style={styles.settingTextContainer}>
-                      <Text style={styles.settingLabel}>Email Notifications</Text>
-                      <Text style={styles.settingDescription}>Receive updates via email</Text>
-                    </View>
-                    <TouchableOpacity 
-                      style={[styles.toggle, privacySettings.emailNotifications && styles.toggleActive]}
-                      onPress={() => setPrivacySettings({ ...privacySettings, emailNotifications: !privacySettings.emailNotifications })}
-                    >
-                      <View style={[styles.toggleCircle, privacySettings.emailNotifications && styles.toggleCircleActive]} />
+        {/* Delete Account Modal */}
+        <Modal
+          transparent={true}
+          visible={showDeleteAccount}
+          animationType="slide"
+          onRequestClose={() => setShowDeleteAccount(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowDeleteAccount(false)}>
+            <View style={styles.accountModalOverlay}>
+              <TouchableWithoutFeedback>
+                <View style={styles.accountModalContent}>
+                  <View style={styles.accountModalHeader}>
+                    <Text style={[styles.accountModalTitle, { color: '#ef4444' }]}>⚠️ Delete Account</Text>
+                    <TouchableOpacity onPress={() => setShowDeleteAccount(false)}>
+                      <Text style={styles.accountModalCloseBtn}>✕</Text>
                     </TouchableOpacity>
                   </View>
 
-                  <View style={styles.settingRow}>
-                    <View style={styles.settingTextContainer}>
-                      <Text style={styles.settingLabel}>SMS Notifications</Text>
-                      <Text style={styles.settingDescription}>Receive updates via SMS</Text>
-                    </View>
-                    <TouchableOpacity 
-                      style={[styles.toggle, privacySettings.smsNotifications && styles.toggleActive]}
-                      onPress={() => setPrivacySettings({ ...privacySettings, smsNotifications: !privacySettings.smsNotifications })}
-                    >
-                      <View style={[styles.toggleCircle, privacySettings.smsNotifications && styles.toggleCircleActive]} />
-                    </TouchableOpacity>
-                  </View>
+                  <ScrollView 
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={styles.accountModalScrollContent}
+                  >
+                    <Text style={styles.deleteWarningText}>
+                      This action is permanent and cannot be undone. All your data will be deleted:
+                    </Text>
+                    <Text style={styles.deleteWarningList}>
+                      • All cover letters and applications{'\n'}
+                      • Profile and account information{'\n'}
+                      • Payment history and credits{'\n'}
+                      • Saved templates and settings
+                    </Text>
+                    <Text style={styles.deleteConfirmInstructions}>
+                      To confirm, type <Text style={styles.deleteConfirmKeyword}>DELETE</Text> below:
+                    </Text>
+                    <TextInput
+                      style={styles.accountModalInput}
+                      placeholder="Type DELETE to confirm"
+                      placeholderTextColor="#9ca3af"
+                      value={deleteConfirmText}
+                      onChangeText={setDeleteConfirmText}
+                      autoCapitalize="characters"
+                    />
+                  </ScrollView>
 
-                  <View style={styles.settingRow}>
-                    <View style={styles.settingTextContainer}>
-                      <Text style={styles.settingLabel}>Public Profile</Text>
-                      <Text style={styles.settingDescription}>Allow others to view your profile</Text>
-                    </View>
-                    <TouchableOpacity 
-                      style={[styles.toggle, privacySettings.profilePublic && styles.toggleActive]}
-                      onPress={() => setPrivacySettings({ ...privacySettings, profilePublic: !privacySettings.profilePublic })}
-                    >
-                      <View style={[styles.toggleCircle, privacySettings.profilePublic && styles.toggleCircleActive]} />
-                    </TouchableOpacity>
-                  </View>
-                </ScrollView>
-
-                <TouchableOpacity 
-                  style={styles.modalButton}
-                  onPress={handleUpdatePrivacySettings}
-                >
-                  <Text style={styles.modalButtonText}>Save Settings</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={[styles.modalButton, { backgroundColor: '#e5e7eb' }]}
-                  onPress={() => setShowPrivacySettings(false)}
-                >
-                  <Text style={[styles.modalButtonText, { color: '#333' }]}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
-            </KeyboardAvoidingView>
-          </View>
-        )}
+                  <TouchableOpacity 
+                    style={[styles.accountModalButton, { backgroundColor: '#ef4444' }]}
+                    onPress={handleDeleteAccount}
+                  >
+                    <Text style={styles.accountModalButtonText}>Delete Account Permanently</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={styles.accountModalButtonSecondary}
+                    onPress={() => {
+                      setShowDeleteAccount(false);
+                      setDeleteConfirmText('');
+                    }}
+                  >
+                    <Text style={styles.accountModalButtonSecondaryText}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -10263,6 +10394,120 @@ const styles = StyleSheet.create({
   },
   toggleCircleActive: {
     backgroundColor: '#fff',
+  },
+  // ACCOUNT MODAL STYLES
+  accountModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'flex-end',
+  },
+  accountModalKeyboardView: {
+    width: '100%',
+  },
+  accountModalContent: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+    paddingHorizontal: 24,
+    maxHeight: Dimensions.get('window').height * 0.85,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 10,
+  },
+  accountModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 24,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  accountModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1f2937',
+  },
+  accountModalCloseBtn: {
+    fontSize: 28,
+    color: '#9ca3af',
+    padding: 4,
+    fontWeight: '300',
+  },
+  accountModalScrollContent: {
+    paddingBottom: 8,
+  },
+  accountModalInput: {
+    borderWidth: 1.5,
+    borderColor: '#e5e7eb',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    fontSize: 15,
+    color: '#1f2937',
+    backgroundColor: '#f9fafb',
+  },
+  accountModalButton: {
+    backgroundColor: '#6366f1',
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 16,
+    marginBottom: 10,
+    alignItems: 'center',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  accountModalButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  accountModalButtonSecondary: {
+    backgroundColor: '#f3f4f6',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 8,
+    alignItems: 'center',
+  },
+  accountModalButtonSecondaryText: {
+    color: '#6b7280',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  deleteWarningText: {
+    fontSize: 15,
+    color: '#374151',
+    lineHeight: 22,
+    marginBottom: 16,
+  },
+  deleteWarningList: {
+    fontSize: 14,
+    color: '#ef4444',
+    lineHeight: 22,
+    marginBottom: 20,
+    backgroundColor: '#fef2f2',
+    padding: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#fee2e2',
+  },
+  deleteConfirmInstructions: {
+    fontSize: 15,
+    color: '#374151',
+    marginBottom: 12,
+    fontWeight: '500',
+  },
+  deleteConfirmKeyword: {
+    fontWeight: '700',
+    color: '#ef4444',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   // REVIEW SCREEN STYLES
   reviewHeader: {
