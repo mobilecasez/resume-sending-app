@@ -17,9 +17,8 @@ import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 // Get your Google Client ID from Google Cloud Console
-// For iOS: Use iOS OAuth Client ID
-// For Android: Use Android OAuth Client ID or Web Client ID
-const GOOGLE_CLIENT_ID = '151384459549-ujnpfbck9e0q2jkmt2q4l0lv1s41lp04.apps.googleusercontent.com';
+// iOS OAuth Client ID (created for com.cvapplyr.mobile bundle)
+const GOOGLE_CLIENT_ID = '151384459549-3rm4atu5eu3ekh9h4rhds6gbd9ecgeb6.apps.googleusercontent.com';
 
 // Microsoft OAuth Client ID from Azure Portal
 const MICROSOFT_CLIENT_ID = '9205782b-1a57-4c2f-bbfd-8136b5378e96';
