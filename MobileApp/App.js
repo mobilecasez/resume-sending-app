@@ -956,16 +956,6 @@ export default function App() {
       fetchProfileData();
     }
   }, [screen]);
-  
-  // Google OAuth setup
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    clientId: GOOGLE_CLIENT_ID,
-    scopes: [
-      'profile',
-      'email',
-      'https://www.googleapis.com/auth/gmail.send'
-    ],
-  });
 
   // Handle password change
   const handleChangePassword = async () => {
@@ -2870,12 +2860,6 @@ export default function App() {
   }, [screen]);
 
   // Handle Google OAuth response
-  useEffect(() => {
-    if (response?.type === 'success') {
-      handleGoogleAuthResponse(response.authentication.accessToken);
-    }
-  }, [response]);
-
   // Function to check if user is admin
   const checkAdminStatus = async (token) => {
     try {
@@ -3193,8 +3177,42 @@ export default function App() {
         setError('Google login cancelled');
       }
     } catch (err) {
+    setLoading(true);
+    try {
+      // Google OAuth URL for mobile (same pattern as Microsoft)
+      const redirectUri = `cvapplyr://google-auth`;
+      const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+        `client_id=${GOOGLE_CLIENT_ID}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&response_type=token` +
+        `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send')}`;
+      
+      console.log('Opening Google auth URL...');
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+      
+      console.log('Google auth result:', result);
+      
+      if (result.type === 'success') {
+        // Extract access token from URL fragment
+        const url = result.url;
+        const accessTokenMatch = url.match(/access_token=([^&]+)/);
+        
+        if (accessTokenMatch && accessTokenMatch[1]) {
+          const accessToken = accessTokenMatch[1];
+          console.log('Google access token received');
+          await handleGoogleAuthResponse(accessToken);
+        } else {
+          throw new Error('No access token received from Google');
+        }
+      } else if (result.type === 'cancel') {
+        setError('Google login cancelled');
+      }
+    } catch (err) {
+      console.error('Google login error:', err);
       setError('Google login failed: ' + err.message);
       Alert.alert('Error', 'Google login failed: ' + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -3339,7 +3357,7 @@ export default function App() {
                   <LinearGradient
                     colors={loading ? ['#64748b', '#475569'] : ['#8b5cf6', '#7c3aed', '#6d28d9']}
                     start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
+                    end={{ x: 1, y: 1 }}
                     style={styles.loginSignInGradient}
                   >
                     <Text style={styles.loginSignInText}>
@@ -3360,9 +3378,9 @@ export default function App() {
                 <View style={styles.loginSocialButtonsContainer}>
                   {/* Google Login */}
                   <TouchableOpacity
-                    style={[styles.loginSocialButton, (loading || !request) && styles.loginSocialButtonDisabled]}
-                    onPress={() => promptAsync()}
-                    disabled={loading || !request}
+                    style={[styles.loginSocialButton, loading && styles.loginSocialButtonDisabled]}
+                    onPress={handleGoogleLogin}
+                    disabled={loading}
                     activeOpacity={0.8}
                   >
                     <View style={styles.loginSocialButtonInner}>
@@ -3509,8 +3527,8 @@ export default function App() {
             {/* Google Sign Up Button */}
             <TouchableOpacity
               style={styles.googleButton}
-              onPress={() => promptAsync()}
-              disabled={loading || !request}
+              onPress={handleGoogleLogin}
+              disabled={loading}
             >
               <Text style={styles.googleButtonIcon}>🔐</Text>
               <Text style={styles.googleButtonText}>Sign up with Google</Text>
