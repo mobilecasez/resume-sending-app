@@ -2,107 +2,167 @@
 
 ## Problem Solved
 
-Google OAuth was **not working on Expo mobile app** while Microsoft OAuth worked fine. The issue was that we were using `expo-auth-session/providers/google` hook which requires additional configuration that wasn't properly set up.
+Google OAuth was **not working on Expo mobile app** because:
+1. Custom URI schemes like `cvapplyr://` are **rejected** by Google Cloud Console
+2. Google requires **platform-specific OAuth clients** (iOS/Android) with proper redirect URI formats
+3. Microsoft OAuth works because it accepts custom schemes
 
 ## Solution
 
-Switched Google OAuth to use the same `WebBrowser.openAuthSessionAsync` approach as Microsoft OAuth, making the implementation consistent and eliminating dependencies on Expo's auth session hooks.
+Use Google's **reverse domain notation** for redirect URIs, which iOS automatically handles.
 
-## Changes Made
+## Current Configuration
 
-### 1. Removed Hook-Based Approach
-**Before:**
-```javascript
-const [request, response, promptAsync] = Google.useAuthRequest({
-  clientId: GOOGLE_CLIENT_ID,
-  scopes: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send'],
-});
+- **Client ID**: `151384459549-ujnpfbck9e0q2jkmt2q4l0lv1s41lp04.apps.googleusercontent.com`
+- **Bundle ID (iOS)**: `com.cvapplyr.mobile`
+- **Package Name (Android)**: `com.cvapplyr.mobile`
 
-useEffect(() => {
-  if (response?.type === 'success') {
-    handleGoogleAuthResponse(response.authentication.accessToken);
-  }
-}, [response]);
-```
+## Google Cloud Console Setup
 
-**After:**
-```javascript
-const handleGoogleLogin = async () => {
-  setLoading(true);
-  try {
-    const redirectUri = `cvapplyr://google-auth`;
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
-      `client_id=${GOOGLE_CLIENT_ID}` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&response_type=token` +
-      `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send')}`;
-    
-    const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
-    
-    if (result.type === 'success') {
-      const accessTokenMatch = result.url.match(/access_token=([^&]+)/);
-      if (accessTokenMatch) {
-        await handleGoogleAuthResponse(accessTokenMatch[1]);
-      }
-    }
-  } finally {
-    setLoading(false);
-  }
-};
-```
+### Option 1: iOS OAuth Client (RECOMMENDED for iOS)
 
-### 2. Updated Button References
-- Removed dependency on `request` object (button was checking `!request`)
-- Changed `onPress={() => promptAsync()}` to `onPress={handleGoogleLogin}`
-- Applied to both login and register screens
+1. **Go to Google Cloud Console**
+   - Visit [Google Cloud Console](https://console.cloud.google.com/)
+   - Select your project
 
-## Google Cloud Console Configuration Required
+2. **Create iOS OAuth Client**
+   - Navigate to **APIs & Services** → **Credentials**
+   - Click **+ CREATE CREDENTIALS** → **OAuth client ID**
+   - Select **iOS**
+   - **Bundle ID**: `com.cvapplyr.mobile`
+   - **App Store ID**: (leave empty for now, add when published)
+   - Click **Create**
 
-To make Google OAuth work on mobile, you need to configure the redirect URI in Google Cloud Console:
+3. **Copy the iOS Client ID**
+   - You'll get a Client ID in format: `XXXXXX-XXXXXX.apps.googleusercontent.com`
+   - This generates an automatic redirect URI: `com.googleusercontent.apps.XXXXXX:/oauth2redirect/google`
 
-### Steps:
+### Option 2: Web OAuth Client (Current - needs redirect URI)
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Select your project
-3. Navigate to **APIs & Services** → **Credentials**
-4. Click on your OAuth 2.0 Client ID
-5. Under **Authorized redirect URIs**, add:
+If you want to keep using your current Web OAuth Client:
+
+1. **In OAuth Client Settings**
+   - Select your existing OAuth client: `151384459549-ujnpfbck9e0q2jkmt2q4l0lv1s41lp04`
+   - Under **Authorized redirect URIs**, add:
+
+   **For iOS:**
    ```
-   cvapplyr://google-auth
+   com.googleusercontent.apps.151384459549:/oauth2redirect/google
    ```
 
-### Current Configuration:
-- **Client ID**: `832256639733-b0481qdpal17m1rcmmvq4nlnlvavgg59.apps.googleusercontent.com`
-- **Redirect URI**: `cvapplyr://google-auth`
-- **Response Type**: `token` (Implicit Flow)
-- **Scopes**: 
-  - `profile`
-  - `email`
-  - `https://www.googleapis.com/auth/gmail.send`
+   **For Android:**
+   ```
+   com.cvapplyr.mobile:/oauth2redirect/google
+   ```
 
-## Why Microsoft OAuth Worked
+2. **Why this works:**
+   - `com.googleusercontent.apps.CLIENT_PREFIX` is Google's accepted format
+   - Extracted from your Client ID: `151384459549-...`
+   - iOS automatically handles this redirect URI format
 
-Microsoft OAuth was already using `WebBrowser.openAuthSessionAsync` with a proper redirect URI (`msauth://com.cvapplyr.app/callback`), which is why it worked without issues.
+### Option 3: Android OAuth Client (for Android only)
+
+1. **Create Android OAuth Client**
+   - Navigate to **APIs & Services** → **Credentials**
+   - Click **+ CREATE CREDENTIALS** → **OAuth client ID**
+   - Select **Android**
+   - **Package name**: `com.cvapplyr.mobile`
+   - **SHA-1 certificate fingerprint**: (get from your keystore)
+   - Click **Create**
+
+## Code Changes Made
+
+### Updated Client ID
+```javascript
+const GOOGLE_CLIENT_ID = '151384459549-ujnpfbck9e0q2jkmt2q4l0lv1s41lp04.apps.googleusercontent.com';
+```
+
+### Updated Redirect URI (Platform-Specific)
+```javascript
+const redirectUri = Platform.OS === 'ios' 
+  ? `com.googleusercontent.apps.${GOOGLE_CLIENT_ID.split('-')[0]}:/oauth2redirect/google`
+  : `com.cvapplyr.mobile:/oauth2redirect/google`;
+```
+
+**Results in:**
+- **iOS**: `com.googleusercontent.apps.151384459549:/oauth2redirect/google`
+- **Android**: `com.cvapplyr.mobile:/oauth2redirect/google`
+
+## Quick Start (Minimum Steps)
+
+### ✅ Add These Redirect URIs to Your OAuth Client
+
+In Google Cloud Console → Your OAuthClient → Authorized redirect URIs:
+
+1. **iOS redirect:**
+   ```
+   com.googleusercontent.apps.151384459549:/oauth2redirect/google
+   ```
+
+2. **Android redirect (optional, for Android support):**
+   ```
+   com.cvapplyr.mobile:/oauth2redirect/google
+   ```
+
+3. **Click SAVE**
+
+That's it! Google OAuth should now work on iOS.
+
+## How It Works
+
+1. **User taps "Sign in with Google"**
+2. **App opens browser** with Google auth URL
+3. **Google shows login page**
+4. **User authenticates**
+5. **Google redirects to** `com.googleusercontent.apps.151384459549:/oauth2redirect/google?access_token=...`
+6. **iOS recognizes** the `com.googleusercontent.apps.*` scheme and opens your app
+7. **App extracts** access token from URL
+8. **Backend validates** token with Google API
 
 ## Testing
 
-After these changes and Google Cloud Console configuration:
+1. **Add redirect URIs to Google Cloud Console** (see above)
+2. **Rebuild your Expo app** (changes to OAuth require rebuild)
+3. **Test on iOS device/simulator**
+4. **Tap "Sign in with Google"**
+5. **Should open browser → Authenticate → Return to app**
 
-1. **Login Screen**: Tap "Google" button → Opens browser → Authenticate → Redirects back
-2. **Register Screen**: Tap "Sign up with Google" → Same flow
-3. **Token Extraction**: Access token extracted from URL fragment
-4. **Backend**: Token sent to `/api/auth/google` for verification
+## Differences from Microsoft OAuth
+
+| Feature | Microsoft OAuth | Google OAuth |
+|---------|----------------|--------------|
+| Custom schemes | ✅ Accepts `msauth://` | ❌ Rejects custom schemes |
+| Redirect format | `msauth://com.cvapplyr.app/callback` | `com.googleusercontent.apps.XXX:/oauth2redirect/google` |
+| Configuration | Simple, one redirect URI | Platform-specific clients recommended |
+| Web client | Works with one client | Needs iOS/Android clients or web with special URIs |
+
+## Troubleshooting
+
+### Error: "Invalid Redirect: must end with a public top-level domain"
+- ✅ **Fixed**: Use `com.googleusercontent.apps.151384459549:/oauth2redirect/google`
+- ❌ **Don't use**: `cvapplyr://google-auth`
+
+### Error: "redirect_uri_mismatch"
+- Check the redirect URI in Google Cloud Console exactly matches the code
+- iOS: `com.googleusercontent.apps.151384459549:/oauth2redirect/google`
+- Android: `com.cvapplyr.mobile:/oauth2redirect/google`
+
+### OAuth doesn't open/return
+- Make sure you've rebuilt the app after code changes
+- Check console logs for the redirect URI being used
+- Verify the URI is added in Google Cloud Console
+
+## Why This Approach
+
+- ✅ No custom URI scheme needed
+- ✅ Google accepts reverse domain notation
+- ✅ iOS handles `com.googleusercontent.apps.*` automatically
+- ✅ Works with Web OAuth Client
+- ✅ Consistent with Google's mobile OAuth guidelines
 
 ## Benefits
 
-- ✅ Consistent OAuth pattern for both Google and Microsoft
-- ✅ No dependency on `expo-auth-session` hooks
-- ✅ Direct control over redirect URIs
-- ✅ Simpler debugging and error handling
-- ✅ Works on both iOS and Android
-
-## Notes
-
-- The `expo-auth-session/providers/google` import can now be removed if not used elsewhere
-- Both iOS and Android will use the same redirect URI scheme: `cvapplyr://google-auth`
-- Make sure the scheme `cvapplyr` matches your app.json configuration
+- **No app.json changes needed** - iOS handles the redirect automatically
+- **Works immediately** after Google Cloud Console config
+- **Platform-specific** - Different URIs for iOS and Android
+- **follows Google best practices** for mobile OAuth

@@ -17,7 +17,9 @@ import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 // Get your Google Client ID from Google Cloud Console
-const GOOGLE_CLIENT_ID = '832256639733-b0481qdpal17m1rcmmvq4nlnlvavgg59.apps.googleusercontent.com';
+// For iOS: Use iOS OAuth Client ID
+// For Android: Use Android OAuth Client ID or Web Client ID
+const GOOGLE_CLIENT_ID = '151384459549-ujnpfbck9e0q2jkmt2q4l0lv1s41lp04.apps.googleusercontent.com';
 
 // Microsoft OAuth Client ID from Azure Portal
 const MICROSOFT_CLIENT_ID = '9205782b-1a57-4c2f-bbfd-8136b5378e96';
@@ -3171,23 +3173,22 @@ export default function App() {
   };
 
   const handleGoogleLogin = async () => {
-    try {
-      const result = await promptAsync();
-      if (result?.type !== 'success') {
-        setError('Google login cancelled');
-      }
-    } catch (err) {
     setLoading(true);
     try {
-      // Google OAuth URL for mobile (same pattern as Microsoft)
-      const redirectUri = `cvapplyr://google-auth`;
+      // Google OAuth URL for mobile
+      // iOS: use reverse domain format that Google accepts
+      // Android: use package name format
+      const redirectUri = Platform.OS === 'ios' 
+        ? `com.googleusercontent.apps.${GOOGLE_CLIENT_ID.split('-')[0]}:/oauth2redirect/google`
+        : `com.cvapplyr.mobile:/oauth2redirect/google`;
+      
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
         `client_id=${GOOGLE_CLIENT_ID}` +
         `&redirect_uri=${encodeURIComponent(redirectUri)}` +
         `&response_type=token` +
         `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send')}`;
       
-      console.log('Opening Google auth URL...');
+      console.log('Opening Google auth URL...', { platform: Platform.OS, redirectUri });
       const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
       
       console.log('Google auth result:', result);
