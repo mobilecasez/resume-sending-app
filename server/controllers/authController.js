@@ -183,6 +183,7 @@ const googleAuth = async (req, res) => {
         });
         
         let finalAccessToken = accessToken;
+        let finalRefreshToken = null; // Store refresh token from OAuth
         
         // If authorization code is provided (mobile flow with PKCE), exchange it for access token
         if (code) {
@@ -262,13 +263,16 @@ const googleAuth = async (req, res) => {
             const tokenData = await tokenResponse.json();
             console.log('Token exchange successful! Response keys:', Object.keys(tokenData));
             console.log('Access token present:', !!tokenData.access_token);
+            console.log('Refresh token present:', !!tokenData.refresh_token);
             finalAccessToken = tokenData.access_token;
+            finalRefreshToken = tokenData.refresh_token; // Store refresh token
             console.log('Successfully exchanged code for access token');
         }
         
         console.log('Final access token check:', {
             hasFinalAccessToken: !!finalAccessToken,
-            finalAccessTokenLength: finalAccessToken?.length || 0
+            finalAccessTokenLength: finalAccessToken?.length || 0,
+            hasFinalRefreshToken: !!finalRefreshToken
         });
         
         if (!finalAccessToken) {
@@ -299,8 +303,8 @@ const googleAuth = async (req, res) => {
                 // Create new user from Google data
                 const hashedPassword = await bcrypt.hash('google-oauth-' + googleUser.id, 10);
                 const result = await dbConfig.run(
-                    'INSERT INTO users (email, full_name, password, oauth_provider, google_access_token) VALUES (?, ?, ?, ?, ?) RETURNING id',
-                    [googleUser.email, googleUser.name, hashedPassword, 'google', finalAccessToken]
+                    'INSERT INTO users (email, full_name, password, oauth_provider, google_access_token, google_refresh_token) VALUES (?, ?, ?, ?, ?, ?) RETURNING id',
+                    [googleUser.email, googleUser.name, hashedPassword, 'google', finalAccessToken, finalRefreshToken]
                 );
 
                 const newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
@@ -342,10 +346,19 @@ const googleAuth = async (req, res) => {
                 });
             } else {
                 // User exists, update OAuth tokens
-                await dbConfig.run(
-                    'UPDATE users SET oauth_provider = ?, google_access_token = ? WHERE id = ?',
-                    ['google', finalAccessToken, user.id]
-                );
+                // Only update refresh_token if we received a new one (first-time consent or re-auth)
+                if (finalRefreshToken) {
+                    await dbConfig.run(
+                        'UPDATE users SET oauth_provider = ?, google_access_token = ?, google_refresh_token = ? WHERE id = ?',
+                        ['google', finalAccessToken, finalRefreshToken, user.id]
+                    );
+                } else {
+                    // Just update access token (refresh token persists)
+                    await dbConfig.run(
+                        'UPDATE users SET oauth_provider = ?, google_access_token = ? WHERE id = ?',
+                        ['google', finalAccessToken, user.id]
+                    );
+                }
                 
                 // Generate JWT
                 const token = jwt.sign(
