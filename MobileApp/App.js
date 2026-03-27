@@ -3207,7 +3207,9 @@ export default function App() {
         `&response_type=code` +
         `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send')}` +
         `&code_challenge=${codeChallenge}` +
-        `&code_challenge_method=S256`;
+        `&code_challenge_method=S256` +
+        `&access_type=offline` +
+        `&prompt=consent`;
       
       console.log('Opening Google auth URL with PKCE...', { platform: Platform.OS, redirectUri });
       const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
