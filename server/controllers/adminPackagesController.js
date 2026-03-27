@@ -12,7 +12,7 @@ const getActivePackages = async (req, res) => {
         const result = await dbConfig.query(`
             SELECT id, name, price as amount, credits, validity_days, description, 'USD' as currency, is_popular, display_order
             FROM plans 
-            WHERE is_active = 1 AND deleted_at IS NULL
+            WHERE is_active = 1
             ORDER BY display_order ASC, id ASC
         `, []);
         res.json({ packages: result.rows || result });
@@ -41,7 +41,6 @@ const getAllPackages = async (req, res) => {
                 created_at,
                 updated_at
             FROM plans 
-            WHERE deleted_at IS NULL
             ORDER BY id ASC
         `, []);
         res.json({ packages });
@@ -71,7 +70,7 @@ const getPackageById = async (req, res) => {
                 display_order,
                 created_at,
                 updated_at
-            FROM plans  AND deleted_at IS NULL
+            FROM plans
             WHERE id = ?
         `, [id]);
         
@@ -184,8 +183,8 @@ const deletePackage = async (req, res) => {
     const { id } = req.params;
     
     try {
-        // Get the package before soft-deleting for audit trail
-        const packageData = await dbConfig.get('SELECT * FROM plans WHERE id = ? AND deleted_at IS NULL', [id]);
+        // Get the package before deleting for audit trail
+        const packageData = await dbConfig.get('SELECT * FROM plans WHERE id = ?', [id]);
         
         if (!packageData) {
             return res.status(404).json({ error: 'Package not found or already deleted' });

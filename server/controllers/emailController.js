@@ -154,6 +154,103 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
     }
 }
 
+// Helper function: Send email via Microsoft Graph API
+async function sendEmailViaMicrosoft(user, recipientEmail, subject, emailBody, resumePath, coverLetterPdfBuffer) {
+    try {
+        const accessToken = user.microsoft_access_token;
+        
+        if (!accessToken) {
+            throw new Error('No Microsoft access token available');
+        }
+
+        // Read and encode attachments
+        const attachments = [];
+        
+        // Attach resume if exists
+        if (resumePath && fsSync.existsSync(resumePath)) {
+            const resumeBuffer = await fs.readFile(resumePath);
+            const resumeBase64 = resumeBuffer.toString('base64');
+            const resumeFilename = path.basename(resumePath);
+            
+            attachments.push({
+                '@odata.type': '#microsoft.graph.fileAttachment',
+                name: resumeFilename,
+                contentType: 'application/pdf',
+                contentBytes: resumeBase64
+            });
+        }
+        
+        // Attach cover letter PDF
+        if (coverLetterPdfBuffer) {
+            const coverLetterBase64 = coverLetterPdfBuffer.toString('base64');
+            
+            attachments.push({
+                '@odata.type': '#microsoft.graph.fileAttachment',
+                name: 'cover_letter.pdf',
+                contentType: 'application/pdf',
+                contentBytes: coverLetterBase64
+            });
+        }
+
+        // Prepare email message for Microsoft Graph API
+        const message = {
+            message: {
+                subject: subject,
+                body: {
+                    contentType: 'Text',
+                    content: emailBody
+                },
+                toRecipients: [
+                    {
+                        emailAddress: {
+                            address: recipientEmail
+                        }
+                    }
+                ],
+                attachments: attachments
+            }
+        };
+
+        // Send email via Microsoft Graph API
+        const response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(message)
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            console.error('Microsoft Graph API error:', errorData);
+            
+            // Handle token expiration
+            if (response.status === 401 || errorData.error?.code === 'InvalidAuthenticationToken') {
+                console.log('❌ Microsoft OAuth token is invalid. Clearing tokens from database...');
+                
+                // Clear the invalid tokens
+                await dbConfig.run(
+                    'UPDATE users SET microsoft_access_token = NULL, microsoft_refresh_token = NULL WHERE id = ?',
+                    [user.id]
+                );
+                
+                console.log('✅ Cleared invalid Microsoft OAuth tokens. User must re-authenticate.');
+                throw new Error('Microsoft OAuth token expired. Please log out and log in again with Microsoft.');
+            }
+            
+            throw new Error(`Microsoft Graph API error: ${errorData.error?.message || response.statusText}`);
+        }
+
+        console.log('✅ Email sent successfully via Microsoft Graph API');
+        return { success: true };
+        
+    } catch (error) {
+        console.error('❌ Error sending email via Microsoft Graph API:', error);
+        throw error;
+    }
+}
+
 // Helper function: Create SMTP transporter
 function createTransporter(smtpUser, smtpPass) {
     return nodemailer.createTransport({
@@ -757,75 +854,134 @@ const sendApplications = async (req, res) => {
                 }
 
                 const position = recipient.position || 'Position at your company';
+                const subject = `Application for ${position} - ${userData.fullName}`;
+                const emailBody = generateEmailBody(position, companyName, user.full_name);
 
-                // Send email
-                // Use plus addressing for Reply-To: cv+email.dob@cvapplyr.com routes to cv@cvapplyr.com but tracks user
-                const emailUsername = user.email.split('@')[0];
-                const dobFormatted = formatDOBForEmail(user.date_of_birth);
-                const replyToEmail = dobFormatted 
-                    ? `${emailSettings.email.split('@')[0]}+${emailUsername}.${dobFormatted}@${emailSettings.email.split('@')[1]}`
-                    : emailSettings.email; // Fallback if no DOB
-                const mailOptions = {
-                    from: `${emailSettings.name} <${emailSettings.email}>`,
-                    to: recipient.email,
-                    replyTo: replyToEmail, // e.g., cv+user1@cvapplyr.com
-                    subject: `Application for ${position} - ${userData.fullName}`,
-                    // Anti-spam headers
-                    headers: {
-                        'X-Mailer': 'Lettrico Job Application System',
-                        'X-Priority': '3',
-                        'Importance': 'Normal',
-                        'List-Unsubscribe': `<mailto:${emailSettings.email}?subject=unsubscribe>`,
-                    },
-                    text: `Dear Hiring Manager at ${companyName},\n\nI'm excited to submit my application for the ${position} role. Please find attached my personalized cover letter and resume.\n\nI believe my background and skills align well with what ${companyName} is looking for.\n\nDirect Contact Information:\nEmail: ${user.email}\n${user.phone_number ? `Phone: ${user.phone_number}\n` : ''}${user.city && user.country ? `Location: ${user.city}, ${user.country}\n` : ''}\n\nPlease feel free to reach me directly at ${user.email} for any questions or to schedule an interview.\n\nI'm looking forward to hearing from you!\n\nBest regards,\n${userData.fullName}\n${user.email}`,
-                    html: `
-                        <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
-                            <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Dear Hiring Manager at ${companyName},</h2>
-                            
-                            <p style="font-size: 16px; margin: 20px 0;">
-                                I'm excited to submit my application for the <strong>${position}</strong> role. 
-                                Please find attached my personalized cover letter and resume.
-                            </p>
-                            
-                            <p style="font-size: 16px; margin: 20px 0;">
-                                I believe my background and skills align well with what ${companyName} is looking for.
-                            </p>
-                            
-                            <div style="background: #f8f9fa; padding: 15px; border-left: 4px solid #3498db; margin: 25px 0;">
-                                <p style="margin: 0; font-size: 14px;">
-                                    📧 <strong>Direct Email:</strong> <a href="mailto:${user.email}" style="color: #3498db; text-decoration: none;">${user.email}</a><br>
-                                    ${user.phone_number ? `📱 <strong>Phone:</strong> ${user.phone_number}<br>` : ''}
-                                    ${user.city && user.country ? `📍 <strong>Location:</strong> ${user.city}, ${user.country}` : ''}
-                                </p>
-                            </div>
-                            
-                            <p style="font-size: 16px; margin: 20px 0;">
-                                Please feel free to reach me directly at <a href="mailto:${user.email}" style="color: #3498db; text-decoration: none;">${user.email}</a> for any questions or to schedule an interview.
-                            </p>
-                            
-                            <p style="font-size: 16px; margin: 20px 0;">
-                                I'm looking forward to hearing from you!
-                            </p>
-                            
-                            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
-                                <p style="margin: 5px 0; font-size: 16px;"><strong>${userData.fullName}</strong></p>
-                                <p style="margin: 5px 0; font-size: 14px; color: #666;">${user.email}</p>
-                            </div>
-                        </div>
-                    `,
-                    attachments: [
-                        {
-                            filename: fileName,
-                            path: filePath,
+                // Read cover letter PDF buffer (needed for OAuth APIs)
+                const coverLetterPdfBuffer = await fs.readFile(filePath);
+
+                // Priority 1: Try Microsoft Graph API if user logged in with Microsoft OAuth
+                let emailSentViaOAuth = false;
+                if (user.oauth_provider === 'microsoft' && user.microsoft_access_token) {
+                    try {
+                        console.log('📧 Sending via Microsoft Graph API (OAuth)...');
+                        
+                        await sendEmailViaMicrosoft(
+                            user,
+                            recipient.email,
+                            subject,
+                            emailBody,
+                            resumePath,
+                            coverLetterPdfBuffer
+                        );
+
+                        console.log(`✅ Email sent via Microsoft to ${recipient.email}`);
+                        emailSentViaOAuth = true;
+
+                    } catch (microsoftError) {
+                        console.error('❌ Microsoft Graph API error:', microsoftError.message);
+                        console.log('⚠️ Microsoft Graph API failed, will try SMTP fallback...');
+                        // Fall through to SMTP
+                    }
+                }
+
+                // Priority 2: Try Gmail API if user logged in with Google OAuth
+                if (!emailSentViaOAuth && user.oauth_provider === 'google' && user.google_access_token) {
+                    try {
+                        console.log('📧 Sending via Gmail API (OAuth)...');
+                        
+                        await sendEmailViaGmail(
+                            user,
+                            recipient.email,
+                            subject,
+                            emailBody,
+                            resumePath,
+                            coverLetterPdfBuffer
+                        );
+
+                        console.log(`✅ Email sent via Gmail to ${recipient.email}`);
+                        emailSentViaOAuth = true;
+
+                    } catch (gmailError) {
+                        console.error('❌ Gmail API error:', gmailError.message);
+                        console.log('⚠️ Gmail API failed, will try SMTP fallback...');
+                        // Fall through to SMTP
+                    }
+                }
+
+                // Priority 3: Use SMTP if OAuth not available or failed
+                if (!emailSentViaOAuth) {
+                    console.log('📧 Sending via SMTP...');
+                    
+                    // Use plus addressing for Reply-To: cv+email.dob@cvapplyr.com routes to cv@cvapplyr.com but tracks user
+                    const emailUsername = user.email.split('@')[0];
+                    const dobFormatted = formatDOBForEmail(user.date_of_birth);
+                    const replyToEmail = dobFormatted 
+                        ? `${emailSettings.email.split('@')[0]}+${emailUsername}.${dobFormatted}@${emailSettings.email.split('@')[1]}`
+                        : emailSettings.email; // Fallback if no DOB
+                    const mailOptions = {
+                        from: `${emailSettings.name} <${emailSettings.email}>`,
+                        to: recipient.email,
+                        replyTo: replyToEmail, // e.g., cv+user1@cvapplyr.com
+                        subject: subject,
+                        // Anti-spam headers
+                        headers: {
+                            'X-Mailer': 'Lettrico Job Application System',
+                            'X-Priority': '3',
+                            'Importance': 'Normal',
+                            'List-Unsubscribe': `<mailto:${emailSettings.email}?subject=unsubscribe>`,
                         },
-                        {
-                            filename: path.basename(resumePath),
-                            path: resumePath,
-                        }
-                    ],
-                };
+                        text: `Dear Hiring Manager at ${companyName},\n\nI'm excited to submit my application for the ${position} role. Please find attached my personalized cover letter and resume.\n\nI believe my background and skills align well with what ${companyName} is looking for.\n\nDirect Contact Information:\nEmail: ${user.email}\n${user.phone_number ? `Phone: ${user.phone_number}\n` : ''}${user.city && user.country ? `Location: ${user.city}, ${user.country}\n` : ''}\n\nPlease feel free to reach me directly at ${user.email} for any questions or to schedule an interview.\n\nI'm looking forward to hearing from you!\n\nBest regards,\n${userData.fullName}\n${user.email}`,
+                        html: `
+                            <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
+                                <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Dear Hiring Manager at ${companyName},</h2>
+                                
+                                <p style="font-size: 16px; margin: 20px 0;">
+                                    I'm excited to submit my application for the <strong>${position}</strong> role. 
+                                    Please find attached my personalized cover letter and resume.
+                                </p>
+                                
+                                <p style="font-size: 16px; margin: 20px 0;">
+                                    I believe my background and skills align well with what ${companyName} is looking for.
+                                </p>
+                                
+                                <div style="background: #f8f9fa; padding: 15px; border-left: 4px solid #3498db; margin: 25px 0;">
+                                    <p style="margin: 0; font-size: 14px;">
+                                        📧 <strong>Direct Email:</strong> <a href="mailto:${user.email}" style="color: #3498db; text-decoration: none;">${user.email}</a><br>
+                                        ${user.phone_number ? `📱 <strong>Phone:</strong> ${user.phone_number}<br>` : ''}
+                                        ${user.city && user.country ? `📍 <strong>Location:</strong> ${user.city}, ${user.country}` : ''}
+                                    </p>
+                                </div>
+                                
+                                <p style="font-size: 16px; margin: 20px 0;">
+                                    Please feel free to reach me directly at <a href="mailto:${user.email}" style="color: #3498db; text-decoration: none;">${user.email}</a> for any questions or to schedule an interview.
+                                </p>
+                                
+                                <p style="font-size: 16px; margin: 20px 0;">
+                                    I'm looking forward to hearing from you!
+                                </p>
+                                
+                                <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
+                                    <p style="margin: 5px 0; font-size: 16px;"><strong>${userData.fullName}</strong></p>
+                                    <p style="margin: 5px 0; font-size: 14px; color: #666;">${user.email}</p>
+                                </div>
+                            </div>
+                        `,
+                        attachments: [
+                            {
+                                filename: fileName,
+                                path: filePath,
+                            },
+                            {
+                                filename: path.basename(resumePath),
+                                path: resumePath,
+                            }
+                        ],
+                    };
 
-                await sendEmailWithTimeout(transporter, mailOptions);
+                    await sendEmailWithTimeout(transporter, mailOptions);
+                    console.log(`✅ Email sent via SMTP to ${recipient.email}`);
+                }
 
                 // Clean up temp PDF
                 await fs.unlink(filePath);
@@ -983,7 +1139,68 @@ const sendSingleApplication = async (req, res) => {
         const emailBody = generateEmailBody(position, companyName, user.full_name);
         const subject = `Application for ${position} - ${user.full_name}`;
 
-        // Priority 1: Try Gmail API if user logged in with OAuth
+        // Priority 1: Try Microsoft Graph API if user logged in with Microsoft OAuth
+        if (user.oauth_provider === 'microsoft' && user.microsoft_access_token) {
+            try {
+                console.log('📧 Sending via Microsoft Graph API (OAuth)...');
+                
+                await sendEmailViaMicrosoft(
+                    user,
+                    recipientEmail,
+                    subject,
+                    emailBody,
+                    resumePath,
+                    coverLetterPdfBuffer
+                );
+
+                console.log(`✅ Application sent via Microsoft to ${recipientEmail}`);
+                
+                // Update counter only (history is managed by mobile app)
+                await dbConfig.run(
+                    'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
+                    [userId]
+                );
+
+                // Record in application_history for usage stats
+                try {
+                    await dbConfig.run(
+                        'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                        [userId, companyName || '', position || '', recipientEmail || '', new Date().toISOString(), 0, null]
+                    );
+                } catch (historyError) {
+                    console.error('Failed to save to application_history:', historyError);
+                }
+
+                // Create notification for sent email
+                try {
+                    await notifyEmailSent(userId, companyName, recipientEmail, position, subject);
+                } catch (notifError) {
+                    console.error('Failed to create notification:', notifError);
+                }
+
+                // Clean up
+                await fs.unlink(filePath);
+
+                return res.json({ 
+                    success: true, 
+                    message: 'Application sent successfully via Microsoft',
+                    method: 'microsoft'
+                });
+
+            } catch (microsoftError) {
+                console.error('❌ Microsoft Graph API error:', microsoftError.message);
+                console.log('⚠️ Microsoft Graph API failed, will try SMTP fallback...');
+                
+                // Don't return error here - let it fall through to SMTP
+                // Only return if it's specifically asking for re-auth
+                if (microsoftError.message.includes('OAuth token expired')) {
+                    console.log('⚠️ Microsoft OAuth tokens expired, attempting SMTP fallback...');
+                }
+                // Fall through to next priority (Gmail or SMTP)
+            }
+        }
+
+        // Priority 2: Try Gmail API if user logged in with OAuth
         if (user.oauth_provider === 'google' && user.google_access_token) {
             try {
                 console.log('📧 Sending via Gmail API (OAuth)...');
@@ -1301,7 +1518,293 @@ const sendSingleApplication = async (req, res) => {
     }
 };
 
+// Check for email replies
+const checkEmailReplies = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        console.log('\n📬 ============ CHECK EMAIL REPLIES START ============');
+        console.log('📬 [CHECK] Timestamp:', new Date().toISOString());
+        console.log('📬 [CHECK] User ID:', userId);
+        console.log('📬 [CHECK] Request headers:', JSON.stringify(req.headers, null, 2));
+
+        // Get user with OAuth tokens
+        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        
+        if (!user) {
+            console.error('❌ [CHECK] User not found in database');
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        console.log('📬 [CHECK] User found:', {
+            id: user.id,
+            email: user.email,
+            fullName: user.full_name,
+            oauthProvider: user.oauth_provider
+        });
+        console.log('📬 [CHECK] OAuth Provider:', user.oauth_provider);
+        console.log('📬 [CHECK] Has Microsoft token:', !!user.microsoft_access_token);
+        console.log('📬 [CHECK] Has Google token:', !!user.google_access_token);
+        if (user.microsoft_access_token) {
+            console.log('📬 [CHECK] Microsoft token (first 20 chars):', user.microsoft_access_token.substring(0, 20) + '...');
+        }
+        if (user.google_access_token) {
+            console.log('📬 [CHECK] Google token (first 20 chars):', user.google_access_token.substring(0, 20) + '...');
+        }
+
+        // Check if user has OAuth provider
+        if (!user.oauth_provider || (user.oauth_provider !== 'google' && user.oauth_provider !== 'microsoft')) {
+            console.error('❌ [CHECK] Invalid OAuth provider:', user.oauth_provider);
+            return res.status(400).json({ 
+                error: 'Email reply checking is only available for Google and Microsoft accounts',
+                message: 'Please log in with Google or Microsoft to check for email replies'
+            });
+        }
+
+        // Get pending applications (not yet replied)
+        console.log('📬 [CHECK] Fetching pending applications...');
+        const pendingApps = await dbConfig.query(
+            'SELECT * FROM application_history WHERE user_id = ? AND reply_received = 0 ORDER BY sent_date DESC',
+            [userId]
+        );
+
+        console.log('📬 [CHECK] Pending applications found:', pendingApps.length);
+        if (pendingApps.length > 0) {
+            console.log('📬 [CHECK] First 3 pending apps:', pendingApps.slice(0, 3).map(app => ({
+                id: app.id,
+                company: app.company_name,
+                email: app.recipient_email,
+                sentDate: app.sent_date
+            })));
+        }
+
+        if (pendingApps.length === 0) {
+            return res.json({ 
+                success: true, 
+                message: 'No pending applications to check',
+                repliesFound: 0,
+                updatedApplications: []
+            });
+        }
+
+        let repliesFound = 0;
+        const updatedApplications = [];
+
+        // Check emails based on OAuth provider
+        if (user.oauth_provider === 'microsoft' && user.microsoft_access_token) {
+            console.log('📬 [CHECK] Checking Microsoft emails...');
+            console.log('📬 [CHECK] Microsoft access token length:', user.microsoft_access_token.length);
+            
+            try {
+                const apiUrl = 'https://graph.microsoft.com/v1.0/me/messages?$top=50&$orderby=receivedDateTime desc';
+                console.log('📬 [CHECK] Microsoft API URL:', apiUrl);
+                console.log('📬 [CHECK] Making request to Microsoft Graph API...');
+                
+                // Microsoft Graph API: Get recent emails
+                const response = await fetch(apiUrl, {
+                    headers: {
+                        'Authorization': `Bearer ${user.microsoft_access_token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                console.log('📬 [CHECK] Microsoft API Response Status:', response.status);
+                console.log('📬 [CHECK] Microsoft API Response Status Text:', response.statusText);
+                console.log('📬 [CHECK] Microsoft API Response Headers:', JSON.stringify([...response.headers.entries()], null, 2));
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('❌ [CHECK] Microsoft API Error Response:', errorText);
+                    throw new Error(`Failed to fetch Microsoft emails: ${response.status} ${response.statusText} - ${errorText}`);
+                }
+
+                const data = await response.json();
+                const emails = data.value || [];
+
+                console.log('📬 [CHECK] Found', emails.length, 'Microsoft emails');
+                if (emails.length > 0) {
+                    console.log('📬 [CHECK] First email sample:', {
+                        from: emails[0].from?.emailAddress?.address,
+                        subject: emails[0].subject,
+                        receivedDateTime: emails[0].receivedDateTime
+                    });
+                }
+
+                // Match emails to applications
+                console.log('📬 [CHECK] Starting to match emails with pending applications...');
+                for (const app of pendingApps) {
+                    const companyEmail = app.recipient_email.toLowerCase();
+                    console.log(`📬 [CHECK] Checking app #${app.id} - ${app.company_name} (${companyEmail})`);
+                    
+                    for (const email of emails) {
+                        const fromEmail = email.from?.emailAddress?.address?.toLowerCase() || '';
+                        const emailDate = new Date(email.receivedDateTime);
+                        const sentDate = new Date(app.sent_date);
+
+                        // Check if:
+                        // 1. Email is from the company we sent to
+                        // 2. Email was received after we sent the application
+                        // 3. Subject might contain user's name or position
+                        if (fromEmail === companyEmail && emailDate > sentDate) {
+                            console.log(`✅ [CHECK] MATCH FOUND! Reply from ${companyEmail} for ${app.company_name}`);
+                            console.log(`✅ [CHECK] Email date: ${emailDate}, Sent date: ${sentDate}`);
+                            
+                            // Update application
+                            await dbConfig.run(
+                                'UPDATE application_history SET reply_received = 1, reply_date = ? WHERE id = ?',
+                                [email.receivedDateTime, app.id]
+                            );
+
+                            repliesFound++;
+                            updatedApplications.push({
+                                id: app.id,
+                                companyName: app.company_name,
+                                replyDate: email.receivedDateTime
+                            });
+                            
+                            break; // Move to next application
+                        }
+                    }
+                }
+
+            } catch (error) {
+                console.error('❌ [CHECK] Microsoft email check error:', error);
+                console.error('❌ [CHECK] Microsoft error stack:', error.stack);
+                console.error('❌ [CHECK] Microsoft error name:', error.name);
+                console.error('❌ [CHECK] Microsoft error message:', error.message);
+                // Continue to return partial results
+            }
+
+        } else if (user.oauth_provider === 'google' && user.google_access_token) {
+            console.log('📬 [CHECK] Checking Gmail...');
+            console.log('📬 [CHECK] Google access token length:', user.google_access_token.length);
+            console.log('📬 [CHECK] Google refresh token exists:', !!user.google_refresh_token);
+            
+            try {
+                console.log('📬 [CHECK] Creating OAuth2 client...');
+                const oauth2Client = createOAuth2Client(user);
+                const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+                console.log('📬 [CHECK] Fetching Gmail messages...');
+                // Get recent unread emails
+                const messagesResponse = await gmail.users.messages.list({
+                    userId: 'me',
+                    maxResults: 50,
+                    q: 'is:unread newer_than:30d' // Unread emails from last 30 days
+                });
+
+                const messages = messagesResponse.data.messages || [];
+                console.log('📬 [CHECK] Found', messages.length, 'unread Gmail messages');
+                if (messages.length > 0) {
+                    console.log('📬 [CHECK] First message ID:', messages[0].id);
+                }
+
+                // Match emails to applications
+                console.log('📬 [CHECK] Starting to match Gmail messages with pending applications...');
+                for (const app of pendingApps) {
+                    const companyEmail = app.recipient_email.toLowerCase();
+                    console.log(`📬 [CHECK] Checking app #${app.id} - ${app.company_name} (${companyEmail})`);
+                    
+                    for (const message of messages) {
+                        try {
+                            // Get full message details
+                            const msg = await gmail.users.messages.get({
+                                userId: 'me',
+                                id: message.id,
+                                format: 'metadata',
+                                metadataHeaders: ['From', 'Date', 'Subject']
+                            });
+
+                            const headers = msg.data.payload.headers;
+                            const fromHeader = headers.find(h => h.name === 'From');
+                            const dateHeader = headers.find(h => h.name === 'Date');
+                            
+                            const fromEmail = fromHeader?.value?.match(/<(.+?)>/)?.[1]?.toLowerCase() || 
+                                            fromHeader?.value?.toLowerCase() || '';
+                            
+                            const emailDate = new Date(dateHeader?.value || msg.data.internalDate);
+                            const sentDate = new Date(app.sent_date);
+
+                            // Check if email is from company and received after sent
+                            if (fromEmail.includes(companyEmail) && emailDate > sentDate) {
+                                console.log(`✅ [CHECK] MATCH FOUND! Reply from ${companyEmail} for ${app.company_name}`);
+                                console.log(`✅ [CHECK] Email date: ${emailDate}, Sent date: ${sentDate}`);
+                                console.log(`✅ [CHECK] From email: ${fromEmail}`);
+                                
+                                // Update application
+                                await dbConfig.run(
+                                    'UPDATE application_history SET reply_received = 1, reply_date = ? WHERE id = ?',
+                                    [emailDate.toISOString(), app.id]
+                                );
+
+                                repliesFound++;
+                                updatedApplications.push({
+                                    id: app.id,
+                                    companyName: app.company_name,
+                                    replyDate: emailDate.toISOString()
+                                });
+                                
+                                break; // Move to next application
+                            }
+
+                        } catch (msgError) {
+                            console.error('❌ [CHECK] Error fetching Gmail message:', msgError.message);
+                            // Continue to next message
+                        }
+                    }
+                }
+
+            } catch (error) {
+                console.error('❌ [CHECK] Gmail check error:', error);
+                console.error('❌ [CHECK] Gmail error stack:', error.stack);
+                console.error('❌ [CHECK] Gmail error name:', error.name);
+                console.error('❌ [CHECK] Gmail error message:', error.message);
+                if (error.response) {
+                    console.error('❌ [CHECK] Gmail API response:', JSON.stringify(error.response.data, null, 2));
+                }
+                // Continue to return partial results
+            }
+        } else {
+            console.warn('⚠️ [CHECK] No valid OAuth provider or token found');
+            console.warn('⚠️ [CHECK] Provider:', user.oauth_provider);
+            console.warn('⚠️ [CHECK] Has Microsoft token:', !!user.microsoft_access_token);
+            console.warn('⚠️ [CHECK] Has Google token:', !!user.google_access_token);
+        }
+
+        console.log(`📬 [CHECK] Total replies found: ${repliesFound}`);
+        console.log('📬 [CHECK] Updated applications:', updatedApplications);
+        console.log('📬 [CHECK] Sending response to client...');
+        console.log('📬 ============ CHECK EMAIL REPLIES END ============\n');
+
+        res.json({
+            success: true,
+            message: repliesFound > 0 
+                ? `Found ${repliesFound} new ${repliesFound === 1 ? 'reply' : 'replies'}!`
+                : 'No new replies found',
+            repliesFound,
+            updatedApplications
+        });
+
+    } catch (error) {
+        console.error('\n❌ ============ CHECK EMAIL REPLIES ERROR ============');
+        console.error('❌ [ERROR] Timestamp:', new Date().toISOString());
+        console.error('❌ [ERROR] Error name:', error.name);
+        console.error('❌ [ERROR] Error message:', error.message);
+        console.error('❌ [ERROR] Error stack:', error.stack);
+        if (error.response) {
+            console.error('❌ [ERROR] API Response:', JSON.stringify(error.response.data, null, 2));
+        }
+        console.error('❌ ============ CHECK EMAIL REPLIES ERROR END ============\n');
+        
+        res.status(500).json({ 
+            error: error.message || 'Failed to check email replies',
+            message: 'An error occurred while checking for replies'
+        });
+    }
+};
+
 module.exports = {
     sendApplications,
-    sendSingleApplication
+    sendSingleApplication,
+    checkEmailReplies
 };

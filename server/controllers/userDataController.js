@@ -11,20 +11,25 @@ const saveRecipients = async (req, res) => {
             return res.status(400).json({ error: 'Recipients must be an array' });
         }
 
-        // SOFT DELETE existing recipients for this user (instead of hard delete)
-        // This preserves data for audit trails and potential recovery
-        await auditUtils.bulkSoftDelete('recipients', 'user_id = ?', [userId], userId);
-
-        // Insert new recipients
+        // Filter valid recipients first
         const validRecipients = recipients.filter(r => r.email && r.website);
         
+        // Don't delete existing data if no valid recipients to replace with
         if (validRecipients.length === 0) {
+            // Return current recipients count instead of deleting
+            const existing = await dbConfig.query(
+                'SELECT COUNT(*) as count FROM recipients WHERE user_id = ?',
+                [userId]
+            );
             return res.json({
                 success: true,
-                message: 'Recipients cleared successfully',
-                recipientsCount: 0
+                message: 'No valid recipients to save, existing data preserved',
+                recipientsCount: existing[0]?.count || 0
             });
         }
+
+        // DELETE existing recipients only if we have valid replacements
+        await dbConfig.run('DELETE FROM recipients WHERE user_id = ?', [userId]);
 
         let insertedCount = 0;
 
@@ -60,9 +65,9 @@ const getRecipients = async (req, res) => {
     try {
         const userId = req.user.id;
 
-        // Only get active (non-deleted) recipients
+        // Get all recipients for the user
         const recipients = await dbConfig.query(
-            'SELECT id, email, website, position FROM recipients WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at ASC',
+            'SELECT id, email, website, position FROM recipients WHERE user_id = ? ORDER BY created_at ASC',
             [userId]
         );
 
@@ -87,28 +92,58 @@ const saveApplicationHistory = async (req, res) => {
             return res.status(400).json({ error: 'Application history must be an array' });
         }
 
-        // SOFT DELETE existing history for this user (instead of hard delete)
-        // This preserves historical data for analytics and audit purposes
-        await auditUtils.bulkSoftDelete('application_history', 'user_id = ?', [userId], userId);
+        // DON'T soft delete existing records - merge instead
+        // This allows both mobile sync and backend INSERTs to coexist
+        
+        // Get existing records to avoid duplicates
+        const existing = await dbConfig.query(
+            'SELECT id, recipient_email, sent_date FROM application_history WHERE user_id = ? AND deleted_at IS NULL',
+            [userId]
+        );
+        
+        const existingSet = new Set();
+        if (existing) {
+            existing.forEach(record => {
+                // Create unique key: email + date (without time)
+                const dateOnly = record.sent_date ? new Date(record.sent_date).toISOString().split('T')[0] : '';
+                const key = `${record.recipient_email}|${dateOnly}`;
+                existingSet.add(key);
+            });
+        }
 
-        // Insert new history
+        // Insert new history (skip duplicates)
         let inserted = 0;
+        let skipped = 0;
         for (const app of applicationHistory) {
             try {
+                const sentDate = app.sentDate || new Date().toISOString();
+                const dateOnly = new Date(sentDate).toISOString().split('T')[0];
+                const key = `${app.recipientEmail || ''}|${dateOnly}`;
+                
+                // Skip if already exists (same email + same date)
+                if (existingSet.has(key)) {
+                    skipped++;
+                    continue;
+                }
+                
                 await dbConfig.run(
                     'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                    [userId, app.companyName || '', app.position || '', app.recipientEmail || '', app.sentDate || new Date().toISOString(), app.replyReceived ? 1 : 0, app.replyDate || null]
+                    [userId, app.companyName || '', app.position || '', app.recipientEmail || '', sentDate, app.replyReceived ? 1 : 0, app.replyDate || null]
                 );
                 inserted++;
+                existingSet.add(key); // Add to set to avoid duplicates within same sync
             } catch (err) {
                 console.error('Error inserting application history:', err);
             }
         }
 
+        console.log(`📊 Application history sync: ${inserted} inserted, ${skipped} skipped (duplicates)`);
+
         res.json({
             success: true,
             message: 'Application history saved',
-            count: inserted
+            inserted: inserted,
+            skipped: skipped
         });
     } catch (error) {
         console.error('Save application history error:', error);
@@ -121,9 +156,10 @@ const getApplicationHistory = async (req, res) => {
     try {
         const userId = req.user.id;
 
-        // Only get active (non-deleted) application history
+        // Get last 10 application history entries for the user (for display purposes)
+        // Note: We don't filter by deleted_at here because application history is for tracking
         const history = await dbConfig.query(
-            'SELECT id, company_name as "companyName", position, recipient_email as "recipientEmail", sent_date as "sentDate", reply_received as "replyReceived", reply_date as "replyDate" FROM application_history WHERE user_id = ? AND deleted_at IS NULL ORDER BY sent_date DESC',
+            'SELECT id, company_name as "companyName", position, recipient_email as "recipientEmail", sent_date as "sentDate", reply_received as "replyReceived", reply_date as "replyDate" FROM application_history WHERE user_id = ? ORDER BY sent_date DESC LIMIT 10',
             [userId]
         );
 
@@ -208,7 +244,7 @@ const getReviewCoverLetters = async (req, res) => {
         
         console.log(`📥 Getting review cover letters for user ${userId}`);
 
-        // Only get active (non-deleted) cover letters
+        // Get all cover letters for the user (excluding soft-deleted ones)
         const letters = await dbConfig.query(
             'SELECT letter_key, company_name as "companyName", recipient_email as "recipientEmail", cover_letter_html as "coverLetterHtml", subject, address, date, position, locations, generated, sent, sent_date as "sentDate", stored_recipient_email as "storedRecipientEmail", stored_recipient_website as "storedRecipientWebsite" FROM review_cover_letters WHERE user_id = ? AND deleted_at IS NULL',
             [userId]

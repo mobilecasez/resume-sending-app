@@ -1091,13 +1091,13 @@ Research ${websiteUrl} now and extract these details. Return ONLY the JSON, no o
             }
 
             // Format the company intelligence nicely
-            const productsInfo = companyIntel?.products?.join('\n   - ') || 'Not available';
-            const clientsInfo = companyIntel?.clients?.join(', ') || 'Not available';
-            const techInfo = companyIntel?.technologies?.join(', ') || 'Not available';
-            const partnersInfo = companyIntel?.partnerships?.join(', ') || 'Not available';
+            const productsInfo = Array.isArray(companyIntel?.products) ? companyIntel.products.join('\n   - ') : 'Not available';
+            const clientsInfo = Array.isArray(companyIntel?.clients) ? companyIntel.clients.join(', ') : 'Not available';
+            const techInfo = Array.isArray(companyIntel?.technologies) ? companyIntel.technologies.join(', ') : 'Not available';
+            const partnersInfo = Array.isArray(companyIntel?.partnerships) ? companyIntel.partnerships.join(', ') : 'Not available';
             const businessModel = companyIntel?.businessModel || 'Technology company';
             const mission = companyIntel?.mission || '';
-            const uniqueDetails = companyIntel?.uniqueDetails?.join('\n   - ') || '';
+            const uniqueDetails = Array.isArray(companyIntel?.uniqueDetails) ? companyIntel.uniqueDetails.join('\n   - ') : '';
             const industry = companyIntel?.industryFocus || '';
 
             // Extract candidate insights from resume

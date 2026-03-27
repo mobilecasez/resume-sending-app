@@ -30,21 +30,210 @@
 <body data-spy="scroll" data-target=".navbar">
 
     <script>
-        // Dynamic base URL - detects localhost vs production
-        const BASE_URL = (
-            window.location.protocol === 'file:' ||
-            window.location.hostname === 'localhost' || 
-            window.location.hostname === '127.0.0.1' ||
-            window.location.hostname === '' ||
-            window.location.hostname === '192.168.1.16'
-        ) ? 'http://localhost:3000' 
-          : 'https://cvapplyr.com';
-        
-        // Helper function to navigate to app pages
+        // Helper function to navigate to app pages using relative paths
         function navigateToApp(path) {
-            window.location.href = BASE_URL + path;
+            // Use relative path - works for both localhost and production
+            window.location.href = path;
         }
+        
+        // Smart home navigation - dashboard for logged-in users, about page for others
+        function navigateHome(event) {
+            const token = localStorage.getItem('authToken');
+            if (token) {
+                event.preventDefault();
+                window.location.href = '/dashboard';
+            }
+            // If not logged in, let the default #home scroll behavior work
+        }
+        
+        // Handle logout
+        function handleLogout() {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('userData');
+            sessionStorage.clear();
+            window.location.href = '/login';
+        }
+        
+        // Update navbar based on login status
+        function updateNavbar() {
+            const authToken = localStorage.getItem('authToken');
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            const navbarNav = document.querySelector('#navbarNav .navbar-nav');
+            
+            // Remove existing auth items
+            const existingAuth = navbarNav.querySelectorAll('.auth-item');
+            existingAuth.forEach(item => item.remove());
+            
+            if (authToken && userData.email) {
+                // User is logged in
+                const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2) : 'U';
+                const authHTML = `
+                    <li class="nav-item auth-item">
+                        <span class="user-badge-nav">
+                            <span class="user-avatar-nav">${initials}</span>
+                            <span class="user-name-nav">${userData.fullName || 'User'}</span>
+                        </span>
+                    </li>
+                    <li class="nav-item auth-item">
+                        <a href="/dashboard" class="btn btn-sm btn-secondary-nav">Dashboard</a>
+                    </li>
+                    <li class="nav-item auth-item">
+                        <button class="btn btn-sm btn-logout-nav" onclick="handleLogout()">Logout</button>
+                    </li>
+                `;
+                navbarNav.insertAdjacentHTML('beforeend', authHTML);
+            } else {
+                // User not logged in
+                const authHTML = `
+                    <li class="nav-item auth-item">
+                        <a class="nav-link" href="javascript:void(0)" onclick="navigateToApp('/login')">Sign In</a>
+                    </li>
+                    <li class="nav-item auth-item">
+                        <a href="javascript:void(0)" onclick="navigateToApp('/register')" class="btn btn-primary btn-sm">Sign Up Free</a>
+                    </li>
+                `;
+                navbarNav.insertAdjacentHTML('beforeend', authHTML);
+            }
+        }
+        
+        // Initialize navbar on page load
+        document.addEventListener('DOMContentLoaded', updateNavbar);
     </script>
+    
+    <style>
+        /* Keep original navbar collapse padding for vertical spacing */
+        .navbar .navbar-collapse {
+            padding: 17px 0px 12px 0 !important;
+        }
+        
+        /* Navbar alignment fix */
+        .navbar-nav {
+            display: flex !important;
+            align-items: center !important;
+            flex-wrap: nowrap !important;
+            gap: 0.5rem;
+        }
+        
+        .navbar-nav .nav-item {
+            display: flex !important;
+            align-items: center !important;
+            white-space: nowrap;
+            margin: 0 !important;
+        }
+        
+        /* Override default button positioning */
+        .navbar .navbar-nav .btn,
+        .navbar .navbar-nav .btn-sm,
+        .navbar .navbar-nav .btn-primary,
+        .navbar .navbar-nav .btn-secondary-nav,
+        .navbar .navbar-nav .btn-logout-nav {
+            position: static !important;
+            top: 0 !important;
+            margin: 0 !important;
+        }
+        
+        /* Ensure all nav-links have proper padding */
+        .navbar .navbar-nav .nav-link {
+            padding: 8px 0.8rem !important;
+            display: flex;
+            align-items: center;
+        }
+        
+        /* User Badge in Navbar */
+        .user-badge-nav {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            font-size: 0.75rem;
+            white-space: nowrap;
+            height: 32px;
+        }
+        
+        .user-avatar-nav {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 0.65rem;
+            flex-shrink: 0;
+        }
+        
+        .user-name-nav {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: white;
+            line-height: 1;
+        }
+        
+        /* Compact buttons - consistent height */
+        .navbar .navbar-nav .btn-sm {
+            padding: 6px 14px !important;
+            font-size: 0.75rem !important;
+            line-height: 1.4 !important;
+            border-radius: 20px !important;
+            white-space: nowrap !important;
+            height: 32px !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+        }
+        
+        .btn-secondary-nav {
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid rgba(147, 197, 253, 0.5);
+            color: white !important;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        
+        .btn-secondary-nav:hover {
+            background: rgba(59, 130, 246, 0.3);
+            border-color: rgba(147, 197, 253, 0.8);
+            color: white !important;
+            text-decoration: none;
+        }
+        
+        .btn-logout-nav {
+            background: rgba(220, 38, 38, 0.15);
+            border: 1px solid rgba(254, 202, 202, 0.5);
+            color: white !important;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        
+        .btn-logout-nav:hover {
+            background: rgba(220, 38, 38, 0.25);
+            border-color: rgba(254, 202, 202, 0.8);
+            color: white !important;
+        }
+        
+        /* Mobile responsive */
+        @media (max-width: 991px) {
+            .navbar-nav {
+                flex-wrap: wrap !important;
+            }
+            
+            .navbar-nav .nav-item {
+                width: 100%;
+                margin: 5px 0 !important;
+            }
+            
+            .user-badge-nav,
+            .btn-sm {
+                width: 100%;
+                justify-content: center;
+            }
+        }
+    </style>
 
     <!-- PRELOADER -->
     <div class="preloader-holder">
@@ -72,14 +261,14 @@
         <!-- Navbar -->
         <nav class="navbar navbar-expand-lg fixed-top">
             <div class="container">
-                <a class="navbar-brand" href="#">CV<span>Applyr</span></a>
+                <a class="navbar-brand" href="#" onclick="navigateHome(event)">CV<span>Applyr</span></a>
                 <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav">
                     <i class="material-icons">menu</i>
                 </button>
                 <div class="collapse navbar-collapse" id="navbarNav">
                     <ul class="nav navbar-nav ml-auto">
                         <li class="nav-item">
-                            <a class="nav-link page-scroll" href="#home">Home</a>
+                            <a class="nav-link page-scroll" href="#home" onclick="navigateHome(event)">Home</a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link page-scroll" href="#services">Why CVApplyr</a>
@@ -92,12 +281,6 @@
                         </li>
                         <li class="nav-item">
                             <a class="nav-link page-scroll" href="#contact">Contact</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="javascript:void(0)" onclick="navigateToApp('/login')">Sign In</a>
-                        </li>
-                        <li>
-                            <a href="javascript:void(0)" onclick="navigateToApp('/register')" class="btn btn-primary">Sign Up Free</a>
                         </li>
                     </ul>
                 </div>
@@ -276,94 +459,113 @@
     </section>
 
     <!-- PRICING -->
-    <section id="prices">
+    <section id="pricing">
         <div class="container">
             <div class="row">
+                <!-- /// Title /// -->
                 <div class="col-md-6 col-sm-offset-2 col-md-offset-3 text-center mx-auto">
-                    <h2 class="section-title">Flexible Credit Packages</h2>
-                    <p>Affordable pay-as-you-go pricing. Purchase credits and use them whenever you need. No monthly subscriptions, credits never expire.</p>
+                    <h2 class="section-title">Flexible Pricing Plans</h2>
+                    <p>Start with a small package and scale as you need. All plans include AI-powered cover letters and application tracking. Credits never expire.</p>
                 </div>
             </div>
             <!-- /// Pricing Tables /// -->
             <!-- First Row: 3 Plans -->
             <div class="row">
-                <!--// Starter Package // -->
+                <!--// Starter Plan // -->
                 <div class="col-lg-4 wow fadeInLeft" data-wow-duration=".5s" data-wow-delay=".2s">
                     <div class="price-table">
                         <div class="header">
                             <h5 class="title">Starter</h5>
-                            <div class="price">$9.99</div>
-                            <h4>10 Credits</h4>
+                            <div class="price">$4.99</div>
+                            <h4>11 Credits</h4>
                         </div>
                         <ul>
-                            <li>10 Applications</li>
-                            <li>AI Cover Letters</li>
+                            <li>11 Job Applications</li>
+                            <li>AI Cover Letter Generation</li>
                             <li>Resume Attachment</li>
-                            <li>Application Tracking</li>
-                            <li>Email Support</li>
+                            <li>Application History</li>
+                            <li>24/7 Support</li>
                         </ul>
                         <button class="btn btn-transparent" type="button" onclick="navigateToApp('/packages')">Get Started</button>
                     </div>
                 </div>
-                <!--// Basic Package // -->
+                <!--// Professional Plan // -->
                 <div class="col-lg-4 wow bounceIn" data-wow-duration=".5s" data-wow-delay=".4s">
                     <div class="price-table">
                         <div class="header">
-                            <h5 class="title">Basic</h5>
-                            <div class="price">$29.99</div>
-                            <h4>50 Credits</h4>
+                            <h5 class="title">Professional</h5>
+                            <div class="price">$12.99</div>
+                            <h4>28 Credits</h4>
                         </div>
                         <ul>
-                            <li>50 Applications</li>
-                            <li>AI Cover Letters</li>
+                            <li>28 Job Applications</li>
+                            <li>AI Cover Letter Generation</li>
                             <li>Resume Attachment</li>
-                            <li>Application Tracking</li>
-                            <li>Priority Support</li>
+                            <li>Application History</li>
+                            <li>24/7 Support</li>
                         </ul>
                         <button class="btn btn-transparent" type="button" onclick="navigateToApp('/packages')">Get Started</button>
                     </div>
                 </div>
-                <!--// Professional Package // -->
+                <!--// Premium Plan // -->
                 <div class="col-lg-4 wow fadeInRight" data-wow-duration=".5s" data-wow-delay=".6s">
                     <div class="price-table">
                         <div class="header">
-                            <h5 class="title">Professional</h5>
-                            <div class="price">$79.99</div>
-                            <h4>150 Credits</h4>
+                            <h5 class="title">Premium</h5>
+                            <div class="price">$34.99</div>
+                            <h4>100 Credits</h4>
                         </div>
                         <ul>
-                            <li>150 Applications</li>
-                            <li>AI Cover Letters</li>
+                            <li>100 Job Applications</li>
+                            <li>AI Cover Letter Generation</li>
                             <li>Resume Attachment</li>
-                            <li>Application Tracking</li>
-                            <li>Priority Support</li>
+                            <li>Application History</li>
+                            <li>Priority 24/7 Support</li>
                         </ul>
                         <button class="btn btn-primary" type="button" onclick="navigateToApp('/packages')">Get Started</button>
                     </div>
                 </div>
             </div>
-            <!-- Second Row: 1 Plan (Centered) -->
+            <!-- Second Row: 2 Plans (Centered) -->
             <div class="row" style="margin-top: 30px;">
-                <div class="col-lg-4"></div>
-                <!--// Enterprise Package // -->
-                <div class="col-lg-4 wow fadeInUp" data-wow-duration=".5s" data-wow-delay=".4s">
+                <div class="col-lg-2"></div>
+                <!--// Enterprise Plan // -->
+                <div class="col-lg-4 wow fadeInLeft" data-wow-duration=".5s" data-wow-delay=".2s">
                     <div class="price-table">
                         <div class="header">
                             <h5 class="title">Enterprise</h5>
-                            <div class="price">$199.99</div>
+                            <div class="price">$149.99</div>
                             <h4>500 Credits</h4>
                         </div>
                         <ul>
-                            <li>500 Applications</li>
-                            <li>AI Cover Letters</li>
+                            <li>500 Job Applications</li>
+                            <li>AI Cover Letter Generation</li>
                             <li>Resume Attachment</li>
-                            <li>Application Tracking</li>
-                            <li>24/7 Priority Support</li>
+                            <li>Application History</li>
+                            <li>Priority 24/7 Support</li>
                         </ul>
                         <button class="btn btn-transparent" type="button" onclick="navigateToApp('/packages')">Get Started</button>
                     </div>
                 </div>
-                <div class="col-lg-4"></div>
+                <!--// Ultimate Plan // -->
+                <div class="col-lg-4 wow fadeInRight" data-wow-duration=".5s" data-wow-delay=".4s">
+                    <div class="price-table">
+                        <div class="header">
+                            <h5 class="title">Ultimate</h5>
+                            <div class="price">$499.99</div>
+                            <h4>2000 Credits</h4>
+                        </div>
+                        <ul>
+                            <li>2000 Job Applications</li>
+                            <li>AI Cover Letter Generation</li>
+                            <li>Resume Attachment</li>
+                            <li>Application History</li>
+                            <li>Dedicated Support Team</li>
+                        </ul>
+                        <button class="btn btn-transparent" type="button" onclick="navigateToApp('/packages')">Get Started</button>
+                    </div>
+                </div>
+                <div class="col-lg-2"></div>
             </div>
         </div>
     </section>
@@ -489,10 +691,10 @@
                 <div class="col-md-2 col-sm-6 mb-4">
                     <h6 class="text-white mb-3">Quick Links</h6>
                     <ul class="list-unstyled">
-                        <li><a href="#home" class="text-muted" style="text-decoration: none;">Home</a></li>
+                        <li><a href="#home" onclick="navigateHome(event)" class="text-muted" style="text-decoration: none;">Home</a></li>
                         <li><a href="#services" class="text-muted" style="text-decoration: none;">Why CVApplyr</a></li>
                         <li><a href="#features" class="text-muted" style="text-decoration: none;">Features</a></li>
-                        <li><a href="#prices" class="text-muted" style="text-decoration: none;">Pricing</a></li>
+                        <li><a href="#pricing" class="text-muted" style="text-decoration: none;">Pricing</a></li>
                         <li><a href="#contact" class="text-muted" style="text-decoration: none;">Contact</a></li>
                     </ul>
                 </div>

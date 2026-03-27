@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS users (
     oauth_provider TEXT,
     google_access_token TEXT,
     google_refresh_token TEXT,
+    microsoft_access_token TEXT,
+    microsoft_refresh_token TEXT,
     total_generated INTEGER DEFAULT 0,
     total_sent INTEGER DEFAULT 0,
     role TEXT DEFAULT 'user',

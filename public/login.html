@@ -259,19 +259,9 @@
 <body data-spy="scroll" data-target=".navbar">
 
     <script>
-        // Dynamic base URL - detects localhost vs production
-        const BASE_URL = (
-            window.location.protocol === 'file:' ||
-            window.location.hostname === 'localhost' || 
-            window.location.hostname === '127.0.0.1' ||
-            window.location.hostname === '' ||
-            window.location.hostname === '192.168.1.16'
-        ) ? 'http://localhost:3000' 
-          : 'https://cvapplyr.com';
-        
-        // Helper function to navigate to app pages
+        // Helper function to navigate to app pages using relative paths
         function navigateToApp(path) {
-            window.location.href = BASE_URL + path;
+            window.location.href = path;
         }
     </script>
 
@@ -351,12 +341,18 @@
 
                         <!-- OAuth Options -->
                         <div class="oauth-section">
-                            <h3 class="oauth-title">Sign in with Google</h3>
-                            <a href="#" onclick="window.location.href=BASE_URL+'/auth/google'; return false;" class="oauth-btn">
+                            <h3 class="oauth-title">Quick Sign In</h3>
+                            <a href="/auth/google" class="oauth-btn">
                                 <svg viewBox="0 0 24 24" width="22" height="22">
                                     <path fill="currentColor" d="M12.545,10.239v3.821h5.445c-0.712,2.315-2.647,3.972-5.445,3.972c-3.332,0-6.033-2.701-6.033-6.032 c0-3.331,2.701-6.032,6.033-6.032c1.498,0,2.866,0.549,3.921,1.453l2.814-2.814C17.461,2.268,15.365,1.25,12.545,1.25 c-6.343,0-11.5,5.157-11.5,11.5c0,6.343,5.157,11.5,11.5,11.5c6.343,0,11.5-5.157,11.5-11.5c0-0.828-0.084-1.628-0.239-2.405H12.545z"/>
                                 </svg>
                                 Continue with Google
+                            </a>
+                            <a href="/auth/microsoft" class="oauth-btn" style="margin-top: 12px;">
+                                <svg viewBox="0 0 24 24" width="22" height="22">
+                                    <path fill="currentColor" d="M11.4,24H0V12.6h11.4V24z M24,24H12.6V12.6H24V24z M11.4,11.4H0V0h11.4V11.4z M24,11.4H12.6V0H24V11.4z"/>
+                                </svg>
+                                Continue with Microsoft
                             </a>
                             <div class="divider">
                                 <span>or</span>
@@ -445,10 +441,10 @@
     </footer>
 
     <script>
-        // Check if already logged in
+        // Check if already logged in - redirect to dashboard
         const token = localStorage.getItem('authToken');
         if (token) {
-            window.location.href = BASE_URL + '/';
+            window.location.href = '/';
         }
 
         async function handleLogin(event) {
@@ -465,7 +461,7 @@
             loginBtn.innerHTML = '<span class="spinner"></span> Signing in...';
 
             try {
-                const response = await fetch(BASE_URL + '/api/auth/login', {
+                const response = await fetch('/api/auth/login', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -478,7 +474,7 @@
                 if (response.ok) {
                     localStorage.setItem('authToken', data.token);
                     localStorage.setItem('userData', JSON.stringify(data.user));
-                    window.location.href = BASE_URL + '/';
+                    window.location.href = '/';
                 } else {
                     errorMessage.textContent = data.error || 'Login failed. Please try again.';
                     errorMessage.style.display = 'block';

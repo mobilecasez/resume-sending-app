@@ -158,6 +158,16 @@ h4 {
     transition: all .2s ease-in-out;
 }
 
+.navbar-brand {
+    display: inline-block;
+    padding-top: 26px;
+    padding-bottom: .3125rem;
+    margin-right: 1rem;
+    font-size: 1.35rem;
+    line-height: inherit;
+    white-space: nowrap;
+}
+
 .navbar .navbar-brand {
     font-weight: bold;
     letter-spacing: 0.3em;
@@ -368,7 +378,7 @@ h4 {
 			PRICES:
 ========================================================*/
 
-#prices {
+#pricing {
     padding: 120px 0;
     background: url(../imgs/pricing-bg.png);
     background-size: cover;
@@ -378,7 +388,7 @@ h4 {
     text-align: center;
 }
 
-#prices .price-table {
+#pricing .price-table {
     background: #fff;
     color: #686b75;
     transition: all .2s ease-in-out;
@@ -387,36 +397,36 @@ h4 {
     margin: 30px 0;
 }
 
-#prices .price-table .header {
+#pricing .price-table .header {
     margin-bottom: 30px;
 }
 
-#prices .price-table .header .title {
+#pricing .price-table .header .title {
     color: #068BEA;
     font-weight: 500;
 }
 
-#prices .price-table .header .price {
+#pricing .price-table .header .price {
     font-size: 60px;
     color: #000;
     font-weight: 700;
 }
 
-#prices .price-table .header h4 {
+#pricing .price-table .header h4 {
     font-weight: 700;
 }
 
-#prices .price-table ul {
+#pricing .price-table ul {
     list-style: none;
     padding: 0;
     margin: 15px 0;
 }
 
-#prices .price-table .btn {
+#pricing .price-table .btn {
     margin-top: 30px;
 }
 
-#prices .price-table:hover {
+#pricing .price-table:hover {
     box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
     transform: translateY(-3px);
 }
