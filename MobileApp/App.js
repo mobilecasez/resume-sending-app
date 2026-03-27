@@ -17,9 +17,9 @@ import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 // Get your Google Client ID from Google Cloud Console
-// Using Web OAuth Client (has client secret for token exchange)
-// Note: Add mobile redirect URIs to this client in Google Cloud Console
-const GOOGLE_CLIENT_ID = '151384459549-ujnpfbck9e0q2jkmt2q4l0lv1s41lp04.apps.googleusercontent.com';
+// Using iOS OAuth Client with PKCE (Proof Key for Code Exchange)
+// PKCE allows secure token exchange without client secret
+const GOOGLE_CLIENT_ID = '151384459549-3rm4atu5eu3ekh9h4rhds6gbd9ecgeb6.apps.googleusercontent.com';
 
 // Microsoft OAuth Client ID from Azure Portal
 const MICROSOFT_CLIENT_ID = '9205782b-1a57-4c2f-bbfd-8136b5378e96';
@@ -345,6 +345,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [user, setUser] = useState(null);
+  const [pkceCodeVerifier, setPkceCodeVerifier] = useState(null); // Store PKCE verifier
   const [recipients, setRecipients] = useState([
     { id: 0, email: '', website: '', position: '', error: '' }
   ]);
@@ -3096,19 +3097,21 @@ export default function App() {
     setRecipients([]);
   };
 
-  const handleGoogleAuthResponse = async (code) => {
+  const handleGoogleAuthResponse = async (code, codeVerifier) => {
     setLoading(true);
     setError('');
     try {
       console.log('Google Auth Response - Code length:', code?.length || 0);
+      console.log('Google Auth Response - Verifier length:', codeVerifier?.length || 0);
       console.log('API Base:', API_BASE);
       
-      // Send authorization code to backend for token exchange
+      // Send authorization code and PKCE verifier to backend for token exchange
       const response = await fetch(`${API_BASE}/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           code, 
+          codeVerifier, // PKCE verifier for secure exchange
           isMobile: true,
           platform: Platform.OS 
         })
@@ -3179,7 +3182,17 @@ export default function App() {
   const handleGoogleLogin = async () => {
     setLoading(true);
     try {
-      // Google OAuth URL for mobile - using authorization code flow (not implicit flow)
+      // PKCE: Generate code_verifier and code_challenge
+      // code_verifier: random 43-128 character string
+      const codeVerifier = generateRandomString(128);
+      
+      // code_challenge: SHA-256 hash of code_verifier, base64url encoded
+      const codeChallenge = await generateCodeChallenge(codeVerifier);
+      
+      console.log('PKCE code_verifier generated:', codeVerifier.substring(0, 20) + '...');
+      console.log('PKCE code_challenge generated:', codeChallenge.substring(0, 20) + '...');
+      
+      // Google OAuth URL for mobile using PKCE (no client secret needed)
       // iOS: use reverse domain format that Google generates (full client ID prefix)
       // Android: use package name format
       const clientIdPrefix = GOOGLE_CLIENT_ID.split('.apps.googleusercontent.com')[0];
@@ -3191,9 +3204,11 @@ export default function App() {
         `client_id=${GOOGLE_CLIENT_ID}` +
         `&redirect_uri=${encodeURIComponent(redirectUri)}` +
         `&response_type=code` +
-        `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send')}`;
+        `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send')}` +
+        `&code_challenge=${codeChallenge}` +
+        `&code_challenge_method=S256`;
       
-      console.log('Opening Google auth URL...', { platform: Platform.OS, redirectUri });
+      console.log('Opening Google auth URL with PKCE...', { platform: Platform.OS, redirectUri });
       const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
       
       console.log('Google auth result:', result);
@@ -3206,7 +3221,8 @@ export default function App() {
         if (codeMatch && codeMatch[1]) {
           const code = codeMatch[1];
           console.log('Google authorization code received');
-          await handleGoogleAuthResponse(code);
+          // Send code WITH code_verifier for PKCE verification
+          await handleGoogleAuthResponse(code, codeVerifier);
         } else {
           throw new Error('No authorization code received from Google');
         }
@@ -3220,6 +3236,38 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  };
+  
+  // PKCE Utility Functions
+  const generateRandomString = (length) => {
+    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+    let text = '';
+    for (let i = 0; i < length; i++) {
+      text += possible.charAt(Math.floor(Math.random() * possible.length));
+    }
+    return text;
+  };
+  
+  const generateCodeChallenge = async (codeVerifier) => {
+    // SHA-256 hash the code_verifier
+    const encoder = new TextEncoder();
+    const data = encoder.encode(codeVerifier);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    
+    // Convert ArrayBuffer to base64url
+    return base64urlEncode(digest);
+  };
+  
+  const base64urlEncode = (arrayBuffer) => {
+    const bytes = new Uint8Array(arrayBuffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    // Convert to base64
+    const base64 = btoa(binary);
+    // Convert base64 to base64url (replace +/= with -_)
+    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
   };
 
   const handleMicrosoftLogin = async () => {

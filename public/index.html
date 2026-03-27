@@ -1251,8 +1251,8 @@
         
         console.log('🔧 Initializing dashboard page...');
         
-        // Authentication check
-        const authToken = localStorage.getItem('authToken');
+        // Authentication check - GLOBAL authToken variable
+        let authToken = localStorage.getItem('authToken');
         if (!authToken) {
             console.log('⚠️ No auth token found, redirecting to login');
             window.location.href = '/login';
@@ -1368,7 +1368,6 @@
             
             try {
                 // Load recipients from backend API
-                const authToken = localStorage.getItem('authToken');
                 const response = await fetch('/api/users/recipients', {
                     method: 'GET',
                     headers: {
@@ -1415,7 +1414,6 @@
         function autoSaveRecipients() {
             clearTimeout(saveTimer);
             saveTimer = setTimeout(async () => {
-                const authToken = localStorage.getItem('authToken');
                 if (!authToken) return;
                 
                 const recipients = [];
@@ -1866,8 +1864,6 @@
             try {
                 // Close the modal
                 closeReplyModal();
-                
-                const authToken = localStorage.getItem('authToken');
                 
                 console.log('🔄 Marking as replied:', { id: appId, replyDate });
                 

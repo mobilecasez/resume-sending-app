@@ -130,7 +130,7 @@ scope: ['user.read', 'Mail.Read', 'Mail.Send', 'offline_access'],
 
 ### 6. ⚠️ **Contact Email Verification**
 **Emails mentioned in policies**:
-- `privacy@cvapplyr.com` - Privacy/DPO contact
+- `support@cvapplyr.com` - Privacy/DPO contact
 - `support@cvapplyr.com` - Support contact
 
 **Required**: These emails MUST be active and monitored
@@ -401,7 +401,7 @@ app.post('/api/account/delete', authenticateUser, async (req, res) => {
 ```
 
 4. **Verify Contact Emails**
-   - Create mailboxes: privacy@cvapplyr.com, support@cvapplyr.com
+   - Create mailboxes: support@cvapplyr.com, support@cvapplyr.com
    - Set up auto-responders
    - Monitor daily
 

@@ -107,6 +107,24 @@ async function runPostgresMigrations(db) {
             END $$;
         `);
         
+        // Migration: Add Microsoft OAuth columns to users table if they don't exist
+        await db.query(`
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='users' AND column_name='microsoft_access_token') THEN
+                    ALTER TABLE users ADD COLUMN microsoft_access_token TEXT;
+                    RAISE NOTICE 'Added microsoft_access_token column to users table';
+                END IF;
+                
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='users' AND column_name='microsoft_refresh_token') THEN
+                    ALTER TABLE users ADD COLUMN microsoft_refresh_token TEXT;
+                    RAISE NOTICE 'Added microsoft_refresh_token column to users table';
+                END IF;
+            END $$;
+        `);
+        
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

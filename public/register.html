@@ -192,18 +192,9 @@
 
     <script>
         // Dynamic base URL - detects localhost vs production
-        const BASE_URL = (
-            window.location.protocol === 'file:' ||
-            window.location.hostname === 'localhost' || 
-            window.location.hostname === '127.0.0.1' ||
-            window.location.hostname === '' ||
-            window.location.hostname === '192.168.1.16'
-        ) ? 'http://localhost:3000' 
-          : 'https://cvapplyr.com';
-        
-        // Helper function to navigate to app pages
+        // Helper function to navigate to app pages using relative paths
         function navigateToApp(path) {
-            window.location.href = BASE_URL + path;
+            window.location.href = path;
         }
     </script>
 
@@ -386,10 +377,10 @@
     </footer>
 
     <script>
-        // Check if already logged in
+        // Check if already logged in - redirect to dashboard
         const token = localStorage.getItem('authToken');
         if (token) {
-            window.location.href = BASE_URL + '/';
+            window.location.href = '/';
         }
 
         async function handleRegister(event) {
@@ -424,7 +415,7 @@
             registerBtn.innerHTML = '<span class="spinner"></span> Creating account...';
 
             try {
-                const response = await fetch(BASE_URL + '/api/auth/register', {
+                const response = await fetch('/api/auth/register', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -439,7 +430,7 @@
                     successMessage.style.display = 'block';
                     
                     setTimeout(() => {
-                        window.location.href = BASE_URL + '/login';
+                        window.location.href = '/login';
                     }, 1500);
                 } else {
                     errorMessage.textContent = data.error || 'Registration failed. Please try again.';

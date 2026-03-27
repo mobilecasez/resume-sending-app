@@ -50,3 +50,6 @@ build/
 logs/
 *.log
 railway_backup.sql
+backup-local-*.sql
+railway-dump-*.sql
+*.db

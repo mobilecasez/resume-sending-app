@@ -172,22 +172,17 @@ const googleCallback = (req, res) => {
 const googleAuth = async (req, res) => {
     try {
         console.log('Google OAuth Request Body:', req.body);
-        const { accessToken, code, isMobile, platform } = req.body;
+        const { accessToken, code, codeVerifier, isMobile, platform } = req.body;
         
         let finalAccessToken = accessToken;
         
-        // If authorization code is provided (mobile flow), exchange it for access token
+        // If authorization code is provided (mobile flow with PKCE), exchange it for access token
         if (code) {
             console.log('Authorization code provided, exchanging for access token...');
             console.log('Platform:', platform || 'not specified');
+            console.log('Using PKCE:', codeVerifier ? 'YES' : 'NO');
             
             const clientId = process.env.GOOGLE_CLIENT_ID;
-            const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-            
-            if (!clientId || !clientSecret) {
-                console.error('Google OAuth credentials not configured');
-                return res.status(500).json({ error: 'Server configuration error' });
-            }
             
             // Determine redirect URI based on platform
             const clientIdPrefix = clientId.split('.apps.googleusercontent.com')[0];
@@ -206,17 +201,35 @@ const googleAuth = async (req, res) => {
             
             console.log('Using redirect URI:', redirectUri);
             
+            // Build token exchange params
+            const tokenParams = {
+                code: code,
+                client_id: clientId,
+                redirect_uri: redirectUri,
+                grant_type: 'authorization_code'
+            };
+            
+            // PKCE: use code_verifier if provided (mobile), otherwise use client_secret (web)
+            if (codeVerifier) {
+                // Mobile PKCE flow - no client secret needed
+                tokenParams.code_verifier = codeVerifier;
+                console.log('Using PKCE code_verifier for token exchange');
+            } else {
+                // Web flow - requires client secret
+                const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+                if (!clientSecret) {
+                    console.error('Google Client Secret not configured for web flow');
+                    return res.status(500).json({ error: 'Server configuration error' });
+                }
+                tokenParams.client_secret = clientSecret;
+                console.log('Using client_secret for token exchange');
+            }
+            
             // Exchange authorization code for access token
             const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    code: code,
-                    client_id: clientId,
-                    client_secret: clientSecret,
-                    redirect_uri: redirectUri,
-                    grant_type: 'authorization_code'
-                })
+                body: new URLSearchParams(tokenParams)
             });
             
             if (!tokenResponse.ok) {
@@ -231,7 +244,7 @@ const googleAuth = async (req, res) => {
         }
         
         if (!finalAccessToken) {
-            console.log('Missing accessToken and code in request');
+            console.log('Missing accessToken, code, and codeVerifier in request');
             return res.status(400).json({ error: 'Access token or authorization code is required' });
         }
 

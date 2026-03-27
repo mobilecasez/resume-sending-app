@@ -75,7 +75,7 @@ async function createOrder(req, res, dbConfig) {
 
         // Validate package exists and get details
         const packageResult = await dbConfig.get(
-            'SELECT * FROM plans WHERE id = ? AND is_active = 1 AND deleted_at IS NULL',
+            'SELECT * FROM plans WHERE id = ? AND is_active = 1',
             [actualPlanId]
         );
 

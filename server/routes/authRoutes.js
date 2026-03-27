@@ -25,6 +25,20 @@ router.get('/google/callback',
 // Google OAuth API endpoint for mobile
 router.post('/google', authController.googleAuth);
 
+// Microsoft OAuth Routes
+router.get('/microsoft', passport.authenticate('microsoft', {
+    scope: ['user.read', 'mail.send', 'offline_access'],
+    prompt: 'consent'
+}));
+
+router.get('/microsoft/callback', 
+    passport.authenticate('microsoft', { failureRedirect: '/login.html' }), 
+    authController.microsoftCallback
+);
+
+// Microsoft OAuth API endpoint for mobile
+router.post('/microsoft', authController.microsoftAuth);
+
 // LinkedIn OAuth Routes (Disabled due to API compatibility issues)
 /*
 router.get('/linkedin', passport.authenticate('linkedin', {
