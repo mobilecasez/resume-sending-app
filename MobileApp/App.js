@@ -11,6 +11,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
+import * as Crypto from 'expo-crypto';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { API_BASE } from './config';
 import SplashScreen from './components/SplashScreen';
@@ -3249,25 +3250,15 @@ export default function App() {
   };
   
   const generateCodeChallenge = async (codeVerifier) => {
-    // SHA-256 hash the code_verifier
-    const encoder = new TextEncoder();
-    const data = encoder.encode(codeVerifier);
-    const digest = await crypto.subtle.digest('SHA-256', data);
+    // SHA-256 hash the code_verifier using expo-crypto
+    const digest = await Crypto.digestStringAsync(
+      Crypto.CryptoDigestAlgorithm.SHA256,
+      codeVerifier,
+      { encoding: Crypto.CryptoEncoding.BASE64 }
+    );
     
-    // Convert ArrayBuffer to base64url
-    return base64urlEncode(digest);
-  };
-  
-  const base64urlEncode = (arrayBuffer) => {
-    const bytes = new Uint8Array(arrayBuffer);
-    let binary = '';
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    // Convert to base64
-    const base64 = btoa(binary);
     // Convert base64 to base64url (replace +/= with -_)
-    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    return digest.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
   };
 
   const handleMicrosoftLogin = async () => {
