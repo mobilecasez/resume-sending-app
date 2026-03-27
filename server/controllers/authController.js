@@ -171,8 +171,16 @@ const googleCallback = (req, res) => {
 // Google OAuth API endpoint for mobile (returns JSON)
 const googleAuth = async (req, res) => {
     try {
-        console.log('Google OAuth Request Body:', req.body);
+        console.log('\n=== Google OAuth Request ===');
+        console.log('Request Body:', JSON.stringify(req.body, null, 2));
         const { accessToken, code, codeVerifier, isMobile, platform } = req.body;
+        console.log('Parsed values:', {
+            hasAccessToken: !!accessToken,
+            hasCode: !!code,
+            hasCodeVerifier: !!codeVerifier,
+            isMobile,
+            platform
+        });
         
         let finalAccessToken = accessToken;
         
@@ -226,24 +234,45 @@ const googleAuth = async (req, res) => {
             }
             
             // Exchange authorization code for access token
+            console.log('Sending token exchange request to Google...');
+            console.log('Token params:', {
+                grant_type: tokenParams.grant_type,
+                client_id: tokenParams.client_id,
+                redirect_uri: tokenParams.redirect_uri,
+                has_code: !!tokenParams.code,
+                has_code_verifier: !!tokenParams.code_verifier,
+                has_client_secret: !!tokenParams.client_secret
+            });
+            
             const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: new URLSearchParams(tokenParams)
             });
             
+            console.log('Google token response status:', tokenResponse.status);
+            
             if (!tokenResponse.ok) {
                 const errorData = await tokenResponse.json();
                 console.error('Google token exchange error:', errorData);
+                console.error('Token params used:', tokenParams);
                 return res.status(401).json({ error: 'Failed to exchange authorization code', details: errorData });
             }
             
             const tokenData = await tokenResponse.json();
+            console.log('Token exchange successful! Response keys:', Object.keys(tokenData));
+            console.log('Access token present:', !!tokenData.access_token);
             finalAccessToken = tokenData.access_token;
             console.log('Successfully exchanged code for access token');
         }
         
+        console.log('Final access token check:', {
+            hasFinalAccessToken: !!finalAccessToken,
+            finalAccessTokenLength: finalAccessToken?.length || 0
+        });
+        
         if (!finalAccessToken) {
+            console.error('❌ No access token available after processing');
             console.log('Missing accessToken, code, and codeVerifier in request');
             return res.status(400).json({ error: 'Access token or authorization code is required' });
         }
