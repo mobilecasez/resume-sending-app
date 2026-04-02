@@ -1693,10 +1693,22 @@ const checkEmailReplies = async (req, res) => {
                             // Extract full email body (not just preview)
                             let emailBody = email.body?.content || email.bodyPreview || '';
                             
-                            // Remove HTML tags if present
-                            emailBody = emailBody.replace(/<[^>]*>/g, ' ');
+                            // Convert block-level HTML elements to newlines before stripping tags
+                            emailBody = emailBody
+                                .replace(/<br\s*\/?>/gi, '\n')
+                                .replace(/<\/p>/gi, '\n')
+                                .replace(/<\/div>/gi, '\n')
+                                .replace(/<\/tr>/gi, '\n')
+                                .replace(/<\/li>/gi, '\n')
+                                .replace(/&nbsp;/gi, ' ')
+                                .replace(/&amp;/gi, '&')
+                                .replace(/&lt;/gi, '<')
+                                .replace(/&gt;/gi, '>')
+                                .replace(/&#13;/gi, '\n');
+                            // Strip remaining HTML tags
+                            emailBody = emailBody.replace(/<[^>]*>/g, '');
                             // Collapse multiple spaces on same line but preserve line breaks
-                            emailBody = emailBody.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+                            emailBody = emailBody.replace(/[ \t]+/g, ' ').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
                             
                             console.log(`✅ [CHECK] Extracted body length: ${emailBody.length} characters`);
                             console.log(`✅ [CHECK] Full extracted body: ${emailBody.substring(0, 500)}`);
@@ -1740,25 +1752,29 @@ const checkEmailReplies = async (req, res) => {
                                     'INSERT INTO application_reply_history (application_id, reply_date, reply_subject, reply_snippet, reply_from_email) VALUES (?, ?, ?, ?, ?)',
                                     [app.id, email.receivedDateTime, subject, fullBody, fromEmail]
                                 );
-                                
-                                // Update main application table with LATEST reply
-                                await dbConfig.run(
-                                    'UPDATE application_history SET reply_received = 1, reply_date = ?, reply_subject = ?, reply_snippet = ?, reply_from_email = ? WHERE id = ?',
-                                    [email.receivedDateTime, subject, fullBody, fromEmail, app.id]
-                                );
-
-                                repliesFound++;
-                                updatedApplications.push({
-                                    id: app.id,
-                                    companyName: app.company_name,
-                                    replyDate: email.receivedDateTime,
-                                    replySubject: subject,
-                                    replySnippet: fullBody,
-                                    replyFromEmail: fromEmail
-                                });
                             } else {
-                                console.log(`⏭️ [CHECK] Reply already exists in history for app #${app.id} - skipping`);
+                                console.log(`🔄 [CHECK] Updating existing reply body for app #${app.id}`);
+                                await dbConfig.run(
+                                    'UPDATE application_reply_history SET reply_snippet = ? WHERE id = ?',
+                                    [fullBody, existingReply.id]
+                                );
                             }
+
+                            // Always update main application table with latest reply info
+                            await dbConfig.run(
+                                'UPDATE application_history SET reply_received = 1, reply_date = ?, reply_subject = ?, reply_snippet = ?, reply_from_email = ? WHERE id = ?',
+                                [email.receivedDateTime, subject, fullBody, fromEmail, app.id]
+                            );
+
+                            repliesFound++;
+                            updatedApplications.push({
+                                id: app.id,
+                                companyName: app.company_name,
+                                replyDate: email.receivedDateTime,
+                                replySubject: subject,
+                                replySnippet: fullBody,
+                                replyFromEmail: fromEmail
+                            });
                             
                             // Continue checking for more replies (don't break - there may be multiple replies)
                         } else {
@@ -1954,25 +1970,29 @@ const checkEmailReplies = async (req, res) => {
                                         'INSERT INTO application_reply_history (application_id, reply_date, reply_subject, reply_snippet, reply_from_email) VALUES (?, ?, ?, ?, ?)',
                                         [app.id, emailDate.toISOString(), subject, fullBody, fromEmail]
                                     );
-                                    
-                                    // Update main application table with LATEST reply
-                                    await dbConfig.run(
-                                        'UPDATE application_history SET reply_received = 1, reply_date = ?, reply_subject = ?, reply_snippet = ?, reply_from_email = ? WHERE id = ?',
-                                        [emailDate.toISOString(), subject, fullBody, fromEmail, app.id]
-                                    );
-
-                                    repliesFound++;
-                                    updatedApplications.push({
-                                        id: app.id,
-                                        companyName: app.company_name,
-                                        replyDate: emailDate.toISOString(),
-                                        replySubject: subject,
-                                        replySnippet: fullBody,
-                                        replyFromEmail: fromEmail
-                                    });
                                 } else {
-                                    console.log(`⏭️ [CHECK] Reply already exists in history for app #${app.id} - skipping`);
+                                    console.log(`🔄 [CHECK] Updating existing reply body for app #${app.id}`);
+                                    await dbConfig.run(
+                                        'UPDATE application_reply_history SET reply_snippet = ? WHERE id = ?',
+                                        [fullBody, existingReply.id]
+                                    );
                                 }
+
+                                // Always update main application table with latest reply info
+                                await dbConfig.run(
+                                    'UPDATE application_history SET reply_received = 1, reply_date = ?, reply_subject = ?, reply_snippet = ?, reply_from_email = ? WHERE id = ?',
+                                    [emailDate.toISOString(), subject, fullBody, fromEmail, app.id]
+                                );
+
+                                repliesFound++;
+                                updatedApplications.push({
+                                    id: app.id,
+                                    companyName: app.company_name,
+                                    replyDate: emailDate.toISOString(),
+                                    replySubject: subject,
+                                    replySnippet: fullBody,
+                                    replyFromEmail: fromEmail
+                                });
                                 
                                 // Continue checking for more replies (don't break - there may be multiple replies)
                             } else {
