@@ -168,7 +168,30 @@ async function runPostgresMigrations(db) {
                 FOREIGN KEY (application_id) REFERENCES application_history(id) ON DELETE CASCADE
             );
         `);
-        
+
+        // Migration: Add soft-delete columns (deleted_at, deleted_by) to all tables
+        await db.query(`
+            DO $$
+            DECLARE
+                tbl TEXT;
+            BEGIN
+                FOREACH tbl IN ARRAY ARRAY['recipients','application_history','review_cover_letters',
+                    'plans','notifications','users','credit_transactions','user_credits','payment_orders']
+                LOOP
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                                   WHERE table_name = tbl AND column_name = 'deleted_at') THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN deleted_at TIMESTAMP DEFAULT NULL', tbl);
+                        RAISE NOTICE 'Added deleted_at to %', tbl;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                                   WHERE table_name = tbl AND column_name = 'deleted_by') THEN
+                        EXECUTE format('ALTER TABLE %I ADD COLUMN deleted_by INTEGER DEFAULT NULL', tbl);
+                        RAISE NOTICE 'Added deleted_by to %', tbl;
+                    END IF;
+                END LOOP;
+            END $$;
+        `);
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);
