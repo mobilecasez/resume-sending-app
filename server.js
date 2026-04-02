@@ -368,14 +368,14 @@ const CALLBACK_URL = process.env.NODE_ENV === 'production'
     : 'http://localhost:3000/auth/google/callback';
 
 passport.use(new GoogleStrategy({
-    clientID: process.env.GOOGLE_CLIENT_ID || 'your-google-client-id',
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET || 'your-google-client-secret',
+    clientID: process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || 'your-google-client-id',
+    clientSecret: process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || 'your-google-client-secret',
     callbackURL: CALLBACK_URL,
     scope: [
         'profile', 
         'email', 
         'https://www.googleapis.com/auth/gmail.send',
-        'https://www.googleapis.com/auth/gmail.metadata'  // Added for reply detection
+        'https://www.googleapis.com/auth/gmail.readonly'  // Updated for reply detection
     ],
     accessType: 'offline', // Request refresh token
     prompt: 'consent' // Force consent screen to get refresh token
@@ -449,9 +449,10 @@ async function handleOAuthUser(profile, provider, accessToken, refreshToken, cal
         if (user) {
             // User exists, update OAuth tokens
             if (provider === 'google') {
+                // Passport-based OAuth is standard flow (not PKCE), so used_pkce=false
                 await dbConfig.run(
-                    'UPDATE users SET oauth_provider = ?, google_access_token = ?, google_refresh_token = ? WHERE id = ?',
-                    [provider, accessToken, refreshToken, user.id]
+                    'UPDATE users SET oauth_provider = ?, google_access_token = ?, google_refresh_token = ?, used_pkce = ? WHERE id = ?',
+                    [provider, accessToken, refreshToken, false, user.id]
                 );
             } else if (provider === 'microsoft') {
                 await dbConfig.run(
@@ -465,9 +466,10 @@ async function handleOAuthUser(profile, provider, accessToken, refreshToken, cal
             const hashedPassword = jwt.sign({ provider, email }, JWT_SECRET);
             let result;
             if (provider === 'google') {
+                // Passport-based OAuth is standard flow (not PKCE), so used_pkce=false
                 result = await dbConfig.run(
-                    'INSERT INTO users (full_name, email, password, oauth_provider, google_access_token, google_refresh_token) VALUES (?, ?, ?, ?, ?, ?)',
-                    [fullName, email, hashedPassword, provider, accessToken, refreshToken]
+                    'INSERT INTO users (full_name, email, password, oauth_provider, google_access_token, google_refresh_token, used_pkce) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    [fullName, email, hashedPassword, provider, accessToken, refreshToken, false]
                 );
             } else if (provider === 'microsoft') {
                 result = await dbConfig.run(

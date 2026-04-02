@@ -152,7 +152,9 @@ const googleCallback = (req, res) => {
     const userData = {
         id: req.user.id,
         fullName: req.user.full_name,
-        email: req.user.email
+        email: req.user.email,
+        provider: 'google',
+        oauth_provider: 'google'
     };
 
     // For mobile apps, return JSON instead of HTML redirect
@@ -302,9 +304,10 @@ const googleAuth = async (req, res) => {
             if (!user) {
                 // Create new user from Google data
                 const hashedPassword = await bcrypt.hash('google-oauth-' + googleUser.id, 10);
+                const usedPkce = !!codeVerifier; // true if PKCE (mobile), false if standard OAuth (web)
                 const result = await dbConfig.run(
-                    'INSERT INTO users (email, full_name, password, oauth_provider, google_access_token, google_refresh_token) VALUES (?, ?, ?, ?, ?, ?) RETURNING id',
-                    [googleUser.email, googleUser.name, hashedPassword, 'google', finalAccessToken, finalRefreshToken]
+                    'INSERT INTO users (email, full_name, password, oauth_provider, google_access_token, google_refresh_token, used_pkce) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id',
+                    [googleUser.email, googleUser.name, hashedPassword, 'google', finalAccessToken, finalRefreshToken, usedPkce]
                 );
 
                 const newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
@@ -346,17 +349,18 @@ const googleAuth = async (req, res) => {
                 });
             } else {
                 // User exists, update OAuth tokens
+                const usedPkce = !!codeVerifier; // true if PKCE (mobile), false if standard OAuth (web)
                 // Only update refresh_token if we received a new one (first-time consent or re-auth)
                 if (finalRefreshToken) {
                     await dbConfig.run(
-                        'UPDATE users SET oauth_provider = ?, google_access_token = ?, google_refresh_token = ? WHERE id = ?',
-                        ['google', finalAccessToken, finalRefreshToken, user.id]
+                        'UPDATE users SET oauth_provider = ?, google_access_token = ?, google_refresh_token = ?, used_pkce = ? WHERE id = ?',
+                        ['google', finalAccessToken, finalRefreshToken, usedPkce, user.id]
                     );
                 } else {
                     // Just update access token (refresh token persists)
                     await dbConfig.run(
-                        'UPDATE users SET oauth_provider = ?, google_access_token = ? WHERE id = ?',
-                        ['google', finalAccessToken, user.id]
+                        'UPDATE users SET oauth_provider = ?, google_access_token = ?, used_pkce = ? WHERE id = ?',
+                        ['google', finalAccessToken, usedPkce, user.id]
                     );
                 }
                 
@@ -404,7 +408,9 @@ const microsoftCallback = (req, res) => {
     const userData = {
         id: req.user.id,
         fullName: req.user.full_name,
-        email: req.user.email
+        email: req.user.email,
+        provider: 'microsoft',
+        oauth_provider: 'microsoft'
     };
 
     // For mobile apps, return JSON instead of HTML redirect

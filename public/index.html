@@ -815,7 +815,6 @@
 
         .modal-footer {
             padding: 20px 28px;
-            border-top: 1px solid var(--border-color);
             display: flex;
             justify-content: flex-end;
             gap: 12px;
@@ -1060,6 +1059,15 @@
                     <span class="employers-badge" id="employersBadge">0</span>
                 </div>
                 
+                <!-- Check for Replies Button (OAuth users only) -->
+                <div id="checkRepliesContainer" style="display: none; margin: 16px 0;">
+                    <button class="btn btn-secondary" id="checkRepliesBtn" onclick="checkForReplies()" style="width: 100%; padding: 12px; display: flex; align-items: center; justify-content: center; gap: 8px;">
+                        <span style="font-size: 1.1rem;">📬</span>
+                        <span>Check for Replies</span>
+                    </button>
+                    <div id="repliesStatus" style="margin-top: 12px; padding: 12px; border-radius: 8px; display: none; font-size: 0.9rem;"></div>
+                </div>
+                
                 <div id="employersContainer" class="employers-container">
                     <div class="empty-state">
                         <div class="empty-icon">📭</div>
@@ -1226,6 +1234,28 @@
                 <button class="btn btn-save" onclick="confirmMarkAsReplied()" style="background: linear-gradient(135deg, #059669 0%, #10b981 100%);">
                     Mark as Replied
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Show Reply Details Modal -->
+    <div id="replyDetailsModal" class="modal">
+        <div class="modal-content" style="max-width: 650px;">
+            <div class="modal-header" style="background: #f8fafc; border-bottom: 2px solid #e2e8f0;">
+                <h2 class="modal-title" style="display: flex; align-items: center; gap: 8px; color: #1e293b;">
+                    <span>📬</span>
+                    <span id="replyDetailsCompany"></span>
+                </h2>
+                <button class="close-btn" onclick="closeReplyDetailsModal()">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 16px;">
+                <!-- Replies Container -->
+                <div id="replyDetailsContent" style="max-height: 450px; overflow-y: auto;">
+                    <!-- Reply cards will be dynamically inserted here -->
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px;">
+                <button class="btn btn-primary" onclick="closeReplyDetailsModal()" style="width: 100%;">Close</button>
             </div>
         </div>
     </div>
@@ -1845,6 +1875,105 @@
             currentReplyCompanyName = '';
         }
 
+        // Show all replies for an application (fetch from API)
+        async function showAllReplies(applicationId, companyName) {
+            try {
+                const response = await fetch(`/api/users/application-history/${applicationId}/replies`, {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch replies');
+                }
+
+                const result = await response.json();
+                
+                if (result.success && result.replies && result.replies.length > 0) {
+                    // Build HTML for all replies with compact card design
+                    const repliesHtml = result.replies.map((reply, index) => {
+                        const replyDate = new Date(reply.replyDate).toLocaleString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit'
+                        });
+                        
+                        // Subtle color variations
+                        const colors = [
+                            { bg: '#eff6ff', accent: '#3b82f6' },
+                            { bg: '#f5f3ff', accent: '#8b5cf6' },
+                            { bg: '#ecfdf5', accent: '#10b981' },
+                            { bg: '#fef3c7', accent: '#f59e0b' }
+                        ];
+                        const color = colors[index % colors.length];
+                        
+                        return `
+                            <div style="background: ${color.bg}; border-left: 3px solid ${color.accent}; border-radius: 6px; padding: 12px 14px; margin-bottom: 12px;">
+                                <!-- Header: Badge + From + Date -->
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
+                                    <div style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;">
+                                        <span style="background: ${color.accent}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; flex-shrink: 0;">#${result.replies.length - index}</span>
+                                        <span style="font-size: 0.875rem; color: #374151; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">✉️ ${reply.replyFromEmail}</span>
+                                    </div>
+                                    <span style="font-size: 0.8rem; color: #6b7280; white-space: nowrap;">📅 ${replyDate}</span>
+                                </div>
+                                
+                                <!-- Subject -->
+                                <div style="font-size: 0.875rem; color: #1f2937; font-weight: 500; margin-bottom: 8px; line-height: 1.4;">
+                                    ${reply.replySubject || '(No Subject)'}
+                                </div>
+                                
+                                <!-- Preview -->
+                                <div style="background: white; border-radius: 4px; padding: 10px; font-size: 0.85rem; color: #4b5563; line-height: 1.5; max-height: 100px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word;">${reply.replySnippet || '(No preview available)'}</div>
+                            </div>
+                        `;
+                    }).join('');
+
+                    // Update modal content
+                    document.getElementById('replyDetailsCompany').textContent = companyName;
+                    document.getElementById('replyDetailsContent').innerHTML = `
+                        <div style="background: #f1f5f9; padding: 10px 14px; border-radius: 6px; margin-bottom: 14px;">
+                            <span style="font-size: 0.95rem; font-weight: 600; color: #374151;">
+                                ${result.count} ${result.count === 1 ? 'Reply' : 'Replies'} Received
+                            </span>
+                        </div>
+                        ${repliesHtml}
+                    `;
+                    
+                    // Show modal
+                    document.getElementById('replyDetailsModal').classList.add('active');
+                } else {
+                    showToast('No replies found', 'info');
+                }
+            } catch (error) {
+                console.error('Error fetching replies:', error);
+                showToast('Failed to load replies', 'error');
+            }
+        }
+
+        // Show reply details (legacy - for single reply)
+        function showReplyDetails(companyName, fromEmail, subject, snippet, replyDate) {
+            document.getElementById('replyDetailsCompany').textContent = companyName;
+            document.getElementById('replyDetailsFrom').textContent = fromEmail || 'N/A';
+            document.getElementById('replyDetailsSubject').textContent = subject || '(No Subject)';
+            document.getElementById('replyDetailsDate').textContent = replyDate || 'N/A';
+            document.getElementById('replyDetailsSnippet').textContent = snippet || 'No preview available';
+            
+            // Show detail fields
+            document.getElementById('replyDetailsSubject').style.display = 'block';
+            document.getElementById('replyDetailsDate').style.display = 'block';
+            document.getElementById('replyDetailsSnippet').style.display = 'block';
+            
+            document.getElementById('replyDetailsModal').classList.add('active');
+        }
+
+        function closeReplyDetailsModal() {
+            document.getElementById('replyDetailsModal').classList.remove('active');
+        }
+
         async function confirmMarkAsReplied() {
             const replyDate = document.getElementById('replyDateInput').value;
             
@@ -1985,7 +2114,7 @@
                                     </div>
                                     ${employer.replyReceived && replyDate ? `
                                         <div class="employer-date-item">
-                                            <div class="employer-date-label">Reply</div>
+                                            <div class="employer-date-label">Latest Reply</div>
                                             <div class="employer-date-value">${replyDate}</div>
                                         </div>
                                     ` : ''}
@@ -1994,6 +2123,10 @@
                                     <div style="font-size: 0.875rem; color: #059669; font-weight: 500; white-space: nowrap;">
                                         ✓ Tap to mark as replied
                                     </div>
+                                ` : employer.replySnippet ? `
+                                    <button class="btn btn-secondary" onclick="event.stopPropagation(); showAllReplies(${employer.id}, '${employer.companyName}')" style="padding: 6px 12px; font-size: 0.875rem; margin-top: 8px;">
+                                        📬 Show ${employer.replyCount > 1 ? employer.replyCount + ' Replies' : 'Reply'}
+                                    </button>
                                 ` : ''}
                             </div>
                         </div>
@@ -2016,6 +2149,18 @@
             const userName = userData.fullName || userData.name || userData.email || 'User';
             console.log('👤 Setting welcome message for:', userName);
             document.getElementById('dashboardUserName').textContent = userName;
+            
+            // Show "Check for Replies" button for OAuth users (Google or Microsoft)
+            const provider = userData.provider || userData.oauth_provider;
+            console.log('🔐 User OAuth provider:', provider);
+            
+            if (provider === 'google' || provider === 'microsoft') {
+                console.log('✅ OAuth user detected - showing Check for Replies button');
+                document.getElementById('checkRepliesContainer').style.display = 'block';
+            } else {
+                console.log('ℹ️ Non-OAuth user - hiding Check for Replies button');
+                document.getElementById('checkRepliesContainer').style.display = 'none';
+            }
             
             try {
                 console.log('🔄 Fetching counters from /api/users/counters...');
@@ -2071,6 +2216,136 @@
             }, 3000);
         }
 
+        // Silent auto-check for replies (no UI updates, runs in background)
+        async function autoCheckForReplies(showNotification = false) {
+            try {
+                console.log('🔄 Auto-checking for email replies...');
+                const response = await fetch('/api/check-replies', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const result = await response.json();
+                
+                if (response.ok) {
+                    const repliesCount = result.repliesFound || 0;
+                    console.log(`✅ Auto-check complete: ${repliesCount} replies found`);
+                    
+                    if (repliesCount > 0) {
+                        // Reload application history to show updated reply status
+                        await loadApplicationHistory();
+                        
+                        if (showNotification) {
+                            showToast(`Auto-sync: Found ${repliesCount} new ${repliesCount === 1 ? 'reply' : 'replies'}!`, 'success');
+                        }
+                    }
+                } else {
+                    console.error('❌ Auto-check error:', result.error || result.message);
+                }
+            } catch (error) {
+                console.error('❌ Auto-check network error:', error);
+            }
+        }
+
+        // Check for email replies (OAuth users only) - Manual button click
+        async function checkForReplies() {
+            const btn = document.getElementById('checkRepliesBtn');
+            const status = document.getElementById('repliesStatus');
+            
+            // Disable button and show loading state
+            btn.disabled = true;
+            btn.innerHTML = '<span>⏳</span><span>Checking...</span>';
+            status.style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/check-replies', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const result = await response.json();
+                
+                if (response.ok) {
+                    const repliesCount = result.repliesFound || 0;
+                    
+                    // Show success message
+                    status.innerHTML = `<strong>✓ Check Complete</strong><br>${repliesCount} ${repliesCount === 1 ? 'reply' : 'replies'} found`;
+                    status.style.backgroundColor = '#d4edda';
+                    status.style.color = '#155724';
+                    status.style.border = '1px solid #c3e6cb';
+                    status.style.display = 'block';
+                    
+                    if (repliesCount > 0) {
+                        showToast(`Found ${repliesCount} ${repliesCount === 1 ? 'reply' : 'replies'}!`, 'success');
+                        
+                        // Reload application history to show updated reply status
+                        setTimeout(() => {
+                            loadApplicationHistory();
+                        }, 1000);
+                    } else {
+                        showToast('No new replies found', 'success');
+                    }
+                } else {
+                    // Show error message
+                    const errorMsg = result.error || result.message || 'Failed to check for replies';
+                    status.innerHTML = `<strong>✗ Error</strong><br>${errorMsg}`;
+                    status.style.backgroundColor = '#f8d7da';
+                    status.style.color = '#721c24';
+                    status.style.border = '1px solid #f5c6cb';
+                    status.style.display = 'block';
+                    
+                    showToast(errorMsg, 'error');
+                }
+            } catch (error) {
+                console.error('Error checking replies:', error);
+                
+                status.innerHTML = '<strong>✗ Error</strong><br>Network error. Please try again.';
+                status.style.backgroundColor = '#f8d7da';
+                status.style.color = '#721c24';
+                status.style.border = '1px solid #f5c6cb';
+                status.style.display = 'block';
+                
+                showToast('Network error. Please try again.', 'error');
+            } finally {
+                // Re-enable button
+                btn.disabled = false;
+                btn.innerHTML = '<span style="font-size: 1.1rem;">📬</span><span>Check for Replies</span>';
+            }
+        }
+
+        // Start periodic reply checking (every 10 minutes)
+        let replyCheckInterval = null;
+        function startPeriodicReplyCheck() {
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            const isOAuthUser = userData.provider === 'google' || userData.provider === 'microsoft';
+            
+            if (isOAuthUser && !replyCheckInterval) {
+                console.log('🔄 Starting periodic reply check (every 10 minutes)');
+                
+                // Initial check after 30 seconds
+                setTimeout(() => autoCheckForReplies(false), 30000);
+                
+                // Then check every 10 minutes
+                replyCheckInterval = setInterval(() => {
+                    autoCheckForReplies(true); // Show notification on periodic checks
+                }, 10 * 60 * 1000); // 10 minutes
+            }
+        }
+
+        function stopPeriodicReplyCheck() {
+            if (replyCheckInterval) {
+                console.log('⏸️ Stopping periodic reply check');
+                clearInterval(replyCheckInterval);
+                replyCheckInterval = null;
+            }
+        }
+
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🚀 ========================================');
@@ -2109,6 +2384,15 @@
             ]).then(() => {
                 console.log('✅ All data loaded successfully');
                 console.log('🚀 ========================================');
+                
+                // Auto-check for replies on load (OAuth users only)
+                const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+                const isOAuthUser = userData.provider === 'google' || userData.provider === 'microsoft';
+                if (isOAuthUser) {
+                    console.log('🔄 Starting auto-check for replies...');
+                    autoCheckForReplies(false);
+                    startPeriodicReplyCheck();
+                }
             }).catch(error => {
                 console.error('❌ Error loading data:', error);
             });
@@ -2117,6 +2401,7 @@
             const settingsModal = document.getElementById('settingsModal');
             const profileModal = document.getElementById('profileModal');
             const replyModal = document.getElementById('replyModal');
+            const replyDetailsModal = document.getElementById('replyDetailsModal');
             
             if (settingsModal) {
                 settingsModal.addEventListener('click', function(e) {
@@ -2137,6 +2422,13 @@
                     if (e.target === this) closeReplyModal();
                 });
                 console.log('✅ Reply modal event listener added');
+            }
+            
+            if (replyDetailsModal) {
+                replyDetailsModal.addEventListener('click', function(e) {
+                    if (e.target === this) closeReplyDetailsModal();
+                });
+                console.log('✅ Reply details modal event listener added');
             }
             
             console.log('✅ Dashboard initialized');

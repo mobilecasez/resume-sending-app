@@ -11,6 +11,7 @@ router.get('/recipients', authenticateToken, userDataController.getRecipients);
 router.post('/application-history', authenticateToken, userDataController.saveApplicationHistory);
 router.get('/application-history', authenticateToken, userDataController.getApplicationHistory);
 router.patch('/application-history/:id', authenticateToken, userDataController.updateApplicationStatus);
+router.get('/application-history/:id/replies', authenticateToken, userDataController.getApplicationReplies);
 
 // Review cover letters routes
 router.post('/review-cover-letters', authenticateToken, userDataController.saveReviewCoverLetters);
