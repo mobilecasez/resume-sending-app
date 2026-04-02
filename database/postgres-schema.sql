@@ -51,8 +51,23 @@ CREATE TABLE IF NOT EXISTS application_history (
     sent_date TIMESTAMP NOT NULL,
     reply_received INTEGER DEFAULT 0,
     reply_date TIMESTAMP,
+    reply_subject TEXT,
+    reply_snippet TEXT,
+    reply_from_email TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Application reply history table (stores each individual reply)
+CREATE TABLE IF NOT EXISTS application_reply_history (
+    id SERIAL PRIMARY KEY,
+    application_id INTEGER NOT NULL,
+    reply_date TIMESTAMP NOT NULL,
+    reply_subject TEXT,
+    reply_snippet TEXT,
+    reply_from_email TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (application_id) REFERENCES application_history(id) ON DELETE CASCADE
 );
 
 -- Review cover letters table

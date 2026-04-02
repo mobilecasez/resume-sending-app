@@ -130,6 +130,44 @@ async function runPostgresMigrations(db) {
                 END IF;
             END $$;
         `);
+
+        // Migration: Add reply columns to application_history if missing
+        await db.query(`
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='application_history' AND column_name='reply_subject') THEN
+                    ALTER TABLE application_history ADD COLUMN reply_subject TEXT;
+                    RAISE NOTICE 'Added reply_subject column to application_history';
+                END IF;
+
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='application_history' AND column_name='reply_snippet') THEN
+                    ALTER TABLE application_history ADD COLUMN reply_snippet TEXT;
+                    RAISE NOTICE 'Added reply_snippet column to application_history';
+                END IF;
+
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='application_history' AND column_name='reply_from_email') THEN
+                    ALTER TABLE application_history ADD COLUMN reply_from_email TEXT;
+                    RAISE NOTICE 'Added reply_from_email column to application_history';
+                END IF;
+            END $$;
+        `);
+
+        // Migration: Create application_reply_history table if it doesn't exist
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS application_reply_history (
+                id SERIAL PRIMARY KEY,
+                application_id INTEGER NOT NULL,
+                reply_date TIMESTAMP NOT NULL,
+                reply_subject TEXT,
+                reply_snippet TEXT,
+                reply_from_email TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (application_id) REFERENCES application_history(id) ON DELETE CASCADE
+            );
+        `);
         
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
