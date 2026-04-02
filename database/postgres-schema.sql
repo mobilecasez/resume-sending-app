@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
     google_refresh_token TEXT,
     microsoft_access_token TEXT,
     microsoft_refresh_token TEXT,
+    used_pkce BOOLEAN DEFAULT FALSE,
     total_generated INTEGER DEFAULT 0,
     total_sent INTEGER DEFAULT 0,
     role TEXT DEFAULT 'user',

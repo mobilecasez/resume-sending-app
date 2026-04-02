@@ -122,6 +122,12 @@ async function runPostgresMigrations(db) {
                     ALTER TABLE users ADD COLUMN microsoft_refresh_token TEXT;
                     RAISE NOTICE 'Added microsoft_refresh_token column to users table';
                 END IF;
+
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='users' AND column_name='used_pkce') THEN
+                    ALTER TABLE users ADD COLUMN used_pkce BOOLEAN DEFAULT FALSE;
+                    RAISE NOTICE 'Added used_pkce column to users table';
+                END IF;
             END $$;
         `);
         
