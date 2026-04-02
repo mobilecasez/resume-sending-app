@@ -12,7 +12,7 @@ router.post('/change-password', authenticateToken, authController.changePassword
 
 // Google OAuth Routes
 router.get('/google', passport.authenticate('google', {
-    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send'],
+    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly'],
     accessType: 'offline',
     prompt: 'consent'
 }));

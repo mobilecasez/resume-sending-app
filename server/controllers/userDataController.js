@@ -157,16 +157,32 @@ const getApplicationHistory = async (req, res) => {
         const userId = req.user.id;
 
         // Get last 10 application history entries for the user (for display purposes)
-        // Note: We don't filter by deleted_at here because application history is for tracking
+        // Include reply count and LATEST reply date from reply_history table
         const history = await dbConfig.query(
-            'SELECT id, company_name as "companyName", position, recipient_email as "recipientEmail", sent_date as "sentDate", reply_received as "replyReceived", reply_date as "replyDate" FROM application_history WHERE user_id = ? ORDER BY sent_date DESC LIMIT 10',
+            `SELECT 
+                ah.id, 
+                ah.company_name as "companyName", 
+                ah.position, 
+                ah.recipient_email as "recipientEmail", 
+                ah.sent_date as "sentDate", 
+                ah.reply_received as "replyReceived", 
+                (SELECT MAX(reply_date) FROM application_reply_history WHERE application_id = ah.id) as "replyDate",
+                ah.reply_subject as "replySubject", 
+                ah.reply_snippet as "replySnippet", 
+                ah.reply_from_email as "replyFromEmail",
+                (SELECT COUNT(*) FROM application_reply_history WHERE application_id = ah.id) as "replyCount"
+            FROM application_history ah 
+            WHERE ah.user_id = ? 
+            ORDER BY ah.sent_date DESC 
+            LIMIT 10`,
             [userId]
         );
 
         // Convert reply_received from 0/1 to boolean
         const formattedHistory = (history || []).map(app => ({
             ...app,
-            replyReceived: app.replyReceived === 1
+            replyReceived: app.replyReceived === 1,
+            replyCount: parseInt(app.replyCount) || 0
         }));
 
         res.json({
@@ -411,6 +427,49 @@ const updateApplicationStatus = async (req, res) => {
     }
 };
 
+// Get all replies for a specific application
+const getApplicationReplies = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const applicationId = req.params.id;
+
+        // Verify that this application belongs to the user
+        const application = await dbConfig.get(
+            'SELECT id, company_name FROM application_history WHERE id = ? AND user_id = ?',
+            [applicationId, userId]
+        );
+
+        if (!application) {
+            return res.status(404).json({ error: 'Application not found' });
+        }
+
+        // Get all replies for this application, ordered by date (newest first)
+        const replies = await dbConfig.query(
+            `SELECT 
+                id, 
+                reply_date as "replyDate", 
+                reply_subject as "replySubject", 
+                reply_snippet as "replySnippet", 
+                reply_from_email as "replyFromEmail", 
+                created_at as "createdAt"
+            FROM application_reply_history 
+            WHERE application_id = ? 
+            ORDER BY reply_date DESC`,
+            [applicationId]
+        );
+
+        res.json({
+            success: true,
+            companyName: application.company_name,
+            replies: replies || [],
+            count: (replies || []).length
+        });
+    } catch (error) {
+        console.error('Get application replies error:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
 module.exports = {
     saveRecipients,
     getRecipients,
@@ -422,5 +481,6 @@ module.exports = {
     updateCounters,
     incrementGenerated,
     incrementSent,
-    updateApplicationStatus
+    updateApplicationStatus,
+    getApplicationReplies
 };

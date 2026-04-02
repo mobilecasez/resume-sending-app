@@ -26,9 +26,30 @@ const JWT_SECRET = process.env.JWT_SECRET || 'default-secret-key';
 
 // Helper function: Create OAuth2 Client
 function createOAuth2Client(user) {
+    // Support both PKCE (mobile) and standard OAuth (web) flows
+    // PKCE: No client secret, uses iOS OAuth client
+    // Web: Uses client secret, uses Web OAuth client
+    const isPkce = user.used_pkce === true || user.used_pkce === 1;
+    
+    const clientId = isPkce 
+        ? process.env.GOOGLE_CLIENT_ID  // iOS OAuth Client
+        : process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;  // Web OAuth Client
+    
+    const clientSecret = isPkce
+        ? undefined  // PKCE doesn't use client secret
+        : process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;  // Web needs client secret
+    
+    console.log('🔧 Creating OAuth2 client');
+    console.log('   - Flow type:', isPkce ? 'PKCE (mobile)' : 'Standard OAuth (web)');
+    console.log('   - Client ID:', clientId);
+    console.log('   - Has client secret:', !!clientSecret);
+    console.log('   - User ID:', user.id);
+    console.log('   - Has access token:', !!user.google_access_token);
+    console.log('   - Has refresh token:', !!user.google_refresh_token);
+    
     const oauth2Client = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID,
-        process.env.GOOGLE_CLIENT_SECRET,
+        clientId,
+        clientSecret,
         process.env.NODE_ENV === 'production' 
             ? 'https://cvapplyr.com/auth/google/callback'
             : 'http://localhost:3000/auth/google/callback'
@@ -860,6 +881,13 @@ const sendApplications = async (req, res) => {
                 // Read cover letter PDF buffer (needed for OAuth APIs)
                 const coverLetterPdfBuffer = await fs.readFile(filePath);
 
+                // DEBUG: Check user OAuth status
+                console.log('🔍 [DEBUG] OAuth Status:');
+                console.log('   - oauth_provider:', user.oauth_provider);
+                console.log('   - google_access_token:', user.google_access_token ? 'EXISTS' : 'NULL');
+                console.log('   - google_refresh_token:', user.google_refresh_token ? 'EXISTS' : 'NULL');
+                console.log('   - microsoft_access_token:', user.microsoft_access_token ? 'EXISTS' : 'NULL');
+
                 // Priority 1: Try Microsoft Graph API if user logged in with Microsoft OAuth
                 let emailSentViaOAuth = false;
                 if (user.oauth_provider === 'microsoft' && user.microsoft_access_token) {
@@ -1561,27 +1589,28 @@ const checkEmailReplies = async (req, res) => {
             });
         }
 
-        // Get pending applications (not yet replied)
-        console.log('📬 [CHECK] Fetching pending applications...');
+        // Get all applications to check for replies (including those that already have replies)
+        console.log('📬 [CHECK] Fetching applications to check for replies...');
         const pendingApps = await dbConfig.query(
-            'SELECT * FROM application_history WHERE user_id = ? AND reply_received = 0 ORDER BY sent_date DESC',
+            'SELECT * FROM application_history WHERE user_id = ? ORDER BY sent_date DESC LIMIT 50',
             [userId]
         );
 
-        console.log('📬 [CHECK] Pending applications found:', pendingApps.length);
+        console.log('📬 [CHECK] Applications found:', pendingApps.length);
         if (pendingApps.length > 0) {
-            console.log('📬 [CHECK] First 3 pending apps:', pendingApps.slice(0, 3).map(app => ({
+            console.log('📬 [CHECK] First 3 apps:', pendingApps.slice(0, 3).map(app => ({
                 id: app.id,
                 company: app.company_name,
                 email: app.recipient_email,
-                sentDate: app.sent_date
+                sentDate: app.sent_date,
+                replyReceived: app.reply_received
             })));
         }
 
         if (pendingApps.length === 0) {
             return res.json({ 
                 success: true, 
-                message: 'No pending applications to check',
+                message: 'No applications to check',
                 repliesFound: 0,
                 updatedApplications: []
             });
@@ -1632,37 +1661,111 @@ const checkEmailReplies = async (req, res) => {
 
                 // Match emails to applications
                 console.log('📬 [CHECK] Starting to match emails with pending applications...');
+                console.log('📬 [CHECK] User email (to exclude from replies):', user.email);
+                
                 for (const app of pendingApps) {
                     const companyEmail = app.recipient_email.toLowerCase();
                     console.log(`📬 [CHECK] Checking app #${app.id} - ${app.company_name} (${companyEmail})`);
                     
                     for (const email of emails) {
                         const fromEmail = email.from?.emailAddress?.address?.toLowerCase() || '';
+                        const subject = email.subject || '(No Subject)';
                         const emailDate = new Date(email.receivedDateTime);
                         const sentDate = new Date(app.sent_date);
 
+                        console.log(`   📧 Checking message from: ${fromEmail}, date: ${emailDate.toISOString()}`);
+
+                        // CRITICAL FIX: Exclude user's own emails (test case handling)
                         // Check if:
-                        // 1. Email is from the company we sent to
-                        // 2. Email was received after we sent the application
-                        // 3. Subject might contain user's name or position
-                        if (fromEmail === companyEmail && emailDate > sentDate) {
+                        // 1. Email is from company email
+                        // 2. Email is NOT from user's own email (avoid matching sent emails in test cases)
+                        // 3. Email was received after we sent the application
+                        const isFromCompany = fromEmail.includes(companyEmail);
+                        const isNotFromUser = !fromEmail.includes(user.email.toLowerCase());
+                        const isAfterSent = emailDate > sentDate;
+
+                        if (isFromCompany && isNotFromUser && isAfterSent) {
                             console.log(`✅ [CHECK] MATCH FOUND! Reply from ${companyEmail} for ${app.company_name}`);
                             console.log(`✅ [CHECK] Email date: ${emailDate}, Sent date: ${sentDate}`);
+                            console.log(`✅ [CHECK] From email: ${fromEmail}`);
+                            console.log(`✅ [CHECK] Subject: ${subject}`);
                             
-                            // Update application
-                            await dbConfig.run(
-                                'UPDATE application_history SET reply_received = 1, reply_date = ? WHERE id = ?',
-                                [email.receivedDateTime, app.id]
+                            // Extract full email body (not just preview)
+                            let emailBody = email.body?.content || email.bodyPreview || '';
+                            
+                            // Remove HTML tags if present
+                            emailBody = emailBody.replace(/<[^>]*>/g, ' ');
+                            // Collapse multiple spaces on same line but preserve line breaks
+                            emailBody = emailBody.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+                            
+                            console.log(`✅ [CHECK] Extracted body length: ${emailBody.length} characters`);
+                            console.log(`✅ [CHECK] Full extracted body: ${emailBody.substring(0, 500)}`);
+                            
+                            // Remove quoted text - look for common reply separators
+                            const quotePatterns = [
+                                /[\r\n]+\s*On\s+(Mon|Tue|Wed|Thu|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\d{1,2}\s+\w+\s+\d{4})[^\r\n]+[\r\n]+wrote:/is,  // Email reply header
+                                /-----Original Message-----/i,
+                                /From:.+?Sent:.+?To:/si,    // Outlook-style headers
+                                /_+\s*From:/i,               // "___ From:"
+                            ];
+                            
+                            let cleanedBody = emailBody;
+                            for (const pattern of quotePatterns) {
+                                const match = cleanedBody.match(pattern);
+                                if (match) {
+                                    console.log(`🔍 [CHECK] Matched pattern at index ${match.index}: "${match[0].substring(0, 100)}"`);
+                                    // Extract only the text before the quoted part
+                                    cleanedBody = cleanedBody.substring(0, match.index).trim();
+                                    break;
+                                }
+                            }
+                            
+                            // Store the full cleaned body (no character limit for storage)
+                            const fullBody = cleanedBody.trim() || '(Reply received - content not available)';
+                            
+                            console.log(`✅ [CHECK] Cleaned body length: ${fullBody.length} characters`);
+                            console.log(`✅ [CHECK] Body preview: ${fullBody.substring(0, 200)}...`);
+                            
+                            // Check if this exact reply already exists in history (avoid duplicates)
+                            const existingReply = await dbConfig.get(
+                                'SELECT id FROM application_reply_history WHERE application_id = ? AND reply_date = ? AND reply_subject = ?',
+                                [app.id, email.receivedDateTime, subject]
                             );
-
-                            repliesFound++;
-                            updatedApplications.push({
-                                id: app.id,
-                                companyName: app.company_name,
-                                replyDate: email.receivedDateTime
-                            });
                             
-                            break; // Move to next application
+                            if (!existingReply) {
+                                console.log(`💾 [CHECK] Saving NEW reply to history for app #${app.id}`);
+                                
+                                // Insert into reply history table
+                                await dbConfig.run(
+                                    'INSERT INTO application_reply_history (application_id, reply_date, reply_subject, reply_snippet, reply_from_email) VALUES (?, ?, ?, ?, ?)',
+                                    [app.id, email.receivedDateTime, subject, fullBody, fromEmail]
+                                );
+                                
+                                // Update main application table with LATEST reply
+                                await dbConfig.run(
+                                    'UPDATE application_history SET reply_received = 1, reply_date = ?, reply_subject = ?, reply_snippet = ?, reply_from_email = ? WHERE id = ?',
+                                    [email.receivedDateTime, subject, fullBody, fromEmail, app.id]
+                                );
+
+                                repliesFound++;
+                                updatedApplications.push({
+                                    id: app.id,
+                                    companyName: app.company_name,
+                                    replyDate: email.receivedDateTime,
+                                    replySubject: subject,
+                                    replySnippet: fullBody,
+                                    replyFromEmail: fromEmail
+                                });
+                            } else {
+                                console.log(`⏭️ [CHECK] Reply already exists in history for app #${app.id} - skipping`);
+                            }
+                            
+                            // Continue checking for more replies (don't break - there may be multiple replies)
+                        } else {
+                            // Log why it didn't match
+                            if (!isFromCompany || !isNotFromUser || !isAfterSent) {
+                                console.log(`   ❌ No match: fromCompany=${isFromCompany}, notFromUser=${isNotFromUser}, afterSent=${isAfterSent}`);
+                            }
                         }
                     }
                 }
@@ -1686,65 +1789,197 @@ const checkEmailReplies = async (req, res) => {
                 const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
                 console.log('📬 [CHECK] Fetching Gmail messages...');
-                // Get recent unread emails
+                // Get recent emails (both read and unread)
                 const messagesResponse = await gmail.users.messages.list({
                     userId: 'me',
                     maxResults: 50,
-                    q: 'is:unread newer_than:30d' // Unread emails from last 30 days
+                    q: 'newer_than:30d' // All emails from last 30 days (read or unread)
                 });
 
                 const messages = messagesResponse.data.messages || [];
-                console.log('📬 [CHECK] Found', messages.length, 'unread Gmail messages');
+                console.log('📬 [CHECK] Found', messages.length, 'Gmail messages from last 30 days');
                 if (messages.length > 0) {
                     console.log('📬 [CHECK] First message ID:', messages[0].id);
                 }
 
                 // Match emails to applications
                 console.log('📬 [CHECK] Starting to match Gmail messages with pending applications...');
+                console.log('📬 [CHECK] User email (to exclude from replies):', user.email);
+                
                 for (const app of pendingApps) {
                     const companyEmail = app.recipient_email.toLowerCase();
                     console.log(`📬 [CHECK] Checking app #${app.id} - ${app.company_name} (${companyEmail})`);
                     
                     for (const message of messages) {
                         try {
-                            // Get full message details
+                            // Get full message details including body
                             const msg = await gmail.users.messages.get({
                                 userId: 'me',
                                 id: message.id,
-                                format: 'metadata',
-                                metadataHeaders: ['From', 'Date', 'Subject']
+                                format: 'full'
                             });
 
                             const headers = msg.data.payload.headers;
                             const fromHeader = headers.find(h => h.name === 'From');
                             const dateHeader = headers.find(h => h.name === 'Date');
+                            const subjectHeader = headers.find(h => h.name === 'Subject');
                             
                             const fromEmail = fromHeader?.value?.match(/<(.+?)>/)?.[1]?.toLowerCase() || 
                                             fromHeader?.value?.toLowerCase() || '';
+                            const subject = subjectHeader?.value || '(No Subject)';
                             
                             const emailDate = new Date(dateHeader?.value || msg.data.internalDate);
                             const sentDate = new Date(app.sent_date);
 
-                            // Check if email is from company and received after sent
-                            if (fromEmail.includes(companyEmail) && emailDate > sentDate) {
+                            console.log(`   📧 Checking message from: ${fromEmail}, date: ${emailDate.toISOString()}`);
+                            
+                            // CRITICAL FIX: Exclude user's own emails (test case handling)
+                            // Check if:
+                            // 1. Email is from company email
+                            // 2. Email is NOT from user's own email (avoid matching sent emails in test cases)
+                            // 3. Email was received after we sent the application
+                            const isFromCompany = fromEmail.includes(companyEmail);
+                            const isNotFromUser = !fromEmail.includes(user.email.toLowerCase());
+                            const isAfterSent = emailDate > sentDate;
+                            
+                            console.log(`   🔍 From: ${fromEmail}`);
+                            console.log(`   🔍 Company: ${companyEmail}, Match: ${isFromCompany}`);
+                            console.log(`   🔍 User: ${user.email.toLowerCase()}, Not from user: ${isNotFromUser}`);
+                            console.log(`   🔍 Email date: ${emailDate.toISOString()}, Sent: ${sentDate.toISOString()}, After sent: ${isAfterSent}`);
+                            console.log(`   🔍 Subject: ${subject}`);
+                            
+                            if (isFromCompany && isNotFromUser && isAfterSent) {
                                 console.log(`✅ [CHECK] MATCH FOUND! Reply from ${companyEmail} for ${app.company_name}`);
                                 console.log(`✅ [CHECK] Email date: ${emailDate}, Sent date: ${sentDate}`);
                                 console.log(`✅ [CHECK] From email: ${fromEmail}`);
+                                console.log(`✅ [CHECK] Subject: ${subject}`);
                                 
-                                // Update application
-                                await dbConfig.run(
-                                    'UPDATE application_history SET reply_received = 1, reply_date = ? WHERE id = ?',
-                                    [emailDate.toISOString(), app.id]
+                                // Extract full email body (not just snippet)
+                                let emailBody = '';
+                                
+                                // Function to decode base64url encoded body
+                                const decodeBody = (data) => {
+                                    if (!data) return '';
+                                    try {
+                                        return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8');
+                                    } catch (err) {
+                                        console.error('Error decoding email body:', err);
+                                        return '';
+                                    }
+                                };
+                                
+                                // Function to extract body from parts recursively
+                                const extractBodyFromParts = (parts) => {
+                                    if (!parts) return '';
+                                    
+                                    for (const part of parts) {
+                                        // Prefer text/plain, but fall back to text/html
+                                        if (part.mimeType === 'text/plain' && part.body && part.body.data) {
+                                            return decodeBody(part.body.data);
+                                        }
+                                        
+                                        // If it's multipart, recurse into parts
+                                        if (part.parts) {
+                                            const bodyFromSubParts = extractBodyFromParts(part.parts);
+                                            if (bodyFromSubParts) return bodyFromSubParts;
+                                        }
+                                    }
+                                    
+                                    // If no text/plain found, try text/html
+                                    for (const part of parts) {
+                                        if (part.mimeType === 'text/html' && part.body && part.body.data) {
+                                            const htmlBody = decodeBody(part.body.data);
+                                            // Basic HTML to text conversion (remove tags)
+                                            // Collapse multiple spaces on same line but preserve line breaks
+                                            return htmlBody.replace(/<[^>]*>/g, ' ').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+                                        }
+                                    }
+                                    
+                                    return '';
+                                };
+                                
+                                // Extract body from message
+                                if (msg.data.payload.body && msg.data.payload.body.data) {
+                                    // Simple message with body directly in payload
+                                    emailBody = decodeBody(msg.data.payload.body.data);
+                                } else if (msg.data.payload.parts) {
+                                    // Multipart message
+                                    emailBody = extractBodyFromParts(msg.data.payload.parts);
+                                }
+                                
+                                // Fallback to snippet if body extraction failed
+                                if (!emailBody || emailBody.trim().length === 0) {
+                                    emailBody = msg.data.snippet || '';
+                                }
+                                
+                                console.log(`✅ [CHECK] Extracted body length: ${emailBody.length} characters`);
+                                console.log(`✅ [CHECK] Full extracted body: ${emailBody.substring(0, 500)}`);
+                                
+                                // Remove quoted text - look for common reply separators
+                                const quotePatterns = [
+                                    /[\r\n]+\s*On\s+(Mon|Tue|Wed|Thu|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\d{1,2}\s+\w+\s+\d{4})[^\r\n]+[\r\n]+wrote:/is,  // Email reply header
+                                    /-----Original Message-----/i,
+                                    /From:.+?Sent:.+?To:/si,    // Outlook-style headers
+                                    /_+\s*From:/i,               // "___ From:"
+                                ];
+                                
+                                let cleanedBody = emailBody;
+                                for (const pattern of quotePatterns) {
+                                    const match = cleanedBody.match(pattern);
+                                    if (match) {
+                                        console.log(`🔍 [CHECK] Matched pattern at index ${match.index}: "${match[0].substring(0, 100)}"`);
+                                        // Extract only the text before the quoted part
+                                        cleanedBody = cleanedBody.substring(0, match.index).trim();
+                                        break;
+                                    }
+                                }
+                                
+                                // Store the full cleaned body (no character limit for storage)
+                                const fullBody = cleanedBody.trim() || '(Reply received - content not available)';
+                                
+                                console.log(`✅ [CHECK] Cleaned body length: ${fullBody.length} characters`);
+                                console.log(`✅ [CHECK] Body preview: ${fullBody.substring(0, 200)}...`);
+                                
+                                // Check if this exact reply already exists in history (avoid duplicates)
+                                const existingReply = await dbConfig.get(
+                                    'SELECT id FROM application_reply_history WHERE application_id = ? AND reply_date = ? AND reply_subject = ?',
+                                    [app.id, emailDate.toISOString(), subject]
                                 );
-
-                                repliesFound++;
-                                updatedApplications.push({
-                                    id: app.id,
-                                    companyName: app.company_name,
-                                    replyDate: emailDate.toISOString()
-                                });
                                 
-                                break; // Move to next application
+                                if (!existingReply) {
+                                    console.log(`💾 [CHECK] Saving NEW reply to history for app #${app.id}`);
+                                    
+                                    // Insert into reply history table
+                                    await dbConfig.run(
+                                        'INSERT INTO application_reply_history (application_id, reply_date, reply_subject, reply_snippet, reply_from_email) VALUES (?, ?, ?, ?, ?)',
+                                        [app.id, emailDate.toISOString(), subject, fullBody, fromEmail]
+                                    );
+                                    
+                                    // Update main application table with LATEST reply
+                                    await dbConfig.run(
+                                        'UPDATE application_history SET reply_received = 1, reply_date = ?, reply_subject = ?, reply_snippet = ?, reply_from_email = ? WHERE id = ?',
+                                        [emailDate.toISOString(), subject, fullBody, fromEmail, app.id]
+                                    );
+
+                                    repliesFound++;
+                                    updatedApplications.push({
+                                        id: app.id,
+                                        companyName: app.company_name,
+                                        replyDate: emailDate.toISOString(),
+                                        replySubject: subject,
+                                        replySnippet: fullBody,
+                                        replyFromEmail: fromEmail
+                                    });
+                                } else {
+                                    console.log(`⏭️ [CHECK] Reply already exists in history for app #${app.id} - skipping`);
+                                }
+                                
+                                // Continue checking for more replies (don't break - there may be multiple replies)
+                            } else {
+                                // Log why it didn't match
+                                if (!isFromCompany || !isNotFromUser || !isAfterSent) {
+                                    console.log(`   ❌ No match: fromCompany=${isFromCompany}, notFromUser=${isNotFromUser}, afterSent=${isAfterSent}`);
+                                }
                             }
 
                         } catch (msgError) {

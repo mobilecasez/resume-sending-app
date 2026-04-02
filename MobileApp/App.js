@@ -442,6 +442,8 @@ export default function App() {
   const [editedCoverLetterData, setEditedCoverLetterData] = useState({});
   const [showAddressDropdown, setShowAddressDropdown] = useState(false);
   const [showReviewDatePicker, setShowReviewDatePicker] = useState(false);
+  const [showReplyDetailsModal, setShowReplyDetailsModal] = useState(false);
+  const [selectedReplyDetails, setSelectedReplyDetails] = useState(null);
   const abortControllerRef = useRef(null);
   const isCancelledRef = useRef(false);
   
@@ -2716,8 +2718,36 @@ export default function App() {
       loadReviewCoverLettersFromStorage();
       loadApplicationHistoryFromStorage();
       loadNotifications(); // Load notifications
+      
+      // Auto-check for replies on login (OAuth users only)
+      if (user.provider === 'google' || user.provider === 'microsoft') {
+        console.log('🔄 OAuth user detected - starting auto-check for replies...');
+        // Initial check after 10 seconds
+        setTimeout(() => autoCheckForReplies(false), 10000);
+      }
     }
   }, [user?.token, user?.email]);
+
+  // Periodic reply checking (every 10 minutes) for OAuth users
+  useEffect(() => {
+    let replyCheckInterval = null;
+    
+    if (user?.token && (user.provider === 'google' || user.provider === 'microsoft')) {
+      console.log('🔄 Starting periodic reply check (every 10 minutes)');
+      
+      replyCheckInterval = setInterval(() => {
+        autoCheckForReplies(true); // Show notification on periodic checks
+      }, 10 * 60 * 1000); // 10 minutes
+    }
+    
+    // Cleanup on unmount or when user changes
+    return () => {
+      if (replyCheckInterval) {
+        console.log('⏸️ Stopping periodic reply check');
+        clearInterval(replyCheckInterval);
+      }
+    };
+  }, [user?.token, user?.provider]);
 
   // Also load when screen changes to dashboard
   useEffect(() => {
@@ -2934,7 +2964,52 @@ export default function App() {
     }
   };
 
-  // Check for email replies
+  // Silent auto-check for replies (no UI updates, runs in background)
+  const autoCheckForReplies = async (showNotification = false) => {
+    try {
+      console.log('🔄 Auto-checking for email replies...');
+      const response = await fetch(`${API_BASE}/check-replies`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        }
+      });
+
+      const responseText = await response.text();
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('Auto-check: Failed to parse response');
+        return;
+      }
+
+      if (response.ok) {
+        const repliesCount = data.repliesFound || 0;
+        console.log(`✅ Auto-check complete: ${repliesCount} replies found`);
+        
+        if (repliesCount > 0) {
+          // Refresh application history to show updated reply status
+          await loadApplicationHistoryFromStorage();
+          
+          if (showNotification) {
+            Alert.alert(
+              '🔄 Auto-Sync',
+              `Found ${repliesCount} new ${repliesCount === 1 ? 'reply' : 'replies'}!`,
+              [{ text: 'OK' }]
+            );
+          }
+        }
+      } else {
+        console.error('❌ Auto-check error:', data.error || data.message);
+      }
+    } catch (error) {
+      console.error('❌ Auto-check network error:', error);
+    }
+  };
+
+  // Check for email replies (manual button click)
   const checkEmailReplies = async () => {
     try {
       setIsCheckingReplies(true);
@@ -2990,6 +3065,37 @@ export default function App() {
       Alert.alert('Error', error.message || 'Failed to check email replies. Please try again.');
     } finally {
       setIsCheckingReplies(false);
+    }
+  };
+
+  // Fetch all replies for a specific application
+  const showAllReplies = async (applicationId, companyName) => {
+    try {
+      const response = await fetch(`${API_BASE}/users/application-history/${applicationId}/replies`, {
+        headers: {
+          'Authorization': `Bearer ${user.token}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch replies');
+      }
+
+      const result = await response.json();
+
+      if (result.success && result.replies && result.replies.length > 0) {
+        setSelectedReplyDetails({
+          companyName: result.companyName,
+          replies: result.replies,
+          count: result.count
+        });
+        setShowReplyDetailsModal(true);
+      } else {
+        Alert.alert('Info', 'No replies found', [{ text: 'OK' }]);
+      }
+    } catch (error) {
+      console.error('Error fetching replies:', error);
+      Alert.alert('Error', 'Failed to load replies. Please try again.', [{ text: 'OK' }]);
     }
   };
 
@@ -3205,7 +3311,7 @@ export default function App() {
         `client_id=${GOOGLE_CLIENT_ID}` +
         `&redirect_uri=${encodeURIComponent(redirectUri)}` +
         `&response_type=code` +
-        `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send')}` +
+        `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly')}` +
         `&code_challenge=${codeChallenge}` +
         `&code_challenge_method=S256` +
         `&access_type=offline` +
@@ -4292,7 +4398,7 @@ export default function App() {
                           <>
                             <View style={styles.dateSeparator} />
                             <View style={styles.dateItem}>
-                              <Text style={styles.dateLabel}>Reply</Text>
+                              <Text style={styles.dateLabel}>Latest Reply</Text>
                               <Text style={[styles.dateValue, styles.dateValueReplied]}>
                                 {new Date(app.replyDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                               </Text>
@@ -4301,12 +4407,21 @@ export default function App() {
                         )}
                       </View>
                       
-                      {/* Action hint */}
-                      {!app.replyReceived && (
+                      {/* Action hint or reply preview */}
+                      {!app.replyReceived ? (
                         <View style={styles.modernActionHint}>
                           <Text style={styles.modernActionHintText}>✓ Tap to mark as replied</Text>
                         </View>
-                      )}
+                      ) : app.replySnippet ? (
+                        <TouchableOpacity 
+                          style={styles.showReplyButton}
+                          onPress={() => showAllReplies(app.id, app.companyName)}
+                        >
+                          <Text style={styles.showReplyButtonText}>
+                            📬 Show {app.replyCount > 1 ? `${app.replyCount} Replies` : 'Reply'}
+                          </Text>
+                        </TouchableOpacity>
+                      ) : null}
                     </View>
                   </TouchableOpacity>
                 ))}
@@ -4343,6 +4458,74 @@ export default function App() {
             </View>
           )}
         </ScrollView>
+
+        {/* Reply Details Modal */}
+        <Modal
+          transparent={true}
+          visible={showReplyDetailsModal}
+          animationType="fade"
+          onRequestClose={() => setShowReplyDetailsModal(false)}
+        >
+          <View style={styles.replyModalOverlay}>
+            <View style={styles.replyDetailsModalContainer}>
+              {/* Header */}
+              <View style={styles.replyDetailsModalHeader}>
+                <Text style={styles.replyDetailsModalTitle}>
+                  📬 {selectedReplyDetails?.companyName || 'Reply Details'}
+                </Text>
+                <TouchableOpacity 
+                  onPress={() => setShowReplyDetailsModal(false)}
+                  style={styles.closeModalButton}
+                >
+                  <Text style={styles.closeModalButtonText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+
+              {selectedReplyDetails && selectedReplyDetails.replies && selectedReplyDetails.replies.length > 0 && (() => {
+                const firstReply = selectedReplyDetails.replies[0];
+                return (
+                  <>
+                    {/* Common meta: from + subject */}
+                    <View style={styles.replyMetaSection}>
+                      <Text style={styles.replyMetaFrom} numberOfLines={1}>✉️  {firstReply.replyFromEmail}</Text>
+                      <Text style={styles.replyMetaSubject} numberOfLines={2}>{firstReply.replySubject || '(No Subject)'}</Text>
+                      <Text style={styles.replyMetaCount}>
+                        {selectedReplyDetails.count} {selectedReplyDetails.count === 1 ? 'reply' : 'replies'} received
+                      </Text>
+                    </View>
+
+                    {/* Reply list — single ScrollView, no inner scroll */}
+                    <ScrollView
+                      style={styles.replyDetailsContent}
+                      contentContainerStyle={{ paddingBottom: 16 }}
+                      showsVerticalScrollIndicator={true}
+                      nestedScrollEnabled={true}
+                    >
+                      {[...selectedReplyDetails.replies].sort((a, b) => new Date(b.replyDate) - new Date(a.replyDate)).map((reply, index) => (
+                        <View key={reply.id || index} style={styles.replyCard}>
+                          <Text style={styles.replyCardDate}>
+                            {new Date(reply.replyDate).toLocaleString('en-US', {
+                              month: 'short', day: 'numeric', year: 'numeric',
+                              hour: 'numeric', minute: '2-digit'
+                            })}
+                          </Text>
+                          <Text style={styles.replyPreviewText}>{reply.replySnippet || '(No content available)'}</Text>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  </>
+                );
+              })()}
+
+              <TouchableOpacity
+                style={styles.replyDetailsCloseButton}
+                onPress={() => setShowReplyDetailsModal(false)}
+              >
+                <Text style={styles.replyDetailsCloseButtonText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
 
         {/* Reply Date Picker Modal */}
         <Modal
@@ -13491,5 +13674,125 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     fontWeight: '600',
     letterSpacing: 0.3,
+  },
+  // Reply Details Modal Styles
+  showReplyButton: {
+    backgroundColor: '#3b82f6',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginTop: 8,
+    alignItems: 'center',
+  },
+  showReplyButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  replyModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  replyDetailsModalContainer: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    width: '100%',
+    maxWidth: 600,
+    maxHeight: '85%',
+    flexShrink: 1,
+  },
+  replyDetailsModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  replyDetailsModalTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#1e293b',
+    flex: 1,
+  },
+  closeModalButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#e2e8f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeModalButtonText: {
+    fontSize: 16,
+    color: '#64748b',
+    fontWeight: '600',
+  },
+  replyMetaSection: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  replyMetaFrom: {
+    fontSize: 13,
+    color: '#374151',
+    marginBottom: 4,
+  },
+  replyMetaSubject: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1e293b',
+    marginBottom: 6,
+  },
+  replyMetaCount: {
+    fontSize: 12,
+    color: '#6b7280',
+    fontWeight: '500',
+  },
+  replyDetailsContent: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    flexGrow: 0,
+  },
+  replyCard: {
+    backgroundColor: '#dbeafe',
+    borderLeftWidth: 3,
+    borderLeftColor: '#2563eb',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 10,
+  },
+  replyCardDate: {
+    fontSize: 11,
+    color: '#6b7280',
+    fontWeight: '500',
+    marginBottom: 8,
+  },
+  replyPreviewText: {
+    fontSize: 13,
+    color: '#1f2937',
+    lineHeight: 20,
+  },
+  replyDetailsCloseButton: {
+    backgroundColor: '#3b82f6',
+    marginHorizontal: 16,
+    marginVertical: 12,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  replyDetailsCloseButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '600',
   },
 });
