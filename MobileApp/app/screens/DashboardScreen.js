@@ -8,10 +8,13 @@ import {
   Alert,
   ActivityIndicator,
   RefreshControl,
+  Animated,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { BlurView } from 'expo-blur';
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
-import { API_BASE } from '../config';
+import { API_BASE } from '../../config';
 
 export default function DashboardScreen({ navigation }) {
   const [user, setUser] = useState(null);
@@ -27,10 +30,29 @@ export default function DashboardScreen({ navigation }) {
   });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const fadeAnim = new Animated.Value(0);
+  const slideAnim = new Animated.Value(30);
 
   useEffect(() => {
     loadDashboard();
   }, []);
+
+  useEffect(() => {
+    if (!loading) {
+      Animated.parallel([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 600,
+          useNativeDriver: true,
+        }),
+        Animated.timing(slideAnim, {
+          toValue: 0,
+          duration: 600,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [loading]);
 
   const loadDashboard = async () => {
     try {
@@ -101,258 +123,353 @@ export default function DashboardScreen({ navigation }) {
 
   if (loading) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color="#1e40af" />
-      </View>
+      <LinearGradient
+        colors={['#667eea', '#764ba2', '#f093fb']}
+        style={styles.centerContainer}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+      >
+        <ActivityIndicator size="large" color="#ffffff" />
+      </LinearGradient>
     );
   }
 
   return (
-    <ScrollView
+    <LinearGradient
+      colors={['#667eea', '#764ba2', '#f093fb']}
       style={styles.container}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
     >
-      <View style={styles.header}>
-        <Text style={styles.greeting}>Welcome back, {user?.name}!</Text>
-        <Text style={styles.subtext}>Here's your application summary</Text>
-      </View>
-
-      {/* Credit Balance Card - Prominently displayed */}
-      <TouchableOpacity
-        style={styles.creditCard}
-        onPress={() => navigation.navigate('Usage')}
+      <ScrollView
+        style={styles.scrollView}
+        refreshControl={
+          <RefreshControl 
+            refreshing={refreshing} 
+            onRefresh={onRefresh}
+            tintColor="#ffffff"
+          />
+        }
       >
-        <View style={styles.creditHeader}>
-          <Text style={styles.creditLabel}>💳 Available Credits</Text>
-          <Text style={styles.viewDetailsText}>View Details →</Text>
-        </View>
-        <Text style={styles.creditBalance}>{credits.balance}</Text>
-        {credits.expiringCredits > 0 && credits.expiryDate && (
-          <View style={styles.expiryWarning}>
-            <Text style={styles.expiryText}>
-              ⚠️ {credits.expiringCredits} credits expiring soon
-            </Text>
+        <Animated.View
+          style={[
+            styles.content,
+            {
+              opacity: fadeAnim,
+              transform: [{ translateY: slideAnim }],
+            },
+          ]}
+        >
+          {/* Header */}
+          <View style={styles.header}>
+            <Text style={styles.greeting}>Welcome back,</Text>
+            <Text style={styles.userName}>{user?.name}!</Text>
+            <Text style={styles.subtext}>Here's your application summary</Text>
           </View>
-        )}
-        <Text style={styles.creditSubtext}>
-          Tap to view usage stats & purchase more credits
-        </Text>
-      </TouchableOpacity>
 
-      <View style={styles.statsContainer}>
-        <View style={styles.statCard}>
-          <Text style={styles.statNumber}>{stats.totalApplications}</Text>
-          <Text style={styles.statLabel}>Total Applications</Text>
-        </View>
+          {/* Credit Balance Card */}
+          <TouchableOpacity
+            style={styles.creditCardContainer}
+            onPress={() => navigation.navigate('Usage')}
+            activeOpacity={0.9}
+          >
+            <BlurView intensity={30} tint="light" style={styles.creditCard}>
+              <View style={styles.creditHeader}>
+                <Text style={styles.creditLabel}>💳 Available Credits</Text>
+                <Text style={styles.viewDetailsText}>View Details →</Text>
+              </View>
+              <Text style={styles.creditBalance}>{credits.balance}</Text>
+              {credits.expiringCredits > 0 && credits.expiryDate && (
+                <View style={styles.expiryWarning}>
+                  <Text style={styles.expiryText}>
+                    ⚠️ {credits.expiringCredits} credits expiring soon
+                  </Text>
+                </View>
+              )}
+              <Text style={styles.creditSubtext}>
+                Tap to view usage stats & purchase more credits
+              </Text>
+            </BlurView>
+          </TouchableOpacity>
 
-        <View style={styles.statCard}>
-          <Text style={styles.statNumber}>{stats.coveredApplications}</Text>
-          <Text style={styles.statLabel}>With Cover Letters</Text>
-        </View>
+          {/* Stats Container */}
+          <View style={styles.statsContainer}>
+            <BlurView intensity={30} tint="light" style={styles.statCard}>
+              <Text style={styles.statNumber}>{stats.totalApplications}</Text>
+              <Text style={styles.statLabel}>Total Applications</Text>
+            </BlurView>
 
-        <View style={styles.statCard}>
-          <Text style={styles.statNumber}>{stats.pendingApplications}</Text>
-          <Text style={styles.statLabel}>Pending</Text>
-        </View>
-      </View>
+            <BlurView intensity={30} tint="light" style={styles.statCard}>
+              <Text style={styles.statNumber}>{stats.coveredApplications}</Text>
+              <Text style={styles.statLabel}>With Cover Letters</Text>
+            </BlurView>
 
-      <View style={styles.quickActions}>
-        <TouchableOpacity
-          style={styles.actionButton}
-          onPress={() => navigation.navigate('Generate')}
-        >
-          <Text style={styles.actionButtonIcon}>✨</Text>
-          <Text style={styles.actionButtonText}>Generate Cover Letter</Text>
-          <Text style={styles.actionButtonArrow}>→</Text>
-        </TouchableOpacity>
+            <BlurView intensity={30} tint="light" style={styles.statCard}>
+              <Text style={styles.statNumber}>{stats.pendingApplications}</Text>
+              <Text style={styles.statLabel}>Pending</Text>
+            </BlurView>
+          </View>
 
-        <TouchableOpacity
-          style={styles.actionButton}
-          onPress={() => navigation.navigate('Applications')}
-        >
-          <Text style={styles.actionButtonIcon}>📋</Text>
-          <Text style={styles.actionButtonText}>View Applications</Text>
-          <Text style={styles.actionButtonArrow}>→</Text>
-        </TouchableOpacity>
+          {/* Quick Actions */}
+          <View style={styles.quickActions}>
+            <TouchableOpacity
+              style={styles.actionButtonContainer}
+              onPress={() => navigation.navigate('Generate')}
+              activeOpacity={0.8}
+            >
+              <BlurView intensity={30} tint="light" style={styles.actionButton}>
+                <Text style={styles.actionButtonIcon}>✨</Text>
+                <Text style={styles.actionButtonText}>Generate Cover Letter</Text>
+                <Text style={styles.actionButtonArrow}>→</Text>
+              </BlurView>
+            </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.actionButton}
-          onPress={() => navigation.navigate('Usage')}
-        >
-          <Text style={styles.actionButtonIcon}>📊</Text>
-          <Text style={styles.actionButtonText}>Usage & Credits</Text>
-          <Text style={styles.actionButtonArrow}>→</Text>
-        </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.actionButtonContainer}
+              onPress={() => navigation.navigate('Applications')}
+              activeOpacity={0.8}
+            >
+              <BlurView intensity={30} tint="light" style={styles.actionButton}>
+                <Text style={styles.actionButtonIcon}>📋</Text>
+                <Text style={styles.actionButtonText}>View Applications</Text>
+                <Text style={styles.actionButtonArrow}>→</Text>
+              </BlurView>
+            </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.actionButton}
-          onPress={() => navigation.navigate('Profile')}
-        >
-          <Text style={styles.actionButtonIcon}>👤</Text>
-          <Text style={styles.actionButtonText}>Edit Profile</Text>
-          <Text style={styles.actionButtonArrow}>→</Text>
-        </TouchableOpacity>
-      </View>
+            <TouchableOpacity
+              style={styles.actionButtonContainer}
+              onPress={() => navigation.navigate('Usage')}
+              activeOpacity={0.8}
+            >
+              <BlurView intensity={30} tint="light" style={styles.actionButton}>
+                <Text style={styles.actionButtonIcon}>📊</Text>
+                <Text style={styles.actionButtonText}>Usage & Credits</Text>
+                <Text style={styles.actionButtonArrow}>→</Text>
+              </BlurView>
+            </TouchableOpacity>
 
-      <View style={styles.footer}>
-        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-          <Text style={styles.logoutButtonText}>Logout</Text>
-        </TouchableOpacity>
-      </View>
-    </ScrollView>
+            <TouchableOpacity
+              style={styles.actionButtonContainer}
+              onPress={() => navigation.navigate('Profile')}
+              activeOpacity={0.8}
+            >
+              <BlurView intensity={30} tint="light" style={styles.actionButton}>
+                <Text style={styles.actionButtonIcon}>👤</Text>
+                <Text style={styles.actionButtonText}>Edit Profile</Text>
+                <Text style={styles.actionButtonArrow}>→</Text>
+              </BlurView>
+            </TouchableOpacity>
+          </View>
+
+          {/* Footer */}
+          <View style={styles.footer}>
+            <TouchableOpacity 
+              style={styles.logoutButtonContainer} 
+              onPress={handleLogout}
+              activeOpacity={0.8}
+            >
+              <BlurView intensity={40} tint="dark" style={styles.logoutButton}>
+                <Text style={styles.logoutButtonText}>Logout</Text>
+              </BlurView>
+            </TouchableOpacity>
+          </View>
+        </Animated.View>
+      </ScrollView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8fafc',
   },
   centerContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#f8fafc',
+  },
+  scrollView: {
+    flex: 1,
+  },
+  content: {
+    paddingBottom: 30,
   },
   header: {
-    padding: 20,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+    padding: 24,
+    paddingTop: 60,
+    paddingBottom: 30,
   },
   greeting: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#1f2937',
+    fontSize: 18,
+    fontWeight: '400',
+    color: '#ffffff',
+    opacity: 0.95,
     marginBottom: 4,
   },
+  userName: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 8,
+  },
   subtext: {
-    fontSize: 14,
-    color: '#6b7280',
+    fontSize: 15,
+    color: '#ffffff',
+    opacity: 0.85,
+  },
+  creditCardContainer: {
+    marginHorizontal: 16,
+    marginBottom: 20,
   },
   creditCard: {
-    margin: 16,
-    marginTop: 12,
-    backgroundColor: '#1e40af',
-    borderRadius: 16,
-    padding: 20,
+    borderRadius: 20,
+    padding: 24,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    overflow: 'hidden',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+    elevation: 8,
   },
   creditHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 12,
   },
   creditLabel: {
-    fontSize: 14,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  viewDetailsText: {
+    fontSize: 13,
     fontWeight: '600',
     color: '#ffffff',
     opacity: 0.9,
   },
-  viewDetailsText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#ffffff',
-    opacity: 0.8,
-  },
   creditBalance: {
-    fontSize: 48,
-    fontWeight: '700',
+    fontSize: 56,
+    fontWeight: '800',
     color: '#ffffff',
     marginBottom: 8,
+    letterSpacing: -2,
   },
   expiryWarning: {
-    backgroundColor: 'rgba(251, 191, 36, 0.2)',
-    borderRadius: 8,
-    padding: 8,
-    marginBottom: 8,
+    backgroundColor: 'rgba(251, 191, 36, 0.3)',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 10,
   },
   expiryText: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#fef3c7',
+    color: '#ffffff',
   },
   creditSubtext: {
-    fontSize: 12,
+    fontSize: 13,
     color: '#ffffff',
-    opacity: 0.7,
+    opacity: 0.85,
   },
   statsContainer: {
     flexDirection: 'row',
-    padding: 16,
+    paddingHorizontal: 16,
     gap: 12,
+    marginBottom: 20,
   },
   statCard: {
     flex: 1,
-    backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 16,
     padding: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
     alignItems: 'center',
+    overflow: 'hidden',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 4,
   },
   statNumber: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#1e40af',
-    marginBottom: 4,
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#ffffff',
+    marginBottom: 6,
   },
   statLabel: {
-    fontSize: 12,
-    color: '#6b7280',
+    fontSize: 11,
+    color: '#ffffff',
     fontWeight: '500',
     textAlign: 'center',
+    opacity: 0.9,
   },
   quickActions: {
-    padding: 16,
+    paddingHorizontal: 16,
     gap: 12,
+    marginBottom: 20,
+  },
+  actionButtonContainer: {
+    marginBottom: 4,
   },
   actionButton: {
     flexDirection: 'row',
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
+    borderRadius: 14,
+    padding: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
     alignItems: 'center',
+    overflow: 'hidden',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 4,
   },
   actionButtonIcon: {
     fontSize: 24,
-    marginRight: 12,
+    marginRight: 14,
   },
   actionButtonText: {
     flex: 1,
     fontSize: 16,
     fontWeight: '600',
-    color: '#1f2937',
+    color: '#ffffff',
   },
   actionButtonArrow: {
-    fontSize: 18,
-    color: '#9ca3af',
+    fontSize: 20,
+    color: '#ffffff',
+    opacity: 0.8,
   },
   footer: {
-    padding: 20,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+  },
+  logoutButtonContainer: {
+    marginBottom: 10,
   },
   logoutButton: {
-    backgroundColor: '#ef4444',
-    borderRadius: 8,
-    padding: 14,
+    borderRadius: 14,
+    padding: 16,
+    backgroundColor: 'rgba(239, 68, 68, 0.3)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.4)',
     alignItems: 'center',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
   },
   logoutButtonText: {
-    color: 'white',
+    color: '#ffffff',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
   },
 });

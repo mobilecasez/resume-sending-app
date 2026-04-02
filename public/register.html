@@ -1,127 +1,117 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Register - CVApplyr</title>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+
+    <!-- // CSS FILES // -->
+
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="../bootstrap-4.1.1-dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css" integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
+    <!-- ANIMATE CSS -->
+    <link rel="stylesheet" href="../css/animate.css">
+    <!-- PRELOADER -->
+    <link rel="stylesheet" href="../css/preloader.css">
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="../css/style.css">
+
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        :root {
-            --primary-color: #1e40af;
-            --primary-hover: #1e3a8a;
-            --secondary-color: #059669;
-            --danger-color: #dc2626;
-            --bg-color: #f8fafc;
-            --text-primary: #0f172a;
-            --text-secondary: #475569;
-            --border-color: #e2e8f0;
-            --accent-color: #3b82f6;
-            --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-        }
-
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 50%, #3b82f6 100%);
-            min-height: 100vh;
+        /* Auth Card Styles */
+        .auth-section {
+            padding: 100px 0;
+            min-height: calc(100vh - 70px);
             display: flex;
             align-items: center;
-            justify-content: center;
-            padding: 20px;
-            color: var(--text-primary);
-        }
-
-        .auth-container {
-            width: 100%;
-            max-width: 440px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
         }
 
         .auth-card {
             background: white;
-            border-radius: 12px;
-            padding: 48px 40px;
-            box-shadow: var(--shadow-lg);
-            border: 1px solid rgba(0, 0, 0, 0.05);
+            border-radius: 16px;
+            padding: 50px 45px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+            max-width: 500px;
+            margin: 0 auto;
         }
 
         .auth-header {
             text-align: center;
-            margin-bottom: 36px;
+            margin-bottom: 40px;
+        }
+
+        .auth-header img {
+            height: 60px;
+            margin-bottom: 15px;
         }
 
         .auth-title {
-            font-size: 1.875rem;
+            font-size: 2rem;
             font-weight: 700;
-            color: var(--text-primary);
-            margin-bottom: 8px;
-            letter-spacing: -0.5px;
+            color: #1e40af;
+            margin-bottom: 10px;
         }
 
         .auth-subtitle {
-            font-size: 0.9375rem;
-            color: var(--text-secondary);
-            font-weight: 400;
+            font-size: 1rem;
+            color: #64748b;
         }
 
         .form-group {
-            margin-bottom: 20px;
+            margin-bottom: 25px;
         }
 
         .form-label {
             display: block;
-            font-size: 0.8125rem;
+            font-size: 0.875rem;
             font-weight: 600;
-            color: var(--text-primary);
+            color: #0f172a;
             margin-bottom: 8px;
-            letter-spacing: 0.2px;
         }
 
         .form-input {
             width: 100%;
-            padding: 11px 14px;
-            border: 1px solid var(--border-color);
-            border-radius: 7px;
-            font-size: 0.9375rem;
-            transition: all 0.2s ease;
-            font-family: inherit;
+            padding: 12px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
             background: white;
         }
 
         .form-input:focus {
             outline: none;
-            border-color: var(--primary-color);
-            box-shadow: 0 0 0 3px rgba(30, 64, 175, 0.08);
+            border-color: #1e40af;
+            box-shadow: 0 0 0 4px rgba(30, 64, 175, 0.1);
         }
 
-        .btn {
+        .btn-auth {
             width: 100%;
-            padding: 13px 28px;
+            padding: 14px 28px;
             border: none;
             border-radius: 8px;
-            font-size: 0.9375rem;
+            font-size: 1rem;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.2s ease;
-            letter-spacing: 0.2px;
-            margin-top: 8px;
-        }
-
-        .btn-primary {
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
+            transition: all 0.3s ease;
+            background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
             color: white;
-            box-shadow: 0 4px 6px -1px rgba(30, 64, 175, 0.3), 0 2px 4px -1px rgba(30, 64, 175, 0.2);
+            margin-top: 10px;
         }
 
-        .btn-primary:hover {
-            box-shadow: 0 10px 15px -3px rgba(30, 64, 175, 0.4), 0 4px 6px -2px rgba(30, 64, 175, 0.3);
-            transform: translateY(-1px);
+        .btn-auth:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(30, 64, 175, 0.4);
         }
 
-        .btn-primary:disabled {
+        .btn-auth:disabled {
             opacity: 0.6;
             cursor: not-allowed;
             transform: none;
@@ -129,48 +119,47 @@
 
         .auth-footer {
             text-align: center;
-            margin-top: 24px;
-            padding-top: 24px;
-            border-top: 1px solid var(--border-color);
+            margin-top: 30px;
+            padding-top: 25px;
+            border-top: 1px solid #e2e8f0;
         }
 
         .auth-link {
-            color: var(--text-secondary);
-            font-size: 0.9375rem;
+            color: #64748b;
+            font-size: 1rem;
         }
 
         .auth-link a {
-            color: var(--primary-color);
+            color: #1e40af;
             text-decoration: none;
             font-weight: 600;
             transition: color 0.2s ease;
         }
 
         .auth-link a:hover {
-            color: var(--primary-hover);
+            color: #1e3a8a;
             text-decoration: underline;
+        }
+
+        .error-message, .success-message {
+            padding: 14px 18px;
+            border-radius: 8px;
+            font-size: 0.9375rem;
+            margin-bottom: 25px;
+            display: none;
+            border-left: 4px solid;
         }
 
         .error-message {
             background: #fee;
-            color: var(--danger-color);
-            padding: 12px 16px;
-            border-radius: 7px;
-            font-size: 0.875rem;
-            margin-bottom: 20px;
-            border-left: 3px solid var(--danger-color);
-            display: none;
+            color: #dc2626;
+            border-color: #dc2626;
         }
 
         .success-message {
             background: #f0fdf4;
-            color: var(--secondary-color);
-            padding: 12px 16px;
-            border-radius: 7px;
-            font-size: 0.875rem;
-            margin-bottom: 20px;
-            border-left: 3px solid var(--secondary-color);
-            display: none;
+            color: #059669;
+            border-color: #059669;
         }
 
         .spinner {
@@ -191,83 +180,204 @@
 
         @media (max-width: 640px) {
             .auth-card {
-                padding: 32px 24px;
+                padding: 35px 25px;
             }
         }
     </style>
+
+    <title>Register - CVApplyr</title>
 </head>
-<body>
-    <div class="auth-container">
-        <div class="auth-card">
-            <div class="auth-header">
-                <img src="/icon_light_background.png" alt="CVApplyr" style="height: 50px; margin-bottom: 10px;">
-                <p class="auth-subtitle">Turn applications into opportunities</p>
+
+<body data-spy="scroll" data-target=".navbar">
+
+    <script>
+        // Dynamic base URL - detects localhost vs production
+        // Helper function to navigate to app pages using relative paths
+        function navigateToApp(path) {
+            window.location.href = path;
+        }
+    </script>
+
+    <!-- PRELOADER -->
+    <div class="preloader-holder">
+        <div class="loading">
+            <div class="finger finger-1">
+                <div class="finger-item"><span></span><i></i></div>
             </div>
-
-            <div id="errorMessage" class="error-message"></div>
-            <div id="successMessage" class="success-message"></div>
-
-            <form id="registerForm" onsubmit="handleRegister(event)">
-                <div class="form-group">
-                    <label class="form-label">Full Name</label>
-                    <input 
-                        type="text" 
-                        class="form-input" 
-                        id="fullName"
-                        placeholder="John Doe"
-                        required
-                    >
-                </div>
-
-                <div class="form-group">
-                    <label class="form-label">Email Address</label>
-                    <input 
-                        type="email" 
-                        class="form-input" 
-                        id="email"
-                        placeholder="your.email@example.com"
-                        required
-                    >
-                </div>
-
-                <div class="form-group">
-                    <label class="form-label">Password</label>
-                    <input 
-                        type="password" 
-                        class="form-input" 
-                        id="password"
-                        placeholder="Minimum 6 characters"
-                        minlength="6"
-                        required
-                    >
-                </div>
-
-                <div class="form-group">
-                    <label class="form-label">Confirm Password</label>
-                    <input 
-                        type="password" 
-                        class="form-input" 
-                        id="confirmPassword"
-                        placeholder="Re-enter your password"
-                        required
-                    >
-                </div>
-
-                <button type="submit" class="btn btn-primary" id="registerBtn">
-                    Create Account
-                </button>
-            </form>
-
-            <div class="auth-footer">
-                <p class="auth-link">
-                    Already have an account? <a href="/login">Sign in</a>
-                </p>
+            <div class="finger finger-2">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-3">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-4">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="last-finger">
+                <div class="last-finger-item"><i></i></div>
             </div>
         </div>
     </div>
 
+    <!-- HEADER -->
+    <header id="home">
+        <!-- Navbar -->
+        <nav class="navbar navbar-expand-lg fixed-top">
+            <div class="container">
+                <a class="navbar-brand" href="/about">CV<span>Applyr</span></a>
+                <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav">
+                    <i class="material-icons">menu</i>
+                </button>
+                <div class="collapse navbar-collapse" id="navbarNav">
+                    <ul class="nav navbar-nav ml-auto">
+                        <li class="nav-item">
+                            <a class="nav-link" href="/about#home">Home</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/about#services">Why CVApplyr</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/about#features">Features</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/about#pricing">Pricing</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="/about#contact">Contact</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="javascript:void(0)" onclick="navigateToApp('/login')">Sign In</a>
+                        </li>
+                        <li>
+                            <a href="javascript:void(0)" onclick="navigateToApp('/register')" class="btn btn-primary">Sign Up Free</a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </nav>
+    </header>
+
+    <!-- AUTH SECTION -->
+    <section class="auth-section">
+        <div class="container">
+            <div class="row">
+                <div class="col-lg-6 offset-lg-3 col-md-8 offset-md-2">
+                    <div class="auth-card wow fadeInUp" data-wow-duration="1s">
+                        <div class="auth-header">
+                            <img src="/icon_light_background.png" alt="CVApplyr" onerror="this.style.display='none'">
+                            <h2 class="auth-title">Create Account</h2>
+                            <p class="auth-subtitle">Turn applications into opportunities</p>
+                        </div>
+
+                        <div id="errorMessage" class="error-message"></div>
+                        <div id="successMessage" class="success-message"></div>
+
+                        <form id="registerForm" onsubmit="handleRegister(event)">
+                            <div class="form-group">
+                                <label class="form-label">Full Name</label>
+                                <input 
+                                    type="text" 
+                                    class="form-input" 
+                                    id="fullName"
+                                    placeholder="John Doe"
+                                    required
+                                >
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">Email Address</label>
+                                <input 
+                                    type="email" 
+                                    class="form-input" 
+                                    id="email"
+                                    placeholder="your.email@example.com"
+                                    required
+                                >
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">Password</label>
+                                <input 
+                                    type="password" 
+                                    class="form-input" 
+                                    id="password"
+                                    placeholder="Minimum 6 characters"
+                                    minlength="6"
+                                    required
+                                >
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">Confirm Password</label>
+                                <input 
+                                    type="password" 
+                                    class="form-input" 
+                                    id="confirmPassword"
+                                    placeholder="Re-enter your password"
+                                    required
+                                >
+                            </div>
+
+                            <button type="submit" class="btn-auth" id="registerBtn">
+                                Create Account
+                            </button>
+                        </form>
+
+                        <div class="auth-footer">
+                            <p class="auth-link">
+                                Already have an account? <a href="javascript:void(0)" onclick="navigateToApp('/login')">Sign in</a>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer id="footer" class="footer" style="background: #1e1e2f; padding: 60px 0 30px 0; margin-top: 0;">
+        <div class="container">
+            <div class="row">
+                <div class="col-md-4 col-sm-12 mb-4">
+                    <h5 class="text-white mb-3">CVApplyr</h5>
+                    <p class="text-muted">AI-Powered Cover Letter Generation and Application Sending App</p>
+                </div>
+                <div class="col-md-2 col-sm-6 mb-4">
+                    <h6 class="text-white mb-3">Quick Links</h6>
+                    <ul class="list-unstyled">
+                        <li><a href="/about#home" class="text-muted" style="text-decoration: none;">Home</a></li>
+                        <li><a href="/about#services" class="text-muted" style="text-decoration: none;">Why CVApplyr</a></li>
+                        <li><a href="/about#features" class="text-muted" style="text-decoration: none;">Features</a></li>
+                        <li><a href="/about#pricing" class="text-muted" style="text-decoration: none;">Pricing</a></li>
+                        <li><a href="/about#contact" class="text-muted" style="text-decoration: none;">Contact</a></li>
+                    </ul>
+                </div>
+                <div class="col-md-3 col-sm-6 mb-4">
+                    <h6 class="text-white mb-3">Legal</h6>
+                    <ul class="list-unstyled">
+                        <li><a href="https://cvapplyr.com/privacy-policy" class="text-muted" style="text-decoration: none;">Privacy Policy</a></li>
+                        <li><a href="https://cvapplyr.com/terms-of-service" class="text-muted" style="text-decoration: none;">Terms of Service</a></li>
+                        <li><a href="https://cvapplyr.com/refund-policy" class="text-muted" style="text-decoration: none;">Refund Policy</a></li>
+                    </ul>
+                </div>
+                <div class="col-md-3 col-sm-12 mb-4">
+                    <h6 class="text-white mb-3">Contact</h6>
+                    <ul class="list-unstyled text-muted">
+                        <li>Email: support@cvapplyr.com</li>
+                        <li>© 2026 zSellr Enterprises LLP</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="row mt-4">
+                <div class="col-12 text-center">
+                    <p class="text-muted mb-0" style="font-size: 14px;">&copy; 2026 CVApplyr by zSellr Enterprises LLP. All Rights Reserved.</p>
+                </div>
+            </div>
+        </div>
+    </footer>
+
     <script>
-        // Check if already logged in
+        // Check if already logged in - redirect to dashboard
         const token = localStorage.getItem('authToken');
         if (token) {
             window.location.href = '/';
@@ -338,5 +448,26 @@
             }
         }
     </script>
+
+    <!-- jQuery -->
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js"></script>
+    <!-- Popper.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.3/umd/popper.min.js" integrity="sha384-ZMP7rVo3mIykV+2+9J3UJ46jBk0WLaUAdn689aCwoqbBJiSnjAK/l8WvCWPIPm49" crossorigin="anonymous"></script>
+    <!-- Bootstrap JS -->
+    <script src="../bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
+    <!-- WOW Animation -->
+    <script src="../js/plugins/wow/wow.min.js"></script>
+    <script>
+        new WOW().init();
+    </script>
+    <!-- Easing -->
+    <script src="../js/plugins/jquery.easing.min.js"></script>
+    <!-- Preloader -->
+    <script>
+        $(window).on('load', function() {
+            $('.preloader-holder').fadeOut('slow');
+        });
+    </script>
+
 </body>
 </html>

@@ -58,6 +58,12 @@ class TemplateCoverLetterGenerator {
             return data.text;
         } catch (error) {
             console.error('Error extracting resume:', error.message);
+            
+            // If file not found, throw user-friendly error
+            if (error.code === 'ENOENT') {
+                throw new Error('Please upload your resume to generate cover letters');
+            }
+            
             return null;
         }
     }
@@ -564,7 +570,7 @@ class TemplateCoverLetterGenerator {
             
             const { GoogleGenerativeAI } = require('@google/generative-ai');
             const genAI = new GoogleGenerativeAI(geminiApiKey);
-            const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+            const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
             
             const prompt = `Extract the actual company/organization name from this website information.
 
@@ -583,7 +589,13 @@ Company name:`;
             
             const result = await model.generateContent(prompt);
             const response = await result.response;
-            const companyName = response.text().trim();
+            const text = response.text();
+            
+            if (!text || text.trim() === '') {
+                throw new Error('Gemini returned empty response');
+            }
+            
+            const companyName = text.trim();
             
             if (companyName && companyName !== 'UNKNOWN' && this.isValidCompanyName(companyName)) {
                 console.log(`🤖 AI extracted company name: ${companyName}`);
@@ -824,6 +836,10 @@ Be professional and factual. If you don't have specific information, make reason
             const response = await result.response;
             const text = response.text();
             
+            if (!text || text.trim() === '') {
+                throw new Error('Gemini returned empty response for research');
+            }
+            
             // Extract JSON from response
             const jsonMatch = text.match(/\{[\s\S]*\}/);
             if (!jsonMatch) {
@@ -869,7 +885,7 @@ Be professional and factual. If you don't have specific information, make reason
             const { GoogleGenerativeAI } = require('@google/generative-ai');
             const genAI = new GoogleGenerativeAI(geminiKey);
             const model = genAI.getGenerativeModel({ 
-                model: 'gemini-2.0-flash-exp',
+                model: 'gemini-2.5-flash',
                 generationConfig: {
                     temperature: 0.7,
                     topP: 0.95,
@@ -881,12 +897,29 @@ Be professional and factual. If you don't have specific information, make reason
             const researchPrompt = `Role: You are an expert Headhunter performing deep company research to extract SPECIFIC PROPER NOUNS.
 
 **Company to Research:**
-- Name: ${companyName}
-- Website: ${websiteUrl}
+- Domain/URL: ${websiteUrl}
+- URL-extracted name: ${companyName}
 
-**CRITICAL INSTRUCTIONS - Step 1: Deep Research & Entity Extraction**
+**MOST CRITICAL - Company Name Extraction:**
+The first and MOST IMPORTANT task is to find the EXACT, OFFICIAL company name with proper spacing and capitalization.
 
-You MUST perform a real-time web search on this company. You are FORBIDDEN from responding until you have extracted the following "Proper Nouns":
+CRITICAL RULES FOR COMPANY NAME:
+1. The company name MUST be related to the domain "${companyName}"
+2. Search the website's <title> tag, <h1>, About Us page, footer copyright, and meta tags
+3. The name should be a properly spaced version of "${companyName}"
+   - Example: "disruptivetechsolutions" → "Disruptive Tech Solutions" (add spaces between words)
+   - Example: "techstack" → ONLY use this if it's actually the company name on the website
+4. DO NOT return a completely different company name unless it's absolutely clear from the website
+5. If unsure, use "${companyName}" with proper word spacing
+
+**VALIDATION:**
+- The extracted company name MUST contain parts of "${companyName}" 
+- If the website shows a completely different name, verify it's not just a product/partner name
+- When in doubt, format "${companyName}" with proper capitalization and spacing
+
+**CRITICAL INSTRUCTIONS - Step 2: Deep Research & Entity Extraction**
+
+After confirming the correct company name, extract the following "Proper Nouns":
 
 1. **Specific Product Names** (CRITICAL):
    - Find the names of SaaS products, platforms, or tools they have built
@@ -952,6 +985,10 @@ Research ${websiteUrl} now and extract these details. Return ONLY the JSON, no o
             const response = await result.response;
             let researchText = response.text();
             
+            if (!researchText || researchText.trim() === '') {
+                throw new Error('Gemini returned empty research response');
+            }
+            
             // Clean up the response (remove markdown code fences if present)
             researchText = researchText.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
             
@@ -1007,7 +1044,7 @@ Research ${websiteUrl} now and extract these details. Return ONLY the JSON, no o
             const { GoogleGenerativeAI } = require('@google/generative-ai');
             const genAI = new GoogleGenerativeAI(geminiKey);
             const model = genAI.getGenerativeModel({ 
-                model: 'gemini-2.0-flash-exp',
+                model: 'gemini-2.5-flash',
                 generationConfig: {
                     temperature: 1,
                     topP: 0.95,
@@ -1019,44 +1056,48 @@ Research ${websiteUrl} now and extract these details. Return ONLY the JSON, no o
             console.log('🤖 Step 2: Generating cover letter with research...');
 
             // Extract company location info
-            let locationText = 'your location';
+            let locationText = '';
             let continentText = '';
+            let hasLocation = false;
             
             if (companyLocations && companyLocations.length > 0) {
                 const headquarters = companyLocations.find(loc => loc.isHeadquarters) || companyLocations[0];
                 const country = headquarters.country;
                 const city = headquarters.city;
                 
-                console.log(`📍 Company location detected: ${city}, ${country}`);
-                
-                // Determine continent and relocation text
-                const europeanCountries = ['Switzerland', 'Germany', 'Austria', 'France', 'Italy', 'Spain', 'Netherlands', 'Belgium', 'Sweden', 'Norway', 'Denmark', 'Finland', 'Poland', 'Czech Republic', 'Hungary', 'Romania', 'Bulgaria', 'Greece', 'Portugal', 'Ireland', 'Luxembourg', 'Slovakia', 'Slovenia', 'Croatia', 'Estonia', 'Latvia', 'Lithuania', 'Malta', 'Cyprus', 'United Kingdom', 'UK'];
-                const asianCountries = ['China', 'Japan', 'India', 'Singapore', 'South Korea', 'Thailand', 'Vietnam', 'Malaysia', 'Indonesia', 'Philippines', 'Taiwan', 'Hong Kong'];
-                const northAmericanCountries = ['United States', 'USA', 'US', 'Canada', 'Mexico'];
-                
-                if (europeanCountries.includes(country)) {
-                    locationText = `${country}/Europe`;
-                    continentText = 'Europe';
-                } else if (asianCountries.includes(country)) {
-                    locationText = `${country}/Asia`;
-                    continentText = 'Asia';
-                } else if (northAmericanCountries.includes(country)) {
-                    locationText = country === 'United States' || country === 'USA' || country === 'US' ? 'the United States' : country;
-                    continentText = 'North America';
-                } else {
-                    locationText = country;
-                    continentText = country;
+                if (country && country !== 'Not specified') {
+                    hasLocation = true;
+                    console.log(`📍 Company location detected: ${city}, ${country}`);
+                    
+                    // Determine continent and relocation text
+                    const europeanCountries = ['Switzerland', 'Germany', 'Austria', 'France', 'Italy', 'Spain', 'Netherlands', 'Belgium', 'Sweden', 'Norway', 'Denmark', 'Finland', 'Poland', 'Czech Republic', 'Hungary', 'Romania', 'Bulgaria', 'Greece', 'Portugal', 'Ireland', 'Luxembourg', 'Slovakia', 'Slovenia', 'Croatia', 'Estonia', 'Latvia', 'Lithuania', 'Malta', 'Cyprus', 'United Kingdom', 'UK'];
+                    const asianCountries = ['China', 'Japan', 'India', 'Singapore', 'South Korea', 'Thailand', 'Vietnam', 'Malaysia', 'Indonesia', 'Philippines', 'Taiwan', 'Hong Kong'];
+                    const northAmericanCountries = ['United States', 'USA', 'US', 'Canada', 'Mexico'];
+                    
+                    if (europeanCountries.includes(country)) {
+                        locationText = `${country}/Europe`;
+                        continentText = 'Europe';
+                    } else if (asianCountries.includes(country)) {
+                        locationText = `${country}/Asia`;
+                        continentText = 'Asia';
+                    } else if (northAmericanCountries.includes(country)) {
+                        locationText = country === 'United States' || country === 'USA' || country === 'US' ? 'the United States' : country;
+                        continentText = 'North America';
+                    } else {
+                        locationText = country;
+                        continentText = country;
+                    }
                 }
             }
 
             // Format the company intelligence nicely
-            const productsInfo = companyIntel?.products?.join('\n   - ') || 'Not available';
-            const clientsInfo = companyIntel?.clients?.join(', ') || 'Not available';
-            const techInfo = companyIntel?.technologies?.join(', ') || 'Not available';
-            const partnersInfo = companyIntel?.partnerships?.join(', ') || 'Not available';
+            const productsInfo = Array.isArray(companyIntel?.products) ? companyIntel.products.join('\n   - ') : 'Not available';
+            const clientsInfo = Array.isArray(companyIntel?.clients) ? companyIntel.clients.join(', ') : 'Not available';
+            const techInfo = Array.isArray(companyIntel?.technologies) ? companyIntel.technologies.join(', ') : 'Not available';
+            const partnersInfo = Array.isArray(companyIntel?.partnerships) ? companyIntel.partnerships.join(', ') : 'Not available';
             const businessModel = companyIntel?.businessModel || 'Technology company';
             const mission = companyIntel?.mission || '';
-            const uniqueDetails = companyIntel?.uniqueDetails?.join('\n   - ') || '';
+            const uniqueDetails = Array.isArray(companyIntel?.uniqueDetails) ? companyIntel.uniqueDetails.join('\n   - ') : '';
             const industry = companyIntel?.industryFocus || '';
 
             // Extract candidate insights from resume
@@ -1115,7 +1156,30 @@ Reference specific company clients/partners from research. Bold all proper nouns
 Example: "As a Team Lead managing cross-functional Agile teams, I bring not just technical expertise but the ability to drive projects to completion. ${hasAIExperience ? 'My experience in **AI** and **Machine Learning** positions me to help ' + companyName + ' leverage intelligent automation and data-driven insights...' : ''} I see powerful synergy with your work for clients like **[specific client name]**..."
 
 **Paragraph 4 - Closing (MANDATORY):**
-End with: "I am eager to relocate to ${locationText} and believe my skills and experience are an excellent fit for **${companyName}**'s environment. I am keen to discuss how my expertise can contribute to your team's success. I look forward to hearing from you soon."
+Write a UNIQUE, VARIED closing paragraph (2-3 sentences) that conveys:
+${hasLocation 
+  ? `1. Interest in joining **${companyName}** 
+2. Willingness to work in/relocate to ${locationText} (mention the location naturally)
+3. Appreciation for their consideration`
+  : `1. Interest in joining **${companyName}**
+2. Appreciation for their consideration`
+}
+
+CRITICAL RULES FOR CLOSING:
+✅ MUST write it differently each time - vary sentence structure, word choice, and phrasing
+✅ Keep tone: polite, humble, professional (not arrogant or overconfident)
+✅ Use varied expressions like: "opportunity to contribute", "chance to be part of", "looking forward to", "excited about", "interested in discussing"
+${hasLocation ? `✅ Naturally mention ${locationText} (don't say "Not specified")` : ''}
+
+❌ FORBIDDEN PHRASES (will be rejected):
+- "I am eager to relocate to"
+- "excellent fit for [company]'s environment"
+- "I am keen to discuss how my expertise"
+- "I am confident that"
+- "proven track record"
+- Any exact repetition of previous closings
+
+IMPORTANT: Generate FRESH wording every time. Vary your sentence structures and vocabulary.
 
 **CRITICAL FORMATTING RULES:**
 **CRITICAL FORMATTING RULES:**
@@ -1183,9 +1247,9 @@ Generate the narrative-driven cover letter now:`;
 
             console.log('🤖 Using Gemini with Google Search + deep research prompt...');
             
-            // Try up to 2 times to get non-generic content
-            for (let attempt = 1; attempt <= 2; attempt++) {
-                console.log(`\n🔄 Attempt ${attempt}/2 to generate specific cover letter...`);
+            // Try up to 3 times to get non-generic content
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                console.log(`\n🔄 Attempt ${attempt}/3 to generate specific cover letter...`);
                 
                 const result = await model.generateContent({
                     contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -1193,6 +1257,12 @@ Generate the narrative-driven cover letter now:`;
                 });
                 const response = await result.response;
                 let coverLetterText = response.text();
+                
+                if (!coverLetterText || coverLetterText.trim() === '') {
+                    console.warn(`⚠️ Attempt ${attempt}: Gemini returned empty response`);
+                    if (attempt < 3) continue;
+                    throw new Error('Gemini returned empty cover letter after 3 attempts');
+                }
                 
                 // Clean up any meta commentary the AI might have added
                 coverLetterText = coverLetterText
@@ -1211,7 +1281,10 @@ Generate the narrative-driven cover letter now:`;
                     'I am writing to express my profound interest',
                     'How My Experience Directly Matches Your Requirements',
                     'My Value Proposition to',
-                    'I bring a proven track record'
+                    'I am eager to relocate to',
+                    'excellent fit for',
+                    'I am keen to discuss how my expertise',
+                    'Not specified' // Reject if location is "Not specified"
                 ];
                 
                 const foundGeneric = genericPhrases.filter(phrase => 
@@ -1219,13 +1292,13 @@ Generate the narrative-driven cover letter now:`;
                 );
                 
                 if (foundGeneric.length > 0) {
-                    console.log(`⚠️ Attempt ${attempt} contained generic phrases:`, foundGeneric);
-                    if (attempt < 2) {
+                    console.log(`⚠️ Attempt ${attempt} contained generic/forbidden phrases:`, foundGeneric);
+                    if (attempt < 3) {
                         console.log('🔄 Retrying with stricter prompt...');
                         continue;
                     } else {
-                        console.log('❌ Both attempts were generic, falling back to template');
-                        return null; // Force fallback to template
+                        console.log('❌ All 3 attempts were generic, returning null');
+                        return null; // Force fallback to simplified generation
                     }
                 }
                 
@@ -1267,9 +1340,11 @@ Generate the narrative-driven cover letter now:`;
             const resumeData = this.parseResumeData(resumeText);
             console.log(`✅ Found ${resumeData.skills.length} skills, ${resumeData.experience.length} experiences\n`);
 
-            // 2. Extract company name (initial fallback)
+            // 2. Extract company name (initial fallback from URL)
             const urlCompanyName = this.extractCompanyFromUrl(websiteUrl) || 'the Company';
             let finalCompanyName = this.isValidCompanyName(urlCompanyName) ? urlCompanyName : 'the Company';
+            
+            console.log(`📋 URL-extracted company name: ${urlCompanyName}`);
 
             // 3. TWO-STEP AI APPROACH: Research THEN Generate
             let coverLetterText = null;
@@ -1279,10 +1354,28 @@ Generate the narrative-driven cover letter now:`;
                 console.log('🔍 Step 1: Researching company with AI...');
                 const companyIntel = await this.researchCompanyWithAI(websiteUrl, finalCompanyName);
                 
-                // Use AI-extracted company name if available (preserves proper spacing/capitalization)
+                // Use AI-extracted company name ONLY if it's related to the URL name
                 if (companyIntel && companyIntel.companyName) {
-                    finalCompanyName = companyIntel.companyName;
-                    console.log(`✅ Using AI-extracted company name: ${finalCompanyName}`);
+                    const aiName = companyIntel.companyName;
+                    const urlNameLower = urlCompanyName.toLowerCase().replace(/\s+/g, '');
+                    const aiNameLower = aiName.toLowerCase().replace(/\s+/g, '');
+                    
+                    // Validate: AI name should contain significant portion of URL name or vice versa
+                    const isRelated = urlNameLower.includes(aiNameLower.substring(0, Math.min(5, aiNameLower.length))) || 
+                                     aiNameLower.includes(urlNameLower.substring(0, Math.min(5, urlNameLower.length)));
+                    
+                    if (isRelated || aiNameLower.length > 0 && urlNameLower.startsWith(aiNameLower.substring(0, 3))) {
+                        finalCompanyName = aiName;
+                        console.log(`✅ Using AI-extracted company name: ${finalCompanyName}`);
+                    } else {
+                        console.log(`⚠️ AI name "${aiName}" doesn't match URL name "${urlCompanyName}", using URL name with proper spacing`);
+                        // Try to add proper spacing to URL name
+                        finalCompanyName = urlCompanyName
+                            .replace(/([a-z])([A-Z])/g, '$1 $2') // Add space before capital letters
+                            .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2') // Handle consecutive capitals
+                            .trim();
+                        console.log(`✅ Using formatted URL name: ${finalCompanyName}`);
+                    }
                 }
                 
                 // STEP 2: Generate cover letter using researched intelligence
@@ -1299,9 +1392,38 @@ Generate the narrative-driven cover letter now:`;
                 }
             }
             
-            // 4. If AI generation failed, fall back to template generation
+            // 4. If AI generation failed, try simplified AI generation without deep research
+            if (!coverLetterText && process.env.GEMINI_API_KEY) {
+                console.log('⚠️  Detailed AI generation failed, trying simplified approach...');
+                try {
+                    const simplifiedIntel = {
+                        companyName: finalCompanyName,
+                        products: [],
+                        clients: [],
+                        technologies: [],
+                        partnerships: [],
+                        businessModel: 'Technology company',
+                        mission: '',
+                        uniqueDetails: [],
+                        industryFocus: ''
+                    };
+                    
+                    coverLetterText = await this.generateCoverLetterWithAI(
+                        resumeText,
+                        websiteUrl,
+                        position,
+                        finalCompanyName,
+                        simplifiedIntel,
+                        companyLocations
+                    );
+                } catch (error) {
+                    console.error('❌ Simplified AI generation also failed:', error.message);
+                }
+            }
+            
+            // 5. Last resort: Use template fallback (but this should rarely happen)
             if (!coverLetterText) {
-                console.log('✍️  AI unavailable, generating cover letter with template fallback...');
+                console.log('⚠️  All AI attempts failed, using basic template...');
                 // Create minimal companyData for template generation
                 const companyData = {
                     companyName: finalCompanyName,

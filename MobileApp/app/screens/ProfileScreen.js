@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
-import config from '../config';
+import config from '../../config';
 
 const { API_BASE_URL } = config;
 

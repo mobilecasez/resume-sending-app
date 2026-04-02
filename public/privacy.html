@@ -4,13 +4,23 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Privacy Policy - CVApplyr</title>
+    
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icon_light_background.png">
+    
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css" integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
+    
+    <!-- ANIMATE CSS -->
+    <link rel="stylesheet" href="/css/animate.css">
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="/css/style.css">
+    
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
         :root {
             --primary-color: #1e40af;
             --primary-hover: #1e3a8a;
@@ -27,156 +37,357 @@
             --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
         }
 
+        /* Apply gradient to entire page */
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 50%, #3b82f6 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%) !important;
+            background-attachment: fixed !important;
             min-height: 100vh;
+            margin: 0;
             padding: 0;
-            color: var(--text-primary);
         }
 
-        .content-wrapper {
-            padding: 24px;
-            max-width: 1200px;
+        /* Override navbar to make it transparent */
+        .navbar,
+        .navbar-light,
+        #home .navbar {
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+
+        /* Ensure navbar stays transparent on mobile */
+        @media (max-width: 991px) {
+            #home .navbar {
+                background: transparent !important;
+            }
+        }
+
+        /* Legal Section */
+        .legal-section {
+            padding: 40px 0 80px 0;
+            min-height: calc(100vh - 70px);
+        }
+
+        .legal-container {
+            max-width: 1000px;
             margin: 0 auto;
+            padding: 0 20px;
         }
 
-        .legal-card {
-            background: white;
-            border-radius: 16px;
-            padding: 40px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        /* Page Header */
+        .page-header {
+            text-align: center;
+            margin-bottom: 40px;
+            animation: fadeInDown 0.6s ease-out;
         }
 
-        h1 {
-            color: #1F2937;
+        .page-title {
             font-size: 2.5rem;
+            font-weight: 700;
+            color: white;
             margin-bottom: 12px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
 
-        .last-updated {
-            color: #6B7280;
+        .page-subtitle {
+            font-size: 1rem;
+            color: rgba(255, 255, 255, 0.95);
+            font-weight: 400;
+        }
+
+        /* Legal Card */
+        .legal-card {
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 16px;
+            padding: 48px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
             margin-bottom: 32px;
-            font-size: 0.875rem;
+            animation: fadeInUp 0.6s ease-out;
+            backdrop-filter: blur(10px);
         }
 
-        h2 {
-            color: #1F2937;
-            font-size: 1.5rem;
+        .legal-card h2 {
+            color: var(--text-primary);
+            font-size: 1.75rem;
+            font-weight: 700;
             margin-top: 32px;
             margin-bottom: 16px;
         }
 
-        p, li {
-            color: #4B5563;
+        .legal-card h2:first-of-type {
+            margin-top: 0;
+        }
+
+        .legal-card h3 {
+            color: var(--text-primary);
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-top: 24px;
+            margin-bottom: 12px;
+        }
+
+        .legal-card p {
+            color: var(--text-secondary);
             line-height: 1.8;
+            margin-bottom: 16px;
+            font-size: 1rem;
+        }
+
+        .legal-card ul {
+            margin-left: 24px;
             margin-bottom: 16px;
         }
 
-        ul {
-            margin-left: 24px;
-            margin-bottom: 16px;
+        .legal-card li {
+            color: var(--text-secondary);
+            line-height: 1.8;
+            margin-bottom: 8px;
+        }
+
+        .legal-card strong {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        /* Animations */
+        @keyframes fadeInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .legal-card {
+                padding: 32px 24px;
+            }
+
+            .page-title {
+                font-size: 2rem;
+            }
+
+            .legal-card h2 {
+                font-size: 1.5rem;
+            }
+
+            .legal-card h3 {
+                font-size: 1.125rem;
+            }
         }
     </style>
 </head>
 <body>
-    <div id="header-container"></div>
+    <!-- Header Component -->
+    <div id="app-header"></div>
     
-    <div class="content-wrapper">
-        <div class="legal-card">
-        
-        <h1>Privacy Policy</h1>
-        <p class="last-updated">Last Updated: January 25, 2026</p>
+    <section class="legal-section">
+        <div class="legal-container">
+            <div class="page-header">
+                <h1 class="page-title">Privacy Policy</h1>
+                <p class="page-subtitle">Last Updated: April 1, 2026</p>
+            </div>
 
-        <h2>1. Introduction</h2>
-        <p>CVApplyr ("we," "our," or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our service.</p>
+            <div class="legal-card">
+                <h2>1. Introduction</h2>
+                <p>CVApplyr ("we," "our," or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our service.</p>
 
-        <h2>2. Information We Collect</h2>
-        
-        <h3>2.1 Personal Information</h3>
-        <p>We collect information that you provide directly to us, including:</p>
-        <ul>
-            <li>Name and email address</li>
-            <li>Account credentials</li>
-            <li>Profile information (phone number, address, date of birth)</li>
-            <li>Resume and cover letter content</li>
-            <li>Job application details (company names, positions, recipient emails)</li>
-        </ul>
+                <h2>2. Information We Collect</h2>
+                
+                <h3>2.1 Personal Information</h3>
+                <p>We collect information that you provide directly to us, including:</p>
+                <ul>
+                    <li>Name and email address</li>
+                    <li>Account credentials</li>
+                    <li>Profile information (phone number, address, date of birth)</li>
+                    <li>Resume and cover letter content</li>
+                    <li>Job application details (company names, positions, recipient emails)</li>
+                </ul>
 
-        <h3>2.2 Usage Information</h3>
-        <p>We automatically collect certain information about your device and how you interact with our Service:</p>
-        <ul>
-            <li>Log data (IP address, browser type, pages visited)</li>
-            <li>Device information</li>
-            <li>Usage statistics (cover letters generated, applications sent)</li>
-            <li>Credit transaction history</li>
-        </ul>
+                <h3>2.2 Usage Information</h3>
+                <p>We automatically collect certain information about your device and how you interact with our Service:</p>
+                <ul>
+                    <li>Log data (IP address, browser type, pages visited)</li>
+                    <li>Device information</li>
+                    <li>Usage statistics (cover letters generated, applications sent)</li>
+                    <li>Credit transaction history</li>
+                </ul>
 
-        <h2>3. How We Use Your Information</h2>
-        <p>We use the information we collect to:</p>
-        <ul>
-            <li>Provide, maintain, and improve our Service</li>
-            <li>Generate AI-powered cover letters</li>
-            <li>Send job applications on your behalf</li>
-            <li>Process payments and manage your credits</li>
-            <li>Send you technical notices and support messages</li>
-            <li>Respond to your comments and questions</li>
-            <li>Analyze usage patterns to improve our Service</li>
-            <li>Detect and prevent fraud or abuse</li>
-        </ul>
+                <h2>3. How We Use Your Information</h2>
+                <p>We use the information we collect to:</p>
+                <ul>
+                    <li>Provide, maintain, and improve our Service</li>
+                    <li>Generate AI-powered cover letters</li>
+                    <li>Send job applications on your behalf</li>
+                    <li>Process payments and manage your credits</li>
+                    <li>Send you technical notices and support messages</li>
+                    <li>Respond to your comments and questions</li>
+                    <li>Analyze usage patterns to improve our Service</li>
+                    <li>Detect and prevent fraud or abuse</li>
+                </ul>
 
-        <h2>4. How We Share Your Information</h2>
-        <p>We do not sell your personal information. We may share your information only in the following circumstances:</p>
-        <ul>
-            <li><strong>With Your Consent:</strong> When you explicitly authorize us to share information</li>
-            <li><strong>Service Providers:</strong> With third-party vendors who perform services on our behalf (payment processors, email services)</li>
-            <li><strong>Legal Compliance:</strong> When required by law or to protect our rights</li>
-            <li><strong>Business Transfers:</strong> In connection with a merger, acquisition, or sale of assets</li>
-        </ul>
+                <h2>4. How We Share Your Information</h2>
+                <p>We do not sell your personal information. We may share your information only in the following circumstances:</p>
+                <ul>
+                    <li><strong>With Your Consent:</strong> When you explicitly authorize us to share information</li>
+                    <li><strong>Service Providers:</strong> With third-party vendors who perform services on our behalf (payment processors, email services)</li>
+                    <li><strong>Legal Compliance:</strong> When required by law or to protect our rights</li>
+                    <li><strong>Business Transfers:</strong> In connection with a merger, acquisition, or sale of assets</li>
+                </ul>
 
-        <h2>5. Data Security</h2>
-        <p>We implement appropriate technical and organizational measures to protect your personal information, including:</p>
-        <ul>
-            <li>Encryption of data in transit and at rest</li>
-            <li>Secure password hashing</li>
-            <li>Regular security assessments</li>
-            <li>Access controls and authentication</li>
-        </ul>
-        <p>However, no method of transmission over the Internet is 100% secure, and we cannot guarantee absolute security.</p>
+                <h2>5. Data Security</h2>
+                <p>We implement appropriate technical and organizational measures to protect your personal information, including:</p>
+                <ul>
+                    <li>Encryption of data in transit and at rest</li>
+                    <li>Secure password hashing</li>
+                    <li>Regular security assessments</li>
+                    <li>Access controls and authentication</li>
+                </ul>
+                <p>However, no method of transmission over the Internet is 100% secure, and we cannot guarantee absolute security.</p>
 
-        <h2>6. Data Retention</h2>
-        <p>We retain your personal information for as long as necessary to provide our Service and fulfill the purposes outlined in this Privacy Policy, unless a longer retention period is required by law.</p>
+                <h2>6. Data Retention</h2>
+                <p>We retain your personal information for as long as necessary to provide our Service and fulfill the purposes outlined in this Privacy Policy, unless a longer retention period is required by law.</p>
 
-        <h2>7. Your Rights</h2>
-        <p>Depending on your location, you may have the following rights:</p>
-        <ul>
-            <li><strong>Access:</strong> Request a copy of your personal information</li>
-            <li><strong>Correction:</strong> Request correction of inaccurate information</li>
-            <li><strong>Deletion:</strong> Request deletion of your personal information</li>
-            <li><strong>Data Portability:</strong> Request transfer of your data</li>
-            <li><strong>Opt-out:</strong> Unsubscribe from marketing communications</li>
-        </ul>
+                <h2>7. Your Rights</h2>
+                <p>Depending on your location, you may have the following rights:</p>
+                <ul>
+                    <li><strong>Access:</strong> Request a copy of your personal information</li>
+                    <li><strong>Correction:</strong> Request correction of inaccurate information</li>
+                    <li><strong>Deletion:</strong> Request deletion of your personal information</li>
+                    <li><strong>Data Portability:</strong> Request transfer of your data</li>
+                    <li><strong>Opt-out:</strong> Unsubscribe from marketing communications</li>
+                </ul>
 
-        <h2>8. Children's Privacy</h2>
-        <p>Our Service is not intended for users under the age of 18. We do not knowingly collect personal information from children under 18. If you believe we have collected information from a child, please contact us immediately.</p>
+                <h2>8. Children's Privacy</h2>
+                <p>Our Service is not intended for users under the age of 18. We do not knowingly collect personal information from children under 18. If you believe we have collected information from a child, please contact us immediately.</p>
 
-        <h2>9. Third-Party Services</h2>
-        <p>Our Service may contain links to third-party websites or services. We are not responsible for the privacy practices of these third parties. We encourage you to review their privacy policies.</p>
+                <h2>9. Third-Party Services</h2>
+                <p>Our Service may contain links to third-party websites or services. We are not responsible for the privacy practices of these third parties. We encourage you to review their privacy policies.</p>
 
-        <h2>10. International Data Transfers</h2>
-        <p>Your information may be transferred to and processed in countries other than your country of residence. We ensure appropriate safeguards are in place to protect your information in accordance with this Privacy Policy.</p>
+                <h2>10. International Data Transfers</h2>
+                <p>Your information may be transferred to and processed in countries other than your country of residence. We ensure appropriate safeguards are in place to protect your information in accordance with this Privacy Policy.</p>
 
-        <h2>11. Changes to This Privacy Policy</h2>
-        <p>We may update this Privacy Policy from time to time. We will notify you of any material changes by posting the new Privacy Policy on this page and updating the "Last Updated" date.</p>
+                <h2>11. Google API Services</h2>
+                <p>CVApplyr uses Google OAuth 2.0 to authenticate users and access Google services on your behalf. By signing in with Google, you grant us the following permissions:</p>
 
-        <h2>12. Contact Us</h2>
-        <p>If you have any questions about this Privacy Policy or our privacy practices, please contact us at:</p>
-        <p><strong>Email:</strong> privacy@cvapplyr.com</p>
-        <p><strong>Support:</strong> support@cvapplyr.com</p>
+                <h3>11.1 Google Account Information</h3>
+                <p>We access your Google Account email address and basic profile information (name, profile picture) to:</p>
+                <ul>
+                    <li>Create and authenticate your CVApplyr account</li>
+                    <li>Personalize your experience within the app</li>
+                    <li>Display your account information in the app interface</li>
+                </ul>
+                <p><strong>Scopes requested:</strong></p>
+                <ul>
+                    <li><code>openid</code> - Associate you with your personal info on Google</li>
+                    <li><code>.../auth/userinfo.email</code> - See your primary Google Account email address</li>
+                    <li><code>.../auth/userinfo.profile</code> - See your personal info, including any personal info you've made publicly available</li>
+                </ul>
+
+                <h3>11.2 Gmail API - Send Email</h3>
+                <p>We request permission to <strong>send emails on your behalf</strong> using the Gmail API.</p>
+                <p><strong>Scope requested:</strong> <code>https://www.googleapis.com/auth/gmail.send</code></p>
+                <p><strong>Purpose:</strong> This permission is used solely to:</p>
+                <ul>
+                    <li>Send job application emails directly from your Gmail account</li>
+                    <li>Attach your resume and cover letter to application emails</li>
+                    <li>Ensure emails are sent from your personal email address (not a third-party server)</li>
+                </ul>
+
+                <h3>11.3 Gmail API - Read Email (Reply Checking)</h3>
+                <p>We request permission to <strong>read your Gmail messages</strong> for a specific purpose.</p>
+                <p><strong>Scope requested:</strong> <code>https://www.googleapis.com/auth/gmail.readonly</code></p>
+                <p><strong>Purpose:</strong> This permission is used <strong>only</strong> to:</p>
+                <ul>
+                    <li>Check for replies from companies you applied to</li>
+                    <li>Match incoming emails with job applications you sent through CVApplyr</li>
+                    <li>Notify you when employers respond to your applications</li>
+                </ul>
+                <p><strong>Important limitations:</strong></p>
+                <ul>
+                    <li>We only search for <strong>unread emails from the last 30 days</strong></li>
+                    <li>We only check emails from <strong>company addresses you applied to</strong></li>
+                    <li>We do NOT read, store, or access any other emails in your inbox</li>
+                    <li>We do NOT access emails sent to you by personal contacts</li>
+                    <li>Email content is never stored on our servers</li>
+                </ul>
+
+                <h3>11.4 What We Do NOT Do</h3>
+                <p>CVApplyr does NOT:</p>
+                <ul>
+                    <li>Read, access, or store personal emails unrelated to job applications</li>
+                    <li>Delete or modify any emails in your Gmail account</li>
+                    <li>Access your Gmail contacts or address book</li>
+                    <li>Access draft emails or spam folder</li>
+                    <li>Share your Gmail data with third parties or advertisers</li>
+                    <li>Use your email data for marketing or analytics purposes</li>
+                </ul>
+
+                <h3>11.5 Data Storage and Security</h3>
+                <p>Your Google OAuth tokens are:</p>
+                <ul>
+                    <li>Encrypted using industry-standard encryption (AES-256) and stored securely in our database</li>
+                    <li>Used only to perform actions you explicitly request (sending applications, checking replies)</li>
+                    <li>Never shared with third parties or external services</li>
+                    <li>Automatically refreshed to maintain access without requiring you to re-authenticate</li>
+                    <li>Deleted immediately when you disconnect your Google account or delete your CVApplyr account</li>
+                </ul>
+
+                <h3>11.6 Revoking Access</h3>
+                <p>You can revoke CVApplyr's access to your Google Account at any time:</p>
+                <ul>
+                    <li>Visit <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener noreferrer">Google Account Permissions</a></li>
+                    <li>Find "CVApplyr" in the list of connected apps</li>
+                    <li>Click "Remove Access" to immediately revoke all permissions</li>
+                    <li>Or delete your CVApplyr account from the app settings</li>
+                </ul>
+                <p>After revoking access, CVApplyr will no longer be able to send emails or check for replies on your behalf. Your stored OAuth tokens will be deleted from our servers.</p>
+
+                <h3>11.7 Compliance with Google API Services User Data Policy</h3>
+                <p>CVApplyr's use of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener noreferrer">Google API Services User Data Policy</a>, including the Limited Use requirements. We:</p>
+                <ul>
+                    <li>Only request the minimum scopes necessary for our app's functionality</li>
+                    <li>Use Gmail data solely for the features disclosed to users</li>
+                    <li>Do not transfer Gmail data to third parties (except as necessary to provide the service)</li>
+                    <li>Do not use Gmail data for serving advertisements</li>
+                    <li>Do not allow humans to read Gmail data unless explicitly permitted by the user or required for security purposes</li>
+                </ul>
+
+                <h2>12. Changes to This Privacy Policy</h2>
+                <p>We may update this Privacy Policy from time to time. We will notify you of any material changes by posting the new Privacy Policy on this page and updating the "Last Updated" date.</p>
+
+                <h2>13. Contact Us</h2>
+                <p>If you have any questions about this Privacy Policy or our privacy practices, please contact us at:</p>
+                <p><strong>Email:</strong> support@cvapplyr.com</p>
+                <p><strong>Support:</strong> support@cvapplyr.com</p>
+            </div>
         </div>
-    </div>
+    </section>
 
-    <script src="/js/common-header.js"></script>
-    <script src="/js/common-footer.js"></script>
+    <!-- Footer Component -->
+    <div id="app-footer"></div>
+
+    <!-- Bootstrap JS -->
+    <script src="/jquery/jquery-3.3.1.slim.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.3/umd/popper.min.js"></script>
+    <script src="/bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
+    
+    <!-- Header & Footer Components -->
+    <script src="/js/app-header.js"></script>
+    <script src="/js/app-footer.js"></script>
 </body>
 </html>

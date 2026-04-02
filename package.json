@@ -37,12 +37,15 @@
     "express-session": "^1.18.2",
     "googleapis": "^134.0.0",
     "hummus": "^1.0.118",
+    "imap": "^0.8.19",
     "jsonwebtoken": "^9.0.3",
+    "mailparser": "^3.9.3",
     "multer": "^2.0.2",
     "nodemailer": "^6.9.7",
     "openai": "^6.10.0",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
+    "passport-microsoft": "^2.1.0",
     "pdf-lib": "^1.17.1",
     "pdf-parse": "^1.1.4",
     "pdf2json": "^4.0.0",
@@ -50,6 +53,10 @@
     "pg": "^8.17.2",
     "razorpay": "^2.9.6",
     "sharp": "^0.34.5",
-    "sqlite3": "^5.1.7"
+    "zeptomail": "^7.0.1-alpha-3"
+  },
+  "devDependencies": {
+    "puppeteer": "^19.0.0",
+    "puppeteer-screen-recorder": "^3.0.6"
   }
 }

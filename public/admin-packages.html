@@ -1,16 +1,31 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Package Management - Admin</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
 
+<head>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+
+    <title>Package Management - Admin</title>
+
+    <!-- // CSS FILES // -->
+
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css" integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
+    <!-- ANIMATE CSS -->
+    <link rel="stylesheet" href="/css/animate.css">
+    <!-- PRELOADER -->
+    <link rel="stylesheet" href="/css/preloader.css">
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="/css/style.css">
+
+    <style>
         :root {
             --primary-color: #6366F1;
             --primary-dark: #4F46E5;
@@ -23,183 +38,57 @@
             --border-color: #E5E7EB;
         }
 
+        /* Apply gradient to entire page */
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%) !important;
+            background-attachment: fixed !important;
             min-height: 100vh;
-            padding: 0;
         }
 
-        /* Top Navigation Bar */
-        .top-navbar {
-            background: white;
-            padding: 12px 24px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            position: sticky;
-            top: 0;
-            z-index: 100;
+        /* Override navbar to make it transparent */
+        .navbar,
+        .navbar-light,
+        #home .navbar {
+            background: transparent !important;
+            box-shadow: none !important;
         }
 
-        .navbar-left {
-            display: flex;
-            align-items: center;
-            gap: 16px;
+        /* Ensure navbar stays transparent on mobile */
+        @media (max-width: 991px) {
+            #home .navbar {
+                background: transparent !important;
+            }
         }
 
-        .navbar-brand {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            text-decoration: none;
-        }
-
-        .navbar-right {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
-
-        .credit-badge {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 16px;
-            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
-            border-radius: 12px;
-            text-decoration: none;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
-            cursor: pointer;
-        }
-
-        .credit-badge:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 16px rgba(139, 92, 246, 0.4);
-        }
-
-        .credit-icon {
-            font-size: 20px;
-        }
-
-        .credit-number {
-            font-size: 18px;
-            font-weight: 700;
-            color: white;
-            min-width: 24px;
-            text-align: center;
-        }
-
-        .user-section {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 6px 12px;
-            background: #f8f9fa;
-            border-radius: 8px;
-        }
-
-        .nav-actions {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .nav-btn {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 36px;
-            height: 36px;
-            border-radius: 8px;
-            background: #f8f9fa;
-            border: 1px solid #e2e8f0;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            text-decoration: none;
-            color: #555;
-        }
-
-        .nav-btn:hover {
-            background: var(--primary-color);
-            border-color: var(--primary-color);
-            color: white;
-        }
-
-        .nav-btn svg {
-            width: 18px;
-            height: 18px;
-        }
-
-        .user-avatar {
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: 600;
-            font-size: 0.75rem;
-        }
-
-        .user-details {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .user-name {
-            font-size: 0.8125rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            line-height: 1.2;
-        }
-
-        .user-email {
-            font-size: 0.6875rem;
-            color: var(--text-secondary);
-        }
-
-        .logout-btn {
-            padding: 8px 14px;
+        /* Admin Section Styles */
+        .admin-section {
+            padding: 40px 0 80px 0;
+            min-height: calc(100vh - 70px);
             background: transparent;
-            border: 1px solid #fecaca;
-            border-radius: 6px;
-            font-size: 0.75rem;
-            color: #dc2626;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            font-weight: 500;
-        }
-
-        .logout-btn:hover {
-            background: #fee2e2;
-            border-color: #dc2626;
         }
 
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            padding: 20px;
+            padding: 0 20px;
         }
 
-        .header {
+        .page-header {
             background: white;
-            padding: 24px;
-            border-radius: 12px;
+            padding: 32px;
+            border-radius: 16px;
             margin-bottom: 24px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         }
 
-        .header h1 {
-            color: var(--text-primary);
+        .page-header h1 {
             font-size: 1.75rem;
+            margin: 0;
+            font-weight: 700;
+            color: var(--text-primary);
             display: flex;
             align-items: center;
             gap: 12px;
@@ -210,7 +99,7 @@
             gap: 12px;
         }
 
-        .btn {
+        .admin-section .btn {
             padding: 10px 20px;
             border: none;
             border-radius: 8px;
@@ -221,163 +110,325 @@
             display: inline-flex;
             align-items: center;
             gap: 8px;
+            font-size: 14px;
         }
 
-        .btn-primary {
+        .admin-section .btn-primary {
             background: var(--primary-color);
             color: white;
         }
 
-        .btn-primary:hover {
+        .admin-section .btn-primary:hover {
             background: var(--primary-dark);
+            color: white;
+            text-decoration: none;
         }
 
-        .btn-secondary {
+        .admin-section .btn-secondary {
             background: white;
             color: var(--text-primary);
             border: 1px solid var(--border-color);
         }
 
-        .btn-secondary:hover {
+        .admin-section .btn-secondary:hover {
             background: var(--bg-light);
+            text-decoration: none;
         }
 
-        .btn-success {
+        .admin-section .btn-success {
             background: var(--success-color);
             color: white;
         }
 
-        .btn-danger {
+        .admin-section .btn-success:hover {
+            background: #059669;
+        }
+
+        .admin-section .btn-warning {
+            background: var(--warning-color);
+            color: white;
+        }
+
+        .admin-section .btn-warning:hover {
+            background: #d97706;
+        }
+
+        .admin-section .btn-danger {
             background: var(--danger-color);
             color: white;
         }
 
-        .btn-sm {
+        .admin-section .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .admin-section .btn-sm {
             padding: 6px 12px;
             font-size: 0.875rem;
         }
 
         .card {
-            background: white;
-            border-radius: 12px;
-            padding: 24px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            background: transparent;
+            border-radius: 16px;
+            padding: 0;
+            margin-top: 40px;
             margin-bottom: 24px;
+            border: none;
+        }
+
+        .card h2 {
+            margin-bottom: 32px;
+            color: white;
+            font-size: 2rem;
+            font-weight: 800;
+            text-align: center;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+            letter-spacing: 0.5px;
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .card h2::after {
+            content: '';
+            position: absolute;
+            bottom: -12px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80px;
+            height: 4px;
+            background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.8) 50%, rgba(255,255,255,0) 100%);
+            border-radius: 2px;
+        }
+
+        #packagesContainer {
+            width: 100%;
         }
 
         .packages-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 20px;
+            display: grid !important;
+            grid-template-columns: repeat(3, 1fr) !important;
+            gap: 28px !important;
             margin-top: 20px;
+            width: 100%;
+        }
+
+        @media (max-width: 1200px) {
+            .packages-grid {
+                grid-template-columns: repeat(2, 1fr) !important;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .packages-grid {
+                grid-template-columns: 1fr !important;
+            }
         }
 
         .package-card {
-            background: white;
-            border: 2px solid var(--border-color);
-            border-radius: 12px;
+            background: linear-gradient(135deg, #F9FAFB 0%, #FFFFFF 100%);
+            border-radius: 16px;
             padding: 24px;
-            transition: all 0.3s;
+            border: none;
+            transition: all 0.3s ease;
             position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 340px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        .package-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #6366F1 0%, #8B5CF6 100%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
         }
 
         .package-card:hover {
-            border-color: var(--primary-color);
-            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.2);
+            transform: translateY(-6px);
+            box-shadow: 0 16px 32px rgba(99, 102, 241, 0.25);
+        }
+
+        .package-card:hover::before {
+            opacity: 1;
+        }
+
+        .package-card.popular {
+            background: linear-gradient(135deg, #F0F4FF 0%, #FFFFFF 100%);
+            box-shadow: 0 6px 20px rgba(99, 102, 241, 0.15);
+        }
+
+        .package-card.popular::before {
+            opacity: 1;
+            height: 6px;
         }
 
         .package-card.inactive {
-            opacity: 0.6;
-            background: var(--bg-light);
+            opacity: 0.7;
+            background: linear-gradient(135deg, #F3F4F6 0%, #E5E7EB 100%);
         }
 
-        .package-badge {
+        .popular-badge {
             position: absolute;
-            top: -10px;
-            right: 20px;
-            background: var(--warning-color);
+            top: 16px;
+            right: -35px;
+            background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
             color: white;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 0.75rem;
-            font-weight: 600;
+            padding: 6px 45px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            transform: rotate(45deg);
+            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+            letter-spacing: 0.5px;
         }
 
         .package-header {
             margin-bottom: 16px;
+            padding-bottom: 16px;
+            border-bottom: 2px solid var(--border-color);
         }
 
         .package-name {
-            font-size: 1.25rem;
+            font-size: 1.375rem;
             font-weight: 700;
             color: var(--text-primary);
-            margin-bottom: 8px;
+            margin-bottom: 10px;
         }
 
-        .package-description {
-            color: var(--text-secondary);
-            font-size: 0.875rem;
-            line-height: 1.5;
-        }
-
-        .package-details {
-            margin: 20px 0;
-        }
-
-        .detail-row {
+        .package-price-container {
             display: flex;
-            justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid var(--border-color);
+            align-items: baseline;
+            gap: 4px;
         }
 
-        .detail-label {
-            color: var(--text-secondary);
-            font-size: 0.875rem;
-        }
-
-        .detail-value {
-            color: var(--text-primary);
+        .package-currency {
+            font-size: 1.25rem;
             font-weight: 600;
+            color: var(--primary-color);
         }
 
         .package-price {
-            font-size: 2rem;
-            font-weight: 700;
+            font-size: 2.5rem;
+            font-weight: 800;
             color: var(--primary-color);
-            margin: 16px 0;
+        }
+
+        .package-details {
+            margin-bottom: 18px;
+            flex-grow: 1;
+        }
+
+        .package-detail-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 9px 0;
+            border-bottom: 1px solid #F3F4F6;
+        }
+
+        .package-detail-row:last-child {
+            border-bottom: none;
+        }
+
+        .package-detail-icon {
+            font-size: 1.25rem;
+            width: 28px;
+            text-align: center;
+        }
+
+        .package-detail-label {
+            font-size: 0.8125rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+            min-width: 80px;
+        }
+
+        .package-detail-value {
+            font-size: 0.9375rem;
+            color: var(--text-primary);
+            font-weight: 600;
+            flex: 1;
+        }
+
+        .package-description {
+            background: #F9FAFB;
+            padding: 12px;
+            border-radius: 10px;
+            margin: 14px 0 16px 0;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+            border-left: 3px solid var(--primary-color);
         }
 
         .package-actions {
-            display: flex;
-            gap: 8px;
-            margin-top: 16px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: auto;
         }
 
+        .package-actions .btn {
+            width: 100%;
+            padding: 10px 16px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            border-radius: 8px;
+            border: none;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .package-actions .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        }
+
+        /* Modal Styles */
         .modal {
             display: none;
             position: fixed;
             top: 0;
             left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.5);
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6);
             z-index: 1000;
-            align-items: center;
-            justify-content: center;
+            overflow-y: auto;
+            padding: 20px;
         }
 
         .modal.active {
             display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .modal-content {
             background: white;
-            border-radius: 12px;
-            width: 90%;
+            border-radius: 16px;
             max-width: 600px;
-            max-height: 90vh;
-            overflow-y: auto;
+            width: 100%;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
         }
 
         .modal-header {
@@ -389,20 +440,42 @@
         }
 
         .modal-header h2 {
-            color: var(--text-primary);
+            margin: 0;
             font-size: 1.5rem;
+            color: var(--text-primary);
         }
 
         .modal-close {
             background: none;
             border: none;
-            font-size: 1.5rem;
-            cursor: pointer;
+            font-size: 2rem;
             color: var(--text-secondary);
+            cursor: pointer;
+            padding: 0;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+
+        .modal-close:hover {
+            background: var(--bg-light);
+            color: var(--text-primary);
         }
 
         .modal-body {
             padding: 24px;
+        }
+
+        .modal-footer {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
         }
 
         .form-group {
@@ -412,19 +485,28 @@
         .form-group label {
             display: block;
             margin-bottom: 8px;
-            color: var(--text-primary);
             font-weight: 600;
+            color: var(--text-primary);
+            font-size: 0.875rem;
         }
 
         .form-group input,
-        .form-group textarea,
-        .form-group select {
+        .form-group select,
+        .form-group textarea {
             width: 100%;
-            padding: 10px;
+            padding: 10px 12px;
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            font-size: 1rem;
-            font-family: inherit;
+            font-size: 0.875rem;
+            transition: all 0.2s;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
         }
 
         .form-group textarea {
@@ -438,40 +520,18 @@
             gap: 16px;
         }
 
-        .checkbox-group {
+        .checkbox-label {
             display: flex;
             align-items: center;
             gap: 8px;
+            font-size: 0.875rem;
+            color: var(--text-primary);
+            cursor: pointer;
         }
 
-        .checkbox-group input[type="checkbox"] {
+        .checkbox-label input[type="checkbox"] {
             width: auto;
-        }
-
-        .form-actions {
-            display: flex;
-            gap: 12px;
-            justify-content: flex-end;
-            padding: 24px;
-            border-top: 1px solid var(--border-color);
-        }
-
-        .status-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 0.75rem;
-            font-weight: 600;
-        }
-
-        .status-active {
-            background: #D1FAE5;
-            color: #065F46;
-        }
-
-        .status-inactive {
-            background: #FEE2E2;
-            color: #991B1B;
+            cursor: pointer;
         }
 
         .loading {
@@ -480,23 +540,14 @@
             color: var(--text-secondary);
         }
 
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-        }
-
-        .empty-state-icon {
-            font-size: 3rem;
-            margin-bottom: 16px;
-        }
-
-        .empty-state-text {
-            color: var(--text-secondary);
-            font-size: 1.125rem;
+        @media (max-width: 1024px) {
+            .packages-grid {
+                grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            }
         }
 
         @media (max-width: 768px) {
-            .header {
+            .page-header {
                 flex-direction: column;
                 gap: 16px;
                 align-items: flex-start;
@@ -514,36 +565,71 @@
             .form-group-inline {
                 grid-template-columns: 1fr;
             }
+
+            .package-actions {
+                grid-template-columns: 1fr;
+            }
+
+            .package-actions .btn:first-child {
+                grid-column: 1;
+            }
         }
     </style>
-    <script src="/js/common-header.js"></script>
 </head>
-<body>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            <h1>
-                <span>🎁</span>
-                Package Management
-            </h1>
-            <div class="header-actions">
-                <button class="btn btn-primary" onclick="openCreateModal()">
-                    <span>+</span> Create Package
-                </button>
-                <a href="/" class="btn btn-secondary">
-                    ← Back to Dashboard
-                </a>
-            </div>
-        </div>
 
-        <!-- Packages List -->
-        <div class="card">
-            <h2 style="margin-bottom: 16px; color: var(--text-primary);">All Credit Packages</h2>
-            <div id="packagesContainer" class="loading">
-                Loading packages...
+<body>
+    <!-- PRELOADER -->
+    <div class="preloader-holder">
+        <div class="loading">
+            <div class="finger finger-1">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-2">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-3">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-4">
+                <div class="finger-item"><span></span><i></i></div>
             </div>
         </div>
     </div>
+
+    <!-- HEADER -->
+    <div id="app-header"></div>
+
+    <!-- ADMIN SECTION -->
+    <section class="admin-section">
+        <div class="container">
+            <!-- Page Header -->
+            <div class="page-header wow fadeInUp" data-wow-duration="1s" data-wow-delay=".1s">
+                <h1>
+                    <span>🎁</span>
+                    Package Management
+                </h1>
+                <div class="header-actions">
+                    <button class="btn btn-primary" onclick="openCreateModal()">
+                        <span>+</span> Create Package
+                    </button>
+                    <a href="/dashboard" class="btn btn-secondary">
+                        ← Back to Dashboard
+                    </a>
+                </div>
+            </div>
+
+            <!-- Packages List -->
+            <div class="card wow fadeInUp" data-wow-duration="1s" data-wow-delay=".2s">
+                <h2>All Credit Packages</h2>
+                <div id="packagesContainer" class="loading">
+                    Loading packages...
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FOOTER -->
+    <div id="app-footer"></div>
 
     <!-- Create/Edit Modal -->
     <div id="packageModal" class="modal">
@@ -599,18 +685,18 @@
                             <input type="number" id="packageOrder" min="0" value="0" placeholder="0">
                         </div>
                         <div class="form-group">
-                            <div class="checkbox-group">
+                            <label class="checkbox-label">
                                 <input type="checkbox" id="packagePopular">
-                                <label for="packagePopular">Mark as Popular</label>
-                            </div>
-                            <div class="checkbox-group" style="margin-top: 8px;">
+                                Mark as Popular
+                            </label>
+                            <label class="checkbox-label">
                                 <input type="checkbox" id="packageActive" checked>
-                                <label for="packageActive">Active</label>
-                            </div>
+                                Active
+                            </label>
                         </div>
                     </div>
                 </div>
-                <div class="form-actions">
+                <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                     <button type="submit" class="btn btn-primary">Save Package</button>
                 </div>
@@ -618,125 +704,104 @@
         </div>
     </div>
 
+    <!-- jQuery from CDN -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <!-- Bootstrap JS -->
+    <script src="/bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
+    <!-- Wow Animation -->
+    <script src="/js/plugins/wow/wow.js"></script>
     <script>
-        const API_BASE = window.location.origin;
-        let packages = [];
-
-        // Load packages on page load
-        document.addEventListener('DOMContentLoaded', () => {
-            const token = localStorage.getItem('authToken');
-            if (!token) {
-                window.location.href = '/login';
-                return;
-            }
-            loadUserInfo();
-            checkAdminAccess();
-            loadPackages();
+        new WOW().init();
+        
+        // Hide preloader when page loads
+        $(window).on('load', function() {
+            $('.preloader-holder').fadeOut('slow');
         });
+    </script>
+    
+    <!-- App Header Component -->
+    <script src="/js/app-header.js"></script>
+    
+    <!-- App Footer Component -->
+    <script src="/js/app-footer.js"></script>
 
-        // Load user information
-        function loadUserInfo() {
-            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
-            if (userData.fullName) {
-                document.getElementById('userName').textContent = userData.fullName;
-                document.getElementById('userEmail').textContent = userData.email;
-                
-                // Set avatar initials
-                const initials = userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-                document.getElementById('userAvatar').textContent = initials;
-            }
-
-            // Show admin button if user is admin
-            checkIfAdmin();
-        }
-
-        // Check if user is admin
-        async function checkIfAdmin() {
-            const token = localStorage.getItem('authToken');
-            try {
-                const response = await fetch(`${API_BASE}/api/user/is-admin`, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-                const data = await response.json();
-                if (data.isAdmin) {
-                    const adminBtn = document.getElementById('adminBtn');
-                    if (adminBtn) {
-                        adminBtn.style.display = 'flex';
-                    }
-                }
-            } catch (error) {
-                console.error('Error checking admin status:', error);
-            }
-        }
-
-        // Logout function
-        function handleLogout() {
-            localStorage.removeItem('authToken');
-            localStorage.removeItem('userData');
-            sessionStorage.clear();
+    <script>
+        // Check authentication and admin access
+        const authToken = localStorage.getItem('authToken');
+        if (!authToken) {
             window.location.href = '/login';
         }
 
-        // Check if user is admin
-        async function checkAdminAccess() {
-            const token = localStorage.getItem('authToken');
-            try {
-                const response = await fetch(`${API_BASE}/api/user/is-admin`, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-                const data = await response.json();
-                if (!data.isAdmin) {
-                    alert('Access denied. Admin privileges required.');
-                    window.location.href = '/';
-                }
-            } catch (error) {
-                console.error('Error checking admin access:', error);
-                alert('Failed to verify admin access');
-                window.location.href = '/';
-            }
-        }
+        // API Base URL
+        const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? 'http://localhost:3000'
+            : 'https://cvapplyr.com';
+
+        let packages = [];
+
+        // Load packages on page load
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadPackages();
+            // Hide preloader after data loads
+            setTimeout(() => {
+                $('.preloader-holder').fadeOut('slow');
+            }, 500);
+        });
 
         // Load all packages
         async function loadPackages() {
-            const token = localStorage.getItem('authToken');
             const container = document.getElementById('packagesContainer');
+            container.classList.add('loading');
+            container.innerHTML = 'Loading packages...';
             
             try {
                 const response = await fetch(`${API_BASE}/api/admin/packages`, {
                     headers: {
-                        'Authorization': `Bearer ${token}`
+                        'Authorization': `Bearer ${authToken}`
                     }
                 });
                 
-                if (!response.ok) throw new Error('Failed to load packages');
-                
-                const data = await response.json();
-                packages = data.packages;
-                
-                if (packages.length === 0) {
-                    container.innerHTML = `
-                        <div class="empty-state">
-                            <div class="empty-state-icon">📦</div>
-                            <div class="empty-state-text">No packages found. Create your first package!</div>
-                        </div>
-                    `;
-                    return;
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        container.classList.remove('loading');
+                        container.innerHTML = `
+                            <div style="text-align: center; padding: 40px; color: #dc2626;">
+                                <p style="font-size: 1.2rem; font-weight: 600;">⛔ Access Denied</p>
+                                <p>You do not have permission to access this page.</p>
+                                <a href="/dashboard" class="btn btn-primary" style="margin-top: 16px;">Go to Dashboard</a>
+                            </div>
+                        `;
+                        return;
+                    }
+                    throw new Error('Failed to load packages');
                 }
                 
-                container.innerHTML = `<div class="packages-grid">${packages.map(renderPackageCard).join('')}</div>`;
+                const data = await response.json();
+                packages = data.packages || [];
+                
+                console.log('📦 Loaded packages:', packages.length);
+                if (packages.length > 0) {
+                    console.log('📦 Sample package:', packages[0]);
+                }
+                
+                // Remove loading class before rendering
+                container.classList.remove('loading');
+                
+                if (packages.length === 0) {
+                    container.innerHTML = `<div class="loading">No packages found. Create your first package!</div>`;
+                } else {
+                    container.innerHTML = `<div class="packages-grid">${packages.map(renderPackageCard).join('')}</div>`;
+                }
             } catch (error) {
                 console.error('Error loading packages:', error);
+                container.classList.remove('loading');
                 container.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-text" style="color: var(--danger-color);">
-                            Failed to load packages. Please try again.
-                        </div>
+                    <div class="loading" style="color: #dc2626;">
+                        Failed to load packages. Please try again.
                     </div>
                 `;
+                // Hide preloader on error too
+                $('.preloader-holder').fadeOut('slow');
             }
         }
 
@@ -744,43 +809,54 @@
         function renderPackageCard(pkg) {
             const isActive = pkg.is_active === 1;
             const isPopular = pkg.is_popular === 1;
-            const amount = pkg.amount || pkg.price || 0;
-            const currency = pkg.currency || 'USD';
+            const price = pkg.price || pkg.amount || 0;
             
             return `
-                <div class="package-card ${!isActive ? 'inactive' : ''}">
-                    ${isPopular ? '<div class="package-badge">⭐ Popular</div>' : ''}
+                <div class="package-card ${isPopular ? 'popular' : ''} ${!isActive ? 'inactive' : ''}">
+                    ${isPopular ? '<div class="popular-badge">⭐ MOST POPULAR</div>' : ''}
+                    
                     <div class="package-header">
                         <div class="package-name">${pkg.name || 'Unnamed Package'}</div>
-                        <div class="package-description">${pkg.description || 'No description'}</div>
+                        <div class="package-price-container">
+                            <span class="package-currency">$</span>
+                            <span class="package-price">${parseFloat(price).toFixed(2)}</span>
+                        </div>
                     </div>
-                    <div class="package-price">${currency} ${parseFloat(amount).toFixed(2)}</div>
+                    
                     <div class="package-details">
-                        <div class="detail-row">
-                            <span class="detail-label">Credits</span>
-                            <span class="detail-value">${pkg.credits || 0}</span>
+                        <div class="package-detail-row">
+                            <span class="package-detail-icon">💎</span>
+                            <span class="package-detail-label">Credits</span>
+                            <span class="package-detail-value">${pkg.credits || 0}</span>
                         </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Validity</span>
-                            <span class="detail-value">${pkg.validity_days || 0} days</span>
+                        <div class="package-detail-row">
+                            <span class="package-detail-icon">⏰</span>
+                            <span class="package-detail-label">Validity</span>
+                            <span class="package-detail-value">${pkg.validity_days || 0} days</span>
                         </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Display Order</span>
-                            <span class="detail-value">#${pkg.display_order || pkg.id || 0}</span>
+                        <div class="package-detail-row">
+                            <span class="package-detail-icon">📊</span>
+                            <span class="package-detail-label">Display Order</span>
+                            <span class="package-detail-value">${pkg.display_order || 0}</span>
                         </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Status</span>
-                            <span class="status-badge ${isActive ? 'status-active' : 'status-inactive'}">
+                        <div class="package-detail-row">
+                            <span class="package-detail-icon">${isActive ? '✅' : '⏸️'}</span>
+                            <span class="package-detail-label">Status</span>
+                            <span class="package-detail-value" style="color: ${isActive ? 'var(--success-color)' : 'var(--warning-color)'}; font-weight: 700;">
                                 ${isActive ? 'Active' : 'Inactive'}
                             </span>
                         </div>
                     </div>
+                    
+                    ${pkg.description ? `<div class="package-description">${pkg.description}</div>` : '<div class="package-description" style="opacity: 0.6; font-style: italic;">No description available</div>'}
+                    
                     <div class="package-actions">
-                        <button class="btn btn-primary btn-sm" onclick="editPackage(${pkg.id})">Edit</button>
-                        <button class="btn btn-secondary btn-sm" onclick="togglePackageStatus(${pkg.id})">
-                            ${isActive ? 'Deactivate' : 'Activate'}
+                        <button class="btn btn-primary" onclick="editPackage(${pkg.id})">
+                            ✏️ Edit Package
                         </button>
-                        <button class="btn btn-danger btn-sm" onclick="deletePackage(${pkg.id})">Delete</button>
+                        <button class="btn btn-danger" onclick="deletePackage(${pkg.id})">
+                            🗑️ Delete
+                        </button>
                     </div>
                 </div>
             `;
@@ -803,12 +879,12 @@
             document.getElementById('modalTitle').textContent = 'Edit Package';
             document.getElementById('packageId').value = pkg.id;
             document.getElementById('packageName').value = pkg.name;
-            document.getElementById('packageAmount').value = pkg.amount;
+            document.getElementById('packageAmount').value = pkg.price || pkg.amount || 0;
             document.getElementById('packageCredits').value = pkg.credits;
             document.getElementById('packageValidity').value = pkg.validity_days;
             document.getElementById('packageDescription').value = pkg.description || '';
-            document.getElementById('packageCurrency').value = pkg.currency;
-            document.getElementById('packageOrder').value = pkg.display_order;
+            document.getElementById('packageCurrency').value = pkg.currency || 'USD';
+            document.getElementById('packageOrder').value = pkg.display_order || 0;
             document.getElementById('packagePopular').checked = pkg.is_popular === 1;
             document.getElementById('packageActive').checked = pkg.is_active === 1;
             
@@ -830,14 +906,14 @@
             
             const formData = {
                 name: document.getElementById('packageName').value,
-                amount: parseFloat(document.getElementById('packageAmount').value),
+                price: parseFloat(document.getElementById('packageAmount').value),
                 credits: parseInt(document.getElementById('packageCredits').value),
                 validity_days: parseInt(document.getElementById('packageValidity').value),
                 description: document.getElementById('packageDescription').value,
                 currency: document.getElementById('packageCurrency').value,
-                display_order: parseInt(document.getElementById('packageOrder').value),
-                is_popular: document.getElementById('packagePopular').checked,
-                is_active: document.getElementById('packageActive').checked
+                display_order: parseInt(document.getElementById('packageOrder').value) || 0,
+                is_popular: document.getElementById('packagePopular').checked ? 1 : 0,
+                is_active: document.getElementById('packageActive').checked ? 1 : 0
             };
             
             try {
@@ -914,6 +990,13 @@
                 alert('Failed to delete package');
             }
         }
+
+        // Close modal when clicking outside
+        document.getElementById('packageModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeModal();
+            }
+        });
     </script>
 </body>
 </html>

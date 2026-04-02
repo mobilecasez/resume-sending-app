@@ -1,0 +1,33 @@
+{
+  "name": "lettrico-mobile",
+  "version": "1.0.0",
+  "description": "Lettrico Mobile App - Turn applications into opportunities",
+  "main": "App.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "build:android": "eas build --platform android",
+    "build:ios": "eas build --platform ios",
+    "build:web": "expo export:web",
+    "prebuild": "expo prebuild --clean",
+    "eject": "expo eject"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~6.1.2",
+    "expo": "~54.0.0",
+    "expo-linking": "~8.0.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-web": "^0.21.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.23.0",
+    "@types/react": "~19.1.10",
+    "@types/react-native": "^0.73.0",
+    "typescript": "^5.0.0"
+  },
+  "private": true
+}

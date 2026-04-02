@@ -1,231 +1,113 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Usage & Credits - CVApplyr</title>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+
+    <!-- // CSS FILES // -->
+
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css" integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
+    <!-- ANIMATE CSS -->
+    <link rel="stylesheet" href="/css/animate.css">
+    <!-- PRELOADER -->
+    <link rel="stylesheet" href="/css/preloader.css">
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="/css/style.css">
+    
+    <!-- Chart.js for usage analytics -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
         :root {
-            --primary-color: #8B5CF6;
-            --primary-dark: #7C3AED;
-            --text-primary: #1e293b;
-            --text-secondary: #64748b;
-            --border-color: #e5e7eb;
-            --bg-light: #f8fafc;
+            --primary-color: #6366F1;
+            --primary-dark: #4F46E5;
+            --success-color: #10B981;
+            --text-primary: #1F2937;
+            --text-secondary: #6B7280;
+            --bg-light: #F9FAFB;
+            --border-color: #E5E7EB;
         }
 
+        /* Apply gradient to entire page */
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
-            background: var(--bg-light);
-            color: var(--text-primary);
-            line-height: 1.6;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%) !important;
+            background-attachment: fixed !important;
+            min-height: 100vh;
         }
 
-        /* Top Navigation */
-        .top-navbar {
-            background: white;
-            padding: 12px 24px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            position: sticky;
-            top: 0;
-            z-index: 100;
+        /* Override navbar to make it transparent */
+        .navbar,
+        .navbar-light,
+        #home .navbar {
+            background: transparent !important;
+            box-shadow: none !important;
         }
 
-        .navbar-left {
-            display: flex;
-            align-items: center;
-            gap: 16px;
+        /* Ensure navbar stays transparent on mobile */
+        @media (max-width: 991px) {
+            #home .navbar {
+                background: transparent !important;
+            }
         }
 
-        .navbar-brand {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            text-decoration: none;
-        }
-
-        .navbar-right {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
-
-        .credit-badge {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 16px;
-            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
-            border-radius: 12px;
-            text-decoration: none;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
-            cursor: pointer;
-        }
-
-        .credit-badge:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 16px rgba(139, 92, 246, 0.4);
-        }
-
-        .credit-icon {
-            font-size: 20px;
-        }
-
-        .credit-number {
-            font-size: 18px;
-            font-weight: 700;
-            color: white;
-            min-width: 24px;
-            text-align: center;
-        }
-
-        .user-section {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 6px 12px;
-            background: #f8f9fa;
-            border-radius: 8px;
-        }
-
-        .nav-actions {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .nav-btn {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 36px;
-            height: 36px;
-            border-radius: 8px;
-            background: #f8f9fa;
-            border: 1px solid #e2e8f0;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            text-decoration: none;
-            color: #555;
-        }
-
-        .nav-btn:hover {
-            background: var(--primary-color);
-            border-color: var(--primary-color);
-            color: white;
-        }
-
-        .nav-btn svg {
-            width: 18px;
-            height: 18px;
-        }
-
-        .user-avatar {
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: 600;
-            font-size: 0.75rem;
-        }
-
-        .user-details {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .user-name {
-            font-size: 0.8125rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            line-height: 1.2;
-        }
-
-        .user-email {
-            font-size: 0.6875rem;
-            color: var(--text-secondary);
-        }
-
-        .logout-btn {
-            padding: 8px 14px;
+        /* Usage Section Styles */
+        .usage-section {
+            padding: 40px 0 80px 0;
+            min-height: calc(100vh - 70px);
             background: transparent;
-            border: 1px solid #fecaca;
-            border-radius: 6px;
-            font-size: 0.75rem;
-            color: #dc2626;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            font-weight: 500;
         }
 
-        .logout-btn:hover {
-            background: #fee2e2;
-            border-color: #dc2626;
-        }
-
-        .back-btn {
-            padding: 8px 16px;
-            background: white;
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            color: var(--text-primary);
-            text-decoration: none;
-            font-weight: 500;
-            transition: all 0.2s;
-        }
-
-        .back-btn:hover {
-            background: var(--bg-light);
-            border-color: var(--primary-color);
-            color: var(--primary-color);
-        }
-
-        /* Main Container */
-        .container {
-            max-width: 900px;
+        .usage-container {
+            max-width: 1200px;
             margin: 0 auto;
-            padding: 32px 24px;
+            padding: 0 20px;
         }
 
-        /* Page Header */
         .page-header {
-            margin-bottom: 32px;
+            background: white;
+            padding: 32px;
+            border-radius: 16px;
+            margin-bottom: 24px;
+            text-align: center;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         }
 
-        .page-title {
+        .page-header h1 {
             font-size: 2rem;
+            margin-bottom: 8px;
             font-weight: 700;
             color: var(--text-primary);
-            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
         }
 
-        .page-subtitle {
-            color: var(--text-secondary);
+        .page-header p {
             font-size: 1rem;
+            color: var(--text-secondary);
+            margin: 0;
         }
 
         /* Loading State */
-        .loading-container {
-            text-align: center;
+        .loading-state {
+            background: white;
+            border-radius: 16px;
             padding: 60px 20px;
+            text-align: center;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         }
 
-        .spinner {
+        .loading-spinner {
             width: 48px;
             height: 48px;
             border: 4px solid var(--bg-light);
@@ -251,7 +133,7 @@
             padding: 48px;
             text-align: center;
             margin-bottom: 32px;
-            box-shadow: 0 12px 40px rgba(139, 92, 246, 0.3);
+            box-shadow: 0 12px 40px rgba(139, 92, 246, 0.4);
         }
 
         .credit-label {
@@ -281,6 +163,7 @@
             border-radius: 12px;
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255, 255, 255, 0.2);
+            display: none;
         }
 
         .expiry-text {
@@ -301,8 +184,7 @@
             background: white;
             border-radius: 16px;
             padding: 24px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         }
 
         .stat-header {
@@ -360,8 +242,78 @@
 
         .progress-fill {
             height: 100%;
+            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
             border-radius: 4px;
             transition: width 0.3s ease;
+        }
+
+        /* Chart Card */
+        .chart-card {
+            background: white;
+            border-radius: 16px;
+            padding: 28px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            margin-bottom: 32px;
+        }
+
+        .chart-header {
+            margin-bottom: 24px;
+        }
+
+        .chart-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+
+        /* Activity Table */
+        .activity-table-container {
+            overflow-x: auto;
+        }
+
+        .activity-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .activity-table th {
+            background: var(--bg-light);
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        .activity-table td {
+            padding: 12px;
+            border-bottom: 1px solid #f1f5f9;
+            font-size: 0.9375rem;
+        }
+
+        .activity-table tbody tr:hover {
+            background: var(--bg-light);
+        }
+
+        .activity-date {
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .activity-value {
+            text-align: center;
+            color: var(--text-secondary);
+        }
+
+        .activity-value.highlight {
+            color: var(--primary-color);
+            font-weight: 600;
         }
 
         /* History Card */
@@ -369,8 +321,7 @@
             background: white;
             border-radius: 16px;
             padding: 28px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
             margin-bottom: 32px;
         }
 
@@ -446,105 +397,43 @@
             font-weight: 600;
         }
 
-        /* Chart Container */
-        .chart-card {
-            background: white;
-            border-radius: 16px;
-            padding: 28px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-            border: 1px solid var(--border-color);
-            margin-bottom: 32px;
-        }
-
-        .chart-header {
-            margin-bottom: 24px;
-        }
-
-        .chart-title {
-            font-size: 1.25rem;
-            font-weight: 700;
-            color: var(--text-primary);
-        }
-
-        .chart-container {
-            position: relative;
-            height: 300px;
-        }
-
-        /* Date-wise Activity Table */
-        .activity-table {
-            width: 100%;
-            border-collapse: collapse;
-            overflow-x: auto;
-        }
-
-        .activity-table th {
-            background: var(--bg-light);
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-            font-size: 0.875rem;
-            color: var(--text-secondary);
-            border-bottom: 2px solid var(--border-color);
-        }
-
-        .activity-table td {
-            padding: 12px;
-            border-bottom: 1px solid #f1f5f9;
-            font-size: 0.9375rem;
-        }
-
-        .activity-table tbody tr:hover {
-            background: var(--bg-light);
-        }
-
-        .activity-date {
-            color: var(--text-primary);
-            font-weight: 500;
-        }
-
-        .activity-value {
-            color: var(--text-secondary);
-        }
-
-        .activity-value.highlight {
-            color: var(--primary-color);
-            font-weight: 600;
-        }
-
+        /* Empty State */
         .empty-state {
             text-align: center;
-            padding: 48px 24px;
+            padding: 40px 20px;
+            color: var(--text-secondary);
         }
 
         .empty-icon {
             font-size: 3rem;
-            margin-bottom: 16px;
+            margin-bottom: 12px;
         }
 
         .empty-text {
-            color: var(--text-secondary);
             font-size: 1rem;
         }
 
         /* Buy Credits Button */
         .buy-btn {
             width: 100%;
-            padding: 18px;
+            max-width: 300px;
+            margin: 0 auto;
+            display: block;
+            padding: 16px 32px;
             background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
             color: white;
             border: none;
             border-radius: 12px;
-            font-size: 1.0625rem;
+            font-size: 1.125rem;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.2s;
-            box-shadow: 0 4px 16px rgba(139, 92, 246, 0.3);
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
         }
 
         .buy-btn:hover {
             transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(139, 92, 246, 0.4);
+            box-shadow: 0 6px 16px rgba(139, 92, 246, 0.5);
         }
 
         /* Toast Notification */
@@ -552,41 +441,26 @@
             position: fixed;
             bottom: 24px;
             right: 24px;
-            background: white;
+            background: #1F2937;
+            color: white;
             padding: 16px 24px;
             border-radius: 12px;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.3s ease;
             z-index: 1000;
-            display: none;
-            align-items: center;
-            gap: 12px;
-            border-left: 4px solid var(--primary-color);
         }
 
         .toast.show {
-            display: flex;
-            animation: slideIn 0.3s ease;
-        }
-
-        @keyframes slideIn {
-            from {
-                transform: translateX(400px);
-                opacity: 0;
-            }
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
+            opacity: 1;
+            transform: translateY(0);
         }
 
         /* Responsive */
         @media (max-width: 768px) {
-            .container {
-                padding: 24px 16px;
-            }
-
-            .credit-card {
-                padding: 32px 24px;
+            .page-header h1 {
+                font-size: 1.5rem;
             }
 
             .credit-amount {
@@ -596,133 +470,196 @@
             .stats-grid {
                 grid-template-columns: 1fr;
             }
-
-            .page-title {
-                font-size: 1.5rem;
-            }
         }
     </style>
-    <script src="/js/common-header.js"></script>
-    <script src="/js/common-footer.js"></script>
+
+    <title>Usage & Credits - CVApplyr</title>
 </head>
-<body>
-    <!-- Main Container -->
-    <div class="container">
-        <!-- Page Header -->
-        <div class="page-header">
-            <h1 class="page-title">💳 Usage & Credits</h1>
-            <p class="page-subtitle">Monitor your credit balance and usage statistics</p>
-        </div>
 
-        <!-- Loading State -->
-        <div id="loadingState" class="loading-container">
-            <div class="spinner"></div>
-            <p class="loading-text">Loading your usage data...</p>
-        </div>
+<body data-spy="scroll" data-target=".navbar">
 
-        <!-- Content (hidden initially) -->
-        <div id="usageContent" style="display: none;">
-            <!-- Credit Balance Card -->
-            <div class="credit-card">
-                <div class="credit-label">Available Credits</div>
-                <div class="credit-amount" id="creditAmount">0</div>
-                <div class="credit-subtext">Credits remaining in your account</div>
-                <div id="expiryWarning" class="expiry-warning" style="display: none;">
-                    <div class="expiry-text" id="expiryText"></div>
-                </div>
+    <script>
+        // Dynamic base URL - detects localhost vs production
+        const BASE_URL = (
+            window.location.protocol === 'file:' ||
+            window.location.hostname === 'localhost' || 
+            window.location.hostname === '127.0.0.1' ||
+            window.location.hostname === '' ||
+            window.location.hostname === '192.168.1.16'
+        ) ? 'http://localhost:3000' 
+          : 'https://cvapplyr.com';
+        
+        // Helper function to navigate to app pages
+        function navigateToApp(path) {
+            window.location.href = BASE_URL + path;
+        }
+    </script>
+
+    <!-- PRELOADER -->
+    <div class="preloader-holder">
+        <div class="loading">
+            <div class="finger finger-1">
+                <div class="finger-item"><span></span><i></i></div>
             </div>
-
-            <!-- Monthly Usage Stats -->
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-header">
-                        <div class="stat-title">📊 This Month</div>
-                        <div class="stat-icon">📈</div>
-                    </div>
-                    <div class="stat-items">
-                        <div class="stat-item">
-                            <div class="stat-item-header">
-                                <span class="stat-item-label">Generated</span>
-                                <span class="stat-item-value" id="generatedCount">0</span>
-                            </div>
-                            <div class="progress-bar">
-                                <div class="progress-fill" id="generatedProgress" style="width: 100%; background: #8B5CF6;"></div>
-                            </div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-item-header">
-                                <span class="stat-item-label">Sent</span>
-                                <span class="stat-item-value" id="sentCount">0</span>
-                            </div>
-                            <div class="progress-bar">
-                                <div class="progress-fill" id="sentProgress" style="width: 100%; background: #10B981;"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+            <div class="finger finger-2">
+                <div class="finger-item"><span></span><i></i></div>
             </div>
-
-            <!-- Usage Chart -->
-            <div class="chart-card">
-                <div class="chart-header">
-                    <h2 class="chart-title">📈 30-Day Activity Overview</h2>
-                </div>
-                <div class="chart-container">
-                    <canvas id="usageChart"></canvas>
-                </div>
+            <div class="finger finger-3">
+                <div class="finger-item"><span></span><i></i></div>
             </div>
-
-            <!-- Date-wise Activity -->
-            <div class="history-card">
-                <div class="history-header">
-                    <h2 class="history-title">📅 Date-wise Activity (Last 30 Days)</h2>
-                </div>
-                <div style="overflow-x: auto;">
-                    <table class="activity-table">
-                        <thead>
-                            <tr>
-                                <th>Date</th>
-                                <th>Generated</th>
-                                <th>Sent</th>
-                                <th>Credits Used</th>
-                                <th>Credits Available</th>
-                            </tr>
-                        </thead>
-                        <tbody id="activityTableBody">
-                            <tr>
-                                <td colspan="5" style="text-align: center; padding: 20px;">
-                                    <div style="color: var(--text-secondary);">No activity data yet</div>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
+            <div class="finger finger-4">
+                <div class="finger-item"><span></span><i></i></div>
             </div>
-
-            <!-- Credit History -->
-            <div class="history-card">
-                <div class="history-header">
-                    <h2 class="history-title">📜 Recent Credit Activity</h2>
-                </div>
-                <div class="history-list" id="historyList">
-                    <div class="empty-state">
-                        <div class="empty-icon">📋</div>
-                        <div class="empty-text">No credit activity yet</div>
-                    </div>
-                </div>
+            <div class="last-finger">
+                <div class="last-finger-item"><i></i></div>
             </div>
-
-            <!-- Buy More Credits Button -->
-            <button class="buy-btn" onclick="showBuyCredits()">
-                💎 Buy More Credits
-            </button>
         </div>
     </div>
+
+    <!-- APP HEADER COMPONENT -->
+    <div id="app-header"></div>
+
+    <!-- USAGE SECTION -->
+    <section class="usage-section">
+        <div class="usage-container">
+            <!-- Page Header -->
+            <div class="page-header wow fadeInUp" data-wow-duration="1s">
+                <h1>📊 Usage & Credits</h1>
+                <p>Track your credit usage and application activity</p>
+            </div>
+
+            <!-- Loading State -->
+            <div class="loading-state" id="loadingState">
+                <div class="loading-spinner"></div>
+                <div class="loading-text">Loading your usage data...</div>
+            </div>
+
+            <!-- Main Content -->
+            <div id="usageContent" style="display: none;">
+                <!-- Credit Balance Card -->
+                <div class="credit-card wow fadeInUp" data-wow-duration="1s" data-wow-delay=".1s">
+                    <div class="credit-label">💳 Your Current Credits</div>
+                    <div class="credit-amount" id="creditAmount">0</div>
+                    <div class="credit-subtext">Available for use</div>
+                    <div class="expiry-warning" id="expiryWarning">
+                        <div class="expiry-text" id="expiryText"></div>
+                    </div>
+                </div>
+
+                <!-- Monthly Stats -->
+                <div class="stats-grid wow fadeInUp" data-wow-duration="1s" data-wow-delay=".2s">
+                    <div class="stat-card">
+                        <div class="stat-header">
+                            <h3 class="stat-title">This Month</h3>
+                            <div class="stat-icon">📅</div>
+                        </div>
+                        <div class="stat-items">
+                            <div class="stat-item">
+                                <div class="stat-item-header">
+                                    <span class="stat-item-label">Letters Generated</span>
+                                    <span class="stat-item-value" id="generatedCount">0</span>
+                                </div>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="generatedProgress" style="width: 0%;"></div>
+                                </div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-item-header">
+                                    <span class="stat-item-label">Applications Sent</span>
+                                    <span class="stat-item-value" id="sentCount">0</span>
+                                </div>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="sentProgress" style="width: 0%;"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Activity Chart -->
+                <div class="chart-card wow fadeInUp" data-wow-duration="1s" data-wow-delay=".3s">
+                    <div class="chart-header">
+                        <h2 class="chart-title">📈 7-Day Activity Trend</h2>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="usageChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Date-wise Activity Table -->
+                <div class="chart-card wow fadeInUp" data-wow-duration="1s" data-wow-delay=".4s">
+                    <div class="chart-header">
+                        <h2 class="chart-title">📋 Daily Activity Details</h2>
+                    </div>
+                    <div class="activity-table-container">
+                        <table class="activity-table">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th style="text-align: center;">Generated</th>
+                                    <th style="text-align: center;">Sent</th>
+                                    <th style="text-align: center;">Credits Used</th>
+                                    <th style="text-align: center;">Balance</th>
+                                </tr>
+                            </thead>
+                            <tbody id="activityTableBody">
+                                <tr>
+                                    <td colspan="5" style="text-align: center; padding: 20px;">
+                                        <div style="color: var(--text-secondary);">Loading activity...</div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Credit History -->
+                <div class="history-card wow fadeInUp" data-wow-duration="1s" data-wow-delay=".5s">
+                    <div class="history-header">
+                        <h2 class="history-title">📜 Recent Credit Activity</h2>
+                    </div>
+                    <div class="history-list" id="historyList">
+                        <div class="empty-state">
+                            <div class="empty-icon">📋</div>
+                            <div class="empty-text">No credit activity yet</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Buy More Credits Button -->
+                <button class="buy-btn wow fadeInUp" data-wow-duration="1s" data-wow-delay=".6s" onclick="showBuyCredits()">
+                    💎 Buy More Credits
+                </button>
+            </div>
+        </div>
+    </section>
 
     <!-- Toast Notification -->
-    <div class="toast" id="toast">
-        <span id="toastMessage"></span>
-    </div>
+    <div class="toast" id="toast"></div>
+
+    <!-- FOOTER -->
+    <div id="app-footer"></div>
+
+    <!-- jQuery from CDN -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <!-- Bootstrap JS -->
+    <script src="/bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
+    <!-- Wow Animation -->
+    <script src="/js/plugins/wow/wow.js"></script>
+    <script>
+        new WOW().init();
+        
+        // Hide preloader when page loads
+        $(window).on('load', function() {
+            $('.preloader-holder').fadeOut('slow');
+        });
+    </script>
+    
+    <!-- App Header Component -->
+    <script src="/js/app-header.js"></script>
+    
+    <!-- App Footer Component -->
+    <script src="/js/app-footer.js"></script>
 
     <script>
         // Check authentication
@@ -736,6 +673,10 @@
         // Load usage data on page load
         document.addEventListener('DOMContentLoaded', async () => {
             await loadUsageData();
+            // Hide preloader after data loads
+            setTimeout(() => {
+                $('.preloader-holder').fadeOut('slow');
+            }, 500);
         });
 
         async function loadUsageData() {
@@ -755,68 +696,63 @@
                 const data = await response.json();
                 
                 if (response.ok && data.success) {
-                        // Update credit balance
-                        const creditBalance = data.credits?.remaining || 0;
-                        document.getElementById('creditAmount').textContent = creditBalance;
-                        
-                        // Update nav credit badge if it exists
-                        const navCreditBalance = document.getElementById('navCreditBalance');
-                        if (navCreditBalance) {
-                            navCreditBalance.textContent = creditBalance;
-                        }
+                    // Update credit balance
+                    const creditBalance = data.credits?.remaining || 0;
+                    document.getElementById('creditAmount').textContent = creditBalance;
 
-                        // Show expiry warning if applicable
-                        if (data.credits?.expiring > 0 && data.credits?.expiryDate) {
-                            const expiryWarning = document.getElementById('expiryWarning');
-                            const expiryText = document.getElementById('expiryText');
-                            const expiryDate = new Date(data.credits.expiryDate).toLocaleDateString();
-                            expiryText.textContent = `⚠️ ${data.credits.expiring} credits expiring on ${expiryDate}`;
-                            expiryWarning.style.display = 'block';
-                        }
+                    // Show expiry warning if applicable
+                    if (data.credits?.expiring > 0 && data.credits?.expiryDate) {
+                        const expiryWarning = document.getElementById('expiryWarning');
+                        const expiryText = document.getElementById('expiryText');
+                        const expiryDate = new Date(data.credits.expiryDate).toLocaleDateString();
+                        expiryText.textContent = `⚠️ ${data.credits.expiring} credits expiring on ${expiryDate}`;
+                        expiryWarning.style.display = 'block';
+                    }
 
-                        // Update monthly usage stats
-                        if (data.currentMonth) {
-                            const generated = data.currentMonth.lettersGenerated || 0;
-                            const sent = data.currentMonth.lettersSent || 0;
+                    // Update monthly usage stats
+                    if (data.currentMonth) {
+                        const generated = data.currentMonth.lettersGenerated || 0;
+                        const sent = data.currentMonth.lettersSent || 0;
 
-                            document.getElementById('generatedCount').textContent = generated;
-                            document.getElementById('sentCount').textContent = sent;
+                        document.getElementById('generatedCount').textContent = generated;
+                        document.getElementById('sentCount').textContent = sent;
 
-                            // Update progress bars (full width as there's no limit)
-                            document.getElementById('generatedProgress').style.width = '100%';
-                            document.getElementById('sentProgress').style.width = '100%';
-                        }
+                        // Update progress bars (full width as there's no limit)
+                        document.getElementById('generatedProgress').style.width = '100%';
+                        document.getElementById('sentProgress').style.width = '100%';
+                    }
 
-                        // Render date-wise activity chart
-                        if (data.dateWiseActivity && data.dateWiseActivity.length > 0) {
-                            renderActivityChart(data.dateWiseActivity);
-                            renderActivityTable(data.dateWiseActivity);
-                        }
+                    // Render date-wise activity chart
+                    if (data.dateWiseActivity && data.dateWiseActivity.length > 0) {
+                        renderActivityChart(data.dateWiseActivity);
+                        renderActivityTable(data.dateWiseActivity);
+                    }
 
-                        // Update credit history
-                        if (data.creditHistory && data.creditHistory.length > 0) {
-                            const historyList = document.getElementById('historyList');
-                            historyList.innerHTML = data.creditHistory.slice(0, 15).map(item => {
-                                const typeClass = item.transactionType === 'deduction' ? 'negative' : 'positive';
-                                const typeSymbol = item.transactionType === 'deduction' ? '−' : '+';
-                                const date = new Date(item.transactionDate).toLocaleDateString();
+                    // Update credit history
+                    if (data.creditHistory && data.creditHistory.length > 0) {
+                        const historyList = document.getElementById('historyList');
+                        historyList.innerHTML = data.creditHistory.slice(0, 15).map(item => {
+                            const isNegative = item.creditsChange < 0;
+                            const typeClass = isNegative ? 'negative' : 'positive';
+                            const typeSymbol = isNegative ? '−' : '+';
+                            const date = new Date(item.transactionDate).toLocaleDateString();
 
-                                return `
-                                    <div class="history-item">
-                                        <div class="history-left">
-                                            <div class="history-amount ${typeClass}">
-                                                ${typeSymbol}${Math.abs(item.creditsChange)}
-                                            </div>
-                                            <div class="history-desc">${item.description}</div>
+                            return `
+                                <div class="history-item">
+                                    <div class="history-left">
+                                        <div class="history-amount ${typeClass}">
+                                            ${typeSymbol}${Math.abs(item.creditsChange)}
                                         </div>
-                                        <div class="history-right">
-                                            <div class="history-date">${date}</div>
-                                            <div class="history-balance">Balance: ${item.balanceAfter}</div>
-                                        </div>
+                                        <div class="history-desc">${item.description}</div>
                                     </div>
-                                `;
-                            }).join('');
-                        }
+                                    <div class="history-right">
+                                        <div class="history-date">${date}</div>
+                                        <div class="history-balance">Balance: ${item.balanceAfter}</div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    }
                 } else {
                     throw new Error(data.error || 'Failed to fetch usage statistics');
                 }
@@ -827,9 +763,11 @@
 
             } catch (error) {
                 console.error('Error loading usage data:', error);
-                showToast('Failed to load usage data', 'error');
+                showToast('Failed to load usage data');
                 loadingState.style.display = 'none';
                 content.style.display = 'block';
+                // Hide preloader on error too
+                $('.preloader-holder').fadeOut('slow');
             }
         }
 
@@ -928,7 +866,7 @@
                 tableBody.innerHTML = `
                     <tr>
                         <td colspan="5" style="text-align: center; padding: 20px;">
-                            <div style="color: var(--text-secondary);">No activity in the last 30 days</div>
+                            <div style="color: var(--text-secondary);">No activity in the last 7 days</div>
                         </td>
                     </tr>
                 `;
@@ -959,17 +897,9 @@
             window.location.href = '/packages';
         }
 
-        function handleLogout() {
-            localStorage.removeItem('authToken');
-            localStorage.removeItem('userData');
-            sessionStorage.clear();
-            window.location.href = '/login';
-        }
-
-        function showToast(message, type = 'info') {
+        function showToast(message) {
             const toast = document.getElementById('toast');
-            const toastMessage = document.getElementById('toastMessage');
-            toastMessage.textContent = message;
+            toast.textContent = message;
             toast.classList.add('show');
             
             setTimeout(() => {

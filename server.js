@@ -1,24 +1,34 @@
 require('dotenv').config();
 
-const express = require('express');
 const path = require('path');
+const fsSync = require('fs');
+
+// Load Razorpay credentials FIRST before any other imports
+const razorpayEnvPath = path.join(__dirname, '.env.razorpay');
+if (fsSync.existsSync(razorpayEnvPath)) {
+    require('dotenv').config({ path: razorpayEnvPath });
+}
+
+// Environment configuration
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+const express = require('express');
 const multer = require('multer');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const CryptoJS = require('crypto-js');
-const sqlite3 = require('sqlite3').verbose();
 const { Pool } = require('pg');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const MicrosoftStrategy = require('passport-microsoft').Strategy;
 const { google } = require('googleapis');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 const fontkit = require('@pdf-lib/fontkit');
 const PDFKit = require('pdfkit');
 const nodemailer = require('nodemailer');
 const fs = require('fs').promises;
-const fsSync = require('fs');
 const sharp = require('sharp');
 const cheerio = require('cheerio');
 const AICoverLetterGenerator = require('./ai-cover-letter-generator');
@@ -27,11 +37,20 @@ const dbConfig = require('./db-config');
 const { initializeDatabase } = require('./db-init');
 const Razorpay = require('razorpay');
 
-// Load Razorpay credentials from separate env file
-const razorpayEnvPath = path.join(__dirname, '.env.razorpay');
-if (fsSync.existsSync(razorpayEnvPath)) {
-    require('dotenv').config({ path: razorpayEnvPath });
-}
+// Import modular routes
+const paymentRoutes = require('./server/routes/payment');
+const authRoutes = require('./server/routes/authRoutes');
+const profileRoutes = require('./server/routes/profileRoutes');
+const userDataRoutes = require('./server/routes/userDataRoutes');
+const creditsRoutes = require('./server/routes/creditsRoutes');
+const adminPackagesRoutes = require('./server/routes/adminPackagesRoutes');
+const coverLetterRoutes = require('./server/routes/coverLetterRoutes');
+const emailRoutes = require('./server/routes/emailRoutes');
+const notificationsRoutes = require('./server/routes/notificationsRoutes');
+const usageRoutes = require('./server/routes/usageRoutes');
+
+// Import authentication middleware
+const { authenticateToken, authenticateAdmin } = require('./server/middleware/auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -176,7 +195,7 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
     }
 }
 
-// Initialize database (supports both SQLite and PostgreSQL)
+// Initialize database (PostgreSQL only)
 const db = dbConfig.initializeConnection();
 
 // Initialize database schema
@@ -207,8 +226,8 @@ const upload = multer({
 });
 
 // Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser());
 
 // CORS Middleware - Allow requests from localhost variants and IP address
@@ -282,6 +301,63 @@ app.get('/admin-packages', serveAdminPageOnly, (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'admin-packages.html'));
 });
 
+// Favicon route with proper headers
+app.get('/favicon.ico', (req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // 1 year cache
+    res.setHeader('Content-Type', 'image/x-icon');
+    res.sendFile(path.join(__dirname, 'public', 'favicon.ico'));
+});
+
+// Root route - serve about page as home page
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'about.html'));
+});
+
+// About page route
+app.get('/about', (req, res) => {
+    res.sendFile(path.join(__dirname, 'about.html'));
+});
+
+// Dashboard route - serve index.html
+app.get('/dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Legal pages routes
+app.get('/privacy', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'privacy-policy.html'));
+});
+
+app.get('/privacy-policy', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'privacy-policy.html'));
+});
+
+app.get('/terms', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'terms-of-service.html'));
+});
+
+app.get('/terms-of-service', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'terms-of-service.html'));
+});
+
+app.get('/refund', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'refund-policy.html'));
+});
+
+app.get('/refund-policy', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'refund-policy.html'));
+});
+
+// Static files for landing page resources
+app.use('/bootstrap-4.1.1-dist', express.static('bootstrap-4.1.1-dist'));
+app.use('/css', express.static('css'));
+app.use('/js', express.static('js'));
+app.use('/imgs', express.static('imgs'));
+app.use('/Screenshots', express.static('Screenshots'));
+
+// Serve .well-known directory for domain verification (Microsoft, Apple, etc.)
+app.use('/.well-known', express.static('.well-known'));
+
 // Static files for public access
 app.use(express.static('public'));
 app.use('/uploads', express.static('uploads'));
@@ -292,15 +368,41 @@ const CALLBACK_URL = process.env.NODE_ENV === 'production'
     : 'http://localhost:3000/auth/google/callback';
 
 passport.use(new GoogleStrategy({
-    clientID: process.env.GOOGLE_CLIENT_ID || 'your-google-client-id',
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET || 'your-google-client-secret',
+    clientID: process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || 'your-google-client-id',
+    clientSecret: process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || 'your-google-client-secret',
     callbackURL: CALLBACK_URL,
-    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send'],
+    scope: [
+        'profile', 
+        'email', 
+        'https://www.googleapis.com/auth/gmail.send',
+        'https://www.googleapis.com/auth/gmail.readonly'  // Updated for reply detection
+    ],
     accessType: 'offline', // Request refresh token
     prompt: 'consent' // Force consent screen to get refresh token
 }, (accessToken, refreshToken, profile, done) => {
     // Handle Google OAuth callback with tokens
     handleOAuthUser(profile, 'google', accessToken, refreshToken, done);
+}));
+
+// Microsoft OAuth Configuration
+const MICROSOFT_CALLBACK_URL = IS_PRODUCTION
+    ? 'https://cvapplyr.com/auth/microsoft/callback'
+    : 'http://localhost:3000/auth/microsoft/callback';
+
+passport.use(new MicrosoftStrategy({
+    clientID: process.env.MICROSOFT_CLIENT_ID || 'your-microsoft-client-id',
+    clientSecret: process.env.MICROSOFT_CLIENT_SECRET || 'your-microsoft-client-secret',
+    callbackURL: MICROSOFT_CALLBACK_URL,
+    scope: [
+        'user.read',
+        'Mail.Read',      // Added for reply detection
+        'Mail.Send',      // Fixed capitalization
+        'offline_access'
+    ],
+    tenant: 'common' // Supports personal Microsoft accounts and work/school accounts
+}, (accessToken, refreshToken, profile, done) => {
+    // Handle Microsoft OAuth callback with tokens
+    handleOAuthUser(profile, 'microsoft', accessToken, refreshToken, done);
 }));
 
 // Passport LinkedIn OAuth Configuration (Disabled due to API compatibility)
@@ -346,18 +448,35 @@ async function handleOAuthUser(profile, provider, accessToken, refreshToken, cal
 
         if (user) {
             // User exists, update OAuth tokens
-            await dbConfig.run(
-        'UPDATE users SET oauth_provider = ?, google_access_token = ?, google_refresh_token = ? WHERE id = ?',
-        [provider, accessToken, refreshToken, user.id]
-            );
+            if (provider === 'google') {
+                // Passport-based OAuth is standard flow (not PKCE), so used_pkce=false
+                await dbConfig.run(
+                    'UPDATE users SET oauth_provider = ?, google_access_token = ?, google_refresh_token = ?, used_pkce = ? WHERE id = ?',
+                    [provider, accessToken, refreshToken, false, user.id]
+                );
+            } else if (provider === 'microsoft') {
+                await dbConfig.run(
+                    'UPDATE users SET oauth_provider = ?, microsoft_access_token = ?, microsoft_refresh_token = ? WHERE id = ?',
+                    [provider, accessToken, refreshToken, user.id]
+                );
+            }
             return callback(null, user);
         } else {
             // Create new user
             const hashedPassword = jwt.sign({ provider, email }, JWT_SECRET);
-            const result = await dbConfig.run(
-        'INSERT INTO users (full_name, email, password, oauth_provider, google_access_token, google_refresh_token) VALUES (?, ?, ?, ?, ?, ?)',
-        [fullName, email, hashedPassword, provider, accessToken, refreshToken]
-            );
+            let result;
+            if (provider === 'google') {
+                // Passport-based OAuth is standard flow (not PKCE), so used_pkce=false
+                result = await dbConfig.run(
+                    'INSERT INTO users (full_name, email, password, oauth_provider, google_access_token, google_refresh_token, used_pkce) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    [fullName, email, hashedPassword, provider, accessToken, refreshToken, false]
+                );
+            } else if (provider === 'microsoft') {
+                result = await dbConfig.run(
+                    'INSERT INTO users (full_name, email, password, oauth_provider, microsoft_access_token, microsoft_refresh_token) VALUES (?, ?, ?, ?, ?, ?)',
+                    [fullName, email, hashedPassword, provider, accessToken, refreshToken]
+                );
+            }
             
             const newUser = await dbConfig.get('SELECT * FROM users WHERE id = ?', [result.lastID || result.id]);
             return callback(null, newUser);
@@ -392,55 +511,6 @@ app.get('/uploads/:userId/:filename', authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Server error' });
     }
 });
-
-// Authentication middleware
-function authenticateToken(req, res, next) {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    console.log('Auth check - Header present:', !!authHeader);
-    console.log('Auth check - Token present:', !!token);
-
-    if (!token) {
-        console.log('Auth failed: No token provided');
-        return res.status(401).json({ error: 'Access denied. No token provided.' });
-    }
-
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) {
-            console.log('Auth failed: Token verification error:', err.message);
-            return res.status(403).json({ error: 'Invalid or expired token. Please login again.' });
-        }
-        console.log('Auth success for user:', user.id);
-        req.user = user;
-        next();
-    });
-}
-
-// Admin authentication middleware
-async function authenticateAdmin(req, res, next) {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) {
-        return res.status(401).json({ error: 'Access denied. No token provided.' });
-    }
-
-    try {
-        const user = jwt.verify(token, JWT_SECRET);
-        
-        // Check if user is admin
-        const row = await dbConfig.get('SELECT role FROM users WHERE id = ?', [user.id]);
-        
-        if (!row || row.role !== 'admin') {
-            return res.status(403).json({ error: 'Access denied. Admin privileges required.' });
-        }
-        req.user = user;
-        next();
-    } catch (err) {
-        return res.status(403).json({ error: 'Invalid or expired token.' });
-    }
-}
 
 // Server-side HTML page protection middleware
 function serveAdminPageOnly(req, res, next) {
@@ -618,8 +688,8 @@ async function deductCredits(userId, creditsToDeduct = 1, actionType = 'cover_le
             INSERT INTO monthly_usage_stats (user_id, month, year, credits_used, letters_generated)
             VALUES (?, ?, ?, ?, 1)
             ON CONFLICT(user_id, month, year) DO UPDATE SET
-        credits_used = credits_used + ?,
-        letters_generated = letters_generated + 1,
+        credits_used = monthly_usage_stats.credits_used + ?,
+        letters_generated = monthly_usage_stats.letters_generated + 1,
         updated_at = CURRENT_TIMESTAMP
         `, [userId, month, year, creditsToDeduct, creditsToDeduct]);
         
@@ -662,280 +732,12 @@ async function updateMonthlySent(userId) {
 // ============================================
 
 // Auth endpoints
-app.post('/api/auth/register', async (req, res) => {
-    try {
-        const { fullName, email, password } = req.body;
-
-        if (!fullName || !email || !password) {
-            return res.status(400).json({ error: 'All fields are required' });
-        }
-
-        if (password.length < 6) {
-            return res.status(400).json({ error: 'Password must be at least 6 characters' });
-        }
-
-        // Check if user already exists
-        const existingUser = await dbConfig.get('SELECT * FROM users WHERE email = ?', [email]);
-        
-        if (existingUser) {
-            return res.status(400).json({ error: 'Email already registered' });
-        }
-
-        // Hash password
-        const hashedPassword = await bcrypt.hash(password, 10);
-
-        // Insert user
-        const result = await dbConfig.run(
-            'INSERT INTO users (full_name, email, password) VALUES (?, ?, ?)',
-            [fullName, email, hashedPassword]
-        );
-
-        const userId = result.lastID || result.id;
-        
-        // Give 2 free credits to new user
-        try {
-            await dbConfig.run(
-        'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
-        [userId, 2, 2]
-            );
-            
-            // Log the credit transaction
-            await dbConfig.run(
-        `INSERT INTO credit_transactions 
-        (user_id, transaction_type, credits_change, balance_after, description) 
-        VALUES (?, ?, ?, ?, ?)`,
-        [userId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
-            );
-        } catch (creditErr) {
-            console.error('Failed to add welcome credits:', creditErr);
-        }
-
-        res.json({ 
-            success: true, 
-            message: 'User created successfully! You received 2 free credits.',
-            userId: userId,
-            freeCredits: 2
-        });
-    } catch (error) {
-        console.error('Registration error:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
-
-app.post('/api/auth/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
-
-        if (!email || !password) {
-            return res.status(400).json({ error: 'Email and password are required' });
-        }
-
-        const user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [email]);
-        
-        if (!user) {
-            return res.status(401).json({ error: 'Invalid email or password' });
-        }
-
-        // Verify password
-        const validPassword = await bcrypt.compare(password, user.password);
-        if (!validPassword) {
-            return res.status(401).json({ error: 'Invalid email or password' });
-        }
-
-        // Generate JWT
-        const token = jwt.sign(
-            { id: user.id, email: user.email },
-            JWT_SECRET,
-            { expiresIn: '24h' }
-        );
-
-        // Set secure HTTP-only cookie for admin page protection
-        res.cookie('authToken', token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            maxAge: 24 * 60 * 60 * 1000, // 24 hours
-            sameSite: 'strict'
-        });
-
-        res.json({
-            success: true,
-            token,
-            user: {
-        id: user.id,
-        fullName: user.full_name,
-        email: user.email
-        }
-        });
-    } catch (error) {
-        console.error('Login error:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
-
-// Logout endpoint - clear auth cookie
-app.post('/api/auth/logout', (req, res) => {
-    res.clearCookie('authToken');
-    res.json({ success: true, message: 'Logged out successfully' });
-});
-
-// OAuth Routes
-// Google OAuth
-app.get('/auth/google', passport.authenticate('google', {
-    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send'],
-    accessType: 'offline',
-    prompt: 'consent'
-}));
-
-// Google OAuth callback - Web/Desktop version (redirects to HTML)
-app.get('/auth/google/callback', passport.authenticate('google', {
-    failureRedirect: '/login.html'
-}), (req, res) => {
-    // Check if this is a mobile request
-    const isMobile = req.query.mobile === 'true' || req.headers['user-agent']?.includes('Expo');
-    
-    // Generate JWT token for the user
-    const token = jwt.sign(
-        { id: req.user.id, email: req.user.email },
-        JWT_SECRET,
-        { expiresIn: '24h' }
-    );
-
-    const userData = {
-        id: req.user.id,
-        fullName: req.user.full_name,
-        email: req.user.email
-    };
-
-    // For mobile apps, return JSON instead of HTML redirect
-    if (isMobile) {
-        res.json({
-            success: true,
-            token,
-            user: userData
-        });
-    } else {
-        // For web, redirect to success page
-        res.redirect(`/auth-success.html?token=${token}&user=${encodeURIComponent(JSON.stringify(userData))}`);
-    }
-});
-
-// Google OAuth API endpoint for mobile (returns JSON)
-app.post('/api/auth/google', async (req, res) => {
-    try {
-        console.log('Google OAuth Request Body:', req.body);
-        const { accessToken } = req.body;
-        
-        if (!accessToken) {
-            console.log('Missing accessToken in request');
-            return res.status(400).json({ error: 'Access token is required' });
-        }
-
-        console.log('Verifying access token with Google API...');
-        // Get user info from Google
-        const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
-            headers: { Authorization: `Bearer ${accessToken}` }
-        });
-
-        if (!userInfoResponse.ok) {
-            console.error('Google API Error:', userInfoResponse.status, userInfoResponse.statusText);
-            return res.status(401).json({ error: 'Failed to get user info from Google', googleStatus: userInfoResponse.status });
-        }
-
-        const googleUser = await userInfoResponse.json();
-        console.log('Google User Info:', { email: googleUser.email, name: googleUser.name });
-        
-        // Find or create user in database
-        try {
-            let user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [googleUser.email]);
-
-            if (!user) {
-        // Create new user from Google data
-        const hashedPassword = await bcrypt.hash('google-oauth-' + googleUser.id, 10);
-        const result = await dbConfig.run(
-            'INSERT INTO users (email, full_name, password, oauth_provider, google_access_token) VALUES (?, ?, ?, ?, ?) RETURNING id',
-            [googleUser.email, googleUser.name, hashedPassword, 'google', accessToken]
-        );
-
-        const newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
-
-        // Generate JWT
-        const token = jwt.sign(
-            { id: newUserId, email: googleUser.email },
-            JWT_SECRET,
-            { expiresIn: '24h' }
-        );
-
-        return res.json({
-            success: true,
-            token,
-            user: {
-                id: newUserId,
-                fullName: googleUser.name,
-                email: googleUser.email
-            }
-        });
-            } else {
-        // User exists, update OAuth tokens
-        await dbConfig.run(
-            'UPDATE users SET oauth_provider = ?, google_access_token = ? WHERE id = ?',
-            ['google', accessToken, user.id]
-        );
-        
-        // Generate JWT
-        const token = jwt.sign(
-            { id: user.id, email: user.email },
-            JWT_SECRET,
-            { expiresIn: '24h' }
-        );
-
-        return res.json({
-            success: true,
-            token,
-            user: {
-                id: user.id,
-                fullName: user.full_name,
-                email: user.email
-            }
-        });
-            }
-        } catch (error) {
-            console.error('Database error:', error);
-            return res.status(500).json({ error: 'Database error' });
-        }
-    } catch (error) {
-        console.error('Google OAuth error:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
-
-// LinkedIn OAuth (Disabled due to API compatibility issues)
-/*
-app.get('/auth/linkedin', passport.authenticate('linkedin', {
-    scope: ['profile', 'email']
-}));
-
-app.get('/auth/linkedin/callback', passport.authenticate('linkedin', {
-    failureRedirect: '/login.html'
-}), (req, res) => {
-    // Generate JWT token for the user
-    const token = jwt.sign(
-        { id: req.user.id, email: req.user.email },
-        JWT_SECRET,
-        { expiresIn: '24h' }
-    );
-
-    res.redirect(`/auth-success.html?token=${token}&user=${encodeURIComponent(JSON.stringify({
-        id: req.user.id,
-        fullName: req.user.full_name,
-        email: req.user.email
-    }))}`);
-});
-*/
-
 // Email configuration
 function createTransporter(smtpUser, smtpPass) {
     return nodemailer.createTransport({
-        service: 'gmail',
+        host: process.env.SMTP_HOST || 'smtppro.zoho.in',
+        port: parseInt(process.env.SMTP_PORT) || 465,
+        secure: true, // SSL
         auth: {
             user: smtpUser,
             pass: smtpPass,
@@ -1048,891 +850,14 @@ app.post('/api/upload-profile', authenticateToken, upload.fields([
     }
 });
 
-// Mobile API: Get user profile data
-app.get('/api/users/profile', authenticateToken, async (req, res) => {
-    const userId = req.user.id;
-    
-    try {
-        const user = await dbConfig.get('SELECT full_name as "fullName", email, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath", phone_number as "phoneNumber", address, date_of_birth as "dateOfBirth", created_at as "createdAt" FROM users WHERE id = ?', [userId]);
-        
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        
-        res.json({
-            fullName: user.fullName,
-            email: user.email,
-            phone: user.phoneNumber,
-            address: user.address,
-            dateOfBirth: user.dateOfBirth,
-            profileImage: user.photoPath ? `http://${req.get('host')}/${user.photoPath}` : null,
-            resume: user.resumePath ? `http://${req.get('host')}/${user.resumePath}` : null,
-            signature: user.signaturePath ? `http://${req.get('host')}/${user.signaturePath}` : null,
-            createdAt: user.createdAt
-        });
-    } catch (err) {
-        return res.status(500).json({ error: err.message });
-    }
-});
-
-// Mobile API: Upload profile image
-app.post('/api/users/profile/image', authenticateToken, upload.single('profileImage'), async (req, res) => {
-    try {
-        const userId = req.user.id;
-        
-        if (!req.file) {
-            return res.status(400).json({ error: 'No file uploaded' });
-        }
-        
-        const filePath = req.file.path.replace(__dirname + '/', '');
-        
-        await dbConfig.run('UPDATE users SET photo_path = ? WHERE id = ?', [filePath, userId]);
-        
-        res.json({
-            success: true,
-            message: 'Profile image uploaded successfully',
-            path: `http://${req.get('host')}/${filePath}`
-        });
-    } catch (error) {
-        console.error('Upload error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Mobile API: Upload resume
-app.post('/api/users/profile/resume', authenticateToken, upload.single('resume'), async (req, res) => {
-    try {
-        const userId = req.user.id;
-        
-        if (!req.file) {
-            return res.status(400).json({ error: 'No file uploaded' });
-        }
-        
-        const filePath = req.file.path.replace(__dirname + '/', '');
-        
-        await dbConfig.run('UPDATE users SET resume_path = ? WHERE id = ?', [filePath, userId]);
-        
-        res.json({
-            success: true,
-            message: 'Resume uploaded successfully',
-            path: `http://${req.get('host')}/${filePath}`
-        });
-    } catch (error) {
-        console.error('Upload error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Mobile API: Upload signature
-app.post('/api/users/profile/signature', authenticateToken, upload.single('signature'), async (req, res) => {
-    try {
-        const userId = req.user.id;
-        
-        if (!req.file) {
-            return res.status(400).json({ error: 'No file uploaded' });
-        }
-        
-        const filePath = req.file.path.replace(__dirname + '/', '');
-        
-        await dbConfig.run('UPDATE users SET signature_path = ? WHERE id = ?', [filePath, userId]);
-        
-        res.json({
-            success: true,
-            message: 'Signature uploaded successfully',
-            path: `http://${req.get('host')}/${filePath}`
-        });
-    } catch (error) {
-        console.error('Upload error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Mobile API: Update user profile data
-app.post('/api/users/profile/update', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { fullName, phone, address, dateOfBirth } = req.body;
-
-        const updates = [];
-        const params = [];
-
-        if (fullName) {
-            updates.push('full_name = ?');
-            params.push(fullName);
-        }
-        if (phone) {
-            updates.push('phone_number = ?');
-            params.push(phone);
-        }
-        if (address) {
-            updates.push('address = ?');
-            params.push(address);
-        }
-        if (dateOfBirth) {
-            updates.push('date_of_birth = ?');
-            params.push(dateOfBirth);
-        }
-
-        if (updates.length === 0) {
-            return res.status(400).json({ error: 'No fields to update' });
-        }
-
-        params.push(userId);
-        const sql = `UPDATE users SET ${updates.join(', ')} WHERE id = ?`;
-
-        await dbConfig.run(sql, params);
-
-        res.json({
-            success: true,
-            message: 'Profile updated successfully'
-        });
-    } catch (error) {
-        console.error('Update error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Change password endpoint
-app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { currentPassword, newPassword } = req.body;
-
-        if (!currentPassword || !newPassword) {
-            return res.status(400).json({ error: 'Current and new password are required' });
-        }
-
-        if (newPassword.length < 6) {
-            return res.status(400).json({ error: 'New password must be at least 6 characters' });
-        }
-
-        // Get user from database
-        const user = await dbConfig.get('SELECT password FROM users WHERE id = ?', [userId]);
-
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-
-        // Verify current password
-        const validPassword = await bcrypt.compare(currentPassword, user.password);
-        if (!validPassword) {
-            return res.status(401).json({ error: 'Current password is incorrect' });
-        }
-
-        // Hash new password
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-        // Update password in database
-        await dbConfig.run('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, userId]);
-
-        res.json({
-            success: true,
-            message: 'Password changed successfully'
-        });
-    } catch (error) {
-        console.error('Change password error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Privacy settings endpoint
-app.post('/api/users/privacy-settings', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { emailNotifications, smsNotifications, profilePublic } = req.body;
-
-        // Store privacy settings as JSON in the database
-        // For now, we'll just return success as these settings can be stored in a future update
-        const privacySettings = {
-            emailNotifications,
-            smsNotifications,
-            profilePublic
-        };
-
-        // In the future, add a privacy_settings column to users table and save there
-        // For now, just acknowledge receipt and store in session/memory if needed
-        res.json({
-            success: true,
-            message: 'Privacy settings updated successfully',
-            privacySettings: privacySettings
-        });
-    } catch (error) {
-        console.error('Privacy settings error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
 // Save/Update recipients for a user
-app.post('/api/users/recipients', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { recipients } = req.body;
-
-        if (!recipients || !Array.isArray(recipients)) {
-            return res.status(400).json({ error: 'Recipients must be an array' });
-        }
-
-        // Clear existing recipients for this user
-        await dbConfig.run('DELETE FROM recipients WHERE user_id = ?', [userId]);
-
-        // Insert new recipients
-        const validRecipients = recipients.filter(r => r.email && r.website);
-        
-        if (validRecipients.length === 0) {
-            return res.json({
-        success: true,
-        message: 'Recipients cleared successfully',
-        recipientsCount: 0
-            });
-        }
-
-        let insertedCount = 0;
-
-        for (const recipient of validRecipients) {
-            try {
-        await dbConfig.run(
-            'INSERT INTO recipients (user_id, email, website, position) VALUES (?, ?, ?, ?)',
-            [userId, recipient.email, recipient.website, recipient.position || '']
-        );
-        insertedCount++;
-            } catch (err) {
-        console.error('Error inserting recipient:', err);
-            }
-        }
-
-        if (insertedCount === 0) {
-            return res.status(500).json({ error: 'Failed to save recipients' });
-        }
-        
-        res.json({
-            success: true,
-            message: `Successfully saved ${insertedCount} recipients`,
-            recipientsCount: insertedCount
-        });
-    } catch (error) {
-        console.error('Save recipients error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Get recipients for a user
-app.get('/api/users/recipients', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-
-        const recipients = await dbConfig.query(
-            'SELECT id, email, website, position FROM recipients WHERE user_id = ? ORDER BY created_at ASC',
-            [userId]
-        );
-
-        res.json({
-            success: true,
-            recipients: recipients || [],
-            count: (recipients || []).length
-        });
-    } catch (error) {
-        console.error('Get recipients error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Save application history for a user
-app.post('/api/users/application-history', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { applicationHistory } = req.body;
-
-        if (!Array.isArray(applicationHistory)) {
-            return res.status(400).json({ error: 'Application history must be an array' });
-        }
-
-        // Delete existing history for this user
-        await dbConfig.run('DELETE FROM application_history WHERE user_id = ?', [userId]);
-
-        // Insert new history
-        let inserted = 0;
-        for (const app of applicationHistory) {
-            try {
-        await dbConfig.run(
-            'INSERT INTO application_history (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [userId, app.companyName || '', app.position || '', app.recipientEmail || '', app.sentDate || new Date().toISOString(), app.replyReceived ? 1 : 0, app.replyDate || null]
-        );
-        inserted++;
-            } catch (err) {
-        console.error('Error inserting application history:', err);
-            }
-        }
-
-        res.json({
-            success: true,
-            message: 'Application history saved',
-            count: inserted
-        });
-    } catch (error) {
-        console.error('Save application history error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Get application history for a user
-app.get('/api/users/application-history', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-
-        const history = await dbConfig.query(
-            'SELECT id, company_name as "companyName", position, recipient_email as "recipientEmail", sent_date as "sentDate", reply_received as "replyReceived", reply_date as "replyDate" FROM application_history WHERE user_id = ? ORDER BY sent_date DESC',
-            [userId]
-        );
-
-        // Convert reply_received from 0/1 to boolean
-        const formattedHistory = (history || []).map(app => ({
-            ...app,
-            replyReceived: app.replyReceived === 1
-        }));
-
-        res.json({
-            success: true,
-            applicationHistory: formattedHistory,
-            count: formattedHistory.length
-        });
-    } catch (error) {
-        console.error('Get application history error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Save review cover letters for a user
-app.post('/api/users/review-cover-letters', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { reviewCoverLetters } = req.body;
-
-        if (!reviewCoverLetters || typeof reviewCoverLetters !== 'object') {
-            return res.status(400).json({ error: 'Review cover letters must be an object' });
-        }
-
-        // Delete existing cover letters for this user
-        await dbConfig.run('DELETE FROM review_cover_letters WHERE user_id = ?', [userId]);
-
-        // Insert new cover letters
-        let inserted = 0;
-        const entries = Object.entries(reviewCoverLetters);
-        
-        for (const [key, letter] of entries) {
-            try {
-        await dbConfig.run(
-            'INSERT INTO review_cover_letters (user_id, letter_key, company_name, recipient_email, cover_letter_html, subject, address, date, position, locations, generated, sent, sent_date, stored_recipient_email, stored_recipient_website) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [
-                userId,
-                key,
-                letter.companyName || '',
-                letter.recipientEmail || '',
-                letter.coverLetterHtml || '',
-                letter.subject || '',
-                letter.address || '',
-                letter.date || '',
-                letter.position || '',
-                letter.locations ? JSON.stringify(letter.locations) : null,
-                letter.generated ? 1 : 0,
-                letter.sent ? 1 : 0,
-                letter.sentDate || null,
-                letter.storedRecipientEmail || '',
-                letter.storedRecipientWebsite || ''
-            ]
-        );
-        inserted++;
-            } catch (err) {
-        console.error('Error inserting review cover letter:', err);
-            }
-        }
-
-        res.json({
-            success: true,
-            message: 'Review cover letters saved',
-            count: inserted
-        });
-    } catch (error) {
-        console.error('Save review cover letters error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Get review cover letters for a user
-app.get('/api/users/review-cover-letters', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-
-        const letters = await dbConfig.query(
-            'SELECT letter_key, company_name as companyName, recipient_email as recipientEmail, cover_letter_html as coverLetterHtml, subject, address, date, position, locations, generated, sent, sent_date as sentDate, stored_recipient_email as storedRecipientEmail, stored_recipient_website as storedRecipientWebsite FROM review_cover_letters WHERE user_id = ?',
-            [userId]
-        );
-
-        // Convert to object with letter_key as keys
-        const reviewCoverLetters = {};
-        (letters || []).forEach(letter => {
-            reviewCoverLetters[letter.letter_key] = {
-        companyName: letter.companyName,
-        recipientEmail: letter.recipientEmail,
-        coverLetterHtml: letter.coverLetterHtml,
-        subject: letter.subject,
-        address: letter.address,
-        date: letter.date,
-        position: letter.position,
-        locations: letter.locations ? JSON.parse(letter.locations) : null,
-        generated: letter.generated === 1,
-        sent: letter.sent === 1,
-        sentDate: letter.sentDate,
-        storedRecipientEmail: letter.storedRecipientEmail,
-        storedRecipientWebsite: letter.storedRecipientWebsite
-            };
-        });
-
-        res.json({
-            success: true,
-            reviewCoverLetters: reviewCoverLetters,
-            count: Object.keys(reviewCoverLetters).length
-        });
-    } catch (error) {
-        console.error('Get review cover letters error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// API endpoint to get user counters
-app.get('/api/users/counters', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        
-        const row = await dbConfig.get(
-            'SELECT total_generated, total_sent FROM users WHERE id = ?',
-            [userId]
-        );
-        
-        res.json({
-            totalGenerated: row?.total_generated || 0,
-            totalSent: row?.total_sent || 0
-        });
-    } catch (error) {
-        console.error('Error fetching counters:', error);
-        res.status(500).json({ error: 'Failed to fetch counters' });
-    }
-});
-
-// API endpoint to update user counters
-app.post('/api/users/counters', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { totalGenerated, totalSent } = req.body;
-        
-        await dbConfig.run(
-            'UPDATE users SET total_generated = ?, total_sent = ? WHERE id = ?',
-            [totalGenerated || 0, totalSent || 0, userId]
-        );
-        
-        res.json({
-            success: true,
-            totalGenerated: totalGenerated || 0,
-            totalSent: totalSent || 0
-        });
-    } catch (error) {
-        console.error('Error updating counters:', error);
-        res.status(500).json({ error: 'Failed to update counters' });
-    }
-});
-
-// API endpoint to increment generated counter
-app.post('/api/users/counters/increment-generated', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        
-        await dbConfig.run(
-            'UPDATE users SET total_generated = total_generated + 1 WHERE id = ?',
-            [userId]
-        );
-        
-        // Fetch updated counter
-        const row = await dbConfig.get('SELECT total_generated FROM users WHERE id = ?', [userId]);
-        res.json({ success: true, totalGenerated: row.total_generated });
-    } catch (error) {
-        console.error('Error incrementing generated counter:', error);
-        res.status(500).json({ error: 'Failed to increment counter' });
-    }
-});
-
-// API endpoint to increment sent counter
-app.post('/api/users/counters/increment-sent', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        
-        await dbConfig.run(
-            'UPDATE users SET total_sent = total_sent + 1 WHERE id = ?',
-            [userId]
-        );
-        
-        // Fetch updated counter
-        const row = await dbConfig.get('SELECT total_sent FROM users WHERE id = ?', [userId]);
-        res.json({ success: true, totalSent: row.total_sent });
-    } catch (error) {
-        console.error('Error incrementing sent counter:', error);
-        res.status(500).json({ error: 'Failed to increment counter' });
-    }
-});
-
 // ============================================
 // CREDITS MANAGEMENT API ENDPOINTS
 // ============================================
 
 // API endpoint to get all available plans
-app.get('/api/plans', async (req, res) => {
-    try {
-        const plans = await dbConfig.query('SELECT * FROM plans WHERE is_active = 1 ORDER BY price ASC', []);
-        
-        // Parse features JSON string back to array
-        const plansWithFeatures = plans.map(plan => ({
-            ...plan,
-            features: plan.features ? JSON.parse(plan.features) : []
-        }));
-        
-        res.json({ success: true, plans: plansWithFeatures });
-    } catch (error) {
-        console.error('Error fetching plans:', error);
-        res.status(500).json({ error: 'Failed to fetch plans' });
-    }
-});
-
-// API endpoint to get user's credit balance and info
-app.get('/api/user/credits', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        
-        const credits = await dbConfig.get(`
-            SELECT 
-        uc.credits_remaining,
-        uc.credits_total,
-        uc.last_purchase_date,
-        uc.expiry_date,
-        uc.created_at
-            FROM user_credits uc
-            WHERE uc.user_id = ?
-        `, [userId]);
-        
-        // If no credits record exists, create one with 0 credits
-        if (!credits) {
-            await dbConfig.run('INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, 0, 0)', 
-        [userId]
-            );
-            return res.json({
-        success: true,
-        balance: 0, // For backward compatibility
-        credits: {
-            remaining: 0,
-            total: 0,
-            lastPurchaseDate: null,
-            expiryDate: null,
-            isExpired: false
-        }
-            });
-        }
-        
-        const now = new Date();
-        const expiryDate = credits.expiry_date ? new Date(credits.expiry_date) : null;
-        const isExpired = expiryDate && expiryDate < now;
-        
-        res.json({
-            success: true,
-            balance: isExpired ? 0 : credits.credits_remaining, // For backward compatibility
-            credits: {
-        remaining: isExpired ? 0 : credits.credits_remaining,
-        total: credits.credits_total,
-        lastPurchaseDate: credits.last_purchase_date,
-        expiryDate: credits.expiry_date,
-        isExpired: isExpired
-            }
-        });
-    } catch (error) {
-        console.error('Error fetching user credits:', error);
-        res.status(500).json({ error: 'Failed to fetch credit balance' });
-    }
-});
-
-// API endpoint to purchase credits (simulated for now)
-app.post('/api/purchase-credits', authenticateToken, async (req, res) => {
-    const userId = req.user.id;
-    const { planId, paymentMethod, transactionId } = req.body;
-    
-    if (!planId) {
-        return res.status(400).json({ error: 'Plan ID is required' });
-    }
-    
-    try {
-        // Get plan details
-        const plan = await dbConfig.get('SELECT * FROM plans WHERE id = ? AND is_active = 1', [planId]);
-        
-        if (!plan) {
-            return res.status(404).json({ error: 'Plan not found' });
-        }
-        
-        const now = new Date();
-        const validUntil = new Date(now.getTime() + plan.validity_days * 24 * 60 * 60 * 1000);
-        
-        // Insert transaction record
-        await dbConfig.run(`
-            INSERT INTO credit_transactions 
-            (user_id, plan_id, credits_purchased, amount_paid, transaction_status, valid_from, valid_until, payment_method, transaction_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [userId, planId, plan.credits, plan.price, 'completed', now.toISOString(), validUntil.toISOString(), paymentMethod || 'simulated', transactionId || `TXN-${Date.now()}`]);
-        
-        // Update or create user credits
-        const userCredits = await dbConfig.get('SELECT * FROM user_credits WHERE user_id = ?', [userId]);
-        
-        if (!userCredits) {
-            // Create new credits record
-            await dbConfig.run(`
-        INSERT INTO user_credits (user_id, credits_remaining, credits_total, last_purchase_date, expiry_date)
-        VALUES (?, ?, ?, ?, ?)
-            `, [userId, plan.credits, plan.credits, now.toISOString(), validUntil.toISOString()]);
-            
-            return res.json({
-        success: true,
-        message: 'Credits purchased successfully',
-        credits: {
-            remaining: plan.credits,
-            total: plan.credits,
-            expiryDate: validUntil.toISOString()
-        }
-            });
-        } else {
-            // Update existing credits (add to existing balance if not expired)
-            const currentExpiry = userCredits.expiry_date ? new Date(userCredits.expiry_date) : null;
-            const isExpired = currentExpiry && currentExpiry < now;
-            
-            const newRemaining = isExpired ? plan.credits : userCredits.credits_remaining + plan.credits;
-            const newTotal = userCredits.credits_total + plan.credits;
-            const newExpiry = (currentExpiry && !isExpired && currentExpiry > validUntil) ? currentExpiry : validUntil;
-            
-            await dbConfig.run(`
-        UPDATE user_credits 
-        SET credits_remaining = ?, credits_total = ?, last_purchase_date = ?, expiry_date = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = ?
-            `, [newRemaining, newTotal, now.toISOString(), newExpiry.toISOString(), userId]);
-            
-            return res.json({
-        success: true,
-        message: 'Credits purchased successfully',
-        credits: {
-            remaining: newRemaining,
-            total: newTotal,
-            expiryDate: newExpiry.toISOString()
-        }
-            });
-        }
-    } catch (error) {
-        console.error('Purchase credits error:', error);
-        return res.status(500).json({ error: 'Failed to purchase credits' });
-    }
-});
-
-// API endpoint to get user's monthly usage statistics
-app.get('/api/user/usage-stats', authenticateToken, async (req, res) => {
-    const userId = req.user.id;
-    
-    const currentDate = new Date();
-    const currentMonth = currentDate.getMonth() + 1; // 1-12
-    const currentYear = currentDate.getFullYear();
-    const firstDayOfMonth = new Date(currentYear, currentMonth - 1, 1);
-    const lastDayOfMonth = new Date(currentYear, currentMonth, 0);
-    
-    try {
-        // Get user's credit info
-        const credits = await dbConfig.get('SELECT credits_remaining as "creditsRemaining", credits_total as "creditsTotal", expiry_date as "expiryDate" FROM user_credits WHERE user_id = ?', [userId]);
-        
-        const creditBalance = credits?.creditsRemaining || 0;
-        const creditTotal = credits?.creditsTotal || 0;
-        const expiryDate = credits?.expiryDate;
-        
-        // Calculate expiring credits (credits expiring within 30 days)
-        let expiringCredits = 0;
-        let creditExpiryDate = null;
-        if (expiryDate) {
-            const expiryDateObj = new Date(expiryDate);
-            const daysUntilExpiry = Math.floor((expiryDateObj - currentDate) / (1000 * 60 * 60 * 24));
-            if (daysUntilExpiry <= 30 && daysUntilExpiry >= 0) {
-        expiringCredits = creditBalance;
-        creditExpiryDate = expiryDate;
-            }
-        }
-        
-        // Get user's total generated and sent from users table
-        const userStats = await dbConfig.get('SELECT total_generated as "totalGenerated", total_sent as "totalSent" FROM users WHERE id = ?', [userId]);
-        
-        const totalGenerated = userStats?.totalGenerated || 0;
-        const totalSent = userStats?.totalSent || 0;
-        
-        // Get credit history (transactions)
-        const transactions = await dbConfig.query(`
-            SELECT 
-        description,
-        credits_change as "creditsChange",
-        balance_after as "balanceAfter",
-        transaction_type as "transactionType",
-        created_at as "transactionDate"
-            FROM credit_transactions
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            LIMIT 20
-        `, [userId]);
-        
-        // Get date-wise activity for last 30 days
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        
-        const dailyActivity = await dbConfig.query(`
-            SELECT 
-        DATE(created_at) as date,
-        SUM(CASE WHEN transaction_type = 'deduction' THEN ABS(credits_change) ELSE 0 END) as "creditsUsed",
-        MAX(balance_after) as "creditsAvailable"
-            FROM credit_transactions
-            WHERE user_id = ? AND created_at >= ?
-            GROUP BY DATE(created_at)
-            ORDER BY date DESC
-        `, [userId, thirtyDaysAgo.toISOString()]);
-        
-        // Create a map for quick lookup
-        const activityMap = {};
-        if (dailyActivity && dailyActivity.length > 0) {
-            dailyActivity.forEach(day => {
-        activityMap[day.date] = {
-            creditsUsed: day.creditsUsed || 0,
-            creditsAvailable: day.creditsAvailable || 0
-        };
-            });
-        }
-        
-        // Generate date-wise data for last 30 days
-        const dateWiseData = [];
-        for (let i = 29; i >= 0; i--) {
-            const date = new Date();
-            date.setDate(date.getDate() - i);
-            const dateStr = date.toISOString().split('T')[0];
-            const dayData = activityMap[dateStr] || { creditsUsed: 0, creditsAvailable: creditBalance };
-            
-            dateWiseData.push({
-        date: dateStr,
-        dateFormatted: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        generated: 0, // Will be calculated from review_cover_letters
-        sent: 0, // Will be calculated from review_cover_letters
-        creditsUsed: dayData.creditsUsed,
-        creditsAvailable: dayData.creditsAvailable
-            });
-        }
-        
-        // Get generated/sent counts per day from review_cover_letters
-        const letterStats = await dbConfig.query(`
-            SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as generated,
-        SUM(CASE WHEN sent = 1 THEN 1 ELSE 0 END) as sent
-            FROM review_cover_letters
-            WHERE user_id = ? AND created_at >= ?
-            GROUP BY DATE(created_at)
-        `, [userId, thirtyDaysAgo.toISOString()]);
-        
-        // Merge letter stats into dateWiseData
-        if (letterStats && letterStats.length > 0) {
-            letterStats.forEach(stat => {
-        const dayIndex = dateWiseData.findIndex(d => d.date === stat.date);
-        if (dayIndex >= 0) {
-            dateWiseData[dayIndex].generated = stat.generated || 0;
-            dateWiseData[dayIndex].sent = stat.sent || 0;
-        }
-            });
-        }
-        
-        res.json({
-            success: true,
-            credits: {
-                remaining: creditBalance,
-                total: creditTotal,
-                expiring: expiringCredits,
-                expiryDate: creditExpiryDate
-            },
-            currentMonth: {
-                month: currentMonth,
-                year: currentYear,
-                creditsUsed: creditTotal - creditBalance, // Credits used = total - remaining
-                lettersGenerated: totalGenerated,
-                lettersSent: totalSent
-            },
-            history: [], // Monthly history from monthly_usage_stats if needed
-            creditHistory: transactions || [],
-            dateWiseActivity: dateWiseData
-        });
-    } catch (error) {
-        console.error('Usage stats error:', error);
-        return res.status(500).json({ error: 'Failed to fetch usage statistics' });
-    }
-});
-
-// API endpoint to get detailed credit usage history
-app.get('/api/user/credit-history', authenticateToken, async (req, res) => {
-    const userId = req.user.id;
-    const { limit = 50 } = req.query;
-    
-    try {
-        const history = await dbConfig.query(`
-            SELECT 
-        id,
-        credits_used as "creditsUsed",
-        action_type as "actionType",
-        company_name as "companyName",
-        position,
-        recipient_email as "recipientEmail",
-        created_at as "createdAt"
-            FROM credit_usage_history
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-        `, [userId, parseInt(limit)]);
-        
-        res.json({ success: true, history: history || [] });
-    } catch (error) {
-        console.error('Error fetching credit history:', error);
-        return res.status(500).json({ error: 'Failed to fetch credit history' });
-    }
-});
-
-// API endpoint to get purchase/transaction history
-app.get('/api/user/purchase-history', authenticateToken, async (req, res) => {
-    const userId = req.user.id;
-    
-    try {
-        const transactions = await dbConfig.query(`
-            SELECT 
-        ct.id,
-        ct.credits_purchased as "creditsPurchased",
-        ct.amount_paid as "amountPaid",
-        ct.transaction_status as "transactionStatus",
-        ct.transaction_date as "transactionDate",
-        ct.valid_from as "validFrom",
-        ct.valid_until as "validUntil",
-        ct.payment_method as "paymentMethod",
-        ct.transaction_id as "transactionId",
-        p.name as "planName"
-            FROM credit_transactions ct
-            LEFT JOIN plans p ON ct.plan_id = p.id
-            WHERE ct.user_id = ?
-            ORDER BY ct.transaction_date DESC
-        `, [userId]);
-        
-        res.json({ success: true, transactions: transactions || [] });
-    } catch (error) {
-        console.error('Error fetching purchase history:', error);
-        return res.status(500).json({ error: 'Failed to fetch purchase history' });
-    }
-});
-
 // ============================================
-// END CREDITS MANAGEMENT API ENDPOINTS
+// CREDITS AND USAGE - Now in server/controllers/creditsController.js
 // ============================================
 
 // API endpoint to get user profile data (protected)
@@ -1949,6 +874,14 @@ app.get('/api/user-profile', authenticateToken, async (req, res) => {
         // Decrypt SMTP password before sending (only send masked version to frontend)
         const decryptedPassword = user.smtpPassword ? '********' : '';
 
+        // Format DOB as date-only string using toLocaleDateString to avoid timezone shifts
+        let formattedDOB = null;
+        if (user.dateOfBirth) {
+            const date = new Date(user.dateOfBirth);
+            // 'en-CA' gives YYYY-MM-DD format without timezone conversion
+            formattedDOB = date.toLocaleDateString('en-CA');
+        }
+
         res.json({
             success: true,
             profile: {
@@ -1960,7 +893,7 @@ app.get('/api/user-profile', authenticateToken, async (req, res) => {
         smtpEmail: user.smtpEmail,
         smtpPassword: decryptedPassword, // Send masked password
         senderName: user.senderName,
-        dateOfBirth: user.dateOfBirth,
+        dateOfBirth: formattedDOB,
         phoneNumber: user.phoneNumber,
         address: user.address,
         createdAt: user.createdAt,
@@ -2010,9 +943,21 @@ app.post('/api/update-user-details', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'Full name is required' });
         }
 
+        // THE NOON TRICK: Set time to 12:00 PM to prevent midnight timezone shifts
+        let dateOnly = null;
+        if (dateOfBirth) {
+            const date = new Date(dateOfBirth);
+            date.setHours(12, 0, 0, 0);
+            
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            dateOnly = `${year}-${month}-${day}`;
+        }
+
         await dbConfig.run(
             'UPDATE users SET full_name = ?, date_of_birth = ?, phone_number = ?, address = ? WHERE id = ?',
-            [fullName, dateOfBirth || null, phoneNumber || null, address || null, userId]
+            [fullName, dateOnly, phoneNumber || null, address || null, userId]
         );
 
         res.json({
@@ -2022,6 +967,86 @@ app.post('/api/update-user-details', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('User details update error:', error);
         res.status(500).json({ error: 'Failed to update user details' });
+    }
+});
+
+// API endpoint to change password (protected)
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { currentPassword, newPassword } = req.body;
+
+        // Validation
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({ error: 'Both current and new password are required' });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+        }
+
+        // Get current user password from database
+        const user = await dbConfig.get('SELECT password FROM users WHERE id = ?', [userId]);
+        
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Verify current password
+        const isValidPassword = await bcrypt.compare(currentPassword, user.password);
+        
+        if (!isValidPassword) {
+            return res.status(401).json({ error: 'Current password is incorrect' });
+        }
+
+        // Hash new password
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+        // Update password in database
+        await dbConfig.run(
+            'UPDATE users SET password = ? WHERE id = ?',
+            [hashedPassword, userId]
+        );
+
+        console.log(`✅ Password changed successfully for user ${userId}`);
+
+        res.json({
+            success: true,
+            message: 'Password changed successfully'
+        });
+    } catch (error) {
+        console.error('Change password error:', error);
+        res.status(500).json({ error: 'Failed to change password' });
+    }
+});
+
+// API endpoint to update privacy settings (protected)
+app.post('/api/users/privacy-settings', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { emailNotifications, smsNotifications, profilePublic } = req.body;
+
+        // Store privacy settings as JSON
+        const privacySettings = {
+            emailNotifications: emailNotifications !== false,  // Default true
+            smsNotifications: smsNotifications === true,       // Default false
+            profilePublic: profilePublic === true              // Default false
+        };
+
+        // In future, add privacy_settings column to users table
+        // For now, just return success (settings handled client-side)
+        
+        console.log(`✅ Privacy settings updated for user ${userId}:`, privacySettings);
+
+        res.json({
+            success: true,
+            message: 'Privacy settings updated successfully',
+            privacySettings: privacySettings
+        });
+    } catch (error) {
+        console.error('Privacy settings error:', error);
+        res.status(500).json({ error: 'Failed to update privacy settings' });
     }
 });
 
@@ -3167,8 +2192,8 @@ async function createCoverLetterPDF(userData, coverLetterText, companyName, phot
     return { filePath, fileName };
 }
 
-// API endpoint to generate cover letters only (no sending)
-app.post('/api/generate-cover-letters', authenticateToken, async (req, res) => {
+// API endpoint to download generated cover letter
+app.get('/api/download-cover-letter/:filename', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
         const { recipients } = req.body;
@@ -3305,6 +2330,19 @@ app.post('/api/generate-cover-letters', authenticateToken, async (req, res) => {
 
         const successCount = results.filter(r => r.status === 'generated').length;
         
+        // Update total_generated counter
+        if (successCount > 0) {
+            try {
+                await dbConfig.run(
+                    'UPDATE users SET total_generated = total_generated + ? WHERE id = ?',
+                    [successCount, userId]
+                );
+                console.log(`📊 Updated total_generated counter: +${successCount}`);
+            } catch (error) {
+                console.error('⚠️ Failed to update counter:', error.message);
+            }
+        }
+        
         console.log(`\n✅ Generated: ${successCount}/${recipients.length} cover letters`);
         console.log(`💳 Total credits deducted: ${creditsDeducted}`);
         
@@ -3336,13 +2374,39 @@ app.post('/api/generate-cover-letters', authenticateToken, async (req, res) => {
     }
 });
 
-// API endpoint to generate cover letter details with AI for review page
-app.post('/api/generate-cover-letter-details', authenticateToken, async (req, res) => {
-    const requestId = Date.now();
-    const startTime = Date.now();
+// ============================================================================
+// COVER LETTER & EMAIL MODULES - Now properly separated into controllers
+// ============================================================================
+// All cover letter generation endpoints are now in:
+//   - server/controllers/coverLetterController.js
+//   - server/routes/coverLetterRoutes.js (mounted below)
+//
+// All email/application sending endpoints are now in:
+//   - server/controllers/emailController.js  
+//   - server/routes/emailRoutes.js (mounted below)
+//
+// These routes are mounted at lines ~3206-3207 with:
+//   app.use('/api', coverLetterRoutes);
+//   app.use('/api', emailRoutes);
+// ============================================================================
+
+// ============================================
+// ADMIN - CREDIT PACKAGE MANAGEMENT
+// ============================================
+// Note: Admin package management endpoints would go here
+// The is-admin check endpoint is defined later in the file
+
+// Skipped duplicate/incorrect cover letter generation endpoint
+// (was mislabeled as /api/generate-cover-letter-pdf but had different implementation)
+
+/* COMMENTED OUT DUPLICATE ENDPOINT - START
+// API endpoint to generate cover letter PDF for download
+app.post('/api/generate-cover-letter-pdf', authenticateToken, async (req, res) => {
+    try {
     console.log(`\n${'='.repeat(60)}`);
     console.log(`📨 [${requestId}] REQUEST RECEIVED at ${new Date().toISOString()}`);
     console.log(`   IP: ${req.ip}, UserAgent: ${req.get('user-agent')?.substring(0, 50)}...`);
+    console.log(`🔑 [${requestId}] GEMINI_API_KEY STATUS: ${process.env.GEMINI_API_KEY ? 'LOADED (length: ' + process.env.GEMINI_API_KEY.length + ')' : '❌ MISSING'}`);
     
     try {
         const userId = req.user.id;
@@ -3435,7 +2499,12 @@ app.post('/api/generate-cover-letter-details', authenticateToken, async (req, re
                 position: position,
                 recipientEmail: recipientEmail
             });
-            console.log(`💳 [${requestId}] Deducted 1 credit for generation`);
+            // Update total_generated counter
+            await dbConfig.run(
+                'UPDATE users SET total_generated = total_generated + 1 WHERE id = ?',
+                [userId]
+            );
+            console.log(`💳 [${requestId}] Deducted 1 credit and updated counter`);
         } catch (creditError) {
             console.error(`❌ [${requestId}] Failed to deduct credit:`, creditError);
             // Continue anyway - letter was generated
@@ -3499,6 +2568,7 @@ app.post('/api/generate-cover-letter-details', authenticateToken, async (req, re
         return res.status(500).json({ error: error.message || 'Server error' });
     }
 });
+COMMENTED OUT DUPLICATE ENDPOINT - END */
 
 // API endpoint to generate cover letter PDF for download
 app.post('/api/generate-cover-letter-pdf', authenticateToken, async (req, res) => {
@@ -3661,12 +2731,14 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
 
 // Helper function to generate hiring manager name and all company locations using AI
 async function generateAdditionalDetails(websiteUrl, companyName, position = 'Position') {
-    console.log(`🤖 Gemini AI: Starting location and hiring manager generation for ${companyName}...`);
+    console.log(`\n🤖 [GEMINI] Starting location and hiring manager generation for ${companyName}...`);
+    console.log(`🔑 [GEMINI] API Key Status: ${process.env.GEMINI_API_KEY ? '✅ LOADED (starts with: ' + process.env.GEMINI_API_KEY.substring(0, 10) + '...)' : '❌ MISSING'}`);
     const startTime = Date.now();
     const geminiKey = process.env.GEMINI_API_KEY;
     
-    if (!geminiKey) {
-        console.log(`⚠️  Gemini API key not found, returning defaults`);
+    if (!geminiKey || geminiKey === 'your_gemini_api_key_here') {
+        console.log(`❌ [GEMINI] API key not found or is placeholder, returning GENERIC defaults`);
+        console.log(`⚠️  [GEMINI] This is why you're getting generic content in 175ms!`);
         return {
             hiringManager: 'Hiring Manager',
             subject: `Application for ${position}`,
@@ -3678,16 +2750,18 @@ async function generateAdditionalDetails(websiteUrl, companyName, position = 'Po
             }]
         };
     }
+    
+    console.log(`✅ [GEMINI] Valid API key detected, proceeding with AI generation...`);
 
     try {
+        console.log(`📦 [GEMINI] Loading GoogleGenerativeAI package...`);
         const { GoogleGenerativeAI } = require('@google/generative-ai');
+        console.log(`🔧 [GEMINI] Initializing Gemini with key: ${geminiKey.substring(0, 15)}...`);
         const genAI = new GoogleGenerativeAI(geminiKey);
         const model = genAI.getGenerativeModel({ 
-            model: 'gemini-2.0-flash-exp',
-            tools: [{
-        googleSearch: {}
-            }]
+            model: 'gemini-2.5-flash'
         });
+        console.log(`✅ [GEMINI] Model initialized, preparing prompt...`);
 
         const prompt = `You are a research assistant. Find the ACTUAL headquarters location and address for the company "${companyName}" (website: ${websiteUrl}).
 
@@ -3784,7 +2858,12 @@ Return ONLY valid JSON, no additional text.`;
         return {
             hiringManager: data.hiringManager || 'Hiring Manager',
             subject: data.subject || `Application for ${position}`,
-            locations: data.locations && data.locations.length > 0 ? data.locations : [{
+            locations: data.locations && data.locations.length > 0 ? data.locations.map(loc => ({
+                country: loc.country || 'N/A',
+                city: loc.city || 'N/A',
+                address: loc.address || `${loc.city || 'N/A'}, ${loc.country || 'N/A'}`,
+                isHeadquarters: loc.isHeadquarters !== undefined ? loc.isHeadquarters : true
+            })) : [{
                 country: 'N/A',
                 city: 'N/A',
                 address: 'N/A',
@@ -3837,228 +2916,12 @@ app.get('/api/download-cover-letter/:filename', authenticateToken, async (req, r
     }
 });
 
-// API endpoint to send applications (protected)
-app.post('/api/send-applications', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { recipients } = req.body;
-
-        if (!recipients || recipients.length === 0) {
-            return res.status(400).json({ error: 'No recipients provided' });
-        }
-
-        // Get user's complete profile and files from database
-        try {
-            const user = await dbConfig.get('SELECT full_name as "fullName", email, phone_number as "phoneNumber", city, country, smtp_email as "smtpEmail", smtp_password as "smtpPassword", sender_name as "senderName", resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath" FROM users WHERE id = ?', [userId]);
-            
-            if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-            }
-
-            // Check if user has personal SMTP or use default from .env
-            let smtpEmail, smtpPassword;
-            
-            if (user.smtpEmail && user.smtpPassword) {
-        // Use user's personal SMTP credentials
-        console.log('📧 Using user SMTP credentials...');
-        smtpEmail = user.smtpEmail;
-        smtpPassword = decryptData(user.smtpPassword);
-            } else if (process.env.SMTP_USER && process.env.SMTP_PASS) {
-        // Use default SMTP credentials from .env
-        console.log('📧 Using default SMTP credentials (.env)...');
-        smtpEmail = process.env.SMTP_USER;
-        smtpPassword = process.env.SMTP_PASS;
-            } else {
-        return res.status(400).json({ 
-            error: 'Email settings are required. Please configure your email in Settings or log in with Google OAuth.' 
-        });
-            }
-
-            if (!user.resumePath) {
-        return res.status(400).json({ 
-            error: 'Resume is required. Please upload your resume in the Profile page.' 
-        });
-            }
-
-            // Create transporter with credentials
-            const transporter = createTransporter(smtpEmail, smtpPassword);
-            
-            const results = [];
-            const emailSettings = {
-        email: smtpEmail,
-        name: user.senderName || user.fullName || smtpEmail.split('@')[0]
-            };
-
-            // Prepare user data for AI generation
-            const userData = {
-        fullName: user.fullName,
-        email: user.email,
-        phoneNumber: user.phoneNumber,
-        city: user.city,
-        country: user.country
-            };
-
-            const resumePath = path.join(__dirname, user.resumePath);
-            const photoPath = user.photoPath ? path.join(__dirname, user.photoPath) : null;
-            const signaturePath = user.signaturePath ? path.join(__dirname, user.signaturePath) : null;
-
-        console.log('\n🚀 Starting application sending process...');
-        console.log(`📧 Sending to ${recipients.length} recipient(s)`);
-
-        for (const recipient of recipients) {
-            try {
-                console.log(`\n📤 Processing: ${recipient.email}`);
-
-                let filePath, fileName, companyName;
-
-                // Check if cover letter was pre-generated (fileName provided)
-                if (recipient.fileName) {
-                    // Use pre-generated cover letter from temp folder
-                    fileName = recipient.fileName;
-                    filePath = path.join(__dirname, 'temp', fileName);
-                    companyName = fileName.split('_')[2] || 'Company'; // Extract from filename
-                    
-                    // Verify file exists
-                    try {
-                        await fs.access(filePath);
-                        console.log(`✅ Using pre-generated cover letter: ${fileName}`);
-                    } catch {
-                        throw new Error('Pre-generated cover letter not found. Please regenerate.');
-                    }
-                } else {
-                    // Generate cover letter on the fly (fallback for backward compatibility)
-                    const coverLetterResult = await templateGenerator.generateCoverLetter(
-                        userData,
-                        resumePath,
-                        recipient.email,
-                        recipient.website,
-                        recipient.position || 'Position'
-                    );
-
-                    if (!coverLetterResult.success) {
-                        throw new Error(`Cover letter generation failed: ${coverLetterResult.error}`);
-                    }
-
-                    companyName = coverLetterResult.companyName;
-                    const coverLetterText = coverLetterResult.coverLetter; // TEXT format
-                    
-                    console.log(`✅ Generated personalized cover letter for ${companyName}`);
-
-                    // Format cover letter with HTML (bold key points) - same as mobile
-                    const coverLetterHtml = formatCoverLetterWithHTML(coverLetterText, coverLetterResult.metadata);
-                    console.log(`📝 HTML formatted for PDF generation`);
-
-                    // Use common PDF generation function (same as mobile)
-                    const pdfResult = await generateCoverLetterPDF(
-                        user,
-                        coverLetterHtml,
-                        companyName,
-                        '' // no specific address
-                    );
-                    
-                    filePath = pdfResult.filePath;
-                    fileName = pdfResult.fileName;
-                    
-                    console.log(`📄 Created PDF: ${fileName}`);
-                }
-
-                console.log(`📎 Attaching cover letter: ${fileName}`);
-
-                // Position from recipient or default
-                const position = recipient.position || 'Position at your company';
-
-                // Send email with personalized content
-                const mailOptions = {
-                    from: `${emailSettings.name} <${emailSettings.email}>`,
-                    to: recipient.email,
-                    replyTo: user.email,
-                    subject: `Application for ${position}`,
-                    html: `
-                        <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
-                            <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Dear Hiring Manager at ${companyName},</h2>
-                            
-                            <p style="font-size: 16px; margin: 20px 0;">
-                                I'm excited to submit my application for the <strong>${position}</strong> role. 
-                                Please find attached my personalized cover letter and resume.
-                            </p>
-                            
-                            <p style="font-size: 16px; margin: 20px 0;">
-                                I believe my background and skills align well with what ${companyName} is looking for, 
-                                and I'd love the opportunity to discuss how I can contribute to your team's success.
-                            </p>
-                            
-                            <div style="background: #f8f9fa; padding: 15px; border-left: 4px solid #3498db; margin: 25px 0;">
-                                <p style="margin: 0; font-size: 14px;">
-                                    📧 <strong>Email:</strong> ${user.email}<br>
-                                    ${user.phone_number ? `📱 <strong>Phone:</strong> ${user.phone_number}<br>` : ''}
-                                    ${user.city && user.country ? `📍 <strong>Location:</strong> ${user.city}, ${user.country}` : ''}
-                                </p>
-                            </div>
-                            
-                            <p style="font-size: 16px; margin: 20px 0;">
-                                I'm looking forward to hearing from you!
-                            </p>
-                            
-                            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
-                                <p style="margin: 5px 0; font-size: 16px;"><strong>${userData.fullName}</strong></p>
-                                <p style="margin: 5px 0; font-size: 14px; color: #666;">${user.email}</p>
-                            </div>
-                        </div>
-                    `,
-                    attachments: [
-                        {
-                            filename: fileName,
-                            path: filePath,
-                        },
-                        {
-                            filename: path.basename(resumePath),
-                            path: resumePath,
-                        }
-                    ],
-                };
-
-                await transporter.sendMail(mailOptions);
-
-                // Clean up temp PDF file
-                await fs.unlink(filePath);
-
-                results.push({
-                    email: recipient.email,
-                    company: companyName,
-                    status: 'success',
-                    message: 'Application sent successfully'
-                });
-
-                console.log(`✅ Email sent successfully to ${recipient.email}`);
-
-            } catch (error) {
-                console.error(`❌ Failed to send to ${recipient.email}:`, error.message);
-                results.push({
-                    email: recipient.email,
-                    status: 'failed',
-                    error: error.message,
-                });
-            }
-        }
-
-        const successCount = results.filter(r => r.status === 'success').length;
-        
-        console.log(`\n✅ Completed: ${successCount}/${recipients.length} successful`);
-        
-        res.json({
-            success: true,
-            message: `Sent to ${successCount}/${recipients.length} recipients`,
-            results,
-        });
-        } catch (error) {
-            console.error('Database error:', error);
-            return res.status(500).json({ error: 'Failed to load user profile' });
-        }
-    } catch (error) {
-        console.error('Server error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
+// ============================================
+// EMAIL SENDING ENDPOINTS - NOW USING REFACTORED CONTROLLERS
+// Endpoints: /api/send-applications, /api/send-single-application
+// Location: server/controllers/emailController.js
+// Routes: server/routes/emailRoutes.js (mounted at bottom of this file)
+// ============================================
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -4068,418 +2931,11 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// API endpoint to send single application from review page
-app.post('/api/send-single-application', authenticateToken, async (req, res) => {
-    console.log('\n=== SEND APPLICATION REQUEST RECEIVED ===');
-    console.log('Request body:', JSON.stringify(req.body, null, 2));
-    console.log('User from token:', req.user);
-    console.log('==========================================\n');
-    
-    const userId = req.user.id;
-    const { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress } = req.body;
-    
-    console.log('\n🔍 EXTRACTED FROM REQUEST:');
-    console.log('  companyName:', companyName);
-    console.log('  companyAddress:', companyAddress);
-    console.log('  coverLetterText type:', typeof coverLetterText);
-    console.log('  coverLetterText is HTML:', coverLetterText?.includes('<'));
-    console.log('  coverLetterText length:', coverLetterText?.length);
-    console.log('\n');
-
-    // Get user profile
-    try {
-        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
-        
-        console.log('\n=== DATABASE USER QUERY ===');
-        console.log('User found:', !!user);
-        if (user) {
-            console.log('User data:', {
-        id: user.id,
-        email: user.email,
-        oauth_provider: user.oauth_provider,
-        has_google_access_token: !!user.google_access_token,
-        has_smtp_email: !!user.smtp_email,
-        has_smtp_password: !!user.smtp_password
-            });
-        }
-        console.log('===========================\n');
-        
-        if (!user) {
-            return res.status(500).json({ error: 'Failed to load user profile' });
-        }
-
-        // Check if resume exists
-        if (!user.resume_path) {
-            return res.status(400).json({ error: 'Resume is required' });
-        }
-
-        // Use common PDF generation function (mobile version logic)
-        const { filePath, fileName } = await generateCoverLetterPDF(
-            user,
-            coverLetterText,  // coverLetterText contains HTML from mobile
-            companyName,
-            companyAddress
-        );
-
-        console.log(`📄 Generated PDF for email: ${fileName} at ${filePath}`);
-
-        // STEP 2: Read the generated PDF file
-        const resumePath = path.join(__dirname, user.resume_path);
-        const coverLetterPdfBuffer = await fs.readFile(filePath);
-
-        // Generate professional email body
-        const emailBody = generateEmailBody(position, companyName, user.full_name);
-        const subject = `Application for ${position} - ${user.full_name}`;
-
-        // Debug: Log user OAuth status
-        console.log('=== USER OAUTH STATUS ===');
-        console.log('User ID:', user.id);
-        console.log('User Email:', user.email);
-        console.log('OAuth Provider:', user.oauth_provider || 'NOT SET');
-        console.log('Has Google Access Token:', !!user.google_access_token);
-        console.log('Has Google Refresh Token:', !!user.google_refresh_token);
-        console.log('Has SMTP Email:', !!user.smtp_email);
-        console.log('Has SMTP Password:', !!user.smtp_password);
-        console.log('=========================');
-
-        // Priority 1: Try Gmail API if user logged in with OAuth
-        if (user.oauth_provider === 'google' && user.google_access_token) {
-            try {
-                console.log('📧 Sending email via Gmail API (OAuth)...');
-                console.log('OAuth User:', { id: user.id, email: user.email, provider: user.oauth_provider });
-                console.log('Recipient:', recipientEmail);
-                console.log('Subject:', subject);
-                
-                const result = await sendEmailViaGmail(
-                    user,
-                    recipientEmail,
-                    subject,
-                    emailBody,
-                    resumePath,
-                    coverLetterPdfBuffer
-                );
-
-                console.log(`✅ Application sent via Gmail to ${recipientEmail}`);
-                return res.json({
-                    success: true,
-                    message: 'Application sent successfully via Gmail',
-                    method: 'gmail-api'
-                });
-
-            } catch (gmailError) {
-                console.error('❌ Gmail API error:', gmailError.message);
-                console.error('Error details:', gmailError);
-                console.error('Error stack:', gmailError.stack);
-                
-                // If OAuth token expired, inform user
-                if (gmailError.message?.includes('OAuth token expired')) {
-                    return res.status(401).json({
-                        error: 'Your Google authentication has expired. Please log out and log in again with Google.',
-                        requiresReauth: true
-                    });
-                }
-                
-                // Otherwise, fall through to SMTP
-                console.log('⚠️ Gmail API failed, falling back to SMTP...');
-            }
-        }
-
-        // Priority 2: Fall back to SMTP
-        // Check if user has personal SMTP or use default from .env
-        let smtpEmail, smtpPassword;
-        
-        if (user.smtp_email && user.smtp_password) {
-            // Use user's personal SMTP credentials
-            console.log('📧 Sending email via user SMTP credentials...');
-            smtpEmail = user.smtp_email;
-            smtpPassword = decryptData(user.smtp_password);
-        } else if (process.env.SMTP_USER && process.env.SMTP_PASS) {
-            // Use default SMTP credentials from .env
-            console.log('📧 Sending email via default SMTP credentials (.env)...');
-            smtpEmail = process.env.SMTP_USER;
-            smtpPassword = process.env.SMTP_PASS;
-            console.log('SMTP_USER from .env:', process.env.SMTP_USER);
-            console.log('SMTP_PASS length:', process.env.SMTP_PASS?.length);
-            console.log('SMTP_PASS first 4 chars:', process.env.SMTP_PASS?.substring(0, 4));
-        } else {
-            console.error('❌ No SMTP credentials available');
-            console.error('User SMTP email:', user.smtp_email ? 'Set' : 'Not set');
-            console.error('User SMTP password:', user.smtp_password ? 'Set' : 'Not set');
-            console.error('Default SMTP email:', process.env.SMTP_USER ? 'Set' : 'Not set');
-            console.error('Default SMTP password:', process.env.SMTP_PASS ? 'Set' : 'Not set');
-            return res.status(400).json({ 
-                error: 'Email sending failed. Please configure SMTP settings in Settings or log in with Google OAuth.' 
-            });
-        }
-
-        console.log('SMTP User:', { id: user.id, email: user.email, smtp_email: smtpEmail });
-        console.log('Recipient:', recipientEmail);
-        console.log('Subject:', subject);
-
-        // Create transporter
-        const transporter = createTransporter(smtpEmail, smtpPassword);
-
-        // Send email via SMTP
-        const senderName = user.sender_name || user.full_name || smtpEmail.split('@')[0];
-
-        await transporter.sendMail({
-            from: `"${senderName}" <${smtpEmail}>`,
-            replyTo: user.email,
-            to: recipientEmail,
-            subject: subject,
-            text: emailBody,
-            attachments: [
-                {
-                    filename: fileName,
-                    path: filePath,
-                },
-                {
-                    filename: path.basename(resumePath),
-                    path: resumePath,
-                },
-            ],
-        });
-
-        console.log(`✅ Application sent via SMTP to ${recipientEmail}`);
-
-        res.json({
-            success: true,
-            message: 'Application sent successfully via SMTP',
-            method: 'smtp'
-        });
-
-    } catch (error) {
-        console.error('Database error:', error);
-        return res.status(500).json({ error: 'Failed to load user profile' });
-    }
-});
-
 // ============================================
 // ADMIN - CREDIT PACKAGE MANAGEMENT
 // ============================================
 
 // Get all packages (public - for users to see available packages)
-app.get('/api/packages', async (req, res) => {
-    try {
-        const packages = await dbConfig.query(`
-            SELECT id, name, price as amount, credits, validity_days, description, 'USD' as currency, is_popular, display_order
-            FROM plans 
-            WHERE is_active = 1
-            ORDER BY display_order ASC, id ASC
-        `, []);
-        res.json({ packages });
-    } catch (error) {
-        console.error('Error fetching packages:', error);
-        res.status(500).json({ error: 'Failed to fetch packages' });
-    }
-});
-
-// Removed duplicate route - keeping first /api/packages above
-
-// Get all packages (admin - including inactive)
-app.get('/api/admin/packages', authenticateAdmin, async (req, res) => {
-    try {
-        const packages = await dbConfig.query(`
-            SELECT 
-        id,
-        name,
-        credits,
-        price as amount,
-        validity_days,
-        description,
-        features,
-        is_active,
-        'USD' as currency,
-        is_popular,
-        display_order,
-        created_at,
-        updated_at
-            FROM plans 
-            ORDER BY id ASC
-        `, []);
-        res.json({ packages });
-    } catch (error) {
-        console.error('Error fetching packages:', error);
-        res.status(500).json({ error: 'Failed to fetch packages' });
-    }
-});
-
-// Get single package
-app.get('/api/admin/packages/:id', authenticateAdmin, async (req, res) => {
-    const { id } = req.params;
-    
-    try {
-        const package = await dbConfig.get(`
-            SELECT 
-        id,
-        name,
-        credits,
-        price as amount,
-        validity_days,
-        description,
-        features,
-        is_active,
-        'USD' as currency,
-        is_popular,
-        display_order,
-        created_at,
-        updated_at
-            FROM plans 
-            WHERE id = ?
-        `, [id]);
-        
-        if (!package) {
-            return res.status(404).json({ error: 'Package not found' });
-        }
-        res.json({ package });
-    } catch (error) {
-        console.error('Error fetching package:', error);
-        res.status(500).json({ error: 'Failed to fetch package' });
-    }
-});
-
-// Create new package
-app.post('/api/admin/packages', authenticateAdmin, async (req, res) => {
-    const { name, amount, credits, validity_days, description, currency, is_popular, display_order } = req.body;
-    
-    // Validation
-    if (!name || amount === undefined || !credits || !validity_days) {
-        return res.status(400).json({ error: 'Missing required fields: name, amount, credits, validity_days' });
-    }
-    
-    if (amount < 0 || credits < 1 || validity_days < 1) {
-        return res.status(400).json({ error: 'Invalid values for amount, credits, or validity_days' });
-    }
-    
-    try {
-        const result = await dbConfig.run(`
-            INSERT INTO plans (name, price, credits, validity_days, description, is_active, is_popular, display_order)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            RETURNING id
-        `, [
-            name, 
-            amount, 
-            credits, 
-            validity_days, 
-            description || null,
-            1,
-            is_popular !== undefined ? (is_popular ? 1 : 0) : 0,
-            display_order || 0
-        ]);
-        
-        const packageId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
-        
-        res.json({ 
-            success: true, 
-            message: 'Package created successfully',
-            packageId: packageId
-        });
-    } catch (error) {
-        console.error('Error creating package:', error);
-        return res.status(500).json({ error: 'Failed to create package' });
-    }
-});
-
-// Update package
-app.put('/api/admin/packages/:id', authenticateAdmin, async (req, res) => {
-    const { id } = req.params;
-    const { name, amount, credits, validity_days, description, currency, is_active, is_popular, display_order } = req.body;
-    
-    // Validation
-    if (!name || amount === undefined || !credits || !validity_days) {
-        return res.status(400).json({ error: 'Missing required fields' });
-    }
-    
-    if (amount < 0 || credits < 1 || validity_days < 1) {
-        return res.status(400).json({ error: 'Invalid values' });
-    }
-    
-    try {
-        const result = await dbConfig.run(`
-            UPDATE plans 
-            SET name = ?, 
-                price = ?, 
-                credits = ?, 
-                validity_days = ?, 
-                description = ?, 
-                is_active = ?,
-                is_popular = ?,
-                display_order = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        `, [
-            name, 
-            amount, 
-            credits, 
-            validity_days, 
-            description || null,
-            is_active !== undefined ? (is_active ? 1 : 0) : 1,
-            is_popular !== undefined ? (is_popular ? 1 : 0) : 0,
-            display_order || 0,
-            id
-        ]);
-        
-        if (result.rowCount === 0) {
-            return res.status(404).json({ error: 'Package not found' });
-        }
-        
-        res.json({ 
-            success: true, 
-            message: 'Package updated successfully'
-        });
-    } catch (error) {
-        console.error('Error updating package:', error);
-        return res.status(500).json({ error: 'Failed to update package' });
-    }
-});
-
-// Delete package
-app.delete('/api/admin/packages/:id', authenticateAdmin, async (req, res) => {
-    const { id } = req.params;
-    
-    try {
-        const result = await dbConfig.run('DELETE FROM plans WHERE id = ?', [id]);
-        
-        if (result.rowCount === 0) {
-            return res.status(404).json({ error: 'Package not found' });
-        }
-        
-        res.json({ 
-            success: true, 
-            message: 'Package deleted successfully'
-        });
-    } catch (error) {
-        console.error('Error deleting package:', error);
-        return res.status(500).json({ error: 'Failed to delete package' });
-    }
-});
-
-// Toggle package active status
-app.patch('/api/admin/packages/:id/toggle-active', authenticateAdmin, async (req, res) => {
-    const { id } = req.params;
-    
-    try {
-        const result = await dbConfig.run(`
-            UPDATE plans 
-            SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        `, [id]);
-        
-        if (result.rowCount === 0) {
-            return res.status(404).json({ error: 'Package not found' });
-        }
-        
-        res.json({ 
-            success: true, 
-            message: 'Package status toggled successfully'
-        });
-    } catch (error) {
-        console.error('Error toggling package status:', error);
-        return res.status(500).json({ error: 'Failed to toggle package status' });
-    }
-});
-
 // Check if user is admin
 app.get('/api/user/is-admin', authenticateToken, async (req, res) => {
     try {
@@ -4491,251 +2947,110 @@ app.get('/api/user/is-admin', authenticateToken, async (req, res) => {
 });
 
 // ============================================
-// PAYMENT ENDPOINTS (RAZORPAY INTEGRATION)
 // ============================================
+// PAYMENT ENDPOINTS - Now Modularized
+// ============================================
+// Payment routes are now in server/routes/payment.js
+// Payment controllers are in server/controllers/paymentController.js
+// Auth middleware is in server/middleware/auth.js
 
-// Initialize Razorpay instance
-let razorpayInstance = null;
-if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
-    razorpayInstance = new Razorpay({
-        key_id: process.env.RAZORPAY_KEY_ID,
-        key_secret: process.env.RAZORPAY_KEY_SECRET,
-    });
-    console.log('✅ Razorpay initialized successfully');
-} else {
-    console.warn('⚠️  Razorpay credentials not found. Payment endpoints will not work.');
-}
+// Set up payment routes with dbConfig access
+paymentRoutes.setDbConfig(dbConfig);
+app.use('/api/payment', paymentRoutes.router);
 
-// Create Razorpay order
-app.post('/api/payment/create-order', authenticateToken, async (req, res) => {
-    const { packageId, amount } = req.body;
-    const userId = req.user.id;
+// Set up auth routes
+app.use('/api/auth', authRoutes);
+app.use('/auth', authRoutes);
 
+// Account deletion endpoint (GDPR/CCPA compliance)
+app.delete('/api/account/delete', authenticateToken, async (req, res) => {
     try {
-        if (!razorpayInstance) {
-            return res.status(503).json({ 
-                error: 'Payment service not configured. Please contact support.' 
-            });
-        }
+        const userId = req.user.id;
+        const { confirmText } = req.body;
 
-        // Validate package exists and get details
-        const packageResult = await dbConfig.query(
-            'SELECT * FROM plans WHERE id = $1 AND is_active = 1',
-            [packageId]
-        );
-        const packageData = packageResult.rows[0];
-
-        if (!packageData) {
-            return res.status(404).json({ error: 'Package not found or inactive' });
-        }
-
-        // Verify amount matches package price
-        if (packageData.price !== amount) {
-            return res.status(400).json({ error: 'Invalid amount' });
-        }
-
-        // Create Razorpay order
-        const options = {
-            amount: amount * 100, // Amount in paise (Razorpay uses smallest currency unit)
-            currency: 'INR',
-            receipt: `rcpt_${Date.now()}_${userId}_${packageId}`,
-            notes: {
-                userId: userId,
-                packageId: packageId,
-                packageName: packageData.name,
-                credits: packageData.credits
-            }
-        };
-
-        const order = await razorpayInstance.orders.create(options);
-
-        // Store order in database for tracking
-        await dbConfig.query(`
-            INSERT INTO payment_orders (
-                order_id, user_id, package_id, amount, currency, 
-                status, created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-        `, [
-            order.id,
-            userId,
-            packageId,
-            amount,
-            'INR',
-            'created'
-        ]);
-
-        res.json({
-            success: true,
-            orderId: order.id,
-            amount: order.amount,
-            currency: order.currency,
-            keyId: process.env.RAZORPAY_KEY_ID
-        });
-
-    } catch (error) {
-        console.error('Error creating Razorpay order:', error);
-        res.status(500).json({ 
-            error: 'Failed to create payment order',
-            message: error.message 
-        });
-    }
-});
-
-// Verify Razorpay payment signature
-app.post('/api/payment/verify', authenticateToken, async (req, res) => {
-    const { 
-        razorpay_order_id, 
-        razorpay_payment_id, 
-        razorpay_signature 
-    } = req.body;
-    const userId = req.user.id;
-
-    try {
-        if (!razorpayInstance) {
-            return res.status(503).json({ 
-                error: 'Payment service not configured' 
-            });
-        }
-
-        // Verify signature
-        const crypto = require('crypto');
-        const body = razorpay_order_id + '|' + razorpay_payment_id;
-        const expectedSignature = crypto
-            .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-            .update(body.toString())
-            .digest('hex');
-
-        const isValidSignature = expectedSignature === razorpay_signature;
-
-        if (!isValidSignature) {
-            // Update order status as failed
-            await dbConfig.query(`
-                UPDATE payment_orders 
-                SET status = 'failed', updated_at = CURRENT_TIMESTAMP
-                WHERE order_id = $1 AND user_id = $2
-            `, [razorpay_order_id, userId]);
-
+        // Require explicit confirmation
+        if (confirmText !== 'DELETE') {
             return res.status(400).json({ 
-                success: false, 
-                error: 'Payment verification failed' 
+                error: 'Invalid confirmation. Please type DELETE to confirm.' 
             });
         }
 
-        // Signature is valid - fetch order details
-        const orderResult = await dbConfig.query(`
-            SELECT po.*, p.credits, p.validity_days, p.name as package_name
-            FROM payment_orders po
-            JOIN plans p ON po.package_id = p.id
-            WHERE po.order_id = $1 AND po.user_id = $2
-        `, [razorpay_order_id, userId]);
-        const orderData = orderResult.rows[0];
+        console.log(`🗑️ [ACCOUNT DELETE] Starting deletion process for user ${userId}`);
 
-        if (!orderData) {
-            return res.status(404).json({ error: 'Order not found' });
+        // Get user data before deletion for logging
+        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
         }
 
-        // Update payment order status
-        await dbConfig.query(`
-            UPDATE payment_orders 
-            SET status = 'completed', 
-                payment_id = $1,
-                signature = $2,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE order_id = $3 AND user_id = $4
-        `, [razorpay_payment_id, razorpay_signature, razorpay_order_id, userId]);
+        // TODO: Revoke OAuth tokens with providers (future enhancement)
+        // For Google: Call https://oauth2.googleapis.com/revoke
+        // For Microsoft: Call https://graph.microsoft.com/v1.0/me/revokeSignInSessions
 
-        // Add credits to user account
-        await dbConfig.query(`
-            UPDATE users 
-            SET credits = credits + $1,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $2
-        `, [orderData.credits, userId]);
+        // Delete user data in correct order (foreign key constraints)
+        await dbConfig.run('DELETE FROM notifications WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted notifications for user ${userId}`);
 
-        // Create transaction record
-        await dbConfig.query(`
-            INSERT INTO credit_transactions (
-                user_id, transaction_type, credits_change, description, 
-                balance_after, created_at
-            ) VALUES ($1, $2, $3, $4, 
-                (SELECT credits FROM users WHERE id = $5),
-                CURRENT_TIMESTAMP
-            )
-        `, [
-            userId,
-            'purchase',
-            orderData.credits,
-            `Purchased ${orderData.package_name} - Payment ID: ${razorpay_payment_id}`,
-            userId
-        ]);
+        await dbConfig.run('DELETE FROM applications WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted applications for user ${userId}`);
 
-        // Fetch updated user data
-        const userResult = await dbConfig.query(
-            'SELECT credits FROM users WHERE id = $1',
-            [userId]
-        );
-        const userData = userResult.rows[0];
+        await dbConfig.run('DELETE FROM payments WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted payments for user ${userId}`);
 
-        res.json({
-            success: true,
-            message: 'Payment successful!',
-            credits: userData.credits,
-            creditsAdded: orderData.credits,
-            orderId: razorpay_order_id,
-            paymentId: razorpay_payment_id
+        await dbConfig.run('DELETE FROM cover_letters WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted cover letters for user ${userId}`);
+
+        // Delete user files from disk
+        const userUploadPath = path.join(__dirname, 'uploads', `user_${userId}`);
+        try {
+            await fs.rm(userUploadPath, { recursive: true, force: true });
+            console.log(`🗑️ [ACCOUNT DELETE] Deleted user files at ${userUploadPath}`);
+        } catch (err) {
+            console.error('Error deleting user files:', err);
+            // Continue with deletion even if file deletion fails
+        }
+
+        // Finally, delete the user account
+        await dbConfig.run('DELETE FROM users WHERE id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted user account ${userId} (${user.email})`);
+
+        // Clear auth cookie if it exists
+        res.clearCookie('authToken');
+
+        res.json({ 
+            success: true, 
+            message: 'Your account and all associated data have been permanently deleted.' 
         });
 
+        console.log(`✅ [ACCOUNT DELETE] Successfully deleted user ${userId} (${user.email})`);
+
     } catch (error) {
-        console.error('Error verifying payment:', error);
+        console.error('❌ [ACCOUNT DELETE] Error:', error);
         res.status(500).json({ 
-            error: 'Payment verification failed',
-            message: error.message 
+            error: 'Failed to delete account. Please contact support if the issue persists.',
+            details: error.message 
         });
     }
 });
 
-// Get payment history for user
-app.get('/api/payment/history', authenticateToken, async (req, res) => {
-    const userId = req.user.id;
+// Set up profile routes with authentication
+app.use('/api/users', authenticateToken, profileRoutes);
 
-    try {
-        const result = await dbConfig.query(`
-            SELECT 
-                po.order_id,
-                po.payment_id,
-                po.amount,
-                po.currency,
-                po.status,
-                po.created_at,
-                p.name as package_name,
-                p.credits
-            FROM payment_orders po
-            LEFT JOIN plans p ON po.package_id = p.id
-            WHERE po.user_id = $1
-            ORDER BY po.created_at DESC
-            LIMIT 50
-        `, [userId]);
+// Set up user data routes (both /api/users and /users for backward compatibility)
+app.use('/api/users', userDataRoutes);
+app.use('/users', userDataRoutes);
+// app.use('/api/user', usageRoutes);  // Commented out - using creditsRoutes instead for /api/user/usage-stats
+app.use('/api', creditsRoutes);
+app.use('/api', adminPackagesRoutes);
+app.use('/api', coverLetterRoutes);
+app.use('/api', emailRoutes);
+app.use('/api', notificationsRoutes);
 
-        res.json({ success: true, payments: result.rows });
-
-    } catch (error) {
-        console.error('Error fetching payment history:', error);
-        res.status(500).json({ error: 'Failed to fetch payment history' });
-    }
-});
-
-// Get Razorpay key for frontend (public key only)
-app.get('/api/payment/config', (req, res) => {
-    if (!process.env.RAZORPAY_KEY_ID) {
-        return res.status(503).json({ 
-            error: 'Payment service not configured' 
-        });
-    }
-    
-    res.json({
-        keyId: process.env.RAZORPAY_KEY_ID
-    });
-});
+// Start email forwarding service
+const EmailForwardingService = require('./server/services/emailForwardingService');
+const emailForwarder = new EmailForwardingService();
+emailForwarder.start();
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
@@ -4748,6 +3063,7 @@ app.listen(PORT, '0.0.0.0', () => {
 🌐 Local: http://localhost:${PORT}
 🌐 Network: http://192.168.1.14:${PORT}
 📧 Configure your email in Settings
+📬 Email forwarding: Active
 
 Open your browser and visit any of the above URLs
     `);

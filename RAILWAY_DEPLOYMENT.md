@@ -1,154 +1,225 @@
-# Railway Deployment Guide
+# Railway Deployment Instructions
 
-## 🚀 Deploy CV Applyr to Railway
+## 🚀 Quick Deploy to Railway
 
-### Step 1: Set Environment Variables in Railway
-
-Go to your Railway project settings and add these environment variables:
-
+### Step 1: Login to Railway
 ```bash
-# Required Variables
-JWT_SECRET=your-super-secret-jwt-key-min-32-chars-random-string
-ENCRYPTION_KEY=your-encryption-key-min-32-chars-random-string
-PORT=3000
-NODE_ENV=production
+cd "/Users/rishisamadhiya/Desktop/Files/Personal/Shopify Apps/resume-sending-app"
+railway login
+```
+This will open your browser. Login with your Railway account.
 
-# Google OAuth (Update with your credentials)
-GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-GOOGLE_CALLBACK_URL=https://your-railway-domain.railway.app/auth/google/callback
+### Step 2: Link to Existing Project
+```bash
+railway link
+```
+Select your existing project: **CVApplyr Website**
 
-# Admin User (Optional - will be auto-created on first run)
-ADMIN_EMAIL=samrishi24@gmail.com
-ADMIN_NAME=Rishi Samadhiya
-ADMIN_PASSWORD=admin123
+### Step 3: Set Environment Variables
+```bash
+# Set DATABASE_URL (PostgreSQL from Railway)
+railway variables set DATABASE_URL="<your-railway-postgres-url>"
+
+# Set other required variables
+railway variables set NODE_ENV=production
+railway variables set PORT=3000
+railway variables set GEMINI_API_KEY="<your-key>"
+railway variables set IMAP_HOST="imap.gmail.com"
+railway variables set IMAP_PORT=993
+railway variables set IMAP_USER="cv@cvapplyr.com"
+railway variables set IMAP_PASS="<your-app-password>"
+railway variables set SMTP_HOST="smtp.gmail.com"
+railway variables set SMTP_PORT=587
+railway variables set SMTP_USER="cv@cvapplyr.com"
+railway variables set SMTP_PASS="<your-app-password>"
+railway variables set JWT_SECRET="<generate-random-secret>"
+railway variables set RAZORPAY_KEY_ID="<your-key>"
+railway variables set RAZORPAY_KEY_SECRET="<your-secret>"
 ```
 
-### Step 2: Generate Secure Keys
-
-Use these commands to generate secure random keys:
-
+### Step 4: Deploy
 ```bash
-# For JWT_SECRET
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-
-# For ENCRYPTION_KEY
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
-
-### Step 3: Deploy to Railway
-
-```bash
-# Make sure you're in the project directory
-cd /Users/rishisamadhiya/Desktop/Files/Personal/Shopify\ Apps/resume-sending-app
-
-# Deploy to Railway
 railway up
 ```
 
-### Step 4: Database Initialization
-
-The server will automatically:
-1. Create all required tables on startup
-2. Initialize an admin user (samrishi24@gmail.com) if it doesn't exist
-3. Create default subscription plans
-
-### Step 5: Update Google OAuth Redirect URI
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com)
-2. Navigate to: APIs & Services > Credentials
-3. Edit your OAuth 2.0 Client
-4. Add Authorized Redirect URI: `https://your-railway-domain.railway.app/auth/google/callback`
-5. Save changes
-
-### Step 6: Test Your Deployment
-
-1. Visit your Railway URL: `https://your-project.railway.app`
-2. Try logging in with:
-   - Email: samrishi24@gmail.com
-   - Password: admin123 (or whatever you set in ADMIN_PASSWORD)
-3. Change the password immediately after first login!
-
----
-
-## 🔄 Recommended: Migrate to PostgreSQL
-
-SQLite uses file-based storage which is ephemeral on Railway. For production, migrate to PostgreSQL:
-
-### Add PostgreSQL to Railway
-
-```bash
-# In Railway dashboard
-1. Click "New" > "Database" > "Add PostgreSQL"
-2. Railway will automatically add DATABASE_URL to your environment variables
-```
-
-### Migration Steps (Future)
-
-1. Export your local SQLite data
-2. Create migration script to PostgreSQL
-3. Update server.js to use `pg` instead of `sqlite3`
-4. Redeploy to Railway
-
----
-
-## 📊 Monitoring
-
-Check your deployment logs:
-
-```bash
-railway logs
-```
-
-Monitor your service:
-
+### Step 5: Get Deployment URL
 ```bash
 railway status
 ```
 
----
+### Step 6: Update Mobile App Config
+Once deployed, get your Railway URL (e.g., `https://cvapplyr-production.up.railway.app`)
 
-## ⚠️ Important Security Notes
-
-1. **Change default admin password** immediately after first login
-2. **Never commit** `.env` file to git
-3. **Use strong secrets** for JWT_SECRET and ENCRYPTION_KEY
-4. **Enable 2FA** on your Railway account
-5. **Regularly backup** your database
+Update `MobileApp/config.js`:
+```javascript
+const PRODUCTION_API_URL = 'https://your-railway-domain.up.railway.app/api';
+```
 
 ---
 
-## 🐛 Troubleshooting
+## 📋 Pre-Deployment Checklist
 
-### Login Issues
+### ✅ Required Files (Already Present)
+- [x] railway.toml - Railway configuration
+- [x] package.json - Dependencies and start script
+- [x] server.js - Main application file
 
-If you can't login after deployment:
+### ✅ Environment Variables to Set
+- [ ] DATABASE_URL (PostgreSQL connection string)
+- [ ] GEMINI_API_KEY (Google AI API key)
+- [ ] IMAP credentials (Email forwarding)
+- [ ] SMTP credentials (Email sending)
+- [ ] JWT_SECRET (Authentication)
+- [ ] RAZORPAY keys (Payment processing)
 
-1. Check Railway logs: `railway logs`
-2. Verify admin user was created (look for "✓ Admin user created successfully")
-3. Ensure JWT_SECRET matches between deployments
-4. Try registering a new account to test
-
-### Database Issues
-
-If database tables are missing:
-
-1. Check logs for table creation messages
-2. Redeploy: `railway up --detach`
-3. Restart service in Railway dashboard
-
-### OAuth Issues
-
-If Google OAuth fails:
-
-1. Verify GOOGLE_CALLBACK_URL matches Railway domain
-2. Check Google Cloud Console redirect URIs
-3. Ensure GOOGLE_CLIENT_ID and SECRET are correct
+### ✅ Database Setup
+Railway will automatically provision PostgreSQL, or you can use existing database.
 
 ---
 
-## 📞 Support
+## 🔧 Alternative: Deploy via Railway Dashboard
 
-For issues specific to this deployment:
-- Email: samrishi24@gmail.com
-- Check Railway logs for detailed error messages
+### Method 1: GitHub Integration (Recommended)
+1. Push your code to GitHub
+2. Go to Railway Dashboard: https://railway.app
+3. Select "CVApplyr Website" project
+4. Click "Deploy from GitHub repo"
+5. Select your repository
+6. Railway will auto-detect settings from railway.toml
+7. Set environment variables in Railway dashboard
+8. Deploy!
+
+### Method 2: Deploy from Local
+1. Login: `railway login`
+2. Link: `railway link`
+3. Deploy: `railway up`
+
+---
+
+## 📊 Verify Deployment
+
+### Check Deployment Status
+```bash
+railway status
+```
+
+### View Logs
+```bash
+railway logs
+```
+
+### Open in Browser
+```bash
+railway open
+```
+
+### Check Environment Variables
+```bash
+railway variables
+```
+
+---
+
+## 🛠 Troubleshooting
+
+### Build Fails
+- Check logs: `railway logs`
+- Verify package.json has correct start script
+- Ensure Node version is specified in package.json
+
+### Database Connection Issues
+- Verify DATABASE_URL is set correctly
+- Check if PostgreSQL service is running
+- Test connection from Railway shell
+
+### Environment Variables Missing
+```bash
+railway variables
+```
+Add missing variables via dashboard or CLI
+
+### Port Issues
+Railway automatically sets PORT variable. Your server.js should use:
+```javascript
+const PORT = process.env.PORT || 3000;
+```
+
+---
+
+## 🔗 Useful Commands
+
+```bash
+# View all services in project
+railway status
+
+# Open Railway dashboard
+railway open
+
+# View environment variables
+railway variables
+
+# Set environment variable
+railway variables set KEY=value
+
+# Delete environment variable
+railway variables delete KEY
+
+# View logs
+railway logs
+
+# Connect to PostgreSQL shell
+railway connect
+
+# Run command in Railway environment
+railway run node server.js
+```
+
+---
+
+## 📱 After Deployment
+
+1. **Test API endpoints**
+   - Visit: `https://your-domain.up.railway.app`
+   - Test: `https://your-domain.up.railway.app/api/health`
+
+2. **Update Mobile App**
+   - Update `MobileApp/config.js` with production URL
+   - Rebuild mobile app
+
+3. **Set up Custom Domain (Optional)**
+   - Railway Dashboard → Settings → Domains
+   - Add your custom domain (e.g., api.cvapplyr.com)
+   - Update DNS records
+
+4. **Monitor Application**
+   - Check logs regularly
+   - Monitor resource usage
+   - Set up alerts
+
+---
+
+## 💰 Railway Pricing
+
+- **Free Tier**: $5/month usage credit
+- **Pro Plan**: $20/month + usage
+- **Database**: ~$5-10/month for PostgreSQL
+
+**Estimated monthly cost**: $15-30 depending on traffic
+
+---
+
+## 🚨 Important Notes
+
+1. **Database Persistence**: Make sure to use Railway's PostgreSQL service (persistent)
+2. **File Uploads**: Railway has ephemeral filesystem, use external storage for uploads (S3, Cloudinary, etc.)
+3. **Environment Variables**: Never commit sensitive data to git
+4. **Logs**: Railway keeps logs for 7 days on free tier
+5. **Backups**: Set up database backups in Railway dashboard
+
+---
+
+## 📞 Need Help?
+
+- Railway Docs: https://docs.railway.app
+- Railway Discord: https://discord.gg/railway
+- Railway Status: https://status.railway.app

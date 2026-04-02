@@ -1,0 +1,799 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+    <!-- // CSS FILES // -->
+
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="bootstrap-4.1.1-dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css" integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
+    <!-- OWl Carousel CSS Files -->
+    <link rel="stylesheet" href="js/plugins/owl-carousel/owl.carousel.css">
+    <link rel="stylesheet" href="js/plugins/owl-carousel/owl.theme.css">
+    <link rel="stylesheet" href="js/plugins/owl-carousel/owl.transitions.css">
+    <!-- ANIMATE CSS -->
+    <link rel="stylesheet" href="css/animate.css">
+    <!-- Video Pop Up Plugin -->
+    <link rel="stylesheet" href="js/plugins/YouTube_PopUp-master/YouTubePopUp.css">
+    <!-- PRELOADER -->
+    <link rel="stylesheet" href="css/preloader.css">
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="css/style.css">
+    <title>CVApplyr - AI-Powered Cover Letter Generation and Application Sending App</title>
+</head>
+
+<body data-spy="scroll" data-target=".navbar">
+
+    <script>
+        // Helper function to navigate to app pages using relative paths
+        function navigateToApp(path) {
+            // Use relative path - works for both localhost and production
+            window.location.href = path;
+        }
+        
+        // Smart home navigation - dashboard for logged-in users, about page for others
+        function navigateHome(event) {
+            const token = localStorage.getItem('authToken');
+            if (token) {
+                event.preventDefault();
+                window.location.href = '/dashboard';
+            }
+            // If not logged in, let the default #home scroll behavior work
+        }
+        
+        // Handle logout
+        function handleLogout() {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('userData');
+            sessionStorage.clear();
+            window.location.href = '/login';
+        }
+        
+        // Update navbar based on login status
+        function updateNavbar() {
+            const authToken = localStorage.getItem('authToken');
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            const navbarNav = document.querySelector('#navbarNav .navbar-nav');
+            
+            // Remove existing auth items
+            const existingAuth = navbarNav.querySelectorAll('.auth-item');
+            existingAuth.forEach(item => item.remove());
+            
+            if (authToken && userData.email) {
+                // User is logged in
+                const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2) : 'U';
+                const authHTML = `
+                    <li class="nav-item auth-item">
+                        <span class="user-badge-nav">
+                            <span class="user-avatar-nav">${initials}</span>
+                            <span class="user-name-nav">${userData.fullName || 'User'}</span>
+                        </span>
+                    </li>
+                    <li class="nav-item auth-item">
+                        <a href="/dashboard" class="btn btn-sm btn-secondary-nav">Dashboard</a>
+                    </li>
+                    <li class="nav-item auth-item">
+                        <button class="btn btn-sm btn-logout-nav" onclick="handleLogout()">Logout</button>
+                    </li>
+                `;
+                navbarNav.insertAdjacentHTML('beforeend', authHTML);
+            } else {
+                // User not logged in
+                const authHTML = `
+                    <li class="nav-item auth-item">
+                        <a class="nav-link" href="javascript:void(0)" onclick="navigateToApp('/login')">Sign In</a>
+                    </li>
+                    <li class="nav-item auth-item">
+                        <a href="javascript:void(0)" onclick="navigateToApp('/register')" class="btn btn-primary btn-sm">Sign Up Free</a>
+                    </li>
+                `;
+                navbarNav.insertAdjacentHTML('beforeend', authHTML);
+            }
+        }
+        
+        // Initialize navbar on page load
+        document.addEventListener('DOMContentLoaded', updateNavbar);
+    </script>
+    
+    <style>
+        /* Keep original navbar collapse padding for vertical spacing */
+        .navbar .navbar-collapse {
+            padding: 17px 0px 12px 0 !important;
+        }
+        
+        /* Navbar alignment fix */
+        .navbar-nav {
+            display: flex !important;
+            align-items: center !important;
+            flex-wrap: nowrap !important;
+            gap: 0.5rem;
+        }
+        
+        .navbar-nav .nav-item {
+            display: flex !important;
+            align-items: center !important;
+            white-space: nowrap;
+            margin: 0 !important;
+        }
+        
+        /* Override default button positioning */
+        .navbar .navbar-nav .btn,
+        .navbar .navbar-nav .btn-sm,
+        .navbar .navbar-nav .btn-primary,
+        .navbar .navbar-nav .btn-secondary-nav,
+        .navbar .navbar-nav .btn-logout-nav {
+            position: static !important;
+            top: 0 !important;
+            margin: 0 !important;
+        }
+        
+        /* Ensure all nav-links have proper padding */
+        .navbar .navbar-nav .nav-link {
+            padding: 8px 0.8rem !important;
+            display: flex;
+            align-items: center;
+        }
+        
+        /* User Badge in Navbar */
+        .user-badge-nav {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            font-size: 0.75rem;
+            white-space: nowrap;
+            height: 32px;
+        }
+        
+        .user-avatar-nav {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 0.65rem;
+            flex-shrink: 0;
+        }
+        
+        .user-name-nav {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: white;
+            line-height: 1;
+        }
+        
+        /* Compact buttons - consistent height */
+        .navbar .navbar-nav .btn-sm {
+            padding: 6px 14px !important;
+            font-size: 0.75rem !important;
+            line-height: 1.4 !important;
+            border-radius: 20px !important;
+            white-space: nowrap !important;
+            height: 32px !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+        }
+        
+        .btn-secondary-nav {
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid rgba(147, 197, 253, 0.5);
+            color: white !important;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        
+        .btn-secondary-nav:hover {
+            background: rgba(59, 130, 246, 0.3);
+            border-color: rgba(147, 197, 253, 0.8);
+            color: white !important;
+            text-decoration: none;
+        }
+        
+        .btn-logout-nav {
+            background: rgba(220, 38, 38, 0.15);
+            border: 1px solid rgba(254, 202, 202, 0.5);
+            color: white !important;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        
+        .btn-logout-nav:hover {
+            background: rgba(220, 38, 38, 0.25);
+            border-color: rgba(254, 202, 202, 0.8);
+            color: white !important;
+        }
+        
+        /* Mobile responsive */
+        @media (max-width: 991px) {
+            .navbar-nav {
+                flex-wrap: wrap !important;
+            }
+            
+            .navbar-nav .nav-item {
+                width: 100%;
+                margin: 5px 0 !important;
+            }
+            
+            .user-badge-nav,
+            .btn-sm {
+                width: 100%;
+                justify-content: center;
+            }
+        }
+    </style>
+
+    <!-- PRELOADER -->
+    <div class="preloader-holder">
+        <div class="loading">
+            <div class="finger finger-1">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-2">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-3">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-4">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="last-finger">
+                <div class="last-finger-item"><i></i></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- HEADER -->
+    <header id="home">
+        <!-- Navbar -->
+        <nav class="navbar navbar-expand-lg fixed-top">
+            <div class="container">
+                <a class="navbar-brand" href="#" onclick="navigateHome(event)">CV<span>Applyr</span></a>
+                <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav">
+                    <i class="material-icons">menu</i>
+                </button>
+                <div class="collapse navbar-collapse" id="navbarNav">
+                    <ul class="nav navbar-nav ml-auto">
+                        <li class="nav-item">
+                            <a class="nav-link page-scroll" href="#home" onclick="navigateHome(event)">Home</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link page-scroll" href="#services">Why CVApplyr</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link page-scroll" href="#features">Features</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link page-scroll" href="#pricing">Pricing</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link page-scroll" href="#contact">Contact</a>
+                        </li>
+                        <!-- Auth links will be dynamically inserted as sibling li elements -->
+                    </ul>
+                </div>
+            </div>
+        </nav>
+
+        <!-- BANNER -->
+        <div class="banner">
+            <div class="container">
+                <div class="row">
+                    <div class="col-md-8 offset-md-2">
+                        <div class="caption">
+                            <h1>AI-Powered Cover Letter Generation and Application Sending App</h1>
+                            <p class="sub">Create professional cover letters instantly, send job applications in bulk, and track your progress. Land more interviews with intelligent automation.</p>
+                            <a class="btn btn-primary" href="javascript:void(0)" onclick="navigateToApp('/register')">Get Started - Free Trial</a>
+                            <img class="img-fluid mx-auto wow fadeInUp" data-wow-duration="1s" data-wow-delay=".3s" src="imgs/macbook.png" alt="CVApplyr Dashboard">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- ABOUT -->
+    <section id="about">
+        <div class="container">
+            <div class="row">
+                <div class="col-md-4 wow bounceIn" data-wow-duration=".5s" data-wow-delay=".2s">
+                    <i data-vi="layers" data-vi-size="70" data-vi-primary="#1992ec" data-vi-accent="#daeffd" data-vi-prop="#CEFAFF"></i>
+                    <h4>User-Friendly Interface</h4>
+                    <p>Seamlessly manage your job applications with an intuitive interface. Create cover letters, send applications, and track progress without any learning curve.</p>
+                </div>
+                <div class="col-md-4 wow bounceIn" data-wow-duration=".5s" data-wow-delay=".4s">
+                    <i data-vi="website" data-vi-size="70" data-vi-primary="#1992ec" data-vi-accent="#daeffd" data-vi-prop="#CEFAFF"></i>
+                    <h4>Responsive Design</h4>
+                    <p>Access CVApplyr from any device - desktop, tablet, or mobile. Apply to jobs on the go and never miss an opportunity.</p>
+                </div>
+                <div class="col-md-4 wow bounceIn" data-wow-duration=".5s" data-wow-delay=".6s">
+                    <i data-vi="chat" data-vi-size="70" data-vi-primary="#1992ec" data-vi-accent="#daeffd" data-vi-prop="#CEFAFF"></i>
+                    <h4>Unlimited Support</h4>
+                    <p>Get expert help whenever you need it. Our dedicated support team is available 24/7 to assist with your job application needs.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- SERVICES - WHY CVAPPLYR -->
+    <section id="services">
+        <div class="container">
+            <div class="row">
+                <div class="col-md-6 col-sm-offset-2 text-center mx-auto">
+                    <h2 class="section-title">Why CVApplyr?</h2>
+                </div>
+            </div>
+            
+            <div class="row seconde">
+                <div class="col-md-5 wow fadeInLeft" data-wow-duration=".5s" data-wow-delay=".2s">
+                    <div class="caption">
+                        <h3>AI-Powered Cover Letter Generation</h3>
+                        <p>No matter what job you're applying for, CVApplyr creates <strong>perfectly crafted, personalized cover letters</strong> in seconds. Our advanced AI understands job requirements and tailors each letter to maximize your chances.</p>
+                        <p>Automatically generates professional cover letters, personalizes content for each application, and creates compelling narratives that get noticed by recruiters.</p>
+                        <button class="btn btn-secondary" type="button" onclick="window.location.href='#contact'">Learn More</button>
+                    </div>
+                </div>
+                <div class="col-md-7 wow fadeInRight" data-wow-duration=".5s" data-wow-delay=".5s">
+                    <img src="Screenshots/Add Product 1.jpg" class="img-fluid" alt="AI-powered cover letter generation">
+                </div>
+            </div>
+            
+            <!-- Bulk Application Sending -->
+            <div class="row seconde">
+                <div class="col-md-7 wow fadeInLeft" data-wow-duration=".5s" data-wow-delay=".2s">
+                    <img src="Screenshots/Add Product 2.jpg" class="img-fluid" alt="Bulk application sending">
+                </div>
+                <div class="col-md-5 wow fadeInRight" data-wow-duration=".5s" data-wow-delay=".5s">
+                    <div class="caption">
+                        <h3>Bulk Application Sending & Tracking</h3>
+                        <p>Apply to multiple jobs at once with our <strong>bulk sending feature</strong>. CVApplyr generates unique cover letters for each recipient and tracks all your applications in one organized dashboard.</p>
+                        <p>Save hours of repetitive work with smart recipient management, automatic email delivery, and comprehensive application history tracking.</p>
+                        <button class="btn btn-secondary" type="button" onclick="window.location.href='#contact'">Learn More</button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Application Tracking -->
+            <div class="row seconde">
+                <div class="col-md-5 wow fadeInLeft" data-wow-duration=".5s" data-wow-delay=".2s">
+                    <div class="caption">
+                        <h3>Complete Application Management</h3>
+                        <p>Manage your entire job search journey in one place. Upload your resume, store profile information, track application history, and monitor your success rate with detailed analytics.</p>
+                        <p>Professional profile management, resume storage and attachment, application statistics, and credit-based system for maximum flexibility.</p>
+                        <button class="btn btn-secondary" type="button" onclick="window.location.href='#contact'">Learn More</button>
+                    </div>
+                </div>
+                <div class="col-md-7 wow fadeInRight" data-wow-duration=".5s" data-wow-delay=".5s">
+                    <img src="imgs/growth-chart.png" class="img-fluid" alt="Application tracking and analytics">
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FEATURES -->
+    <section id="features">
+        <div class="container">
+            <div class="row">
+                <div class="col-md-6 col-sm-offset-2 text-center mx-auto">
+                    <h2 class="section-title">Powerful Features for Job Seekers</h2>
+                    <p>Everything you need to streamline your job search and land more interviews faster.</p>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-4 feature wow bounceIn" data-wow-duration=".5s" data-wow-delay=".2s">
+                    <div class="feature-icon">
+                        <i data-vi="processor" data-vi-primary="#cfecff" data-vi-accent="#60b6f4" data-vi-prop="#CEFAFF"></i>
+                    </div>
+                    <h4>AI Cover Letter Writer</h4>
+                    <p>Generate professional, personalized cover letters in seconds using advanced Google Gemini AI technology.</p>
+                </div>
+                <div class="col-md-4 feature wow bounceIn" data-wow-duration=".5s" data-wow-delay=".4s">
+                    <div class="feature-icon">
+                        <i data-vi="newspaper" data-vi-primary="#60b6f4" data-vi-accent="#cfecff" data-vi-prop="#CEFAFF"></i>
+                    </div>
+                    <h4>Bulk Application Sending</h4>
+                    <p>Send applications to multiple employers at once with unique cover letters for each recipient.</p>
+                </div>
+                <div class="col-md-4 feature wow bounceIn" data-wow-duration=".5s" data-wow-delay=".6s">
+                    <div class="feature-icon">
+                        <i data-vi="controller" data-vi-primary="#60b6f4" data-vi-accent="#cfecff" data-vi-prop="#CEFAFF"></i>
+                    </div>
+                    <h4>Resume Attachment</h4>
+                    <p>Automatically attach your resume to every application with professional formatting and delivery.</p>
+                </div>
+                <div class="col-md-4 feature wow bounceIn" data-wow-duration=".5s" data-wow-delay=".8s">
+                    <div class="feature-icon">
+                        <i data-vi="doc" data-vi-primary="#60b6f4" data-vi-accent="#cfecff" data-vi-prop="#CEFAFF"></i>
+                    </div>
+                    <h4>Application History</h4>
+                    <p>Track all your applications with detailed history, timestamps, and generated cover letter content.</p>
+                </div>
+                <div class="col-md-4 feature wow bounceIn" data-wow-duration=".5s" data-wow-delay="1s">
+                    <div class="feature-icon">
+                        <i data-vi="user" data-vi-primary="#cfecff" data-vi-accent="#60b6f4" data-vi-prop="#CEFAFF"></i>
+                    </div>
+                    <h4>Profile Management</h4>
+                    <p>Store your professional information, upload profile photo and digital signature in one secure place.</p>
+                </div>
+                <div class="col-md-4 feature wow bounceIn" data-wow-duration=".5s" data-wow-delay="1.2s">
+                    <div class="feature-icon">
+                        <i data-vi="cloud" data-vi-primary="#60b6f4" data-vi-accent="#60b6f4" data-vi-prop="#CEFAFF"></i>
+                    </div>
+                    <h4>Credit-Based System</h4>
+                    <p>Pay only for what you use with flexible credit packages. No monthly subscriptions, credits never expire.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- TESTIMONIALS -->
+    <section id="testimonials">
+        <div class="container">
+            <div class="row">
+                <div class="col-md-8 col-sm-offset-2 carousel-container">
+                    <div id="owl-testimonials" class="owl-carousel owl-theme">
+                        <div class="item">
+                            <div class="testi-icon">
+                                <i data-vi="storefront" data-vi-size="70" data-vi-primary="#cfecff" data-vi-accent="#60b6f4" data-vi-prop="#CEFAFF"></i>
+                            </div>
+                            <p class="quote">" CVApplyr is built and owned by zSellr Enterprises LLP, a company dedicated to empowering job seekers with cutting-edge AI tools. We understand the challenges of job hunting and repetitive application processes because we've experienced it ourselves. Our mission is to make job applications faster, more efficient, and more successful for everyone. Many more features coming soon! "</p>
+                            <h4>zSellr Enterprises LLP</h4>
+                            <span>Creators of CVApplyr</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- PRICING -->
+    <section id="pricing">
+        <div class="container">
+            <div class="row">
+                <!-- /// Title /// -->
+                <div class="col-md-6 col-sm-offset-2 col-md-offset-3 text-center mx-auto">
+                    <h2 class="section-title">Flexible Pricing Plans</h2>
+                    <p>Start with a small package and scale as you need. All plans include AI-powered cover letters and application tracking. Credits never expire.</p>
+                </div>
+            </div>
+            <!-- /// Pricing Tables /// -->
+            <!-- First Row: 3 Plans -->
+            <div class="row">
+                <!--// Starter Plan // -->
+                <div class="col-lg-4 wow fadeInLeft" data-wow-duration=".5s" data-wow-delay=".2s">
+                    <div class="price-table">
+                        <div class="header">
+                            <h5 class="title">Starter</h5>
+                            <div class="price">$4.99</div>
+                            <h4>11 Credits</h4>
+                        </div>
+                        <ul>
+                            <li>11 Job Applications</li>
+                            <li>AI Cover Letter Generation</li>
+                            <li>Resume Attachment</li>
+                            <li>Application History</li>
+                            <li>24/7 Support</li>
+                        </ul>
+                        <button class="btn btn-transparent" type="button" onclick="navigateToApp('/packages')">Get Started</button>
+                    </div>
+                </div>
+                <!--// Professional Plan // -->
+                <div class="col-lg-4 wow bounceIn" data-wow-duration=".5s" data-wow-delay=".4s">
+                    <div class="price-table">
+                        <div class="header">
+                            <h5 class="title">Professional</h5>
+                            <div class="price">$12.99</div>
+                            <h4>28 Credits</h4>
+                        </div>
+                        <ul>
+                            <li>28 Job Applications</li>
+                            <li>AI Cover Letter Generation</li>
+                            <li>Resume Attachment</li>
+                            <li>Application History</li>
+                            <li>24/7 Support</li>
+                        </ul>
+                        <button class="btn btn-transparent" type="button" onclick="navigateToApp('/packages')">Get Started</button>
+                    </div>
+                </div>
+                <!--// Premium Plan // -->
+                <div class="col-lg-4 wow fadeInRight" data-wow-duration=".5s" data-wow-delay=".6s">
+                    <div class="price-table">
+                        <div class="header">
+                            <h5 class="title">Premium</h5>
+                            <div class="price">$34.99</div>
+                            <h4>100 Credits</h4>
+                        </div>
+                        <ul>
+                            <li>100 Job Applications</li>
+                            <li>AI Cover Letter Generation</li>
+                            <li>Resume Attachment</li>
+                            <li>Application History</li>
+                            <li>Priority 24/7 Support</li>
+                        </ul>
+                        <button class="btn btn-primary" type="button" onclick="navigateToApp('/packages')">Get Started</button>
+                    </div>
+                </div>
+            </div>
+            <!-- Second Row: 2 Plans (Centered) -->
+            <div class="row" style="margin-top: 30px;">
+                <div class="col-lg-2"></div>
+                <!--// Enterprise Plan // -->
+                <div class="col-lg-4 wow fadeInLeft" data-wow-duration=".5s" data-wow-delay=".2s">
+                    <div class="price-table">
+                        <div class="header">
+                            <h5 class="title">Enterprise</h5>
+                            <div class="price">$149.99</div>
+                            <h4>500 Credits</h4>
+                        </div>
+                        <ul>
+                            <li>500 Job Applications</li>
+                            <li>AI Cover Letter Generation</li>
+                            <li>Resume Attachment</li>
+                            <li>Application History</li>
+                            <li>Priority 24/7 Support</li>
+                        </ul>
+                        <button class="btn btn-transparent" type="button" onclick="navigateToApp('/packages')">Get Started</button>
+                    </div>
+                </div>
+                <!--// Ultimate Plan // -->
+                <div class="col-lg-4 wow fadeInRight" data-wow-duration=".5s" data-wow-delay=".4s">
+                    <div class="price-table">
+                        <div class="header">
+                            <h5 class="title">Ultimate</h5>
+                            <div class="price">$499.99</div>
+                            <h4>2000 Credits</h4>
+                        </div>
+                        <ul>
+                            <li>2000 Job Applications</li>
+                            <li>AI Cover Letter Generation</li>
+                            <li>Resume Attachment</li>
+                            <li>Application History</li>
+                            <li>Dedicated Support Team</li>
+                        </ul>
+                        <button class="btn btn-transparent" type="button" onclick="navigateToApp('/packages')">Get Started</button>
+                    </div>
+                </div>
+                <div class="col-lg-2"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- SCREENSHOTS -->
+    <section id="screenshots">
+        <div class="container">
+            <div class="row">
+                <div class="col-md-6 col-sm-offset-2 col-md-offset-3 text-center title-container">
+                    <h2 class="section-title">See CVApplyr in Action</h2>
+                    <p>Experience the power of AI-driven cover letter generation and application management. From creating applications to managing your profile, CVApplyr makes everything effortless.</p>
+                </div>
+            </div>
+            <div class="row">
+                <div id="owl-screenshots">
+                    <div class="item"><img src="Screenshots/Dashboard.jpg" class="img-fluid" alt="CVApplyr Dashboard"></div>
+                    <div class="item"><img src="Screenshots/Add Product 1.jpg" class="img-fluid" alt="AI Cover Letter Generator"></div>
+                    <div class="item"><img src="Screenshots/Add Product 2.jpg" class="img-fluid" alt="Application Sending"></div>
+                    <div class="item"><img src="Screenshots/Add Product 3.jpg" class="img-fluid" alt="Bulk Application Management"></div>
+                    <div class="item"><img src="Screenshots/Subscription 1.png" class="img-fluid" alt="Credit Packages"></div>
+                    <div class="item"><img src="Screenshots/Subscription 2.png" class="img-fluid" alt="Package Management"></div>
+                    <div class="item"><img src="Screenshots/Subscription 3.png" class="img-fluid" alt="Credit Purchase"></div>
+                    <div class="item"><img src="Screenshots/Usage Details.png" class="img-fluid" alt="Application History"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- VIDEO DEMO -->
+    <div id="video-popup" style="padding: 0;">
+        <div class="container">
+            <div class="row">
+                <div class="col-md-6 col-sm-offset-2 col-md-offset-3 text-center mx-auto" style="margin-bottom: 40px;">
+                    <h2 class="section-title">Watch CVApplyr in Action</h2>
+                    <p>See how easy it is to generate cover letters and send applications with CVApplyr. This demonstration video walks you through the key features and shows you how to get started in minutes.</p>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-10 col-sm-offset-1 col-md-8 col-md-offset-2 video-box">
+                    <video 
+                        class="img-fluid wow rotateIn" 
+                        data-wow-duration=".5s" 
+                        data-wow-delay=".2s" 
+                        controls 
+                        poster="Screenshots/Dashboard.jpg"
+                        style="width: 100%; border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,0.2);">
+                        <source src="Screenshots/ShopFlixAI.mp4" type="video/mp4">
+                        Your browser does not support the video tag.
+                    </video>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- BRANDS -->
+    <section id="brands">
+        <div class="container">
+            <div class="row">
+                <div class="col-xs-12 col-sm-8 col-md-6 col-sm-offset-2 col-md-offset-3 text-center title-container">
+                    <h2 class="section-title">Trusted By Job Seekers Worldwide</h2>
+                    <p>Join thousands of successful job seekers using CVApplyr to streamline their application process and land more interviews.</p>
+                </div>
+            </div>
+            <div class="row">
+                <div id="owl-brands">
+                    <div class="item"><img src="imgs/brands/brand-1.png" class="img-fluid" alt="Job Seekers"></div>
+                    <div class="item"><img src="imgs/mobileCasez.png" class="img-fluid" alt="Professionals"></div>
+                    <div class="item" style="display: flex; align-items: center; justify-content: center; min-height: 100px;">
+                        <h3 style="color: #666; font-weight: 300;">And Many More...</h3>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CONTACT -->
+    <section id="contact">
+        <div class="container">
+            <div class="row">
+                <div class="col-xs-12 col-sm-8 col-md-6 col-sm-offset-2 col-md-offset-3 text-center title-container">
+                    <h2 class="section-title">Get in Touch</h2>
+                    <p>Have questions, experiencing issues, or want to share feedback? We'd love to hear from you! Send us a message and our team will get back to you as soon as possible.</p>
+                </div>
+            </div>
+
+            <form id="contactForm">
+                <div class="form-row">
+                    <div class="form-group col-xs-12 col-sm-4">
+                        <label>Name: <span style="color: red;">*</span></label>
+                        <input type="text" class="form-control" id="inputName" name="name" required>
+                    </div>
+                    <div class="form-group col-xs-12 col-sm-4">
+                        <label for="inputEmail">Email: <span style="color: red;">*</span></label>
+                        <input type="email" class="form-control" id="inputEmail" name="email" required>
+                    </div>
+                    <div class="form-group col-xs-12 col-sm-4">
+                        <label>Phone:</label>
+                        <input type="text" class="form-control" id="inputPhone" name="phone">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Subject: <span style="color: red;">*</span></label>
+                    <input type="text" class="form-control" id="inputSubject" name="subject" required>
+                </div>
+                <div class="form-group">
+                    <label>Message: <span style="color: red;">*</span></label>
+                    <textarea id="form-message" name="message" cols="30" rows="5" class="form-control" required></textarea>
+                </div>
+                <div id="formStatus" style="margin-bottom: 15px; padding: 10px; display: none; border-radius: 4px;"></div>
+                <button type="submit" class="btn btn-primary" id="submitBtn">Send Message</button>
+            </form>
+        </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer id="footer" class="footer" style="background: #1e1e2f; padding: 60px 0 30px 0; margin-top: 0;">
+        <div class="container">
+            <div class="row">
+                <div class="col-md-4 col-sm-12 mb-4">
+                    <h5 class="text-white mb-3">CVApplyr</h5>
+                    <p class="text-muted">AI-Powered Cover Letter Generation and Application Sending App</p>
+                </div>
+                <div class="col-md-2 col-sm-6 mb-4">
+                    <h6 class="text-white mb-3">Quick Links</h6>
+                    <ul class="list-unstyled">
+                        <li><a href="#home" onclick="navigateHome(event)" class="text-muted" style="text-decoration: none;">Home</a></li>
+                        <li><a href="#services" class="text-muted" style="text-decoration: none;">Why CVApplyr</a></li>
+                        <li><a href="#features" class="text-muted" style="text-decoration: none;">Features</a></li>
+                        <li><a href="#pricing" class="text-muted" style="text-decoration: none;">Pricing</a></li>
+                        <li><a href="#contact" class="text-muted" style="text-decoration: none;">Contact</a></li>
+                    </ul>
+                </div>
+                <div class="col-md-3 col-sm-6 mb-4">
+                    <h6 class="text-white mb-3">Legal</h6>
+                    <ul class="list-unstyled">
+                        <li><a href="https://cvapplyr.com/privacy-policy" class="text-muted" style="text-decoration: none;">Privacy Policy</a></li>
+                        <li><a href="https://cvapplyr.com/terms-of-service" class="text-muted" style="text-decoration: none;">Terms of Service</a></li>
+                        <li><a href="https://cvapplyr.com/refund-policy" class="text-muted" style="text-decoration: none;">Refund Policy</a></li>
+                    </ul>
+                </div>
+                <div class="col-md-3 col-sm-12 mb-4">
+                    <h6 class="text-white mb-3">Contact</h6>
+                    <ul class="list-unstyled text-muted">
+                        <li>Email: support@cvapplyr.com</li>
+                        <li>© 2026 zSellr Enterprises LLP</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="row mt-4">
+                <div class="col-12 text-center">
+                    <p class="text-muted mb-0" style="font-size: 14px;">&copy; 2026 CVApplyr by zSellr Enterprises LLP. All Rights Reserved.</p>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+    document.getElementById('contactForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const submitBtn = document.getElementById('submitBtn');
+        const formStatus = document.getElementById('formStatus');
+        
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Sending...';
+        
+        const formData = {
+            name: document.getElementById('inputName').value,
+            email: document.getElementById('inputEmail').value,
+            phone: document.getElementById('inputPhone').value || '',
+            subject: document.getElementById('inputSubject').value,
+            message: document.getElementById('form-message').value
+        };
+        
+        try {
+            const response = await fetch(`${BASE_URL}/api/contact-form`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(formData)
+            });
+            
+            const result = await response.json();
+            
+            if (response.ok) {
+                formStatus.style.display = 'block';
+                formStatus.style.backgroundColor = '#d4edda';
+                formStatus.style.color = '#155724';
+                formStatus.style.borderColor = '#c3e6cb';
+                formStatus.textContent = 'Thank you! Your message has been sent successfully. We\'ll get back to you soon.';
+                
+                document.getElementById('contactForm').reset();
+            } else {
+                throw new Error(result.error || 'Failed to send message');
+            }
+        } catch (error) {
+            formStatus.style.display = 'block';
+            formStatus.style.backgroundColor = '#f8d7da';
+            formStatus.style.color = '#721c24';
+            formStatus.style.borderColor = '#f5c6cb';
+            formStatus.textContent = 'Sorry, there was an error sending your message. Please try again or email us directly.';
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Send Message';
+        }
+    });
+    </script>
+
+    <!-- jQuery -->
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js"></script>
+    <!-- Popper.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.3/umd/popper.min.js" integrity="sha384-ZMP7rVo3mIykV+2+9J3UJ46jBk0WLaUAdn689aCwoqbBJiSnjAK/l8WvCWPIPm49" crossorigin="anonymous"></script>
+    <!-- Bootstrap JS -->
+    <script src="bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
+    <!-- Icons -->
+    <script src="https://cdn.jsdelivr.net/npm/vivid-icons"></script>
+    <script src="https://unpkg.com/vivid-icons"></script>
+    <!-- OWL Carousel -->
+    <script src="js/plugins/owl-carousel/owl.carousel.js"></script>
+    <!-- Video Pop Up Plugin -->
+    <script src="js/plugins/YouTube_PopUp-master/YouTubePopUp.jquery.js"></script>
+    <script src="js/plugins/wow/wow.min.js"></script>
+    <!-- Easing -->
+    <script src="js/plugins/jquery.easing.min.js"></script>
+    <!-- Main JS -->
+    <script src="js/main.js"></script>
+
+</body>
+</html>

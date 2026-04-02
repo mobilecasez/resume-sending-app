@@ -1,21 +1,31 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, ActionSheetIOS, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView } from 'react-native-webview';
+import { LinearGradient } from 'expo-linear-gradient';
+import { BlurView } from 'expo-blur';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import * as Clipboard from 'expo-clipboard';
+import * as Crypto from 'expo-crypto';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { API_BASE } from './config';
+import SplashScreen from './components/SplashScreen';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 // Get your Google Client ID from Google Cloud Console
-const GOOGLE_CLIENT_ID = '832256639733-b0481qdpal17m1rcmmvq4nlnlvavgg59.apps.googleusercontent.com';
+// Using iOS OAuth Client with PKCE (Proof Key for Code Exchange)
+// PKCE allows secure token exchange without client secret
+const GOOGLE_CLIENT_ID = '151384459549-3rm4atu5eu3ekh9h4rhds6gbd9ecgeb6.apps.googleusercontent.com';
 
-// API Base - always use IP address (works for both web and mobile)
-const API_BASE = 'http://192.168.1.19:3000/api';
-const { width, height } = Dimensions.get('window');
+// Microsoft OAuth Client ID from Azure Portal
+const MICROSOFT_CLIENT_ID = '9205782b-1a57-4c2f-bbfd-8136b5378e96';
+
+const { width, height} = Dimensions.get('window');
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -68,7 +78,7 @@ const HTMLContentViewer = ({ htmlContent, onEdit }) => {
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
           line-height: 1.7;
           margin: 0;
-          padding: 16px;
+          padding: 0px 12px 12px 12px;
           font-size: 15px;
           color: #333;
           background: white;
@@ -118,7 +128,7 @@ const HTMLContentViewer = ({ htmlContent, onEdit }) => {
   `;
 
   return (
-    <View style={{ flex: 1, borderRadius: 6, borderWidth: 1, borderColor: '#17a2b8', overflow: 'hidden' }}>
+    <View style={{ flex: 1, borderRadius: 12, borderWidth: 1.5, borderColor: '#e2e8f0', overflow: 'hidden', backgroundColor: '#f8fafc' }}>
       <WebView
         ref={webViewRef}
         source={{ html: htmlTemplate }}
@@ -127,6 +137,7 @@ const HTMLContentViewer = ({ htmlContent, onEdit }) => {
         style={{ flex: 1, backgroundColor: 'white' }}
         originWhitelist={['*']}
         javaScriptEnabled={true}
+        contentInset={{ top: 0, left: 0, bottom: 0, right: 0 }}
       />
       {onEdit && (
         <TouchableOpacity
@@ -165,7 +176,7 @@ const RichTextEditorWebView = ({ initialHtml, onContentChange, height = 400 }) =
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-          padding: 12px;
+          padding: 2px;
           background: white;
         }
         .toolbar {
@@ -193,7 +204,7 @@ const RichTextEditorWebView = ({ initialHtml, onContentChange, height = 400 }) =
         }
         .editor {
           min-height: ${height - 60}px;
-          padding: 16px;
+          padding: 6px;
           outline: none;
           line-height: 1.7;
           font-size: 15px;
@@ -327,6 +338,7 @@ const FormattedCoverLetterPreview = ({ htmlContent, style }) => {
 };
 
 export default function App() {
+  const [showSplash, setShowSplash] = useState(true);
   const [screen, setScreen] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -334,6 +346,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [user, setUser] = useState(null);
+  const [pkceCodeVerifier, setPkceCodeVerifier] = useState(null); // Store PKCE verifier
   const [recipients, setRecipients] = useState([
     { id: 0, email: '', website: '', position: '', error: '' }
   ]);
@@ -373,6 +386,7 @@ export default function App() {
     createdAt: new Date(),
   });
   const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -383,6 +397,8 @@ export default function App() {
     smsNotifications: false,
     profilePublic: false,
   });
+  const [showDeleteAccount, setShowDeleteAccount] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [reviewCoverLetters, setReviewCoverLetters] = useState({});
   const [applicationHistory, setApplicationHistory] = useState([]);
   const [totalGenerated, setTotalGenerated] = useState(0);
@@ -398,6 +414,12 @@ export default function App() {
   const [reviewGeneratingAll, setReviewGeneratingAll] = useState(false);
   const [reviewSendingAll, setReviewSendingAll] = useState(false);
   const [reviewGeneratingAndSendingAll, setReviewGeneratingAndSendingAll] = useState(false);
+  const [progressiveLoadingMessage, setProgressiveLoadingMessage] = useState('');
+  const [progressiveLoadingProgress, setProgressiveLoadingProgress] = useState(0);
+  const progressAnimValue = useRef(new Animated.Value(0)).current;
+  const progressIntervalRef = useRef(null);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [paymentUrl, setPaymentUrl] = useState('');
   const [selectedCoverLetterIndex, setSelectedCoverLetterIndex] = useState(null);
   const [showCoverLetterPreview, setShowCoverLetterPreview] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -419,12 +441,49 @@ export default function App() {
   });
   const [editedCoverLetterData, setEditedCoverLetterData] = useState({});
   const [showAddressDropdown, setShowAddressDropdown] = useState(false);
+  const [showReviewDatePicker, setShowReviewDatePicker] = useState(false);
+  const [showReplyDetailsModal, setShowReplyDetailsModal] = useState(false);
+  const [selectedReplyDetails, setSelectedReplyDetails] = useState(null);
   const abortControllerRef = useRef(null);
   const isCancelledRef = useRef(false);
   
   // Packages screen state
   const [userPackages, setUserPackages] = useState([]);
   const [loadingUserPackages, setLoadingUserPackages] = useState(false);
+  
+  // Stat tile flip animation state
+  const flipAnimSent = useRef(new Animated.Value(0)).current;
+  const flipAnimGenerated = useRef(new Animated.Value(0)).current;
+  const flipAnimPending = useRef(new Animated.Value(0)).current;
+  const flipAnimReply = useRef(new Animated.Value(0)).current;
+  
+  // Recipient card flip animation state (one for each recipient)
+  const recipientFlipAnims = useRef({}).current;
+  
+  // Initialize flip animations for each recipient
+  const getRecipientFlipAnim = (index) => {
+    if (!recipientFlipAnims[index]) {
+      recipientFlipAnims[index] = new Animated.Value(0);
+    }
+    return recipientFlipAnims[index];
+  };
+  
+  // Reply date picker state
+  const [showReplyDatePicker, setShowReplyDatePicker] = useState(false);
+  const [selectedReplyDate, setSelectedReplyDate] = useState(new Date());
+  const [replyAppId, setReplyAppId] = useState(null);
+  const [isCheckingReplies, setIsCheckingReplies] = useState(false);
+  
+  // Review date picker state
+  const [selectedReviewDate, setSelectedReviewDate] = useState(new Date());
+  
+  // Notification state
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [loadingNotifications, setLoadingNotifications] = useState(false);
+  const [notificationFilter, setNotificationFilter] = useState('all'); // all, unread, read
+  const lastNotificationUpdateRef = useRef(null); // Track when notifications were last modified locally
   
   // Validation functions
   const isValidEmail = (email) => {
@@ -439,6 +498,48 @@ export default function App() {
     } catch {
       return false;
     }
+  };
+
+  // Flip tile animation handler
+  const handleTileFlip = (animValue) => {
+    // Check current value and toggle
+    const currentValue = animValue._value;
+    const toValue = currentValue >= 90 ? 0 : 180;
+    
+    Animated.spring(animValue, {
+      toValue,
+      friction: 8,
+      tension: 10,
+      useNativeDriver: true,
+    }).start();
+  };
+  
+  // Flip recipient card handler
+  const handleRecipientFlip = (index) => {
+    const flipAnim = getRecipientFlipAnim(index);
+    const currentValue = flipAnim._value;
+    const toValue = currentValue >= 90 ? 0 : 180;
+    
+    Animated.spring(flipAnim, {
+      toValue,
+      friction: 8,
+      tension: 10,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  // Reset all flipped tiles back to front
+  const resetAllFlips = () => {
+    [flipAnimSent, flipAnimGenerated, flipAnimPending, flipAnimReply].forEach(animValue => {
+      if (animValue._value > 0) {
+        Animated.spring(animValue, {
+          toValue: 0,
+          friction: 8,
+          tension: 10,
+          useNativeDriver: true,
+        }).start();
+      }
+    });
   };
 
   const addRecipient = () => {
@@ -496,6 +597,55 @@ export default function App() {
       // Don't clear existing cover letters - preserve sent/generated status
       setCurrentReviewTab(0);
       setScreen('review');
+    }
+  };
+
+  // Handle Razorpay payment
+  const handleBuyPackage = async (pkg) => {
+    console.log('💳 Buy package clicked:', pkg);
+    try {
+      // Create Razorpay order
+      console.log('📞 Calling create-order API...');
+      const orderResponse = await fetch(`${API_BASE}/payment/create-order`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user?.token || ''}`
+        },
+        body: JSON.stringify({
+          packageId: pkg.id,
+          amount: parseFloat(pkg.amount)
+        })
+      });
+
+      console.log('📦 Order response status:', orderResponse.status);
+      const orderData = await orderResponse.json();
+      console.log('📦 Order data:', orderData);
+
+      if (!orderResponse.ok) {
+        throw new Error(orderData.error || 'Failed to create order');
+      }
+
+      // 🔥 Use prefill data from backend (fetched from database)
+      const prefillData = orderData.prefill || {};
+      console.log('👤 Prefill data from backend:', prefillData);
+
+      // Open Razorpay payment page in WebView modal with prefill data
+      const url = `${API_BASE.replace('/api', '')}/payment.html?orderId=${orderData.orderId}&amount=${orderData.amount}&currency=${orderData.currency}&keyId=${orderData.keyId}&packageName=${encodeURIComponent(pkg.name)}&credits=${pkg.credits}&email=${encodeURIComponent(prefillData.email || '')}&name=${encodeURIComponent(prefillData.name || '')}&phone=${encodeURIComponent(prefillData.contact || '')}`;
+      
+      console.log('🌐 Opening payment URL with backend prefill data');
+      console.log('🔑 Key ID:', orderData.keyId);
+      console.log('📱 Current modal state before:', showPaymentModal);
+      setPaymentUrl(url);
+      setShowPaymentModal(true);
+      console.log('✅ Payment modal state updated');
+    } catch (error) {
+      console.error('❌ Payment error:', error);
+      Alert.alert(
+        'Payment Error',
+        error.message || 'Failed to initiate payment. Please try again.',
+        [{ text: 'OK' }]
+      );
     }
   };
 
@@ -570,43 +720,50 @@ export default function App() {
 
   // Pick and upload profile image
   const pickProfileImage = async () => {
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options: ['Cancel', 'Choose from Files', 'Choose from Photos'],
-        cancelButtonIndex: 0,
-      },
-      async (buttonIndex) => {
-        if (buttonIndex === 1) {
-          // Choose from Files
-          try {
-            const result = await DocumentPicker.getDocumentAsync({
-              type: 'image/*',
-            });
+    Alert.alert(
+      'Choose Profile Image',
+      'Select an option',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel'
+        },
+        {
+          text: 'Choose from Files',
+          onPress: async () => {
+            try {
+              const result = await DocumentPicker.getDocumentAsync({
+                type: 'image/*',
+              });
 
-            if (result.assets && result.assets.length > 0) {
-              await uploadProfileImage(result.assets[0]);
+              if (result.assets && result.assets.length > 0) {
+                await uploadProfileImage(result.assets[0]);
+              }
+            } catch (error) {
+              console.log('Error:', error);
             }
-          } catch (error) {
-            console.log('Error:', error);
           }
-        } else if (buttonIndex === 2) {
-          // Choose from Photos
-          try {
-            const result = await ImagePicker.launchImageLibraryAsync({
-              mediaTypes: ImagePicker.MediaTypeOptions.Images,
-              allowsEditing: true,
-              aspect: [1, 1],
-              quality: 0.8,
-            });
+        },
+        {
+          text: 'Choose from Photos',
+          onPress: async () => {
+            try {
+              const result = await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                allowsEditing: true,
+                aspect: [1, 1],
+                quality: 0.8,
+              });
 
-            if (!result.canceled) {
-              await uploadProfileImage(result.assets[0]);
+              if (!result.canceled) {
+                await uploadProfileImage(result.assets[0]);
+              }
+            } catch (error) {
+              console.log('Error:', error);
             }
-          } catch (error) {
-            console.log('Error:', error);
           }
         }
-      }
+      ]
     );
   };
 
@@ -654,27 +811,20 @@ export default function App() {
 
   // Pick and upload resume
   const pickResume = async () => {
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options: ['Cancel', 'Choose PDF File'],
-        cancelButtonIndex: 0,
-      },
-      async (buttonIndex) => {
-        if (buttonIndex === 1) {
-          try {
-            const result = await DocumentPicker.getDocumentAsync({
-              type: 'application/pdf',
-            });
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+      });
 
-            if (result.assets && result.assets.length > 0) {
-              await uploadResume(result.assets[0]);
-            }
-          } catch (error) {
-            console.log('Error:', error);
-          }
-        }
+      if (result.assets && result.assets.length > 0) {
+        await uploadResume(result.assets[0]);
       }
-    );
+    } catch (error) {
+      console.log('Error picking resume:', error);
+      if (error.message !== 'User cancelled document picker') {
+        Alert.alert('Error', 'Failed to pick resume. Please try again.');
+      }
+    }
   };
 
   // Upload resume
@@ -720,41 +870,48 @@ export default function App() {
 
   // Pick and upload signature
   const pickSignature = async () => {
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options: ['Cancel', 'Choose from Files', 'Choose from Photos'],
-        cancelButtonIndex: 0,
-      },
-      async (buttonIndex) => {
-        if (buttonIndex === 1) {
-          // Choose from Files
-          try {
-            const result = await DocumentPicker.getDocumentAsync({
-              type: 'image/*',
-            });
+    Alert.alert(
+      'Choose Signature',
+      'Select an option',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel'
+        },
+        {
+          text: 'Choose from Files',
+          onPress: async () => {
+            try {
+              const result = await DocumentPicker.getDocumentAsync({
+                type: 'image/*',
+              });
 
-            if (result.assets && result.assets.length > 0) {
-              await uploadSignature(result.assets[0]);
+              if (result.assets && result.assets.length > 0) {
+                await uploadSignature(result.assets[0]);
+              }
+            } catch (error) {
+              console.log('Error:', error);
             }
-          } catch (error) {
-            console.log('Error:', error);
           }
-        } else if (buttonIndex === 2) {
-          // Choose from Photos
-          try {
-            const result = await ImagePicker.launchImageLibraryAsync({
-              mediaTypes: ImagePicker.MediaTypeOptions.Images,
-              quality: 0.8,
-            });
+        },
+        {
+          text: 'Choose from Photos',
+          onPress: async () => {
+            try {
+              const result = await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                quality: 0.8,
+              });
 
-            if (!result.canceled) {
-              await uploadSignature(result.assets[0]);
+              if (!result.canceled) {
+                await uploadSignature(result.assets[0]);
+              }
+            } catch (error) {
+              console.log('Error:', error);
             }
-          } catch (error) {
-            console.log('Error:', error);
           }
         }
-      }
+      ]
     );
   };
 
@@ -805,16 +962,6 @@ export default function App() {
       fetchProfileData();
     }
   }, [screen]);
-  
-  // Google OAuth setup
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    clientId: GOOGLE_CLIENT_ID,
-    scopes: [
-      'profile',
-      'email',
-      'https://www.googleapis.com/auth/gmail.send'
-    ],
-  });
 
   // Handle password change
   const handleChangePassword = async () => {
@@ -834,7 +981,7 @@ export default function App() {
     }
 
     try {
-      const response = await fetch(`${API_BASE}/auth/change-password`, {
+      const response = await fetch(`${API_BASE.replace('/api', '')}/api/auth/change-password`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${user?.token}`,
@@ -866,7 +1013,7 @@ export default function App() {
   // Handle privacy settings update
   const handleUpdatePrivacySettings = async () => {
     try {
-      const response = await fetch(`${API_BASE}/users/privacy-settings`, {
+      const response = await fetch(`${API_BASE.replace('/api', '')}/api/users/privacy-settings`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${user?.token}`,
@@ -884,6 +1031,50 @@ export default function App() {
 
       Alert.alert('Success', 'Privacy settings updated successfully');
       setShowPrivacySettings(false);
+    } catch (error) {
+      Alert.alert('Error', error.message);
+    }
+  };
+
+  // Handle delete account
+  const handleDeleteAccount = async () => {
+    if (deleteConfirmText !== 'DELETE') {
+      Alert.alert('Error', 'Please type DELETE to confirm account deletion');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE.replace('/api', '')}/api/account/delete`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${user?.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          confirmText: deleteConfirmText
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        Alert.alert('Error', data.error || 'Failed to delete account');
+        return;
+      }
+
+      Alert.alert('Account Deleted', 'Your account has been permanently deleted', [
+        {
+          text: 'OK',
+          onPress: async () => {
+            // Clear all local data
+            await AsyncStorage.clear();
+            setUser(null);
+            setShowDeleteAccount(false);
+            setDeleteConfirmText('');
+            setScreen('login');
+          }
+        }
+      ]);
     } catch (error) {
       Alert.alert('Error', error.message);
     }
@@ -1075,6 +1266,107 @@ export default function App() {
   }, [screen]);
 
   // REVIEW SCREEN HANDLERS
+  // Progressive loading functions
+  const startProgressiveLoading = (companyUrl) => {
+    const companyName = companyUrl ? companyUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0] : 'the company';
+    const steps = [
+      { time: 0, message: '🔍 Fetching your profile details...', progress: 0 },
+      { time: 3000, message: `🌐 Researching about ${companyName}...`, progress: 15 },
+      { time: 8000, message: '🏢 Analyzing company culture and requirements...', progress: 30 },
+      { time: 15000, message: '🤝 Matching your skills with job requirements...', progress: 50 },
+      { time: 22000, message: '✍️ Crafting your personalized cover letter...', progress: 70 },
+      { time: 30000, message: '✨ Adding final touches and formatting...', progress: 85 },
+      { time: 40000, message: '⏳ Almost done, finalizing content...', progress: 95 }
+    ];
+
+    // Clear any existing interval
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+    }
+
+    // Reset animation value
+    progressAnimValue.setValue(0);
+
+    // Set initial message and progress
+    setProgressiveLoadingMessage(steps[0].message);
+    setProgressiveLoadingProgress(0);
+    console.log('📊', steps[0].message);
+
+    let currentStepIndex = 0;
+    const startTime = Date.now();
+
+    progressIntervalRef.current = setInterval(() => {
+      if (isCancelledRef.current) {
+        clearInterval(progressIntervalRef.current);
+        return;
+      }
+
+      const elapsedTime = Date.now() - startTime;
+      
+      // Find the current step based on elapsed time
+      let newStepIndex = 0;
+      for (let i = steps.length - 1; i >= 0; i--) {
+        if (elapsedTime >= steps[i].time) {
+          newStepIndex = i;
+          break;
+        }
+      }
+
+      // Update message only when we enter a new step (prevents flickering)
+      if (newStepIndex !== currentStepIndex) {
+        currentStepIndex = newStepIndex;
+        setProgressiveLoadingMessage(steps[currentStepIndex].message);
+        console.log('📊', steps[currentStepIndex].message);
+      }
+
+      // Calculate smooth progress within current step
+      const currentStep = steps[currentStepIndex];
+      const nextStep = steps[currentStepIndex + 1];
+      
+      if (nextStep) {
+        // We're in a step that has a next step - smoothly transition
+        const stepStartTime = currentStep.time;
+        const stepEndTime = nextStep.time;
+        const stepDuration = stepEndTime - stepStartTime;
+        const timeIntoStep = elapsedTime - stepStartTime;
+        const stepProgress = Math.min(timeIntoStep / stepDuration, 1);
+        
+        // Interpolate between current and next progress
+        const startProgress = currentStep.progress;
+        const endProgress = nextStep.progress;
+        const progressRange = endProgress - startProgress;
+        const smoothProgress = startProgress + (progressRange * stepProgress);
+        
+        setProgressiveLoadingProgress(Math.floor(smoothProgress));
+        
+        // Animate to the smooth progress value
+        Animated.timing(progressAnimValue, {
+          toValue: smoothProgress,
+          duration: 100,
+          useNativeDriver: false
+        }).start();
+      } else {
+        // We're at the final step - stay at its progress
+        setProgressiveLoadingProgress(currentStep.progress);
+        Animated.timing(progressAnimValue, {
+          toValue: currentStep.progress,
+          duration: 100,
+          useNativeDriver: false
+        }).start();
+      }
+    }, 100); // Update every 100ms for smooth animation
+  };
+
+  const stopProgressiveLoading = () => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+    setProgressiveLoadingMessage('');
+    setProgressiveLoadingProgress(0);
+    progressAnimValue.setValue(0);
+  };
+
   const generateCoverLetterForReview = async (recipientIndex, retryCount = 0) => {
     const recipient = recipients[recipientIndex];
     if (!recipient.email || !recipient.website) {
@@ -1090,6 +1382,9 @@ export default function App() {
       }
       
       setReviewGeneratingIndex(recipientIndex);
+      
+      // Start progressive loading
+      startProgressiveLoading(recipient.website);
       
       // Keep the app awake during the request (prevents background suspension)
       await activateKeepAwakeAsync();
@@ -1177,14 +1472,53 @@ export default function App() {
         return;
       }
       
-      // Get headquarter address as default
+      // Get headquarter address as default - construct properly without duplicates
       const headquarterLocation = data.locations?.find(loc => loc.isHeadquarters) || data.locations?.[0];
-      const defaultAddress = headquarterLocation ? `${headquarterLocation.address}, ${headquarterLocation.city}, ${headquarterLocation.country}` : '';
+      let defaultAddress = '';
+      if (headquarterLocation) {
+        let address = headquarterLocation.address || '';
+        const city = headquarterLocation.city || '';
+        const country = headquarterLocation.country || '';
+        
+        // Check if address is empty or placeholder
+        if (!address || address === 'Address not available online') {
+          // Construct from city and country if available
+          const parts = [];
+          if (city && city !== 'Not specified') parts.push(city);
+          if (country && country !== 'Not specified') parts.push(country);
+          defaultAddress = parts.join(', ') || '';
+        } else {
+          // Address exists - check if we need to append city/country
+          const addressLower = address.toLowerCase();
+          const cityLower = city.toLowerCase();
+          const countryLower = country.toLowerCase();
+          
+          // Only add city if it's not already in the address
+          const cityInAddress = cityLower && addressLower.includes(cityLower);
+          // Only add country if it's not already in the address
+          const countryInAddress = countryLower && addressLower.includes(countryLower);
+          
+          // Start with the address
+          defaultAddress = address;
+          
+          // Append city if valid and not already present
+          if (city && city !== 'Not specified' && !cityInAddress) {
+            defaultAddress += `, ${city}`;
+          }
+          
+          // Append country if valid and not already present
+          if (country && country !== 'Not specified' && !countryInAddress) {
+            defaultAddress += `, ${country}`;
+          }
+        }
+      }
       
-      console.log(`💾 [${requestId}] Storing in state...`);
+      console.log(`💾 [${requestId}] Storing in state with address: ${defaultAddress}...`);
+      
+      // Use functional setState to avoid race conditions when generating in parallel
+      let updatedCoverLetters = {};
       setReviewCoverLetters(prev => {
-        console.log(`   State update callback triggered`);
-        return {
+        updatedCoverLetters = {
           ...prev,
           [recipientIndex]: {
             ...data,
@@ -1197,7 +1531,17 @@ export default function App() {
             storedRecipientWebsite: recipient.website
           }
         };
+        return updatedCoverLetters;
       });
+      console.log(`   State update callback triggered`);
+      
+      // Save to backend database (sync with web) - wait a bit for state to settle
+      setTimeout(() => {
+        setReviewCoverLetters(current => {
+          saveReviewCoverLettersToBackend(current);
+          return current;
+        });
+      }, 100);
       
       // Increment total generated counter
       setTotalGenerated(prev => prev + 1);
@@ -1274,6 +1618,7 @@ export default function App() {
       // Always deactivate keep-awake when done
       deactivateKeepAwake();
       console.log('🔓 Keep-awake deactivated - app can sleep normally');
+      stopProgressiveLoading();
       setReviewGeneratingIndex(null);
     }
   };
@@ -1356,7 +1701,7 @@ export default function App() {
       const promises = recipients
         .map((recipient, index) => {
           const coverLetter = reviewCoverLetters[index];
-          if (recipient.email && recipient.website && coverLetter && !coverLetter.sent) {
+          if (recipient.email && recipient.website && coverLetter) {
             return sendApplicationFromReview(index, true);
           }
           return Promise.resolve();
@@ -1786,6 +2131,229 @@ export default function App() {
     }
   };
 
+  // Load notifications from backend
+  const loadNotifications = async (force = false) => {
+    if (!user?.token) return;
+    
+    // Don't fetch if we just updated locally (within last 5 seconds) unless forced
+    const now = Date.now();
+    const timeSinceLastUpdate = lastNotificationUpdateRef.current ? now - lastNotificationUpdateRef.current : Infinity;
+    
+    if (!force && timeSinceLastUpdate < 5000) {
+      console.log('⏭️  Skipping fetch - notifications were just updated locally', timeSinceLastUpdate, 'ms ago');
+      console.log('💡 Using local state to preserve recent mark-as-read updates');
+      return;
+    }
+    
+    console.log('📥 Loading notifications (limit 5)... Force:', force, 'Time since last update:', timeSinceLastUpdate);
+    setLoadingNotifications(true);
+    try {
+      const response = await fetch(`${API_BASE}/notifications?limit=5`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json',
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('✅ Notifications loaded:', data.notifications?.length || 0, 'unread:', data.unreadCount);
+        if (data.success) {
+          setNotifications(data.notifications || []);
+          setUnreadCount(data.unreadCount || 0);
+        }
+      } else {
+        console.log('❌ Failed to load notifications:', response.status);
+      }
+    } catch (err) {
+      console.log('❌ Error loading notifications:', err.message);
+    } finally {
+      setLoadingNotifications(false);
+    }
+  };
+
+  // Load all notifications for notifications page  
+  const loadAllNotifications = async (force = false) => {
+    if (!user?.token) return;
+    
+    // Don't fetch if we just updated locally (within last 5 seconds) unless forced
+    const now = Date.now();
+    const timeSinceLastUpdate = lastNotificationUpdateRef.current ? now - lastNotificationUpdateRef.current : Infinity;
+    
+    if (!force && timeSinceLastUpdate < 5000) {
+      console.log('⏭️  Skipping fetch (all) - notifications were just updated locally', timeSinceLastUpdate, 'ms ago');
+      console.log('💡 Using local state to preserve recent mark-as-read updates');
+      return;
+    }
+    
+    console.log('📥 Loading ALL notifications... Force:', force, 'Time since last update:', timeSinceLastUpdate);
+    setLoadingNotifications(true);
+    try {
+      const response = await fetch(`${API_BASE}/notifications`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json',
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('✅ All notifications loaded:', data.notifications?.length || 0, 'unread:', data.unreadCount);
+        if (data.success) {
+          setNotifications(data.notifications || []);
+          setUnreadCount(data.unreadCount || 0);
+        }
+      } else {
+        console.log('❌ Failed to load all notifications:', response.status);
+      }
+    } catch (err) {
+      console.log('Error loading all notifications:', err.message);
+    } finally {
+      setLoadingNotifications(false);
+    }
+  };
+
+  // Mark all notifications as read
+  const markAllNotificationsRead = async () => {
+    if (!user?.token) return;
+    
+    console.log('📝 Marking ALL notifications as read');
+    
+    // Optimistically update UI immediately
+    setNotifications(prevNotifications => 
+      prevNotifications.map(n => ({ ...n, is_read: true }))
+    );
+    setUnreadCount(0);
+    
+    // Mark timestamp of local update to prevent immediate refetch
+    lastNotificationUpdateRef.current = Date.now();
+    console.log('⏰ Set last notification update timestamp:', lastNotificationUpdateRef.current);
+    
+    // Make API call in background
+    try {
+      await fetch(`${API_BASE}/notifications/mark-all-read`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json',
+        }
+      });
+    } catch (err) {
+      console.log('Error marking all notifications as read (silent):', err.message);
+      // Don't revert - keep optimistic update
+    }
+  };
+
+  // Mark single notification as read
+  const markNotificationAsRead = async (notificationId) => {
+    if (!user?.token) return;
+    
+    // Check if already marked
+    const notification = notifications.find(n => n.id === notificationId);
+    console.log('🔍 Checking notification:', { id: notificationId, found: !!notification, is_read: notification?.is_read });
+    
+    if (!notification || notification.is_read) {
+      console.log('⏭️  Notification already read or not found:', notificationId);
+      return;
+    }
+    
+    console.log('📝 Marking notification as read:', notificationId, 'API_BASE:', API_BASE);
+    console.log('🔑 Using token:', user.token ? 'Token exists' : 'No token');
+    
+    // Optimistically update UI immediately
+    setNotifications(prevNotifications => {
+      const updated = prevNotifications.map(n => 
+        n.id === notificationId ? { ...n, is_read: true } : n
+      );
+      console.log('✅ Optimistically updated state. Unread before:', prevNotifications.filter(n => !n.is_read).length);
+      return updated;
+    });
+    setUnreadCount(prevCount => {
+      const newCount = Math.max(0, prevCount - 1);
+      console.log('📊 Unread count updated:', prevCount, '→', newCount);
+      return newCount;
+    });
+    
+    // Mark timestamp of local update to prevent immediate refetch
+    lastNotificationUpdateRef.current = Date.now();
+    console.log('⏰ Set last notification update timestamp:', lastNotificationUpdateRef.current);
+    
+    // Make API call in background
+    try {
+      const url = `${API_BASE}/notifications/${notificationId}/read`;
+      console.log('🌐 Making API call to:', url);
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json',
+        }
+      });
+      
+      console.log('📡 API Response status:', response.status, response.statusText);
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('✅ Notification marked as read on server:', data);
+      } else {
+        const errorText = await response.text();
+        console.log('❌ Failed to mark notification as read on server:', response.status, errorText);
+      }
+    } catch (err) {
+      console.log('❌ Error marking notification as read:', err.message, err.stack);
+      // Don't revert - keep optimistic update
+    }
+  };
+
+  // Get time ago for notifications
+  const getTimeAgo = (timestamp) => {
+    const now = new Date();
+    const then = new Date(timestamp);
+    const seconds = Math.floor((now - then) / 1000);
+    
+    if (seconds < 60) return 'Just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+    return `${Math.floor(seconds / 604800)}w ago`;
+  };
+
+  // Save review cover letters to backend database
+  const saveReviewCoverLettersToBackend = async (lettersToSave = null) => {
+    try {
+      if (!user?.token) {
+        console.log('⚠️ Cannot save review cover letters - no user token');
+        return;
+      }
+
+      const dataToSave = lettersToSave || reviewCoverLetters;
+      
+      console.log('💾 Saving review cover letters to backend:', Object.keys(dataToSave).length, 'items');
+      
+      const response = await fetch(`${API_BASE}/users/review-cover-letters`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ reviewCoverLetters: dataToSave })
+      });
+      
+      if (response.ok) {
+        console.log('✅ Review cover letters saved to backend database');
+        // Also save to AsyncStorage for offline access
+        await AsyncStorage.setItem(`reviewCoverLetters_${user.email}`, JSON.stringify(dataToSave));
+      } else {
+        console.error('❌ Failed to save cover letters to backend:', response.status);
+      }
+    } catch (error) {
+      console.error('Failed to save review cover letters to backend:', error);
+    }
+  };
+
   const loadReviewCoverLettersFromStorage = async () => {
     try {
       if (!user?.email) {
@@ -1793,13 +2361,41 @@ export default function App() {
         return;
       }
       
+      // Try to load from backend API first (sync with web)
+      try {
+        const response = await fetch(`${API_BASE}/users/review-cover-letters`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${user.token}`,
+            'Content-Type': 'application/json',
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success && data.reviewCoverLetters) {
+            setReviewCoverLetters(data.reviewCoverLetters);
+            console.log('📖 Review cover letters loaded from backend database:', Object.keys(data.reviewCoverLetters).length, 'items');
+            
+            // Cache in AsyncStorage for offline access
+            await AsyncStorage.setItem(`reviewCoverLetters_${user.email}`, JSON.stringify(data.reviewCoverLetters));
+            return;
+          }
+        } else {
+          console.log('⚠️ Backend returned error for cover letters, trying AsyncStorage fallback');
+        }
+      } catch (apiError) {
+        console.log('⚠️ Backend API error, trying AsyncStorage fallback:', apiError.message);
+      }
+      
+      // Fallback to AsyncStorage if backend is unavailable
       const stored = await AsyncStorage.getItem(`reviewCoverLetters_${user.email}`);
-      console.log('🔍 Attempting to load review cover letters for:', user.email);
+      console.log('🔍 Attempting to load review cover letters from AsyncStorage for:', user.email);
       
       if (stored) {
         const parsed = JSON.parse(stored);
         setReviewCoverLetters(parsed);
-        console.log('📖 Review cover letters loaded from AsyncStorage:', Object.keys(parsed).length, 'items');
+        console.log('📖 Review cover letters loaded from AsyncStorage (offline):', Object.keys(parsed).length, 'items');
       } else {
         console.log('ℹ️ No stored review cover letters found');
       }
@@ -1815,15 +2411,50 @@ export default function App() {
         return;
       }
       
-      const stored = await AsyncStorage.getItem(`applicationHistory_${user.email}`);
-      console.log('🔍 Attempting to load application history for:', user.email);
-      
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        setApplicationHistory(parsed);
-        console.log('📖 Application history loaded from AsyncStorage:', parsed.length, 'items');
-      } else {
-        console.log('ℹ️ No stored application history found');
+      // Try to load from backend API first
+      try {
+        const response = await fetch(`${API_BASE}/users/application-history`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${user.token}`,
+            'Content-Type': 'application/json',
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success && data.applicationHistory) {
+            setApplicationHistory(data.applicationHistory);
+            console.log('📖 Application history loaded from backend API:', data.applicationHistory.length, 'items');
+            
+            // Cache in AsyncStorage for offline access
+            await AsyncStorage.setItem(`applicationHistory_${user.email}`, JSON.stringify(data.applicationHistory));
+            // Continue to load counters and credits below
+          }
+        } else {
+          // Fallback to AsyncStorage if backend returns error
+          const stored = await AsyncStorage.getItem(`applicationHistory_${user.email}`);
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            setApplicationHistory(parsed);
+            console.log('📖 Application history loaded from AsyncStorage cache:', parsed.length, 'items');
+          } else {
+            console.log('ℹ️ No stored application history found');
+            setApplicationHistory([]); // Set to empty array
+          }
+        }
+      } catch (apiError) {
+        console.log('⚠️ Failed to load from backend, trying AsyncStorage cache:', apiError.message);
+        // Fallback to AsyncStorage if backend fails
+        const stored = await AsyncStorage.getItem(`applicationHistory_${user.email}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          setApplicationHistory(parsed);
+          console.log('📖 Application history loaded from AsyncStorage cache:', parsed.length, 'items');
+        } else {
+          console.log('ℹ️ No stored application history found');
+          setApplicationHistory([]); // Set to empty array
+        }
       }
       
       // Load cumulative counters from backend API first, fallback to AsyncStorage
@@ -1838,8 +2469,13 @@ export default function App() {
         
         if (response.ok) {
           const data = await response.json();
-          setTotalGenerated(data.totalGenerated || 0);
-          setTotalSent(data.totalSent || 0);
+          // Only update if backend returns actual data (not null/undefined)
+          if (data.totalGenerated !== null && data.totalGenerated !== undefined) {
+            setTotalGenerated(data.totalGenerated);
+          }
+          if (data.totalSent !== null && data.totalSent !== undefined) {
+            setTotalSent(data.totalSent);
+          }
           console.log('📊 Loaded counters from backend API - Generated:', data.totalGenerated, 'Sent:', data.totalSent);
 
           // Also load credit balance
@@ -1865,31 +2501,47 @@ export default function App() {
             console.log('⚠️ Could not load credits:', creditsError);
           }
           
-          // Also cache in AsyncStorage
-          await AsyncStorage.setItem(`appCounters_${user.email}`, JSON.stringify({
-            totalGenerated: data.totalGenerated || 0,
-            totalSent: data.totalSent || 0
-          }));
+          // Only cache in AsyncStorage if we got valid data from backend
+          if (data.totalGenerated !== null || data.totalSent !== null) {
+            await AsyncStorage.setItem(`appCounters_${user.email}`, JSON.stringify({
+              totalGenerated: data.totalGenerated || 0,
+              totalSent: data.totalSent || 0
+            }));
+          }
         } else {
           // Fallback to AsyncStorage
           console.log('⚠️ Failed to load from backend, using AsyncStorage cache');
           const countersStored = await AsyncStorage.getItem(`appCounters_${user.email}`);
           if (countersStored) {
             const counters = JSON.parse(countersStored);
-            setTotalGenerated(counters.totalGenerated || 0);
-            setTotalSent(counters.totalSent || 0);
+            // Only update if we have valid cached data - don't override with 0
+            if (counters.totalGenerated !== null && counters.totalGenerated !== undefined) {
+              setTotalGenerated(counters.totalGenerated);
+            }
+            if (counters.totalSent !== null && counters.totalSent !== undefined) {
+              setTotalSent(counters.totalSent);
+            }
             console.log('📊 Loaded counters from AsyncStorage - Generated:', counters.totalGenerated, 'Sent:', counters.totalSent);
+          } else {
+            console.log('ℹ️ No cached counters - keeping current values');
           }
         }
       } catch (error) {
         console.error('Failed to load counters from backend:', error);
-        // Fallback to AsyncStorage
+        // Fallback to AsyncStorage - don't override with 0
         const countersStored = await AsyncStorage.getItem(`appCounters_${user.email}`);
         if (countersStored) {
           const counters = JSON.parse(countersStored);
-          setTotalGenerated(counters.totalGenerated || 0);
-          setTotalSent(counters.totalSent || 0);
+          // Only update if we have valid cached data
+          if (counters.totalGenerated !== null && counters.totalGenerated !== undefined) {
+            setTotalGenerated(counters.totalGenerated);
+          }
+          if (counters.totalSent !== null && counters.totalSent !== undefined) {
+            setTotalSent(counters.totalSent);
+          }
           console.log('📊 Loaded counters from AsyncStorage (fallback) - Generated:', counters.totalGenerated, 'Sent:', counters.totalSent);
+        } else {
+          console.log('ℹ️ No cached counters - keeping current values');
         }
       }
       
@@ -2052,7 +2704,10 @@ export default function App() {
       }
     };
     
-    saveCounters();
+    // Only save if counters have been loaded (don't save initial 0 values)
+    if (countersLoaded) {
+      saveCounters();
+    }
   }, [totalGenerated, totalSent, user?.email, countersLoaded]);
 
   // Load recipients when user is set
@@ -2062,8 +2717,37 @@ export default function App() {
       loadRecipientsFromBackend(user.token);
       loadReviewCoverLettersFromStorage();
       loadApplicationHistoryFromStorage();
+      loadNotifications(); // Load notifications
+      
+      // Auto-check for replies on login (OAuth users only)
+      if (user.provider === 'google' || user.provider === 'microsoft') {
+        console.log('🔄 OAuth user detected - starting auto-check for replies...');
+        // Initial check after 10 seconds
+        setTimeout(() => autoCheckForReplies(false), 10000);
+      }
     }
   }, [user?.token, user?.email]);
+
+  // Periodic reply checking (every 10 minutes) for OAuth users
+  useEffect(() => {
+    let replyCheckInterval = null;
+    
+    if (user?.token && (user.provider === 'google' || user.provider === 'microsoft')) {
+      console.log('🔄 Starting periodic reply check (every 10 minutes)');
+      
+      replyCheckInterval = setInterval(() => {
+        autoCheckForReplies(true); // Show notification on periodic checks
+      }, 10 * 60 * 1000); // 10 minutes
+    }
+    
+    // Cleanup on unmount or when user changes
+    return () => {
+      if (replyCheckInterval) {
+        console.log('⏸️ Stopping periodic reply check');
+        clearInterval(replyCheckInterval);
+      }
+    };
+  }, [user?.token, user?.provider]);
 
   // Also load when screen changes to dashboard
   useEffect(() => {
@@ -2109,6 +2793,7 @@ export default function App() {
     if (screen === 'usage' && user?.token) {
       const fetchUsageData = async () => {
         try {
+          console.log('📱 [USAGE] Fetching usage data from:', `${API_BASE}/user/usage-stats`);
           setLoadingUsage(true);
           const response = await fetch(`${API_BASE}/user/usage-stats`, {
             method: 'GET',
@@ -2118,19 +2803,46 @@ export default function App() {
             }
           });
           
+          console.log('📱 [USAGE] Response status:', response.status, response.ok ? 'OK' : 'ERROR');
+          
           if (response.ok) {
             const data = await response.json();
+            console.log('📱 [USAGE] Response data.success:', data.success);
+            console.log('📱 [USAGE] dateWiseActivity length:', data.dateWiseActivity?.length || 0);
+            
+            if (data.dateWiseActivity && data.dateWiseActivity.length > 0) {
+              const nonZero = data.dateWiseActivity.filter(d => d.generated > 0 || d.sent > 0 || d.creditsUsed > 0);
+              console.log('📱 [USAGE] Days with non-zero activity:', nonZero.length);
+              console.log('📱 [USAGE] Sample data (first 3 days):', JSON.stringify(data.dateWiseActivity.slice(0, 3)));
+              console.log('📱 [USAGE] Sample data (last 7 days):', JSON.stringify(data.dateWiseActivity.slice(-7)));
+            } else {
+              console.log('⚠️ [USAGE] No dateWiseActivity data received!');
+            }
+            
             if (data.success) {
               setUsageData(data);
+              console.log('✅ [USAGE] UsageData state updated');
             }
+          } else {
+            console.error('❌ [USAGE] Response not OK:', response.status);
           }
         } catch (error) {
-          console.error('Failed to load usage data:', error);
+          console.error('❌ [USAGE] Failed to load usage data:', error);
         } finally {
           setLoadingUsage(false);
         }
       };
       fetchUsageData();
+    }
+  }, [screen, user?.token]);
+
+  // Load all notifications when opening notifications screen
+  useEffect(() => {
+    if (screen === 'notifications' && user?.token) {
+      console.log('🔔 Navigated to notifications screen - checking if fetch needed...');
+      // Don't force fetch - let the smart fetching mechanism decide based on timestamp
+      // This prevents overwriting recently marked-as-read notifications
+      loadAllNotifications(); // Will skip if recently updated (within 5 seconds)
     }
   }, [screen, user?.token]);
 
@@ -2182,12 +2894,6 @@ export default function App() {
   }, [screen]);
 
   // Handle Google OAuth response
-  useEffect(() => {
-    if (response?.type === 'success') {
-      handleGoogleAuthResponse(response.authentication.accessToken);
-    }
-  }, [response]);
-
   // Function to check if user is admin
   const checkAdminStatus = async (token) => {
     try {
@@ -2258,6 +2964,141 @@ export default function App() {
     }
   };
 
+  // Silent auto-check for replies (no UI updates, runs in background)
+  const autoCheckForReplies = async (showNotification = false) => {
+    try {
+      console.log('🔄 Auto-checking for email replies...');
+      const response = await fetch(`${API_BASE}/check-replies`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        }
+      });
+
+      const responseText = await response.text();
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('Auto-check: Failed to parse response');
+        return;
+      }
+
+      if (response.ok) {
+        const repliesCount = data.repliesFound || 0;
+        console.log(`✅ Auto-check complete: ${repliesCount} replies found`);
+        
+        if (repliesCount > 0) {
+          // Refresh application history to show updated reply status
+          await loadApplicationHistoryFromStorage();
+          
+          if (showNotification) {
+            Alert.alert(
+              '🔄 Auto-Sync',
+              `Found ${repliesCount} new ${repliesCount === 1 ? 'reply' : 'replies'}!`,
+              [{ text: 'OK' }]
+            );
+          }
+        }
+      } else {
+        console.error('❌ Auto-check error:', data.error || data.message);
+      }
+    } catch (error) {
+      console.error('❌ Auto-check network error:', error);
+    }
+  };
+
+  // Check for email replies (manual button click)
+  const checkEmailReplies = async () => {
+    try {
+      setIsCheckingReplies(true);
+
+      const response = await fetch(`${API_BASE}/check-replies`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`
+        }
+      });
+
+      // Log response details for debugging
+      console.log('Check replies response status:', response.status);
+      console.log('Check replies response headers:', response.headers);
+      
+      // Get response text first to handle non-JSON responses
+      const responseText = await response.text();
+      console.log('Check replies response text (first 200 chars):', responseText.substring(0, 200));
+
+      // Try to parse as JSON
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('Failed to parse response as JSON:', parseError);
+        throw new Error(`Server returned invalid response. Status: ${response.status}. Response: ${responseText.substring(0, 100)}`);
+      }
+
+      if (response.ok) {
+        if (data.repliesFound > 0) {
+          // Refresh application history from backend
+          await loadApplicationHistoryFromStorage();
+          
+          Alert.alert(
+            '✅ Replies Found!',
+            data.message,
+            [{ text: 'OK' }]
+          );
+        } else {
+          Alert.alert(
+            'No New Replies',
+            'No replies found yet. Keep checking!',
+            [{ text: 'OK' }]
+          );
+        }
+      } else {
+        Alert.alert('Error', data.message || data.error || 'Failed to check replies');
+      }
+
+    } catch (error) {
+      console.error('Check replies error:', error);
+      Alert.alert('Error', error.message || 'Failed to check email replies. Please try again.');
+    } finally {
+      setIsCheckingReplies(false);
+    }
+  };
+
+  // Fetch all replies for a specific application
+  const showAllReplies = async (applicationId, companyName) => {
+    try {
+      const response = await fetch(`${API_BASE}/users/application-history/${applicationId}/replies`, {
+        headers: {
+          'Authorization': `Bearer ${user.token}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch replies');
+      }
+
+      const result = await response.json();
+
+      if (result.success && result.replies && result.replies.length > 0) {
+        setSelectedReplyDetails({
+          companyName: result.companyName,
+          replies: result.replies,
+          count: result.count
+        });
+        setShowReplyDetailsModal(true);
+      } else {
+        Alert.alert('Info', 'No replies found', [{ text: 'OK' }]);
+      }
+    } catch (error) {
+      console.error('Error fetching replies:', error);
+      Alert.alert('Error', 'Failed to load replies. Please try again.', [{ text: 'OK' }]);
+    }
+  };
+
   const handleRegister = async () => {
     if (!fullName || !email || !password) {
       setError('Please fill in all fields');
@@ -2275,12 +3116,53 @@ export default function App() {
       });
       
       const data = await response.json();
+      console.log('Register Response Status:', response.status);
+      console.log('Register Response Data:', data);
       
       if (!response.ok) {
-        throw new Error(data.message || 'Registration failed');
+        // Backend returns 'error' field for error messages
+        throw new Error(data.error || data.message || 'Registration failed');
       }
       
-      setUser(data.user);
+      // Ensure user object has all required fields including token
+      const userData = {
+        id: data.user?.id,
+        email: data.user?.email,
+        fullName: data.user?.fullName || data.user?.name,
+        name: data.user?.name || data.user?.fullName,
+        token: data.token,
+        createdAt: data.user?.createdAt,
+        provider: data.user?.provider || 'email'
+      };
+      
+      console.log('Registered User:', userData);
+      
+      // Clear any cached data from previous sessions
+      try {
+        const allKeys = await AsyncStorage.getAllKeys();
+        const oldUserKeys = allKeys.filter(key => 
+          key.startsWith('appCounters_') || 
+          key.startsWith('applicationHistory_') || 
+          key.startsWith('reviewCoverLetters_') || 
+          key.startsWith('recipients_')
+        );
+        if (oldUserKeys.length > 0) {
+          await AsyncStorage.multiRemove(oldUserKeys);
+          console.log('🗑️ Cleared cached data from previous sessions');
+        }
+      } catch (error) {
+        console.error('Failed to clear old cache:', error);
+      }
+      
+      // Reset all state to fresh start
+      setTotalGenerated(0);
+      setTotalSent(0);
+      setCreditBalance(0);
+      setApplicationHistory([]);
+      setReviewCoverLetters({});
+      setRecipients([]);
+      
+      setUser(userData);
       setScreen('dashboard');
       setEmail('');
       setPassword('');
@@ -2293,27 +3175,53 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    // Clear all user-specific data from AsyncStorage
+    if (user?.email) {
+      try {
+        await AsyncStorage.removeItem(`appCounters_${user.email}`);
+        await AsyncStorage.removeItem(`applicationHistory_${user.email}`);
+        await AsyncStorage.removeItem(`reviewCoverLetters_${user.email}`);
+        await AsyncStorage.removeItem(`recipients_${user.email}`);
+        console.log('🗑️ Cleared user cache on logout');
+      } catch (error) {
+        console.error('Failed to clear cache:', error);
+      }
+    }
+    
+    // Reset all state
     setUser(null);
     setScreen('login');
     setEmail('');
     setPassword('');
     setFullName('');
     setError('');
+    setTotalGenerated(0);
+    setTotalSent(0);
+    setCreditBalance(0);
+    setApplicationHistory([]);
+    setReviewCoverLetters({});
+    setRecipients([]);
   };
 
-  const handleGoogleAuthResponse = async (accessToken) => {
+  const handleGoogleAuthResponse = async (code, codeVerifier) => {
     setLoading(true);
     setError('');
     try {
-      console.log('Google Auth Response - Token length:', accessToken?.length || 0);
+      console.log('Google Auth Response - Code length:', code?.length || 0);
+      console.log('Google Auth Response - Verifier length:', codeVerifier?.length || 0);
       console.log('API Base:', API_BASE);
       
-      // Send access token to backend
-      const response = await fetch(`${API_BASE}/api/auth/google`, {
+      // Send authorization code and PKCE verifier to backend for token exchange
+      const response = await fetch(`${API_BASE}/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accessToken })
+        body: JSON.stringify({ 
+          code, 
+          codeVerifier, // PKCE verifier for secure exchange
+          isMobile: true,
+          platform: Platform.OS 
+        })
       });
 
       console.log('Backend Response Status:', response.status);
@@ -2340,119 +3248,333 @@ export default function App() {
     }
   };
 
-  const handleGoogleLogin = async () => {
+  const handleMicrosoftAuthResponse = async (accessToken) => {
+    setLoading(true);
+    setError('');
     try {
-      const result = await promptAsync();
-      if (result?.type !== 'success') {
+      console.log('Microsoft Auth Response - Token length:', accessToken?.length || 0);
+      console.log('API Base:', API_BASE);
+      
+      // Send access token to backend
+      const response = await fetch(`${API_BASE}/auth/microsoft`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessToken })
+      });
+
+      console.log('Backend Response Status:', response.status);
+      const data = await response.json();
+      console.log('Backend Response Data:', data);
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Microsoft login failed');
+      }
+
+      // Store user data with token
+      setUser({
+        ...data.user,
+        token: data.token
+      });
+      setScreen('dashboard');
+      Alert.alert('Success', `Welcome ${data.user.fullName}!`);
+    } catch (err) {
+      console.log('Microsoft Login Error:', err.message);
+      setError(err.message || 'Microsoft login failed');
+      Alert.alert('Error', err.message || 'Microsoft login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    setLoading(true);
+    try {
+      // PKCE: Generate code_verifier and code_challenge
+      // code_verifier: random 43-128 character string
+      const codeVerifier = generateRandomString(128);
+      
+      // code_challenge: SHA-256 hash of code_verifier, base64url encoded
+      const codeChallenge = await generateCodeChallenge(codeVerifier);
+      
+      console.log('PKCE code_verifier generated:', codeVerifier.substring(0, 20) + '...');
+      console.log('PKCE code_challenge generated:', codeChallenge.substring(0, 20) + '...');
+      
+      // Google OAuth URL for mobile using PKCE (no client secret needed)
+      // iOS: use reverse domain format that Google generates (full client ID prefix)
+      // Android: use package name format
+      const clientIdPrefix = GOOGLE_CLIENT_ID.split('.apps.googleusercontent.com')[0];
+      const redirectUri = Platform.OS === 'ios' 
+        ? `com.googleusercontent.apps.${clientIdPrefix}:/oauth2redirect/google`
+        : `com.cvapplyr.mobile:/oauth2redirect/google`;
+      
+      const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+        `client_id=${GOOGLE_CLIENT_ID}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&response_type=code` +
+        `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly')}` +
+        `&code_challenge=${codeChallenge}` +
+        `&code_challenge_method=S256` +
+        `&access_type=offline` +
+        `&prompt=consent`;
+      
+      console.log('Opening Google auth URL with PKCE...', { platform: Platform.OS, redirectUri });
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+      
+      console.log('Google auth result:', result);
+      
+      if (result.type === 'success') {
+        // Extract authorization code from URL query parameters
+        const url = result.url;
+        const codeMatch = url.match(/code=([^&]+)/);
+        
+        if (codeMatch && codeMatch[1]) {
+          const code = codeMatch[1];
+          console.log('Google authorization code received');
+          // Send code WITH code_verifier for PKCE verification
+          await handleGoogleAuthResponse(code, codeVerifier);
+        } else {
+          throw new Error('No authorization code received from Google');
+        }
+      } else if (result.type === 'cancel') {
         setError('Google login cancelled');
       }
     } catch (err) {
+      console.error('Google login error:', err);
       setError('Google login failed: ' + err.message);
       Alert.alert('Error', 'Google login failed: ' + err.message);
+    } finally {
+      setLoading(false);
     }
   };
+  
+  // PKCE Utility Functions
+  const generateRandomString = (length) => {
+    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+    let text = '';
+    for (let i = 0; i < length; i++) {
+      text += possible.charAt(Math.floor(Math.random() * possible.length));
+    }
+    return text;
+  };
+  
+  const generateCodeChallenge = async (codeVerifier) => {
+    // SHA-256 hash the code_verifier using expo-crypto
+    const digest = await Crypto.digestStringAsync(
+      Crypto.CryptoDigestAlgorithm.SHA256,
+      codeVerifier,
+      { encoding: Crypto.CryptoEncoding.BASE64 }
+    );
+    
+    // Convert base64 to base64url (replace +/= with -_)
+    return digest.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  };
+
+  const handleMicrosoftLogin = async () => {
+    setLoading(true);
+    try {
+      // Microsoft OAuth URL for mobile
+      const redirectUri = `msauth://com.cvapplyr.app/callback`;
+      const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
+        `client_id=${MICROSOFT_CLIENT_ID}` +
+        `&response_type=token` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&scope=${encodeURIComponent('user.read Mail.Read Mail.Send offline_access')}` +
+        `&response_mode=fragment`;
+      
+      console.log('Opening Microsoft auth URL...');
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+      
+      console.log('Microsoft auth result:', result);
+      
+      if (result.type === 'success') {
+        // Extract access token from URL fragment
+        const url = result.url;
+        const accessTokenMatch = url.match(/access_token=([^&]+)/);
+        
+        if (accessTokenMatch && accessTokenMatch[1]) {
+          const accessToken = accessTokenMatch[1];
+          console.log('Microsoft access token received');
+          await handleMicrosoftAuthResponse(accessToken);
+        } else {
+          throw new Error('No access token received from Microsoft');
+        }
+      } else if (result.type === 'cancel') {
+        setError('Microsoft login cancelled');
+      }
+    } catch (err) {
+      console.error('Microsoft login error:', err);
+      setError('Microsoft login failed: ' + err.message);
+      Alert.alert('Error', 'Microsoft login failed: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Show splash screen while loading
+  if (showSplash) {
+    return <SplashScreen onFinish={() => setShowSplash(false)} />;
+  }
 
   // LOGIN SCREEN
   if (screen === 'login') {
     return (
-      <View style={styles.container}>
-        <StatusBar barStyle="light-content" backgroundColor="#1E40AF" />
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {/* Header with gradient effect */}
-          <View style={styles.gradientHeader}>
-            <View style={styles.logoContainer}>
-              <Image 
-                source={require('./assets/images/icon_dark_background_small.png')} 
-                style={{ width: 200, height: 60 }}
-                resizeMode="contain"
-              />
-            </View>
-            <Text style={styles.headerSubtitle}>Turn applications into opportunities</Text>
-          </View>
-
-          {/* Main Content Card */}
-          <View style={styles.mainCard}>
-            <Text style={styles.cardTitle}>Welcome Back</Text>
-            <Text style={styles.cardSubtitle}>Sign in to your account</Text>
-
-            {error ? (
-              <View style={styles.errorContainer}>
-                <Text style={styles.errorIcon}>⚠️</Text>
-                <Text style={styles.errorText}>{error}</Text>
-              </View>
-            ) : null}
-
-            {/* Email Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Email Address</Text>
-              <View style={styles.inputWrapper}>
-                <Text style={styles.inputIcon}>📧</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="you@example.com"
-                  value={email}
-                  onChangeText={setEmail}
-                  editable={!loading}
-                  keyboardType="email-address"
-                  placeholderTextColor="#a0aec0"
+      <View style={styles.loginContainer}>
+        <StatusBar barStyle="light-content" />
+        <LinearGradient
+          colors={['#1e293b', '#334155', '#475569']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.loginGradientBg}
+        >
+          <ScrollView 
+            contentContainerStyle={styles.loginScrollContent} 
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Logo Section */}
+            <View style={styles.loginLogoSection}>
+              <View style={styles.loginLogoGlow}>
+                <Image 
+                  source={require('./assets/images/logo_hd_no_background_white_small.png')} 
+                  style={styles.loginLogoImage}
+                  resizeMode="contain"
                 />
               </View>
+              <Text style={styles.loginTagline}>Turn applications into opportunities</Text>
             </View>
 
-            {/* Password Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Password</Text>
-              <View style={styles.inputWrapper}>
-                <Text style={styles.inputIcon}>🔐</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="••••••••"
-                  value={password}
-                  onChangeText={setPassword}
-                  editable={!loading}
-                  secureTextEntry
-                  placeholderTextColor="#a0aec0"
-                />
-              </View>
+            {/* Main Login Card */}
+            <View style={styles.loginCard}>
+              <LinearGradient
+                colors={['rgba(255, 255, 255, 0.15)', 'rgba(255, 255, 255, 0.1)']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.loginCardGradient}
+              >
+                {/* Header */}
+                <View style={styles.loginCardHeader}>
+                  <Text style={styles.loginCardTitle}>Welcome Back</Text>
+                  <Text style={styles.loginCardSubtitle}>Sign in to continue your journey</Text>
+                </View>
+
+                {/* Error Message */}
+                {error ? (
+                  <View style={styles.loginErrorContainer}>
+                    <View style={styles.loginErrorIconBox}>
+                      <Text style={styles.loginErrorIconText}>!</Text>
+                    </View>
+                    <Text style={styles.loginErrorText}>{error}</Text>
+                  </View>
+                ) : null}
+
+                {/* Email Input */}
+                <View style={styles.loginInputGroup}>
+                  <Text style={styles.loginInputLabel}>EMAIL ADDRESS</Text>
+                  <View style={styles.loginInputContainer}>
+                    <TextInput
+                      style={styles.loginInput}
+                      placeholder="you@example.com"
+                      value={email}
+                      onChangeText={setEmail}
+                      editable={!loading}
+                      keyboardType="email-address"
+                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      autoCapitalize="none"
+                    />
+                  </View>
+                </View>
+
+                {/* Password Input */}
+                <View style={styles.loginInputGroup}>
+                  <Text style={styles.loginInputLabel}>PASSWORD</Text>
+                  <View style={styles.loginInputContainer}>
+                    <TextInput
+                      style={styles.loginInput}
+                      placeholder="Enter your password"
+                      value={password}
+                      onChangeText={setPassword}
+                      editable={!loading}
+                      secureTextEntry
+                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      autoCapitalize="none"
+                    />
+                  </View>
+                </View>
+
+                {/* Sign In Button */}
+                <TouchableOpacity
+                  style={[styles.loginSignInButton, loading && styles.loginButtonDisabled]}
+                  onPress={handleLogin}
+                  disabled={loading}
+                  activeOpacity={0.85}
+                >
+                  <LinearGradient
+                    colors={loading ? ['#64748b', '#475569'] : ['#8b5cf6', '#7c3aed', '#6d28d9']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.loginSignInGradient}
+                  >
+                    <Text style={styles.loginSignInText}>
+                      {loading ? 'Signing in...' : 'Sign In'}
+                    </Text>
+                    {!loading && <Text style={styles.loginSignInArrow}>→</Text>}
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                {/* Divider */}
+                <View style={styles.loginDividerContainer}>
+                  <View style={styles.loginDividerLine} />
+                  <Text style={styles.loginDividerText}>OR CONTINUE WITH</Text>
+                  <View style={styles.loginDividerLine} />
+                </View>
+
+                {/* Social Login Buttons */}
+                <View style={styles.loginSocialButtonsContainer}>
+                  {/* Google Login */}
+                  <TouchableOpacity
+                    style={[styles.loginSocialButton, loading && styles.loginSocialButtonDisabled]}
+                    onPress={handleGoogleLogin}
+                    disabled={loading}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.loginSocialButtonInner}>
+                      <Image 
+                        source={require('./assets/images/google.png')} 
+                        style={styles.loginSocialIcon}
+                        resizeMode="contain"
+                      />
+                      <Text style={styles.loginSocialButtonText}>Google</Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Microsoft Login */}
+                  <TouchableOpacity
+                    style={[styles.loginSocialButton, loading && styles.loginSocialButtonDisabled]}
+                    onPress={() => handleMicrosoftLogin()}
+                    disabled={loading}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.loginSocialButtonInner}>
+                      <Image 
+                        source={require('./assets/images/microsoft.png')} 
+                        style={styles.loginSocialIcon}
+                        resizeMode="contain"
+                      />
+                      <Text style={styles.loginSocialButtonText}>Microsoft</Text>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Register Link */}
+                <View style={styles.loginFooter}>
+                  <Text style={styles.loginFooterText}>Don't have an account? </Text>
+                  <TouchableOpacity onPress={() => { setScreen('register'); setError(''); }}>
+                    <Text style={styles.loginFooterLink}>Create one</Text>
+                  </TouchableOpacity>
+                </View>
+              </LinearGradient>
             </View>
-
-            {/* Sign In Button */}
-            <TouchableOpacity
-              style={[styles.primaryButton, loading && styles.buttonDisabled]}
-              onPress={handleLogin}
-              disabled={loading}
-            >
-              <Text style={styles.primaryButtonText}>
-                {loading ? '⏳ Signing in...' : '→ Sign In'}
-              </Text>
-            </TouchableOpacity>
-
-            {/* Divider */}
-            <View style={styles.dividerContainer}>
-              <View style={styles.dividerLine} />
-              <Text style={styles.dividerText}>or continue with</Text>
-              <View style={styles.dividerLine} />
-            </View>
-
-            {/* Google Login Button */}
-            <TouchableOpacity
-              style={styles.googleButton}
-              onPress={() => promptAsync()}
-              disabled={loading || !request}
-            >
-              <Text style={styles.googleButtonIcon}>🔐</Text>
-              <Text style={styles.googleButtonText}>Sign in with Google</Text>
-            </TouchableOpacity>
-
-            {/* Register Link */}
-            <View style={styles.footerText}>
-              <Text style={styles.footerLabel}>Don't have an account? </Text>
-              <TouchableOpacity onPress={() => { setScreen('register'); setError(''); }}>
-                <Text style={styles.footerLink}>Create one</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </ScrollView>
+          </ScrollView>
+        </LinearGradient>
       </View>
     );
   }
@@ -2467,7 +3589,7 @@ export default function App() {
           <View style={[styles.gradientHeader, { backgroundColor: '#059669' }]}>
             <View style={styles.logoContainer}>
               <Image 
-                source={require('./assets/images/icon_dark_background_small.png')} 
+                source={require('./assets/images/logo_hd_no_background_white_small.png')} 
                 style={{ width: 200, height: 60 }}
                 resizeMode="contain"
               />
@@ -2558,8 +3680,8 @@ export default function App() {
             {/* Google Sign Up Button */}
             <TouchableOpacity
               style={styles.googleButton}
-              onPress={() => promptAsync()}
-              disabled={loading || !request}
+              onPress={handleGoogleLogin}
+              disabled={loading}
             >
               <Text style={styles.googleButtonIcon}>🔐</Text>
               <Text style={styles.googleButtonText}>Sign up with Google</Text>
@@ -2581,39 +3703,89 @@ export default function App() {
   // DASHBOARD/RECIPIENTS SCREEN
   if (screen === 'dashboard' || !screen || screen === '') {
     return (
-      <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
+      <SafeAreaView style={styles.modernContainer}>
+        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
         
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {/* Premium Header - now part of content */}
-          <View style={styles.premiumHeader}>
-            <View style={styles.headerContent}>
-              <View style={styles.logoSection}>
+        <ScrollView 
+          contentContainerStyle={styles.scrollContent} 
+          showsVerticalScrollIndicator={false}
+          onScroll={resetAllFlips}
+          scrollEventThrottle={16}
+        >
+          {/* Modern Header Card */}
+          <TouchableWithoutFeedback onPress={resetAllFlips}>
+            <View>
+              <LinearGradient
+                colors={['#667eea', '#764ba2']}
+                style={styles.modernHeaderCard}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+              >
+            <View style={styles.headerTop}>
+              <View style={styles.headerLeft}>
                 <Image 
-                  source={require('./assets/images/icon_light_background.png')} 
-                  style={{ width: 180, height: 50 }}
+                  source={require('./assets/images/logo_hd_no_background_white_small.png')} 
+                  style={{ width: 140, height: 40 }}
                   resizeMode="contain"
                 />
-                <Text style={styles.headerBrandSubtext}>Turn Applications into Opportunities</Text>
               </View>
-              <View style={styles.headerRightSection}>
+              <View style={styles.headerRightActions}>
                 <TouchableOpacity 
-                  style={styles.compactCreditBadge}
-                  onPress={() => setScreen('usage')}
-                  activeOpacity={0.7}
+                  style={styles.notificationButton}
+                  onPress={async () => {
+                    setShowNotifications(!showNotifications);
+                    if (!showNotifications) {
+                      await loadNotifications();
+                    }
+                  }}
                 >
-                  <Text style={styles.creditIcon}>💎</Text>
-                  <Text style={styles.creditNumber}>{creditBalance}</Text>
+                  <View style={styles.notificationIconWrapper}>
+                    <View style={styles.bellIconContainer}>
+                      <View style={styles.bellHandle} />
+                      <View style={styles.bellBody} />
+                      <View style={styles.bellOpening} />
+                    </View>
+                    {unreadCount > 0 && (
+                      <View style={styles.notificationBadge}>
+                        <Text style={styles.notificationBadgeText}>
+                          {unreadCount > 99 ? '99+' : unreadCount}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
                 </TouchableOpacity>
                 <TouchableOpacity 
-                  style={styles.menuIconButton}
+                  style={styles.modernMenuButton}
                   onPress={() => setShowSettings(!showSettings)}
                 >
-                  <Text style={styles.menuIcon}>☰</Text>
+                  <Text style={styles.modernMenuIcon}>☰</Text>
                 </TouchableOpacity>
               </View>
             </View>
-          </View>
+            
+            <View style={styles.headerGreeting}>
+              <Text style={styles.modernGreeting}>Welcome back,</Text>
+              <Text style={styles.modernUserName}>{user?.fullName || user?.name || 'User'}</Text>
+            </View>
+
+            {/* Credits Display */}
+            <TouchableOpacity 
+              style={styles.headerCreditsBadge}
+              onPress={() => setScreen('usage')}
+              activeOpacity={0.8}
+            >
+              <View style={styles.creditsIconBox}>
+                <Text style={styles.creditsIcon}>◆</Text>
+              </View>
+              <View style={styles.creditsInfo}>
+                <Text style={styles.creditsLabel}>Available Credits</Text>
+                <Text style={styles.creditsValue}>{creditBalance}</Text>
+              </View>
+              <Text style={styles.creditsArrow}>→</Text>
+            </TouchableOpacity>
+          </LinearGradient>
+            </View>
+          </TouchableWithoutFeedback>
 
           {/* Side Menu Modal - slides in from right */}
           <Modal
@@ -2658,7 +3830,9 @@ export default function App() {
                         setScreen('profile');
                       }}
                     >
-                      <Text style={styles.sideMenuItemIcon}>⚙️</Text>
+                      <View style={styles.sideMenuItemIconBox}>
+                        <Text style={styles.sideMenuItemIconText}>⚙</Text>
+                      </View>
                       <View style={styles.sideMenuItemContent}>
                         <Text style={styles.sideMenuItemTitle}>Account Settings</Text>
                         <Text style={styles.sideMenuItemDesc}>View your profile</Text>
@@ -2673,7 +3847,9 @@ export default function App() {
                           setScreen('admin');
                         }}
                       >
-                        <Text style={styles.sideMenuItemIcon}>🛡️</Text>
+                        <View style={styles.sideMenuItemIconBox}>
+                          <Text style={styles.sideMenuItemIconText}>★</Text>
+                        </View>
                         <View style={styles.sideMenuItemContent}>
                           <Text style={styles.sideMenuItemTitle}>Admin Panel</Text>
                           <Text style={styles.sideMenuItemDesc}>Manage credit packages</Text>
@@ -2690,7 +3866,9 @@ export default function App() {
                         setScreen('terms');
                       }}
                     >
-                      <Text style={styles.sideMenuItemIcon}>📄</Text>
+                      <View style={styles.sideMenuItemIconBox}>
+                        <Text style={styles.sideMenuItemIconText}>§</Text>
+                      </View>
                       <View style={styles.sideMenuItemContent}>
                         <Text style={styles.sideMenuItemTitle}>Terms & Conditions</Text>
                         <Text style={styles.sideMenuItemDesc}>View terms of service</Text>
@@ -2704,7 +3882,9 @@ export default function App() {
                         setScreen('privacy');
                       }}
                     >
-                      <Text style={styles.sideMenuItemIcon}>🔒</Text>
+                      <View style={styles.sideMenuItemIconBox}>
+                        <Text style={styles.sideMenuItemIconText}>◈</Text>
+                      </View>
                       <View style={styles.sideMenuItemContent}>
                         <Text style={styles.sideMenuItemTitle}>Privacy Policy</Text>
                         <Text style={styles.sideMenuItemDesc}>How we protect your data</Text>
@@ -2718,7 +3898,9 @@ export default function App() {
                         setScreen('refund');
                       }}
                     >
-                      <Text style={styles.sideMenuItemIcon}>💰</Text>
+                      <View style={styles.sideMenuItemIconBox}>
+                        <Text style={styles.sideMenuItemIconText}>$</Text>
+                      </View>
                       <View style={styles.sideMenuItemContent}>
                         <Text style={styles.sideMenuItemTitle}>Refund Policy</Text>
                         <Text style={styles.sideMenuItemDesc}>Credit refund information</Text>
@@ -2734,7 +3916,9 @@ export default function App() {
                         handleLogout();
                       }}
                     >
-                      <Text style={styles.sideMenuItemIcon}>🚪</Text>
+                      <View style={styles.sideMenuItemIconBox}>
+                        <Text style={styles.sideMenuItemIconText}>→</Text>
+                      </View>
                       <View style={styles.sideMenuItemContent}>
                         <Text style={styles.sideMenuItemTitle}>Sign Out</Text>
                         <Text style={styles.sideMenuItemDesc}>Logout from your account</Text>
@@ -2746,66 +3930,306 @@ export default function App() {
             </View>
           </Modal>
 
-
-          {/* Welcome Section */}
-          <View style={styles.welcomeSection}>
-            <Text style={styles.welcomeTitle}>Welcome, {user?.fullName || user?.name || 'User'}!</Text>
-            <Text style={styles.welcomeSubtitle}>Send Applications with AI Generated Cover Letter</Text>
-          </View>
-
-          {/* Stats Card Only */}
-          <View style={styles.statsOnlySection}>
-            {/* Main Stats Card */}
-            <View style={styles.statsCard}>
-              <View style={styles.statsRow}>
-                <View style={styles.statBox}>
-                  <Text style={styles.statNumber}>
-                    {totalSent}
-                  </Text>
-                  <Text style={styles.statLabel}>Total Application Sent</Text>
+          {/* Stats Grid */}
+          <View style={styles.statsGridContainer}>
+            <View style={styles.statsRow}>
+              {/* Applications Sent Tile */}
+              <TouchableOpacity 
+                style={styles.statTileWrapper}
+                activeOpacity={0.9}
+                onPress={() => handleTileFlip(flipAnimSent)}
+              >
+                <View style={{ position: 'relative' }}>
+                  {/* Front side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimSent.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['0deg', '180deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileTop}>
+                      <View style={styles.statIconBox}>
+                        <Text style={styles.statIconText}>↑</Text>
+                      </View>
+                      <Text style={styles.statValue}>{totalSent}</Text>
+                    </View>
+                    <Text style={styles.statLabel}>Applications Sent</Text>
+                  </Animated.View>
+                  
+                  {/* Back side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    styles.statTileBackContainer,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimSent.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['180deg', '360deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileBack}>
+                      <Text style={styles.statBackTitle}>Last Application</Text>
+                      {applicationHistory.length > 0 && applicationHistory[0] ? (
+                        <>
+                          <Text style={styles.statBackDate}>
+                            {new Date(applicationHistory[0].sentDate).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric'
+                            })}
+                          </Text>
+                          <Text style={styles.statBackCompany} numberOfLines={2}>
+                            {applicationHistory[0].companyName}
+                          </Text>
+                        </>
+                      ) : (
+                        <Text style={styles.statBackEmpty}>No applications yet</Text>
+                      )}
+                    </View>
+                  </Animated.View>
                 </View>
-                <View style={[styles.statBox, { borderLeftWidth: 1, borderLeftColor: '#E5E7EB' }]}>
-                  <Text style={styles.statNumber}>
-                    {totalGenerated}
-                  </Text>
-                  <Text style={styles.statLabel}>Generated</Text>
+              </TouchableOpacity>
+
+              {/* Letters Generated Tile */}
+              <TouchableOpacity 
+                style={styles.statTileWrapper}
+                activeOpacity={0.9}
+                onPress={() => handleTileFlip(flipAnimGenerated)}
+              >
+                <View style={{ position: 'relative' }}>
+                  {/* Front side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimGenerated.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['0deg', '180deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileTop}>
+                      <View style={styles.statIconBox}>
+                        <Text style={styles.statIconText}>✎</Text>
+                      </View>
+                      <Text style={styles.statValue}>{totalGenerated}</Text>
+                    </View>
+                    <Text style={styles.statLabel}>Letters Generated</Text>
+                  </Animated.View>
+                  
+                  {/* Back side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    styles.statTileBackContainer,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimGenerated.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['180deg', '360deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileBack}>
+                      <Text style={styles.statBackTitle}>Total Letters</Text>
+                      <Text style={styles.statBackValue}>{totalGenerated}</Text>
+                      <Text style={styles.statBackLabel}>
+                        {totalGenerated === totalSent ? 'All letters sent' : `${totalGenerated - totalSent} pending`}
+                      </Text>
+                    </View>
+                  </Animated.View>
                 </View>
-              </View>
+              </TouchableOpacity>
+            </View>
+
+            <View style={[styles.statsRow, { marginTop: -26 }]}>
+              {/* Pending Response Tile */}
+              <TouchableOpacity 
+                style={styles.statTileWrapper}
+                activeOpacity={0.9}
+                onPress={() => handleTileFlip(flipAnimPending)}
+              >
+                <View style={{ position: 'relative' }}>
+                  {/* Front side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimPending.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['0deg', '180deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileTop}>
+                      <View style={styles.statIconBox}>
+                        <Text style={styles.statIconText}>○</Text>
+                      </View>
+                      <Text style={styles.statValue}>
+                        {totalSent - applicationHistory.filter(app => app.replyReceived).length}
+                      </Text>
+                    </View>
+                    <Text style={styles.statLabel}>Pending Response</Text>
+                  </Animated.View>
+                  
+                  {/* Back side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    styles.statTileBackContainer,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimPending.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['180deg', '360deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileBack}>
+                      <Text style={styles.statBackTitle}>Awaiting Reply</Text>
+                      <Text style={styles.statBackValue}>
+                        {totalSent - applicationHistory.filter(app => app.replyReceived).length}
+                      </Text>
+                      <Text style={styles.statBackLabel}>
+                        applications pending
+                      </Text>
+                    </View>
+                  </Animated.View>
+                </View>
+              </TouchableOpacity>
+
+              {/* Reply Rate Tile */}
+              <TouchableOpacity 
+                style={styles.statTileWrapper}
+                activeOpacity={0.9}
+                onPress={() => handleTileFlip(flipAnimReply)}
+              >
+                <View style={{ position: 'relative' }}>
+                  {/* Front side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimReply.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['0deg', '180deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileTop}>
+                      <View style={styles.statIconBox}>
+                        <Text style={styles.statIconText}>✓</Text>
+                      </View>
+                      <Text style={styles.statValue}>
+                        {totalSent > 0 
+                          ? Math.round((applicationHistory.filter(app => app.replyReceived).length / totalSent) * 100)
+                          : 0}%
+                      </Text>
+                    </View>
+                    <Text style={styles.statLabel}>Reply Rate</Text>
+                  </Animated.View>
+                  
+                  {/* Back side */}
+                  <Animated.View style={[
+                    styles.statTile,
+                    styles.statTileBackContainer,
+                    {
+                      backfaceVisibility: 'hidden',
+                      transform: [{
+                        rotateY: flipAnimReply.interpolate({
+                          inputRange: [0, 180],
+                          outputRange: ['180deg', '360deg']
+                        })
+                      }]
+                    }
+                  ]}>
+                    <View style={styles.statTileBack}>
+                      <Text style={styles.statBackTitle}>Success Rate</Text>
+                      <Text style={styles.statBackValue}>
+                        {applicationHistory.filter(app => app.replyReceived).length}/{totalSent}
+                      </Text>
+                      <Text style={styles.statBackLabel}>
+                        replies received
+                      </Text>
+                    </View>
+                  </Animated.View>
+                </View>
+              </TouchableOpacity>
             </View>
           </View>
 
           {/* Recipients Section */}
-          <View style={styles.recipientsSection}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>📬 Recipients</Text>
-            </View>
+          <View style={styles.modernRecipientsSection}>
+            <TouchableWithoutFeedback onPress={resetAllFlips}>
+              <View style={styles.modernSectionHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.modernSectionTitle}>Companies</Text>
+                  <Text style={styles.modernSectionSubtitle}>Manage your application recipients</Text>
+                </View>
+                <View style={styles.modernCountBadge}>
+                  <Text style={styles.modernCountBadgeIcon}>◆</Text>
+                  <Text style={styles.modernCountBadgeText}>{recipients.length}</Text>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
 
             {/* Render all recipient forms */}
             {recipients.map((recipient, index) => (
-              <View key={recipient.id} style={styles.recipientFormCard}>
-                <View style={styles.formHeaderBar}>
-                  <Text style={styles.formHeaderNumber}>{index + 1}</Text>
-                  <Text style={styles.formHeaderTitle}>Recipient Details</Text>
+              <View key={recipient.id} style={styles.modernRecipientCard}>
+                <View style={styles.modernFormHeader}>
+                  <View style={styles.recipientNumberBadge}>
+                    <Text style={styles.recipientNumberText}>{index + 1}</Text>
+                  </View>
+                  <View style={styles.recipientHeaderInfo}>
+                    <Text style={styles.modernFormTitle}>
+                      {recipient.website 
+                        ? recipient.website.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].substring(0, 25)
+                        : recipient.email
+                        ? recipient.email.split('@')[1] || 'New Company'
+                        : 'New Company'}
+                    </Text>
+                    <Text style={styles.recipientSubtitle}>
+                      {recipient.position || 'No position specified'}
+                    </Text>
+                  </View>
                   {recipients.length > 1 && (
                     <TouchableOpacity 
-                      style={styles.removeRecipientBtn}
+                      style={styles.modernRemoveBtn}
                       onPress={() => removeRecipient(recipient.id)}
                     >
-                      <Text style={styles.removeRecipientIcon}>✕</Text>
+                      <Text style={styles.modernRemoveIcon}>×</Text>
                     </TouchableOpacity>
                   )}
                 </View>
 
                 {/* Email Field */}
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>
-                    Hiring Manager's Email <Text style={styles.required}>*</Text>
+                <View style={styles.modernFormGroup}>
+                  <Text style={styles.modernFormLabel}>
+                    Hiring Manager Email <Text style={styles.required}>*</Text>
                   </Text>
                   <TextInput
-                    style={[styles.formInput, recipient.error && recipient.email && !isValidEmail(recipient.email) ? styles.formInputError : {}]}
+                    style={[styles.modernFormInput, recipient.error && recipient.email && !isValidEmail(recipient.email) ? styles.modernFormInputError : {}]}
                     placeholder="hiring@company.com"
                     placeholderTextColor="#9CA3AF"
                     keyboardType="email-address"
+                    autoCapitalize="none"
                     value={recipient.email}
                     onChangeText={(text) => updateRecipient(recipient.id, 'email', text)}
                   />
@@ -2815,29 +4239,30 @@ export default function App() {
                 </View>
 
                 {/* Website Field */}
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>
+                <View style={styles.modernFormGroup}>
+                  <Text style={styles.modernFormLabel}>
                     Company Website <Text style={styles.required}>*</Text>
                   </Text>
                   <TextInput
-                    style={[styles.formInput, recipient.error && recipient.website && !isValidURL(recipient.website) ? styles.formInputError : {}]}
+                    style={[styles.modernFormInput, recipient.error && recipient.website && !isValidURL(recipient.website) ? styles.modernFormInputError : {}]}
                     placeholder="https://www.company.com"
                     placeholderTextColor="#9CA3AF"
                     keyboardType="url"
+                    autoCapitalize="none"
                     value={recipient.website}
                     onChangeText={(text) => updateRecipient(recipient.id, 'website', text)}
                   />
                   {recipient.error && recipient.website && !isValidURL(recipient.website) && (
-                    <Text style={styles.errorMessage}>{recipient.error}</Text>
+                    <Text style={styles.modernErrorMessage}>{recipient.error}</Text>
                   )}
                 </View>
 
                 {/* Position Field */}
-                <View style={[styles.formGroup, { borderBottomWidth: 0 }]}>
-                  <Text style={styles.formLabel}>Position/Job Title</Text>
+                <View style={styles.modernFormGroup}>
+                  <Text style={styles.modernFormLabel}>Position / Job Title</Text>
                   <TextInput
-                    style={styles.formInput}
-                    placeholder="Software Engineer, Marketing Manager, etc."
+                    style={styles.modernFormInput}
+                    placeholder="e.g., Software Engineer, Marketing Manager"
                     placeholderTextColor="#9CA3AF"
                     value={recipient.position}
                     onChangeText={(text) => updateRecipient(recipient.id, 'position', text)}
@@ -2847,139 +4272,156 @@ export default function App() {
             ))}
 
             {/* Add Another Button */}
-            <TouchableOpacity style={styles.addRecipientBtn} onPress={addRecipient}>
-              <Text style={styles.addRecipientIcon}>+</Text>
-              <Text style={styles.addRecipientText}>Add Another Recipient</Text>
+            <TouchableOpacity style={styles.modernAddRecipientBtn} onPress={addRecipient}>
+              <View style={styles.addBtnIconBox}>
+                <Text style={styles.modernAddIcon}>+</Text>
+              </View>
+              <Text style={styles.modernAddText}>Add Company</Text>
             </TouchableOpacity>
 
             {/* Action Button */}
-            <TouchableOpacity style={styles.fullWidthActionBtn} onPress={handleReview}>
-              <Text style={styles.fullWidthActionBtnIcon}>🚀</Text>
-              <Text style={styles.fullWidthActionBtnText}>Review & Generate</Text>
+            <TouchableOpacity 
+              onPress={handleReview}
+              activeOpacity={0.85}
+            >
+              <LinearGradient
+                colors={['#667eea', '#764ba2']}
+                style={styles.modernActionBtn}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                <Text style={styles.modernActionBtnIcon}>✎</Text>
+                <Text style={styles.modernActionBtnText}>Generate Cover Letters</Text>
+                <Text style={styles.modernActionBtnArrow}>→</Text>
+              </LinearGradient>
             </TouchableOpacity>
           </View>
 
-          {/* Last 5 Employers Section */}
-          <View style={styles.employersSection}>
-            <View style={styles.employersSectionHeader}>
-              <Text style={styles.employersSectionTitle}>Recent Applications</Text>
-              <View style={styles.employersBadge}>
-                <Text style={styles.employersBadgeText}>{applicationHistory.length}</Text>
+          {/* Recent Applications Section */}
+          <View style={styles.modernRecentSection}>
+            <View style={styles.modernSectionHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modernSectionTitle}>Recent Applications</Text>
+                <Text style={styles.modernSectionSubtitle}>
+                  {applicationHistory.length > 0 
+                    ? `Showing ${Math.min(5, applicationHistory.length)} of ${totalSent} total sent`
+                    : 'Your latest job applications'}
+                </Text>
               </View>
+              {applicationHistory.length > 0 && (user.provider === 'google' || user.provider === 'microsoft') && (
+                <TouchableOpacity 
+                  style={styles.refreshButton}
+                  onPress={checkEmailReplies}
+                  disabled={isCheckingReplies}
+                >
+                  <Text style={[styles.refreshButtonIcon, isCheckingReplies && styles.refreshButtonIconSpinning]}>
+                    ↻
+                  </Text>
+                  <Text style={styles.refreshButtonText}>
+                    {isCheckingReplies ? 'Checking...' : 'Check Replies'}
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
             
             {applicationHistory.length === 0 ? (
-              <View style={styles.emptyStateContainer}>
-                <Text style={styles.emptyStateIcon}>📭</Text>
-                <Text style={styles.emptyStateTitle}>No Applications Yet</Text>
-                <Text style={styles.emptyStateSubtitle}>Your recent job applications will appear here</Text>
+              <View style={styles.modernEmptyState}>
+                <View style={styles.emptyStateIconBox}>
+                  <Text style={styles.modernEmptyIcon}>—</Text>
+                </View>
+                <Text style={styles.modernEmptyTitle}>No Applications Yet</Text>
+                <Text style={styles.modernEmptySubtitle}>Your recent job applications will appear here</Text>
               </View>
             ) : (
-              <View style={styles.employersListContainer}>
+              <View style={styles.modernApplicationsList}>
                 {applicationHistory.slice(0, 5).map((app, index) => (
                   <TouchableOpacity 
                     key={app.id}
-                    style={styles.employerCard}
-                    disabled={user.provider === 'google' || app.replyReceived}
-                    activeOpacity={user.provider === 'email' && !app.replyReceived ? 0.7 : 1}
+                    style={styles.modernApplicationCard}
+                    disabled={app.replyReceived}
+                    activeOpacity={!app.replyReceived ? 0.7 : 1}
                     onPress={() => {
-                      if (user.provider === 'email' && !app.replyReceived) {
-                        Alert.alert(
-                          'Mark Reply Received',
-                          `Did you receive a reply from ${app.companyName}?`,
-                          [
-                            {
-                              text: 'Cancel',
-                              style: 'cancel'
-                            },
-                            {
-                              text: 'Yes, Received',
-                              onPress: () => {
-                                Alert.prompt(
-                                  'Reply Date',
-                                  'Enter the date you received the reply (YYYY-MM-DD):',
-                                  (text) => {
-                                    setApplicationHistory(prev =>
-                                      prev.map(item =>
-                                        item.id === app.id
-                                          ? { ...item, replyReceived: true, replyDate: text || new Date().toISOString() }
-                                          : item
-                                      )
-                                    );
-                                  }
-                                );
-                              }
-                            }
-                          ]
-                        );
+                      if (!app.replyReceived) {
+                        setReplyAppId(app.id);
+                        setSelectedReplyDate(new Date());
+                        setShowReplyDatePicker(true);
                       }
                     }}
                   >
-                    {/* Status Indicator */}
+                    {/* Left accent bar */}
                     <View style={[
-                      styles.statusIndicator,
-                      app.replyReceived ? styles.statusReplied : styles.statusPending
+                      styles.applicationAccentBar,
+                      app.replyReceived ? styles.accentBarReplied : styles.accentBarPending
                     ]} />
                     
-                    {/* Card Content */}
-                    <View style={styles.employerCardContent}>
-                      <View style={styles.employerMainInfo}>
-                        <View style={styles.employerNumberBadge}>
-                          <Text style={styles.employerNumber}>{index + 1}</Text>
+                    {/* Content Container */}
+                    <View style={styles.applicationCardInner}>
+                      {/* Header Row: Number + Company + Status */}
+                      <View style={styles.applicationTopRow}>
+                        <View style={styles.applicationNumberBadge}>
+                          <Text style={styles.applicationNumberText}>{index + 1}</Text>
                         </View>
-                        <View style={styles.employerDetails}>
-                          <Text style={styles.employerCompanyName} numberOfLines={1}>{app.companyName}</Text>
-                          <Text style={styles.employerJobPosition} numberOfLines={1}>{app.position}</Text>
-                        </View>
-                      </View>
-                      
-                      {/* Status & Dates Row */}
-                      <View style={styles.employerMetaRow}>
-                        <View style={[
-                          styles.statusBadge,
-                          app.replyReceived ? styles.statusBadgeReplied : styles.statusBadgePending
-                        ]}>
-                          <Text style={[
-                            styles.statusBadgeText,
-                            app.replyReceived ? styles.statusBadgeTextReplied : styles.statusBadgeTextPending
-                          ]}>
-                            {app.replyReceived ? '✓ Replied' : '⏳ Pending'}
+                        
+                        <View style={styles.applicationMainInfo}>
+                          <Text style={styles.applicationCompany} numberOfLines={1}>{app.companyName}</Text>
+                          <Text style={styles.applicationPosition} numberOfLines={1}>
+                            {app.position || 'Position not specified'}
                           </Text>
                         </View>
                         
-                        <View style={styles.datesContainer}>
-                          <View style={styles.dateItem}>
-                            <Text style={styles.dateLabelSmall}>Sent</Text>
-                            <Text style={styles.dateValueSmall}>
-                              {new Date(app.sentDate).toLocaleDateString('en-US', { 
-                                month: 'short', 
-                                day: 'numeric' 
-                              })}
-                            </Text>
-                          </View>
-                          {app.replyReceived && (
-                            <>
-                              <Text style={styles.dateSeparator}>→</Text>
-                              <View style={styles.dateItem}>
-                                <Text style={styles.dateLabelSmall}>Reply</Text>
-                                <Text style={styles.dateValueReplied}>
-                                  {new Date(app.replyDate).toLocaleDateString('en-US', { 
-                                    month: 'short', 
-                                    day: 'numeric' 
-                                  })}
-                                </Text>
-                              </View>
-                            </>
+                        <View style={[
+                          styles.modernStatusBadge,
+                          app.replyReceived ? styles.modernStatusReplied : styles.modernStatusPending
+                        ]}>
+                          {app.replyReceived ? (
+                            <Text style={[styles.modernStatusText, styles.statusTextReplied]}>✓</Text>
+                          ) : (
+                            <View style={styles.clockIcon}>
+                              <View style={styles.clockCircle} />
+                              <View style={styles.clockHourHand} />
+                              <View style={styles.clockMinuteHand} />
+                            </View>
                           )}
                         </View>
                       </View>
                       
-                      {/* Action hint for email users */}
-                      {user.provider === 'email' && !app.replyReceived && (
-                        <View style={styles.actionHintContainer}>
-                          <Text style={styles.actionHintText}>✓ Tap to mark as replied</Text>
+                      {/* Dates Row */}
+                      <View style={styles.applicationDatesRow}>
+                        <View style={styles.dateItem}>
+                          <Text style={styles.dateLabel}>Sent</Text>
+                          <Text style={styles.dateValue}>
+                            {new Date(app.sentDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                          </Text>
                         </View>
-                      )}
+                        
+                        {app.replyReceived && (
+                          <>
+                            <View style={styles.dateSeparator} />
+                            <View style={styles.dateItem}>
+                              <Text style={styles.dateLabel}>Latest Reply</Text>
+                              <Text style={[styles.dateValue, styles.dateValueReplied]}>
+                                {new Date(app.replyDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                              </Text>
+                            </View>
+                          </>
+                        )}
+                      </View>
+                      
+                      {/* Action hint or reply preview */}
+                      {!app.replyReceived ? (
+                        <View style={styles.modernActionHint}>
+                          <Text style={styles.modernActionHintText}>✓ Tap to mark as replied</Text>
+                        </View>
+                      ) : app.replySnippet ? (
+                        <TouchableOpacity 
+                          style={styles.showReplyButton}
+                          onPress={() => showAllReplies(app.id, app.companyName)}
+                        >
+                          <Text style={styles.showReplyButtonText}>
+                            📬 Show {app.replyCount > 1 ? `${app.replyCount} Replies` : 'Reply'}
+                          </Text>
+                        </TouchableOpacity>
+                      ) : null}
                     </View>
                   </TouchableOpacity>
                 ))}
@@ -3016,6 +4458,269 @@ export default function App() {
             </View>
           )}
         </ScrollView>
+
+        {/* Reply Details Modal */}
+        <Modal
+          transparent={true}
+          visible={showReplyDetailsModal}
+          animationType="fade"
+          onRequestClose={() => setShowReplyDetailsModal(false)}
+        >
+          <View style={styles.replyModalOverlay}>
+            <View style={styles.replyDetailsModalContainer}>
+              {/* Header */}
+              <View style={styles.replyDetailsModalHeader}>
+                <Text style={styles.replyDetailsModalTitle}>
+                  📬 {selectedReplyDetails?.companyName || 'Reply Details'}
+                </Text>
+                <TouchableOpacity 
+                  onPress={() => setShowReplyDetailsModal(false)}
+                  style={styles.closeModalButton}
+                >
+                  <Text style={styles.closeModalButtonText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+
+              {selectedReplyDetails && selectedReplyDetails.replies && selectedReplyDetails.replies.length > 0 && (() => {
+                const firstReply = selectedReplyDetails.replies[0];
+                return (
+                  <>
+                    {/* Common meta: from + subject */}
+                    <View style={styles.replyMetaSection}>
+                      <Text style={styles.replyMetaFrom} numberOfLines={1}>✉️  {firstReply.replyFromEmail}</Text>
+                      <Text style={styles.replyMetaSubject} numberOfLines={2}>{firstReply.replySubject || '(No Subject)'}</Text>
+                      <Text style={styles.replyMetaCount}>
+                        {selectedReplyDetails.count} {selectedReplyDetails.count === 1 ? 'reply' : 'replies'} received
+                      </Text>
+                    </View>
+
+                    {/* Reply list — single ScrollView, no inner scroll */}
+                    <ScrollView
+                      style={styles.replyDetailsContent}
+                      contentContainerStyle={{ paddingBottom: 16 }}
+                      showsVerticalScrollIndicator={true}
+                      nestedScrollEnabled={true}
+                    >
+                      {[...selectedReplyDetails.replies].sort((a, b) => new Date(b.replyDate) - new Date(a.replyDate)).map((reply, index) => (
+                        <View key={reply.id || index} style={styles.replyCard}>
+                          <Text style={styles.replyCardDate}>
+                            {new Date(reply.replyDate).toLocaleString('en-US', {
+                              month: 'short', day: 'numeric', year: 'numeric',
+                              hour: 'numeric', minute: '2-digit'
+                            })}
+                          </Text>
+                          <Text style={styles.replyPreviewText}>{reply.replySnippet || '(No content available)'}</Text>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  </>
+                );
+              })()}
+
+              <TouchableOpacity
+                style={styles.replyDetailsCloseButton}
+                onPress={() => setShowReplyDetailsModal(false)}
+              >
+                <Text style={styles.replyDetailsCloseButtonText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Reply Date Picker Modal */}
+        <Modal
+          transparent={true}
+          visible={showReplyDatePicker}
+          animationType="slide"
+          onRequestClose={() => setShowReplyDatePicker(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowReplyDatePicker(false)}>
+            <View style={styles.modalOverlay}>
+              <TouchableWithoutFeedback>
+                <SafeAreaView style={styles.datePickerModalWrapper}>
+                  <View style={styles.datePickerModal}>
+                    {/* Header */}
+                    <View style={styles.datePickerHeader}>
+                      <View style={styles.datePickerHeaderLine} />
+                      <Text style={styles.datePickerTitle}>Reply Date</Text>
+                    </View>
+                    
+                    {/* Date Picker Container */}
+                    <View style={styles.datePickerContainer}>
+                      <DateTimePicker
+                        value={selectedReplyDate}
+                        mode="date"
+                        display="spinner"
+                        onChange={(event, date) => {
+                          if (date) setSelectedReplyDate(date);
+                        }}
+                        maximumDate={new Date()}
+                        textColor="#1f2937"
+                      />
+                    </View>
+                    
+                    {/* Buttons */}
+                    <View style={styles.modalButtons}>
+                      <TouchableOpacity
+                        style={styles.modalCancelButton}
+                        onPress={() => setShowReplyDatePicker(false)}
+                      >
+                        <Text style={styles.modalCancelText}>Cancel</Text>
+                      </TouchableOpacity>
+                      
+                      <TouchableOpacity
+                        style={styles.modalConfirmButton}
+                        onPress={() => {
+                          setApplicationHistory(prev =>
+                            prev.map(item =>
+                              item.id === replyAppId
+                                ? { ...item, replyReceived: true, replyDate: selectedReplyDate.toISOString() }
+                                : item
+                            )
+                          );
+                          setShowReplyDatePicker(false);
+                        }}
+                      >
+                        <View style={styles.confirmButtonWrapper}>
+                          <LinearGradient
+                            colors={['#667eea', '#764ba2']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.modalConfirmGradient}
+                          >
+                            <Text style={styles.modalConfirmText}>Confirm</Text>
+                          </LinearGradient>
+                        </View>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </SafeAreaView>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
+
+        {/* Notifications Modal */}
+        <Modal
+          transparent={true}
+          visible={showNotifications}
+          animationType="slide"
+          onRequestClose={() => setShowNotifications(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowNotifications(false)}>
+            <View style={styles.notificationModalOverlay}>
+              <TouchableWithoutFeedback>
+                <SafeAreaView style={styles.notificationModalWrapper}>
+                  <View style={styles.notificationModal}>
+                    {/* Header */}
+                    <View style={styles.notificationHeader}>
+                      <View style={styles.notificationHeaderLine} />
+                      <Text style={styles.notificationTitle}>Notifications</Text>
+                      {unreadCount > 0 && (
+                        <View style={styles.notificationHeaderBadge}>
+                          <Text style={styles.notificationHeaderBadgeText}>{unreadCount}</Text>
+                        </View>
+                      )}
+                    </View>
+                    
+                    {/* Body */}
+                    <ScrollView 
+                      style={styles.notificationBody}
+                      showsVerticalScrollIndicator={false}
+                    >
+                      {loadingNotifications ? (
+                        <View style={styles.notificationLoading}>
+                          <ActivityIndicator size="large" color="#667eea" />
+                          <Text style={styles.notificationLoadingText}>Loading notifications...</Text>
+                        </View>
+                      ) : notifications.length === 0 ? (
+                        <View style={styles.notificationEmpty}>
+                          <View style={styles.emptyBellContainer}>
+                            <View style={styles.emptyBellHandle} />
+                            <View style={styles.emptyBellBody} />
+                            <View style={styles.emptyBellOpening} />
+                          </View>
+                          <Text style={styles.notificationEmptyTitle}>No notifications yet</Text>
+                          <Text style={styles.notificationEmptyText}>You'll be notified when something important happens</Text>
+                        </View>
+                      ) : (
+                        notifications.map((notif, index) => (
+                          <TouchableOpacity
+                            key={notif.id || index}
+                            activeOpacity={0.7}
+                            onPress={() => {
+                              if (!notif.is_read) {
+                                markNotificationAsRead(notif.id);
+                              }
+                            }}
+                            style={[
+                              styles.notificationItem,
+                              !notif.is_read && styles.notificationItemUnread,
+                              index === notifications.length - 1 && styles.notificationItemLast
+                            ]}
+                          >
+                            <View style={[
+                              styles.notificationIconBox,
+                              notif.type === 'email' && styles.notificationIconEmail,
+                              notif.type === 'cover_letter' && styles.notificationIconLetter,
+                              notif.type === 'credits' && styles.notificationIconCredits,
+                              notif.type === 'profile' && styles.notificationIconProfile,
+                            ]}>
+                              <Text style={styles.notificationItemIcon}>
+                                {notif.type === 'email' ? '✉' : 
+                                 notif.type === 'cover_letter' ? '📄' : 
+                                 notif.type === 'credits' ? '◆' : 
+                                 notif.type === 'profile' ? '👤' : '🔔'}
+                              </Text>
+                            </View>
+                            <View style={styles.notificationContent}>
+                              <View style={styles.notificationTopRow}>
+                                <Text style={styles.notificationItemTitle} numberOfLines={1}>
+                                  {notif.title}
+                                </Text>
+                                <Text style={styles.notificationTime}>
+                                  {getTimeAgo(notif.created_at)}
+                                </Text>
+                              </View>
+                              <Text style={styles.notificationMessage} numberOfLines={2}>
+                                {notif.message}
+                              </Text>
+                              {!notif.is_read && (
+                                <View style={styles.notificationUnreadDot} />
+                              )}
+                            </View>
+                          </TouchableOpacity>
+                        ))
+                      )}
+                    </ScrollView>
+                    
+                    {/* Footer */}
+                    {notifications.length > 0 && (
+                      <View style={styles.notificationFooter}>
+                        <TouchableOpacity 
+                          style={styles.viewAllButton}
+                          onPress={() => {
+                            setShowNotifications(false);
+                            setScreen('notifications');
+                          }}
+                        >
+                          <LinearGradient
+                            colors={['#667eea', '#764ba2']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.viewAllGradient}
+                          >
+                            <Text style={styles.viewAllText}>View All Notifications</Text>
+                          </LinearGradient>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                </SafeAreaView>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -3114,15 +4819,32 @@ export default function App() {
               {/* 30-Day Activity Overview Chart */}
               {usageData?.dateWiseActivity && usageData.dateWiseActivity.length > 0 && (
                 <View style={styles.usageHistoryCard}>
-                  <Text style={styles.usageCardTitle}>📈 7-Day Activity Overview</Text>
+                  <Text style={styles.usageCardTitle}>📈 Activity Overview (Last 7 Days)</Text>
                   <View style={styles.chartContainer}>
                     {(() => {
-                      // Get last 7 days for chart
-                      const chartData = usageData.dateWiseActivity.slice(-7);
+                      // Get days with activity for chart (show all 30 days)
+                      const daysWithActivity = usageData.dateWiseActivity.filter(d => d.generated > 0 || d.sent > 0 || d.creditsUsed > 0);
+                      const chartData = daysWithActivity.length > 0 ? daysWithActivity : usageData.dateWiseActivity.slice(-7);
+                      console.log('📊 [CHART] Days with activity:', daysWithActivity.length);
+                      console.log('📊 [CHART] Rendering chart with data:', JSON.stringify(chartData));
+                      
+                      // If no activity at all, show a message
+                      if (daysWithActivity.length === 0) {
+                        return (
+                          <View style={{ padding: 20, alignItems: 'center' }}>
+                            <Text style={{ fontSize: 16, color: '#666', textAlign: 'center' }}>
+                              📊 No activity recorded yet.{'\n'}
+                              Generate and send cover letters to see your activity here!
+                            </Text>
+                          </View>
+                        );
+                      }
+                      
                       const maxValue = Math.max(
                         ...chartData.map(d => Math.max(d.generated || 0, d.sent || 0, d.creditsUsed || 0)),
                         5
                       );
+                      console.log('📊 [CHART] Max value for chart:', maxValue);
                       
                       // Generate Y-axis labels (0 to maxValue)
                       const yAxisLabels = [];
@@ -3148,15 +4870,17 @@ export default function App() {
                                 const sentHeight = ((day.sent || 0) / maxValue) * 120;
                                 const usedHeight = ((day.creditsUsed || 0) / maxValue) * 120;
                                 
+                                console.log(`📊 [BAR ${index}] ${day.date}: Gen=${day.generated}(${genHeight.toFixed(1)}px), Sent=${day.sent}(${sentHeight.toFixed(1)}px), Used=${day.creditsUsed}(${usedHeight.toFixed(1)}px)`);
+                                
                                 return (
                                   <View key={index} style={styles.chartBarGroup}>
                                     <View style={styles.chartBarContainer}>
                                       <View style={[styles.chartBar, { height: Math.max(genHeight, 2), backgroundColor: '#8B5CF6' }]} />
-                                      <View style={[styles.chartBar, { height: Math.max(sentHeight, 2), backgroundColor: '#10B981', marginLeft: 2 }]} />
-                                      <View style={[styles.chartBar, { height: Math.max(usedHeight, 2), backgroundColor: '#EF4444', marginLeft: 2 }]} />
+                                      <View style={[styles.chartBar, { height: Math.max(sentHeight, 2), backgroundColor: '#10B981', marginLeft: 3 }]} />
+                                      <View style={[styles.chartBar, { height: Math.max(usedHeight, 2), backgroundColor: '#EF4444', marginLeft: 3 }]} />
                                     </View>
                                     <Text style={styles.chartLabel}>
-                                      {new Date(day.date).toLocaleDateString('en-US', { day: 'numeric' })}
+                                      {new Date(day.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                     </Text>
                                   </View>
                                 );
@@ -3188,7 +4912,7 @@ export default function App() {
               {/* Date-wise Activity Table */}
               {usageData?.dateWiseActivity && usageData.dateWiseActivity.length > 0 && (
                 <View style={styles.usageHistoryCard}>
-                  <Text style={styles.usageCardTitle}>📅 Date-wise Activity (Last 30 Days)</Text>
+                  <Text style={styles.usageCardTitle}>📅 Date-wise Activity (Last 7 Days)</Text>
                   <View style={styles.activityTableHeader}>
                     <Text style={[styles.activityTableHeaderText, { flex: 2 }]}>Date</Text>
                     <Text style={[styles.activityTableHeaderText, { flex: 1, textAlign: 'center' }]}>Generated</Text>
@@ -3197,11 +4921,20 @@ export default function App() {
                     <Text style={[styles.activityTableHeaderText, { flex: 1, textAlign: 'center' }]}>Credits Available</Text>
                   </View>
                   <ScrollView style={{ maxHeight: 300 }}>
-                    {usageData.dateWiseActivity
-                      .filter(day => day.generated > 0 || day.sent > 0 || day.creditsUsed > 0)
-                      .reverse()
-                      .slice(0, 15)
-                      .map((day, index) => (
+                    {(() => {
+                      const activeDays = usageData.dateWiseActivity.filter(day => day.generated > 0 || day.sent > 0 || day.creditsUsed > 0);
+                      
+                      if (activeDays.length === 0) {
+                        return (
+                          <View style={{ padding: 20, alignItems: 'center' }}>
+                            <Text style={{ fontSize: 14, color: '#666', textAlign: 'center' }}>
+                              No activity recorded in the last 7 days.
+                            </Text>
+                          </View>
+                        );
+                      }
+                      
+                      return activeDays.reverse().map((day, index) => (
                         <View key={index} style={styles.activityTableRow}>
                           <Text style={[styles.activityTableCell, { flex: 2, fontWeight: '500' }]}>
                             {new Date(day.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
@@ -3219,7 +4952,8 @@ export default function App() {
                             {day.creditsAvailable}
                           </Text>
                         </View>
-                      ))}
+                      ));
+                    })()}
                   </ScrollView>
                 </View>
               )}
@@ -3261,11 +4995,188 @@ export default function App() {
               {/* Buy More Credits Button */}
               <TouchableOpacity 
                 style={styles.buyCreditsButton}
-                onPress={() => setScreen('plans')}
+                onPress={() => setScreen('packages')}
               >
                 <Text style={styles.buyCreditsButtonText}>💎 Buy More Credits</Text>
               </TouchableOpacity>
             </>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // NOTIFICATIONS SCREEN
+  if (screen === 'notifications') {
+    // Filter notifications based on selected filter
+    const filteredNotifications = notifications.filter(notif => {
+      if (notificationFilter === 'unread') return !notif.is_read;
+      if (notificationFilter === 'read') return notif.is_read;
+      return true; // 'all'
+    });
+
+    return (
+      <SafeAreaView style={styles.notificationsPageContainer}>
+        <StatusBar barStyle="light-content" />
+        
+        {/* Header with Gradient */}
+        <LinearGradient
+          colors={['#667eea', '#764ba2']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.notificationsHeader}
+        >
+          <View style={styles.notificationsHeaderTop}>
+            <TouchableOpacity 
+              style={styles.notificationsBackButton}
+              onPress={() => setScreen('dashboard')}
+            >
+              <Text style={styles.notificationsBackIcon}>←</Text>
+            </TouchableOpacity>
+            <View style={styles.notificationsHeaderCenter}>
+              <Text style={styles.notificationsHeaderTitle}>Notifications</Text>
+              {unreadCount > 0 && (
+                <View style={styles.notificationsHeaderBadge}>
+                  <Text style={styles.notificationsHeaderBadgeText}>{unreadCount}</Text>
+                </View>
+              )}
+            </View>
+            {unreadCount > 0 && (
+              <TouchableOpacity 
+                style={styles.notificationsMarkReadButton}
+                onPress={markAllNotificationsRead}
+              >
+                <Text style={styles.notificationsMarkReadText}>✓</Text>
+              </TouchableOpacity>
+            )}
+            {unreadCount === 0 && <View style={{ width: 44 }} />}
+          </View>
+        </LinearGradient>
+
+        {/* Filter Tabs */}
+        <View style={styles.notificationsFilters}>
+          <TouchableOpacity
+            style={[
+              styles.notificationsFilterTab,
+              notificationFilter === 'all' && styles.notificationsFilterTabActive
+            ]}
+            onPress={() => setNotificationFilter('all')}
+          >
+            <Text style={[
+              styles.notificationsFilterText,
+              notificationFilter === 'all' && styles.notificationsFilterTextActive
+            ]}>
+              All ({notifications.length})
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.notificationsFilterTab,
+              notificationFilter === 'unread' && styles.notificationsFilterTabActive
+            ]}
+            onPress={() => setNotificationFilter('unread')}
+          >
+            <Text style={[
+              styles.notificationsFilterText,
+              notificationFilter === 'unread' && styles.notificationsFilterTextActive
+            ]}>
+              Unread ({unreadCount})
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.notificationsFilterTab,
+              notificationFilter === 'read' && styles.notificationsFilterTabActive
+            ]}
+            onPress={() => setNotificationFilter('read')}
+          >
+            <Text style={[
+              styles.notificationsFilterText,
+              notificationFilter === 'read' && styles.notificationsFilterTextActive
+            ]}>
+              Read ({notifications.length - unreadCount})
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Notifications List */}
+        <ScrollView 
+          style={styles.notificationsScrollView}
+          contentContainerStyle={styles.notificationsScrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {loadingNotifications ? (
+            <View style={styles.notificationsLoading}>
+              <ActivityIndicator size="large" color="#667eea" />
+              <Text style={styles.notificationsLoadingText}>Loading notifications...</Text>
+            </View>
+          ) : filteredNotifications.length === 0 ? (
+            <View style={styles.notificationsEmpty}>
+              <View style={styles.notificationsEmptyIconBox}>
+                <Text style={styles.notificationsEmptyIcon}>🔔</Text>
+              </View>
+              <Text style={styles.notificationsEmptyTitle}>
+                {notificationFilter === 'unread' ? 'No unread notifications' :
+                 notificationFilter === 'read' ? 'No read notifications' :
+                 'No notifications yet'}
+              </Text>
+              <Text style={styles.notificationsEmptySubtitle}>
+                {notificationFilter === 'all' 
+                  ? "You'll be notified when something important happens"
+                  : 'Check back later for updates'}
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.notificationsListContainer}>
+              {filteredNotifications.map((notif, index) => (
+                <TouchableOpacity
+                  key={notif.id || index}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    if (!notif.is_read) {
+                      markNotificationAsRead(notif.id);
+                    }
+                  }}
+                  style={[
+                    styles.notificationsPageItem,
+                    !notif.is_read && styles.notificationsPageItemUnread
+                  ]}
+                >
+                  <View style={[
+                    styles.notificationsPageIconBox,
+                    notif.type === 'email' && styles.notificationsIconTypeEmail,
+                    notif.type === 'cover_letter' && styles.notificationsIconTypeLetter,
+                    notif.type === 'credits' && styles.notificationsIconTypeCredits,
+                    notif.type === 'profile' && styles.notificationsIconTypeProfile,
+                  ]}>
+                    <Text style={styles.notificationsPageIcon}>
+                      {notif.type === 'email' ? '✉' : 
+                       notif.type === 'cover_letter' ? '📄' : 
+                       notif.type === 'credits' ? '◆' : 
+                       notif.type === 'profile' ? '👤' : '🔔'}
+                    </Text>
+                  </View>
+                  <View style={styles.notificationsPageContent}>
+                    <View style={styles.notificationsPageTopRow}>
+                      <Text style={styles.notificationsPageTitle} numberOfLines={2}>
+                        {notif.title}
+                      </Text>
+                      {!notif.is_read && (
+                        <View style={styles.notificationsPageUnreadBadge}>
+                          <View style={styles.notificationsPageUnreadDot} />
+                        </View>
+                      )}
+                    </View>
+                    <Text style={styles.notificationsPageMessage}>
+                      {notif.message}
+                    </Text>
+                    <Text style={styles.notificationsPageTime}>
+                      {getTimeAgo(notif.created_at)}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
           )}
         </ScrollView>
       </SafeAreaView>
@@ -3374,13 +5285,7 @@ export default function App() {
                         styles.packageBuyButton,
                         pkg.is_popular === 1 && styles.packageBuyButtonPopular
                       ]}
-                      onPress={() => {
-                        Alert.alert(
-                          'Purchase Credits',
-                          `Package: ${pkg.name}\nAmount: $${pkg.amount}\nCredits: ${pkg.credits}\n\nPayment integration coming soon!`,
-                          [{ text: 'OK' }]
-                        );
-                      }}
+                      onPress={() => handleBuyPackage(pkg)}
                     >
                       <Text style={styles.packageBuyButtonText}>💳 Buy Plan</Text>
                     </TouchableOpacity>
@@ -3398,6 +5303,141 @@ export default function App() {
             </View>
           )}
         </ScrollView>
+        
+        {/* Payment WebView Modal */}
+        <Modal
+          visible={showPaymentModal}
+          animationType="slide"
+          transparent={false}
+          onRequestClose={() => {
+            console.log('🚫 Payment modal closed');
+            setShowPaymentModal(false);
+            setPaymentUrl('');
+          }}
+        >
+          <SafeAreaView style={{flex: 1, backgroundColor: '#fff'}}>
+            <View style={{flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb', backgroundColor: '#fff'}}>
+              <TouchableOpacity 
+                onPress={() => {
+                  console.log('❌ Close button pressed');
+                  setShowPaymentModal(false);
+                  setPaymentUrl('');
+                }}
+                style={{padding: 8}}
+              >
+                <Text style={{fontSize: 18, color: '#3b82f6', fontWeight: '600'}}>✕ Close</Text>
+              </TouchableOpacity>
+              <Text style={{flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#1f2937'}}>Complete Payment</Text>
+              <View style={{width: 60}} />
+            </View>
+            {paymentUrl ? (
+              <WebView
+                source={{ uri: paymentUrl }}
+                style={{flex: 1}}
+                onNavigationStateChange={(navState) => {
+                  console.log('📱 Navigation:', navState.url);
+                  
+                  // Check if payment was successful
+                  if (navState.url.includes('/payment-success.html')) {
+                    // Extract payment details from URL (Razorpay returns payment_id, order_id, signature)
+                    const url = new URL(navState.url);
+                    const razorpay_payment_id = url.searchParams.get('payment_id');
+                    const razorpay_order_id = url.searchParams.get('order_id');
+                    const razorpay_signature = url.searchParams.get('signature');
+                    
+                    console.log('💳 Payment details:', { razorpay_payment_id, razorpay_order_id, razorpay_signature });
+                    
+                    // ✅ CLOSE MODAL IMMEDIATELY (non-blocking)
+                    setTimeout(async () => {
+                      setShowPaymentModal(false);
+                      setPaymentUrl('');
+                      
+                      try {
+                        // Verify payment with backend
+                        const verifyResponse = await fetch(`${API_BASE}/payment/verify`, {
+                          method: 'POST',
+                          headers: {
+                            'Authorization': `Bearer ${user.token}`,
+                            'Content-Type': 'application/json',
+                          },
+                          body: JSON.stringify({
+                            razorpay_order_id,
+                            razorpay_payment_id,
+                            razorpay_signature
+                          })
+                        });
+                        
+                        const verifyData = await verifyResponse.json();
+                        console.log('✅ Payment verification response:', verifyData);
+                        
+                        if (verifyData.success) {
+                          // Update credit balance from verification response
+                          // Also reload from API to ensure sync
+                          try {
+                            const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
+                              method: 'GET',
+                              headers: {
+                                'Authorization': `Bearer ${user.token}`,
+                                'Content-Type': 'application/json',
+                              }
+                            });
+                            
+                            if (creditsResponse.ok) {
+                              const creditsData = await creditsResponse.json();
+                              if (creditsData.success) {
+                                setCreditBalance(creditsData.balance || 0);
+                                console.log('💳 Reloaded credits after payment:', creditsData.balance);
+                              }
+                            }
+                          } catch (reloadError) {
+                            console.log('Failed to reload credits, using verification response');
+                            setCreditBalance(verifyData.credits);
+                          }
+                          
+                          // Force screen refresh by navigating away and back
+                          setScreen('');
+                          setTimeout(() => {
+                            // Close processing alert and show success
+                            Alert.alert(
+                              '🎉 Payment Successful!',
+                              `${verifyData.creditsAdded} credits have been added to your account!\n\nNew Balance: ${verifyData.credits} credits`,
+                              [{ text: 'Awesome!', onPress: () => setScreen('dashboard') }]
+                            );
+                          }, 100);
+                        } else {
+                          throw new Error(verifyData.error || 'Verification failed');
+                        }
+                      } catch (error) {
+                        console.error('❌ Payment verification error:', error);
+                        Alert.alert(
+                          'Verification Pending',
+                          'Payment received! Credits will be added shortly. Please check your balance in a few minutes.',
+                          [{ text: 'OK', onPress: () => setScreen('dashboard') }]
+                        );
+                      }
+                    }, 10);
+                  } else if (navState.url.includes('/payment-failure.html')) {
+                    // Close modal immediately on failure too
+                    setTimeout(() => {
+                      setShowPaymentModal(false);
+                      setPaymentUrl('');
+                      Alert.alert('Payment Failed', 'Payment was not completed. Please try again.', [{ text: 'OK' }]);
+                    }, 10);
+                  }
+                }}
+                javaScriptEnabled={true}
+                domStorageEnabled={true}
+                startInLoadingState={true}
+                scalesPageToFit={true}
+              />
+            ) : (
+              <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}>
+                <ActivityIndicator size="large" color="#3b82f6" />
+                <Text style={{marginTop: 16, color: '#6b7280'}}>Loading payment...</Text>
+              </View>
+            )}
+          </SafeAreaView>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -3429,7 +5469,7 @@ export default function App() {
               style={styles.editButton}
               onPress={() => setIsEditingProfile(!isEditingProfile)}
             >
-              <Text style={styles.editButtonText}>{isEditingProfile ? 'Cancel' : 'Edit'}</Text>
+              <Text style={[styles.editButtonText, { color: '#0d9488' }]}>{isEditingProfile ? 'Cancel' : 'Edit'}</Text>
             </TouchableOpacity>
           </View>
 
@@ -3437,7 +5477,9 @@ export default function App() {
           <View style={styles.profileCardHeader}>
             <TouchableOpacity 
               style={styles.profileAvatarLarge}
-              onPress={isEditingProfile ? pickProfileImage : null}
+              onPress={pickProfileImage}
+              disabled={!isEditingProfile}
+              activeOpacity={isEditingProfile ? 0.7 : 1}
             >
               {profileData?.profileImage ? (
                 <Image 
@@ -3447,7 +5489,11 @@ export default function App() {
               ) : (
                 <Text style={styles.profileAvatarText}>{displayName.charAt(0).toUpperCase()}</Text>
               )}
-              {isEditingProfile && <View style={styles.editOverlay} />}
+              {isEditingProfile && (
+                <View style={styles.editOverlay}>
+                  <Text style={styles.editOverlayText}>📷</Text>
+                </View>
+              )}
             </TouchableOpacity>
             <View style={styles.profileBasicInfo}>
               <Text style={styles.profileNameLarge}>{displayName}</Text>
@@ -3463,8 +5509,9 @@ export default function App() {
             <View style={styles.profileDetailCard}>
               <Text style={styles.cardTitleProfile}>📷 Profile Photo</Text>
               <TouchableOpacity 
-                style={styles.uploadZone}
+                style={[styles.uploadZone, styles.uploadZoneActive]}
                 onPress={pickProfileImage}
+                activeOpacity={0.7}
               >
                 {profileData?.profileImage ? (
                   <Image 
@@ -3478,6 +5525,7 @@ export default function App() {
                   </View>
                 )}
               </TouchableOpacity>
+              <Text style={styles.uploadHint}>Tap to change from files or photos</Text>
             </View>
           )}
 
@@ -3530,33 +5578,73 @@ export default function App() {
                 </View>
                 <View style={styles.editFormGroup}>
                   <Text style={styles.formLabel}>Date of Birth</Text>
-                  <TextInput 
-                    style={styles.formInput}
-                    placeholder="MM/DD/YYYY"
-                    placeholderTextColor="#9CA3AF"
-                    value={profileData?.dateOfBirth || ''}
-                    onChangeText={(text) => setProfileData({ ...profileData, dateOfBirth: text })}
-                  />
+                  <TouchableOpacity 
+                    style={styles.datePickerButton}
+                    onPress={() => setShowDatePicker(true)}
+                  >
+                    <Text style={styles.datePickerText}>
+                      {profileData?.dateOfBirth || 'Select Date'}
+                    </Text>
+                  </TouchableOpacity>
+                  {showDatePicker && (
+                    <DateTimePicker
+                      value={profileData?.dateOfBirth ? new Date(profileData.dateOfBirth) : new Date()}
+                      mode="date"
+                      display="spinner"
+                      onChange={(event, selectedDate) => {
+                        setShowDatePicker(false);
+                        if (selectedDate) {
+                          // Format date as YYYY-MM-DD
+                          const formattedDate = selectedDate.toLocaleDateString('en-CA');
+                          setProfileData({ ...profileData, dateOfBirth: formattedDate });
+                        }
+                      }}
+                    />
+                  )}
                 </View>
               </>
             ) : (
               <>
-                <View style={styles.detailRow}>
+                <TouchableOpacity 
+                  style={styles.detailRow}
+                  onLongPress={() => {
+                    Clipboard.setStringAsync(profileData?.fullName || '');
+                    Alert.alert('Copied', 'Full name copied to clipboard');
+                  }}
+                >
                   <Text style={styles.detailLabel}>Full Name</Text>
                   <Text style={styles.detailValue}>{profileData?.fullName || 'Not provided'}</Text>
-                </View>
-                <View style={styles.detailRow}>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.detailRow}
+                  onLongPress={() => {
+                    Clipboard.setStringAsync(profileData?.phone || '');
+                    Alert.alert('Copied', 'Phone number copied to clipboard');
+                  }}
+                >
                   <Text style={styles.detailLabel}>Phone Number</Text>
                   <Text style={styles.detailValue}>{profileData?.phone || 'Not provided'}</Text>
-                </View>
-                <View style={styles.detailRow}>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.detailRow}
+                  onLongPress={() => {
+                    Clipboard.setStringAsync(profileData?.address || '');
+                    Alert.alert('Copied', 'Address copied to clipboard');
+                  }}
+                >
                   <Text style={styles.detailLabel}>Address</Text>
                   <Text style={styles.detailValue}>{profileData?.address || 'Not provided'}</Text>
-                </View>
-                <View style={styles.detailRow}>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.detailRow}
+                  onLongPress={() => {
+                    Clipboard.setStringAsync(profileData?.dateOfBirth || '');
+                    Alert.alert('Copied', 'Date of birth copied to clipboard');
+                  }}
+                >
                   <Text style={styles.detailLabel}>Date of Birth</Text>
                   <Text style={styles.detailValue}>{profileData?.dateOfBirth || 'Not provided'}</Text>
-                </View>
+                </TouchableOpacity>
                 <View style={styles.detailRow}>
                   <Text style={styles.detailLabel}>Account Type</Text>
                   <Text style={styles.detailValue}>{user?.provider === 'google' ? 'Google' : 'Email'}</Text>
@@ -3573,13 +5661,19 @@ export default function App() {
           <View style={styles.profileDetailCard}>
             <Text style={styles.cardTitleProfile}>📄 Resume</Text>
             <TouchableOpacity 
-              style={styles.uploadZone}
-              onPress={isEditingProfile ? pickResume : null}
+              style={[
+                styles.uploadZone,
+                isEditingProfile && styles.uploadZoneActive
+              ]}
+              onPress={pickResume}
+              disabled={!isEditingProfile}
+              activeOpacity={isEditingProfile ? 0.7 : 1}
             >
               {profileData?.resume ? (
                 <View style={styles.uploadPlaceholder}>
                   <Text style={styles.uploadIcon}>✓</Text>
                   <Text style={styles.uploadText}>{profileData.resume}</Text>
+                  {isEditingProfile && <Text style={styles.uploadHint}>Tap to change</Text>}
                 </View>
               ) : (
                 <View style={styles.uploadPlaceholder}>
@@ -3594,8 +5688,13 @@ export default function App() {
           <View style={styles.profileDetailCard}>
             <Text style={styles.cardTitleProfile}>✍️ Signature</Text>
             <TouchableOpacity 
-              style={styles.uploadZone}
-              onPress={isEditingProfile ? pickSignature : null}
+              style={[
+                styles.uploadZone,
+                isEditingProfile && styles.uploadZoneActive
+              ]}
+              onPress={pickSignature}
+              disabled={!isEditingProfile}
+              activeOpacity={isEditingProfile ? 0.7 : 1}
             >
               {profileData?.signature ? (
                 <Image 
@@ -3664,6 +5763,13 @@ export default function App() {
               <Text style={styles.actionButtonIcon}>→</Text>
             </TouchableOpacity>
             <TouchableOpacity 
+              style={styles.actionButton}
+              onPress={() => setShowDeleteAccount(true)}
+            >
+              <Text style={[styles.actionButtonText, { color: '#ef4444' }]}>Delete Account Permanently</Text>
+              <Text style={styles.actionButtonIcon}>→</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
               style={[styles.actionButton, { borderBottomWidth: 0 }]}
               onPress={() => {
                 Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
@@ -3672,7 +5778,7 @@ export default function App() {
                 ]);
               }}
             >
-              <Text style={[styles.actionButtonText, { color: '#ef4444' }]}>Sign Out</Text>
+              <Text style={[styles.actionButtonText, { color: '#6b7280' }]}>Sign Out</Text>
               <Text style={styles.actionButtonIcon}>→</Text>
             </TouchableOpacity>
           </View>
@@ -3681,122 +5787,220 @@ export default function App() {
         </ScrollView>
 
         {/* Change Password Modal */}
-        {showChangePassword && (
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Change Password</Text>
-                <TouchableOpacity onPress={() => setShowChangePassword(false)}>
-                  <Text style={styles.modalCloseBtn}>✕</Text>
-                </TouchableOpacity>
-              </View>
+        <Modal
+          transparent={true}
+          visible={showChangePassword}
+          animationType="slide"
+          onRequestClose={() => setShowChangePassword(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowChangePassword(false)}>
+            <View style={styles.accountModalOverlay}>
+              <TouchableWithoutFeedback>
+                <KeyboardAvoidingView 
+                  behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                  style={styles.accountModalKeyboardView}
+                >
+                  <View style={styles.accountModalContent}>
+                    <View style={styles.accountModalHeader}>
+                      <Text style={styles.accountModalTitle}>🔒 Change Password</Text>
+                      <TouchableOpacity onPress={() => setShowChangePassword(false)}>
+                        <Text style={styles.accountModalCloseBtn}>✕</Text>
+                      </TouchableOpacity>
+                    </View>
 
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Current Password"
-                placeholderTextColor="#999"
-                secureTextEntry
-                value={currentPassword}
-                onChangeText={setCurrentPassword}
-              />
-              <TextInput
-                style={styles.modalInput}
-                placeholder="New Password"
-                placeholderTextColor="#999"
-                secureTextEntry
-                value={newPassword}
-                onChangeText={setNewPassword}
-              />
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Confirm New Password"
-                placeholderTextColor="#999"
-                secureTextEntry
-                value={confirmPassword}
-                onChangeText={setConfirmPassword}
-              />
+                    <ScrollView 
+                      showsVerticalScrollIndicator={false}
+                      contentContainerStyle={styles.accountModalScrollContent}
+                    >
+                      <TextInput
+                        style={styles.accountModalInput}
+                        placeholder="Current Password"
+                        placeholderTextColor="#9ca3af"
+                        secureTextEntry
+                        value={currentPassword}
+                        onChangeText={setCurrentPassword}
+                      />
+                      <TextInput
+                        style={styles.accountModalInput}
+                        placeholder="New Password"
+                        placeholderTextColor="#9ca3af"
+                        secureTextEntry
+                        value={newPassword}
+                        onChangeText={setNewPassword}
+                      />
+                      <TextInput
+                        style={styles.accountModalInput}
+                        placeholder="Confirm New Password"
+                        placeholderTextColor="#9ca3af"
+                        secureTextEntry
+                        value={confirmPassword}
+                        onChangeText={setConfirmPassword}
+                      />
+                    </ScrollView>
 
-              <TouchableOpacity 
-                style={styles.modalButton}
-                onPress={handleChangePassword}
-              >
-                <Text style={styles.modalButtonText}>Change Password</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.modalButton, { backgroundColor: '#e5e7eb' }]}
-                onPress={() => setShowChangePassword(false)}
-              >
-                <Text style={[styles.modalButtonText, { color: '#333' }]}>Cancel</Text>
-              </TouchableOpacity>
+                    <TouchableOpacity 
+                      style={styles.accountModalButton}
+                      onPress={handleChangePassword}
+                    >
+                      <Text style={styles.accountModalButtonText}>Change Password</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity 
+                      style={styles.accountModalButtonSecondary}
+                      onPress={() => setShowChangePassword(false)}
+                    >
+                      <Text style={styles.accountModalButtonSecondaryText}>Cancel</Text>
+                    </TouchableOpacity>
+                  </View>
+                </KeyboardAvoidingView>
+              </TouchableWithoutFeedback>
             </View>
-          </View>
-        )}
+          </TouchableWithoutFeedback>
+        </Modal>
 
         {/* Privacy Settings Modal */}
-        {showPrivacySettings && (
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Privacy Settings</Text>
-                <TouchableOpacity onPress={() => setShowPrivacySettings(false)}>
-                  <Text style={styles.modalCloseBtn}>✕</Text>
-                </TouchableOpacity>
-              </View>
+        <Modal
+          transparent={true}
+          visible={showPrivacySettings}
+          animationType="slide"
+          onRequestClose={() => setShowPrivacySettings(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowPrivacySettings(false)}>
+            <View style={styles.accountModalOverlay}>
+              <TouchableWithoutFeedback>
+                <View style={styles.accountModalContent}>
+                  <View style={styles.accountModalHeader}>
+                    <Text style={styles.accountModalTitle}>🔐 Privacy Settings</Text>
+                    <TouchableOpacity onPress={() => setShowPrivacySettings(false)}>
+                      <Text style={styles.accountModalCloseBtn}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
 
-              <View style={styles.settingRow}>
-                <View>
-                  <Text style={styles.settingLabel}>Email Notifications</Text>
-                  <Text style={styles.settingDescription}>Receive updates via email</Text>
+                  <ScrollView 
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={styles.accountModalScrollContent}
+                  >
+                    <View style={styles.settingRow}>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Email Notifications</Text>
+                        <Text style={styles.settingDescription}>Receive updates via email</Text>
+                      </View>
+                      <TouchableOpacity 
+                        style={[styles.toggle, privacySettings.emailNotifications && styles.toggleActive]}
+                        onPress={() => setPrivacySettings({ ...privacySettings, emailNotifications: !privacySettings.emailNotifications })}
+                      >
+                        <View style={[styles.toggleCircle, privacySettings.emailNotifications && styles.toggleCircleActive]} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.settingRow}>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>SMS Notifications</Text>
+                        <Text style={styles.settingDescription}>Receive updates via SMS</Text>
+                      </View>
+                      <TouchableOpacity 
+                        style={[styles.toggle, privacySettings.smsNotifications && styles.toggleActive]}
+                        onPress={() => setPrivacySettings({ ...privacySettings, smsNotifications: !privacySettings.smsNotifications })}
+                      >
+                        <View style={[styles.toggleCircle, privacySettings.smsNotifications && styles.toggleCircleActive]} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.settingRow}>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingLabel}>Public Profile</Text>
+                        <Text style={styles.settingDescription}>Allow others to view your profile</Text>
+                      </View>
+                      <TouchableOpacity 
+                        style={[styles.toggle, privacySettings.profilePublic && styles.toggleActive]}
+                        onPress={() => setPrivacySettings({ ...privacySettings, profilePublic: !privacySettings.profilePublic })}
+                      >
+                        <View style={[styles.toggleCircle, privacySettings.profilePublic && styles.toggleCircleActive]} />
+                      </TouchableOpacity>
+                    </View>
+                  </ScrollView>
+
+                  <TouchableOpacity 
+                    style={styles.accountModalButton}
+                    onPress={handleUpdatePrivacySettings}
+                  >
+                    <Text style={styles.accountModalButtonText}>Save Settings</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={styles.accountModalButtonSecondary}
+                    onPress={() => setShowPrivacySettings(false)}
+                  >
+                    <Text style={styles.accountModalButtonSecondaryText}>Cancel</Text>
+                  </TouchableOpacity>
                 </View>
-                <TouchableOpacity 
-                  style={[styles.toggle, privacySettings.emailNotifications && styles.toggleActive]}
-                  onPress={() => setPrivacySettings({ ...privacySettings, emailNotifications: !privacySettings.emailNotifications })}
-                >
-                  <View style={[styles.toggleCircle, privacySettings.emailNotifications && styles.toggleCircleActive]} />
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.settingRow}>
-                <View>
-                  <Text style={styles.settingLabel}>SMS Notifications</Text>
-                  <Text style={styles.settingDescription}>Receive updates via SMS</Text>
-                </View>
-                <TouchableOpacity 
-                  style={[styles.toggle, privacySettings.smsNotifications && styles.toggleActive]}
-                  onPress={() => setPrivacySettings({ ...privacySettings, smsNotifications: !privacySettings.smsNotifications })}
-                >
-                  <View style={[styles.toggleCircle, privacySettings.smsNotifications && styles.toggleCircleActive]} />
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.settingRow}>
-                <View>
-                  <Text style={styles.settingLabel}>Public Profile</Text>
-                  <Text style={styles.settingDescription}>Allow others to view your profile</Text>
-                </View>
-                <TouchableOpacity 
-                  style={[styles.toggle, privacySettings.profilePublic && styles.toggleActive]}
-                  onPress={() => setPrivacySettings({ ...privacySettings, profilePublic: !privacySettings.profilePublic })}
-                >
-                  <View style={[styles.toggleCircle, privacySettings.profilePublic && styles.toggleCircleActive]} />
-                </TouchableOpacity>
-              </View>
-
-              <TouchableOpacity 
-                style={styles.modalButton}
-                onPress={handleUpdatePrivacySettings}
-              >
-                <Text style={styles.modalButtonText}>Save Settings</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.modalButton, { backgroundColor: '#e5e7eb' }]}
-                onPress={() => setShowPrivacySettings(false)}
-              >
-                <Text style={[styles.modalButtonText, { color: '#333' }]}>Cancel</Text>
-              </TouchableOpacity>
+              </TouchableWithoutFeedback>
             </View>
-          </View>
-        )}
+          </TouchableWithoutFeedback>
+        </Modal>
+
+        {/* Delete Account Modal */}
+        <Modal
+          transparent={true}
+          visible={showDeleteAccount}
+          animationType="slide"
+          onRequestClose={() => setShowDeleteAccount(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowDeleteAccount(false)}>
+            <View style={styles.accountModalOverlay}>
+              <TouchableWithoutFeedback>
+                <View style={styles.accountModalContent}>
+                  <View style={styles.accountModalHeader}>
+                    <Text style={[styles.accountModalTitle, { color: '#ef4444' }]}>⚠️ Delete Account</Text>
+                    <TouchableOpacity onPress={() => setShowDeleteAccount(false)}>
+                      <Text style={styles.accountModalCloseBtn}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <ScrollView 
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={styles.accountModalScrollContent}
+                  >
+                    <Text style={styles.deleteWarningText}>
+                      This action is permanent and cannot be undone. All your data will be deleted:
+                    </Text>
+                    <Text style={styles.deleteWarningList}>
+                      • All cover letters and applications{'\n'}
+                      • Profile and account information{'\n'}
+                      • Payment history and credits{'\n'}
+                      • Saved templates and settings
+                    </Text>
+                    <Text style={styles.deleteConfirmInstructions}>
+                      To confirm, type <Text style={styles.deleteConfirmKeyword}>DELETE</Text> below:
+                    </Text>
+                    <TextInput
+                      style={styles.accountModalInput}
+                      placeholder="Type DELETE to confirm"
+                      placeholderTextColor="#9ca3af"
+                      value={deleteConfirmText}
+                      onChangeText={setDeleteConfirmText}
+                      autoCapitalize="characters"
+                    />
+                  </ScrollView>
+
+                  <TouchableOpacity 
+                    style={[styles.accountModalButton, { backgroundColor: '#ef4444' }]}
+                    onPress={handleDeleteAccount}
+                  >
+                    <Text style={styles.accountModalButtonText}>Delete Account Permanently</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={styles.accountModalButtonSecondary}
+                    onPress={() => {
+                      setShowDeleteAccount(false);
+                      setDeleteConfirmText('');
+                    }}
+                  >
+                    <Text style={styles.accountModalButtonSecondaryText}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -4367,13 +6571,18 @@ export default function App() {
   };
 
   const saveReviewEdits = (index) => {
-    // Update cover letter with edited data
-    setReviewCoverLetters({
-      ...reviewCoverLetters,
-      [index]: {
-        ...reviewCoverLetters[index],
-        ...editedCoverLetterData
-      }
+    // Update cover letter with edited data - use functional setState
+    setReviewCoverLetters(prev => {
+      const updated = {
+        ...prev,
+        [index]: {
+          ...prev[index],
+          ...editedCoverLetterData
+        }
+      };
+      // Save to backend after state update
+      saveReviewCoverLettersToBackend(updated);
+      return updated;
     });
     
     // Exit edit mode
@@ -4399,89 +6608,260 @@ export default function App() {
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
         
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {/* Header with Credit Badge and User Info */}
-          <View style={styles.reviewHeaderEnhanced}>
-            <TouchableOpacity onPress={() => setScreen('dashboard')} style={styles.backButton}>
-              <Text style={styles.backIcon}>← Back</Text>
-            </TouchableOpacity>
-            <View style={styles.reviewHeaderCenter}>
-              <Text style={styles.reviewTitle}>📋 Review Applications</Text>
-            </View>
-            <View style={styles.reviewHeaderRight}>
+          {/* Header with Gradient Design */}
+          <View style={styles.reviewHeaderCard}>
+            <LinearGradient
+              colors={['#667eea', '#764ba2']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.reviewHeaderGradient}
+            >
               <TouchableOpacity 
-                style={styles.compactCreditBadge}
-                onPress={() => setScreen('usage')}
-                activeOpacity={0.7}
+                onPress={() => setScreen('dashboard')} 
+                style={styles.reviewBackButton}
               >
-                <Text style={styles.creditIcon}>💎</Text>
-                <Text style={styles.creditNumber}>{creditBalance}</Text>
+                <Text style={styles.reviewBackIcon}>←</Text>
+                <Text style={styles.reviewBackText}>Back</Text>
               </TouchableOpacity>
-            </View>
+              
+              <View style={styles.reviewHeaderContent}>
+                <Text style={styles.reviewHeaderTitle}>Review Applications</Text>
+                <Text style={styles.reviewHeaderSubtitle}>Review and send your cover letters</Text>
+              </View>
+              
+              <TouchableOpacity 
+                style={styles.reviewCreditBadge}
+                onPress={() => setScreen('usage')}
+                activeOpacity={0.8}
+              >
+                <View style={styles.reviewCreditIconBox}>
+                  <View style={styles.reviewDiamondIcon}>
+                    <View style={styles.reviewDiamondTop} />
+                    <View style={styles.reviewDiamondBottom} />
+                  </View>
+                </View>
+                <Text style={styles.reviewCreditText}>{creditBalance}</Text>
+              </TouchableOpacity>
+            </LinearGradient>
           </View>
 
-          {/* Tab Navigation */}
-          <View style={styles.reviewTabsContainer}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.reviewTabsScroll}>
-              {recipients.map((recipient, index) => (
-                <TouchableOpacity
-                  key={index}
-                  style={[styles.reviewTab, currentReviewTab === index && styles.reviewTabActive]}
-                  onPress={() => setCurrentReviewTab(index)}
-                >
-                  <Text style={[styles.reviewTabText, currentReviewTab === index && styles.reviewTabTextActive]}>
-                    {index + 1}. {recipient.email}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+          {/* Recipients Horizontal Scrollable Cards */}
+          <View style={styles.recipientsCardsSection}>
+            <Text style={styles.recipientsCardsSectionLabel}>Recipients ({recipients.length})</Text>
+            <ScrollView 
+              horizontal 
+              showsHorizontalScrollIndicator={false} 
+              style={styles.recipientsCardsScroll}
+              contentContainerStyle={styles.recipientsCardsContent}
+              snapToInterval={280}
+              decelerationRate="fast"
+            >
+              {recipients.map((recipient, index) => {
+                const flipAnim = getRecipientFlipAnim(index);
+                const isActive = currentReviewTab === index;
+                const companyName = recipient.website 
+                  ? recipient.website.replace(/^https?:\/\/(www\.)?/, '').split('/')[0]
+                  : recipient.email.split('@')[1] || 'Company';
+                
+                const frontRotate = flipAnim.interpolate({
+                  inputRange: [0, 180],
+                  outputRange: ['0deg', '180deg']
+                });
+                
+                const backRotate = flipAnim.interpolate({
+                  inputRange: [0, 180],
+                  outputRange: ['180deg', '360deg']
+                });
+                
+                // Color palettes for variety - all light shades with dark text
+                const colorSets = [
+                  { front: ['#fffbeb', '#fef3c7', '#fde68a'], back: ['#fde68a', '#fef3c7', '#fffbeb'] }, // Yellow
+                  { front: ['#f0f9ff', '#e0f2fe', '#bae6fd'], back: ['#bae6fd', '#e0f2fe', '#f0f9ff'] }, // Blue
+                  { front: ['#fdf2f8', '#fce7f3', '#fbcfe8'], back: ['#fbcfe8', '#fce7f3', '#fdf2f8'] }, // Pink
+                  { front: ['#f0fdf4', '#dcfce7', '#bbf7d0'], back: ['#bbf7d0', '#dcfce7', '#f0fdf4'] }, // Green
+                  { front: ['#faf5ff', '#f3e8ff', '#e9d5ff'], back: ['#e9d5ff', '#f3e8ff', '#faf5ff'] }, // Purple
+                ];
+                const colorSet = colorSets[index % colorSets.length];
+                
+                // Calculate narrative text length for dynamic sizing
+                const narrativeText = `You are applying for the position of ${recipient.position || 'Not specified'} at ${companyName.toUpperCase()} with the email address ${recipient.email}`;
+                const narrativeFontSize = narrativeText.length > 120 ? 11 : narrativeText.length > 100 ? 12 : 13;
+                
+                return (
+                  <View key={index} style={styles.recipientCardWrapper}>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        if (isActive) {
+                          // If already selected, flip the card
+                          handleRecipientFlip(index);
+                        } else {
+                          // If not selected, select it first
+                          setCurrentReviewTab(index);
+                        }
+                      }}
+                      style={styles.recipientCardTouchable}
+                    >
+                      {/* Front Side - iOS Widget Style */}
+                      <Animated.View style={[
+                        styles.recipientCardAnimated,
+                        {
+                          backfaceVisibility: 'hidden',
+                          transform: [{ rotateY: frontRotate }]
+                        }
+                      ]}>
+                        <LinearGradient
+                          colors={colorSet.front}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={styles.recipientCardGradient}
+                        >
+                          {/* Number Badge */}
+                          <View style={styles.recipientCardBadge}>
+                            <Text style={styles.recipientCardBadgeText}>
+                              {index + 1}
+                            </Text>
+                          </View>
+                          
+                          {/* Content */}
+                          <View style={styles.recipientCardContent}>
+                            <View style={styles.recipientCardSection}>
+                              <Text style={styles.recipientCardLabel}>Position:</Text>
+                              <Text style={styles.recipientCardPosition} numberOfLines={1} ellipsizeMode="tail">
+                                {recipient.position || 'No position specified'}
+                              </Text>
+                            </View>
+                            
+                            <View style={styles.recipientCardSection}>
+                              <Text style={styles.recipientCardLabel}>Employer:</Text>
+                              <Text style={styles.recipientCardCompany} numberOfLines={1} ellipsizeMode="tail">
+                                {companyName.toUpperCase()}
+                              </Text>
+                            </View>
+                            
+                            <View style={styles.recipientCardSection}>
+                              <Text style={styles.recipientCardLabel}>Email:</Text>
+                              <Text style={styles.recipientCardEmail} numberOfLines={1} ellipsizeMode="tail">
+                                {recipient.email}
+                              </Text>
+                            </View>
+                          </View>
+                          
+                          {/* Footer Hint */}
+                          <Text style={styles.recipientCardFlipHint}>Tap to see details</Text>
+                        </LinearGradient>
+                        
+                        {/* Bottom Selection Indicator */}
+                        {isActive && (
+                          <View style={styles.recipientCardBottomIndicator} />
+                        )}
+                      </Animated.View>
+                      
+                      {/* Back Side - iOS Widget Style */}
+                      <Animated.View style={[
+                        styles.recipientCardAnimated,
+                        styles.recipientCardBackPosition,
+                        {
+                          backfaceVisibility: 'hidden',
+                          transform: [{ rotateY: backRotate }]
+                        }
+                      ]}>
+                        <LinearGradient
+                          colors={colorSet.back}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={styles.recipientCardGradient}
+                        >
+                          {/* Number Badge */}
+                          <View style={styles.recipientCardBadge}>
+                            <Text style={styles.recipientCardBadgeText}>
+                              {index + 1}
+                            </Text>
+                          </View>
+                          
+                          {/* Details Content - Narrative Style */}
+                          <View style={styles.recipientCardContent}>
+                            <Text style={[
+                              styles.recipientCardNarrative,
+                              { fontSize: narrativeFontSize, lineHeight: narrativeFontSize * 1.6 }
+                            ]}>
+                              You are applying for the position of{' '}
+                              <Text style={styles.recipientCardNarrativeBold}>
+                                {recipient.position || 'Not specified'}
+                              </Text>
+                              {' '}at{' '}
+                              <Text style={styles.recipientCardNarrativeBold}>
+                                {companyName.toUpperCase()}
+                              </Text>
+                              {' '}with the email address{' '}
+                              <Text style={styles.recipientCardNarrativeBold}>
+                                {recipient.email}
+                              </Text>
+                            </Text>
+                          </View>
+                          
+                          {/* Footer Hint */}
+                          <Text style={styles.recipientCardFlipHint}>Tap to return</Text>
+                        </LinearGradient>
+                        
+                        {/* Bottom Selection Indicator */}
+                        {isActive && (
+                          <View style={styles.recipientCardBottomIndicator} />
+                        )}
+                      </Animated.View>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
             </ScrollView>
           </View>
-
-          {/* Recipient Information Card */}
-          {recipients[currentReviewTab] && (
-            <View style={styles.reviewDetailCard}>
-              <Text style={styles.reviewDetailTitle}>Recipient #{currentReviewTab + 1}</Text>
-              <View style={styles.reviewDetailRow}>
-                <Text style={styles.reviewDetailLabel}>📧 Email:</Text>
-                <Text style={styles.reviewDetailValue}>{recipients[currentReviewTab].email}</Text>
-              </View>
-              <View style={styles.reviewDetailRow}>
-                <Text style={styles.reviewDetailLabel}>🌐 Website:</Text>
-                <Text style={styles.reviewDetailValue}>{recipients[currentReviewTab].website}</Text>
-              </View>
-              <View style={[styles.reviewDetailRow, { borderBottomWidth: 0 }]}>
-                <Text style={styles.reviewDetailLabel}>💼 Position:</Text>
-                <Text style={styles.reviewDetailValue}>{recipients[currentReviewTab].position}</Text>
-              </View>
-            </View>
-          )}
 
           {/* Cover Letter Generation Section */}
           {reviewCoverLetters[currentReviewTab] ? (
             <View style={styles.reviewCoverLetterCard}>
-              {/* Header with Edit Button */}
-              <View style={styles.sectionHeader}>
-                <Text style={styles.coverLetterTitle}>✓ Recipient #{currentReviewTab + 1}</Text>
+              <LinearGradient
+                colors={['#f0f9ff', '#e0f2fe', '#dbeafe']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.reviewCoverLetterGradient}
+              >
+                {/* Header with Edit Button */}
+                <View style={styles.sectionHeader}>
+                <View style={styles.reviewRecipientHeaderLeft}>
+                  <Text style={styles.reviewRecipientNumberBadge}>#{currentReviewTab + 1}</Text>
+                  <Text style={styles.reviewCoverLetterTitle}>Recipient Details</Text>
+                </View>
                 {editingReviewIndex !== currentReviewTab && (
                   <TouchableOpacity 
                     style={styles.editButton}
                     onPress={() => toggleReviewEditMode(currentReviewTab)}
                   >
-                    <Text style={styles.editButtonText}>✏️ Edit Details</Text>
+                    <LinearGradient
+                      colors={['#3b82f6', '#2563eb']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.editButtonGradient}
+                    >
+                      <Text style={styles.editButtonText}>Edit</Text>
+                    </LinearGradient>
                   </TouchableOpacity>
                 )}
               </View>
 
               {/* Edit/View Mode Combined */}
               {editingReviewIndex === currentReviewTab ? (
-                <View style={styles.editModeContainer}>
+                <View style={styles.viewModeContainer}>
                   {/* To (Hiring Manager) - Label Only */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>To (Hiring Manager)</Text>
+                    <Text style={styles.fieldDisplayLabel}>To (Hiring Manager)</Text>
+                    <View style={styles.fieldDisplay}>
+                      <Text style={styles.fieldDisplayValue}>The Hiring Manager</Text>
+                    </View>
                   </View>
 
                   {/* Employer Field */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Employer</Text>
+                    <Text style={styles.fieldDisplayLabel}>Employer</Text>
                     <TextInput
                       style={styles.editFieldInput}
                       value={editedCoverLetterData.companyName}
@@ -4492,7 +6872,7 @@ export default function App() {
 
                   {/* Email Field - Read Only */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Email</Text>
+                    <Text style={styles.fieldDisplayLabel}>Email</Text>
                     <TextInput
                       style={[styles.editFieldInput, styles.readOnlyField]}
                       value={editedCoverLetterData.email}
@@ -4502,7 +6882,7 @@ export default function App() {
 
                   {/* Address Dropdown */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Address</Text>
+                    <Text style={styles.fieldDisplayLabel}>Address</Text>
                     {reviewCoverLetters[currentReviewTab].locations && reviewCoverLetters[currentReviewTab].locations.length > 0 ? (
                       <View>
                         <TouchableOpacity 
@@ -4559,18 +6939,34 @@ export default function App() {
 
                   {/* Date Field */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Date</Text>
-                    <TextInput
-                      style={styles.editFieldInput}
-                      value={editedCoverLetterData.date}
-                      onChangeText={(text) => setEditedCoverLetterData({ ...editedCoverLetterData, date: text })}
-                      placeholder="Date"
-                    />
+                    <Text style={styles.fieldDisplayLabel}>Date</Text>
+                    <TouchableOpacity 
+                      style={styles.dropdownButton}
+                      onPress={() => {
+                        // Parse the current date string to Date object, or use current date
+                        if (editedCoverLetterData.date) {
+                          try {
+                            const parsedDate = new Date(editedCoverLetterData.date);
+                            setSelectedReviewDate(isNaN(parsedDate.getTime()) ? new Date() : parsedDate);
+                          } catch (e) {
+                            setSelectedReviewDate(new Date());
+                          }
+                        } else {
+                          setSelectedReviewDate(new Date());
+                        }
+                        setShowReviewDatePicker(true);
+                      }}
+                    >
+                      <Text style={styles.dropdownButtonText}>
+                        {editedCoverLetterData.date || 'Select Date'}
+                      </Text>
+                      <Text style={styles.dropdownArrow}>▼</Text>
+                    </TouchableOpacity>
                   </View>
 
                   {/* Position Field */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Position</Text>
+                    <Text style={styles.fieldDisplayLabel}>Position</Text>
                     <TextInput
                       style={styles.editFieldInput}
                       value={editedCoverLetterData.position}
@@ -4581,7 +6977,7 @@ export default function App() {
 
                   {/* Subject Field */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Subject</Text>
+                    <Text style={styles.fieldDisplayLabel}>Subject</Text>
                     <TextInput
                       style={styles.editFieldInput}
                       value={editedCoverLetterData.subject}
@@ -4592,7 +6988,7 @@ export default function App() {
 
                   {/* Rich Text Editor for Cover Letter */}
                   <View style={styles.editFieldSection}>
-                    <Text style={styles.editFieldLabel}>Cover Letter - Rich Text Editor</Text>
+                    <Text style={styles.fieldDisplayLabel}>Cover Letter - Rich Text Editor</Text>
                     
                     {/* Quill.js Rich Text Editor - Full Width */}
                     <RichTextEditorWebView 
@@ -4610,16 +7006,30 @@ export default function App() {
                   {/* Save and Cancel Buttons */}
                   <View style={styles.editButtonGroup}>
                     <TouchableOpacity
-                      style={[styles.reviewActionBtn, styles.saveBtnStyle]}
+                      style={styles.editActionBtn}
                       onPress={() => saveReviewEdits(currentReviewTab)}
                     >
-                      <Text style={styles.reviewActionBtnText}>💾 Save</Text>
+                      <LinearGradient
+                        colors={['#10b981', '#059669']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.editActionGradient}
+                      >
+                        <Text style={styles.editActionBtnText}>Save</Text>
+                      </LinearGradient>
                     </TouchableOpacity>
                     <TouchableOpacity
-                      style={[styles.reviewActionBtn, styles.cancelBtnStyle]}
+                      style={styles.editActionBtn}
                       onPress={() => toggleReviewEditMode(currentReviewTab)}
                     >
-                      <Text style={styles.reviewActionBtnText}>❌ Cancel</Text>
+                      <LinearGradient
+                        colors={['#64748b', '#475569']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.editActionGradient}
+                      >
+                        <Text style={styles.editActionBtnText}>Cancel</Text>
+                      </LinearGradient>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -4642,12 +7052,12 @@ export default function App() {
                       </View>
                     </View>
 
-                    <View style={styles.fieldDisplayRow}>
-                      <View style={[styles.fieldDisplay, { flex: 1 }]}>
+                    <View style={styles.fieldDisplayRowDouble}>
+                      <View style={styles.fieldDisplayHalf}>
                         <Text style={styles.fieldDisplayLabel}>Position</Text>
                         <Text style={styles.fieldDisplayValue}>{recipients[currentReviewTab]?.position}</Text>
                       </View>
-                      <View style={[styles.fieldDisplay, { flex: 1, marginLeft: 12 }]}>
+                      <View style={styles.fieldDisplayHalf}>
                         <Text style={styles.fieldDisplayLabel}>Date</Text>
                         <Text style={styles.fieldDisplayValue}>{reviewCoverLetters[currentReviewTab].date}</Text>
                       </View>
@@ -4678,16 +7088,32 @@ export default function App() {
                     </View>
 
                     {/* Action Buttons */}
-                    <View style={styles.reviewActionButtons}>
+                    <View style={styles.reviewModernActionButtons}>
+                      {/* Regenerate Button */}
                       <TouchableOpacity
-                        style={[styles.reviewActionBtn, styles.regenerateBtn]}
+                        style={styles.reviewActionButtonFull}
                         onPress={() => generateCoverLetterForReview(currentReviewTab)}
                         disabled={reviewGeneratingIndex === currentReviewTab || reviewLoading || reviewGeneratingAll || reviewGeneratingAndSendingAll}
+                        activeOpacity={0.8}
                       >
-                        <Text style={styles.reviewActionBtnText}>🔄 Regenerate</Text>
+                        <LinearGradient
+                          colors={['#fb923c', '#f97316']}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 0, y: 1 }}
+                          style={styles.reviewActionButtonGradient}
+                        >
+                          <View style={styles.reviewActionButtonContent}>
+                            <View style={styles.reviewActionIconCircle}>
+                              <Text style={styles.reviewActionButtonIcon}>⟳</Text>
+                            </View>
+                            <Text style={styles.reviewActionButtonText} numberOfLines={1}>Regenerate</Text>
+                          </View>
+                        </LinearGradient>
                       </TouchableOpacity>
+                      
+                      {/* Download Button */}
                       <TouchableOpacity
-                        style={[styles.reviewActionBtn, styles.downloadBtn]}
+                        style={styles.reviewActionButtonFull}
                         onPress={() => {
                           if (creditBalance <= 0) {
                             Alert.alert(
@@ -4695,7 +7121,7 @@ export default function App() {
                               'Remaining credits are 0. Please recharge to continue downloading PDFs.',
                               [
                                 { text: 'Cancel', style: 'cancel' },
-                                { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+                                { text: 'Recharge Now', onPress: () => setScreen('packages') }
                               ]
                             );
                             return;
@@ -4703,11 +7129,26 @@ export default function App() {
                           downloadCoverLetterPDFFromReview(currentReviewTab);
                         }}
                         disabled={reviewDownloading}
+                        activeOpacity={0.8}
                       >
-                        <Text style={styles.reviewActionBtnText}>📥 Download</Text>
+                        <LinearGradient
+                          colors={['#06b6d4', '#0891b2']}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 0, y: 1 }}
+                          style={styles.reviewActionButtonGradient}
+                        >
+                          <View style={styles.reviewActionButtonContent}>
+                            <View style={styles.reviewActionIconCircle}>
+                              <Text style={styles.reviewActionButtonIcon}>↓</Text>
+                            </View>
+                            <Text style={styles.reviewActionButtonText} numberOfLines={1}>Download</Text>
+                          </View>
+                        </LinearGradient>
                       </TouchableOpacity>
+                      
+                      {/* Send Button */}
                       <TouchableOpacity
-                        style={[styles.reviewActionBtn, styles.sendBtn, reviewCoverLetters[currentReviewTab].sent && styles.sentBtn]}
+                        style={styles.reviewActionButtonFull}
                         onPress={() => {
                           if (creditBalance <= 0) {
                             Alert.alert(
@@ -4715,7 +7156,7 @@ export default function App() {
                               'Remaining credits are 0. Please recharge to continue sending applications.',
                               [
                                 { text: 'Cancel', style: 'cancel' },
-                                { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+                                { text: 'Recharge Now', onPress: () => setScreen('packages') }
                               ]
                             );
                             return;
@@ -4723,23 +7164,48 @@ export default function App() {
                           sendApplicationFromReview(currentReviewTab);
                         }}
                         disabled={reviewLoading || reviewSendingAll || reviewGeneratingAndSendingAll || reviewCoverLetters[currentReviewTab].sent}
+                        activeOpacity={0.8}
                       >
-                        <Text style={styles.reviewActionBtnText}>
-                          {reviewCoverLetters[currentReviewTab].sent ? '✓ Sent' : '📧 Send'}
-                        </Text>
+                        {!reviewCoverLetters[currentReviewTab].sent ? (
+                          <LinearGradient
+                            colors={['#a78bfa', '#8b5cf6']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 0, y: 1 }}
+                            style={styles.reviewActionButtonGradient}
+                          >
+                            <View style={styles.reviewActionButtonContent}>
+                              <View style={styles.reviewActionIconCircle}>
+                                <Text style={styles.reviewActionButtonIcon}>✉</Text>
+                              </View>
+                              <Text style={styles.reviewActionButtonText} numberOfLines={1}>Send</Text>
+                            </View>
+                          </LinearGradient>
+                        ) : (
+                          <View style={styles.reviewActionButtonSentGradient}>
+                            <View style={styles.reviewActionButtonContent}>
+                              <View style={styles.reviewActionIconCircle}>
+                                <Text style={styles.reviewActionButtonIcon}>✓</Text>
+                              </View>
+                              <Text style={styles.reviewActionButtonText} numberOfLines={1}>Sent</Text>
+                            </View>
+                          </View>
+                        )}
                       </TouchableOpacity>
                     </View>
                   </View>
                 </>
               )}
+              </LinearGradient>
             </View>
           ) : (
-            <View style={styles.reviewEmptyCard}>
-              <Text style={styles.emptyIcon}>📝</Text>
-              <Text style={styles.emptyTitle}>No Cover Letter Generated</Text>
-              <Text style={styles.emptySubtitle}>Generate a cover letter to view and send</Text>
+            <View style={styles.reviewEmptyCardModern}>
+              <View style={styles.reviewEmptyIconBox}>
+                <Text style={styles.reviewEmptyIconText}>CL</Text>
+              </View>
+              <Text style={styles.reviewEmptyTitle}>No Cover Letter Generated</Text>
+              <Text style={styles.reviewEmptySubtitle}>Generate a professional cover letter to review and send to this recipient</Text>
               <TouchableOpacity
-                style={styles.generateBtn}
+                style={styles.reviewEmptyActionBtn}
                 onPress={() => {
                   if (creditBalance <= 0) {
                     Alert.alert(
@@ -4747,7 +7213,7 @@ export default function App() {
                       'Remaining credits are 0. Please recharge to continue generating cover letters.',
                       [
                         { text: 'Cancel', style: 'cancel' },
-                        { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+                        { text: 'Recharge Now', onPress: () => setScreen('packages') }
                       ]
                     );
                     return;
@@ -4755,64 +7221,379 @@ export default function App() {
                   generateCoverLetterForReview(currentReviewTab);
                 }}
                 disabled={reviewGeneratingIndex === currentReviewTab || reviewGeneratingAll || reviewGeneratingAndSendingAll}
+                activeOpacity={0.8}
               >
-                <Text style={styles.generateBtnText}>✨ Generate Cover Letter</Text>
+                <LinearGradient
+                  colors={['#667eea', '#764ba2']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.reviewEmptyActionGradient}
+                >
+                  <Text style={styles.reviewEmptyActionText}>Generate Cover Letter</Text>
+                </LinearGradient>
               </TouchableOpacity>
             </View>
           )}
 
-          {/* Generate All Button */}
-          <TouchableOpacity
-            style={styles.generateAllBtn}
-            onPress={generateAllCoverLettersForReview}
-            disabled={reviewGeneratingAll}
-          >
-            <Text style={styles.generateAllBtnText}>🚀 Generate All Cover Letters</Text>
-          </TouchableOpacity>
+          {/* Bulk Actions Card - Modern Design */}
+          <View style={styles.reviewBulkActionsCard}>
+            <LinearGradient
+              colors={['#1e293b', '#334155', '#475569']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.reviewBulkActionsGradient}
+            >
+              {/* Header Section */}
+              <View style={styles.reviewBulkActionsHeaderSection}>
+                <View>
+                  <Text style={styles.reviewBulkActionsTitle}>Batch Operations</Text>
+                  <Text style={styles.reviewBulkActionsSubtitle}>Manage all {recipients.length} applications at once</Text>
+                </View>
+                <View style={styles.reviewBulkActionsStatusBadge}>
+                  <View style={styles.reviewBulkActionsStatusDot} />
+                  <Text style={styles.reviewBulkActionsStatusText}>Ready</Text>
+                </View>
+              </View>
 
-          {/* Send All Button */}
-          <TouchableOpacity
-            style={[styles.generateAllBtn, { backgroundColor: allApplicationsSent ? '#9ca3af' : '#3b82f6', marginTop: 8 }]}
-            onPress={sendAllApplicationsFromReview}
-            disabled={reviewSendingAll || allApplicationsSent}
-          >
-            <Text style={styles.generateAllBtnText}>{allApplicationsSent ? '✓ All Sent' : '📧 Send to All'}</Text>
-          </TouchableOpacity>
+              {/* Action Grid */}
+              <View style={styles.reviewBulkActionsGrid}>
+                {/* Generate All Button */}
+                <TouchableOpacity
+                  onPress={generateAllCoverLettersForReview}
+                  disabled={false}
+                  activeOpacity={0.85}
+                  style={styles.reviewBulkActionCard}
+                >
+                  <LinearGradient
+                    colors={['#10b981', '#059669', '#047857']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.reviewBulkActionCardGradient}
+                  >
+                    <View style={styles.reviewBulkActionIconContainer}>
+                      <View style={styles.reviewBulkActionIconOuter}>
+                        <Text style={styles.reviewBulkActionIconSymbol}>↻</Text>
+                      </View>
+                    </View>
+                    <View style={styles.reviewBulkActionTextContainer}>
+                      <Text style={styles.reviewBulkActionTitle}>Generate All</Text>
+                      <Text style={styles.reviewBulkActionDesc}>Create cover letters</Text>
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
 
-          {/* Generate and Send All Button */}
-          <TouchableOpacity
-            style={[styles.generateAllBtn, { backgroundColor: allApplicationsSent ? '#9ca3af' : '#10b981', marginTop: 8 }]}
-            onPress={generateAndSendAllApplications}
-            disabled={reviewGeneratingAndSendingAll || allApplicationsSent}
-          >
-            <Text style={styles.generateAllBtnText}>{allApplicationsSent ? '✓ All Generated & Sent' : '🚀📧 Generate & Send to All'}</Text>
-          </TouchableOpacity>
+                {/* Send All Button */}
+                <TouchableOpacity
+                  onPress={sendAllApplicationsFromReview}
+                  disabled={false}
+                  activeOpacity={0.85}
+                  style={styles.reviewBulkActionCard}
+                >
+                  {allApplicationsSent ? (
+                    <View style={styles.reviewBulkActionCardCompleted}>
+                      <View style={styles.reviewBulkActionIconContainer}>
+                        <View style={styles.reviewBulkActionIconOuter}>
+                          <Text style={styles.reviewBulkActionIconSymbol}>✓</Text>
+                        </View>
+                      </View>
+                      <View style={styles.reviewBulkActionTextContainer}>
+                        <Text style={styles.reviewBulkActionTitle}>All Sent</Text>
+                        <Text style={styles.reviewBulkActionDesc}>Task completed</Text>
+                      </View>
+                    </View>
+                  ) : (
+                    <LinearGradient
+                      colors={['#3b82f6', '#2563eb', '#1d4ed8']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.reviewBulkActionCardGradient}
+                    >
+                      <View style={styles.reviewBulkActionIconContainer}>
+                        <View style={styles.reviewBulkActionIconOuter}>
+                          <Text style={styles.reviewBulkActionIconSymbol}>↑</Text>
+                        </View>
+                      </View>
+                      <View style={styles.reviewBulkActionTextContainer}>
+                        <Text style={styles.reviewBulkActionTitle}>Send All</Text>
+                        <Text style={styles.reviewBulkActionDesc}>Email applications</Text>
+                      </View>
+                    </LinearGradient>
+                  )}
+                </TouchableOpacity>
+
+                {/* Generate & Send All Button */}
+                <TouchableOpacity
+                  onPress={generateAndSendAllApplications}
+                  disabled={false}
+                  activeOpacity={0.85}
+                  style={styles.reviewBulkActionCard}
+                >
+                  {allApplicationsSent ? (
+                    <View style={styles.reviewBulkActionCardCompleted}>
+                      <View style={styles.reviewBulkActionIconContainer}>
+                        <View style={styles.reviewBulkActionIconOuter}>
+                          <Text style={styles.reviewBulkActionIconSymbol}>✓</Text>
+                        </View>
+                      </View>
+                      <View style={styles.reviewBulkActionTextContainer}>
+                        <Text style={styles.reviewBulkActionTitle}>Completed</Text>
+                        <Text style={styles.reviewBulkActionDesc}>All processed</Text>
+                      </View>
+                    </View>
+                  ) : (
+                    <LinearGradient
+                      colors={['#8b5cf6', '#7c3aed', '#6d28d9']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.reviewBulkActionCardGradient}
+                    >
+                      <View style={styles.reviewBulkActionIconContainer}>
+                        <View style={styles.reviewBulkActionIconOuter}>
+                          <Text style={styles.reviewBulkActionIconSymbol}>▶</Text>
+                        </View>
+                      </View>
+                      <View style={styles.reviewBulkActionTextContainer}>
+                        <Text style={styles.reviewBulkActionTitle}>Auto Process</Text>
+                        <Text style={styles.reviewBulkActionDesc}>Generate & send</Text>
+                      </View>
+                    </LinearGradient>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </LinearGradient>
+          </View>
 
           <View style={{ height: 30 }} />
         </ScrollView>
         
-        {/* Full Screen Loading Overlay */}
-        {isAnyLoadingActive && (
-          <View style={styles.loadingOverlay}>
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0d9488" />
-              <Text style={styles.loadingText}>
-                {reviewGeneratingAll ? 'Generating all cover letters...' :
-                 reviewSendingAll ? 'Sending all applications...' :
-                 reviewGeneratingAndSendingAll ? 'Generating & sending all...' :
-                 reviewDownloading ? 'Downloading PDF...' :
-                 reviewLoading ? 'Sending application...' :
-                 'Processing...'}
-              </Text>
-              <TouchableOpacity 
-                style={styles.cancelButton}
-                onPress={cancelOperation}
+        {/* Full Screen Loading Overlay - Modern Design */}
+        <Modal
+          visible={isAnyLoadingActive}
+          transparent={true}
+          animationType="fade"
+        >
+          <View style={styles.loadingModalOverlay}>
+            <View style={styles.loadingModalContainer}>
+              <LinearGradient
+                colors={['#1e293b', '#334155', '#475569']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.loadingModalGradient}
               >
-                <Text style={styles.cancelButtonText}>✕ Cancel</Text>
-              </TouchableOpacity>
+                {/* Animated Loader */}
+                <View style={styles.loadingAnimationContainer}>
+                  <View style={styles.loadingSpinnerOuter}>
+                    <ActivityIndicator size="large" color="#ffffff" />
+                  </View>
+                  <View style={styles.loadingGlowEffect} />
+                </View>
+                
+                {/* Status Text */}
+                <View style={styles.loadingTextContainer}>
+                  <Text style={styles.loadingTitleText}>
+                    {reviewGeneratingAll ? 'Generating Cover Letters' :
+                     reviewSendingAll ? 'Sending Applications' :
+                     reviewGeneratingAndSendingAll ? 'Auto Processing' :
+                     reviewDownloading ? 'Preparing Download' :
+                     reviewLoading ? 'Sending Application' :
+                     'Processing Request'}
+                  </Text>
+                  <Text style={styles.loadingSubtitleText}>
+                    {progressiveLoadingMessage ? progressiveLoadingMessage :
+                     reviewGeneratingAll ? 'Creating professional cover letters for all recipients' :
+                     reviewSendingAll ? 'Delivering applications to all recipients' :
+                     reviewGeneratingAndSendingAll ? 'Generating and sending to all recipients' :
+                     reviewDownloading ? 'Generating your PDF document' :
+                     reviewLoading ? 'Delivering your application via email' :
+                     'Please wait while we process your request'}
+                  </Text>
+                </View>
+                
+                {/* Progress Bar */}
+                {progressiveLoadingMessage && reviewGeneratingIndex !== null && !reviewGeneratingAll && (
+                  <View style={styles.loadingProgressSection}>
+                    <View style={styles.loadingProgressBarContainer}>
+                      <View style={styles.loadingProgressBarBackground}>
+                        <Animated.View style={[
+                          styles.loadingProgressBarFill,
+                          {
+                            width: progressAnimValue.interpolate({
+                              inputRange: [0, 100],
+                              outputRange: ['0%', '100%']
+                            })
+                          }
+                        ]}>
+                          <LinearGradient
+                            colors={['#10b981', '#059669', '#047857']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.loadingProgressGradient}
+                          />
+                        </Animated.View>
+                      </View>
+                    </View>
+                    <View style={styles.loadingProgressTextContainer}>
+                      <Text style={styles.loadingProgressPercentage}>{progressiveLoadingProgress}%</Text>
+                      <Text style={styles.loadingProgressLabel}>Complete</Text>
+                    </View>
+                  </View>
+                )}
+                
+                {/* Cancel Button */}
+                <TouchableOpacity 
+                  style={styles.loadingCancelButton}
+                  onPress={cancelOperation}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.loadingCancelButtonInner}>
+                    <Text style={styles.loadingCancelIcon}>✕</Text>
+                    <Text style={styles.loadingCancelText}>Cancel Operation</Text>
+                  </View>
+                </TouchableOpacity>
+              </LinearGradient>
             </View>
           </View>
-        )}
+        </Modal>
+
+        {/* Payment WebView Modal */}
+        <Modal
+          visible={showPaymentModal}
+          animationType="slide"
+          onRequestClose={() => {
+            setShowPaymentModal(false);
+            setPaymentUrl('');
+          }}
+        >
+          <SafeAreaView style={{flex: 1, backgroundColor: '#fff'}}>
+            <View style={{flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb'}}>
+              <TouchableOpacity 
+                onPress={() => {
+                  setShowPaymentModal(false);
+                  setPaymentUrl('');
+                }}
+                style={{padding: 8}}
+              >
+                <Text style={{fontSize: 16, color: '#3b82f6'}}>✕ Close</Text>
+              </TouchableOpacity>
+              <Text style={{flex: 1, textAlign: 'center', fontSize: 16, fontWeight: '600'}}>Complete Payment</Text>
+              <View style={{width: 50}} />
+            </View>
+            <WebView
+              source={{ uri: paymentUrl }}
+              style={{flex: 1}}
+              onNavigationStateChange={(navState) => {
+                // Check if payment was successful or failed
+                if (navState.url.includes('/payment-success.html')) {
+                  setTimeout(() => {
+                    setShowPaymentModal(false);
+                    setPaymentUrl('');
+                    // Reload credits
+                    fetch(`${API_BASE}/user/credits`, {
+                      method: 'GET',
+                      headers: {
+                        'Authorization': `Bearer ${user.token}`,
+                        'Content-Type': 'application/json',
+                      }
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                      if (data.success) {
+                        setCreditBalance(data.balance || 0);
+                        Alert.alert('Success', 'Payment completed! Your credits have been added.');
+                      }
+                    })
+                    .catch(err => console.error('Failed to reload credits:', err));
+                  }, 1000);
+                } else if (navState.url.includes('/payment-failure.html')) {
+                  setTimeout(() => {
+                    setShowPaymentModal(false);
+                    setPaymentUrl('');
+                    Alert.alert('Payment Failed', 'Payment was not completed. Please try again.');
+                  }, 1000);
+                }
+              }}
+              javaScriptEnabled={true}
+              domStorageEnabled={true}
+              startInLoadingState={true}
+              scalesPageToFit={true}
+            />
+          </SafeAreaView>
+        </Modal>
+
+        {/* Review Date Picker Modal */}
+        <Modal
+          transparent={true}
+          visible={showReviewDatePicker}
+          animationType="slide"
+          onRequestClose={() => setShowReviewDatePicker(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setShowReviewDatePicker(false)}>
+            <View style={styles.modalOverlay}>
+              <TouchableWithoutFeedback>
+                <SafeAreaView style={styles.datePickerModalWrapper}>
+                  <View style={styles.datePickerModal}>
+                    {/* Header */}
+                    <View style={styles.datePickerHeader}>
+                      <View style={styles.datePickerHeaderLine} />
+                      <Text style={styles.datePickerTitle}>Cover Letter Date</Text>
+                    </View>
+                    
+                    {/* Date Picker Container */}
+                    <View style={styles.datePickerContainer}>
+                      <DateTimePicker
+                        value={selectedReviewDate}
+                        mode="date"
+                        display="spinner"
+                        onChange={(event, date) => {
+                          if (date) setSelectedReviewDate(date);
+                        }}
+                        textColor="#1f2937"
+                      />
+                    </View>
+                    
+                    {/* Buttons */}
+                    <View style={styles.modalButtons}>
+                      <TouchableOpacity
+                        style={styles.modalCancelButton}
+                        onPress={() => setShowReviewDatePicker(false)}
+                      >
+                        <Text style={styles.modalCancelText}>Cancel</Text>
+                      </TouchableOpacity>
+                      
+                      <TouchableOpacity
+                        style={styles.modalConfirmButton}
+                        onPress={() => {
+                          // Format the date to match the expected format
+                          const formattedDate = selectedReviewDate.toLocaleDateString('en-US', { 
+                            month: 'long', 
+                            day: 'numeric', 
+                            year: 'numeric' 
+                          });
+                          setEditedCoverLetterData({ 
+                            ...editedCoverLetterData, 
+                            date: formattedDate 
+                          });
+                          setShowReviewDatePicker(false);
+                        }}
+                      >
+                        <View style={styles.confirmButtonWrapper}>
+                          <LinearGradient
+                            colors={['#667eea', '#764ba2']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.modalConfirmGradient}
+                          >
+                            <Text style={styles.modalConfirmText}>Confirm</Text>
+                          </LinearGradient>
+                        </View>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </SafeAreaView>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -4822,8 +7603,904 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f8fafc',
   },
+  modernContainer: {
+    flex: 1,
+    backgroundColor: '#f5f7fa',
+  },
+  gradientContainer: {
+    flex: 1,
+  },
   scrollContent: {
     paddingBottom: 40,
+  },
+
+  // ===== MODERN HEADER CARD =====
+  modernHeaderCard: {
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 20,
+    borderRadius: 24,
+    padding: 20,
+    paddingTop: 24,
+    paddingBottom: 24,
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  headerLeft: {
+    flex: 1,
+  },
+  headerRightActions: {
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'center',
+  },
+  notificationButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  notificationIconWrapper: {
+    position: 'relative',
+  },
+  bellIconContainer: {
+    width: 20,
+    height: 20,
+    position: 'relative',
+    alignItems: 'center',
+  },
+  bellHandle: {
+    width: 4,
+    height: 2,
+    backgroundColor: '#ffffff',
+    borderRadius: 2,
+    marginBottom: 1,
+  },
+  bellBody: {
+    width: 16,
+    height: 14,
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
+    borderBottomLeftRadius: 2,
+    borderBottomRightRadius: 2,
+  },
+  bellOpening: {
+    width: 18,
+    height: 2,
+    backgroundColor: '#ffffff',
+    borderRadius: 1,
+    marginTop: 1,
+  },
+  notificationBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    backgroundColor: '#ef4444',
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#ef4444',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 3,
+    elevation: 4,
+  },
+  notificationBadgeText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  modernMenuButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modernMenuIcon: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  headerGreeting: {
+    marginBottom: 20,
+  },
+  modernGreeting: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontWeight: '500',
+    marginBottom: 4,
+    letterSpacing: 0.3,
+  },
+  modernUserName: {
+    fontSize: 26,
+    color: '#ffffff',
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  modernCreditBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 16,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  creditBadgeContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  creditBadgeIcon: {
+    fontSize: 28,
+  },
+  creditBadgeLabel: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontWeight: '500',
+    marginBottom: 2,
+  },
+  creditBadgeAmount: {
+    fontSize: 24,
+    color: '#ffffff',
+    fontWeight: '800',
+  },
+  creditBadgeArrow: {
+    fontSize: 24,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontWeight: '300',
+  },
+  
+  // ===== HEADER CREDITS BADGE =====
+  headerCreditsBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 16,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.35)',
+  },
+  creditsIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  creditsIcon: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  creditsInfo: {
+    flex: 1,
+  },
+  creditsLabel: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontWeight: '600',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  creditsValue: {
+    fontSize: 26,
+    color: '#ffffff',
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  creditsArrow: {
+    fontSize: 20,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontWeight: '600',
+  },
+
+  // ===== STATS GRID =====
+  statsGridContainer: {
+    paddingHorizontal: 0,
+    marginTop: -24,
+    marginBottom: 20,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 0,
+  },
+  statTileWrapper: {
+    width: '48.5%',
+    height: 130,
+    overflow: 'hidden',
+  },
+  statTile: {
+    width: '100%',
+    height: 130,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+    overflow: 'hidden',
+  },
+  statTileBackContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 130,
+  },
+  statTileBack: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 98,
+  },
+  statBackTitle: {
+    fontSize: 10,
+    color: '#6b7280',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  },
+  statBackDate: {
+    fontSize: 12,
+    color: '#667eea',
+    fontWeight: '600',
+    marginBottom: 3,
+  },
+  statBackCompany: {
+    fontSize: 13,
+    color: '#1a1a2e',
+    fontWeight: '700',
+    textAlign: 'center',
+    letterSpacing: 0.2,
+    lineHeight: 18,
+  },
+  statBackValue: {
+    fontSize: 28,
+    color: '#667eea',
+    fontWeight: '900',
+    marginBottom: 3,
+    lineHeight: 32,
+  },
+  statBackLabel: {
+    fontSize: 11,
+    color: '#6b7280',
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 15,
+  },
+  statBackEmpty: {
+    fontSize: 12,
+    color: '#9ca3af',
+    fontWeight: '500',
+    fontStyle: 'italic',
+    marginTop: 4,
+  },
+  statTileTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  statIconBox: {
+    width: 54,
+    height: 54,
+    borderRadius: 15,
+    backgroundColor: '#f5f7ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statIconText: {
+    fontSize: 27,
+    color: '#667eea',
+    fontWeight: '600',
+  },
+  statValue: {
+    fontSize: 24,
+    fontWeight: '900',
+    color: '#1a1a2e',
+    letterSpacing: 0.5,
+  },
+  statLabel: {
+    fontSize: 10,
+    color: '#6b7280',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    lineHeight: 14,
+  },
+
+  // ===== MODERN PAGE HEADER =====
+  modernPageHeader: {
+    paddingHorizontal: 20,
+    marginBottom: 24,
+  },
+  modernPageTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#1a1a2e',
+    letterSpacing: 0.3,
+    marginBottom: 6,
+  },
+  modernPageSubtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    fontWeight: '500',
+    letterSpacing: 0.2,
+    lineHeight: 20,
+  },
+
+  // ===== MODERN WELCOME SECTION =====
+  modernWelcomeSection: {
+    paddingHorizontal: 20,
+    marginBottom: 20,
+  },
+  modernWelcomeTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1a1a2e',
+    marginBottom: 6,
+  },
+  modernWelcomeSubtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    fontWeight: '400',
+  },
+
+  // ===== MODERN STATS GRID =====
+  modernStatsGrid: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    gap: 12,
+    marginBottom: 24,
+  },
+  modernStatCard: {
+    flex: 1,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 20,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+  },
+  statCardIconContainer: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: '#f5f7ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  statCardIcon: {
+    fontSize: 28,
+  },
+  statCardNumber: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#667eea',
+    marginBottom: 4,
+  },
+  statCardLabel: {
+    fontSize: 12,
+    color: '#6b7280',
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+
+  // ===== MODERN RECIPIENTS SECTION =====
+  modernRecipientsSection: {
+    paddingHorizontal: 16,
+    marginBottom: 24,
+  },
+  modernSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingBottom: 12,
+  },
+  modernSectionTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#1a1a2e',
+    marginBottom: 4,
+    letterSpacing: 0.5,
+  },
+  modernSectionSubtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    fontWeight: '500',
+    letterSpacing: 0.2,
+    lineHeight: 20,
+  },
+  modernCountBadge: {
+    flexDirection: 'row',
+    backgroundColor: '#667eea',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    alignItems: 'center',
+    gap: 6,
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  modernCountBadgeIcon: {
+    fontSize: 12,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  modernCountBadgeText: {
+    fontSize: 15,
+    color: '#ffffff',
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  
+  // Refresh button styles
+  refreshButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#10b981',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    gap: 8,
+    shadowColor: '#10b981',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  refreshButtonIcon: {
+    fontSize: 18,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  refreshButtonIconSpinning: {
+    opacity: 0.7,
+  },
+  refreshButtonText: {
+    fontSize: 14,
+    color: '#ffffff',
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  
+  // ===== MODERN RECIPIENT CARD =====
+  modernRecipientCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+  },
+  modernFormHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  recipientNumberBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#667eea',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  recipientNumberText: {
+    fontSize: 18,
+    color: '#ffffff',
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  recipientHeaderInfo: {
+    flex: 1,
+  },
+  recipientHeaderTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1a1a2e',
+  },
+  modernFormTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#1a1a2e',
+    letterSpacing: 0.3,
+    marginBottom: 2,
+  },
+  recipientSubtitle: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#6b7280',
+    letterSpacing: 0.2,
+  },
+  modernRemoveBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#fee2e2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+  },
+  modernRemoveIcon: {
+    fontSize: 22,
+    color: '#dc2626',
+    fontWeight: '700',
+  },
+  modernFormGroup: {
+    marginBottom: 18,
+  },
+  modernFormLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 10,
+    letterSpacing: 0.2,
+  },
+  required: {
+    color: '#ef4444',
+  },
+  modernFormInput: {
+    backgroundColor: '#f9fafb',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    fontSize: 15,
+    color: '#1a1a2e',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    letterSpacing: 0.2,
+  },
+  modernFormInputError: {
+    borderColor: '#ef4444',
+    borderWidth: 1.5,
+  },
+  modernErrorMessage: {
+    fontSize: 12,
+    color: '#ef4444',
+    marginTop: 6,
+    fontWeight: '500',
+  },
+  
+  // ===== MODERN BUTTONS =====
+  modernAddRecipientBtn: {
+    backgroundColor: '#f9fafb',
+    borderRadius: 16,
+    padding: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    borderColor: '#d1d5db',
+  },
+  addBtnIconBox: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#667eea',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  modernAddIcon: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  modernAddText: {
+    fontSize: 15,
+    color: '#374151',
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  modernActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 16,
+    paddingVertical: 18,
+    paddingHorizontal: 24,
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 6,
+    gap: 12,
+  },
+  modernActionBtnIcon: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '600',
+  },
+  modernActionBtnText: {
+    fontSize: 16,
+    color: '#ffffff',
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    textAlign: 'center',
+  },
+  modernActionBtnArrow: {
+    fontSize: 18,
+    color: '#ffffff',
+    fontWeight: '800',
+  },
+  
+  // ===== MODERN RECENT APPLICATIONS =====
+  modernRecentSection: {
+    paddingHorizontal: 16,
+    marginTop: 20,
+    marginBottom: 24,
+  },
+  modernEmptyState: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 40,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+  },
+  emptyStateIconBox: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#f5f7fa',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  modernEmptyIcon: {
+    fontSize: 32,
+    color: '#9ca3af',
+    fontWeight: '300',
+  },
+  modernEmptyTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#374151',
+    marginBottom: 6,
+    letterSpacing: 0.3,
+  },
+  modernEmptySubtitle: {
+    fontSize: 13,
+    color: '#9ca3af',
+    textAlign: 'center',
+    letterSpacing: 0.2,
+    lineHeight: 18,
+  },
+  modernApplicationsList: {
+    gap: 14,
+  },
+  modernApplicationCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 18,
+    overflow: 'hidden',
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+    marginBottom: 2,
+  },
+  applicationAccentBar: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+  },
+  accentBarPending: {
+    backgroundColor: '#f59e0b',
+  },
+  accentBarReplied: {
+    backgroundColor: '#10b981',
+  },
+  applicationCardInner: {
+    paddingLeft: 16,
+    paddingRight: 16,
+    paddingTop: 16,
+    paddingBottom: 14,
+  },
+  applicationTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  applicationNumberBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f5f7ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    borderWidth: 2,
+    borderColor: '#e0e7ff',
+  },
+  applicationNumberText: {
+    fontSize: 15,
+    color: '#667eea',
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  applicationMainInfo: {
+    flex: 1,
+    marginRight: 10,
+  },
+  applicationCompany: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#1a1a2e',
+    marginBottom: 4,
+    letterSpacing: 0.3,
+  },
+  applicationPosition: {
+    fontSize: 13,
+    color: '#6b7280',
+    fontWeight: '500',
+    letterSpacing: 0.2,
+  },
+  modernStatusBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modernStatusPending: {
+    backgroundColor: '#fef3c7',
+  },
+  modernStatusReplied: {
+    backgroundColor: '#d1fae5',
+  },
+  modernStatusText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  statusTextPending: {
+    color: '#f59e0b',
+  },
+  statusTextReplied: {
+    color: '#10b981',
+  },
+  clockIcon: {
+    width: 16,
+    height: 16,
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clockCircle: {
+    position: 'absolute',
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: '#f59e0b',
+  },
+  clockHourHand: {
+    position: 'absolute',
+    width: 2,
+    height: 5,
+    backgroundColor: '#f59e0b',
+    borderRadius: 1,
+    top: 3,
+  },
+  clockMinuteHand: {
+    position: 'absolute',
+    width: 2,
+    height: 7,
+    backgroundColor: '#f59e0b',
+    borderRadius: 1,
+    top: 1,
+    transform: [{ rotate: '90deg' }],
+  },
+  applicationDatesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f9fafb',
+    borderRadius: 12,
+    padding: 12,
+    gap: 16,
+  },
+  dateItem: {
+    flex: 1,
+  },
+  dateLabel: {
+    fontSize: 10,
+    color: '#9ca3af',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  dateValue: {
+    fontSize: 13,
+    color: '#374151',
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  dateValueReplied: {
+    color: '#10b981',
+  },
+  dateSeparator: {
+    width: 1,
+    height: 24,
+    backgroundColor: '#e5e7eb',
+  },
+  modernActionHint: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+  },
+  modernActionHintText: {
+    fontSize: 11,
+    color: '#667eea',
+    fontWeight: '600',
+    textAlign: 'center',
+    letterSpacing: 0.3,
   },
   
   // ===== LOADING OVERLAY =====
@@ -4844,11 +8521,13 @@ const styles = StyleSheet.create({
     padding: 30,
     alignItems: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 10,
-    minWidth: 200,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 15,
+    width: '85%',
+    borderWidth: 2,
+    borderColor: '#e5e7eb',
   },
   loadingText: {
     marginTop: 16,
@@ -4856,6 +8535,38 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#374151',
     textAlign: 'center',
+    marginBottom: 10,
+  },
+  progressBarContainer: {
+    width: '100%',
+    marginTop: 15,
+    marginBottom: 10,
+  },
+  progressBar: {
+    width: '100%',
+    height: 8,
+  },
+  progressBarWrapper: {
+    width: '100%',
+    marginBottom: 8,
+  },
+  progressBarTrack: {
+    width: '100%',
+    height: 8,
+    backgroundColor: '#e5e7eb',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#0d9488',
+    borderRadius: 4,
+  },
+  progressText: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 5,
   },
   cancelButton: {
     marginTop: 20,
@@ -5025,15 +8736,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#fff',
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
+    borderWidth: 1,
+    borderColor: '#8C8C8C',
     borderRadius: 10,
     paddingVertical: 12,
     marginBottom: 16,
   },
   googleButtonIcon: {
-    fontSize: 20,
+    fontSize: 22,
     marginRight: 10,
+    fontWeight: '700',
   },
   googleButtonText: {
     fontSize: 15,
@@ -5225,6 +8937,48 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     borderBottomWidth: 0,
   },
+  premiumGradientHeader: {
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    paddingTop: 50,
+  },
+  compactCreditBadgeGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+    gap: 6,
+  },
+  creditNumberWhite: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  menuIconButtonGradient: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: -19,
+  },
+  menuIconWhite: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
   headerContent: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -5393,6 +9147,20 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     paddingHorizontal: 16,
   },
+  sideMenuItemIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#f5f7ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+  },
+  sideMenuItemIconText: {
+    fontSize: 18,
+    color: '#667eea',
+    fontWeight: '600',
+  },
   sideMenuItemIcon: {
     fontSize: 28,
     marginRight: 14,
@@ -5405,10 +9173,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#1F2937',
     marginBottom: 2,
+    letterSpacing: 0.2,
   },
   sideMenuItemDesc: {
     fontSize: 13,
     color: '#9CA3AF',
+    letterSpacing: 0.1,
   },
   sideMenuDivider: {
     height: 1,
@@ -5435,7 +9205,11 @@ const styles = StyleSheet.create({
 
   welcomeSection: {
     paddingHorizontal: 20,
-    paddingVertical: 16.2,
+    paddingVertical: 8.2,
+  },
+  welcomeSectionGradient: {
+    paddingHorizontal: 20,
+    paddingVertical: 8.2,
   },
   welcomeTitle: {
     fontSize: 21,
@@ -5443,9 +9217,19 @@ const styles = StyleSheet.create({
     color: '#1F2937',
     marginBottom: 4,
   },
+  welcomeTitleWhite: {
+    fontSize: 21,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 4,
+  },
   welcomeSubtitle: {
     fontSize: 11,
     color: '#6B7280',
+  },
+  welcomeSubtitleWhite: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.9)',
   },
 
   recipientsSection: {
@@ -5542,6 +9326,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     marginBottom: 8,
   },
+  statsOnlySectionGradient: {
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
   statisticsSection: {
     paddingHorizontal: 16,
     marginBottom: 24,
@@ -5558,6 +9346,19 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 3,
     elevation: 2,
+  },
+  statsCardGradient: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    marginBottom: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
   },
   statsRow: {
     flexDirection: 'row',
@@ -5576,10 +9377,21 @@ const styles = StyleSheet.create({
     color: '#0d9488',
     marginBottom: 6.12,
   },
+  statNumberWhite: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#ffffff',
+    marginBottom: 4,
+  },
   statLabel: {
     fontSize: 9.945,
     color: '#6B7280',
     fontWeight: '500',
+  },
+  statLabelWhite: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.9)',
+    textAlign: 'center',
   },
   countriesCard: {
     backgroundColor: '#fff',
@@ -5917,6 +9729,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#1F2937',
   },
+  datePickerButton: {
+    backgroundColor: '#f9fafb',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 42,
+    justifyContent: 'center',
+  },
+  datePickerText: {
+    fontSize: 14,
+    color: '#1F2937',
+  },
   formInputError: {
     borderColor: '#ef4444',
     backgroundColor: '#fee2e2',
@@ -6248,9 +10074,9 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   chartBar: {
-    width: 3,
-    borderRadius: 2,
-    minHeight: 2,
+    width: 8,
+    borderRadius: 3,
+    minHeight: 3,
   },
   chartLabel: {
     fontSize: 9,
@@ -6449,15 +10275,6 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: 'center',
   },
-  editButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  editButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#0d9488',
-  },
   profileCardHeader: {
     backgroundColor: '#fff',
     borderRadius: 14,
@@ -6486,6 +10303,21 @@ const styles = StyleSheet.create({
   profileAvatarText: {
     fontSize: 32,
     fontWeight: '700',
+    color: '#fff',
+  },
+  editOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderRadius: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editOverlayText: {
+    fontSize: 24,
     color: '#fff',
   },
   profileImageContent: {
@@ -6600,6 +10432,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     backgroundColor: '#F9FAFB',
   },
+  uploadZoneActive: {
+    borderColor: '#0d9488',
+    backgroundColor: '#e0f2f1',
+  },
   uploadPreview: {
     width: '100%',
     height: 150,
@@ -6618,6 +10454,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '500',
     color: '#6B7280',
+  },
+  uploadHint: {
+    fontSize: 11,
+    fontWeight: '400',
+    color: '#0d9488',
+    marginTop: 4,
   },
   statsGrid: {
     flexDirection: 'row',
@@ -6667,6 +10509,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 1000,
+    padding: 20,
+  },
+  modalKeyboardView: {
+    width: '100%',
+    maxWidth: 400,
+    justifyContent: 'center',
   },
   modalContent: {
     backgroundColor: '#fff',
@@ -6674,43 +10522,70 @@ const styles = StyleSheet.create({
     padding: 20,
     width: '85%',
     maxWidth: 400,
+    maxHeight: '80%',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
     elevation: 5,
   },
+  modalContentScrollable: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    width: '100%',
+    maxHeight: Dimensions.get('window').height * 0.75,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  modalScrollContent: {
+    paddingBottom: 10,
+  },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 20,
+    paddingBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#000',
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1f2937',
   },
   modalCloseBtn: {
-    fontSize: 24,
-    color: '#666',
+    fontSize: 28,
+    color: '#9ca3af',
     padding: 5,
+    fontWeight: '300',
   },
   modalInput: {
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-    fontSize: 14,
-    color: '#000',
+    borderColor: '#e5e7eb',
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 14,
+    fontSize: 15,
+    color: '#1f2937',
+    backgroundColor: '#f9fafb',
   },
   modalButton: {
     backgroundColor: '#6366f1',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 10,
+    borderRadius: 10,
+    padding: 14,
+    marginTop: 8,
+    marginBottom: 8,
     alignItems: 'center',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
   },
   modalButtonText: {
     color: '#fff',
@@ -6721,29 +10596,34 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
-    marginBottom: 12,
+    marginBottom: 8,
+  },
+  settingTextContainer: {
+    flex: 1,
+    marginRight: 12,
   },
   settingLabel: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#000',
+    color: '#1f2937',
     marginBottom: 4,
   },
   settingDescription: {
     fontSize: 13,
-    color: '#666',
+    color: '#6b7280',
+    lineHeight: 18,
   },
   toggle: {
-    width: 50,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#e5e7eb',
+    width: 52,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#d1d5db',
     justifyContent: 'center',
     alignItems: 'flex-start',
-    paddingHorizontal: 2,
+    paddingHorizontal: 3,
   },
   toggleActive: {
     backgroundColor: '#6366f1',
@@ -6754,9 +10634,128 @@ const styles = StyleSheet.create({
     height: 24,
     borderRadius: 12,
     backgroundColor: '#fff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
   },
   toggleCircleActive: {
     backgroundColor: '#fff',
+  },
+  // ACCOUNT MODAL STYLES
+  accountModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'flex-end',
+  },
+  accountModalKeyboardView: {
+    width: '100%',
+  },
+  accountModalContent: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+    paddingHorizontal: 24,
+    maxHeight: Dimensions.get('window').height * 0.85,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 10,
+  },
+  accountModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 24,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  accountModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1f2937',
+  },
+  accountModalCloseBtn: {
+    fontSize: 28,
+    color: '#9ca3af',
+    padding: 4,
+    fontWeight: '300',
+  },
+  accountModalScrollContent: {
+    paddingBottom: 8,
+  },
+  accountModalInput: {
+    borderWidth: 1.5,
+    borderColor: '#e5e7eb',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    fontSize: 15,
+    color: '#1f2937',
+    backgroundColor: '#f9fafb',
+  },
+  accountModalButton: {
+    backgroundColor: '#6366f1',
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 16,
+    marginBottom: 10,
+    alignItems: 'center',
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  accountModalButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  accountModalButtonSecondary: {
+    backgroundColor: '#f3f4f6',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 8,
+    alignItems: 'center',
+  },
+  accountModalButtonSecondaryText: {
+    color: '#6b7280',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  deleteWarningText: {
+    fontSize: 15,
+    color: '#374151',
+    lineHeight: 22,
+    marginBottom: 16,
+  },
+  deleteWarningList: {
+    fontSize: 14,
+    color: '#ef4444',
+    lineHeight: 22,
+    marginBottom: 20,
+    backgroundColor: '#fef2f2',
+    padding: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#fee2e2',
+  },
+  deleteConfirmInstructions: {
+    fontSize: 15,
+    color: '#374151',
+    marginBottom: 12,
+    fontWeight: '500',
+  },
+  deleteConfirmKeyword: {
+    fontWeight: '700',
+    color: '#ef4444',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   // REVIEW SCREEN STYLES
   reviewHeader: {
@@ -6850,36 +10849,43 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#f3f4f6',
+    alignItems: 'flex-start',
   },
   reviewDetailLabel: {
     fontSize: 14,
     fontWeight: '600',
     color: '#666',
+    width: '30%',
+    flexShrink: 0,
   },
   reviewDetailValue: {
     fontSize: 14,
     fontWeight: '500',
     color: '#1f2937',
+    width: '68%',
+    flexWrap: 'wrap',
   },
   reviewCoverLetterCard: {
     marginHorizontal: 16,
-    marginVertical: 16,
-    padding: 16,
-    backgroundColor: '#fff',
-    borderRadius: 12,
+    marginBottom: 16,
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: '#3b82f6',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 8,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderColor: '#bae6fd',
+  },
+  reviewCoverLetterGradient: {
+    paddingTop: 0,
   },
   coverLetterHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
-  },
-  coverLetterTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#059669',
   },
   sentBadge: {
     backgroundColor: '#d1fae5',
@@ -7029,50 +11035,82 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 16,
+    backgroundColor: 'transparent',
   },
-  editLink: {
-    color: '#17a2b8',
+  reviewRecipientHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  reviewRecipientNumberBadge: {
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '800',
+    color: '#ffffff',
+    backgroundColor: '#3b82f6',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    overflow: 'hidden',
+    letterSpacing: 0.5,
+  },
+  reviewCoverLetterTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#1e293b',
+    letterSpacing: 0.3,
   },
   editButton: {
-    backgroundColor: '#17a2b8',
     paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 8,
-    shadowColor: '#000',
+    backgroundColor: '#e0f2f1',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#0d9488',
+    overflow: 'hidden',
+    shadowColor: '#0d9488',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
-    shadowRadius: 3,
+    shadowRadius: 4,
     elevation: 2,
   },
+  editButtonGradient: {
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   editButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
   editModeContainer: {
-    backgroundColor: '#fffbf0',
-    borderRadius: 8,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#17a2b8',
+    backgroundColor: '#f8fafc',
+    borderRadius: 16,
+    padding: 20,
+    marginHorizontal: 16,
+    marginBottom: 16,
   },
   viewModeContainer: {
-    padding: 12,
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    paddingTop: 4,
   },
   editFieldSection: {
     marginBottom: 16,
   },
   editFieldLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 8,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#475569',
+    marginBottom: 10,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   hirngManagerName: {
     fontSize: 16,
@@ -7084,17 +11122,24 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   editFieldInput: {
-    borderWidth: 1,
-    borderColor: '#17a2b8',
-    borderRadius: 6,
-    padding: 12,
-    fontSize: 14,
-    color: '#333',
-    backgroundColor: '#fff',
+    borderWidth: 1.5,
+    borderColor: '#cbd5e1',
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 15,
+    color: '#1e293b',
+    backgroundColor: '#ffffff',
+    fontWeight: '500',
+    shadowColor: '#94a3b8',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
   },
   readOnlyField: {
-    backgroundColor: '#f5f5f5',
-    color: '#666',
+    backgroundColor: '#f1f5f9',
+    borderColor: '#e2e8f0',
+    color: '#64748b',
   },
   addressDropdown: {
     borderWidth: 1,
@@ -7150,83 +11195,1090 @@ const styles = StyleSheet.create({
   },
   editButtonGroup: {
     flexDirection: 'row',
-    gap: 8,
-    marginTop: 16,
+    gap: 12,
+    marginTop: 20,
   },
-  saveBtnStyle: {
-    backgroundColor: '#28a745',
+  editActionBtn: {
     flex: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: '#64748b',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 4,
   },
-  cancelBtnStyle: {
-    backgroundColor: '#dc3545',
-    flex: 1,
+  editActionGradient: {
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  fieldDisplayRow: {
-    flexDirection: 'row',
-    marginBottom: 12,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-  },
-  fieldDisplay: {
-    backgroundColor: '#f8f9fa',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 6,
-  },
-  fieldDisplayLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#666',
-    marginBottom: 4,
-  },
-  fieldDisplayValue: {
+  editActionBtnText: {
     fontSize: 14,
-    fontWeight: '500',
-    color: '#1a1a1a',
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
   },
-  coverLetterPreviewContainer: {
-    marginTop: 12,
+  
+  // ===== MODERN REVIEW PAGE STYLES =====
+  reviewHeaderCard: {
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 12,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  reviewHeaderGradient: {
+    padding: 20,
+    position: 'relative',
+  },
+  reviewBackButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
     marginBottom: 16,
+    alignSelf: 'flex-start',
   },
-  coverLetterPreviewLabel: {
-    fontSize: 13,
+  reviewBackIcon: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '700',
+    marginRight: 6,
+  },
+  reviewBackText: {
+    fontSize: 15,
+    color: '#ffffff',
     fontWeight: '600',
-    color: '#333',
+    letterSpacing: 0.3,
+  },
+  reviewHeaderContent: {
     marginBottom: 8,
   },
-  coverLetterPreviewBox: {
-    backgroundColor: '#fafafa',
+  reviewHeaderTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#ffffff',
+    marginBottom: 4,
+    letterSpacing: 0.5,
+  },
+  reviewHeaderSubtitle: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontWeight: '500',
+  },
+  reviewCreditBadge: {
+    position: 'absolute',
+    top: 20,
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    borderRadius: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  reviewCreditIconBox: {
+    marginRight: 6,
+  },
+  reviewDiamondIcon: {
+    width: 16,
+    height: 16,
+  },
+  reviewDiamondTop: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 8,
+    borderRightWidth: 8,
+    borderBottomWidth: 8,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: '#ffffff',
+  },
+  reviewDiamondBottom: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 8,
+    borderRightWidth: 8,
+    borderTopWidth: 8,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor: '#ffffff',
+  },
+  reviewCreditText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  
+  // ===== NEW RECIPIENTS CARDS SECTION =====
+  recipientsCardsSection: {
+    paddingTop: 12,
+    paddingBottom: 16,
+    marginBottom: 16,
+  },
+  recipientsCardsSectionLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#6b7280',
+    marginBottom: 14,
+    marginHorizontal: 20,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  recipientsCardsScroll: {
+    paddingLeft: 16,
+  },
+  recipientsCardsContent: {
+    paddingRight: 16,
+  },
+  recipientCardWrapper: {
+    marginRight: 16,
+  },
+  recipientCardTouchable: {
+    width: 260,
+    height: 180,
+  },
+  recipientCardAnimated: {
+    width: 260,
+    height: 180,
+    borderRadius: 24,
+    overflow: 'visible',
+    shadowColor: '#94a3b8',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  recipientCardBackPosition: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+  },
+  recipientCardGradient: {
+    flex: 1,
+    padding: 20,
+    paddingTop: 16,
+    paddingBottom: 14,
+    justifyContent: 'space-between',
+    borderRadius: 24,
+    overflow: 'hidden',
+  },
+  recipientCardBottomIndicator: {
+    position: 'absolute',
+    bottom: 0,
+    left: '20%',
+    right: '20%',
+    height: 4,
+    backgroundColor: '#3b82f6',
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 4,
+    shadowColor: '#3b82f6',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+  },
+  recipientCardBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  recipientCardBadgeText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#78350f',
+  },
+  recipientCardContent: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingRight: 16,
+  },
+  recipientCardSection: {
+    marginBottom: 10,
+  },
+  recipientCardLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#92400e',
+    marginBottom: 3,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  recipientCardPosition: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#78350f',
+    lineHeight: 20,
+  },
+  recipientCardCompany: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#422006',
+    lineHeight: 19,
+    letterSpacing: 0.3,
+  },
+  recipientCardEmail: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#78350f',
+    lineHeight: 18,
+  },
+  recipientCardFlipHint: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: 'rgba(66, 32, 6, 0.35)',
+    textAlign: 'center',
+    fontStyle: 'italic',
+    letterSpacing: 0.3,
+  },
+  recipientCardNarrative: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#78350f',
+    lineHeight: 20,
+    textAlign: 'left',
+  },
+  recipientCardNarrativeBold: {
+    fontWeight: '800',
+    color: '#422006',
+  },
+  
+  // ===== OLD REVIEW TAB STYLES (KEPT FOR COMPATIBILITY) =====
+  reviewTabsWrapper: {
+    backgroundColor: '#ffffff',
+    paddingTop: 16,
+    paddingBottom: 12,
+    marginBottom: 16,
+  },
+  reviewTabsLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#6b7280',
+    marginBottom: 12,
+    marginHorizontal: 20,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  reviewTabsScroll: {
+    paddingHorizontal: 20,
+  },
+  reviewTab: {
+    marginRight: 10,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  reviewTabGradient: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  reviewTabText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#6b7280',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#f3f4f6',
+    borderRadius: 12,
+  },
+  reviewTabTextActive: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  reviewDetailCardModern: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  reviewDetailHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+  },
+  reviewDetailAccent: {
+    width: 4,
+    height: 24,
+    borderRadius: 2,
+    marginRight: 12,
+    background: 'linear-gradient(180deg, #667eea 0%, #764ba2 100%)',
+    backgroundColor: '#667eea',
+  },
+  reviewDetailTitleModern: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1f2937',
+    letterSpacing: 0.3,
+  },
+  reviewDetailContent: {
+    padding: 20,
+  },
+  reviewDetailItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+  },
+  reviewDetailIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f3f4f6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  reviewDetailIconText: {
+    fontSize: 18,
+  },
+  reviewDetailInfo: {
+    flex: 1,
+  },
+  reviewDetailLabelModern: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#9ca3af',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  reviewDetailValueModern: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1f2937',
+    lineHeight: 22,
+  },
+  reviewModernActionButtons: {
+    marginTop: 24,
+    paddingBottom: 28,
+    flexDirection: 'row',
+    gap: 10,
+  },
+  reviewActionButtonFull: {
+    flex: 1,
+    borderRadius: 14,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  reviewActionButtonGradient: {
+    paddingVertical: 16,
+    paddingHorizontal: 6,
+  },
+  reviewActionButtonSentGradient: {
+    paddingVertical: 16,
+    paddingHorizontal: 6,
+    backgroundColor: '#9ca3af',
+  },
+  reviewActionButtonContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  reviewActionIconCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.5)',
+  },
+  reviewActionButtonIcon: {
+    fontSize: 17,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  reviewActionButtonText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    textAlign: 'center',
+  },
+  reviewEmptyCardModern: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 32,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  reviewEmptyIconBox: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#e0e7ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  reviewEmptyIconText: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#4f46e5',
+    letterSpacing: 1,
+  },
+  reviewEmptyTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1f2937',
+    marginBottom: 8,
+    letterSpacing: 0.3,
+  },
+  reviewEmptySubtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 24,
+    paddingHorizontal: 12,
+  },
+  reviewEmptyActionBtn: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  reviewEmptyActionGradient: {
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  reviewEmptyActionIcon: {
+    fontSize: 18,
+  },
+  reviewEmptyActionText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  reviewBulkActionsCard: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    borderRadius: 24,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  reviewBulkActionsGradient: {
+    padding: 24,
+  },
+  reviewBulkActionsHeaderSection: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 24,
+  },
+  reviewBulkActionsTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  reviewBulkActionsSubtitle: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#cbd5e1',
+    letterSpacing: 0.2,
+  },
+  reviewBulkActionsStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 6,
+  },
+  reviewBulkActionsStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10b981',
+  },
+  reviewBulkActionsStatusText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  reviewBulkActionsGrid: {
+    gap: 14,
+  },
+  reviewBulkActionCard: {
+    borderRadius: 18,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  reviewBulkActionCardGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 20,
+    paddingHorizontal: 20,
+    gap: 16,
+  },
+  reviewBulkActionCardCompleted: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 20,
+    paddingHorizontal: 20,
+    gap: 16,
+    backgroundColor: '#64748b',
+  },
+  reviewBulkActionIconContainer: {
+    position: 'relative',
+  },
+  reviewBulkActionIconOuter: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderWidth: 3,
+    borderColor: 'rgba(255, 255, 255, 0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewBulkActionIconSymbol: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  reviewBulkActionTextContainer: {
+    flex: 1,
+  },
+  reviewBulkActionTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.4,
+    marginBottom: 2,
+  },
+  reviewBulkActionDesc: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.85)',
+    letterSpacing: 0.2,
+  },
+  
+  // Loading Modal Styles
+  loadingModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  loadingModalContainer: {
+    width: '100%',
+    maxWidth: 400,
+    borderRadius: 28,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.5,
+    shadowRadius: 30,
+    elevation: 20,
+  },
+  loadingModalGradient: {
+    paddingVertical: 40,
+    paddingHorizontal: 32,
+    alignItems: 'center',
+  },
+  loadingAnimationContainer: {
+    position: 'relative',
+    width: 100,
+    height: 100,
+    marginBottom: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingSpinnerOuter: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 3,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    zIndex: 2,
+  },
+  loadingGlowEffect: {
+    position: 'absolute',
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    top: 0,
+    left: 0,
+    zIndex: 1,
+  },
+  loadingTextContainer: {
+    width: '100%',
+    marginBottom: 32,
+    alignItems: 'center',
+  },
+  loadingTitleText: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#ffffff',
+    textAlign: 'center',
+    marginBottom: 8,
+    letterSpacing: 0.5,
+  },
+  loadingSubtitleText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: 'rgba(255, 255, 255, 0.75)',
+    textAlign: 'center',
+    lineHeight: 20,
+    letterSpacing: 0.2,
+  },
+  loadingProgressSection: {
+    width: '100%',
+    marginBottom: 28,
+  },
+  loadingProgressBarContainer: {
+    width: '100%',
+    marginBottom: 12,
+  },
+  loadingProgressBarBackground: {
+    width: '100%',
+    height: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  loadingProgressBarFill: {
+    height: '100%',
     borderRadius: 6,
+    overflow: 'hidden',
+  },
+  loadingProgressGradient: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+  },
+  loadingProgressTextContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  loadingProgressPercentage: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.5,
+  },
+  loadingProgressLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.7)',
+    letterSpacing: 0.3,
+  },
+  loadingCancelButton: {
+    width: '100%',
+    borderRadius: 16,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: 'rgba(239, 68, 68, 0.5)',
+    shadowColor: '#ef4444',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  loadingCancelButtonInner: {
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  loadingCancelIcon: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#fca5a5',
+  },
+  loadingCancelText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.5,
+  },
+  
+  // Login Screen Styles
+  loginContainer: {
+    flex: 1,
+  },
+  loginGradientBg: {
+    flex: 1,
+  },
+  loginScrollContent: {
+    flexGrow: 1,
+    paddingVertical: 40,
+    paddingHorizontal: 20,
+    justifyContent: 'center',
+  },
+  loginLogoSection: {
+    alignItems: 'center',
+    marginBottom: 40,
+  },
+  loginLogoGlow: {
+    marginBottom: 16,
+    shadowColor: '#a78bfa',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  loginLogoImage: {
+    width: 220,
+    height: 66,
+  },
+  loginTagline: {
+    fontSize: 15,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    textAlign: 'center',
+  },
+  loginCard: {
+    borderRadius: 28,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.4,
+    shadowRadius: 24,
+    elevation: 15,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  loginCardGradient: {
+    padding: 32,
+  },
+  loginCardHeader: {
+    marginBottom: 28,
+    alignItems: 'center',
+  },
+  loginCardTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#ffffff',
+    marginBottom: 8,
+    letterSpacing: 0.5,
+  },
+  loginCardSubtitle: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: 'rgba(255, 255, 255, 0.75)',
+    letterSpacing: 0.3,
+  },
+  loginErrorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+  },
+  loginErrorIconBox: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(239, 68, 68, 0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  loginErrorIconText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#fca5a5',
+  },
+  loginErrorText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#fecaca',
+    fontWeight: '600',
+    lineHeight: 18,
+  },
+  loginInputGroup: {
+    marginBottom: 20,
+  },
+  loginInputLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginBottom: 10,
+    letterSpacing: 1.2,
+  },
+  loginInputContainer: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    overflow: 'hidden',
+  },
+  loginInput: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    fontSize: 16,
+    color: '#ffffff',
+    fontWeight: '500',
+  },
+  loginSignInButton: {
+    marginTop: 8,
+    marginBottom: 28,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#8b5cf6',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  loginButtonDisabled: {
+    opacity: 0.6,
+  },
+  loginSignInGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 18,
+    paddingHorizontal: 24,
+    gap: 12,
+  },
+  loginSignInText: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.5,
+  },
+  loginSignInArrow: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  loginDividerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  loginDividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  loginDividerText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.5)',
+    marginHorizontal: 16,
+    letterSpacing: 1,
+  },
+  loginSocialButtonsContainer: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 28,
+  },
+  loginSocialButton: {
+    flex: 1,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  loginSocialButtonDisabled: {
+    opacity: 0.5,
+  },
+  loginSocialButtonInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    gap: 8,
+  },
+  loginSocialIcon: {
+    width: 20,
+    height: 20,
+  },
+  loginSocialButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  loginFooter: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loginFooterText: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontWeight: '500',
+  },
+  loginFooterLink: {
+    fontSize: 14,
+    color: '#c4b5fd',
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  
+  fieldDisplayRow: {
+    marginBottom: 14,
+  },
+  fieldDisplayRowDouble: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 14,
+  },
+  fieldDisplay: {
+    backgroundColor: '#f8fafc',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  fieldDisplayHalf: {
+    flex: 1,
+    backgroundColor: '#f8fafc',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  fieldDisplayLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#64748b',
+    marginBottom: 6,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  fieldDisplayValue: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1e293b',
+    lineHeight: 22,
+  },
+  coverLetterPreviewContainer: {
+    marginTop: 16,
+    marginBottom: 20,
+  },
+  coverLetterPreviewLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#475569',
+    marginBottom: 12,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  coverLetterPreviewBox: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
     height: 200,
-    padding: 12,
+    padding: 16,
   },
   coverLetterPreviewText: {
     fontSize: 14,
-    lineHeight: 20,
-    color: '#333',
+    lineHeight: 22,
+    color: '#1e293b',
+    fontWeight: '400',
   },
   dropdownButton: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#17a2b8',
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    backgroundColor: '#fff',
+    borderWidth: 1.5,
+    borderColor: '#cbd5e1',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    backgroundColor: '#ffffff',
+    shadowColor: '#94a3b8',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
   },
   dropdownButtonText: {
-    fontSize: 14,
-    color: '#333',
+    fontSize: 15,
+    color: '#1e293b',
+    fontWeight: '500',
     flex: 1,
   },
   dropdownArrow: {
-    fontSize: 12,
-    color: '#17a2b8',
+    fontSize: 14,
+    color: '#64748b',
     marginLeft: 8,
   },
   dropdownOverlay: {
@@ -7236,25 +12288,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   dropdownMenu: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
     width: '85%',
     maxHeight: 300,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    elevation: 8,
+    overflow: 'hidden',
   },
   dropdownItem: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: '#f1f5f9',
   },
   dropdownItemText: {
-    fontSize: 14,
-    color: '#333',
+    fontSize: 15,
+    color: '#1e293b',
+    fontWeight: '500',
+    lineHeight: 22,
   },
   // ==================== ADMIN PANEL STYLES ====================
   adminModalContainer: {
@@ -8066,5 +13121,678 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#78350F',
     lineHeight: 20,
+  },
+  
+  // Reply Date Picker Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    justifyContent: 'flex-end',
+  },
+  datePickerModalWrapper: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+  },
+  datePickerModalWrapper2: {
+    justifyContent: 'flex-end',
+    backgroundColor: 'transparent',
+  },
+  datePickerModal: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 20,
+  },
+  datePickerHeader: {
+    alignItems: 'center',
+    paddingTop: 8,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+  },
+  datePickerHeaderLine: {
+    width: 40,
+    height: 4,
+    backgroundColor: '#d1d5db',
+    borderRadius: 2,
+    marginBottom: 12,
+  },
+  datePickerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1f2937',
+    letterSpacing: 0.3,
+  },
+  datePickerContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 12,
+    backgroundColor: '#fff',
+  },
+  modalCancelButton: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#fff',
+  },
+  modalCancelText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#6b7280',
+    textAlign: 'center',
+  },
+  modalConfirmButton: {
+    flex: 1,
+  },
+  confirmButtonWrapper: {
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  modalConfirmGradient: {
+    paddingVertical: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalConfirmText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    textAlign: 'center',
+  },
+  
+  // Notification Modal Styles
+  notificationModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  notificationModalWrapper: {
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '85%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -5 },
+    shadowOpacity: 0.15,
+    shadowRadius: 25,
+    elevation: 20,
+  },
+  notificationModal: {
+    maxHeight: '100%',
+  },
+  notificationHeader: {
+    alignItems: 'center',
+    paddingTop: 8,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+    position: 'relative',
+  },
+  notificationHeaderLine: {
+    width: 40,
+    height: 4,
+    backgroundColor: '#d1d5db',
+    borderRadius: 2,
+    marginBottom: 12,
+  },
+  notificationTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1f2937',
+    letterSpacing: 0.3,
+  },
+  notificationHeaderBadge: {
+    position: 'absolute',
+    top: 30,
+    right: 20,
+    backgroundColor: '#ef4444',
+    borderRadius: 12,
+    minWidth: 24,
+    height: 24,
+    paddingHorizontal: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  notificationHeaderBadgeText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  notificationBody: {
+    maxHeight: 450,
+  },
+  notificationLoading: {
+    paddingVertical: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationLoadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#6b7280',
+    fontWeight: '500',
+  },
+  notificationEmpty: {
+    paddingVertical: 60,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyBellContainer: {
+    width: 56,
+    height: 56,
+    marginBottom: 16,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    opacity: 0.3,
+  },
+  emptyBellHandle: {
+    width: 6,
+    height: 3,
+    backgroundColor: '#9ca3af',
+    borderRadius: 2,
+    marginBottom: 1,
+  },
+  emptyBellBody: {
+    width: 24,
+    height: 22,
+    backgroundColor: '#9ca3af',
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    marginBottom: 1,
+  },
+  emptyBellOpening: {
+    width: 28,
+    height: 3,
+    backgroundColor: '#9ca3af',
+    borderRadius: 2,
+  },
+  notificationEmptyTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1f2937',
+    marginBottom: 8,
+    letterSpacing: 0.2,
+  },
+  notificationEmptyText: {
+    fontSize: 14,
+    color: '#6b7280',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  notificationItem: {
+    flexDirection: 'row',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f3f4f6',
+    backgroundColor: '#ffffff',
+  },
+  notificationItemUnread: {
+    backgroundColor: '#f0f9ff',
+  },
+  notificationItemLast: {
+    borderBottomWidth: 0,
+  },
+  notificationIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#e5e7eb',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  notificationIconEmail: {
+    backgroundColor: '#dbeafe',
+  },
+  notificationIconLetter: {
+    backgroundColor: '#fce7f3',
+  },
+  notificationIconCredits: {
+    backgroundColor: '#fef3c7',
+  },
+  notificationIconProfile: {
+    backgroundColor: '#e0e7ff',
+  },
+  notificationItemIcon: {
+    fontSize: 20,
+  },
+  notificationContent: {
+    flex: 1,
+    position: 'relative',
+  },
+  notificationTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 4,
+  },
+  notificationItemTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111827',
+    flex: 1,
+    marginRight: 8,
+    letterSpacing: 0.2,
+  },
+  notificationTime: {
+    fontSize: 12,
+    color: '#9ca3af',
+    fontWeight: '500',
+  },
+  notificationMessage: {
+    fontSize: 14,
+    color: '#6b7280',
+    lineHeight: 20,
+    marginBottom: 4,
+  },
+  notificationUnreadDot: {
+    position: 'absolute',
+    top: 4,
+    right: 0,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#3b82f6',
+  },
+  notificationFooter: {
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#f3f4f6',
+    backgroundColor: '#ffffff',
+  },
+  viewAllButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  viewAllGradient: {
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewAllText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  
+  // Notifications Page Styles
+  notificationsPageContainer: {
+    flex: 1,
+    backgroundColor: '#f8fafc',
+  },
+  notificationsHeader: {
+    paddingTop: 16,
+    paddingBottom: 20,
+    paddingHorizontal: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  notificationsHeaderTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  notificationsBackButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationsBackIcon: {
+    fontSize: 24,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  notificationsHeaderCenter: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  notificationsHeaderTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.5,
+  },
+  notificationsHeaderBadge: {
+    backgroundColor: 'rgba(239, 68, 68, 0.9)',
+    borderRadius: 12,
+    minWidth: 24,
+    height: 24,
+    paddingHorizontal: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  notificationsHeaderBadgeText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  notificationsMarkReadButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationsMarkReadText: {
+    fontSize: 20,
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  notificationsFilters: {
+    flexDirection: 'row',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  notificationsFilterTab: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: '#f8fafc',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  notificationsFilterTabActive: {
+    backgroundColor: '#667eea',
+    borderColor: '#667eea',
+  },
+  notificationsFilterText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#64748b',
+    letterSpacing: 0.3,
+  },
+  notificationsFilterTextActive: {
+    color: '#ffffff',
+  },
+  notificationsScrollView: {
+    flex: 1,
+  },
+  notificationsScrollContent: {
+    paddingBottom: 20,
+  },
+  notificationsLoading: {
+    paddingVertical: 80,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationsLoadingText: {
+    marginTop: 16,
+    fontSize: 15,
+    color: '#64748b',
+    fontWeight: '600',
+  },
+  notificationsEmpty: {
+    paddingVertical: 100,
+    paddingHorizontal: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationsEmptyIconBox: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  notificationsEmptyIcon: {
+    fontSize: 40,
+    opacity: 0.4,
+  },
+  notificationsEmptyTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#1e293b',
+    marginBottom: 8,
+    letterSpacing: 0.3,
+  },
+  notificationsEmptySubtitle: {
+    fontSize: 14,
+    color: '#64748b',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  notificationsListContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    gap: 12,
+  },
+  notificationsPageItem: {
+    flexDirection: 'row',
+    backgroundColor: '#ffffff',
+    borderRadius: 18,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+  },
+  notificationsPageItemUnread: {
+    backgroundColor: '#f0f9ff',
+    borderColor: '#bae6fd',
+    borderWidth: 1.5,
+  },
+  notificationsPageIconBox: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#e5e7eb',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+  },
+  notificationsIconTypeEmail: {
+    backgroundColor: '#dbeafe',
+  },
+  notificationsIconTypeLetter: {
+    backgroundColor: '#fce7f3',
+  },
+  notificationsIconTypeCredits: {
+    backgroundColor: '#fef3c7',
+  },
+  notificationsIconTypeProfile: {
+    backgroundColor: '#e0e7ff',
+  },
+  notificationsPageIcon: {
+    fontSize: 24,
+  },
+  notificationsPageContent: {
+    flex: 1,
+  },
+  notificationsPageTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  notificationsPageTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#1e293b',
+    marginRight: 8,
+    letterSpacing: 0.2,
+    lineHeight: 22,
+  },
+  notificationsPageUnreadBadge: {
+    marginLeft: 8,
+  },
+  notificationsPageUnreadDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#3b82f6',
+  },
+  notificationsPageMessage: {
+    fontSize: 14,
+    color: '#64748b',
+    lineHeight: 20,
+    marginBottom: 8,
+  },
+  notificationsPageTime: {
+    fontSize: 12,
+    color: '#94a3b8',
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  // Reply Details Modal Styles
+  showReplyButton: {
+    backgroundColor: '#3b82f6',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginTop: 8,
+    alignItems: 'center',
+  },
+  showReplyButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  replyModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  replyDetailsModalContainer: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    width: '100%',
+    maxWidth: 600,
+    maxHeight: '85%',
+    flexShrink: 1,
+  },
+  replyDetailsModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  replyDetailsModalTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#1e293b',
+    flex: 1,
+  },
+  closeModalButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#e2e8f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeModalButtonText: {
+    fontSize: 16,
+    color: '#64748b',
+    fontWeight: '600',
+  },
+  replyMetaSection: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  replyMetaFrom: {
+    fontSize: 13,
+    color: '#374151',
+    marginBottom: 4,
+  },
+  replyMetaSubject: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1e293b',
+    marginBottom: 6,
+  },
+  replyMetaCount: {
+    fontSize: 12,
+    color: '#6b7280',
+    fontWeight: '500',
+  },
+  replyDetailsContent: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    flexGrow: 0,
+  },
+  replyCard: {
+    backgroundColor: '#dbeafe',
+    borderLeftWidth: 3,
+    borderLeftColor: '#2563eb',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 10,
+  },
+  replyCardDate: {
+    fontSize: 11,
+    color: '#6b7280',
+    fontWeight: '500',
+    marginBottom: 8,
+  },
+  replyPreviewText: {
+    fontSize: 13,
+    color: '#1f2937',
+    lineHeight: 20,
+  },
+  replyDetailsCloseButton: {
+    backgroundColor: '#3b82f6',
+    marginHorizontal: 16,
+    marginVertical: 12,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  replyDetailsCloseButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '600',
   },
 });
