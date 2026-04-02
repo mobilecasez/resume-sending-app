@@ -1,6 +1,54 @@
 # Railway Deployment Instructions
 
-## 🚀 Quick Deploy to Railway
+> ⚠️ **GitHub auto-deploy is NOT configured.** Always deploy manually using the Railway CLI steps below.
+
+---
+
+## 🚀 Manual Deploy to Railway (CLI)
+
+### Prerequisites
+- Railway CLI installed: `brew install railway` (macOS)
+- Logged in: `railway login`
+- Project linked (one-time setup): `railway link` → select **CVApplyr Website**
+
+---
+
+### Every Time You Want to Deploy
+
+```bash
+cd "/Users/rishisamadhiya/Desktop/Files/Personal/Shopify Apps/resume-sending-app"
+
+# 1. Make sure all changes are committed
+git add -A && git commit -m "your message"
+
+# 2. Push to GitHub (keeps repo in sync)
+git push origin main
+
+# 3. Deploy to Railway
+railway up --detach
+```
+
+`--detach` returns immediately and builds in the background. Track progress:
+```bash
+railway logs
+```
+
+---
+
+### First-Time Setup (One-Time Only)
+
+```bash
+# Install CLI
+brew install railway
+
+# Login (opens browser)
+railway login
+
+# Link to existing project
+cd "/Users/rishisamadhiya/Desktop/Files/Personal/Shopify Apps/resume-sending-app"
+railway link
+# → Select: CVApplyr Website → production
+```
 
 ### Step 1: Login to Railway
 ```bash
@@ -57,7 +105,55 @@ const PRODUCTION_API_URL = 'https://your-railway-domain.up.railway.app/api';
 
 ---
 
-## 📋 Pre-Deployment Checklist
+## �️ MANDATORY: Schema Comparison Before Every Deploy
+
+> ⚠️ **Never deploy without first running a schema diff.** Schema drift (missing columns/tables in production) causes silent runtime errors. Fix ALL gaps in one shot — never chase errors one by one.
+
+### Run the comparison
+
+```bash
+cd "/Users/rishisamadhiya/Desktop/Files/Personal/Shopify Apps/resume-sending-app"
+
+python3 - << 'EOF'
+import subprocess, json
+
+result = subprocess.run(['railway', 'variables', '--json'], capture_output=True, text=True)
+db_url = json.loads(result.stdout)['DATABASE_URL']
+
+pg = subprocess.run(
+    ['psql', f'{db_url}?sslmode=require', '--no-psqlrc', '-t', '-A', '-F|',
+     '-c', "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema='public' ORDER BY table_name, column_name;"],
+    capture_output=True, text=True
+)
+
+prod = {}
+for line in pg.stdout.strip().split('\n'):
+    if '|' not in line: continue
+    parts = line.split('|')
+    if len(parts) >= 2:
+        tbl, col = parts[0].strip(), parts[1].strip()
+        prod.setdefault(tbl, set()).add(col)
+
+print("=== PRODUCTION SCHEMA ===")
+for t in sorted(prod):
+    print(f"  {t}: {sorted(prod[t])}")
+EOF
+```
+
+Compare the output against `database/postgres-schema.sql`. For any missing columns, write a single `.sql` patch file and apply it all at once:
+
+```bash
+PGURL=$(railway variables --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['DATABASE_URL'])")
+psql "${PGURL}?sslmode=require" --no-psqlrc -f /tmp/schema-patch.sql
+```
+
+### After any direct psql change, update BOTH:
+1. `database/postgres-schema.sql` — add column to the `CREATE TABLE IF NOT EXISTS` block
+2. `db-init.js` — add an `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migration block
+
+---
+
+## �📋 Pre-Deployment Checklist
 
 ### ✅ Required Files (Already Present)
 - [x] railway.toml - Railway configuration
@@ -77,22 +173,16 @@ Railway will automatically provision PostgreSQL, or you can use existing databas
 
 ---
 
-## 🔧 Alternative: Deploy via Railway Dashboard
+## 🔧 Deployment Methods
 
-### Method 1: GitHub Integration (Recommended)
-1. Push your code to GitHub
-2. Go to Railway Dashboard: https://railway.app
-3. Select "CVApplyr Website" project
-4. Click "Deploy from GitHub repo"
-5. Select your repository
-6. Railway will auto-detect settings from railway.toml
-7. Set environment variables in Railway dashboard
-8. Deploy!
+### ✅ Method 1: Railway CLI (Use This — GitHub auto-deploy is disabled)
+```bash
+# From project root:
+railway up --detach
+```
 
-### Method 2: Deploy from Local
-1. Login: `railway login`
-2. Link: `railway link`
-3. Deploy: `railway up`
+### ❌ Method 2: GitHub Auto-Deploy (Not configured)
+Railway is NOT set to auto-deploy on push. Do not rely on GitHub pushes to trigger deployment — always use `railway up` manually.
 
 ---
 
