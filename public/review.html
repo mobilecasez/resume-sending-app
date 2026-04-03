@@ -1436,11 +1436,13 @@
                                         console.log(`  New: ${currentRecipient.email} / ${currentRecipient.website}`);
                                         needsRegeneration = true;
                                     } else {
+                                        reviewCoverLetters[index] = letter; // restore in-memory state from DB
                                         populateFormWithData(index, letter);
                                         hasValidData = true;
                                     }
                                 } else {
                                     // No stored recipient data, just populate (old data format)
+                                    reviewCoverLetters[index] = letter; // restore in-memory state from DB
                                     populateFormWithData(index, letter);
                                     hasValidData = true;
                                 }

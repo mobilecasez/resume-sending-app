@@ -206,18 +206,32 @@ const saveReviewCoverLetters = async (req, res) => {
             return res.status(400).json({ error: 'Review cover letters must be an object' });
         }
 
-        // SOFT DELETE existing cover letters for this user (instead of hard delete)
-        // This preserves cover letter drafts for potential recovery and audit
-        await auditUtils.bulkSoftDelete('review_cover_letters', 'user_id = ?', [userId], userId);
-
-        // Insert new cover letters
+        // UPSERT each letter individually — never delete-all to avoid data loss on partial saves
         let inserted = 0;
         const entries = Object.entries(reviewCoverLetters);
         
         for (const [key, letter] of entries) {
             try {
                 await dbConfig.run(
-                    'INSERT INTO review_cover_letters (user_id, letter_key, company_name, recipient_email, cover_letter_html, subject, address, date, position, locations, generated, sent, sent_date, stored_recipient_email, stored_recipient_website) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    `INSERT INTO review_cover_letters
+                        (user_id, letter_key, company_name, recipient_email, cover_letter_html, subject, address, date, position, locations, generated, sent, sent_date, stored_recipient_email, stored_recipient_website, deleted_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                     ON CONFLICT (user_id, letter_key) DO UPDATE SET
+                        company_name = EXCLUDED.company_name,
+                        recipient_email = EXCLUDED.recipient_email,
+                        cover_letter_html = EXCLUDED.cover_letter_html,
+                        subject = EXCLUDED.subject,
+                        address = EXCLUDED.address,
+                        date = EXCLUDED.date,
+                        position = EXCLUDED.position,
+                        locations = EXCLUDED.locations,
+                        generated = EXCLUDED.generated,
+                        sent = EXCLUDED.sent,
+                        sent_date = EXCLUDED.sent_date,
+                        stored_recipient_email = EXCLUDED.stored_recipient_email,
+                        stored_recipient_website = EXCLUDED.stored_recipient_website,
+                        deleted_at = NULL,
+                        updated_at = CURRENT_TIMESTAMP`,
                     [
                         userId,
                         key,
@@ -238,7 +252,7 @@ const saveReviewCoverLetters = async (req, res) => {
                 );
                 inserted++;
             } catch (err) {
-                console.error('Error inserting review cover letter:', err);
+                console.error('Error upserting review cover letter:', err);
             }
         }
 
