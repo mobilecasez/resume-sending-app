@@ -375,7 +375,7 @@ passport.use(new GoogleStrategy({
         'profile', 
         'email', 
         'https://www.googleapis.com/auth/gmail.send',
-        'https://www.googleapis.com/auth/gmail.readonly'  // Updated for reply detection
+        'https://www.googleapis.com/auth/gmail.metadata'  // Approved scope for reply detection (labels/headers)
     ],
     accessType: 'offline', // Request refresh token
     prompt: 'consent' // Force consent screen to get refresh token

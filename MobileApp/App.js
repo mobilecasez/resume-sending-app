@@ -3311,7 +3311,7 @@ export default function App() {
         `client_id=${GOOGLE_CLIENT_ID}` +
         `&redirect_uri=${encodeURIComponent(redirectUri)}` +
         `&response_type=code` +
-        `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly')}` +
+        `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.metadata')}` +
         `&code_challenge=${codeChallenge}` +
         `&code_challenge_method=S256` +
         `&access_type=offline` +

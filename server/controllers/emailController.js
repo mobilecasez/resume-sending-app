@@ -1828,14 +1828,15 @@ const checkEmailReplies = async (req, res) => {
                     
                     for (const message of messages) {
                         try {
-                            // Get full message details including body
+                            // Get message metadata (headers + snippet) — works with gmail.metadata scope
                             const msg = await gmail.users.messages.get({
                                 userId: 'me',
                                 id: message.id,
-                                format: 'full'
+                                format: 'metadata',
+                                metadataHeaders: ['From', 'Date', 'Subject']
                             });
 
-                            const headers = msg.data.payload.headers;
+                            const headers = msg.data.payload?.headers || [];
                             const fromHeader = headers.find(h => h.name === 'From');
                             const dateHeader = headers.find(h => h.name === 'Date');
                             const subjectHeader = headers.find(h => h.name === 'Subject');
@@ -1870,88 +1871,8 @@ const checkEmailReplies = async (req, res) => {
                                 console.log(`✅ [CHECK] From email: ${fromEmail}`);
                                 console.log(`✅ [CHECK] Subject: ${subject}`);
                                 
-                                // Extract full email body (not just snippet)
-                                let emailBody = '';
-                                
-                                // Function to decode base64url encoded body
-                                const decodeBody = (data) => {
-                                    if (!data) return '';
-                                    try {
-                                        return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8');
-                                    } catch (err) {
-                                        console.error('Error decoding email body:', err);
-                                        return '';
-                                    }
-                                };
-                                
-                                // Function to extract body from parts recursively
-                                const extractBodyFromParts = (parts) => {
-                                    if (!parts) return '';
-                                    
-                                    for (const part of parts) {
-                                        // Prefer text/plain, but fall back to text/html
-                                        if (part.mimeType === 'text/plain' && part.body && part.body.data) {
-                                            return decodeBody(part.body.data);
-                                        }
-                                        
-                                        // If it's multipart, recurse into parts
-                                        if (part.parts) {
-                                            const bodyFromSubParts = extractBodyFromParts(part.parts);
-                                            if (bodyFromSubParts) return bodyFromSubParts;
-                                        }
-                                    }
-                                    
-                                    // If no text/plain found, try text/html
-                                    for (const part of parts) {
-                                        if (part.mimeType === 'text/html' && part.body && part.body.data) {
-                                            const htmlBody = decodeBody(part.body.data);
-                                            // Basic HTML to text conversion (remove tags)
-                                            // Collapse multiple spaces on same line but preserve line breaks
-                                            return htmlBody.replace(/<[^>]*>/g, ' ').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
-                                        }
-                                    }
-                                    
-                                    return '';
-                                };
-                                
-                                // Extract body from message
-                                if (msg.data.payload.body && msg.data.payload.body.data) {
-                                    // Simple message with body directly in payload
-                                    emailBody = decodeBody(msg.data.payload.body.data);
-                                } else if (msg.data.payload.parts) {
-                                    // Multipart message
-                                    emailBody = extractBodyFromParts(msg.data.payload.parts);
-                                }
-                                
-                                // Fallback to snippet if body extraction failed
-                                if (!emailBody || emailBody.trim().length === 0) {
-                                    emailBody = msg.data.snippet || '';
-                                }
-                                
-                                console.log(`✅ [CHECK] Extracted body length: ${emailBody.length} characters`);
-                                console.log(`✅ [CHECK] Full extracted body: ${emailBody.substring(0, 500)}`);
-                                
-                                // Remove quoted text - look for common reply separators
-                                const quotePatterns = [
-                                    /[\r\n]+\s*On\s+(Mon|Tue|Wed|Thu|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\d{1,2}\s+\w+\s+\d{4})[^\r\n]+[\r\n]+wrote:/is,  // Email reply header
-                                    /-----Original Message-----/i,
-                                    /From:.+?Sent:.+?To:/si,    // Outlook-style headers
-                                    /_+\s*From:/i,               // "___ From:"
-                                ];
-                                
-                                let cleanedBody = emailBody;
-                                for (const pattern of quotePatterns) {
-                                    const match = cleanedBody.match(pattern);
-                                    if (match) {
-                                        console.log(`🔍 [CHECK] Matched pattern at index ${match.index}: "${match[0].substring(0, 100)}"`);
-                                        // Extract only the text before the quoted part
-                                        cleanedBody = cleanedBody.substring(0, match.index).trim();
-                                        break;
-                                    }
-                                }
-                                
-                                // Store the full cleaned body (no character limit for storage)
-                                const fullBody = cleanedBody.trim() || '(Reply received - content not available)';
+                                // Use snippet (available with gmail.metadata scope) as reply content
+                                const fullBody = msg.data.snippet || '(Reply received - content not available)';
                                 
                                 console.log(`✅ [CHECK] Cleaned body length: ${fullBody.length} characters`);
                                 console.log(`✅ [CHECK] Body preview: ${fullBody.substring(0, 200)}...`);
