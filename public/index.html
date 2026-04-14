@@ -2154,11 +2154,11 @@
             const provider = userData.provider || userData.oauth_provider;
             console.log('🔐 User OAuth provider:', provider);
             
-            if (provider === 'google' || provider === 'microsoft') {
-                console.log('✅ OAuth user detected - showing Check for Replies button');
+            if (provider === 'microsoft') {
+                console.log('✅ Microsoft OAuth user - showing Check for Replies button');
                 document.getElementById('checkRepliesContainer').style.display = 'block';
             } else {
-                console.log('ℹ️ Non-OAuth user - hiding Check for Replies button');
+                console.log('ℹ️ Non-Microsoft user - hiding Check for Replies button');
                 document.getElementById('checkRepliesContainer').style.display = 'none';
             }
             
@@ -2255,6 +2255,18 @@
             const btn = document.getElementById('checkRepliesBtn');
             const status = document.getElementById('repliesStatus');
             
+            // Gmail auto-reply checking disabled until CASA — show info message
+            const currentUserData = JSON.parse(localStorage.getItem('userData') || '{}');
+            const currentProvider = currentUserData.provider || currentUserData.oauth_provider;
+            if (currentProvider === 'google') {
+                status.innerHTML = '<strong>📬 Gmail — Coming Soon</strong><br>Automatic reply checking currently works only with Microsoft/Outlook email. Gmail feature coming soon.<br><br>Please check your mails manually and click on the application card to mark it as replied.';
+                status.style.backgroundColor = '#fff3cd';
+                status.style.color = '#856404';
+                status.style.border = '1px solid #ffc107';
+                status.style.display = 'block';
+                return;
+            }
+            
             // Disable button and show loading state
             btn.disabled = true;
             btn.innerHTML = '<span>⏳</span><span>Checking...</span>';
@@ -2323,9 +2335,9 @@
         let replyCheckInterval = null;
         function startPeriodicReplyCheck() {
             const userData = JSON.parse(localStorage.getItem('userData') || '{}');
-            const isOAuthUser = userData.provider === 'google' || userData.provider === 'microsoft';
+            const isMicrosoftUser = userData.provider === 'microsoft';
             
-            if (isOAuthUser && !replyCheckInterval) {
+            if (isMicrosoftUser && !replyCheckInterval) {
                 console.log('🔄 Starting periodic reply check (every 10 minutes)');
                 
                 // Initial check after 30 seconds
