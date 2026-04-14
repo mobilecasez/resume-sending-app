@@ -40,7 +40,7 @@
     "hummus": "^1.0.118",
     "imap": "^0.8.19",
     "jsonwebtoken": "^9.0.3",
-    "jwks-rsa": "^4.0.1",
+    "jwks-rsa": "^3.2.2",
     "mailparser": "^3.9.3",
     "multer": "^2.0.2",
     "nodemailer": "^6.9.7",
