@@ -56,6 +56,8 @@ const usageRoutes = require('./server/routes/usageRoutes');
 const { authenticateToken, authenticateAdmin } = require('./server/middleware/auth');
 
 const app = express();
+// Trust Railway's reverse proxy for rate limiting and IP detection
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
 

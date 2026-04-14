@@ -25,6 +25,10 @@ global.pgPool = global.pgPool || null;
 function initializeConnection() {
     console.log('🐘 Using PostgreSQL database');
     
+    // Internal Railway connections (*.railway.internal) don't use SSL
+    const isInternalRailway = DATABASE_URL.includes('.railway.internal');
+    const sslConfig = IS_PRODUCTION && !isInternalRailway ? { rejectUnauthorized: false } : false;
+    
     // Reuse existing pool if available
     if (global.pgPool) {
         console.log('♻️  Reusing existing PostgreSQL connection pool');
@@ -32,7 +36,7 @@ function initializeConnection() {
     } else {
         db = new Pool({
             connectionString: DATABASE_URL,
-            ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : false,
+            ssl: sslConfig,
             connectionTimeoutMillis: 10000, // 10 seconds
             idleTimeoutMillis: 30000,
             max: 10, // Maximum pool size
