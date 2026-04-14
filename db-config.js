@@ -105,8 +105,8 @@ function run(sql, params = []) {
         let paramIndex = 1;
         pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
         
-        // For INSERT queries, add RETURNING id to get lastID
-        if (pgSql.trim().toUpperCase().startsWith('INSERT')) {
+        // For INSERT queries, add RETURNING id to get lastID (if not already present)
+        if (pgSql.trim().toUpperCase().startsWith('INSERT') && !/RETURNING/i.test(pgSql)) {
             pgSql = pgSql.replace(/;?\s*$/, ' RETURNING id');
         }
         

@@ -112,7 +112,7 @@ const uploadSignature = async (req, res) => {
 const updateProfile = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { fullName, phone, address, dateOfBirth } = req.body;
+        const { fullName, phone, address, dateOfBirth, email } = req.body;
 
         const updates = [];
         const params = [];
@@ -120,6 +120,19 @@ const updateProfile = async (req, res) => {
         if (fullName) {
             updates.push('full_name = ?');
             params.push(fullName);
+        }
+        if (email) {
+            // Basic email validation
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(email)) {
+                return res.status(400).json({ error: 'Invalid email format' });
+            }
+            // Don't allow setting a private relay email
+            if (email.includes('privaterelay.appleid.com')) {
+                return res.status(400).json({ error: 'Please provide your real email address, not the Apple private relay' });
+            }
+            updates.push('email = ?');
+            params.push(email);
         }
         if (phone) {
             updates.push('phone_number = ?');

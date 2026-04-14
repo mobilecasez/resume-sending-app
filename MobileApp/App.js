@@ -347,6 +347,9 @@ function AppContent() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [user, setUser] = useState(null);
+  const userRef = useRef(null);
+  // Keep ref in sync so link handlers always have the latest token
+  useEffect(() => { userRef.current = user; }, [user]);
   const [recipients, setRecipients] = useState([
     { id: 0, email: '', website: '', position: '', error: '' }
   ]);
@@ -438,6 +441,9 @@ function AppContent() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showCompleteProfileModal, setShowCompleteProfileModal] = useState(false);
+  const [completeProfileEmail, setCompleteProfileEmail] = useState('');
+  const [completeProfileName, setCompleteProfileName] = useState('');
   const [showPrivacySettings, setShowPrivacySettings] = useState(false);
   const [privacySettings, setPrivacySettings] = useState({
     emailNotifications: true,
@@ -477,7 +483,7 @@ function AppContent() {
     androidClientId: GOOGLE_CLIENT_ID_ANDROID,
     webClientId: GOOGLE_CLIENT_ID_WEB,
     redirectUri: Platform.OS === 'ios' ? iosRedirectUri : undefined,
-    scopes: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly'],
+    scopes: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send'], // gmail.readonly removed — re-enable after CASA
   });
   const [selectedCoverLetterIndex, setSelectedCoverLetterIndex] = useState(null);
   const [showCoverLetterPreview, setShowCoverLetterPreview] = useState(false);
@@ -755,6 +761,7 @@ function AppContent() {
         },
         body: JSON.stringify({
           fullName: profileData.fullName,
+          email: profileData.email,
           phone: profileData.phone,
           address: profileData.address,
           dateOfBirth: profileData.dateOfBirth,
@@ -1426,11 +1433,39 @@ function AppContent() {
     progressAnimValue.setValue(0);
   };
 
+  // Validate mandatory profile items before generating/sending
+  const validateProfileForGeneration = () => {
+    const missing = [];
+    if (!profileData?.resume) missing.push('Resume');
+    if (!profileData?.profileImage) missing.push('Photo');
+    if (!profileData?.signature) missing.push('Signature');
+    if (!profileData?.fullName) missing.push('Full Name');
+    if (!profileData?.email) missing.push('Email');
+
+    if (missing.length > 0) {
+      Alert.alert(
+        'Profile Incomplete',
+        `Please add the following before generating cover letters:\n\n${missing.map(item => `• ${item}`).join('\n')}\n\nGo to your Profile to upload these.`,
+        [
+          { text: 'Later', style: 'cancel' },
+          { text: 'Go to Profile', onPress: () => setShowSettings(true) }
+        ]
+      );
+      return false;
+    }
+    return true;
+  };
+
   const generateCoverLetterForReview = async (recipientIndex, retryCount = 0) => {
     const recipient = recipients[recipientIndex];
     if (!recipient.email || !recipient.website) {
       Alert.alert('Missing Information', 'Email and website are required');
       return;
+    }
+
+    // Validate profile on first attempt only (not retries, not bulk calls)
+    if (retryCount === 0 && !reviewGeneratingAll && !reviewGeneratingAndSendingAll) {
+      if (!validateProfileForGeneration()) return;
     }
 
     const requestId = `REQ_${Date.now()}_${recipientIndex}`;
@@ -1683,6 +1718,9 @@ function AppContent() {
   };
 
   const generateAllCoverLettersForReview = async () => {
+    // Validate profile before generating
+    if (!validateProfileForGeneration()) return;
+
     // Check credits before generating
     if (creditBalance <= 0) {
       Alert.alert(
@@ -1782,6 +1820,9 @@ function AppContent() {
   };
 
   const generateAndSendAllApplications = async () => {
+    // Validate profile before generating and sending
+    if (!validateProfileForGeneration()) return;
+
     // Check credits before generating and sending
     if (creditBalance <= 0) {
       Alert.alert(
@@ -2780,9 +2821,9 @@ function AppContent() {
       loadApplicationHistoryFromStorage();
       loadNotifications(); // Load notifications
       
-      // Auto-check for replies on login (OAuth users only)
-      if (user.provider === 'google' || user.provider === 'microsoft') {
-        console.log('🔄 OAuth user detected - starting auto-check for replies...');
+      // Auto-check for replies on login (Microsoft OAuth users only — Gmail disabled until CASA)
+      if (user.provider === 'microsoft') {
+        console.log('🔄 Microsoft OAuth user detected - starting auto-check for replies...');
         // Initial check after 10 seconds
         setTimeout(() => autoCheckForReplies(false), 10000);
       }
@@ -2793,7 +2834,7 @@ function AppContent() {
   useEffect(() => {
     let replyCheckInterval = null;
     
-    if (user?.token && (user.provider === 'google' || user.provider === 'microsoft')) {
+    if (user?.token && (user.provider === 'microsoft')) { // Gmail auto-check disabled until CASA
       console.log('🔄 Starting periodic reply check (every 10 minutes)');
       
       replyCheckInterval = setInterval(() => {
@@ -3066,6 +3107,16 @@ function AppContent() {
 
   // Check for email replies (manual button click)
   const checkEmailReplies = async () => {
+    // Gmail auto-reply checking disabled until CASA — show info message
+    if (user.provider === 'google') {
+      Alert.alert(
+        'Gmail — Coming Soon',
+        'Automatic reply checking currently works only with Microsoft/Outlook email. Gmail feature coming soon.\n\nPlease check your mails manually and tap on the application card to mark it as replied.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     try {
       setIsCheckingReplies(true);
 
@@ -3455,6 +3506,152 @@ function AppContent() {
   };
 
   // ==========================================
+  // Link Google Account (for Apple Sign-In users to enable Gmail sending)
+  // Reuses PKCE auth flow but sends code to /auth/link-google with JWT
+  // ==========================================
+  const handleLinkGoogle = async () => {
+    if (!googleRequest) {
+      Alert.alert('Please wait', 'Google login is initializing, try again in a moment.');
+      return;
+    }
+    try {
+      let authUrl = googleRequest.url;
+      if (!authUrl) {
+        authUrl = await googleRequest.makeAuthUrlAsync({
+          authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
+        });
+      }
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, googleRequest.redirectUri);
+      if (result.type === 'success' && result.url) {
+        const urlObj = new URL(result.url);
+        const code = urlObj.searchParams.get('code');
+        if (code) {
+          setLoading(true);
+          const response = await fetch(`${API_BASE}/auth/link-google`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${userRef.current?.token}`,
+            },
+            body: JSON.stringify({
+              code,
+              codeVerifier: googleRequest.codeVerifier,
+              redirectUri: googleRequest.redirectUri,
+              platform: Platform.OS,
+            }),
+          });
+          const data = await response.json();
+          setLoading(false);
+          if (response.ok) {
+            setUser(prev => ({ ...prev, oauth_provider: 'google', needsEmailConnect: false }));
+            Alert.alert('Connected!', data.message || 'Google account linked. Emails will be sent from your Gmail.');
+          } else {
+            Alert.alert('Error', data.error || 'Failed to connect Google account');
+          }
+        }
+      }
+    } catch (err) {
+      setLoading(false);
+      console.error('Link Google error:', err);
+      Alert.alert('Error', err.message || 'Failed to connect Google account');
+    }
+  };
+
+  // ==========================================
+  // Link Microsoft Account (for Apple Sign-In users to enable Outlook sending)
+  // Uses same Microsoft OAuth flow but sends token to /auth/link-microsoft with JWT
+  // ==========================================
+  const handleLinkMicrosoft = async () => {
+    try {
+      const redirectUri = `msauth://com.cvapplyr.app/callback`;
+      const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
+        `client_id=${MICROSOFT_CLIENT_ID}` +
+        `&response_type=token` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&scope=${encodeURIComponent('user.read Mail.Read Mail.Send offline_access')}` +
+        `&response_mode=fragment`;
+
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+
+      if (result.type === 'success') {
+        const url = result.url;
+        const accessTokenMatch = url.match(/access_token=([^&]+)/);
+
+        if (accessTokenMatch && accessTokenMatch[1]) {
+          const accessToken = accessTokenMatch[1];
+          setLoading(true);
+          const response = await fetch(`${API_BASE}/auth/link-microsoft`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${userRef.current?.token}`,
+            },
+            body: JSON.stringify({ accessToken }),
+          });
+          const data = await response.json();
+          setLoading(false);
+          if (response.ok) {
+            setUser(prev => ({ ...prev, oauth_provider: 'microsoft', needsEmailConnect: false }));
+            Alert.alert('Connected!', data.message || 'Microsoft account linked. Emails will be sent from your Outlook.');
+          } else {
+            Alert.alert('Error', data.error || 'Failed to connect Microsoft account');
+          }
+        } else {
+          Alert.alert('Error', 'No access token received from Microsoft');
+        }
+      } else if (result.type === 'cancel') {
+        console.log('Microsoft link cancelled by user');
+      }
+    } catch (err) {
+      setLoading(false);
+      console.error('Link Microsoft error:', err);
+      Alert.alert('Error', err.message || 'Failed to connect Microsoft account');
+    }
+  };
+
+  // ==========================================
+  // Revoke linked email provider (Google/Microsoft)
+  // ==========================================
+  const handleRevokeEmailProvider = () => {
+    const providerName = user?.oauth_provider === 'google' ? 'Gmail' : 'Outlook';
+    Alert.alert(
+      'Revoke Access',
+      `Are you sure you want to disconnect your ${providerName} account?\n\nEmails will no longer be sent from your personal address.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Revoke',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setLoading(true);
+              const response = await fetch(`${API_BASE}/auth/revoke-email-provider`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${userRef.current?.token}`,
+                },
+              });
+              const data = await response.json();
+              setLoading(false);
+              if (response.ok) {
+                setUser(prev => ({ ...prev, oauth_provider: null, provider: null }));
+                Alert.alert('Revoked', data.message || `${providerName} access has been revoked.`);
+              } else {
+                Alert.alert('Error', data.error || 'Failed to revoke access');
+              }
+            } catch (err) {
+              setLoading(false);
+              console.error('Revoke error:', err);
+              Alert.alert('Error', err.message || 'Failed to revoke access');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // ==========================================
   // Apple Sign-In — iOS only (native ASAuthorizationController)
   // Uses expo-apple-authentication; sends identity token to backend for verification
   // ==========================================
@@ -3463,6 +3660,23 @@ function AppContent() {
       Alert.alert('Not Available', 'Sign in with Apple is only available on iOS.');
       return;
     }
+
+    // Show important notice before Apple Sign-In dialog
+    return new Promise((resolve) => {
+      Alert.alert(
+        '📧 Important: Share Your Email',
+        'On the next screen, Apple will ask how you want to share your email.\n\nPlease select "Share My Email" — this app sends job applications on your behalf, so employers need your real email address to reply to you.',
+        [
+          { text: 'Cancel', style: 'cancel', onPress: () => resolve() },
+          { text: 'Continue', style: 'default', onPress: () => {
+            resolve(performAppleLogin());
+          }},
+        ]
+      );
+    });
+  };
+
+  const performAppleLogin = async () => {
     setLoading(true);
     setError('');
     try {
@@ -3484,6 +3698,22 @@ function AppContent() {
         throw new Error('No identity token received from Apple');
       }
 
+      // Apple only sends fullName on the FIRST sign-in — cache it locally
+      let fullName = credential.fullName;
+      const appleUserId = credential.user;
+      if (fullName && (fullName.givenName || fullName.familyName)) {
+        await AsyncStorage.setItem(`apple_fullName_${appleUserId}`, JSON.stringify(fullName));
+      } else {
+        // Try to recover cached name from a previous sign-in
+        try {
+          const cached = await AsyncStorage.getItem(`apple_fullName_${appleUserId}`);
+          if (cached) {
+            fullName = JSON.parse(cached);
+            console.log('Recovered cached Apple fullName:', fullName);
+          }
+        } catch (e) { /* ignore */ }
+      }
+
       // Send identity token to backend for verification and user creation/login
       const response = await fetch(`${API_BASE}/auth/apple`, {
         method: 'POST',
@@ -3492,20 +3722,46 @@ function AppContent() {
           identityToken: credential.identityToken,
           authorizationCode: credential.authorizationCode,
           email: credential.email,
-          fullName: credential.fullName,
+          fullName: fullName,
         }),
       });
 
       const data = await response.json();
-      console.log('Apple backend response:', data);
+      console.log('Apple backend response status:', response.status);
+      console.log('Apple backend response:', JSON.stringify(data));
 
       if (!response.ok) {
-        throw new Error(data.error || 'Apple login failed');
+        throw new Error(data.details || data.error || 'Apple login failed');
       }
 
       setUser({ ...data.user, token: data.token });
       setScreen('dashboard');
-      Alert.alert('Success', `Welcome ${data.user.fullName}!`);
+
+      // If Apple used private relay email, force user to provide real email before proceeding
+      if (data.user.needsProfileUpdate) {
+        setCompleteProfileEmail('');
+        setCompleteProfileName(data.user.fullName === 'Apple User' ? '' : data.user.fullName || '');
+        setTimeout(() => setShowCompleteProfileModal(true), 300);
+      } else if (data.user.needsEmailConnect) {
+        // User signed in with Apple but has no Google/Microsoft tokens for sending emails
+        setTimeout(() => {
+          Alert.alert(
+            'Connect Your Email',
+            'You signed in with Apple, but to send job applications from your own email address, you need to connect your Gmail or Outlook account.\n\nWithout this, emails will be sent from our system address instead of yours.',
+            [
+              { text: 'Later', style: 'cancel' },
+              { text: 'Connect Outlook', onPress: () => {
+                handleLinkMicrosoft();
+              }},
+              { text: 'Connect Google', onPress: () => {
+                handleLinkGoogle();
+              }},
+            ]
+          );
+        }, 500);
+      } else {
+        Alert.alert('Success', `Welcome ${data.user.fullName}!`);
+      }
     } catch (err) {
       if (err.code === 'ERR_REQUEST_CANCELED') {
         console.log('Apple Sign-In cancelled by user');
@@ -3841,9 +4097,77 @@ function AppContent() {
   }
 
   // DASHBOARD/RECIPIENTS SCREEN
+  // Complete Profile Modal for Apple Sign-In users with private relay email
+  const renderCompleteProfileModal = () => (
+    <Modal visible={showCompleteProfileModal} animationType="slide" transparent={true}>
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 24, width: '85%', maxWidth: 400 }}>
+          <Text style={{ fontSize: 22, fontWeight: '700', color: '#1a1a2e', textAlign: 'center', marginBottom: 8 }}>Complete Your Profile</Text>
+          <Text style={{ fontSize: 14, color: '#6b7280', textAlign: 'center', marginBottom: 20 }}>
+            Apple Sign-In used a private relay email. Please provide your real email address — it's required for sending applications to employers.
+          </Text>
+          
+          <Text style={{ fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 6 }}>Full Name *</Text>
+          <TextInput
+            style={{ borderWidth: 1, borderColor: '#d1d5db', borderRadius: 10, padding: 12, fontSize: 16, marginBottom: 16, color: '#1a1a2e' }}
+            placeholder="Enter your full name"
+            placeholderTextColor="#9CA3AF"
+            value={completeProfileName}
+            onChangeText={setCompleteProfileName}
+            autoCapitalize="words"
+          />
+          
+          <Text style={{ fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 6 }}>Email Address *</Text>
+          <TextInput
+            style={{ borderWidth: 1, borderColor: '#d1d5db', borderRadius: 10, padding: 12, fontSize: 16, marginBottom: 20, color: '#1a1a2e' }}
+            placeholder="your.real@email.com"
+            placeholderTextColor="#9CA3AF"
+            value={completeProfileEmail}
+            onChangeText={setCompleteProfileEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          
+          <TouchableOpacity
+            style={{ backgroundColor: (!completeProfileEmail.includes('@') || !completeProfileName.trim()) ? '#d1d5db' : '#0d9488', borderRadius: 10, padding: 14, alignItems: 'center' }}
+            disabled={!completeProfileEmail.includes('@') || !completeProfileName.trim()}
+            onPress={async () => {
+              try {
+                const response = await fetch(`${API_BASE}/users/profile/update`, {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${user.token}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({ fullName: completeProfileName.trim(), email: completeProfileEmail.trim() }),
+                });
+                if (response.ok) {
+                  setUser({ ...user, fullName: completeProfileName.trim(), email: completeProfileEmail.trim(), name: completeProfileName.trim() });
+                  setProfileData(prev => ({ ...prev, fullName: completeProfileName.trim(), email: completeProfileEmail.trim() }));
+                  setShowCompleteProfileModal(false);
+                  setScreen('dashboard');
+                  Alert.alert('Welcome!', `Profile updated successfully.`);
+                } else {
+                  const err = await response.json();
+                  Alert.alert('Error', err.error || 'Failed to update profile');
+                }
+              } catch (e) {
+                Alert.alert('Error', e.message || 'Network error');
+              }
+            }}
+          >
+            <Text style={{ color: '#fff', fontSize: 16, fontWeight: '600' }}>Continue</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+
   if (screen === 'dashboard' || !screen || screen === '') {
     return (
       <SafeAreaViewContext style={styles.modernContainer}>
+        {renderCompleteProfileModal()}
         <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
         
         <ScrollView 
@@ -4710,15 +5034,41 @@ function AppContent() {
                       
                       <TouchableOpacity
                         style={styles.modalConfirmButton}
-                        onPress={() => {
-                          setApplicationHistory(prev =>
-                            prev.map(item =>
-                              item.id === replyAppId
-                                ? { ...item, replyReceived: true, replyDate: selectedReplyDate.toISOString() }
-                                : item
-                            )
-                          );
-                          setShowReplyDatePicker(false);
+                        onPress={async () => {
+                          try {
+                            // Save to server first
+                            const response = await fetch(`${API_BASE}/users/application-history/${replyAppId}`, {
+                              method: 'PATCH',
+                              headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${userRef.current?.token}`,
+                              },
+                              body: JSON.stringify({
+                                replyReceived: true,
+                                replyDate: selectedReplyDate.toISOString(),
+                              }),
+                            });
+
+                            if (response.ok) {
+                              // Update local application history
+                              setApplicationHistory(prev =>
+                                prev.map(item =>
+                                  item.id === replyAppId
+                                    ? { ...item, replyReceived: true, replyDate: selectedReplyDate.toISOString() }
+                                    : item
+                                )
+                              );
+                              // Update dashboard counters immediately
+                              setTotalReplied(prev => prev + 1);
+                              setShowReplyDatePicker(false);
+                            } else {
+                              const data = await response.json();
+                              Alert.alert('Error', data.error || 'Failed to save reply status');
+                            }
+                          } catch (err) {
+                            console.error('Mark as replied error:', err);
+                            Alert.alert('Error', 'Failed to save reply. Please try again.');
+                          }
                         }}
                       >
                         <View style={styles.confirmButtonWrapper}>
@@ -5676,10 +6026,42 @@ function AppContent() {
               <Text style={styles.detailLabel}>Email Address</Text>
               <Text style={styles.detailValue}>{displayEmail}</Text>
             </View>
-            <View style={[styles.detailRow, { borderBottomWidth: 0 }]}>
+            <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Verification Status</Text>
               <Text style={styles.detailValueVerified}>✓ Verified</Text>
             </View>
+            <View style={[styles.detailRow, { borderBottomWidth: 0 }]}>
+              <Text style={styles.detailLabel}>Email Sending</Text>
+              {user?.oauth_provider === 'google' ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={styles.detailValueVerified}>✓ Gmail</Text>
+                  <TouchableOpacity onPress={handleRevokeEmailProvider}>
+                    <Text style={{ color: '#EF4444', fontWeight: '600', fontSize: 12 }}>Revoke</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : user?.oauth_provider === 'microsoft' ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={styles.detailValueVerified}>✓ Outlook</Text>
+                  <TouchableOpacity onPress={handleRevokeEmailProvider}>
+                    <Text style={{ color: '#EF4444', fontWeight: '600', fontSize: 12 }}>Revoke</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={{ flexDirection: 'row', gap: 12 }}>
+                  <TouchableOpacity onPress={handleLinkGoogle}>
+                    <Text style={{ color: '#0d9488', fontWeight: '600', fontSize: 14 }}>Google →</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={handleLinkMicrosoft}>
+                    <Text style={{ color: '#0d9488', fontWeight: '600', fontSize: 14 }}>Outlook →</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+            {user?.oauth_provider !== 'google' && user?.oauth_provider !== 'microsoft' && (
+              <Text style={{ color: '#9CA3AF', fontSize: 12, marginTop: 4, paddingHorizontal: 16, paddingBottom: 12 }}>
+                Connect Google or Outlook to send job applications from your own email
+              </Text>
+            )}
           </View>
 
           {/* Personal Information */}
@@ -5688,6 +6070,18 @@ function AppContent() {
             
             {isEditingProfile ? (
               <>
+                <View style={styles.editFormGroup}>
+                  <Text style={styles.formLabel}>Email Address</Text>
+                  <TextInput 
+                    style={styles.formInput}
+                    placeholder="your@email.com"
+                    placeholderTextColor="#9CA3AF"
+                    value={profileData?.email || ''}
+                    onChangeText={(text) => setProfileData({ ...profileData, email: text })}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                  />
+                </View>
                 <View style={styles.editFormGroup}>
                   <Text style={styles.formLabel}>Full Name</Text>
                   <TextInput 
@@ -5766,14 +6160,14 @@ function AppContent() {
                   <Text style={styles.detailValue}>{profileData?.phone || 'Not provided'}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity 
-                  style={styles.detailRow}
+                  style={[styles.detailRow, { alignItems: 'flex-start' }]}
                   onLongPress={() => {
                     Clipboard.setStringAsync(profileData?.address || '');
                     Alert.alert('Copied', 'Address copied to clipboard');
                   }}
                 >
-                  <Text style={styles.detailLabel}>Address</Text>
-                  <Text style={styles.detailValue}>{profileData?.address || 'Not provided'}</Text>
+                  <Text style={[styles.detailLabel, { marginTop: 2 }]}>Address</Text>
+                  <Text style={[styles.detailValue, { flex: 1, textAlign: 'right' }]}>{profileData?.address || 'Not provided'}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity 
                   style={styles.detailRow}
@@ -10535,11 +10929,14 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '500',
     color: '#6B7280',
+    width: 120,
   },
   detailValue: {
     fontSize: 13,
     fontWeight: '600',
     color: '#1F2937',
+    flexShrink: 1,
+    textAlign: 'right',
   },
   detailValueVerified: {
     fontSize: 13,

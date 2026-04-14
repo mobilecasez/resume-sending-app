@@ -688,7 +688,8 @@ passport.use(new GoogleStrategy({
         'profile', 
         'email', 
         'https://www.googleapis.com/auth/gmail.send',
-        'https://www.googleapis.com/auth/gmail.metadata'  // Approved scope for reply detection (labels/headers)
+        // TODO: Re-enable after CASA Tier 2 approval
+        // 'https://www.googleapis.com/auth/gmail.metadata'  // Requires CASA — reply detection (labels/headers)
     ],
     accessType: 'offline', // Request refresh token
     prompt: 'consent' // Force consent screen to get refresh token
@@ -702,7 +703,9 @@ passport.use('google-mobile', new GoogleStrategy({
     clientID: process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET,
     callbackURL: MOBILE_CALLBACK_URL,
-    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly'],
+    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send'],
+    // TODO: Re-enable after CASA Tier 2 approval
+    // 'https://www.googleapis.com/auth/gmail.readonly' — removed to avoid CASA requirement
     accessType: 'offline',
     prompt: 'consent',
 }, (accessToken, refreshToken, profile, done) => {

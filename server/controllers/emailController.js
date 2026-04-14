@@ -1710,6 +1710,19 @@ const checkEmailReplies = async (req, res) => {
             });
         }
 
+        // Gmail auto-reply checking is disabled until CASA Tier 2 approval (requires gmail.readonly/metadata scope)
+        // For Gmail users, replies must be tracked manually via the app
+        if (user.oauth_provider === 'google') {
+            console.log('📬 [CHECK] Gmail auto-reply check is disabled (CASA not yet approved). Use manual reply tracking.');
+            return res.json({
+                success: true,
+                message: 'Automatic reply checking for Gmail is coming soon. Please mark replies manually.',
+                repliesFound: 0,
+                updatedApplications: [],
+                gmailAutoCheckDisabled: true
+            });
+        }
+
         // Get all applications to check for replies (including those that already have replies)
         console.log('📬 [CHECK] Fetching applications to check for replies...');
         const pendingApps = await dbConfig.query(

@@ -12,7 +12,7 @@ router.post('/change-password', authenticateToken, authController.changePassword
 
 // Google OAuth Routes
 router.get('/google', passport.authenticate('google', {
-    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.metadata'],
+    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send'], // gmail.metadata removed — re-enable after CASA
     accessType: 'offline',
     prompt: 'consent'
 }));
@@ -24,7 +24,7 @@ router.get('/google/callback',
 
 // Mobile-specific Google OAuth: initiates web OAuth, returns JWT via deep link
 router.get('/google/mobile', passport.authenticate('google-mobile', {
-    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly'],
+    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send'], // gmail.readonly removed — re-enable after CASA
     accessType: 'offline',
     prompt: 'consent',
 }));
@@ -53,6 +53,15 @@ router.post('/microsoft', authController.microsoftAuth);
 
 // Apple Sign-In API endpoint for mobile
 router.post('/apple', authController.appleAuth);
+
+// Link Google account to existing user (for Apple Sign-In users who need Gmail sending)
+router.post('/link-google', authenticateToken, authController.linkGoogle);
+
+// Link Microsoft account to existing user (for Apple Sign-In users who need Outlook sending)
+router.post('/link-microsoft', authenticateToken, authController.linkMicrosoft);
+
+// Revoke linked email provider (Google/Microsoft) — clears tokens
+router.post('/revoke-email-provider', authenticateToken, authController.revokeEmailProvider);
 
 // LinkedIn OAuth Routes (Disabled due to API compatibility issues)
 /*

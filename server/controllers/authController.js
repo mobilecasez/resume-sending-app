@@ -824,28 +824,67 @@ const appleAuth = async (req, res) => {
             return res.status(400).json({ error: 'Identity token is required' });
         }
 
+        console.log('Identity token length:', identityToken.length);
+        console.log('Identity token preview:', identityToken.substring(0, 50) + '...');
+
         // Decode header to get kid for key lookup
         const tokenParts = identityToken.split('.');
         if (tokenParts.length !== 3) {
+            console.error('Token has', tokenParts.length, 'parts instead of 3');
             return res.status(400).json({ error: 'Invalid identity token format' });
         }
-        const header = JSON.parse(Buffer.from(tokenParts[0], 'base64url').toString());
+        
+        // Try both base64url and standard base64 decoding
+        let header;
+        try {
+            header = JSON.parse(Buffer.from(tokenParts[0], 'base64url').toString());
+        } catch (e) {
+            console.log('base64url decode failed, trying base64...');
+            header = JSON.parse(Buffer.from(tokenParts[0], 'base64').toString());
+        }
+        console.log('Token header:', JSON.stringify(header));
+        
+        // Decode payload to inspect claims before verification
+        let payload;
+        try {
+            payload = JSON.parse(Buffer.from(tokenParts[1], 'base64url').toString());
+        } catch (e) {
+            payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString());
+        }
+        console.log('Token payload (pre-verify):', JSON.stringify({
+            iss: payload.iss,
+            aud: payload.aud,
+            sub: payload.sub,
+            email: payload.email,
+            exp: payload.exp,
+            iat: payload.iat,
+            exp_date: new Date(payload.exp * 1000).toISOString(),
+            now: new Date().toISOString(),
+            expired: Date.now() > payload.exp * 1000
+        }));
 
         // Get Apple's public key and verify the token
+        console.log('Fetching Apple signing key for kid:', header.kid);
         const signingKey = await getAppleSigningKey(header.kid);
+        console.log('Got signing key, verifying token...');
+        
         const decoded = jwt.verify(identityToken, signingKey, {
             algorithms: ['RS256'],
             issuer: 'https://appleid.apple.com',
-            audience: 'com.cvapplyr.mobile', // Must match your bundle ID
+            audience: payload.aud, // Use the actual audience from the token (handles dev vs prod bundle ID)
+            clockTolerance: 120, // Allow 2 minutes of clock skew
         });
 
         console.log('Apple token verified:', { sub: decoded.sub, email: decoded.email });
 
         // Apple only sends email/name on FIRST sign-in; afterwards decoded.email may still be present
-        const email = decoded.email || appleEmail;
+        const email = appleEmail || decoded.email;
         if (!email) {
             return res.status(400).json({ error: 'No email provided by Apple. Please try again or use a different sign-in method.' });
         }
+
+        // Check if this is a private relay email
+        const isPrivateRelay = email.includes('privaterelay.appleid.com');
 
         // Build display name (Apple may hide real name)
         let displayName = 'Apple User';
@@ -853,29 +892,54 @@ const appleAuth = async (req, res) => {
             displayName = [fullName.givenName, fullName.familyName].filter(Boolean).join(' ');
         }
 
+        // Also try to find user by apple_user_id (sub) first — more reliable than email for Apple users
+        let user = await dbConfig.get('SELECT * FROM users WHERE apple_user_id = ?', [decoded.sub]);
+        if (!user) {
+            user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [email]);
+        }
+        // Also check if there's a user with the private relay email for this Apple sub
+        if (!user) {
+            user = await dbConfig.get('SELECT * FROM users WHERE email LIKE ? AND oauth_provider = ?', ['%privaterelay.appleid.com', 'apple']);
+        }
+
         const issuedAt = new Date();
         const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000);
 
-        // Find or create user
-        let user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [email]);
-
         if (!user) {
-            // Create new user
-            const hashedPassword = await bcrypt.hash('apple-oauth-' + decoded.sub, 10);
-            const result = await dbConfig.run(
-                `INSERT INTO users (
-                    email, full_name, password, oauth_provider,
-                    apple_user_id, apple_identity_token,
-                    apple_token_issued_at, apple_token_expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-                [
-                    email, displayName, hashedPassword, 'apple',
-                    decoded.sub, encryptOAuthToken(identityToken),
-                    issuedAt.toISOString(), expiresAt.toISOString()
-                ]
-            );
+            // Create new user — but handle case where email already exists (link accounts)
+            let newUserId;
+            try {
+                const hashedPassword = await bcrypt.hash('apple-oauth-' + decoded.sub, 10);
+                const result = await dbConfig.run(
+                    `INSERT INTO users (
+                        email, full_name, password, oauth_provider,
+                        apple_user_id, apple_identity_token,
+                        apple_token_issued_at, apple_token_expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                    [
+                        email, displayName, hashedPassword, 'apple',
+                        decoded.sub, encryptOAuthToken(identityToken),
+                        issuedAt.toISOString(), expiresAt.toISOString()
+                    ]
+                );
+                newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
+            } catch (insertErr) {
+                // Duplicate email — link Apple to existing account instead
+                if (insertErr.code === '23505' || (insertErr.message && insertErr.message.includes('duplicate key'))) {
+                    user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [email]);
+                    if (user) {
+                        // Link Apple to this existing account — fall through to existing user path below
+                        console.log(`Linking Apple account to existing user ${user.id} (${user.email})`);
+                    } else {
+                        throw insertErr;
+                    }
+                } else {
+                    throw insertErr;
+                }
+            }
 
-            const newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
+            // If we successfully created a new user (no duplicate)
+            if (newUserId && !user) {
 
             // Give 2 free credits to new user
             try {
@@ -918,32 +982,42 @@ const appleAuth = async (req, res) => {
                     fullName: displayName,
                     email,
                     oauth_provider: 'apple',
-                    provider: 'apple'
+                    provider: 'apple',
+                    needsEmailConnect: true
                 }
             });
-        } else {
-            // Existing user — update Apple tokens
+            } // end if (newUserId && !user)
+        }
+        
+        // Existing user (found by lookup OR linked via duplicate email) — update Apple tokens
+        if (user) {
+            // Only change oauth_provider to 'apple' if user doesn't already have Google/Microsoft
+            // (those providers are needed for sending emails via Gmail/Outlook APIs)
+            const preserveProvider = user.oauth_provider === 'google' || user.oauth_provider === 'microsoft';
+            
             await dbConfig.run(
                 `UPDATE users SET 
-                    oauth_provider = ?,
+                    ${preserveProvider ? '' : 'oauth_provider = ?,'}
                     apple_user_id = ?,
                     apple_identity_token = ?,
                     apple_token_issued_at = ?,
                     apple_token_expires_at = ?
                 WHERE id = ?`,
-                [
-                    'apple',
-                    decoded.sub,
-                    encryptOAuthToken(identityToken),
-                    issuedAt.toISOString(),
-                    expiresAt.toISOString(),
-                    user.id
-                ]
+                preserveProvider
+                    ? [decoded.sub, encryptOAuthToken(identityToken), issuedAt.toISOString(), expiresAt.toISOString(), user.id]
+                    : ['apple', decoded.sub, encryptOAuthToken(identityToken), issuedAt.toISOString(), expiresAt.toISOString(), user.id]
             );
+
+            // Update email if Apple provided a real one and DB still has private relay
+            if (email && !email.includes('privaterelay.appleid.com') && user.email.includes('privaterelay.appleid.com')) {
+                await dbConfig.run('UPDATE users SET email = ? WHERE id = ?', [email, user.id]);
+                user.email = email;
+            }
 
             // Update name if Apple provided it and current name is generic
             if (displayName !== 'Apple User' && (user.full_name === 'Apple User' || !user.full_name)) {
                 await dbConfig.run('UPDATE users SET full_name = ? WHERE id = ?', [displayName, user.id]);
+                user.full_name = displayName;
             }
 
             await logSecurityEvent(user.id, 'OAUTH_TOKEN_GRANTED', 'oauth', {
@@ -952,8 +1026,11 @@ const appleAuth = async (req, res) => {
                 expires_at: expiresAt.toISOString()
             }, req);
 
+            const currentEmail = user.email;
+            const currentName = user.full_name || displayName;
+
             const token = jwt.sign(
-                { id: user.id, email: user.email },
+                { id: user.id, email: currentEmail },
                 JWT_SECRET,
                 { expiresIn: '24h' }
             );
@@ -963,19 +1040,26 @@ const appleAuth = async (req, res) => {
                 token,
                 user: {
                     id: user.id,
-                    fullName: user.full_name !== 'Apple User' ? user.full_name : displayName,
-                    email: user.email,
-                    oauth_provider: 'apple',
-                    provider: 'apple'
+                    fullName: currentName !== 'Apple User' ? currentName : displayName,
+                    email: currentEmail,
+                    oauth_provider: user.oauth_provider || 'apple',
+                    provider: 'apple',
+                    isPrivateRelay: currentEmail.includes('privaterelay.appleid.com'),
+                    needsProfileUpdate: currentName === 'Apple User' || currentEmail.includes('privaterelay.appleid.com'),
+                    needsEmailConnect: !user.google_access_token && !user.microsoft_access_token
                 }
             });
         }
     } catch (error) {
-        console.error('Apple Sign-In error:', error);
+        console.error('Apple Sign-In error:', error.name, error.message);
+        console.error('Full error:', error);
         if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
-            return res.status(401).json({ error: 'Invalid or expired Apple identity token' });
+            return res.status(401).json({ error: 'Invalid or expired Apple identity token', details: error.message });
         }
-        return res.status(500).json({ error: 'Apple authentication failed' });
+        if (error.name === 'SigningKeyNotFoundError') {
+            return res.status(401).json({ error: 'Apple signing key not found. Please try again.', details: error.message });
+        }
+        return res.status(500).json({ error: 'Apple authentication failed', details: error.message });
     }
 };
 
@@ -1022,6 +1106,233 @@ const changePassword = async (req, res) => {
     }
 };
 
+// Link Google account to existing user (for users who signed in via Apple)
+// Same token exchange as googleAuth but links to the authenticated user instead of creating/switching accounts
+const linkGoogle = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { code, codeVerifier, redirectUri: clientRedirectUri, platform } = req.body;
+
+        if (!code) {
+            return res.status(400).json({ error: 'Authorization code is required' });
+        }
+
+        // Exchange authorization code for tokens (same logic as googleAuth)
+        const clientId = process.env.GOOGLE_CLIENT_ID;
+        let redirectUri = clientRedirectUri;
+        if (!redirectUri) {
+            if (platform === 'ios') {
+                const clientIdPrefix = clientId.split('.apps.googleusercontent.com')[0];
+                redirectUri = `com.googleusercontent.apps.${clientIdPrefix}:/oauth2redirect/google`;
+            } else {
+                redirectUri = 'com.cvapplyr.mobile:/oauth2redirect/google';
+            }
+        }
+
+        const tokenParams = {
+            code,
+            client_id: clientId,
+            redirect_uri: redirectUri,
+            grant_type: 'authorization_code'
+        };
+
+        if (codeVerifier) {
+            tokenParams.code_verifier = codeVerifier;
+        } else {
+            tokenParams.client_secret = process.env.GOOGLE_CLIENT_SECRET;
+        }
+
+        const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams(tokenParams)
+        });
+
+        if (!tokenResponse.ok) {
+            const errorData = await tokenResponse.json();
+            console.error('Google token exchange error (link):', errorData);
+            return res.status(401).json({ error: 'Failed to exchange authorization code', details: errorData });
+        }
+
+        const tokenData = await tokenResponse.json();
+        const accessToken = tokenData.access_token;
+        const refreshToken = tokenData.refresh_token;
+
+        // Verify the Google account
+        const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
+            headers: { Authorization: `Bearer ${accessToken}` }
+        });
+
+        if (!userInfoResponse.ok) {
+            return res.status(401).json({ error: 'Failed to verify Google account' });
+        }
+
+        const googleUser = await userInfoResponse.json();
+        console.log(`Linking Google account (${googleUser.email}) to user ${userId}`);
+
+        const issuedAt = new Date();
+        const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000);
+
+        // Update user with Google tokens — preserve apple fields, set oauth_provider to google for email sending
+        const updateFields = [
+            'oauth_provider = ?',
+            'google_access_token = ?',
+            'used_pkce = ?',
+            'google_token_issued_at = ?',
+            'google_token_expires_at = ?'
+        ];
+        const updateParams = [
+            'google',
+            encryptOAuthToken(accessToken),
+            !!codeVerifier,
+            issuedAt.toISOString(),
+            expiresAt.toISOString()
+        ];
+
+        if (refreshToken) {
+            updateFields.push('google_refresh_token = ?');
+            updateParams.push(encryptOAuthToken(refreshToken));
+        }
+
+        updateParams.push(userId);
+        await dbConfig.run(
+            `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`,
+            updateParams
+        );
+
+        await logSecurityEvent(userId, 'OAUTH_ACCOUNT_LINKED', 'oauth', {
+            provider: 'google',
+            linked_email: googleUser.email,
+            flow: 'account_link'
+        }, req);
+
+        return res.json({
+            success: true,
+            linkedEmail: googleUser.email,
+            provider: 'google',
+            message: `Google account (${googleUser.email}) connected successfully. Emails will now be sent from your Gmail.`
+        });
+    } catch (error) {
+        console.error('Link Google error:', error);
+        return res.status(500).json({ error: 'Failed to link Google account', details: error.message });
+    }
+};
+
+/**
+ * Link Microsoft/Outlook account for Apple Sign-In users (email sending)
+ * Accepts an access token obtained via the mobile Microsoft OAuth flow
+ */
+const linkMicrosoft = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { accessToken } = req.body;
+
+        if (!accessToken) {
+            return res.status(400).json({ error: 'Access token is required' });
+        }
+
+        // Verify the access token with Microsoft Graph API
+        const response = await fetch('https://graph.microsoft.com/v1.0/me', {
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+
+        if (!response.ok) {
+            return res.status(401).json({ error: 'Invalid Microsoft access token' });
+        }
+
+        const microsoftUser = await response.json();
+        const msEmail = microsoftUser.mail || microsoftUser.userPrincipalName;
+        console.log(`Linking Microsoft account (${msEmail}) to user ${userId}`);
+
+        const issuedAt = new Date();
+        const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000);
+
+        await dbConfig.run(
+            `UPDATE users SET 
+                oauth_provider = ?,
+                microsoft_access_token = ?,
+                microsoft_token_issued_at = ?,
+                microsoft_token_expires_at = ?
+            WHERE id = ?`,
+            [
+                'microsoft',
+                encryptOAuthToken(accessToken),
+                issuedAt.toISOString(),
+                expiresAt.toISOString(),
+                userId
+            ]
+        );
+
+        await logSecurityEvent(userId, 'OAUTH_ACCOUNT_LINKED', 'oauth', {
+            provider: 'microsoft',
+            linked_email: msEmail,
+            flow: 'account_link'
+        }, req);
+
+        return res.json({
+            success: true,
+            linkedEmail: msEmail,
+            provider: 'microsoft',
+            message: `Microsoft account (${msEmail}) connected successfully. Emails will now be sent from your Outlook.`
+        });
+    } catch (error) {
+        console.error('Link Microsoft error:', error);
+        return res.status(500).json({ error: 'Failed to link Microsoft account', details: error.message });
+    }
+};
+
+/**
+ * Revoke linked email provider (Google/Microsoft) — clears tokens, resets oauth_provider
+ * User remains signed in via Apple (or local account)
+ */
+const revokeEmailProvider = async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        // Get current user to log what's being revoked
+        const user = await dbConfig.get('SELECT oauth_provider, email FROM users WHERE id = ?', [userId]);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const previousProvider = user.oauth_provider;
+        if (!previousProvider || (previousProvider !== 'google' && previousProvider !== 'microsoft')) {
+            return res.status(400).json({ error: 'No email provider connected to revoke' });
+        }
+
+        // Clear all email-sending tokens and reset provider
+        await dbConfig.run(
+            `UPDATE users SET 
+                oauth_provider = NULL,
+                google_access_token = NULL,
+                google_refresh_token = NULL,
+                google_token_issued_at = NULL,
+                google_token_expires_at = NULL,
+                microsoft_access_token = NULL,
+                microsoft_refresh_token = NULL,
+                microsoft_token_issued_at = NULL,
+                microsoft_token_expires_at = NULL,
+                used_pkce = false
+            WHERE id = ?`,
+            [userId]
+        );
+
+        await logSecurityEvent(userId, 'OAUTH_PROVIDER_REVOKED', 'oauth', {
+            previous_provider: previousProvider,
+            flow: 'manual_revoke'
+        }, req);
+
+        const providerName = previousProvider === 'google' ? 'Gmail' : 'Outlook';
+        return res.json({
+            success: true,
+            message: `${providerName} access has been revoked. Emails will now be sent from our system address.`
+        });
+    } catch (error) {
+        console.error('Revoke email provider error:', error);
+        return res.status(500).json({ error: 'Failed to revoke email provider', details: error.message });
+    }
+};
+
 module.exports = {
     register,
     login,
@@ -1033,5 +1344,8 @@ module.exports = {
     microsoftAuth,
     appleAuth,
     linkedinCallback,
-    changePassword
+    changePassword,
+    linkGoogle,
+    linkMicrosoft,
+    revokeEmailProvider
 };
