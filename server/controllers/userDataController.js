@@ -322,20 +322,35 @@ const getReviewCoverLetters = async (req, res) => {
 const getCounters = async (req, res) => {
     try {
         const userId = req.user.id;
-        
-        console.log('🔍 [COUNTERS] Getting counters for user ID:', userId);
-        
-        const row = await dbConfig.get(
-            'SELECT total_generated, total_sent FROM users WHERE id = ?',
+
+        // Derive all counts directly from actual data — never trust stale users.total_sent/total_generated
+        const sentRow = await dbConfig.get(
+            'SELECT COUNT(*) as total FROM application_history WHERE user_id = ? AND deleted_at IS NULL',
             [userId]
         );
-        
-        console.log('📊 [COUNTERS] Database row:', row);
-        console.log('📊 [COUNTERS] Returning - Generated:', row?.total_generated || 0, 'Sent:', row?.total_sent || 0);
-        
+
+        const repliedRow = await dbConfig.get(
+            'SELECT COUNT(*) as total FROM application_history WHERE user_id = ? AND deleted_at IS NULL AND reply_received = 1',
+            [userId]
+        );
+
+        // cover_letter_generation entries = letters generated (no deleted_at on this table)
+        const usageRow = await dbConfig.get(
+            "SELECT COUNT(*) as total FROM credit_usage_history WHERE user_id = ? AND action_type = 'cover_letter_generation'",
+            [userId]
+        );
+
+        const totalSent = parseInt(sentRow?.total) || 0;
+        const totalReplied = parseInt(repliedRow?.total) || 0;
+        // Generated is whichever is higher: letters generated from usage history, or apps sent
+        const totalGenerated = Math.max(totalSent, parseInt(usageRow?.total) || 0);
+
+        console.log('📊 [COUNTERS] Derived - Generated:', totalGenerated, 'Sent:', totalSent, 'Replied:', totalReplied);
+
         res.json({
-            totalGenerated: row?.total_generated || 0,
-            totalSent: row?.total_sent || 0
+            totalGenerated,
+            totalSent,
+            totalReplied
         });
     } catch (error) {
         console.error('Error fetching counters:', error);

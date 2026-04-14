@@ -246,6 +246,20 @@ const notifyError = async (userId, errorTitle, errorMessage, action = null) => {
     await createNotification(userId, 'error', title, message, details, metadata);
 };
 
+// Email Reply Received
+const notifyEmailReply = async (userId, companyName, replySubject) => {
+    const title = 'Reply Received!';
+    const message = `${companyName} replied to your application`;
+    const details = `Subject: ${replySubject}`;
+    const metadata = {
+        companyName,
+        replySubject,
+        action: 'email_reply_received'
+    };
+
+    await createNotification(userId, 'email', title, message, details, metadata);
+};
+
 module.exports = {
     getUserNotifications,
     markAsRead,
@@ -259,5 +273,6 @@ module.exports = {
     notifyCreditsUsed,
     notifyProfileUpdated,
     notifyError,
+    notifyEmailReply,
     createNotification
 };

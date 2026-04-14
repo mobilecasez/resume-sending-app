@@ -8,7 +8,37 @@ const TemplateCoverLetterGenerator = require('../../template-cover-letter-genera
 const PDFKit = require('pdfkit');
 const cheerio = require('cheerio');
 const { sendEmailViaZeptoMail } = require('../services/zeptomailService');
-const { notifyEmailSent, notifyError } = require('./notificationsController');
+const { notifyEmailSent, notifyError, notifyEmailReply } = require('./notificationsController');
+const CryptoJS = require('crypto-js');
+
+// SECURITY: Get encryption key (same as server.js)
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+if (!ENCRYPTION_KEY) {
+    console.error('⚠️ WARNING: ENCRYPTION_KEY not set in emailController');
+}
+
+// OAuth token decryption helper with backward compatibility
+function decryptOAuthToken(encryptedToken) {
+    if (!encryptedToken) return null;
+    if (!ENCRYPTION_KEY) return encryptedToken; // Fallback for backward compatibility during migration
+    try {
+        // BACKWARD COMPATIBILITY: Check if token is already decrypted (starts with 'ya29.' for Google)
+        // This handles existing unencrypted tokens in the database from before this security fix
+        if (encryptedToken.startsWith('ya29.') || encryptedToken.startsWith('EwB') || encryptedToken.startsWith('eyJ')) {
+            // Token appears to be in plain text (Google tokens start with 'ya29.', Microsoft with 'EwB' or 'eyJ')
+            console.log('⚠️ Found unencrypted OAuth token - using as-is (will be encrypted on next login)');
+            return encryptedToken;
+        }
+        
+        const bytes = CryptoJS.AES.decrypt(encryptedToken, ENCRYPTION_KEY);
+        const decrypted = bytes.toString(CryptoJS.enc.Utf8);
+        return decrypted || encryptedToken; // Fallback to original if decryption yields empty string
+    } catch (error) {
+        console.error('OAuth token decryption error:', error);
+        // If decryption fails, token might be plain text - return it
+        return encryptedToken;
+    }
+}
 
 // Helper function to format DOB as YYYYMMDD for Reply-To email
 function formatDOBForEmail(dateOfBirth) {
@@ -21,11 +51,97 @@ function formatDOBForEmail(dateOfBirth) {
     return `${year}${month}${day}`;
 }
 
+// Helper function to encrypt OAuth token (AES-256)
+function encryptOAuthToken(token) {
+    if (!token) return null;
+    if (!ENCRYPTION_KEY) {
+        console.error('⚠️ WARNING: Cannot encrypt token - ENCRYPTION_KEY not set');
+        return token;
+    }
+    try {
+        const encrypted = CryptoJS.AES.encrypt(token, ENCRYPTION_KEY).toString();
+        return encrypted;
+    } catch (error) {
+        console.error('OAuth token encryption error:', error);
+        return token;
+    }
+}
+
+// Check if token is expired (with 5-minute buffer)
+function isTokenExpired(expiresAt) {
+    if (!expiresAt) return true; // If no expiration date, consider it expired
+    const expiryTime = new Date(expiresAt).getTime();
+    const currentTime = Date.now();
+    const bufferTime = 5 * 60 * 1000; // 5 minutes in milliseconds
+    return currentTime >= (expiryTime - bufferTime);
+}
+
+// Refresh Google OAuth token using refresh_token
+async function refreshGoogleToken(user) {
+    try {
+        console.log('\n🔄 Refreshing Google OAuth token for user', user.id);
+        
+        const isPkce = user.used_pkce === true || user.used_pkce === 1;
+        const clientId = isPkce 
+            ? process.env.GOOGLE_CLIENT_ID
+            : process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+        const clientSecret = isPkce 
+            ? undefined 
+            : process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
+        
+        const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+        oauth2Client.setCredentials({
+            refresh_token: decryptOAuthToken(user.google_refresh_token)
+        });
+        
+        // Request new access token
+        const { credentials } = await oauth2Client.refreshAccessToken();
+        const newAccessToken = credentials.access_token;
+        
+        // Calculate new expiration (1 hour from now)
+        const issuedAt = new Date();
+        const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000);
+        
+        // Update database with encrypted new token
+        await dbConfig.run(
+            `UPDATE users SET 
+                google_access_token = ?,
+                google_token_issued_at = ?,
+                google_token_expires_at = ?
+            WHERE id = ?`,
+            [encryptOAuthToken(newAccessToken), issuedAt.toISOString(), expiresAt.toISOString(), user.id]
+        );
+        
+        console.log('✅ Token refreshed successfully, expires at:', expiresAt.toISOString());
+        
+        // Return updated user object
+        return {
+            ...user,
+            google_access_token: encryptOAuthToken(newAccessToken),
+            google_token_issued_at: issuedAt.toISOString(),
+            google_token_expires_at: expiresAt.toISOString()
+        };
+    } catch (error) {
+        console.error('❌ Failed to refresh Google token:', error);
+        throw new Error('Token refresh failed: ' + error.message);
+    }
+}
+
+// Get valid Google access token (auto-refreshes if expired)
+async function getValidGoogleAccessToken(user) {
+    if (isTokenExpired(user.google_token_expires_at)) {
+        console.log('⏰ Token expired, refreshing...');
+        const updatedUser = await refreshGoogleToken(user);
+        return decryptOAuthToken(updatedUser.google_access_token);
+    }
+    return decryptOAuthToken(user.google_access_token);
+}
+
 const templateGenerator = new TemplateCoverLetterGenerator();
 const JWT_SECRET = process.env.JWT_SECRET || 'default-secret-key';
 
-// Helper function: Create OAuth2 Client
-function createOAuth2Client(user) {
+// Helper function: Create OAuth2 Client with auto-refresh
+async function createOAuth2Client(user) {
     // Support both PKCE (mobile) and standard OAuth (web) flows
     // PKCE: No client secret, uses iOS OAuth client
     // Web: Uses client secret, uses Web OAuth client
@@ -46,6 +162,7 @@ function createOAuth2Client(user) {
     console.log('   - User ID:', user.id);
     console.log('   - Has access token:', !!user.google_access_token);
     console.log('   - Has refresh token:', !!user.google_refresh_token);
+    console.log('   - Token expires at:', user.google_token_expires_at);
     
     const oauth2Client = new google.auth.OAuth2(
         clientId,
@@ -55,9 +172,12 @@ function createOAuth2Client(user) {
             : 'http://localhost:3000/auth/google/callback'
     );
 
+    // SECURITY: Get valid access token (auto-refreshes if expired) and decrypt
+    const accessToken = await getValidGoogleAccessToken(user);
+    
     oauth2Client.setCredentials({
-        access_token: user.google_access_token,
-        refresh_token: user.google_refresh_token
+        access_token: accessToken,
+        refresh_token: decryptOAuthToken(user.google_refresh_token)
     });
 
     return oauth2Client;
@@ -80,7 +200,7 @@ ${userFullName}`;
 // Helper function: Send email via Gmail API
 async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resumePath, coverLetterPdfBuffer) {
     try {
-        const oauth2Client = createOAuth2Client(user);
+        const oauth2Client = await createOAuth2Client(user);
         const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
         
         // Create email message with attachments
@@ -178,7 +298,8 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
 // Helper function: Send email via Microsoft Graph API
 async function sendEmailViaMicrosoft(user, recipientEmail, subject, emailBody, resumePath, coverLetterPdfBuffer) {
     try {
-        const accessToken = user.microsoft_access_token;
+        // SECURITY: Decrypt Microsoft access token before using
+        const accessToken = decryptOAuthToken(user.microsoft_access_token);
         
         if (!accessToken) {
             throw new Error('No Microsoft access token available');
@@ -1624,6 +1745,9 @@ const checkEmailReplies = async (req, res) => {
             console.log('📬 [CHECK] Checking Microsoft emails...');
             console.log('📬 [CHECK] Microsoft access token length:', user.microsoft_access_token.length);
             
+            // SECURITY: Decrypt Microsoft access token before using
+            const microsoftAccessToken = decryptOAuthToken(user.microsoft_access_token);
+            
             try {
                 const apiUrl = 'https://graph.microsoft.com/v1.0/me/messages?$top=50&$orderby=receivedDateTime desc';
                 console.log('📬 [CHECK] Microsoft API URL:', apiUrl);
@@ -1632,7 +1756,7 @@ const checkEmailReplies = async (req, res) => {
                 // Microsoft Graph API: Get recent emails
                 const response = await fetch(apiUrl, {
                     headers: {
-                        'Authorization': `Bearer ${user.microsoft_access_token}`,
+                        'Authorization': `Bearer ${microsoftAccessToken}`,
                         'Content-Type': 'application/json'
                     }
                 });
@@ -1752,29 +1876,32 @@ const checkEmailReplies = async (req, res) => {
                                     'INSERT INTO application_reply_history (application_id, reply_date, reply_subject, reply_snippet, reply_from_email) VALUES (?, ?, ?, ?, ?)',
                                     [app.id, email.receivedDateTime, subject, fullBody, fromEmail]
                                 );
-                            } else {
-                                console.log(`🔄 [CHECK] Updating existing reply body for app #${app.id}`);
+
+                                // Always update main application table with latest reply info
                                 await dbConfig.run(
-                                    'UPDATE application_reply_history SET reply_snippet = ? WHERE id = ?',
-                                    [fullBody, existingReply.id]
+                                    'UPDATE application_history SET reply_received = 1, reply_date = ?, reply_subject = ?, reply_snippet = ?, reply_from_email = ? WHERE id = ?',
+                                    [email.receivedDateTime, subject, fullBody, fromEmail, app.id]
                                 );
+
+                                repliesFound++;
+                                updatedApplications.push({
+                                    id: app.id,
+                                    companyName: app.company_name,
+                                    replyDate: email.receivedDateTime,
+                                    replySubject: subject,
+                                    replySnippet: fullBody,
+                                    replyFromEmail: fromEmail
+                                });
+
+                                // Create notification for the new reply
+                                try {
+                                    await notifyEmailReply(userId, app.company_name, subject);
+                                } catch (notifError) {
+                                    console.error('Failed to create reply notification:', notifError);
+                                }
+                            } else {
+                                console.log(`🔄 [CHECK] Reply already recorded for app #${app.id}, skipping`);
                             }
-
-                            // Always update main application table with latest reply info
-                            await dbConfig.run(
-                                'UPDATE application_history SET reply_received = 1, reply_date = ?, reply_subject = ?, reply_snippet = ?, reply_from_email = ? WHERE id = ?',
-                                [email.receivedDateTime, subject, fullBody, fromEmail, app.id]
-                            );
-
-                            repliesFound++;
-                            updatedApplications.push({
-                                id: app.id,
-                                companyName: app.company_name,
-                                replyDate: email.receivedDateTime,
-                                replySubject: subject,
-                                replySnippet: fullBody,
-                                replyFromEmail: fromEmail
-                            });
                             
                             // Continue checking for more replies (don't break - there may be multiple replies)
                         } else {
@@ -1801,7 +1928,7 @@ const checkEmailReplies = async (req, res) => {
             
             try {
                 console.log('📬 [CHECK] Creating OAuth2 client...');
-                const oauth2Client = createOAuth2Client(user);
+                const oauth2Client = await createOAuth2Client(user);
                 const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
                 console.log('📬 [CHECK] Fetching Gmail messages...');
@@ -1891,29 +2018,32 @@ const checkEmailReplies = async (req, res) => {
                                         'INSERT INTO application_reply_history (application_id, reply_date, reply_subject, reply_snippet, reply_from_email) VALUES (?, ?, ?, ?, ?)',
                                         [app.id, emailDate.toISOString(), subject, fullBody, fromEmail]
                                     );
-                                } else {
-                                    console.log(`🔄 [CHECK] Updating existing reply body for app #${app.id}`);
+
+                                    // Always update main application table with latest reply info
                                     await dbConfig.run(
-                                        'UPDATE application_reply_history SET reply_snippet = ? WHERE id = ?',
-                                        [fullBody, existingReply.id]
+                                        'UPDATE application_history SET reply_received = 1, reply_date = ?, reply_subject = ?, reply_snippet = ?, reply_from_email = ? WHERE id = ?',
+                                        [emailDate.toISOString(), subject, fullBody, fromEmail, app.id]
                                     );
+
+                                    repliesFound++;
+                                    updatedApplications.push({
+                                        id: app.id,
+                                        companyName: app.company_name,
+                                        replyDate: emailDate.toISOString(),
+                                        replySubject: subject,
+                                        replySnippet: fullBody,
+                                        replyFromEmail: fromEmail
+                                    });
+
+                                    // Create notification for the new reply
+                                    try {
+                                        await notifyEmailReply(userId, app.company_name, subject);
+                                    } catch (notifError) {
+                                        console.error('Failed to create reply notification:', notifError);
+                                    }
+                                } else {
+                                    console.log(`🔄 [CHECK] Reply already recorded for app #${app.id}, skipping`);
                                 }
-
-                                // Always update main application table with latest reply info
-                                await dbConfig.run(
-                                    'UPDATE application_history SET reply_received = 1, reply_date = ?, reply_subject = ?, reply_snippet = ?, reply_from_email = ? WHERE id = ?',
-                                    [emailDate.toISOString(), subject, fullBody, fromEmail, app.id]
-                                );
-
-                                repliesFound++;
-                                updatedApplications.push({
-                                    id: app.id,
-                                    companyName: app.company_name,
-                                    replyDate: emailDate.toISOString(),
-                                    replySubject: subject,
-                                    replySnippet: fullBody,
-                                    replyFromEmail: fromEmail
-                                });
                                 
                                 // Continue checking for more replies (don't break - there may be multiple replies)
                             } else {
@@ -1948,16 +2078,55 @@ const checkEmailReplies = async (req, res) => {
         }
 
         console.log(`📬 [CHECK] Total replies found: ${repliesFound}`);
+
+        // Backfill notifications for any reply records that don't have one yet
+        // This handles replies found before notifyEmailReply was added
+        let notificationsCreated = 0;
+        try {
+            const repliesNeedingNotif = await dbConfig.query(`
+                SELECT DISTINCT arh.application_id, ah.company_name, arh.reply_subject
+                FROM application_reply_history arh
+                JOIN application_history ah ON ah.id = arh.application_id
+                WHERE ah.user_id = ?
+                AND ah.deleted_at IS NULL
+                AND arh.deleted_at IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM notifications n
+                    WHERE n.user_id = ?
+                    AND n.type = 'email'
+                    AND n.title = 'Reply Received!'
+                    AND (n.deleted_at IS NULL)
+                    AND POSITION(ah.company_name IN n.message) > 0
+                )
+            `, [userId, userId]);
+
+            for (const reply of repliesNeedingNotif) {
+                try {
+                    await notifyEmailReply(userId, reply.company_name, reply.reply_subject);
+                    notificationsCreated++;
+                } catch (e) {
+                    console.error('Failed to backfill reply notification:', e);
+                }
+            }
+            if (notificationsCreated > 0) {
+                console.log(`📢 [CHECK] Backfilled ${notificationsCreated} reply notification(s)`);
+            }
+        } catch (backfillErr) {
+            console.error('❌ [CHECK] Backfill notification error:', backfillErr);
+        }
+
         console.log('📬 [CHECK] Updated applications:', updatedApplications);
         console.log('📬 [CHECK] Sending response to client...');
         console.log('📬 ============ CHECK EMAIL REPLIES END ============\n');
 
+        const totalNew = repliesFound + notificationsCreated;
         res.json({
             success: true,
-            message: repliesFound > 0 
+            message: totalNew > 0
                 ? `Found ${repliesFound} new ${repliesFound === 1 ? 'reply' : 'replies'}!`
                 : 'No new replies found',
             repliesFound,
+            notificationsCreated,
             updatedApplications
         });
 

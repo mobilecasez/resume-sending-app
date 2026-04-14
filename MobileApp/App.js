@@ -8,19 +8,20 @@ import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
+import { Ionicons } from '@expo/vector-icons';
+import { SafeAreaView as SafeAreaViewContext, SafeAreaProvider } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
-import * as Crypto from 'expo-crypto';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { API_BASE } from './config';
 import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
-// Get your Google Client ID from Google Cloud Console
-// Using iOS OAuth Client with PKCE (Proof Key for Code Exchange)
-// PKCE allows secure token exchange without client secret
-const GOOGLE_CLIENT_ID = '151384459549-3rm4atu5eu3ekh9h4rhds6gbd9ecgeb6.apps.googleusercontent.com';
+const GOOGLE_CLIENT_ID_IOS = '151384459549-3rm4atu5eu3ekh9h4rhds6gbd9ecgeb6.apps.googleusercontent.com';
+const GOOGLE_CLIENT_ID_ANDROID = '151384459549-ro8tqemri24dc3n2lh7ak5t3fjr365nl.apps.googleusercontent.com';
+const GOOGLE_CLIENT_ID_WEB = '151384459549-ujnpfbck9e0q2jkmt2q4l0lv1s41lp04.apps.googleusercontent.com';
 
 // Microsoft OAuth Client ID from Azure Portal
 const MICROSOFT_CLIENT_ID = '9205782b-1a57-4c2f-bbfd-8136b5378e96';
@@ -337,7 +338,7 @@ const FormattedCoverLetterPreview = ({ htmlContent, style }) => {
   );
 };
 
-export default function App() {
+function AppContent() {
   const [showSplash, setShowSplash] = useState(true);
   const [screen, setScreen] = useState('login');
   const [email, setEmail] = useState('');
@@ -346,7 +347,6 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [user, setUser] = useState(null);
-  const [pkceCodeVerifier, setPkceCodeVerifier] = useState(null); // Store PKCE verifier
   const [recipients, setRecipients] = useState([
     { id: 0, email: '', website: '', position: '', error: '' }
   ]);
@@ -355,6 +355,53 @@ export default function App() {
   // Animation for side menu - slides from right
   const slideAnim = useRef(new Animated.Value(300)).current; // Start off-screen (300px to the right)
   
+  // iOS only: Handle Google OAuth response from expo-auth-session hook (fallback/unused — iOS now uses direct WebBrowser flow)
+  // Kept for safety but the main iOS flow handles responses directly in handleGoogleLoginIOS
+  useEffect(() => {
+    if (!googleResponse || Platform.OS !== 'ios') return;
+    if (googleResponse.type === 'success') {
+      const { code } = googleResponse.params;
+      handleGoogleAuthResponse(code, googleRequest?.codeVerifier, googleRequest?.redirectUri);
+    } else if (googleResponse.type === 'error') {
+      console.error('Google auth error:', googleResponse.error);
+      setError('Google login failed: ' + (googleResponse.error?.message || 'Unknown error'));
+    }
+  }, [googleResponse]);
+
+  // Android only: handle deep link from backend mobile OAuth flow (fallback for edge cases)
+  // Dev: exp://192.168.1.10:8081/?token=JWT&user=...
+  // Prod: cvapplyr://oauth-success?token=JWT&user=...
+  useEffect(() => {
+    const handleDeepLink = (event) => {
+      const url = event.url || event;
+      console.log('Deep link received:', url);
+      if (!url) return;
+      // Quick check: must contain 'token=' to be our OAuth callback
+      if (!url.includes('token=')) return;
+      try {
+        const urlObj = new URL(url);
+        const token = urlObj.searchParams.get('token');
+        const userStr = urlObj.searchParams.get('user');
+        if (token && userStr) {
+          const userData = JSON.parse(decodeURIComponent(userStr));
+          console.log('✅ Google mobile auth complete via deep link');
+          console.log('User:', userData.email);
+          setUser({ ...userData, token });
+          setScreen('dashboard');
+          setLoading(false);
+          Alert.alert('Success', `Welcome ${userData.fullName}!`);
+        }
+      } catch (e) {
+        console.error('Deep link parse error:', e);
+      }
+    };
+
+    // Check if app was opened via deep link
+    Linking.getInitialURL().then((url) => { if (url) handleDeepLink({ url }); });
+    const sub = Linking.addEventListener('url', handleDeepLink);
+    return () => sub.remove();
+  }, []);
+
   useEffect(() => {
     if (showSettings) {
       // Opening: animate from 300 to 0
@@ -403,6 +450,7 @@ export default function App() {
   const [applicationHistory, setApplicationHistory] = useState([]);
   const [totalGenerated, setTotalGenerated] = useState(0);
   const [totalSent, setTotalSent] = useState(0);
+  const [totalReplied, setTotalReplied] = useState(0);
   const [countersLoaded, setCountersLoaded] = useState(false);
   const [creditBalance, setCreditBalance] = useState(0);
   const [expiringCredits, setExpiringCredits] = useState(0);
@@ -420,6 +468,17 @@ export default function App() {
   const progressIntervalRef = useRef(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState('');
+  // iOS-ONLY: expo-auth-session Google hook builds the auth URL + PKCE code verifier.
+  // Android does NOT use this — it uses backend-mediated OAuth flow.
+  // The redirect URI is set only for iOS (reverse client ID scheme).
+  const iosRedirectUri = `com.googleusercontent.apps.${GOOGLE_CLIENT_ID_IOS.split('.apps.googleusercontent.com')[0]}:/oauth2redirect/google`;
+  const [googleRequest, googleResponse, googlePromptAsync] = Google.useAuthRequest({
+    iosClientId: GOOGLE_CLIENT_ID_IOS,
+    androidClientId: GOOGLE_CLIENT_ID_ANDROID,
+    webClientId: GOOGLE_CLIENT_ID_WEB,
+    redirectUri: Platform.OS === 'ios' ? iosRedirectUri : undefined,
+    scopes: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly'],
+  });
   const [selectedCoverLetterIndex, setSelectedCoverLetterIndex] = useState(null);
   const [showCoverLetterPreview, setShowCoverLetterPreview] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -2476,7 +2535,10 @@ export default function App() {
           if (data.totalSent !== null && data.totalSent !== undefined) {
             setTotalSent(data.totalSent);
           }
-          console.log('📊 Loaded counters from backend API - Generated:', data.totalGenerated, 'Sent:', data.totalSent);
+          if (data.totalReplied !== null && data.totalReplied !== undefined) {
+            setTotalReplied(data.totalReplied);
+          }
+          console.log('📊 Loaded counters from backend API - Generated:', data.totalGenerated, 'Sent:', data.totalSent, 'Replied:', data.totalReplied);
 
           // Also load credit balance
           try {
@@ -2501,13 +2563,12 @@ export default function App() {
             console.log('⚠️ Could not load credits:', creditsError);
           }
           
-          // Only cache in AsyncStorage if we got valid data from backend
-          if (data.totalGenerated !== null || data.totalSent !== null) {
-            await AsyncStorage.setItem(`appCounters_${user.email}`, JSON.stringify({
+          // Always overwrite cache with fresh server data (prevents stale negative values)
+          await AsyncStorage.setItem(`appCounters_${user.email}`, JSON.stringify({
               totalGenerated: data.totalGenerated || 0,
-              totalSent: data.totalSent || 0
+              totalSent: data.totalSent || 0,
+              totalReplied: data.totalReplied || 0
             }));
-          }
         } else {
           // Fallback to AsyncStorage
           console.log('⚠️ Failed to load from backend, using AsyncStorage cache');
@@ -2987,19 +3048,13 @@ export default function App() {
 
       if (response.ok) {
         const repliesCount = data.repliesFound || 0;
-        console.log(`✅ Auto-check complete: ${repliesCount} replies found`);
+        const notifCount = data.notificationsCreated || 0;
+        console.log(`✅ Auto-check complete: ${repliesCount} replies found, ${notifCount} notifications created`);
         
-        if (repliesCount > 0) {
-          // Refresh application history to show updated reply status
+        if (repliesCount > 0 || notifCount > 0) {
+          // Refresh application history and notifications silently (no popup)
           await loadApplicationHistoryFromStorage();
-          
-          if (showNotification) {
-            Alert.alert(
-              '🔄 Auto-Sync',
-              `Found ${repliesCount} new ${repliesCount === 1 ? 'reply' : 'replies'}!`,
-              [{ text: 'OK' }]
-            );
-          }
+          await loadNotifications(true);
         }
       } else {
         console.error('❌ Auto-check error:', data.error || data.message);
@@ -3040,10 +3095,17 @@ export default function App() {
       }
 
       if (response.ok) {
-        if (data.repliesFound > 0) {
-          // Refresh application history from backend
+        const hasNew = (data.repliesFound || 0) + (data.notificationsCreated || 0) > 0;
+
+        if (hasNew) {
+          // Refresh application history
           await loadApplicationHistoryFromStorage();
-          
+        }
+
+        // Always refresh notifications panel after a manual check
+        await loadNotifications(true);
+
+        if (hasNew) {
           Alert.alert(
             '✅ Replies Found!',
             data.message,
@@ -3204,12 +3266,13 @@ export default function App() {
     setRecipients([]);
   };
 
-  const handleGoogleAuthResponse = async (code, codeVerifier) => {
+  const handleGoogleAuthResponse = async (code, codeVerifier, redirectUri) => {
     setLoading(true);
     setError('');
     try {
       console.log('Google Auth Response - Code length:', code?.length || 0);
       console.log('Google Auth Response - Verifier length:', codeVerifier?.length || 0);
+      console.log('Google Auth Response - Redirect URI:', redirectUri);
       console.log('API Base:', API_BASE);
       
       // Send authorization code and PKCE verifier to backend for token exchange
@@ -3218,9 +3281,10 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           code, 
-          codeVerifier, // PKCE verifier for secure exchange
+          codeVerifier,
+          redirectUri, // actual redirectUri used for auth — needed for token exchange
           isMobile: true,
-          platform: Platform.OS 
+          platform: Platform.OS,
         })
       });
 
@@ -3286,87 +3350,173 @@ export default function App() {
     }
   };
 
-  const handleGoogleLogin = async () => {
-    setLoading(true);
+  // ==========================================
+  // ANDROID Google OAuth — Backend-mediated flow
+  // Uses WebBrowser.openAuthSessionAsync (Chrome Custom Tab, stays in-app)
+  // Backend handles Google OAuth and redirects back via deep link
+  // ==========================================
+  const handleGoogleLoginAndroid = async () => {
+    // Derive backend URL from API_BASE so it always uses the correct IP
+    const baseUrl = API_BASE.replace('/api', '');
+    const mobileAuthUrl = `${baseUrl}/auth/google/mobile`;
+    // Return URL must match the deep link the backend redirects to after OAuth
+    const devIp = API_BASE.match(/\/\/([^:]+):/)?.[1] || '192.168.1.10';
+    const returnUrl = __DEV__
+      ? `exp://${devIp}:8081`
+      : 'cvapplyr://oauth-success';
+    console.log('Android: Opening Google OAuth via backend Custom Tab...');
+    console.log('Android: Auth URL:', mobileAuthUrl);
+    console.log('Android: Return URL:', returnUrl);
     try {
-      // PKCE: Generate code_verifier and code_challenge
-      // code_verifier: random 43-128 character string
-      const codeVerifier = generateRandomString(128);
-      
-      // code_challenge: SHA-256 hash of code_verifier, base64url encoded
-      const codeChallenge = await generateCodeChallenge(codeVerifier);
-      
-      console.log('PKCE code_verifier generated:', codeVerifier.substring(0, 20) + '...');
-      console.log('PKCE code_challenge generated:', codeChallenge.substring(0, 20) + '...');
-      
-      // Google OAuth URL for mobile using PKCE (no client secret needed)
-      // iOS: use reverse domain format that Google generates (full client ID prefix)
-      // Android: use package name format
-      const clientIdPrefix = GOOGLE_CLIENT_ID.split('.apps.googleusercontent.com')[0];
-      const redirectUri = Platform.OS === 'ios' 
-        ? `com.googleusercontent.apps.${clientIdPrefix}:/oauth2redirect/google`
-        : `com.cvapplyr.mobile:/oauth2redirect/google`;
-      
-      const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
-        `client_id=${GOOGLE_CLIENT_ID}` +
-        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-        `&response_type=code` +
-        `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.metadata')}` +
-        `&code_challenge=${codeChallenge}` +
-        `&code_challenge_method=S256` +
-        `&access_type=offline` +
-        `&prompt=consent`;
-      
-      console.log('Opening Google auth URL with PKCE...', { platform: Platform.OS, redirectUri });
-      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
-      
-      console.log('Google auth result:', result);
-      
-      if (result.type === 'success') {
-        // Extract authorization code from URL query parameters
-        const url = result.url;
-        const codeMatch = url.match(/code=([^&]+)/);
-        
-        if (codeMatch && codeMatch[1]) {
-          const code = codeMatch[1];
-          console.log('Google authorization code received');
-          // Send code WITH code_verifier for PKCE verification
-          await handleGoogleAuthResponse(code, codeVerifier);
-        } else {
-          throw new Error('No authorization code received from Google');
+      const result = await WebBrowser.openAuthSessionAsync(mobileAuthUrl, returnUrl);
+      console.log('Android: Auth result type:', result.type);
+      if (result.type === 'success' && result.url) {
+        console.log('Android: Success URL received, parsing...');
+        try {
+          const urlObj = new URL(result.url);
+          const token = urlObj.searchParams.get('token');
+          const userStr = urlObj.searchParams.get('user');
+          if (token && userStr) {
+            const userData = JSON.parse(decodeURIComponent(userStr));
+            console.log('✅ Android Google auth complete:', userData.email);
+            setUser({ ...userData, token });
+            setScreen('dashboard');
+            Alert.alert('Success', `Welcome ${userData.fullName}!`);
+          } else {
+            Alert.alert('OAuth Error', 'Missing token or user data in response');
+          }
+        } catch (parseErr) {
+          console.error('Android OAuth parse error:', parseErr);
+          Alert.alert('OAuth Error', 'Failed to parse auth response');
         }
-      } else if (result.type === 'cancel') {
-        setError('Google login cancelled');
+      } else if (result.type === 'cancel' || result.type === 'dismiss') {
+        console.log('Android: Google login cancelled/dismissed');
+      } else {
+        console.log('Android: Unexpected result type:', result.type);
       }
     } catch (err) {
-      console.error('Google login error:', err);
-      setError('Google login failed: ' + err.message);
+      console.error('Android Google login error:', err);
       Alert.alert('Error', 'Google login failed: ' + err.message);
+    }
+  };
+
+  // ==========================================
+  // iOS Google OAuth — Direct PKCE flow
+  // Uses expo-auth-session to build auth URL, WebBrowser.openAuthSessionAsync to open it
+  // Reverse client ID scheme lets ASWebAuthenticationSession intercept Google's redirect
+  // ==========================================
+  const handleGoogleLoginIOS = async () => {
+    if (!googleRequest) {
+      Alert.alert('Please wait', 'Google login is initializing, try again in a moment.');
+      return;
+    }
+    console.log('iOS: Opening Google auth session directly...');
+    console.log('iOS: Auth URL:', googleRequest.url?.substring(0, 120));
+    console.log('iOS: Redirect URI:', googleRequest.redirectUri);
+    console.log('iOS: Code verifier length:', googleRequest.codeVerifier?.length);
+    try {
+      let authUrl = googleRequest.url;
+      if (!authUrl) {
+        authUrl = await googleRequest.makeAuthUrlAsync({
+          authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
+        });
+      }
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, googleRequest.redirectUri);
+      console.log('iOS: Auth session result type:', result.type);
+      if (result.type === 'success' && result.url) {
+        console.log('iOS: Success URL received, parsing code...');
+        const urlObj = new URL(result.url);
+        const code = urlObj.searchParams.get('code');
+        if (code) {
+          console.log('iOS: Got authorization code, exchanging...');
+          handleGoogleAuthResponse(code, googleRequest.codeVerifier, googleRequest.redirectUri);
+        } else {
+          Alert.alert('OAuth Error', 'No authorization code in response URL');
+        }
+      } else if (result.type === 'cancel' || result.type === 'dismiss') {
+        console.log('iOS: Google login cancelled/dismissed');
+      } else {
+        console.log('iOS: Unexpected result type:', result.type);
+      }
+    } catch (err) {
+      console.error('iOS Google login error:', err);
+      Alert.alert('Google Login Error', err.message);
+    }
+  };
+
+  // ==========================================
+  // Unified handler — dispatches to the correct platform flow
+  // ==========================================
+  const handleGoogleLogin = async () => {
+    if (Platform.OS === 'android') {
+      return handleGoogleLoginAndroid();
+    }
+    return handleGoogleLoginIOS();
+  };
+
+  // ==========================================
+  // Apple Sign-In — iOS only (native ASAuthorizationController)
+  // Uses expo-apple-authentication; sends identity token to backend for verification
+  // ==========================================
+  const handleAppleLogin = async () => {
+    if (Platform.OS !== 'ios') {
+      Alert.alert('Not Available', 'Sign in with Apple is only available on iOS.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+
+      console.log('Apple Sign-In credential received:', {
+        user: credential.user?.substring(0, 10) + '...',
+        email: credential.email,
+        fullName: credential.fullName,
+        hasIdentityToken: !!credential.identityToken,
+      });
+
+      if (!credential.identityToken) {
+        throw new Error('No identity token received from Apple');
+      }
+
+      // Send identity token to backend for verification and user creation/login
+      const response = await fetch(`${API_BASE}/auth/apple`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identityToken: credential.identityToken,
+          authorizationCode: credential.authorizationCode,
+          email: credential.email,
+          fullName: credential.fullName,
+        }),
+      });
+
+      const data = await response.json();
+      console.log('Apple backend response:', data);
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Apple login failed');
+      }
+
+      setUser({ ...data.user, token: data.token });
+      setScreen('dashboard');
+      Alert.alert('Success', `Welcome ${data.user.fullName}!`);
+    } catch (err) {
+      if (err.code === 'ERR_REQUEST_CANCELED') {
+        console.log('Apple Sign-In cancelled by user');
+      } else {
+        console.error('Apple Sign-In error:', err);
+        setError(err.message || 'Apple login failed');
+        Alert.alert('Error', err.message || 'Apple login failed');
+      }
     } finally {
       setLoading(false);
     }
-  };
-  
-  // PKCE Utility Functions
-  const generateRandomString = (length) => {
-    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
-    let text = '';
-    for (let i = 0; i < length; i++) {
-      text += possible.charAt(Math.floor(Math.random() * possible.length));
-    }
-    return text;
-  };
-  
-  const generateCodeChallenge = async (codeVerifier) => {
-    // SHA-256 hash the code_verifier using expo-crypto
-    const digest = await Crypto.digestStringAsync(
-      Crypto.CryptoDigestAlgorithm.SHA256,
-      codeVerifier,
-      { encoding: Crypto.CryptoEncoding.BASE64 }
-    );
-    
-    // Convert base64 to base64url (replace +/= with -_)
-    return digest.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
   };
 
   const handleMicrosoftLogin = async () => {
@@ -3410,66 +3560,55 @@ export default function App() {
     }
   };
 
-  // Show splash screen while loading
-  if (showSplash) {
-    return <SplashScreen onFinish={() => setShowSplash(false)} />;
-  }
+  // Show splash screen overlay on top of login (so login is already rendered behind)
+  const splashOverlay = showSplash ? <SplashScreen onFinish={() => setShowSplash(false)} /> : null;
 
   // LOGIN SCREEN
   if (screen === 'login') {
     return (
-      <View style={styles.loginContainer}>
-        <StatusBar barStyle="light-content" />
-        <LinearGradient
-          colors={['#1e293b', '#334155', '#475569']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.loginGradientBg}
-        >
-          <ScrollView 
-            contentContainerStyle={styles.loginScrollContent} 
-            showsVerticalScrollIndicator={false}
+        <View style={styles.loginContainer}>
+          <StatusBar barStyle={showSplash ? 'dark-content' : 'light-content'} backgroundColor="transparent" translucent={true} />
+          <LinearGradient
+            colors={['#1a1a2e', '#16213e', '#0f3460']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 0, y: 1 }}
+            style={styles.loginGradientBg}
           >
-            {/* Logo Section */}
-            <View style={styles.loginLogoSection}>
-              <View style={styles.loginLogoGlow}>
-                <Image 
-                  source={require('./assets/images/logo_hd_no_background_white_small.png')} 
-                  style={styles.loginLogoImage}
-                  resizeMode="contain"
-                />
-              </View>
-              <Text style={styles.loginTagline}>Turn applications into opportunities</Text>
-            </View>
-
-            {/* Main Login Card */}
-            <View style={styles.loginCard}>
-              <LinearGradient
-                colors={['rgba(255, 255, 255, 0.15)', 'rgba(255, 255, 255, 0.1)']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.loginCardGradient}
+            <SafeAreaViewContext style={{ flex: 1 }} edges={['top', 'bottom']}>
+              <KeyboardAvoidingView
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                style={{ flex: 1 }}
               >
-                {/* Header */}
-                <View style={styles.loginCardHeader}>
-                  <Text style={styles.loginCardTitle}>Welcome Back</Text>
-                  <Text style={styles.loginCardSubtitle}>Sign in to continue your journey</Text>
+                <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+                  <View style={styles.loginInnerContainer}>
+                {/* Logo Section */}
+                <View style={styles.loginLogoSection}>
+                  <Image 
+                    source={require('./assets/images/logo_hd_no_background_white_small.png')} 
+                    style={styles.loginLogoImage}
+                    resizeMode="contain"
+                  />
+                  <Text style={styles.loginTagline}>Turn applications into opportunities</Text>
+                </View>
+
+                {/* Welcome Text */}
+                <View style={styles.loginWelcomeSection}>
+                  <Text style={styles.loginCardTitle}>Welcome back</Text>
+                  <Text style={styles.loginCardSubtitle}>Sign in to your account</Text>
                 </View>
 
                 {/* Error Message */}
                 {error ? (
                   <View style={styles.loginErrorContainer}>
-                    <View style={styles.loginErrorIconBox}>
-                      <Text style={styles.loginErrorIconText}>!</Text>
-                    </View>
                     <Text style={styles.loginErrorText}>{error}</Text>
                   </View>
                 ) : null}
 
-                {/* Email Input */}
-                <View style={styles.loginInputGroup}>
-                  <Text style={styles.loginInputLabel}>EMAIL ADDRESS</Text>
-                  <View style={styles.loginInputContainer}>
+                {/* Form Section */}
+                <View style={styles.loginFormSection}>
+                  {/* Email Input */}
+                  <View style={styles.loginInputGroup}>
+                    <Text style={styles.loginInputLabel}>Email</Text>
                     <TextInput
                       style={styles.loginInput}
                       placeholder="you@example.com"
@@ -3477,16 +3616,14 @@ export default function App() {
                       onChangeText={setEmail}
                       editable={!loading}
                       keyboardType="email-address"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor="rgba(255, 255, 255, 0.3)"
                       autoCapitalize="none"
                     />
                   </View>
-                </View>
 
-                {/* Password Input */}
-                <View style={styles.loginInputGroup}>
-                  <Text style={styles.loginInputLabel}>PASSWORD</Text>
-                  <View style={styles.loginInputContainer}>
+                  {/* Password Input */}
+                  <View style={styles.loginInputGroup}>
+                    <Text style={styles.loginInputLabel}>Password</Text>
                     <TextInput
                       style={styles.loginInput}
                       placeholder="Enter your password"
@@ -3494,73 +3631,73 @@ export default function App() {
                       onChangeText={setPassword}
                       editable={!loading}
                       secureTextEntry
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor="rgba(255, 255, 255, 0.3)"
                       autoCapitalize="none"
                     />
                   </View>
-                </View>
 
-                {/* Sign In Button */}
-                <TouchableOpacity
-                  style={[styles.loginSignInButton, loading && styles.loginButtonDisabled]}
-                  onPress={handleLogin}
-                  disabled={loading}
-                  activeOpacity={0.85}
-                >
-                  <LinearGradient
-                    colors={loading ? ['#64748b', '#475569'] : ['#8b5cf6', '#7c3aed', '#6d28d9']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.loginSignInGradient}
+                  {/* Sign In Button */}
+                  <TouchableOpacity
+                    style={[styles.loginSignInButton, loading && styles.loginButtonDisabled]}
+                    onPress={handleLogin}
+                    disabled={loading}
+                    activeOpacity={0.85}
                   >
-                    <Text style={styles.loginSignInText}>
-                      {loading ? 'Signing in...' : 'Sign In'}
-                    </Text>
-                    {!loading && <Text style={styles.loginSignInArrow}>→</Text>}
-                  </LinearGradient>
-                </TouchableOpacity>
+                    <LinearGradient
+                      colors={loading ? ['#64748b', '#475569'] : ['#e94560', '#c81d4e']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.loginSignInGradient}
+                    >
+                      <Text style={styles.loginSignInText}>
+                        {loading ? 'Signing in...' : 'Sign In'}
+                      </Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </View>
 
                 {/* Divider */}
                 <View style={styles.loginDividerContainer}>
                   <View style={styles.loginDividerLine} />
-                  <Text style={styles.loginDividerText}>OR CONTINUE WITH</Text>
+                  <Text style={styles.loginDividerText}>or continue with</Text>
                   <View style={styles.loginDividerLine} />
                 </View>
 
-                {/* Social Login Buttons */}
+                {/* Social buttons — horizontal row */}
                 <View style={styles.loginSocialButtonsContainer}>
-                  {/* Google Login */}
                   <TouchableOpacity
                     style={[styles.loginSocialButton, loading && styles.loginSocialButtonDisabled]}
                     onPress={handleGoogleLogin}
                     disabled={loading}
-                    activeOpacity={0.8}
+                    activeOpacity={0.7}
                   >
-                    <View style={styles.loginSocialButtonInner}>
-                      <Image 
-                        source={require('./assets/images/google.png')} 
-                        style={styles.loginSocialIcon}
-                        resizeMode="contain"
-                      />
-                      <Text style={styles.loginSocialButtonText}>Google</Text>
-                    </View>
+                    <Image 
+                      source={require('./assets/images/google.png')} 
+                      style={styles.loginSocialIcon}
+                      resizeMode="contain"
+                    />
                   </TouchableOpacity>
 
-                  {/* Microsoft Login */}
                   <TouchableOpacity
                     style={[styles.loginSocialButton, loading && styles.loginSocialButtonDisabled]}
                     onPress={() => handleMicrosoftLogin()}
                     disabled={loading}
-                    activeOpacity={0.8}
+                    activeOpacity={0.7}
                   >
-                    <View style={styles.loginSocialButtonInner}>
-                      <Image 
-                        source={require('./assets/images/microsoft.png')} 
-                        style={styles.loginSocialIcon}
-                        resizeMode="contain"
-                      />
-                      <Text style={styles.loginSocialButtonText}>Microsoft</Text>
-                    </View>
+                    <Image 
+                      source={require('./assets/images/microsoft.png')} 
+                      style={styles.loginSocialIcon}
+                      resizeMode="contain"
+                    />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.loginSocialButton, styles.loginAppleButton, loading && styles.loginSocialButtonDisabled]}
+                    onPress={handleAppleLogin}
+                    disabled={loading}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="logo-apple" size={26} color="#ffffff" />
                   </TouchableOpacity>
                 </View>
 
@@ -3568,13 +3705,15 @@ export default function App() {
                 <View style={styles.loginFooter}>
                   <Text style={styles.loginFooterText}>Don't have an account? </Text>
                   <TouchableOpacity onPress={() => { setScreen('register'); setError(''); }}>
-                    <Text style={styles.loginFooterLink}>Create one</Text>
+                    <Text style={styles.loginFooterLink}>Sign up</Text>
                   </TouchableOpacity>
                 </View>
-              </LinearGradient>
-            </View>
-          </ScrollView>
+              </View>
+            </TouchableWithoutFeedback>
+          </KeyboardAvoidingView>
+          </SafeAreaViewContext>
         </LinearGradient>
+        {splashOverlay}
       </View>
     );
   }
@@ -3582,8 +3721,8 @@ export default function App() {
   // REGISTER SCREEN
   if (screen === 'register') {
     return (
-      <View style={styles.container}>
-        <StatusBar barStyle="light-content" backgroundColor="#059669" />
+      <SafeAreaViewContext style={styles.container}>
+        <StatusBar barStyle="light-content" backgroundColor="#059669" translucent={false} />
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           {/* Header with gradient effect */}
           <View style={[styles.gradientHeader, { backgroundColor: '#059669' }]}>
@@ -3696,14 +3835,15 @@ export default function App() {
             </View>
           </View>
         </ScrollView>
-      </View>
+
+      </SafeAreaViewContext>
     );
   }
 
   // DASHBOARD/RECIPIENTS SCREEN
   if (screen === 'dashboard' || !screen || screen === '') {
     return (
-      <SafeAreaView style={styles.modernContainer}>
+      <SafeAreaViewContext style={styles.modernContainer}>
         <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
         
         <ScrollView 
@@ -4046,7 +4186,7 @@ export default function App() {
                       <Text style={styles.statBackTitle}>Total Letters</Text>
                       <Text style={styles.statBackValue}>{totalGenerated}</Text>
                       <Text style={styles.statBackLabel}>
-                        {totalGenerated === totalSent ? 'All letters sent' : `${totalGenerated - totalSent} pending`}
+                        {totalGenerated <= totalSent ? 'All letters sent' : `${totalGenerated - totalSent} pending`}
                       </Text>
                     </View>
                   </Animated.View>
@@ -4080,7 +4220,7 @@ export default function App() {
                         <Text style={styles.statIconText}>○</Text>
                       </View>
                       <Text style={styles.statValue}>
-                        {totalSent - applicationHistory.filter(app => app.replyReceived).length}
+                        {Math.max(0, totalSent - totalReplied)}
                       </Text>
                     </View>
                     <Text style={styles.statLabel}>Pending Response</Text>
@@ -4103,7 +4243,7 @@ export default function App() {
                     <View style={styles.statTileBack}>
                       <Text style={styles.statBackTitle}>Awaiting Reply</Text>
                       <Text style={styles.statBackValue}>
-                        {totalSent - applicationHistory.filter(app => app.replyReceived).length}
+                        {Math.max(0, totalSent - totalReplied)}
                       </Text>
                       <Text style={styles.statBackLabel}>
                         applications pending
@@ -4139,7 +4279,7 @@ export default function App() {
                       </View>
                       <Text style={styles.statValue}>
                         {totalSent > 0 
-                          ? Math.round((applicationHistory.filter(app => app.replyReceived).length / totalSent) * 100)
+                          ? Math.round((totalReplied / totalSent) * 100)
                           : 0}%
                       </Text>
                     </View>
@@ -4163,7 +4303,7 @@ export default function App() {
                     <View style={styles.statTileBack}>
                       <Text style={styles.statBackTitle}>Success Rate</Text>
                       <Text style={styles.statBackValue}>
-                        {applicationHistory.filter(app => app.replyReceived).length}/{totalSent}
+                        {totalReplied}/{totalSent}
                       </Text>
                       <Text style={styles.statBackLabel}>
                         replies received
@@ -4537,7 +4677,7 @@ export default function App() {
           <TouchableWithoutFeedback onPress={() => setShowReplyDatePicker(false)}>
             <View style={styles.modalOverlay}>
               <TouchableWithoutFeedback>
-                <SafeAreaView style={styles.datePickerModalWrapper}>
+                <SafeAreaViewContext style={styles.datePickerModalWrapper}>
                   <View style={styles.datePickerModal}>
                     {/* Header */}
                     <View style={styles.datePickerHeader}>
@@ -4594,7 +4734,7 @@ export default function App() {
                       </TouchableOpacity>
                     </View>
                   </View>
-                </SafeAreaView>
+                </SafeAreaViewContext>
               </TouchableWithoutFeedback>
             </View>
           </TouchableWithoutFeedback>
@@ -4610,7 +4750,7 @@ export default function App() {
           <TouchableWithoutFeedback onPress={() => setShowNotifications(false)}>
             <View style={styles.notificationModalOverlay}>
               <TouchableWithoutFeedback>
-                <SafeAreaView style={styles.notificationModalWrapper}>
+                <SafeAreaViewContext style={styles.notificationModalWrapper}>
                   <View style={styles.notificationModal}>
                     {/* Header */}
                     <View style={styles.notificationHeader}>
@@ -4716,19 +4856,19 @@ export default function App() {
                       </View>
                     )}
                   </View>
-                </SafeAreaView>
+                </SafeAreaViewContext>
               </TouchableWithoutFeedback>
             </View>
           </TouchableWithoutFeedback>
         </Modal>
-      </SafeAreaView>
+      </SafeAreaViewContext>
     );
   }
 
   // USAGE & CREDITS SCREEN
   if (screen === 'usage') {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaViewContext style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
         
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -5002,7 +5142,7 @@ export default function App() {
             </>
           )}
         </ScrollView>
-      </SafeAreaView>
+      </SafeAreaViewContext>
     );
   }
 
@@ -5016,8 +5156,8 @@ export default function App() {
     });
 
     return (
-      <SafeAreaView style={styles.notificationsPageContainer}>
-        <StatusBar barStyle="light-content" />
+      <SafeAreaViewContext style={styles.notificationsPageContainer}>
+        <StatusBar barStyle="light-content" backgroundColor="#667eea" translucent={false} />
         
         {/* Header with Gradient */}
         <LinearGradient
@@ -5179,14 +5319,14 @@ export default function App() {
             </View>
           )}
         </ScrollView>
-      </SafeAreaView>
+      </SafeAreaViewContext>
     );
   }
 
   // PACKAGES SCREEN
   if (screen === 'packages') {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaViewContext style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
         
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -5303,7 +5443,7 @@ export default function App() {
             </View>
           )}
         </ScrollView>
-        
+
         {/* Payment WebView Modal */}
         <Modal
           visible={showPaymentModal}
@@ -5315,7 +5455,7 @@ export default function App() {
             setPaymentUrl('');
           }}
         >
-          <SafeAreaView style={{flex: 1, backgroundColor: '#fff'}}>
+          <SafeAreaViewContext style={{flex: 1, backgroundColor: '#fff'}}>
             <View style={{flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb', backgroundColor: '#fff'}}>
               <TouchableOpacity 
                 onPress={() => {
@@ -5436,9 +5576,9 @@ export default function App() {
                 <Text style={{marginTop: 16, color: '#6b7280'}}>Loading payment...</Text>
               </View>
             )}
-          </SafeAreaView>
+          </SafeAreaViewContext>
         </Modal>
-      </SafeAreaView>
+      </SafeAreaViewContext>
     );
   }
 
@@ -5449,7 +5589,7 @@ export default function App() {
     const accountCreatedDate = profileData?.createdAt ? new Date(profileData.createdAt).toLocaleDateString() : new Date().toLocaleDateString();
 
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaViewContext style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
         
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -6001,14 +6141,14 @@ export default function App() {
             </View>
           </TouchableWithoutFeedback>
         </Modal>
-      </SafeAreaView>
+      </SafeAreaViewContext>
     );
   }
 
   // ADMIN PACKAGES SCREEN
   if (screen === 'admin') {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaViewContext style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
         
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -6329,14 +6469,14 @@ export default function App() {
         </KeyboardAvoidingView>
       </Modal>
     )}
-      </SafeAreaView>
+      </SafeAreaViewContext>
     );
   }
 
   // Terms & Conditions Screen
   if (screen === 'terms') {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaViewContext style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
         
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -6402,14 +6542,14 @@ export default function App() {
             <Text style={styles.legalParagraph}>For questions about these Terms:{'\n'}Email: support@cvapplyr.com</Text>
           </View>
         </ScrollView>
-      </SafeAreaView>
+      </SafeAreaViewContext>
     );
   }
 
   // Privacy Policy Screen
   if (screen === 'privacy') {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaViewContext style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
         
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -6469,14 +6609,14 @@ export default function App() {
             <Text style={styles.legalParagraph}>For privacy-related questions:{'\n'}Email: support@cvapplyr.com</Text>
           </View>
         </ScrollView>
-      </SafeAreaView>
+      </SafeAreaViewContext>
     );
   }
 
   // Refund Policy Screen
   if (screen === 'refund') {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaViewContext style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
         
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -6542,7 +6682,7 @@ export default function App() {
             <Text style={styles.legalParagraph}>This policy does not affect your statutory rights as a consumer under applicable laws.</Text>
           </View>
         </ScrollView>
-      </SafeAreaView>
+      </SafeAreaViewContext>
     );
   }
 
@@ -6604,7 +6744,7 @@ export default function App() {
   });
   
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaViewContext style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
         
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -7464,7 +7604,7 @@ export default function App() {
             setPaymentUrl('');
           }}
         >
-          <SafeAreaView style={{flex: 1, backgroundColor: '#fff'}}>
+          <SafeAreaViewContext style={{flex: 1, backgroundColor: '#fff'}}>
             <View style={{flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb'}}>
               <TouchableOpacity 
                 onPress={() => {
@@ -7517,7 +7657,7 @@ export default function App() {
               startInLoadingState={true}
               scalesPageToFit={true}
             />
-          </SafeAreaView>
+          </SafeAreaViewContext>
         </Modal>
 
         {/* Review Date Picker Modal */}
@@ -7530,7 +7670,7 @@ export default function App() {
           <TouchableWithoutFeedback onPress={() => setShowReviewDatePicker(false)}>
             <View style={styles.modalOverlay}>
               <TouchableWithoutFeedback>
-                <SafeAreaView style={styles.datePickerModalWrapper}>
+                <SafeAreaViewContext style={styles.datePickerModalWrapper}>
                   <View style={styles.datePickerModal}>
                     {/* Header */}
                     <View style={styles.datePickerHeader}>
@@ -7589,12 +7729,12 @@ export default function App() {
                       </TouchableOpacity>
                     </View>
                   </View>
-                </SafeAreaView>
+                </SafeAreaViewContext>
               </TouchableWithoutFeedback>
             </View>
           </TouchableWithoutFeedback>
         </Modal>
-      </SafeAreaView>
+      </SafeAreaViewContext>
     );
   }
 
@@ -7832,6 +7972,7 @@ const styles = StyleSheet.create({
   statTileWrapper: {
     width: '48.5%',
     height: 130,
+    borderRadius: 16,
     overflow: 'hidden',
   },
   statTile: {
@@ -7840,11 +7981,17 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
     borderRadius: 16,
     padding: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.08,
+        shadowRadius: 12,
+      },
+      android: {
+        elevation: 0,
+      },
+    }),
     borderWidth: 1,
     borderColor: '#f0f0f0',
     overflow: 'hidden',
@@ -11964,157 +12111,103 @@ const styles = StyleSheet.create({
   // Login Screen Styles
   loginContainer: {
     flex: 1,
+    backgroundColor: '#1a1a2e',
   },
   loginGradientBg: {
     flex: 1,
   },
-  loginScrollContent: {
-    flexGrow: 1,
-    paddingVertical: 40,
-    paddingHorizontal: 20,
-    justifyContent: 'center',
+  loginInnerContainer: {
+    flex: 1,
+    paddingHorizontal: 28,
   },
   loginLogoSection: {
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: 60,
+    marginTop: 8,
   },
-  loginLogoGlow: {
-    marginBottom: 16,
-    shadowColor: '#a78bfa',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.5,
-    shadowRadius: 20,
-    elevation: 10,
+  loginTagline: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontWeight: '500',
+    letterSpacing: 0.3,
+    marginTop: 10,
   },
   loginLogoImage: {
     width: 220,
     height: 66,
   },
-  loginTagline: {
-    fontSize: 15,
-    color: 'rgba(255, 255, 255, 0.85)',
-    fontWeight: '600',
-    letterSpacing: 0.5,
-    textAlign: 'center',
-  },
-  loginCard: {
-    borderRadius: 28,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.4,
-    shadowRadius: 24,
-    elevation: 15,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-  },
-  loginCardGradient: {
-    padding: 32,
-  },
-  loginCardHeader: {
+  loginWelcomeSection: {
     marginBottom: 28,
-    alignItems: 'center',
   },
   loginCardTitle: {
-    fontSize: 28,
+    fontSize: 32,
     fontWeight: '800',
     color: '#ffffff',
     marginBottom: 8,
-    letterSpacing: 0.5,
+    letterSpacing: -0.5,
   },
   loginCardSubtitle: {
-    fontSize: 15,
-    fontWeight: '500',
-    color: 'rgba(255, 255, 255, 0.75)',
-    letterSpacing: 0.3,
+    fontSize: 16,
+    fontWeight: '400',
+    color: 'rgba(255, 255, 255, 0.5)',
+    letterSpacing: 0.1,
   },
   loginErrorContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(239, 68, 68, 0.2)',
-    borderRadius: 14,
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderRadius: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#ef4444',
     padding: 14,
     marginBottom: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.4)',
-  },
-  loginErrorIconBox: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: 'rgba(239, 68, 68, 0.3)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  loginErrorIconText: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#fca5a5',
   },
   loginErrorText: {
-    flex: 1,
-    fontSize: 13,
+    fontSize: 14,
     color: '#fecaca',
-    fontWeight: '600',
-    lineHeight: 18,
+    fontWeight: '500',
+    lineHeight: 20,
+  },
+  loginFormSection: {
+    marginBottom: 24,
   },
   loginInputGroup: {
-    marginBottom: 20,
+    marginBottom: 18,
   },
   loginInputLabel: {
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '600',
     color: 'rgba(255, 255, 255, 0.7)',
-    marginBottom: 10,
-    letterSpacing: 1.2,
-  },
-  loginInputContainer: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    overflow: 'hidden',
+    marginBottom: 8,
+    letterSpacing: 0.2,
   },
   loginInput: {
-    paddingHorizontal: 16,
-    paddingVertical: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    paddingHorizontal: 18,
+    paddingVertical: Platform.OS === 'ios' ? 17 : 14,
     fontSize: 16,
     color: '#ffffff',
-    fontWeight: '500',
+    fontWeight: '400',
   },
   loginSignInButton: {
-    marginTop: 8,
-    marginBottom: 28,
-    borderRadius: 16,
+    marginTop: 6,
+    borderRadius: 14,
     overflow: 'hidden',
-    shadowColor: '#8b5cf6',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    elevation: 8,
   },
   loginButtonDisabled: {
     opacity: 0.6,
   },
   loginSignInGradient: {
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 18,
-    paddingHorizontal: 24,
-    gap: 12,
+    paddingVertical: 17,
   },
   loginSignInText: {
     fontSize: 17,
-    fontWeight: '800',
-    color: '#ffffff',
-    letterSpacing: 0.5,
-  },
-  loginSignInArrow: {
-    fontSize: 20,
     fontWeight: '700',
     color: '#ffffff',
+    letterSpacing: 0.3,
   },
   loginDividerContainer: {
     flexDirection: 'row',
@@ -12123,54 +12216,45 @@ const styles = StyleSheet.create({
   },
   loginDividerLine: {
     flex: 1,
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
   },
   loginDividerText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: 'rgba(255, 255, 255, 0.5)',
-    marginHorizontal: 16,
-    letterSpacing: 1,
+    fontSize: 13,
+    fontWeight: '500',
+    color: 'rgba(255, 255, 255, 0.35)',
+    marginHorizontal: 14,
   },
   loginSocialButtonsContainer: {
     flexDirection: 'row',
-    gap: 12,
-    marginBottom: 28,
+    justifyContent: 'center',
+    gap: 16,
+    marginBottom: 32,
   },
   loginSocialButton: {
-    flex: 1,
-    borderRadius: 14,
-    overflow: 'hidden',
-    backgroundColor: 'rgba(255, 255, 255, 0.18)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 3,
+    width: 60,
+    height: 60,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   loginSocialButtonDisabled: {
     opacity: 0.5,
   },
-  loginSocialButtonInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 10,
-    gap: 8,
-  },
   loginSocialIcon: {
-    width: 20,
-    height: 20,
+    width: 26,
+    height: 26,
   },
-  loginSocialButtonText: {
-    fontSize: 14,
-    fontWeight: '700',
+  loginAppleButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  loginAppleIcon: {
+    fontSize: 26,
     color: '#ffffff',
-    letterSpacing: 0.3,
   },
   loginFooter: {
     flexDirection: 'row',
@@ -12178,15 +12262,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   loginFooterText: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
-    fontWeight: '500',
+    fontSize: 15,
+    color: 'rgba(255, 255, 255, 0.45)',
+    fontWeight: '400',
   },
   loginFooterLink: {
-    fontSize: 14,
-    color: '#c4b5fd',
-    fontWeight: '800',
-    letterSpacing: 0.3,
+    fontSize: 15,
+    color: '#e94560',
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   
   fieldDisplayRow: {
@@ -13796,3 +13880,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppContent />
+    </SafeAreaProvider>
+  );
+}

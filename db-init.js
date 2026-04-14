@@ -131,6 +131,36 @@ async function runPostgresMigrations(db) {
             END $$;
         `);
 
+        // Migration: Add Apple Sign-In columns to users table if they don't exist
+        await db.query(`
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='users' AND column_name='apple_user_id') THEN
+                    ALTER TABLE users ADD COLUMN apple_user_id TEXT;
+                    RAISE NOTICE 'Added apple_user_id column to users table';
+                END IF;
+
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='users' AND column_name='apple_identity_token') THEN
+                    ALTER TABLE users ADD COLUMN apple_identity_token TEXT;
+                    RAISE NOTICE 'Added apple_identity_token column to users table';
+                END IF;
+
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='users' AND column_name='apple_token_issued_at') THEN
+                    ALTER TABLE users ADD COLUMN apple_token_issued_at TIMESTAMP;
+                    RAISE NOTICE 'Added apple_token_issued_at column to users table';
+                END IF;
+
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='users' AND column_name='apple_token_expires_at') THEN
+                    ALTER TABLE users ADD COLUMN apple_token_expires_at TIMESTAMP;
+                    RAISE NOTICE 'Added apple_token_expires_at column to users table';
+                END IF;
+            END $$;
+        `);
+
         // Migration: Add reply columns to application_history if missing
         await db.query(`
             DO $$ 
@@ -190,6 +220,59 @@ async function runPostgresMigrations(db) {
                     END IF;
                 END LOOP;
             END $$;
+        `);
+
+        // SECURITY FIX: Add OAuth token expiration tracking columns
+        await db.query(`
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='users' AND column_name='google_token_expires_at') THEN
+                    ALTER TABLE users ADD COLUMN google_token_expires_at TIMESTAMP DEFAULT NULL;
+                    RAISE NOTICE 'Added google_token_expires_at column to users table';
+                END IF;
+                
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='users' AND column_name='microsoft_token_expires_at') THEN
+                    ALTER TABLE users ADD COLUMN microsoft_token_expires_at TIMESTAMP DEFAULT NULL;
+                    RAISE NOTICE 'Added microsoft_token_expires_at column to users table';
+                END IF;
+
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='users' AND column_name='google_token_issued_at') THEN
+                    ALTER TABLE users ADD COLUMN google_token_issued_at TIMESTAMP DEFAULT NULL;
+                    RAISE NOTICE 'Added google_token_issued_at column to users table';
+                END IF;
+                
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='users' AND column_name='microsoft_token_issued_at') THEN
+                    ALTER TABLE users ADD COLUMN microsoft_token_issued_at TIMESTAMP DEFAULT NULL;
+                    RAISE NOTICE 'Added microsoft_token_issued_at column to users table';
+                END IF;
+            END $$;
+        `);
+
+        // SECURITY FIX: Create security_audit_log table for CASA Tier 2 compliance
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS security_audit_log (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER,
+                event_type VARCHAR(100) NOT NULL,
+                event_category VARCHAR(50) NOT NULL,
+                ip_address VARCHAR(45),
+                user_agent TEXT,
+                details JSONB,
+                success BOOLEAN DEFAULT TRUE,
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+            
+            -- Indexes for efficient querying
+            CREATE INDEX IF NOT EXISTS idx_security_audit_user_id ON security_audit_log(user_id);
+            CREATE INDEX IF NOT EXISTS idx_security_audit_event_type ON security_audit_log(event_type);
+            CREATE INDEX IF NOT EXISTS idx_security_audit_created_at ON security_audit_log(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_security_audit_category ON security_audit_log(event_category);
         `);
 
         console.log('✅ PostgreSQL migrations completed successfully');

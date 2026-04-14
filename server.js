@@ -13,6 +13,9 @@ if (fsSync.existsSync(razorpayEnvPath)) {
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 const express = require('express');
+const rateLimit = require('express-rate-limit');
+const validator = require('validator');
+const axios = require('axios');
 const multer = require('multer');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -55,7 +58,15 @@ const { authenticateToken, authenticateAdmin } = require('./server/middleware/au
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'your-encryption-key-change-this-in-production-min-32-chars';
+
+// SECURITY: Encryption key is REQUIRED - no fallback allowed
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length < 32) {
+    console.error('❌ CRITICAL SECURITY ERROR: ENCRYPTION_KEY environment variable must be set and at least 32 characters long');
+    console.error('   Current length:', ENCRYPTION_KEY ? ENCRYPTION_KEY.length : 0);
+    console.error('   Set ENCRYPTION_KEY in your environment variables or .env file');
+    process.exit(1);
+}
 
 // Initialize Cover Letter Generators
 const aiGenerator = new AICoverLetterGenerator();
@@ -71,6 +82,38 @@ function decryptData(ciphertext) {
     return bytes.toString(CryptoJS.enc.Utf8);
 }
 
+// SECURITY: OAuth token encryption functions
+function encryptOAuthToken(token) {
+    if (!token) return null;
+    try {
+        return CryptoJS.AES.encrypt(token, ENCRYPTION_KEY).toString();
+    } catch (error) {
+        console.error('OAuth token encryption error:', error);
+        return null;
+    }
+}
+
+function decryptOAuthToken(encryptedToken) {
+    if (!encryptedToken) return null;
+    try {
+        // BACKWARD COMPATIBILITY: Check if token is already decrypted (starts with 'ya29.' for Google)
+        // This handles existing unencrypted tokens in the database from before this security fix
+        if (encryptedToken.startsWith('ya29.') || encryptedToken.startsWith('EwB') || encryptedToken.startsWith('eyJ')) {
+            // Token appears to be in plain text (Google tokens start with 'ya29.', Microsoft with 'EwB' or 'eyJ')
+            console.log('⚠️ Found unencrypted OAuth token - using as-is (will be encrypted on next login)');
+            return encryptedToken;
+        }
+        
+        const bytes = CryptoJS.AES.decrypt(encryptedToken, ENCRYPTION_KEY);
+        const decrypted = bytes.toString(CryptoJS.enc.Utf8);
+        return decrypted || null;
+    } catch (error) {
+        console.error('OAuth token decryption error:', error);
+        // If decryption fails, token might be plain text - return it
+        return encryptedToken;
+    }
+}
+
 // Gmail API Helper Functions
 function createOAuth2Client(user) {
     const callbackUrl = process.env.NODE_ENV === 'production' 
@@ -83,13 +126,124 @@ function createOAuth2Client(user) {
         callbackUrl
     );
     
-    // Set credentials
+    // Set credentials (decrypt tokens from database)
     oauth2Client.setCredentials({
-        access_token: user.google_access_token,
-        refresh_token: user.google_refresh_token
+        access_token: decryptOAuthToken(user.google_access_token),
+        refresh_token: decryptOAuthToken(user.google_refresh_token)
     });
     
     return oauth2Client;
+}
+
+// SECURITY: Security audit logging function
+async function logSecurityEvent(userId, eventType, eventCategory, details = {}, req = null, success = true, errorMessage = null) {
+    try {
+        const ipAddress = req ? (req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress) : null;
+        const userAgent = req ? req.headers['user-agent'] : null;
+        
+        await dbConfig.run(
+            `INSERT INTO security_audit_log 
+            (user_id, event_type, event_category, ip_address, user_agent, details, success, error_message) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [userId, eventType, eventCategory, ipAddress, userAgent, JSON.stringify(details), success, errorMessage]
+        );
+        
+        console.log(`🔒 Security Event: [${eventCategory}] ${eventType} - User: ${userId || 'N/A'} - Success: ${success}`);
+    } catch (error) {
+        // Don't fail the main operation if logging fails
+        console.error('⚠️ Failed to log security event:', error.message);
+    }
+}
+
+// SECURITY: Token lifecycle - Check if token is expired
+function isTokenExpired(expiresAt) {
+    if (!expiresAt) return true; // No expiration date = assume expired for safety
+    const now = new Date();
+    const expiration = new Date(expiresAt);
+    // Add 5 minute buffer to refresh before actual expiration
+    const bufferMs = 5 * 60 * 1000;
+    return now >= new Date(expiration.getTime() - bufferMs);
+}
+
+// SECURITY: Token lifecycle - Refresh Google OAuth token
+async function refreshGoogleToken(user) {
+    try {
+        console.log(`🔄 Refreshing Google OAuth token for user ${user.id}`);
+        
+        const oauth2Client = new google.auth.OAuth2(
+            process.env.GOOGLE_CLIENT_ID,
+            process.env.GOOGLE_CLIENT_SECRET,
+            process.env.NODE_ENV === 'production' 
+                ? 'https://cvapplyr.com/auth/google/callback'
+                : 'http://localhost:3000/auth/google/callback'
+        );
+        
+        // Set refresh token (decrypt it first)
+        const refreshToken = decryptOAuthToken(user.google_refresh_token);
+        if (!refreshToken) {
+            throw new Error('No refresh token available');
+        }
+        
+        oauth2Client.setCredentials({
+            refresh_token: refreshToken
+        });
+        
+        // Request new access token
+        const { credentials } = await oauth2Client.refreshAccessToken();
+        
+        // Calculate expiration time (default 3600 seconds = 1 hour)
+        const expiresIn = credentials.expiry_date 
+            ? Math.floor((credentials.expiry_date - Date.now()) / 1000)
+            : 3600;
+        const expiresAt = new Date(Date.now() + expiresIn * 1000);
+        
+        // Encrypt and store new access token
+        await dbConfig.run(
+            `UPDATE users 
+            SET google_access_token = ?, 
+                google_token_expires_at = ?, 
+                google_token_issued_at = CURRENT_TIMESTAMP 
+            WHERE id = ?`,
+            [encryptOAuthToken(credentials.access_token), expiresAt, user.id]
+        );
+        
+        // Log the refresh event
+        await logSecurityEvent(user.id, 'OAUTH_TOKEN_REFRESHED', 'oauth', {
+            provider: 'google',
+            expires_at: expiresAt.toISOString()
+        });
+        
+        console.log(`✅ Google token refreshed successfully for user ${user.id}, expires at ${expiresAt}`);
+        
+        return credentials.access_token;
+    } catch (error) {
+        console.error('❌ Failed to refresh Google token:', error.message);
+        
+        // Log the failed refresh
+        await logSecurityEvent(user.id, 'OAUTH_TOKEN_REFRESH_FAILED', 'oauth', {
+            provider: 'google',
+            error: error.message
+        }, null, false, error.message);
+        
+        throw error;
+    }
+}
+
+// SECURITY: Token lifecycle - Get valid Google access token (refreshes if needed)
+async function getValidGoogleAccessToken(user) {
+    try {
+        // Check if token is expired or missing
+        if (!user.google_access_token || isTokenExpired(user.google_token_expires_at)) {
+            console.log(`⏰ Google token expired or missing for user ${user.id}, refreshing...`);
+            return await refreshGoogleToken(user);
+        }
+        
+        // Token is still valid, decrypt and return
+        return decryptOAuthToken(user.google_access_token);
+    } catch (error) {
+        console.error('❌ Failed to get valid Google token:', error.message);
+        throw new Error('OAuth token expired. Please log out and log in again with Google.');
+    }
 }
 
 // Function to generate professional email body
@@ -263,6 +417,160 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
+// ============================================
+// SECURITY: Rate Limiting (CASA Tier 2 Compliance)
+// ============================================
+
+// Strict rate limiter for authentication endpoints (prevent brute force)
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 5, // 5 attempts per window
+    message: 'Too many authentication attempts. Please try again in 15 minutes.',
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: false, // Count all attempts
+    handler: async (req, res) => {
+        // Log failed rate limit attempt
+        console.warn('⚠️ Rate limit exceeded:', {
+            ip: req.ip,
+            path: req.path,
+            headers: req.headers['user-agent']
+        });
+        res.status(429).json({ 
+            error: 'Too many attempts. Please try again in 15 minutes.',
+            retryAfter: 900 // seconds
+        });
+    }
+});
+
+// Moderate rate limiter for API endpoints
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // 100 requests per window
+    message: 'Too many requests. Please try again later.',
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true // Don't count successful requests
+});
+
+// Strict rate limiter for sensitive operations
+const sensitiveLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 3, // 3 attempts per hour
+    message: 'Too many sensitive operations. Please try again in 1 hour.',
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+// ============================================
+// SECURITY: Input Validation Middleware (CASA Tier 2 Compliance)
+// ============================================
+
+// Validation helper functions
+const validateEmail = (email) => {
+    if (!email || typeof email !== 'string') return false;
+    return validator.isEmail(email) && email.length <= 255;
+};
+
+const validatePassword = (password) => {
+    if (!password || typeof password !== 'string') return false;
+    // At least 8 characters, 1 uppercase, 1 lowercase, 1 number
+    return password.length >= 8 && password.length <= 128 &&
+           /[A-Z]/.test(password) &&
+           /[a-z]/.test(password) &&
+           /[0-9]/.test(password);
+};
+
+const validateString = (str, minLength = 1, maxLength = 1000) => {
+    if (!str || typeof str !== 'string') return false;
+    const trimmed = str.trim();
+    return trimmed.length >= minLength && trimmed.length <= maxLength;
+};
+
+const sanitizeString = (str) => {
+    if (!str || typeof str !== 'string') return '';
+    // Remove potentially dangerous characters
+    return validator.escape(str.trim());
+};
+
+const validateUrl = (url) => {
+    if (!url || typeof url !== 'string') return false;
+    return validator.isURL(url, { protocols: ['http', 'https'], require_protocol: true });
+};
+
+const validateFileName = (filename) => {
+    if (!filename || typeof filename !== 'string') return false;
+    // Only allow safe characters in filenames
+    return /^[a-zA-Z0-9._-]+$/.test(filename) && filename.length <= 255;
+};
+
+// Validation middleware for registration
+const validateRegistration = (req, res, next) => {
+    const { email, password, fullName } = req.body;
+    
+    if (!validateEmail(email)) {
+        return res.status(400).json({ error: 'Invalid email address' });
+    }
+    
+    if (!validatePassword(password)) {
+        return res.status(400).json({ 
+            error: 'Password must be 8-128 characters with at least 1 uppercase, 1 lowercase, and 1 number' 
+        });
+    }
+    
+    if (!validateString(fullName, 2, 100)) {
+        return res.status(400).json({ error: 'Full name must be 2-100 characters' });
+    }
+    
+    // Sanitize inputs
+    req.body.email = email.toLowerCase().trim();
+    req.body.fullName = sanitizeString(fullName);
+    
+    next();
+};
+
+// Validation middleware for login
+const validateLogin = (req, res, next) => {
+    const { email, password } = req.body;
+    
+    if (!validateEmail(email)) {
+        return res.status(400).json({ error: 'Invalid email address' });
+    }
+    
+    if (!password || typeof password !== 'string' || password.length > 128) {
+        return res.status(400).json({ error: 'Invalid password' });
+    }
+    
+    req.body.email = email.toLowerCase().trim();
+    
+    next();
+};
+
+// Validation middleware for email sending
+const validateEmailData = (req, res, next) => {
+    const { recipientEmail, companyName, position } = req.body;
+    
+    if (recipientEmail && !validateEmail(recipientEmail)) {
+        return res.status(400).json({ error: 'Invalid recipient email address' });
+    }
+    
+    if (companyName && !validateString(companyName, 1, 200)) {
+        return res.status(400).json({ error: 'Company name must be 1-200 characters' });
+    }
+    
+    if (position && !validateString(position, 1, 200)) {
+        return res.status(400).json({ error: 'Position must be 1-200 characters' });
+    }
+    
+    // Sanitize inputs
+    if (companyName) req.body.companyName = sanitizeString(companyName);
+    if (position) req.body.position = sanitizeString(position);
+    
+    next();
+};
+
+console.log('✅ Rate limiting and input validation configured');
+
 // Protected admin pages - MUST come before express.static
 app.get('/admin-packages.html', serveAdminPageOnly, (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'admin-packages.html'));
@@ -363,9 +671,14 @@ app.use(express.static('public'));
 app.use('/uploads', express.static('uploads'));
 
 // Passport Google OAuth Configuration
-const CALLBACK_URL = process.env.NODE_ENV === 'production' 
+// Mobile flow always uses production callback so Chrome on Android emulator can reach it.
+const CALLBACK_URL = process.env.NODE_ENV === 'production'
     ? 'https://cvapplyr.com/auth/google/callback'
     : 'http://localhost:3000/auth/google/callback';
+
+const MOBILE_CALLBACK_URL = process.env.NODE_ENV === 'production'
+    ? 'https://cvapplyr.com/auth/google/mobile-callback'
+    : 'http://localhost:3000/auth/google/mobile-callback';
 
 passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || 'your-google-client-id',
@@ -381,6 +694,18 @@ passport.use(new GoogleStrategy({
     prompt: 'consent' // Force consent screen to get refresh token
 }, (accessToken, refreshToken, profile, done) => {
     // Handle Google OAuth callback with tokens
+    handleOAuthUser(profile, 'google', accessToken, refreshToken, done);
+}));
+
+// Second Google strategy for mobile deep-link flow
+passport.use('google-mobile', new GoogleStrategy({
+    clientID: process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: MOBILE_CALLBACK_URL,
+    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly'],
+    accessType: 'offline',
+    prompt: 'consent',
+}, (accessToken, refreshToken, profile, done) => {
     handleOAuthUser(profile, 'google', accessToken, refreshToken, done);
 }));
 
@@ -447,35 +772,108 @@ async function handleOAuthUser(profile, provider, accessToken, refreshToken, cal
         const user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [email]);
 
         if (user) {
-            // User exists, update OAuth tokens
+            // User exists, update OAuth tokens (ENCRYPTED for security) and track expiration
             if (provider === 'google') {
+                // Calculate token expiration (Google tokens typically expire in 1 hour = 3600 seconds)
+                const expiresAt = new Date(Date.now() + 3600 * 1000);
+                
                 // Passport-based OAuth is standard flow (not PKCE), so used_pkce=false
                 await dbConfig.run(
-                    'UPDATE users SET oauth_provider = ?, google_access_token = ?, google_refresh_token = ?, used_pkce = ? WHERE id = ?',
-                    [provider, accessToken, refreshToken, false, user.id]
+                    `UPDATE users 
+                    SET oauth_provider = ?, 
+                        google_access_token = ?, 
+                        google_refresh_token = ?, 
+                        google_token_expires_at = ?,
+                        google_token_issued_at = CURRENT_TIMESTAMP,
+                        used_pkce = ? 
+                    WHERE id = ?`,
+                    [provider, encryptOAuthToken(accessToken), encryptOAuthToken(refreshToken), expiresAt, false, user.id]
                 );
+                
+                // Log OAuth token grant
+                await logSecurityEvent(user.id, 'OAUTH_TOKEN_GRANTED', 'oauth', {
+                    provider: 'google',
+                    flow: 'passport',
+                    expires_at: expiresAt.toISOString()
+                });
             } else if (provider === 'microsoft') {
+                // Microsoft tokens typically expire in 1 hour as well
+                const expiresAt = new Date(Date.now() + 3600 * 1000);
+                
                 await dbConfig.run(
-                    'UPDATE users SET oauth_provider = ?, microsoft_access_token = ?, microsoft_refresh_token = ? WHERE id = ?',
-                    [provider, accessToken, refreshToken, user.id]
+                    `UPDATE users 
+                    SET oauth_provider = ?, 
+                        microsoft_access_token = ?, 
+                        microsoft_refresh_token = ?,
+                        microsoft_token_expires_at = ?,
+                        microsoft_token_issued_at = CURRENT_TIMESTAMP
+                    WHERE id = ?`,
+                    [provider, encryptOAuthToken(accessToken), encryptOAuthToken(refreshToken), expiresAt, user.id]
                 );
+                
+                // Log OAuth token grant
+                await logSecurityEvent(user.id, 'OAUTH_TOKEN_GRANTED', 'oauth', {
+                    provider: 'microsoft',
+                    flow: 'passport',
+                    expires_at: expiresAt.toISOString()
+                });
             }
             return callback(null, user);
         } else {
-            // Create new user
+            // Create new user (with ENCRYPTED OAuth tokens for security) and track expiration
             const hashedPassword = jwt.sign({ provider, email }, JWT_SECRET);
             let result;
             if (provider === 'google') {
+                const expiresAt = new Date(Date.now() + 3600 * 1000);
+                
                 // Passport-based OAuth is standard flow (not PKCE), so used_pkce=false
                 result = await dbConfig.run(
-                    'INSERT INTO users (full_name, email, password, oauth_provider, google_access_token, google_refresh_token, used_pkce) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                    [fullName, email, hashedPassword, provider, accessToken, refreshToken, false]
+                    `INSERT INTO users 
+                    (full_name, email, password, oauth_provider, google_access_token, google_refresh_token, 
+                     google_token_expires_at, google_token_issued_at, used_pkce) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)`,
+                    [fullName, email, hashedPassword, provider, encryptOAuthToken(accessToken), encryptOAuthToken(refreshToken), expiresAt, false]
                 );
+                
+                const newUserId = result.lastID || result.id;
+                
+                // Log new user registration via OAuth
+                await logSecurityEvent(newUserId, 'USER_REGISTERED', 'auth', {
+                    provider: 'google',
+                    method: 'oauth'
+                });
+                
+                // Log OAuth token grant
+                await logSecurityEvent(newUserId, 'OAUTH_TOKEN_GRANTED', 'oauth', {
+                    provider: 'google',
+                    flow: 'passport',
+                    expires_at: expiresAt.toISOString()
+                });
             } else if (provider === 'microsoft') {
+                const expiresAt = new Date(Date.now() + 3600 * 1000);
+                
                 result = await dbConfig.run(
-                    'INSERT INTO users (full_name, email, password, oauth_provider, microsoft_access_token, microsoft_refresh_token) VALUES (?, ?, ?, ?, ?, ?)',
-                    [fullName, email, hashedPassword, provider, accessToken, refreshToken]
+                    `INSERT INTO users 
+                    (full_name, email, password, oauth_provider, microsoft_access_token, microsoft_refresh_token,
+                     microsoft_token_expires_at, microsoft_token_issued_at) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+                    [fullName, email, hashedPassword, provider, encryptOAuthToken(accessToken), encryptOAuthToken(refreshToken), expiresAt]
                 );
+                
+                const newUserId = result.lastID || result.id;
+                
+                // Log new user registration via OAuth
+                await logSecurityEvent(newUserId, 'USER_REGISTERED', 'auth', {
+                    provider: 'microsoft',
+                    method: 'oauth'
+                });
+                
+                // Log OAuth token grant
+                await logSecurityEvent(newUserId, 'OAUTH_TOKEN_GRANTED', 'oauth', {
+                    provider: 'microsoft',
+                    flow: 'passport',
+                    expires_at: expiresAt.toISOString()
+                });
             }
             
             const newUser = await dbConfig.get('SELECT * FROM users WHERE id = ?', [result.lastID || result.id]);
@@ -2958,18 +3356,21 @@ app.get('/api/user/is-admin', authenticateToken, async (req, res) => {
 paymentRoutes.setDbConfig(dbConfig);
 app.use('/api/payment', paymentRoutes.router);
 
-// Set up auth routes
-app.use('/api/auth', authRoutes);
-app.use('/auth', authRoutes);
+// Set up auth routes with rate limiting
+app.use('/api/auth', authLimiter, authRoutes);
+app.use('/auth', authLimiter, authRoutes);
 
-// Account deletion endpoint (GDPR/CCPA compliance)
-app.delete('/api/account/delete', authenticateToken, async (req, res) => {
+// Account deletion endpoint (GDPR/CCPA compliance) with OAuth revocation
+app.delete('/api/account/delete', authenticateToken, sensitiveLimiter, async (req, res) => {
     try {
         const userId = req.user.id;
         const { confirmText } = req.body;
 
         // Require explicit confirmation
         if (confirmText !== 'DELETE') {
+            await logSecurityEvent('account', 'ACCOUNT_DELETE_FAILED', userId, false, {
+                reason: 'Invalid confirmation'
+            });
             return res.status(400).json({ 
                 error: 'Invalid confirmation. Please type DELETE to confirm.' 
             });
@@ -2981,25 +3382,72 @@ app.delete('/api/account/delete', authenticateToken, async (req, res) => {
         const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
         
         if (!user) {
+            await logSecurityEvent('account', 'ACCOUNT_DELETE_FAILED', userId, false, {
+                reason: 'User not found'
+            });
             return res.status(404).json({ error: 'User not found' });
         }
 
-        // TODO: Revoke OAuth tokens with providers (future enhancement)
-        // For Google: Call https://oauth2.googleapis.com/revoke
-        // For Microsoft: Call https://graph.microsoft.com/v1.0/me/revokeSignInSessions
+        // Revoke OAuth tokens with providers (CASA Tier 2 requirement)
+        const revokeResults = { google: 'skipped', microsoft: 'skipped', apple: 'skipped' };
+        
+        // Revoke Google OAuth token
+        if (user.google_access_token) {
+            try {
+                const tokenToRevoke = decryptOAuthToken(user.google_access_token) || user.google_access_token;
+                const revokeResponse = await axios.post('https://oauth2.googleapis.com/revoke', null, {
+                    params: { token: tokenToRevoke },
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+                });
+                revokeResults.google = 'success';
+                console.log(`🔒 [ACCOUNT DELETE] Revoked Google OAuth token for user ${userId}`);
+            } catch (error) {
+                // Token might already be invalid, continue with deletion
+                revokeResults.google = 'failed: ' + (error.response?.data?.error || error.message);
+                console.error(`⚠️ [ACCOUNT DELETE] Failed to revoke Google token:`, error.message);
+            }
+        }
+
+        // Revoke Microsoft OAuth token
+        if (user.microsoft_access_token) {
+            try {
+                const tokenToRevoke = decryptOAuthToken(user.microsoft_access_token) || user.microsoft_access_token;
+                const revokeResponse = await axios.post(
+                    'https://graph.microsoft.com/v1.0/me/revokeSignInSessions',
+                    {},
+                    { headers: { 'Authorization': `Bearer ${tokenToRevoke}` } }
+                );
+                revokeResults.microsoft = 'success';
+                console.log(`🔒 [ACCOUNT DELETE] Revoked Microsoft OAuth token for user ${userId}`);
+            } catch (error) {
+                // Token might already be invalid, continue with deletion
+                revokeResults.microsoft = 'failed: ' + (error.response?.data?.error?.message || error.message);
+                console.error(`⚠️ [ACCOUNT DELETE] Failed to revoke Microsoft token:`, error.message);
+            }
+        }
+
+        // Note Apple token cleanup (Apple doesn't provide a simple revocation endpoint for server-side)
+        if (user.apple_user_id) {
+            revokeResults.apple = 'token_cleared';
+            console.log(`🔒 [ACCOUNT DELETE] Cleared Apple credentials for user ${userId}`);
+        }
 
         // Delete user data in correct order (foreign key constraints)
         await dbConfig.run('DELETE FROM notifications WHERE user_id = ?', [userId]);
         console.log(`🗑️ [ACCOUNT DELETE] Deleted notifications for user ${userId}`);
 
-        await dbConfig.run('DELETE FROM applications WHERE user_id = ?', [userId]);
+        await dbConfig.run('DELETE FROM application_history WHERE user_id = ?', [userId]);
         console.log(`🗑️ [ACCOUNT DELETE] Deleted applications for user ${userId}`);
 
-        await dbConfig.run('DELETE FROM payments WHERE user_id = ?', [userId]);
+        await dbConfig.run('DELETE FROM payment_orders WHERE user_id = ?', [userId]);
         console.log(`🗑️ [ACCOUNT DELETE] Deleted payments for user ${userId}`);
 
-        await dbConfig.run('DELETE FROM cover_letters WHERE user_id = ?', [userId]);
+        await dbConfig.run('DELETE FROM review_cover_letters WHERE user_id = ?', [userId]);
         console.log(`🗑️ [ACCOUNT DELETE] Deleted cover letters for user ${userId}`);
+
+        // Delete security audit logs for user (GDPR compliance)
+        await dbConfig.run('DELETE FROM security_audit_log WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted security audit logs for user ${userId}`);
 
         // Delete user files from disk
         const userUploadPath = path.join(__dirname, 'uploads', `user_${userId}`);
@@ -3011,6 +3459,12 @@ app.delete('/api/account/delete', authenticateToken, async (req, res) => {
             // Continue with deletion even if file deletion fails
         }
 
+        // Log account deletion event before deleting user
+        await logSecurityEvent('account', 'ACCOUNT_DELETED', userId, true, {
+            email: user.email,
+            oauth_revoked: revokeResults
+        });
+
         // Finally, delete the user account
         await dbConfig.run('DELETE FROM users WHERE id = ?', [userId]);
         console.log(`🗑️ [ACCOUNT DELETE] Deleted user account ${userId} (${user.email})`);
@@ -3020,15 +3474,165 @@ app.delete('/api/account/delete', authenticateToken, async (req, res) => {
 
         res.json({ 
             success: true, 
-            message: 'Your account and all associated data have been permanently deleted.' 
+            message: 'Your account and all associated data have been permanently deleted.',
+            oauth_revocation: revokeResults
         });
 
         console.log(`✅ [ACCOUNT DELETE] Successfully deleted user ${userId} (${user.email})`);
 
     } catch (error) {
         console.error('❌ [ACCOUNT DELETE] Error:', error);
+        await logSecurityEvent('account', 'ACCOUNT_DELETE_FAILED', req.user?.id, false, {
+            error: error.message
+        });
         res.status(500).json({ 
             error: 'Failed to delete account. Please contact support if the issue persists.',
+            details: error.message 
+        });
+    }
+});
+
+// GDPR Data Export endpoint (CASA Tier 2 requirement)
+app.get('/api/account/export', authenticateToken, sensitiveLimiter, async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        console.log(`📦 [DATA EXPORT] Starting export for user ${userId}`);
+
+        // Get user data
+        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        
+        if (!user) {
+            await logSecurityEvent('account', 'DATA_EXPORT_FAILED', userId, false, {
+                reason: 'User not found'
+            });
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Get all related data (using correct table names)
+        const [applications, coverLetters, payments, notifications, auditLogs] = await Promise.all([
+            dbConfig.query('SELECT * FROM application_history WHERE user_id = ?', [userId]),
+            dbConfig.query('SELECT * FROM review_cover_letters WHERE user_id = ?', [userId]),
+            dbConfig.query('SELECT * FROM payment_orders WHERE user_id = ?', [userId]),
+            dbConfig.query('SELECT * FROM notifications WHERE user_id = ?', [userId]),
+            dbConfig.query('SELECT * FROM security_audit_log WHERE user_id = ?', [userId])
+        ]);
+
+        // Remove sensitive encrypted tokens from export (keep only metadata)
+        const exportData = {
+            export_date: new Date().toISOString(),
+            user_data: {
+                id: user.id,
+                email: user.email,
+                full_name: user.full_name,
+                phone: user.phone,
+                created_at: user.created_at,
+                oauth_providers: {
+                    google: {
+                        connected: !!user.google_access_token,
+                        email: user.google_email,
+                        token_issued_at: user.google_token_issued_at,
+                        token_expires_at: user.google_token_expires_at
+                    },
+                    microsoft: {
+                        connected: !!user.microsoft_access_token,
+                        email: user.microsoft_email,
+                        token_issued_at: user.microsoft_token_issued_at,
+                        token_expires_at: user.microsoft_token_expires_at
+                    },
+                    apple: {
+                        connected: !!user.apple_user_id,
+                        token_issued_at: user.apple_token_issued_at,
+                        token_expires_at: user.apple_token_expires_at
+                    }
+                },
+                credits: {
+                    total_credits: user.total_credits,
+                    used_credits: user.used_credits,
+                    remaining_credits: (user.total_credits || 0) - (user.used_credits || 0)
+                },
+                subscription: {
+                    package_id: user.package_id,
+                    package_name: user.package_name,
+                    package_start_date: user.package_start_date,
+                    package_end_date: user.package_end_date,
+                    auto_renew: user.auto_renew
+                }
+            },
+            applications: applications.map(app => ({
+                id: app.id,
+                company_name: app.company_name,
+                position: app.position,
+                recipient_email: app.recipient_email,
+                status: app.status,
+                sent_at: app.sent_at,
+                created_at: app.created_at
+            })),
+            cover_letters: coverLetters.map(cl => ({
+                id: cl.id,
+                company_name: cl.company_name,
+                position: cl.position,
+                content: cl.content,
+                model_used: cl.model_used,
+                created_at: cl.created_at
+            })),
+            payments: payments.map(payment => ({
+                id: payment.id,
+                amount: payment.amount,
+                currency: payment.currency,
+                status: payment.status,
+                package_id: payment.package_id,
+                package_name: payment.package_name,
+                razorpay_order_id: payment.razorpay_order_id,
+                razorpay_payment_id: payment.razorpay_payment_id,
+                created_at: payment.created_at
+            })),
+            notifications: notifications.map(notif => ({
+                id: notif.id,
+                type: notif.type,
+                title: notif.title,
+                message: notif.message,
+                read: notif.read,
+                created_at: notif.created_at
+            })),
+            security_audit_logs: auditLogs.map(log => ({
+                id: log.id,
+                event_type: log.event_type,
+                event_category: log.event_category,
+                success: log.success,
+                ip_address: log.ip_address,
+                user_agent: log.user_agent,
+                metadata: log.metadata,
+                created_at: log.created_at
+            }))
+        };
+
+        // Log export event
+        await logSecurityEvent('account', 'DATA_EXPORTED', userId, true, {
+            email: user.email,
+            records_count: {
+                applications: applications.length,
+                cover_letters: coverLetters.length,
+                payments: payments.length,
+                notifications: notifications.length,
+                audit_logs: auditLogs.length
+            }
+        });
+
+        console.log(`✅ [DATA EXPORT] Successfully exported data for user ${userId}`);
+
+        // Set headers for file download
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename="account-data-${userId}-${Date.now()}.json"`);
+        res.json(exportData);
+
+    } catch (error) {
+        console.error('❌ [DATA EXPORT] Error:', error);
+        await logSecurityEvent('account', 'DATA_EXPORT_FAILED', req.user?.id, false, {
+            error: error.message
+        });
+        res.status(500).json({ 
+            error: 'Failed to export account data. Please contact support if the issue persists.',
             details: error.message 
         });
     }

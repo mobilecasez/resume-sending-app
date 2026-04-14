@@ -34,11 +34,13 @@
     "crypto-js": "^4.2.0",
     "dotenv": "^16.3.1",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.3.2",
     "express-session": "^1.18.2",
     "googleapis": "^134.0.0",
     "hummus": "^1.0.118",
     "imap": "^0.8.19",
     "jsonwebtoken": "^9.0.3",
+    "jwks-rsa": "^4.0.1",
     "mailparser": "^3.9.3",
     "multer": "^2.0.2",
     "nodemailer": "^6.9.7",
@@ -53,6 +55,7 @@
     "pg": "^8.17.2",
     "razorpay": "^2.9.6",
     "sharp": "^0.34.5",
+    "validator": "^13.15.35",
     "zeptomail": "^7.0.1-alpha-3"
   },
   "devDependencies": {

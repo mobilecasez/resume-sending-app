@@ -22,6 +22,18 @@ router.get('/google/callback',
     authController.googleCallback
 );
 
+// Mobile-specific Google OAuth: initiates web OAuth, returns JWT via deep link
+router.get('/google/mobile', passport.authenticate('google-mobile', {
+    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly'],
+    accessType: 'offline',
+    prompt: 'consent',
+}));
+
+router.get('/google/mobile-callback',
+    passport.authenticate('google-mobile', { failureRedirect: '/login.html' }),
+    authController.googleMobileCallback
+);
+
 // Google OAuth API endpoint for mobile
 router.post('/google', authController.googleAuth);
 
@@ -38,6 +50,9 @@ router.get('/microsoft/callback',
 
 // Microsoft OAuth API endpoint for mobile
 router.post('/microsoft', authController.microsoftAuth);
+
+// Apple Sign-In API endpoint for mobile
+router.post('/apple', authController.appleAuth);
 
 // LinkedIn OAuth Routes (Disabled due to API compatibility issues)
 /*

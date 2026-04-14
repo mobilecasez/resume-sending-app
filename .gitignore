@@ -53,3 +53,9 @@ railway_backup.sql
 backup-local-*.sql
 railway-dump-*.sql
 *.db
+CREDENTIALS.md
+searchrks-account-export.json
+searchrks-export.json
+security_verification_report.txt
+force-reencrypt-tokens.js
+verify_security_implementation.sql

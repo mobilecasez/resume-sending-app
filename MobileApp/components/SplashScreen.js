@@ -1,5 +1,5 @@
-import React, { useEffect, useRef } from 'react';
-import { View, StyleSheet, Animated, Dimensions } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Image, StyleSheet, Animated, Dimensions, Platform, View } from 'react-native';
 import { Video } from 'expo-av';
 
 const { width, height } = Dimensions.get('window');
@@ -7,22 +7,43 @@ const { width, height } = Dimensions.get('window');
 export default function SplashScreen({ onFinish }) {
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const videoRef = useRef(null);
+  const [gifDone, setGifDone] = useState(false);
 
   useEffect(() => {
-    // Start fade out after video finishes (3.7 seconds)
-    const timer = setTimeout(() => {
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 500,
-        useNativeDriver: true,
-      }).start(() => {
-        if (onFinish) {
-          onFinish();
-        }
-      });
-    }, 3200); // Start fade at 3.2s (before 3.7s video ends)
+    if (Platform.OS === 'android') {
+      // Android: let GIF play for 3.7s, then show static last frame briefly, then fade entire screen
+      const doneTimer = setTimeout(() => {
+        setGifDone(true); // Switch from GIF to static last frame (no animation artifacts)
+      }, 3650);
 
-    return () => clearTimeout(timer);
+      const fadeTimer = setTimeout(() => {
+        Animated.timing(fadeAnim, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: true,
+        }).start(() => {
+          if (onFinish) onFinish();
+        });
+      }, 3800);
+
+      return () => {
+        clearTimeout(doneTimer);
+        clearTimeout(fadeTimer);
+      };
+    } else {
+      // iOS: smooth fade with video
+      const fadeTimer = setTimeout(() => {
+        Animated.timing(fadeAnim, {
+          toValue: 0,
+          duration: 500,
+          useNativeDriver: true,
+        }).start(() => {
+          if (onFinish) onFinish();
+        });
+      }, 3200);
+
+      return () => clearTimeout(fadeTimer);
+    }
   }, []);
 
   const handleVideoLoad = () => {
@@ -30,6 +51,26 @@ export default function SplashScreen({ onFinish }) {
       videoRef.current.playAsync();
     }
   };
+
+  if (Platform.OS === 'android') {
+    return (
+      <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
+        {gifDone ? (
+          <Image
+            source={require('../assets/splash_last_frame_fullscreen.jpg')}
+            style={styles.fullScreen}
+            resizeMode="cover"
+          />
+        ) : (
+          <Image
+            source={require('../assets/splash_animation.gif')}
+            style={styles.video}
+            resizeMode="contain"
+          />
+        )}
+      </Animated.View>
+    );
+  }
 
   return (
     <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
@@ -64,5 +105,9 @@ const styles = StyleSheet.create({
   video: {
     width: Math.min(width * 0.8, 480),
     height: Math.min(height * 0.5, 270),
+  },
+  fullScreen: {
+    width: width,
+    height: height,
   },
 });
