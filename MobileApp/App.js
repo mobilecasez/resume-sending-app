@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking, AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView } from 'react-native-webview';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -350,6 +350,25 @@ function AppContent() {
   const userRef = useRef(null);
   // Keep ref in sync so link handlers always have the latest token
   useEffect(() => { userRef.current = user; }, [user]);
+  
+  // Track app background/foreground state to handle iOS suspending network requests
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (appStateRef.current === 'active' && nextAppState.match(/inactive|background/)) {
+        // App going to background — mark if a request is in progress
+        if (requestInProgressRef.current) {
+          wasBackgroundedDuringRequestRef.current = true;
+          console.log('📱 App backgrounded during active request');
+        }
+      }
+      if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
+        console.log('📱 App returned to foreground');
+      }
+      appStateRef.current = nextAppState;
+    });
+    return () => subscription?.remove();
+  }, []);
+  
   const [recipients, setRecipients] = useState([
     { id: 0, email: '', website: '', position: '', error: '' }
   ]);
@@ -513,6 +532,11 @@ function AppContent() {
   const [selectedReplyDetails, setSelectedReplyDetails] = useState(null);
   const abortControllerRef = useRef(null);
   const isCancelledRef = useRef(false);
+  
+  // Background state tracking - detect when iOS suspends the app during a request
+  const appStateRef = useRef(AppState.currentState);
+  const requestInProgressRef = useRef(false);
+  const wasBackgroundedDuringRequestRef = useRef(false);
   
   // Packages screen state
   const [userPackages, setUserPackages] = useState([]);
@@ -1479,6 +1503,10 @@ function AppContent() {
         isCancelledRef.current = false;
       }
       
+      // Track active request for background state detection
+      requestInProgressRef.current = true;
+      wasBackgroundedDuringRequestRef.current = false;
+      
       setReviewGeneratingIndex(recipientIndex);
       
       // Start progressive loading
@@ -1689,14 +1717,23 @@ function AppContent() {
       console.log(`   Message: ${error.message}`);
       console.log(`   Stack: ${error.stack?.split('\n')[0]}`);
       console.log(`   Retry count: ${retryCount}`);
+      console.log(`   Was backgrounded: ${wasBackgroundedDuringRequestRef.current}`);
 
-      // Handle user cancellation
-      if (error.name === 'AbortError') {
+      // Handle user cancellation (user explicitly pressed Cancel)
+      if (error.name === 'AbortError' && isCancelledRef.current) {
         console.log(`🛑 [${requestId}] Request cancelled by user`);
         return;
       }
       
-      if (error.name === 'AbortError' || error.message.includes('timeout')) {
+      // Handle app backgrounding — iOS killed the request, auto-retry
+      if (wasBackgroundedDuringRequestRef.current && retryCount < 2) {
+        wasBackgroundedDuringRequestRef.current = false;
+        console.log(`📱 [${requestId}] App was backgrounded during request - auto-retrying...`);
+        setTimeout(() => generateCoverLetterForReview(recipientIndex, retryCount + 1), 1500);
+        return;
+      }
+      
+      if (error.name === 'AbortError' || error.message.includes('timeout') || error.message.includes('Network request failed')) {
         if (retryCount < 2) {
           console.log(`🔄 [${requestId}] Retrying attempt ${retryCount + 1}...`);
           Alert.alert('Network Timeout', 'Retrying...');
@@ -1714,6 +1751,7 @@ function AppContent() {
       
     } finally {
       // Always deactivate keep-awake when done
+      requestInProgressRef.current = false;
       deactivateKeepAwake();
       console.log('🔓 Keep-awake deactivated - app can sleep normally');
       stopProgressiveLoading();
@@ -1965,6 +2003,12 @@ function AppContent() {
 
     try {
       setReviewLoading(true);
+      
+      // Track active request and keep app awake
+      requestInProgressRef.current = true;
+      wasBackgroundedDuringRequestRef.current = false;
+      await activateKeepAwakeAsync();
+      
       console.log(`\n=== [SEND ${recipientIndex}] MOBILE: SENDING APPLICATION ===`);
       console.log('Recipient email:', recipient.email);
       console.log('Recipient website:', recipient.website);
@@ -2078,17 +2122,28 @@ function AppContent() {
       console.log('Error stack:', error.stack);
       console.log('Error type:', typeof error);
       console.log('Full error object:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
+      console.log('Was backgrounded:', wasBackgroundedDuringRequestRef.current);
       console.log('================================\n');
 
       // Handle user cancellation
-      if (error.name === 'AbortError') {
+      if (error.name === 'AbortError' && isCancelledRef.current) {
         console.log('🛑 Request cancelled by user');
+        return false;
+      }
+      
+      // Handle app backgrounding — iOS killed the request, auto-retry once
+      if (wasBackgroundedDuringRequestRef.current) {
+        wasBackgroundedDuringRequestRef.current = false;
+        console.log(`📱 [SEND ${recipientIndex}] App was backgrounded - auto-retrying...`);
+        setTimeout(() => sendApplicationFromReview(recipientIndex, silent, coverLetterOverride), 1500);
         return false;
       }
 
       if (!silent) Alert.alert('Error', error.message || 'Failed to send application');
       return false;
     } finally {
+      requestInProgressRef.current = false;
+      deactivateKeepAwake();
       setReviewLoading(false);
     }
   };
@@ -2104,6 +2159,11 @@ function AppContent() {
     try {
       isCancelledRef.current = false;
       setReviewDownloading(true);
+      
+      // Track active request and keep app awake
+      requestInProgressRef.current = true;
+      wasBackgroundedDuringRequestRef.current = false;
+      await activateKeepAwakeAsync();
 
       // Create new AbortController for this request
       abortControllerRef.current = new AbortController();
@@ -2160,12 +2220,23 @@ function AppContent() {
       }
     } catch (error) {
       // Handle user cancellation
-      if (error.name === 'AbortError') {
+      if (error.name === 'AbortError' && isCancelledRef.current) {
         console.log('🛑 Download cancelled by user');
         return;
       }
+      
+      // Handle app backgrounding — auto-retry once
+      if (wasBackgroundedDuringRequestRef.current) {
+        wasBackgroundedDuringRequestRef.current = false;
+        console.log(`📱 [DOWNLOAD ${recipientIndex}] App was backgrounded - auto-retrying...`);
+        setTimeout(() => downloadCoverLetterPDFFromReview(recipientIndex), 1500);
+        return;
+      }
+      
       Alert.alert('Error', error.message);
     } finally {
+      requestInProgressRef.current = false;
+      deactivateKeepAwake();
       setReviewDownloading(false);
     }
   };
@@ -5023,13 +5094,12 @@ function AppContent() {
                         mode="date"
                         display="spinner"
                         onChange={(event, date) => {
-                          if (date) {
-                            selectedReplyDateRef.current = date;
-                            setSelectedReplyDate(date);
-                          }
+                          const currentDate = date || selectedReplyDate;
+                          setSelectedReplyDate(currentDate);
+                          selectedReplyDateRef.current = currentDate;
                         }}
                         maximumDate={new Date()}
-                        textColor="#1f2937"
+                        themeVariant="light"
                         style={{ height: 216, width: '100%' }}
                       />
                     </View>
@@ -5096,71 +5166,6 @@ function AppContent() {
                     </View>
                 </View>
               </SafeAreaViewContext>
-          </View>
-        </Modal>
-
-        {/* Date of Birth Picker Modal */}
-        <Modal
-          transparent={true}
-          visible={showDatePicker}
-          animationType="slide"
-          onRequestClose={() => setShowDatePicker(false)}
-        >
-          <View style={styles.modalOverlay}>
-            <TouchableWithoutFeedback onPress={() => setShowDatePicker(false)}>
-              <View style={{ flex: 1 }} />
-            </TouchableWithoutFeedback>
-            <SafeAreaViewContext style={styles.datePickerModalWrapper}>
-              <View style={styles.datePickerModal}>
-                <View style={styles.datePickerHeader}>
-                  <View style={styles.datePickerHeaderLine} />
-                  <Text style={styles.datePickerTitle}>Date of Birth</Text>
-                </View>
-                <View style={styles.datePickerContainer}>
-                  <DateTimePicker
-                    value={tempDobDate}
-                    mode="date"
-                    display="spinner"
-                    onChange={(event, date) => {
-                      if (date) {
-                        tempDobDateRef.current = date;
-                        setTempDobDate(date);
-                      }
-                    }}
-                    maximumDate={new Date()}
-                    textColor="#1f2937"
-                    style={{ height: 216, width: '100%' }}
-                  />
-                </View>
-                <View style={styles.modalButtons}>
-                  <TouchableOpacity
-                    style={styles.modalCancelButton}
-                    onPress={() => setShowDatePicker(false)}
-                  >
-                    <Text style={styles.modalCancelText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.modalConfirmButton}
-                    onPress={() => {
-                      const formattedDate = tempDobDateRef.current.toLocaleDateString('en-CA');
-                      setProfileData({ ...profileData, dateOfBirth: formattedDate });
-                      setShowDatePicker(false);
-                    }}
-                  >
-                    <View style={styles.confirmButtonWrapper}>
-                      <LinearGradient
-                        colors={['#667eea', '#764ba2']}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 0 }}
-                        style={styles.modalConfirmGradient}
-                      >
-                        <Text style={styles.modalConfirmText}>Confirm</Text>
-                      </LinearGradient>
-                    </View>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </SafeAreaViewContext>
           </View>
         </Modal>
 
@@ -6599,6 +6604,71 @@ function AppContent() {
             </View>
           </TouchableWithoutFeedback>
         </Modal>
+
+        {/* Date of Birth Picker Modal */}
+        <Modal
+          transparent={true}
+          visible={showDatePicker}
+          animationType="slide"
+          onRequestClose={() => setShowDatePicker(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback onPress={() => setShowDatePicker(false)}>
+              <View style={{ flex: 1 }} />
+            </TouchableWithoutFeedback>
+            <SafeAreaViewContext style={styles.datePickerModalWrapper}>
+              <View style={styles.datePickerModal}>
+                <View style={styles.datePickerHeader}>
+                  <View style={styles.datePickerHeaderLine} />
+                  <Text style={styles.datePickerTitle}>Date of Birth</Text>
+                </View>
+                <View style={styles.datePickerContainer}>
+                  <DateTimePicker
+                    value={tempDobDate}
+                    mode="date"
+                    display="spinner"
+                    onChange={(event, date) => {
+                      const currentDate = date || tempDobDate;
+                      setTempDobDate(currentDate);
+                      tempDobDateRef.current = currentDate;
+                    }}
+                    maximumDate={new Date()}
+                    themeVariant="light"
+                    style={{ height: 216, width: '100%' }}
+                  />
+                </View>
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    style={styles.modalCancelButton}
+                    onPress={() => setShowDatePicker(false)}
+                  >
+                    <Text style={styles.modalCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.modalConfirmButton}
+                    onPress={() => {
+                      const formattedDate = tempDobDateRef.current.toLocaleDateString('en-CA');
+                      setProfileData({ ...profileData, dateOfBirth: formattedDate });
+                      setShowDatePicker(false);
+                    }}
+                  >
+                    <View style={styles.confirmButtonWrapper}>
+                      <LinearGradient
+                        colors={['#667eea', '#764ba2']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                        style={styles.modalConfirmGradient}
+                      >
+                        <Text style={styles.modalConfirmText}>Confirm</Text>
+                      </LinearGradient>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </SafeAreaViewContext>
+          </View>
+        </Modal>
+
       </SafeAreaViewContext>
     );
   }
@@ -8148,12 +8218,11 @@ function AppContent() {
                     mode="date"
                     display="spinner"
                     onChange={(event, date) => {
-                      if (date) {
-                        selectedReviewDateRef.current = date;
-                        setSelectedReviewDate(date);
-                      }
+                      const currentDate = date || selectedReviewDate;
+                      setSelectedReviewDate(currentDate);
+                      selectedReviewDateRef.current = currentDate;
                     }}
-                    textColor="#1f2937"
+                    themeVariant="light"
                     style={{ height: 216, width: '100%' }}
                   />
                 </View>
