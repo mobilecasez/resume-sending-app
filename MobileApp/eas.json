@@ -23,7 +23,8 @@
   "submit": {
     "production": {
       "ios": {
-        "companyName": "zSellr (OPC) Private Limited"
+        "companyName": "zSellr (OPC) Private Limited",
+        "ascAppId": "6762126502"
       }
     }
   }
