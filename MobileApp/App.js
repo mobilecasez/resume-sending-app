@@ -1448,7 +1448,7 @@ function AppContent() {
         `Please add the following before generating cover letters:\n\n${missing.map(item => `• ${item}`).join('\n')}\n\nGo to your Profile to upload these.`,
         [
           { text: 'Later', style: 'cancel' },
-          { text: 'Go to Profile', onPress: () => setShowSettings(true) }
+          { text: 'Go to Profile', onPress: () => setScreen('profile') }
         ]
       );
       return false;
@@ -4998,11 +4998,12 @@ function AppContent() {
           animationType="slide"
           onRequestClose={() => setShowReplyDatePicker(false)}
         >
-          <TouchableWithoutFeedback onPress={() => setShowReplyDatePicker(false)}>
-            <View style={styles.modalOverlay}>
-              <TouchableWithoutFeedback>
-                <SafeAreaViewContext style={styles.datePickerModalWrapper}>
-                  <View style={styles.datePickerModal}>
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback onPress={() => setShowReplyDatePicker(false)}>
+              <View style={{ flex: 1 }} />
+            </TouchableWithoutFeedback>
+              <SafeAreaViewContext style={styles.datePickerModalWrapper}>
+                <View style={styles.datePickerModal}>
                     {/* Header */}
                     <View style={styles.datePickerHeader}>
                       <View style={styles.datePickerHeaderLine} />
@@ -5083,11 +5084,9 @@ function AppContent() {
                         </View>
                       </TouchableOpacity>
                     </View>
-                  </View>
-                </SafeAreaViewContext>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
+                </View>
+              </SafeAreaViewContext>
+          </View>
         </Modal>
 
         {/* Notifications Modal */}
