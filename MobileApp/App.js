@@ -437,6 +437,7 @@ function AppContent() {
   });
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [tempDobDate, setTempDobDate] = useState(new Date());
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -5015,13 +5016,13 @@ function AppContent() {
                       <DateTimePicker
                         value={selectedReplyDate}
                         mode="date"
-                        display={Platform.OS === 'ios' ? 'inline' : 'spinner'}
+                        display="spinner"
                         onChange={(event, date) => {
                           if (date) setSelectedReplyDate(date);
                         }}
                         maximumDate={new Date()}
-                        themeVariant="light"
-                        style={{ height: 320, width: '100%' }}
+                        textColor="#1f2937"
+                        style={{ height: 216, width: '100%' }}
                       />
                     </View>
                     
@@ -5087,6 +5088,68 @@ function AppContent() {
                     </View>
                 </View>
               </SafeAreaViewContext>
+          </View>
+        </Modal>
+
+        {/* Date of Birth Picker Modal */}
+        <Modal
+          transparent={true}
+          visible={showDatePicker}
+          animationType="slide"
+          onRequestClose={() => setShowDatePicker(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback onPress={() => setShowDatePicker(false)}>
+              <View style={{ flex: 1 }} />
+            </TouchableWithoutFeedback>
+            <SafeAreaViewContext style={styles.datePickerModalWrapper}>
+              <View style={styles.datePickerModal}>
+                <View style={styles.datePickerHeader}>
+                  <View style={styles.datePickerHeaderLine} />
+                  <Text style={styles.datePickerTitle}>Date of Birth</Text>
+                </View>
+                <View style={styles.datePickerContainer}>
+                  <DateTimePicker
+                    value={tempDobDate}
+                    mode="date"
+                    display="spinner"
+                    onChange={(event, date) => {
+                      if (date) setTempDobDate(date);
+                    }}
+                    maximumDate={new Date()}
+                    textColor="#1f2937"
+                    style={{ height: 216, width: '100%' }}
+                  />
+                </View>
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    style={styles.modalCancelButton}
+                    onPress={() => setShowDatePicker(false)}
+                  >
+                    <Text style={styles.modalCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.modalConfirmButton}
+                    onPress={() => {
+                      const formattedDate = tempDobDate.toLocaleDateString('en-CA');
+                      setProfileData({ ...profileData, dateOfBirth: formattedDate });
+                      setShowDatePicker(false);
+                    }}
+                  >
+                    <View style={styles.confirmButtonWrapper}>
+                      <LinearGradient
+                        colors={['#667eea', '#764ba2']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                        style={styles.modalConfirmGradient}
+                      >
+                        <Text style={styles.modalConfirmText}>Confirm</Text>
+                      </LinearGradient>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </SafeAreaViewContext>
           </View>
         </Modal>
 
@@ -6114,27 +6177,15 @@ function AppContent() {
                   <Text style={styles.formLabel}>Date of Birth</Text>
                   <TouchableOpacity 
                     style={styles.datePickerButton}
-                    onPress={() => setShowDatePicker(true)}
+                    onPress={() => {
+                      setTempDobDate(profileData?.dateOfBirth ? new Date(profileData.dateOfBirth) : new Date());
+                      setShowDatePicker(true);
+                    }}
                   >
                     <Text style={styles.datePickerText}>
                       {profileData?.dateOfBirth || 'Select Date'}
                     </Text>
                   </TouchableOpacity>
-                  {showDatePicker && (
-                    <DateTimePicker
-                      value={profileData?.dateOfBirth ? new Date(profileData.dateOfBirth) : new Date()}
-                      mode="date"
-                      display="spinner"
-                      onChange={(event, selectedDate) => {
-                        setShowDatePicker(false);
-                        if (selectedDate) {
-                          // Format date as YYYY-MM-DD
-                          const formattedDate = selectedDate.toLocaleDateString('en-CA');
-                          setProfileData({ ...profileData, dateOfBirth: formattedDate });
-                        }
-                      }}
-                    />
-                  )}
                 </View>
               </>
             ) : (
@@ -8061,72 +8112,71 @@ function AppContent() {
           animationType="slide"
           onRequestClose={() => setShowReviewDatePicker(false)}
         >
-          <TouchableWithoutFeedback onPress={() => setShowReviewDatePicker(false)}>
-            <View style={styles.modalOverlay}>
-              <TouchableWithoutFeedback>
-                <SafeAreaViewContext style={styles.datePickerModalWrapper}>
-                  <View style={styles.datePickerModal}>
-                    {/* Header */}
-                    <View style={styles.datePickerHeader}>
-                      <View style={styles.datePickerHeaderLine} />
-                      <Text style={styles.datePickerTitle}>Cover Letter Date</Text>
-                    </View>
-                    
-                    {/* Date Picker Container */}
-                    <View style={styles.datePickerContainer}>
-                      <DateTimePicker
-                        value={selectedReviewDate}
-                        mode="date"
-                        display="spinner"
-                        onChange={(event, date) => {
-                          if (date) setSelectedReviewDate(date);
-                        }}
-                        textColor="#1f2937"
-                      />
-                    </View>
-                    
-                    {/* Buttons */}
-                    <View style={styles.modalButtons}>
-                      <TouchableOpacity
-                        style={styles.modalCancelButton}
-                        onPress={() => setShowReviewDatePicker(false)}
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback onPress={() => setShowReviewDatePicker(false)}>
+              <View style={{ flex: 1 }} />
+            </TouchableWithoutFeedback>
+            <SafeAreaViewContext style={styles.datePickerModalWrapper}>
+              <View style={styles.datePickerModal}>
+                {/* Header */}
+                <View style={styles.datePickerHeader}>
+                  <View style={styles.datePickerHeaderLine} />
+                  <Text style={styles.datePickerTitle}>Cover Letter Date</Text>
+                </View>
+                
+                {/* Date Picker Container */}
+                <View style={styles.datePickerContainer}>
+                  <DateTimePicker
+                    value={selectedReviewDate}
+                    mode="date"
+                    display="spinner"
+                    onChange={(event, date) => {
+                      if (date) setSelectedReviewDate(date);
+                    }}
+                    textColor="#1f2937"
+                    style={{ height: 216, width: '100%' }}
+                  />
+                </View>
+                
+                {/* Buttons */}
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    style={styles.modalCancelButton}
+                    onPress={() => setShowReviewDatePicker(false)}
+                  >
+                    <Text style={styles.modalCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={styles.modalConfirmButton}
+                    onPress={() => {
+                      const formattedDate = selectedReviewDate.toLocaleDateString('en-US', { 
+                        month: 'long', 
+                        day: 'numeric', 
+                        year: 'numeric' 
+                      });
+                      setEditedCoverLetterData({ 
+                        ...editedCoverLetterData, 
+                        date: formattedDate 
+                      });
+                      setShowReviewDatePicker(false);
+                    }}
+                  >
+                    <View style={styles.confirmButtonWrapper}>
+                      <LinearGradient
+                        colors={['#667eea', '#764ba2']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                        style={styles.modalConfirmGradient}
                       >
-                        <Text style={styles.modalCancelText}>Cancel</Text>
-                      </TouchableOpacity>
-                      
-                      <TouchableOpacity
-                        style={styles.modalConfirmButton}
-                        onPress={() => {
-                          // Format the date to match the expected format
-                          const formattedDate = selectedReviewDate.toLocaleDateString('en-US', { 
-                            month: 'long', 
-                            day: 'numeric', 
-                            year: 'numeric' 
-                          });
-                          setEditedCoverLetterData({ 
-                            ...editedCoverLetterData, 
-                            date: formattedDate 
-                          });
-                          setShowReviewDatePicker(false);
-                        }}
-                      >
-                        <View style={styles.confirmButtonWrapper}>
-                          <LinearGradient
-                            colors={['#667eea', '#764ba2']}
-                            start={{ x: 0, y: 0 }}
-                            end={{ x: 1, y: 0 }}
-                            style={styles.modalConfirmGradient}
-                          >
-                            <Text style={styles.modalConfirmText}>Confirm</Text>
-                          </LinearGradient>
-                        </View>
-                      </TouchableOpacity>
+                        <Text style={styles.modalConfirmText}>Confirm</Text>
+                      </LinearGradient>
                     </View>
-                  </View>
-                </SafeAreaViewContext>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </SafeAreaViewContext>
+          </View>
         </Modal>
       </SafeAreaViewContext>
     );
