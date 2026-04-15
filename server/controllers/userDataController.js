@@ -167,6 +167,7 @@ const getApplicationHistory = async (req, res) => {
                 ah.sent_date as "sentDate", 
                 ah.reply_received as "replyReceived", 
                 (SELECT MAX(reply_date) FROM application_reply_history WHERE application_id = ah.id) as "replyDate",
+                ah.reply_date as "manualReplyDate",
                 ah.reply_subject as "replySubject", 
                 ah.reply_snippet as "replySnippet", 
                 ah.reply_from_email as "replyFromEmail",
@@ -182,6 +183,7 @@ const getApplicationHistory = async (req, res) => {
         const formattedHistory = (history || []).map(app => ({
             ...app,
             replyReceived: app.replyReceived === 1,
+            replyDate: app.replyDate || app.manualReplyDate || null,
             replyCount: parseInt(app.replyCount) || 0
         }));
 
