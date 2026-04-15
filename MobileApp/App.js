@@ -438,6 +438,7 @@ function AppContent() {
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [tempDobDate, setTempDobDate] = useState(new Date());
+  const tempDobDateRef = useRef(new Date());
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -537,11 +538,13 @@ function AppContent() {
   // Reply date picker state
   const [showReplyDatePicker, setShowReplyDatePicker] = useState(false);
   const [selectedReplyDate, setSelectedReplyDate] = useState(new Date());
+  const selectedReplyDateRef = useRef(new Date());
   const [replyAppId, setReplyAppId] = useState(null);
   const [isCheckingReplies, setIsCheckingReplies] = useState(false);
   
   // Review date picker state
   const [selectedReviewDate, setSelectedReviewDate] = useState(new Date());
+  const selectedReviewDateRef = useRef(new Date());
   
   // Notification state
   const [showNotifications, setShowNotifications] = useState(false);
@@ -4808,7 +4811,9 @@ function AppContent() {
                     onPress={() => {
                       if (!app.replyReceived) {
                         setReplyAppId(app.id);
-                        setSelectedReplyDate(new Date());
+                        const now = new Date();
+                        setSelectedReplyDate(now);
+                        selectedReplyDateRef.current = now;
                         setShowReplyDatePicker(true);
                       }
                     }}
@@ -5018,7 +5023,10 @@ function AppContent() {
                         mode="date"
                         display="spinner"
                         onChange={(event, date) => {
-                          if (date) setSelectedReplyDate(date);
+                          if (date) {
+                            selectedReplyDateRef.current = date;
+                            setSelectedReplyDate(date);
+                          }
                         }}
                         maximumDate={new Date()}
                         textColor="#1f2937"
@@ -5048,7 +5056,7 @@ function AppContent() {
                               },
                               body: JSON.stringify({
                                 replyReceived: true,
-                                replyDate: selectedReplyDate.toISOString(),
+                                replyDate: selectedReplyDateRef.current.toISOString(),
                               }),
                             });
 
@@ -5057,7 +5065,7 @@ function AppContent() {
                               setApplicationHistory(prev =>
                                 prev.map(item =>
                                   item.id === replyAppId
-                                    ? { ...item, replyReceived: true, replyDate: selectedReplyDate.toISOString() }
+                                    ? { ...item, replyReceived: true, replyDate: selectedReplyDateRef.current.toISOString() }
                                     : item
                                 )
                               );
@@ -5114,7 +5122,10 @@ function AppContent() {
                     mode="date"
                     display="spinner"
                     onChange={(event, date) => {
-                      if (date) setTempDobDate(date);
+                      if (date) {
+                        tempDobDateRef.current = date;
+                        setTempDobDate(date);
+                      }
                     }}
                     maximumDate={new Date()}
                     textColor="#1f2937"
@@ -5131,7 +5142,7 @@ function AppContent() {
                   <TouchableOpacity
                     style={styles.modalConfirmButton}
                     onPress={() => {
-                      const formattedDate = tempDobDate.toLocaleDateString('en-CA');
+                      const formattedDate = tempDobDateRef.current.toLocaleDateString('en-CA');
                       setProfileData({ ...profileData, dateOfBirth: formattedDate });
                       setShowDatePicker(false);
                     }}
@@ -6178,7 +6189,9 @@ function AppContent() {
                   <TouchableOpacity 
                     style={styles.datePickerButton}
                     onPress={() => {
-                      setTempDobDate(profileData?.dateOfBirth ? new Date(profileData.dateOfBirth) : new Date());
+                      const initDate = profileData?.dateOfBirth ? new Date(profileData.dateOfBirth) : new Date();
+                      setTempDobDate(initDate);
+                      tempDobDateRef.current = initDate;
                       setShowDatePicker(true);
                     }}
                   >
@@ -7532,12 +7545,16 @@ function AppContent() {
                         if (editedCoverLetterData.date) {
                           try {
                             const parsedDate = new Date(editedCoverLetterData.date);
-                            setSelectedReviewDate(isNaN(parsedDate.getTime()) ? new Date() : parsedDate);
+                            const d = isNaN(parsedDate.getTime()) ? new Date() : parsedDate;
+                            setSelectedReviewDate(d);
+                            selectedReviewDateRef.current = d;
                           } catch (e) {
                             setSelectedReviewDate(new Date());
+                            selectedReviewDateRef.current = new Date();
                           }
                         } else {
                           setSelectedReviewDate(new Date());
+                          selectedReviewDateRef.current = new Date();
                         }
                         setShowReviewDatePicker(true);
                       }}
@@ -8131,7 +8148,10 @@ function AppContent() {
                     mode="date"
                     display="spinner"
                     onChange={(event, date) => {
-                      if (date) setSelectedReviewDate(date);
+                      if (date) {
+                        selectedReviewDateRef.current = date;
+                        setSelectedReviewDate(date);
+                      }
                     }}
                     textColor="#1f2937"
                     style={{ height: 216, width: '100%' }}
@@ -8150,7 +8170,7 @@ function AppContent() {
                   <TouchableOpacity
                     style={styles.modalConfirmButton}
                     onPress={() => {
-                      const formattedDate = selectedReviewDate.toLocaleDateString('en-US', { 
+                      const formattedDate = selectedReviewDateRef.current.toLocaleDateString('en-US', { 
                         month: 'long', 
                         day: 'numeric', 
                         year: 'numeric' 
