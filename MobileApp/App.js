@@ -5015,12 +5015,13 @@ function AppContent() {
                       <DateTimePicker
                         value={selectedReplyDate}
                         mode="date"
-                        display="spinner"
+                        display={Platform.OS === 'ios' ? 'inline' : 'spinner'}
                         onChange={(event, date) => {
                           if (date) setSelectedReplyDate(date);
                         }}
                         maximumDate={new Date()}
-                        textColor="#1f2937"
+                        themeVariant="light"
+                        style={{ height: 320, width: '100%' }}
                       />
                     </View>
                     

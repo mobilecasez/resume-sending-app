@@ -333,7 +333,15 @@ const googleAuth = async (req, res) => {
             console.log('Platform:', platform || 'not specified');
             console.log('Using PKCE:', codeVerifier ? 'YES' : 'NO');
             
-            const clientId = process.env.GOOGLE_CLIENT_ID;
+            // Use the correct client ID based on platform — iOS auth codes require the iOS client ID
+            let clientId;
+            if (platform === 'ios') {
+                clientId = process.env.GOOGLE_IOS_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+            } else if (platform === 'android') {
+                clientId = process.env.GOOGLE_ANDROID_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+            } else {
+                clientId = process.env.GOOGLE_CLIENT_ID;
+            }
             
             // Use redirectUri provided by the client (expo-auth-session sets the actual one used).
             // Fall back to platform-based computation only if not provided.
@@ -1118,7 +1126,15 @@ const linkGoogle = async (req, res) => {
         }
 
         // Exchange authorization code for tokens (same logic as googleAuth)
-        const clientId = process.env.GOOGLE_CLIENT_ID;
+        // Use the correct client ID based on platform — iOS auth codes require the iOS client ID
+        let clientId;
+        if (platform === 'ios') {
+            clientId = process.env.GOOGLE_IOS_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+        } else if (platform === 'android') {
+            clientId = process.env.GOOGLE_ANDROID_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+        } else {
+            clientId = process.env.GOOGLE_CLIENT_ID;
+        }
         let redirectUri = clientRedirectUri;
         if (!redirectUri) {
             if (platform === 'ios') {

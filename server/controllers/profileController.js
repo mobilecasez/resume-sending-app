@@ -20,15 +20,18 @@ const getProfile = async (req, res) => {
             formattedDOB = date.toLocaleDateString('en-CA');
         }
         
+        const protocol = req.get('x-forwarded-proto') || req.protocol;
+        const baseUrl = `${protocol}://${req.get('host')}`;
+        
         res.json({
             fullName: user.fullName,
             email: user.email,
             phone: user.phoneNumber,
             address: user.address,
             dateOfBirth: formattedDOB,
-            profileImage: user.photoPath ? `http://${req.get('host')}/${user.photoPath}` : null,
-            resume: user.resumePath ? `http://${req.get('host')}/${user.resumePath}` : null,
-            signature: user.signaturePath ? `http://${req.get('host')}/${user.signaturePath}` : null,
+            profileImage: user.photoPath ? `${baseUrl}/${user.photoPath}` : null,
+            resume: user.resumePath ? `${baseUrl}/${user.resumePath}` : null,
+            signature: user.signaturePath ? `${baseUrl}/${user.signaturePath}` : null,
             createdAt: user.createdAt
         });
     } catch (err) {
@@ -49,10 +52,12 @@ const uploadProfileImage = async (req, res) => {
         
         await dbConfig.run('UPDATE users SET photo_path = ? WHERE id = ?', [filePath, userId]);
         
+        const protocol = req.get('x-forwarded-proto') || req.protocol;
+        const baseUrl = `${protocol}://${req.get('host')}`;
         res.json({
             success: true,
             message: 'Profile image uploaded successfully',
-            path: `http://${req.get('host')}/${filePath}`
+            path: `${baseUrl}/${filePath}`
         });
     } catch (error) {
         console.error('Upload error:', error);
@@ -73,10 +78,12 @@ const uploadResume = async (req, res) => {
         
         await dbConfig.run('UPDATE users SET resume_path = ? WHERE id = ?', [filePath, userId]);
         
+        const protocol = req.get('x-forwarded-proto') || req.protocol;
+        const baseUrl = `${protocol}://${req.get('host')}`;
         res.json({
             success: true,
             message: 'Resume uploaded successfully',
-            path: `http://${req.get('host')}/${filePath}`
+            path: `${baseUrl}/${filePath}`
         });
     } catch (error) {
         console.error('Upload error:', error);
@@ -97,10 +104,12 @@ const uploadSignature = async (req, res) => {
         
         await dbConfig.run('UPDATE users SET signature_path = ? WHERE id = ?', [filePath, userId]);
         
+        const protocol = req.get('x-forwarded-proto') || req.protocol;
+        const baseUrl = `${protocol}://${req.get('host')}`;
         res.json({
             success: true,
             message: 'Signature uploaded successfully',
-            path: `http://${req.get('host')}/${filePath}`
+            path: `${baseUrl}/${filePath}`
         });
     } catch (error) {
         console.error('Upload error:', error);
