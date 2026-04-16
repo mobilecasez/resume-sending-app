@@ -206,7 +206,24 @@ VALUES
     ('Enterprise', 500, 149.99, 365, 'Ultimate plan for power users', '["500 cover letters", "365 days validity", "AI-powered generation", "Dedicated support", "All features included", "Annual validity"]')
 ON CONFLICT (name) DO NOTHING;
 
+-- Async jobs table (for background processing)
+CREATE TABLE IF NOT EXISTS async_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    progress INTEGER DEFAULT 0,
+    input JSONB,
+    result JSONB,
+    error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- Create indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_async_jobs_user_id ON async_jobs(user_id);
+CREATE INDEX IF NOT EXISTS idx_async_jobs_status ON async_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_recipients_user_id ON recipients(user_id);
 CREATE INDEX IF NOT EXISTS idx_application_history_user_id ON application_history(user_id);

@@ -275,6 +275,25 @@ async function runPostgresMigrations(db) {
             CREATE INDEX IF NOT EXISTS idx_security_audit_category ON security_audit_log(event_category);
         `);
 
+        // Async jobs table for background processing
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS async_jobs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                progress INTEGER DEFAULT 0,
+                input JSONB,
+                result JSONB,
+                error TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_async_jobs_user_id ON async_jobs(user_id);
+            CREATE INDEX IF NOT EXISTS idx_async_jobs_status ON async_jobs(status);
+        `);
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

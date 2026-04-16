@@ -4,6 +4,7 @@ const fs = require('fs').promises;
 const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
 const TemplateCoverLetterGenerator = require('../../template-cover-letter-generator');
 const { notifyCoverLetterGenerated, notifyError } = require('./notificationsController');
+const jobService = require('../services/jobService');
 
 const templateGenerator = new TemplateCoverLetterGenerator();
 
@@ -587,15 +588,16 @@ const generateCoverLetters = async (req, res) => {
 const generateCoverLetterDetails = async (req, res) => {
     const requestId = Date.now();
     const startTime = Date.now();
+    const useAsync = process.env.USE_ASYNC_JOBS === 'true';
     
     try {
         const userId = req.user.id;
         const { recipientEmail, websiteUrl, position } = req.body;
 
-        console.log(`\n📨 [${requestId}] Generate Cover Letter Details Request`);
+        console.log(`\n📨 [${requestId}] Generate Cover Letter Details Request (${useAsync ? 'ASYNC' : 'SYNC'})`);
         console.log(`   User: ${userId}, Position: ${position}`);
 
-        // CHECK CREDITS
+        // CHECK CREDITS (always synchronous — fast DB check)
         try {
             const creditCheck = await checkUserCredits(userId, 1);
             if (!creditCheck.hasCredits) {
@@ -609,7 +611,7 @@ const generateCoverLetterDetails = async (req, res) => {
             return res.status(500).json({ error: 'Failed to check credit balance' });
         }
 
-        // Get user profile
+        // Get user profile (always synchronous — fast DB check)
         const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
         
         if (!user) {
@@ -617,7 +619,6 @@ const generateCoverLetterDetails = async (req, res) => {
         }
         
         if (!user.resume_path || user.resume_path.trim() === '') {
-            // Create notification for missing resume
             await notifyError(
                 userId,
                 'Resume Required',
@@ -632,81 +633,31 @@ const generateCoverLetterDetails = async (req, res) => {
             });
         }
 
-        const userData = {
-            fullName: user.full_name,
-            email: user.email,
-            phoneNumber: user.phone_number,
-            city: user.city,
-            country: user.country
-        };
-
-        const resumePath = path.join(__dirname, '../../', user.resume_path);
-        
-        // Generate hiring manager, locations, and subject
-        const urlCompanyName = websiteUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0];
-        const initialCompanyName = urlCompanyName.charAt(0).toUpperCase() + urlCompanyName.slice(1);
-        const { hiringManager, locations, subject } = await generateAdditionalDetails(websiteUrl, initialCompanyName, position, userData.fullName);
-        
-        // Generate cover letter with AI
-        const result = await templateGenerator.generateCoverLetter(
-            userData,
-            resumePath,
-            recipientEmail,
-            websiteUrl,
-            position,
-            locations
-        );
-
-        if (!result.success) {
-            return res.status(500).json({ error: 'Failed to generate cover letter' });
-        }
-
-        // DEDUCT CREDIT
-        try {
-            console.log(`💳 Deducting 1 credit from user ${userId}...`);
-            await deductCredits(userId, 1, 'cover_letter_generation', {
-                companyName: result.companyName,
-                position: position,
-                recipientEmail: recipientEmail
+        if (useAsync) {
+            // ASYNC MODE: Create job and return immediately
+            const jobId = await jobService.createJob(userId, 'generate_cover_letter', {
+                recipientEmail, websiteUrl, position
             });
-            console.log(`✅ Credit deducted successfully`);
-            
-            await dbConfig.run(
-                'UPDATE users SET total_generated = total_generated + 1 WHERE id = ?',
-                [userId]
-            );
-        } catch (creditError) {
-            console.error('❌ Failed to deduct credit:', creditError);
+            console.log(`🚀 [${requestId}] Async job created: ${jobId}`);
+
+            // Respond immediately with 202
+            res.status(202).json({ jobId, status: 'pending' });
+
+            // Fire and forget — process in background
+            processGenerationJob(jobId, userId, { recipientEmail, websiteUrl, position }).catch(err => {
+                console.error(`❌ [${requestId}] Async job ${jobId} failed:`, err.message);
+                jobService.failJob(jobId, err.message).catch(console.error);
+            });
+
+        } else {
+            // SYNC MODE: Original behavior — hold connection until done
+            const result = await executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position });
+
+            const duration = Date.now() - startTime;
+            console.log(`✅ [${requestId}] Response sent in ${duration}ms`);
+
+            res.json(result);
         }
-
-        // Format cover letter
-        const coverLetterHtml = formatCoverLetterWithHTML(result.coverLetter, result.metadata);
-
-        // Get updated credits
-        const creditCheck = await checkUserCredits(userId, 0);
-        console.log(`💰 User ${userId} now has ${creditCheck.remaining} credits remaining`);
-
-        // Create notification for cover letter generation
-        try {
-            await notifyCoverLetterGenerated(userId, result.companyName, position, websiteUrl);
-        } catch (notifError) {
-            console.error('Failed to create notification:', notifError);
-        }
-
-        const duration = Date.now() - startTime;
-        console.log(`✅ [${requestId}] Response sent in ${duration}ms`);
-
-        res.json({
-            success: true,
-            companyName: result.companyName,
-            hiringManager: hiringManager,
-            subject: subject,
-            locations: locations,
-            coverLetterHtml: coverLetterHtml,
-            metadata: result.metadata,
-            creditsUsed: 1,
-            creditsRemaining: creditCheck.remaining
-        });
 
     } catch (error) {
         const duration = Date.now() - startTime;
@@ -715,8 +666,103 @@ const generateCoverLetterDetails = async (req, res) => {
     }
 };
 
+/**
+ * The actual heavy generation work — used by both sync and async modes
+ */
+async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position }) {
+    const userData = {
+        fullName: user.full_name,
+        email: user.email,
+        phoneNumber: user.phone_number,
+        city: user.city,
+        country: user.country
+    };
+
+    const resumePath = path.join(__dirname, '../../', user.resume_path);
+
+    // Generate hiring manager, locations, and subject
+    const urlCompanyName = websiteUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0];
+    const initialCompanyName = urlCompanyName.charAt(0).toUpperCase() + urlCompanyName.slice(1);
+    const { hiringManager, locations, subject } = await generateAdditionalDetails(websiteUrl, initialCompanyName, position, userData.fullName);
+
+    // Generate cover letter with AI
+    const result = await templateGenerator.generateCoverLetter(
+        userData,
+        resumePath,
+        recipientEmail,
+        websiteUrl,
+        position,
+        locations
+    );
+
+    if (!result.success) {
+        throw new Error('Failed to generate cover letter');
+    }
+
+    // DEDUCT CREDIT
+    try {
+        console.log(`💳 Deducting 1 credit from user ${userId}...`);
+        await deductCredits(userId, 1, 'cover_letter_generation', {
+            companyName: result.companyName,
+            position: position,
+            recipientEmail: recipientEmail
+        });
+        console.log(`✅ Credit deducted successfully`);
+
+        await dbConfig.run(
+            'UPDATE users SET total_generated = total_generated + 1 WHERE id = ?',
+            [userId]
+        );
+    } catch (creditError) {
+        console.error('❌ Failed to deduct credit:', creditError);
+    }
+
+    // Format cover letter
+    const coverLetterHtml = formatCoverLetterWithHTML(result.coverLetter, result.metadata);
+
+    // Get updated credits
+    const creditCheck = await checkUserCredits(userId, 0);
+    console.log(`💰 User ${userId} now has ${creditCheck.remaining} credits remaining`);
+
+    // Create notification
+    try {
+        await notifyCoverLetterGenerated(userId, result.companyName, position, websiteUrl);
+    } catch (notifError) {
+        console.error('Failed to create notification:', notifError);
+    }
+
+    return {
+        success: true,
+        companyName: result.companyName,
+        hiringManager: hiringManager,
+        subject: subject,
+        locations: locations,
+        coverLetterHtml: coverLetterHtml,
+        metadata: result.metadata,
+        creditsUsed: 1,
+        creditsRemaining: creditCheck.remaining
+    };
+}
+
+/**
+ * Process a generation job asynchronously (called fire-and-forget)
+ */
+async function processGenerationJob(jobId, userId, input) {
+    await jobService.startJob(jobId);
+    await jobService.updateJobProgress(jobId, 10);
+
+    const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+    await jobService.updateJobProgress(jobId, 20);
+
+    const result = await executeGenerationWork(userId, user, input);
+    await jobService.completeJob(jobId, result);
+    console.log(`✅ Async job ${jobId} completed successfully`);
+}
+
 // Generate cover letter PDF for download
 const generateCoverLetterPdf = async (req, res) => {
+    const useAsync = process.env.USE_ASYNC_JOBS === 'true';
+    
     try {
         const userId = req.user.id;
         const { coverLetterHtml, companyName, companyAddress } = req.body;
@@ -728,20 +774,29 @@ const generateCoverLetterPdf = async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        const { filePath, fileName } = await generateCoverLetterPDF(
-            user,
-            coverLetterHtml,
-            companyName,
-            companyAddress
-        );
+        if (useAsync) {
+            const jobId = await jobService.createJob(userId, 'generate_pdf', {
+                coverLetterHtml, companyName, companyAddress
+            });
 
-        const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
+            res.status(202).json({ jobId, status: 'pending' });
 
-        res.json({
-            success: true,
-            downloadUrl: downloadUrl,
-            fileName: fileName
-        });
+            // Fire and forget
+            (async () => {
+                try {
+                    await jobService.startJob(jobId);
+                    const { filePath, fileName } = await generateCoverLetterPDF(user, coverLetterHtml, companyName, companyAddress);
+                    const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
+                    await jobService.completeJob(jobId, { success: true, downloadUrl, fileName });
+                } catch (err) {
+                    await jobService.failJob(jobId, err.message).catch(console.error);
+                }
+            })();
+        } else {
+            const { filePath, fileName } = await generateCoverLetterPDF(user, coverLetterHtml, companyName, companyAddress);
+            const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
+            res.json({ success: true, downloadUrl, fileName });
+        }
 
     } catch (error) {
         console.error('Error generating PDF:', error);
@@ -752,5 +807,6 @@ const generateCoverLetterPdf = async (req, res) => {
 module.exports = {
     generateCoverLetters,
     generateCoverLetterDetails,
-    generateCoverLetterPdf
+    generateCoverLetterPdf,
+    executeGenerationWork
 };

@@ -12,6 +12,7 @@ async function sendEmailViaZeptoMail(options) {
         replyTo,
         subject,
         textBody,
+        htmlBody,
         attachments = []
     } = options;
 
@@ -46,6 +47,7 @@ async function sendEmailViaZeptoMail(options) {
             }
         ],
         subject: subject,
+        htmlbody: htmlBody || undefined,
         textbody: textBody,
         reply_to: [
             {

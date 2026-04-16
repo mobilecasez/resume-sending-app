@@ -10,7 +10,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView as SafeAreaViewContext, SafeAreaProvider } from 'react-native-safe-area-context';
-import * as FileSystem from 'expo-file-system';
+import { File as ExpoFile, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
 import * as AppleAuthentication from 'expo-apple-authentication';
@@ -408,7 +408,14 @@ function AppContent() {
   // Track app background/foreground state
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
+      const wasBackground = appStateRef.current.match(/inactive|background/);
       appStateRef.current = nextAppState;
+      
+      // When returning to foreground with an active job, polling auto-resumes
+      // (pollJobStatus checks appStateRef.current === 'active')
+      if (wasBackground && nextAppState === 'active' && activeJobRef.current) {
+        console.log('📱 App foregrounded with active job:', activeJobRef.current.jobId);
+      }
     });
     return () => subscription?.remove();
   }, []);
@@ -580,7 +587,185 @@ function AppContent() {
   // Background state tracking
   const appStateRef = useRef(AppState.currentState);
   const requestInProgressRef = useRef(false);
-  
+  const activeJobRef = useRef(null); // tracks {jobId, type, recipientIndex} for polling
+
+  /**
+   * Poll server for async job completion. Pauses when app is backgrounded,
+   * resumes when foregrounded. Returns the job result data.
+   */
+  const pollJobStatus = (jobId) => {
+    return new Promise((resolve, reject) => {
+      let cancelled = false;
+      let lastServerProgress = 0;
+      let displayProgress = 1;
+      let driftInterval = null;
+      let ceiling = 30; // start higher so early bar feels fast
+      let lastMessagePct = -1;
+      
+      // Detailed message steps for each batch type
+      const batchMessages = {
+        batch_generate_and_send: [
+          { at: 1,  msg: '🚀 Starting auto process...' },
+          { at: 4,  msg: '🔍 Fetching your profile details...' },
+          { at: 8,  msg: '📋 Loading recipient information...' },
+          { at: 12, msg: '🌐 Researching employer details...' },
+          { at: 18, msg: '🏢 Analyzing company culture & requirements...' },
+          { at: 25, msg: '🤝 Matching your skills with job requirements...' },
+          { at: 35, msg: '✍️ Crafting personalized cover letters...' },
+          { at: 48, msg: '📝 Tailoring content for each recipient...' },
+          { at: 58, msg: '🎨 Formatting and adding final touches...' },
+          { at: 68, msg: '📄 Generating PDF documents...' },
+          { at: 78, msg: '✅ Reviewing generated cover letters...' },
+          { at: 88, msg: '🔒 Preparing secure email delivery...' },
+          { at: 92, msg: '📧 Sending applications to employers...' },
+          { at: 96, msg: '✨ Finalizing and saving records...' },
+        ],
+        batch_generate: [
+          { at: 1,  msg: '🚀 Starting generation...' },
+          { at: 5,  msg: '🔍 Fetching your profile details...' },
+          { at: 10, msg: '📋 Loading recipient information...' },
+          { at: 18, msg: '🌐 Researching employer details...' },
+          { at: 28, msg: '🏢 Analyzing company culture & requirements...' },
+          { at: 38, msg: '🤝 Matching your skills with job requirements...' },
+          { at: 50, msg: '✍️ Crafting personalized cover letters...' },
+          { at: 65, msg: '📝 Tailoring content for each recipient...' },
+          { at: 78, msg: '🎨 Formatting and adding final touches...' },
+          { at: 88, msg: '📄 Generating PDF documents...' },
+          { at: 95, msg: '✨ Almost done, finalizing...' },
+        ],
+        batch_send: [
+          { at: 1,  msg: '🚀 Preparing to send...' },
+          { at: 10, msg: '🔒 Setting up secure email delivery...' },
+          { at: 25, msg: '📧 Sending applications to employers...' },
+          { at: 55, msg: '📬 Delivering to remaining recipients...' },
+          { at: 80, msg: '✅ Confirming delivery status...' },
+          { at: 95, msg: '✨ Finalizing and saving records...' },
+        ],
+      };
+      
+      // Update message based on current display progress
+      const updateMessage = (pct) => {
+        const jobType = activeJobRef.current?.type;
+        const steps = batchMessages[jobType];
+        if (!steps) return;
+        
+        // Find the latest message whose threshold we've passed
+        let msg = null;
+        for (let i = steps.length - 1; i >= 0; i--) {
+          if (pct >= steps[i].at) {
+            msg = steps[i].msg;
+            break;
+          }
+        }
+        if (msg && pct !== lastMessagePct) {
+          lastMessagePct = pct;
+          setProgressiveLoadingMessage(msg);
+        }
+      };
+      
+      // Continuous drift — always keeps the bar moving, decelerating as it nears the ceiling
+      const startDrift = () => {
+        if (driftInterval) return; // already running
+        driftInterval = setInterval(() => {
+          const remaining = ceiling - displayProgress;
+          if (remaining <= 0.2) return; // close enough, just wait for next ceiling bump
+          // Move ~4% of the remaining gap each tick → fast at first, decelerates smoothly
+          const step = Math.max(0.3, remaining * 0.04);
+          displayProgress = Math.min(displayProgress + step, ceiling);
+          const rounded = Math.floor(displayProgress);
+          setProgressiveLoadingProgress(rounded);
+          Animated.timing(progressAnimValue, {
+            toValue: rounded,
+            duration: 80,
+            useNativeDriver: false
+          }).start();
+          // Update message as display progress moves
+          updateMessage(rounded);
+        }, 100);
+      };
+      
+      // When server reports new progress, raise the ceiling so the drift speeds up toward it
+      const nudgeCeiling = (serverPct) => {
+        // Set ceiling slightly ahead of server value to keep bar always moving
+        ceiling = Math.min(serverPct + 5, 95);
+        // If display is already past the new server value, just keep going
+        if (displayProgress < serverPct) {
+          // Boost a little so the user sees a visible acceleration
+          const boost = Math.max(0.5, (serverPct - displayProgress) * 0.15);
+          displayProgress += boost;
+        }
+      };
+      
+      const cleanup = () => {
+        if (driftInterval) { clearInterval(driftInterval); driftInterval = null; }
+      };
+      
+      // Start drifting immediately so the bar moves from the very first moment
+      startDrift();
+      
+      const poll = async () => {
+        if (cancelled || isCancelledRef.current) {
+          cleanup();
+          reject(new Error('Cancelled'));
+          return;
+        }
+        
+        // Pause polling when app is backgrounded
+        if (appStateRef.current !== 'active') {
+          setTimeout(poll, 1000);
+          return;
+        }
+        
+        try {
+          const response = await fetch(`${API_BASE}/job-status/${jobId}`, {
+            headers: { 'Authorization': `Bearer ${user.token}` }
+          });
+          
+          if (!response.ok) {
+            cleanup();
+            reject(new Error(`Job status check failed: ${response.status}`));
+            return;
+          }
+          
+          const job = await response.json();
+          
+          if (job.status === 'completed') {
+            cleanup();
+            activeJobRef.current = null;
+            // Quick smooth finish to 100 %
+            displayProgress = 100;
+            setProgressiveLoadingProgress(100);
+            setProgressiveLoadingMessage('🎉 All done!');
+            Animated.timing(progressAnimValue, {
+              toValue: 100,
+              duration: 300,
+              useNativeDriver: false
+            }).start();
+            resolve(job.data);
+          } else if (job.status === 'failed') {
+            cleanup();
+            activeJobRef.current = null;
+            reject(new Error(job.error || 'Job failed'));
+          } else {
+            // Raise ceiling when server reports real progress
+            if (job.progress != null && job.progress > lastServerProgress) {
+              lastServerProgress = job.progress;
+              nudgeCeiling(lastServerProgress);
+            }
+            setTimeout(poll, 3000);
+          }
+        } catch (error) {
+          // Network error during polling — retry, don't fail
+          if (!cancelled && !isCancelledRef.current) {
+            setTimeout(poll, 3000);
+          }
+        }
+      };
+      
+      poll();
+    });
+  };
+
   // Packages screen state
   const [userPackages, setUserPackages] = useState([]);
   const [loadingUserPackages, setLoadingUserPackages] = useState(false);
@@ -1093,12 +1278,12 @@ function AppContent() {
     }
   };
 
-  // Fetch profile when screen changes to profile
+  // Fetch profile when screen changes to profile OR when user is set (session restore)
   useEffect(() => {
-    if (screen === 'profile') {
+    if (screen === 'profile' || (user?.token && screen === 'dashboard')) {
       fetchProfileData();
     }
-  }, [screen]);
+  }, [screen, user?.token]);
 
   // Handle password change
   const handleChangePassword = async () => {
@@ -1597,6 +1782,23 @@ function AppContent() {
       console.log(`✅ [${requestId}] Response received in ${elapsedTime}ms`);
       console.log(`   Status: ${response.status}, Ok: ${response.ok}`);
       
+      let data;
+      
+      // ASYNC MODE: Server returned 202 with jobId — switch to polling
+      if (response.status === 202) {
+        const { jobId } = await response.json();
+        console.log(`🔄 [${requestId}] Async job started: ${jobId} — switching to polling`);
+        activeJobRef.current = { jobId, type: 'generate', recipientIndex };
+        
+        data = await pollJobStatus(jobId);
+        console.log(`✅ [${requestId}] Async job completed, processing result...`);
+        
+        // Check if cancelled during polling
+        if (isCancelledRef.current) {
+          console.log(`🛑 [${requestId}] Operation cancelled during polling`);
+          return;
+        }
+      } else {
       // Check for insufficient credits (402 status)
       if (response.status === 402) {
         console.log(`💳 [${requestId}] Insufficient credits error`);
@@ -1622,7 +1824,6 @@ function AppContent() {
       console.log(`✅ [${requestId}] Response body read, length: ${responseText.length} bytes`);
       
       console.log(`🔄 [${requestId}] Parsing JSON...`);
-      let data;
       try {
         data = JSON.parse(responseText);
         console.log(`✅ [${requestId}] JSON parsed successfully`);
@@ -1639,6 +1840,7 @@ function AppContent() {
         console.log(`🛑 [${requestId}] Operation cancelled - not updating state`);
         return;
       }
+      } // end else (sync path)
       
       // Get headquarter address as default - construct properly without duplicates
       const headquarterLocation = data.locations?.find(loc => loc.isHeadquarters) || data.locations?.[0];
@@ -1812,27 +2014,122 @@ function AppContent() {
     try {
       isCancelledRef.current = false;
       setReviewGeneratingAll(true);
+      requestInProgressRef.current = true;
+      await activateKeepAwakeAsync();
+      setProgressiveLoadingProgress(1);
+      setProgressiveLoadingMessage('🔍 Starting batch generation...');
+      progressAnimValue.setValue(1);
       
-      // Generate all cover letters simultaneously
-      const promises = recipients
-        .map((recipient, index) => {
-          if (recipient.email && recipient.website) {
-            return generateCoverLetterForReview(index);
+      // Build recipients payload
+      const validRecipients = recipients.map((r, i) => ({
+        email: r.email, website: r.website, position: r.position
+      }));
+      
+      // Send batch request to server
+      const response = await fetch(`${API_BASE}/batch-process`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ recipients: validRecipients, mode: 'generate' })
+      });
+      
+      if (response.status === 202) {
+        const { jobId } = await response.json();
+        console.log(`🔄 Batch generate job started: ${jobId}`);
+        activeJobRef.current = { jobId, type: 'batch_generate' };
+        
+        const batchResult = await pollJobStatus(jobId);
+        console.log('✅ Batch generate completed:', batchResult);
+        
+        if (isCancelledRef.current) return;
+        
+        // Process results — update state for each recipient
+        if (batchResult.results) {
+          for (const [indexStr, result] of Object.entries(batchResult.results)) {
+            const index = parseInt(indexStr);
+            if (result.generated && result.generationData) {
+              const data = result.generationData;
+              const recipient = recipients[index];
+              
+              // Build address from locations
+              const headquarterLocation = data.locations?.find(loc => loc.isHeadquarters) || data.locations?.[0];
+              let defaultAddress = '';
+              if (headquarterLocation) {
+                let address = headquarterLocation.address || '';
+                const city = headquarterLocation.city || '';
+                const country = headquarterLocation.country || '';
+                if (!address || address === 'Address not available online') {
+                  const parts = [];
+                  if (city && city !== 'Not specified') parts.push(city);
+                  if (country && country !== 'Not specified') parts.push(country);
+                  defaultAddress = parts.join(', ') || '';
+                } else {
+                  defaultAddress = address;
+                  if (city && city !== 'Not specified' && !address.toLowerCase().includes(city.toLowerCase())) {
+                    defaultAddress += `, ${city}`;
+                  }
+                  if (country && country !== 'Not specified' && !address.toLowerCase().includes(country.toLowerCase())) {
+                    defaultAddress += `, ${country}`;
+                  }
+                }
+              }
+              
+              setReviewCoverLetters(prev => ({
+                ...prev,
+                [index]: {
+                  ...data,
+                  coverLetterHtml: data.coverLetterHtml,
+                  address: defaultAddress,
+                  date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+                  generated: true,
+                  sent: false,
+                  storedRecipientEmail: recipient?.email,
+                  storedRecipientWebsite: recipient?.website
+                }
+              }));
+              setTotalGenerated(prev => prev + 1);
+            }
           }
-          return Promise.resolve();
-        });
-      
-      await Promise.all(promises);
-      
-      // Only show alert if not cancelled
-      if (!isCancelledRef.current) {
-        Alert.alert('Success', 'All cover letters generated');
+          
+          // Save to backend
+          setTimeout(() => {
+            setReviewCoverLetters(current => {
+              saveReviewCoverLettersToBackend(current);
+              return current;
+            });
+          }, 500);
+          
+          // Reload credits
+          try {
+            const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
+              headers: { 'Authorization': `Bearer ${user.token}` }
+            });
+            if (creditsResponse.ok) {
+              const creditsData = await creditsResponse.json();
+              if (creditsData.success) setCreditBalance(creditsData.balance || 0);
+            }
+          } catch (e) { console.log('Failed to reload credits:', e); }
+        }
+        
+        if (!isCancelledRef.current) {
+          const genCount = batchResult.generatedCount || 0;
+          Alert.alert('Success', `Generated ${genCount} cover letter${genCount !== 1 ? 's' : ''}`);
+        }
+      } else {
+        // Fallback: non-202 means async not enabled — use old parallel approach
+        const errorText = await response.text();
+        throw new Error(`Batch request failed: ${response.status} ${errorText}`);
       }
     } catch (error) {
       if (!isCancelledRef.current) {
         Alert.alert('Error', error.message);
       }
     } finally {
+      requestInProgressRef.current = false;
+      deactivateKeepAwake();
+      stopProgressiveLoading();
       setReviewGeneratingAll(false);
     }
   };
@@ -1868,28 +2165,93 @@ function AppContent() {
 
       isCancelledRef.current = false;
       setReviewSendingAll(true);
+      requestInProgressRef.current = true;
+      await activateKeepAwakeAsync();
+      setProgressiveLoadingProgress(1);
+      setProgressiveLoadingMessage('📧 Preparing to send applications...');
+      progressAnimValue.setValue(1);
       
-      // Send all applications simultaneously (silent mode to avoid multiple alerts)
-      const promises = recipients
-        .map((recipient, index) => {
-          const coverLetter = reviewCoverLetters[index];
-          if (recipient.email && recipient.website && coverLetter) {
-            return sendApplicationFromReview(index, true);
+      // Build payloads
+      const validRecipients = recipients.map((r, i) => ({
+        email: r.email, website: r.website, position: r.position
+      }));
+      
+      // Build coverLetters map for the server
+      const coverLettersPayload = {};
+      recipients.forEach((r, i) => {
+        const cl = reviewCoverLetters[i];
+        if (cl) {
+          coverLettersPayload[String(i)] = {
+            coverLetterHtml: cl.coverLetterHtml,
+            companyName: cl.companyName,
+            address: cl.address || '',
+            companyAddress: cl.address || ''
+          };
+        }
+      });
+      
+      const response = await fetch(`${API_BASE}/batch-process`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ recipients: validRecipients, mode: 'send', coverLetters: coverLettersPayload })
+      });
+      
+      if (response.status === 202) {
+        const { jobId } = await response.json();
+        console.log(`🔄 Batch send job started: ${jobId}`);
+        activeJobRef.current = { jobId, type: 'batch_send' };
+        
+        const batchResult = await pollJobStatus(jobId);
+        console.log('✅ Batch send completed:', batchResult);
+        
+        if (isCancelledRef.current) return;
+        
+        // Mark sent recipients in state
+        if (batchResult.results) {
+          for (const [indexStr, result] of Object.entries(batchResult.results)) {
+            const index = parseInt(indexStr);
+            if (result.sent) {
+              setReviewCoverLetters(prev => ({
+                ...prev,
+                [index]: { ...prev[index], sent: true, sentDate: new Date().toISOString() }
+              }));
+              
+              const recipient = recipients[index];
+              const coverLetter = reviewCoverLetters[index];
+              const historyEntry = {
+                id: Date.now() + index,
+                companyName: coverLetter?.companyName || '',
+                position: recipient?.position || 'N/A',
+                recipientEmail: recipient?.email,
+                sentDate: new Date().toISOString(),
+                replyReceived: false,
+                replyDate: null
+              };
+              setApplicationHistory(prev => [historyEntry, ...prev].slice(0, 10));
+              setTotalSent(prev => prev + 1);
+            }
           }
-          return Promise.resolve();
-        });
-      
-      await Promise.all(promises);
-      
-      // Only show alert if not cancelled
-      if (!isCancelledRef.current) {
-        Alert.alert('Success', 'All applications sent');
+        }
+        
+        if (!isCancelledRef.current) {
+          const sentCount = batchResult.sentCount || 0;
+          Alert.alert('Success', `Sent ${sentCount} application${sentCount !== 1 ? 's' : ''}`);
+        }
+      } else {
+        const errorText = await response.text();
+        throw new Error(`Batch request failed: ${response.status} ${errorText}`);
       }
     } catch (error) {
       if (!isCancelledRef.current) {
         Alert.alert('Error', error.message);
       }
     } finally {
+      requestInProgressRef.current = false;
+      deactivateKeepAwake();
+      stopProgressiveLoading();
       setReviewSendingAll(false);
     }
   };
@@ -1914,94 +2276,147 @@ function AppContent() {
     try {
       isCancelledRef.current = false;
       setReviewGeneratingAndSendingAll(true);
+      requestInProgressRef.current = true;
+      await activateKeepAwakeAsync();
+      setProgressiveLoadingProgress(1);
+      setProgressiveLoadingMessage('🚀 Starting auto process...');
+      progressAnimValue.setValue(1);
       
-      // First, generate all cover letters sequentially to ensure state updates
-      console.log('🚀 Starting Generate and Send All...');
-      console.log('Total recipients:', recipients.length);
+      console.log('🚀 Starting Auto Process (server-side batch)...');
       
-      for (let index = 0; index < recipients.length; index++) {
-        // Check if cancelled
-        if (isCancelledRef.current) {
-          console.log('🛑 Operation cancelled during generation phase');
-          return;
-        }
-        
-        const recipient = recipients[index];
-        if (recipient.email && recipient.website) {
-          console.log(`Generating cover letter for recipient ${index}...`);
-          await generateCoverLetterForReview(index);
-          // Wait for state to update
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-      }
+      // Build recipients payload
+      const validRecipients = recipients.map((r, i) => ({
+        email: r.email, website: r.website, position: r.position
+      }));
       
-      console.log('✅ All cover letters generated');
-      
-      // Wait for final state updates to complete
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // Now send all applications - use a callback to get the latest state
-      console.log('📧 Starting to send all applications...');
-      
-      // Get the current state snapshot
-      let coverLettersSnapshot = {};
-      setReviewCoverLetters(current => {
-        coverLettersSnapshot = { ...current };
-        console.log('📦 Current cover letters in state:', Object.keys(current).length);
-        return current;
+      const response = await fetch(`${API_BASE}/batch-process`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ recipients: validRecipients, mode: 'generate-and-send' })
       });
       
-      // Wait for state callback to execute
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      let sentCount = 0;
-      let failedCount = 0;
-      
-      for (let index = 0; index < recipients.length; index++) {
-        // Check if cancelled
-        if (isCancelledRef.current) {
-          console.log('🛑 Operation cancelled during send phase');
-          return;
-        }
+      if (response.status === 202) {
+        const { jobId } = await response.json();
+        console.log(`🔄 Batch generate-and-send job started: ${jobId}`);
+        activeJobRef.current = { jobId, type: 'batch_generate_and_send' };
         
-        const recipient = recipients[index];
-        const coverLetter = coverLettersSnapshot[index];
+        const batchResult = await pollJobStatus(jobId);
+        console.log('✅ Batch generate-and-send completed:', batchResult);
         
-        if (recipient.email && recipient.website && coverLetter) {
-          console.log(`\n📤 Attempting to send application for recipient ${index}...`);
-          // Pass the cover letter directly to avoid state access issues
-          const success = await sendApplicationFromReview(index, true, coverLetter);
-          if (success) {
-            sentCount++;
-            console.log(`✅ Sent ${sentCount}/${recipients.length}`);
-            // Wait a bit between sends to avoid overwhelming the backend
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          } else {
-            failedCount++;
-            console.log(`❌ Failed to send to recipient ${index}`);
+        if (isCancelledRef.current) return;
+        
+        // Process results — update state for each recipient
+        if (batchResult.results) {
+          for (const [indexStr, result] of Object.entries(batchResult.results)) {
+            const index = parseInt(indexStr);
+            const recipient = recipients[index];
+            
+            // Update cover letter state if generated
+            if (result.generated && result.generationData) {
+              const data = result.generationData;
+              
+              // Build address
+              const headquarterLocation = data.locations?.find(loc => loc.isHeadquarters) || data.locations?.[0];
+              let defaultAddress = '';
+              if (headquarterLocation) {
+                let address = headquarterLocation.address || '';
+                const city = headquarterLocation.city || '';
+                const country = headquarterLocation.country || '';
+                if (!address || address === 'Address not available online') {
+                  const parts = [];
+                  if (city && city !== 'Not specified') parts.push(city);
+                  if (country && country !== 'Not specified') parts.push(country);
+                  defaultAddress = parts.join(', ') || '';
+                } else {
+                  defaultAddress = address;
+                  if (city && city !== 'Not specified' && !address.toLowerCase().includes(city.toLowerCase())) {
+                    defaultAddress += `, ${city}`;
+                  }
+                  if (country && country !== 'Not specified' && !address.toLowerCase().includes(country.toLowerCase())) {
+                    defaultAddress += `, ${country}`;
+                  }
+                }
+              }
+              
+              setReviewCoverLetters(prev => ({
+                ...prev,
+                [index]: {
+                  ...data,
+                  coverLetterHtml: data.coverLetterHtml,
+                  address: defaultAddress,
+                  date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+                  generated: true,
+                  sent: result.sent || false,
+                  sentDate: result.sent ? new Date().toISOString() : null,
+                  storedRecipientEmail: recipient?.email,
+                  storedRecipientWebsite: recipient?.website
+                }
+              }));
+              setTotalGenerated(prev => prev + 1);
+            }
+            
+            // Update sent state + history
+            if (result.sent) {
+              const coverLetter = result.generationData || {};
+              const historyEntry = {
+                id: Date.now() + index,
+                companyName: coverLetter.companyName || '',
+                position: recipient?.position || 'N/A',
+                recipientEmail: recipient?.email,
+                sentDate: new Date().toISOString(),
+                replyReceived: false,
+                replyDate: null
+              };
+              setApplicationHistory(prev => [historyEntry, ...prev].slice(0, 10));
+              setTotalSent(prev => prev + 1);
+            }
           }
-        } else {
-          console.log(`⚠️ Skipping recipient ${index}: hasEmail=${!!recipient.email}, hasWebsite=${!!recipient.website}, hasCoverLetter=${!!coverLetter}`);
-          failedCount++;
+          
+          // Save to backend
+          setTimeout(() => {
+            setReviewCoverLetters(current => {
+              saveReviewCoverLettersToBackend(current);
+              return current;
+            });
+          }, 500);
+          
+          // Reload credits
+          try {
+            const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
+              headers: { 'Authorization': `Bearer ${user.token}` }
+            });
+            if (creditsResponse.ok) {
+              const creditsData = await creditsResponse.json();
+              if (creditsData.success) setCreditBalance(creditsData.balance || 0);
+            }
+          } catch (e) { console.log('Failed to reload credits:', e); }
         }
-      }
-      
-      console.log(`\n✅ Completed: Sent ${sentCount} applications, Failed: ${failedCount}`);
-      
-      // Only show alerts if not cancelled
-      if (!isCancelledRef.current) {
-        if (sentCount > 0) {
-          Alert.alert('Success', `Generated and sent ${sentCount} application${sentCount > 1 ? 's' : ''}${failedCount > 0 ? `. ${failedCount} failed.` : ''}`);
-        } else {
-          Alert.alert('Error', 'Failed to send any applications. Check console logs.');
+        
+        if (!isCancelledRef.current) {
+          const genCount = batchResult.generatedCount || 0;
+          const sentCount = batchResult.sentCount || 0;
+          if (sentCount > 0) {
+            Alert.alert('Success', `Generated and sent ${sentCount} application${sentCount !== 1 ? 's' : ''}${genCount > sentCount ? `. ${genCount - sentCount} failed to send.` : ''}`);
+          } else {
+            Alert.alert('Error', 'Failed to send any applications. Check console logs.');
+          }
         }
+      } else {
+        const errorText = await response.text();
+        throw new Error(`Batch request failed: ${response.status} ${errorText}`);
       }
     } catch (error) {
-      console.error('❌ Generate and Send All error:', error);
+      console.error('❌ Auto Process error:', error);
       if (!isCancelledRef.current) {
         Alert.alert('Error', error.message);
       }
     } finally {
+      requestInProgressRef.current = false;
+      deactivateKeepAwake();
+      stopProgressiveLoading();
       setReviewGeneratingAndSendingAll(false);
     }
   };
@@ -2090,6 +2505,26 @@ function AppContent() {
       console.log(`✅ [SEND ${recipientIndex}] Got response!`);
       console.log(`Response status [${recipientIndex}]:`, response.status);
       
+      // ASYNC MODE: Server returned 202 with jobId — switch to polling
+      if (response.status === 202) {
+        const { jobId } = await response.json();
+        console.log(`🔄 [SEND ${recipientIndex}] Async job started: ${jobId} — switching to polling`);
+        activeJobRef.current = { jobId, type: 'send', recipientIndex };
+        
+        const result = await pollJobStatus(jobId);
+        console.log(`✅ [SEND ${recipientIndex}] Async job completed`);
+        
+        if (isCancelledRef.current) {
+          console.log(`🛑 [SEND ${recipientIndex}] Operation cancelled during polling`);
+          return false;
+        }
+        
+        if (!result.success) {
+          throw new Error(result.error || 'Send failed');
+        }
+        
+        // Fall through to update state below
+      } else {
       // Check if operation was cancelled while waiting for response
       if (isCancelledRef.current) {
         console.log(`🛑 [SEND ${recipientIndex}] Operation cancelled - not updating state`);
@@ -2128,6 +2563,7 @@ function AppContent() {
         // If response was OK but can't parse JSON, still consider it success
         console.log(`✅ [SEND ${recipientIndex}] Email sent (response OK despite parse error)`);
       }
+      } // end else (sync path)
 
       console.log(`✅ [SEND ${recipientIndex}] Updating state to mark as sent`);
       setReviewCoverLetters(prev => ({
@@ -2215,6 +2651,22 @@ function AppContent() {
         })
       });
 
+      let data;
+      
+      // ASYNC MODE: Server returned 202 with jobId — switch to polling
+      if (response.status === 202) {
+        const { jobId } = await response.json();
+        console.log(`🔄 [PDF] Async job started: ${jobId} — switching to polling`);
+        activeJobRef.current = { jobId, type: 'pdf', recipientIndex };
+        
+        data = await pollJobStatus(jobId);
+        console.log(`✅ [PDF] Async job completed`);
+        
+        if (isCancelledRef.current) {
+          console.log('🛑 Download cancelled during polling');
+          return;
+        }
+      } else {
       if (!response.ok) throw new Error('Failed to generate PDF');
       
       // Check if operation was cancelled
@@ -2224,29 +2676,37 @@ function AppContent() {
       }
       
       // Get the response JSON with download URL
-      const data = await response.json();
+      data = await response.json();
+      } // end else (sync path)
       
       if (!data.downloadUrl) {
         throw new Error('No download URL received');
       }
       
-      // Save to file system using FileSystem.downloadAsync
-      const fileName = data.fileName || `${coverLetter.companyName.replace(/[^a-z0-9]/gi, '_')}_CoverLetter.pdf`;
-      const fileUri = FileSystem.documentDirectory + fileName;
+      // Save to file system using ExpoFile.downloadFileAsync
+      const sanitizedName = (profileData?.fullName || 'Applicant').replace(/[^a-zA-Z0-9\s]/g, '').trim().replace(/\s+/g, '_');
+      const fileName = `${sanitizedName}_Cover_Letter.pdf`;
       
-      const downloadResult = await FileSystem.downloadAsync(
-        `${API_BASE}${data.downloadUrl}`,
-        fileUri,
-        {
-          headers: {
-            'Authorization': `Bearer ${user.token}`
-          }
-        }
-      );
+      // downloadUrl starts with /api/ but API_BASE already ends with /api
+      const cleanUrl = data.downloadUrl.replace(/^\/api/, '');
+      const fullUrl = `${API_BASE}${cleanUrl}`;
+      console.log('📥 Downloading PDF from:', fullUrl);
+      
+      const destination = new ExpoFile(Paths.cache, fileName);
+      // Delete existing file if present to avoid conflicts
+      if (destination.exists) {
+        destination.delete();
+      }
+      
+      const downloadedFile = await ExpoFile.downloadFileAsync(fullUrl, new ExpoFile(Paths.cache, fileName), {
+        headers: { 'Authorization': `Bearer ${user.token}` }
+      });
+      
+      console.log('📥 Downloaded file:', downloadedFile.uri, 'exists:', downloadedFile.exists, 'size:', downloadedFile.size);
       
       // Share the file
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(fileUri);
+        await Sharing.shareAsync(downloadedFile.uri);
         Alert.alert('Success', 'PDF downloaded successfully!');
       } else {
         Alert.alert('Error', 'Sharing is not available on this device');
@@ -4975,7 +5435,14 @@ function AppContent() {
                             <View style={styles.dateItem}>
                               <Text style={styles.dateLabel}>Latest Reply</Text>
                               <Text style={[styles.dateValue, styles.dateValueReplied]}>
-                                {new Date(app.replyDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                {(() => {
+                                  const d = app.replyDate;
+                                  if (d && d.length === 10 && d.includes('-')) {
+                                    const [y, m, day] = d.split('-');
+                                    return new Date(parseInt(y), parseInt(m) - 1, parseInt(day)).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                                  }
+                                  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                                })()}
                               </Text>
                             </View>
                           </>
@@ -5160,12 +5627,12 @@ function AppContent() {
                               },
                               body: JSON.stringify({
                                 replyReceived: true,
-                                replyDate: selectedReplyDateRef.current.toISOString(),
+                                replyDate: selectedReplyDateRef.current.toLocaleDateString('en-CA'),
                               }),
                             });
 
                             if (response.ok) {
-                              const replyDateISO = selectedReplyDateRef.current.toISOString();
+                              const replyDateISO = selectedReplyDateRef.current.toLocaleDateString('en-CA');
                               // Update local application history
                               setApplicationHistory(prev => {
                                 const updated = prev.map(item =>
@@ -6234,7 +6701,12 @@ function AppContent() {
                   <TouchableOpacity 
                     style={styles.datePickerButton}
                     onPress={() => {
-                      const initDate = profileData?.dateOfBirth ? new Date(profileData.dateOfBirth) : new Date();
+                      let initDate = new Date();
+                      if (profileData?.dateOfBirth) {
+                        // Parse as local date to avoid UTC timezone shift (e.g. '2026-04-10' → April 9 in US timezones)
+                        const parts = profileData.dateOfBirth.split('-');
+                        initDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+                      }
                       setTempDobDate(initDate);
                       tempDobDateRef.current = initDate;
                       setShowDatePicker(true);
@@ -8122,7 +8594,7 @@ function AppContent() {
                 </View>
                 
                 {/* Progress Bar */}
-                {progressiveLoadingMessage && reviewGeneratingIndex !== null && !reviewGeneratingAll && (
+                {(progressiveLoadingProgress > 0 || reviewGeneratingAll || reviewSendingAll || reviewGeneratingAndSendingAll) && (
                   <View style={styles.loadingProgressSection}>
                     <View style={styles.loadingProgressBarContainer}>
                       <View style={styles.loadingProgressBarBackground}>

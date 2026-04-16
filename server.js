@@ -51,6 +51,7 @@ const coverLetterRoutes = require('./server/routes/coverLetterRoutes');
 const emailRoutes = require('./server/routes/emailRoutes');
 const notificationsRoutes = require('./server/routes/notificationsRoutes');
 const usageRoutes = require('./server/routes/usageRoutes');
+const jobRoutes = require('./server/routes/jobRoutes');
 
 // Import authentication middleware
 const { authenticateToken, authenticateAdmin } = require('./server/middleware/auth');
@@ -249,17 +250,78 @@ async function getValidGoogleAccessToken(user) {
 }
 
 // Function to generate professional email body
-function generateEmailBody(position, companyName, userFullName) {
+// Helper function: Generate professional email body using AI (unique every time)
+async function generateEmailBody(position, companyName, userFullName) {
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (geminiKey) {
+        try {
+            const { GoogleGenerativeAI } = require('@google/generative-ai');
+            const genAI = new GoogleGenerativeAI(geminiKey);
+            const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+            const prompt = `Write a short, professional email body for a job application. The applicant's name is "${userFullName}", applying for the "${position}" position at "${companyName}".
+
+Rules:
+- Write ONLY the email body text, no subject line
+- Start with a greeting like "Dear Hiring Manager," or "Dear Hiring Team," followed by a BLANK LINE before the body
+- Keep the body to 3-5 sentences maximum
+- Sound natural and human-written, not robotic or templated
+- Mention that resume and cover letter are attached
+- Be unique — vary sentence structure, tone, and phrasing each time
+- Do NOT use phrases like "I hope this email finds you well" or "I am writing to express my interest"
+- Use a professional but warm, conversational tone
+- End with a closing like "Best regards," or "Kind regards," followed by a new line with the applicant's name
+- Do NOT include any markdown formatting, asterisks, bold, or special characters
+- Use proper paragraph spacing — separate the greeting, body paragraphs, and sign-off with blank lines
+- Output plain text only, no HTML
+- Do NOT wrap or break lines at any character width — each paragraph should be one continuous line of text`;
+
+            const result = await model.generateContent(prompt);
+            let text = result.response.text().trim();
+            if (text && text.length > 30) {
+                // Normalize line breaks
+                text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+                // Unwrap word-wrapped lines: join lines within the same paragraph
+                text = text.split(/\n\n+/).map(para => {
+                    const lines = para.split('\n');
+                    if (lines.length === 1) return para;
+                    if (lines.length <= 2 && lines[0].length < 30) return para;
+                    return lines.join(' ');
+                }).join('\n\n');
+                // Ensure blank line after greeting
+                text = text.replace(/^(Dear[^\n]*,)\n(?!\n)/m, '$1\n\n');
+                return text;
+            }
+        } catch (aiError) {
+            console.error('⚠️ AI email body generation failed, using fallback:', aiError.message);
+        }
+    }
+
+    // Fallback: static template
     return `Dear Hiring Manager,
 
-I hope this email finds you well. I am writing to express my strong interest in the ${position} position at ${companyName}.
+I am excited to submit my application for the ${position} role at ${companyName}. Please find my resume and cover letter attached for your consideration.
 
-I have attached my resume and cover letter for your review. I believe my skills and experience make me a strong candidate for this role, and I would welcome the opportunity to discuss how I can contribute to your team.
+I would love the opportunity to discuss how my background and skills align with your team's needs. Please feel free to reach out at your convenience.
 
-Thank you for considering my application. I look forward to hearing from you.
+Thank you for your time.
 
 Best regards,
 ${userFullName}`;
+}
+
+// Helper function: Sanitize name for PDF attachment filenames
+function sanitizeName(name) {
+    return (name || 'Applicant').replace(/[^a-zA-Z0-9\s]/g, '').trim().replace(/\s+/g, '_');
+}
+
+// Helper: Convert plain text email body to simple HTML
+function textToHtml(text) {
+    const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return escaped
+        .split(/\n\n+/)
+        .map(para => `<p style="margin: 0 0 12px 0; line-height: 1.6;">${para.replace(/\n/g, '<br>')}</p>`)
+        .join('\n');
 }
 
 // Function to send email via Gmail API
@@ -280,10 +342,10 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
             `Content-Type: multipart/mixed; boundary="${boundary}"`,
             '',
             `--${boundary}`,
-            'Content-Type: text/plain; charset="UTF-8"',
+            'Content-Type: text/html; charset="UTF-8"',
             'Content-Transfer-Encoding: 7bit',
             '',
-            emailBody,
+            textToHtml(emailBody),
             ''
         ].join(nl);
         
@@ -291,7 +353,7 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
         if (resumePath && fsSync.existsSync(resumePath)) {
             const resumeBuffer = await fs.readFile(resumePath);
             const resumeBase64 = resumeBuffer.toString('base64');
-            const resumeFilename = path.basename(resumePath);
+            const resumeFilename = `${sanitizeName(user.full_name)}_Resume.pdf`;
             
             message += [
         `--${boundary}`,
@@ -312,7 +374,7 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
         `--${boundary}`,
         'Content-Type: application/pdf',
         'Content-Transfer-Encoding: base64',
-        'Content-Disposition: attachment; filename="cover_letter.pdf"',
+        'Content-Disposition: attachment; filename="' + sanitizeName(user.full_name) + '_Cover_Letter.pdf"',
         '',
         coverLetterBase64,
         ''
@@ -2595,8 +2657,9 @@ async function createCoverLetterPDF(userData, coverLetterText, companyName, phot
     return { filePath, fileName };
 }
 
-// API endpoint to download generated cover letter
-app.get('/api/download-cover-letter/:filename', authenticateToken, async (req, res) => {
+// LEGACY: Old bulk-generate endpoint (now handled by batch routes and cover letter controller)
+// Renamed from GET /api/download-cover-letter/:filename to avoid shadowing the actual download route
+app.post('/api/generate-cover-letters-bulk', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
         const { recipients } = req.body;
@@ -3655,6 +3718,14 @@ app.use('/api', adminPackagesRoutes);
 app.use('/api', coverLetterRoutes);
 app.use('/api', emailRoutes);
 app.use('/api', notificationsRoutes);
+app.use('/api', jobRoutes);
+const batchRoutes = require('./server/routes/batchRoutes');
+app.use('/api', batchRoutes);
+
+// Async job startup maintenance (runs after DB is ready via app.listen)
+const { requeueStuckJobs, cleanupOldJobs } = require('./server/services/jobService');
+// Clean up old jobs every hour
+setInterval(() => cleanupOldJobs().catch(console.error), 60 * 60 * 1000);
 
 // Start email forwarding service
 const EmailForwardingService = require('./server/services/emailForwardingService');
@@ -3676,4 +3747,8 @@ app.listen(PORT, '0.0.0.0', () => {
 
 Open your browser and visit any of the above URLs
     `);
+    
+    // Run async job maintenance after server (and DB) is ready
+    requeueStuckJobs().catch(err => console.error('Failed to requeue stuck jobs:', err));
+    cleanupOldJobs().catch(err => console.error('Failed to cleanup old jobs:', err));
 });

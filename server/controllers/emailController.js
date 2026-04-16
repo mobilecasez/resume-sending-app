@@ -10,6 +10,7 @@ const cheerio = require('cheerio');
 const { sendEmailViaZeptoMail } = require('../services/zeptomailService');
 const { notifyEmailSent, notifyError, notifyEmailReply } = require('./notificationsController');
 const CryptoJS = require('crypto-js');
+const jobService = require('../services/jobService');
 
 // SECURITY: Get encryption key (same as server.js)
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
@@ -183,18 +184,84 @@ async function createOAuth2Client(user) {
     return oauth2Client;
 }
 
-// Helper function: Generate professional email body
-function generateEmailBody(position, companyName, userFullName) {
+// Helper function: Sanitize name for PDF attachment filenames
+function sanitizeName(name) {
+    return (name || 'Applicant').replace(/[^a-zA-Z0-9\s]/g, '').trim().replace(/\s+/g, '_');
+}
+
+// Helper function: Generate professional email body using AI (unique every time)
+async function generateEmailBody(position, companyName, userFullName) {
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (geminiKey) {
+        try {
+            const { GoogleGenerativeAI } = require('@google/generative-ai');
+            const genAI = new GoogleGenerativeAI(geminiKey);
+            const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+            const prompt = `Write a short, professional email body for a job application. The applicant's name is "${userFullName}", applying for the "${position}" position at "${companyName}".
+
+Rules:
+- Write ONLY the email body text, no subject line
+- Start with a greeting like "Dear Hiring Manager," or "Dear Hiring Team," followed by a BLANK LINE before the body
+- Keep the body to 3-5 sentences maximum
+- Sound natural and human-written, not robotic or templated
+- Mention that resume and cover letter are attached
+- Be unique — vary sentence structure, tone, and phrasing each time
+- Do NOT use phrases like "I hope this email finds you well" or "I am writing to express my interest"
+- Use a professional but warm, conversational tone
+- End with a closing like "Best regards," or "Kind regards," followed by a new line with the applicant's name
+- Do NOT include any markdown formatting, asterisks, bold, or special characters
+- Use proper paragraph spacing — separate the greeting, body paragraphs, and sign-off with blank lines
+- Output plain text only, no HTML
+- Do NOT wrap or break lines at any character width — each paragraph should be one continuous line of text`;
+
+            const result = await model.generateContent(prompt);
+            let text = result.response.text().trim();
+            if (text && text.length > 30) {
+                // Normalize line breaks
+                text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+                // Unwrap word-wrapped lines: join lines within the same paragraph
+                // Split by double newlines (paragraph breaks), unwrap each paragraph, rejoin
+                text = text.split(/\n\n+/).map(para => {
+                    // Don't unwrap greeting lines or sign-off lines (short lines ending with comma or just a name)
+                    const lines = para.split('\n');
+                    if (lines.length === 1) return para;
+                    // If it looks like a sign-off block (e.g. "Best regards,\nName"), keep as-is
+                    if (lines.length <= 2 && lines[0].length < 30) return para;
+                    // Join wrapped lines into a single paragraph
+                    return lines.join(' ');
+                }).join('\n\n');
+                // Ensure blank line after greeting (Dear ...,)
+                text = text.replace(/^(Dear[^\n]*,)\n(?!\n)/m, '$1\n\n');
+                return text;
+            }
+        } catch (aiError) {
+            console.error('⚠️ AI email body generation failed, using fallback:', aiError.message);
+        }
+    }
+
+    // Fallback: static template
     return `Dear Hiring Manager,
 
-I hope this email finds you well. I am writing to express my strong interest in the ${position} position at ${companyName}.
+I am excited to submit my application for the ${position} role at ${companyName}. Please find my resume and cover letter attached for your consideration.
 
-I have attached my resume and cover letter for your review. I believe my skills and experience make me a strong candidate for this role, and I would welcome the opportunity to discuss how I can contribute to your team.
+I would love the opportunity to discuss how my background and skills align with your team's needs. Please feel free to reach out at your convenience.
 
-Thank you for considering my application. I look forward to hearing from you.
+Thank you for your time.
 
 Best regards,
 ${userFullName}`;
+}
+
+// Helper: Convert plain text email body to simple HTML
+function textToHtml(text) {
+    // Escape HTML entities
+    const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // Split into paragraphs by double newlines, wrap each in <p>
+    return escaped
+        .split(/\n\n+/)
+        .map(para => `<p style="margin: 0 0 12px 0; line-height: 1.6;">${para.replace(/\n/g, '<br>')}</p>`)
+        .join('\n');
 }
 
 // Helper function: Send email via Gmail API
@@ -215,10 +282,10 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
             `Content-Type: multipart/mixed; boundary="${boundary}"`,
             '',
             `--${boundary}`,
-            'Content-Type: text/plain; charset="UTF-8"',
+            'Content-Type: text/html; charset="UTF-8"',
             'Content-Transfer-Encoding: 7bit',
             '',
-            emailBody,
+            textToHtml(emailBody),
             ''
         ].join(nl);
         
@@ -226,7 +293,7 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
         if (resumePath && fsSync.existsSync(resumePath)) {
             const resumeBuffer = await fs.readFile(resumePath);
             const resumeBase64 = resumeBuffer.toString('base64');
-            const resumeFilename = path.basename(resumePath);
+            const resumeFilename = `${sanitizeName(user.full_name)}_Resume.pdf`;
             
             message += [
                 `--${boundary}`,
@@ -247,7 +314,7 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
                 `--${boundary}`,
                 'Content-Type: application/pdf',
                 'Content-Transfer-Encoding: base64',
-                'Content-Disposition: attachment; filename="cover_letter.pdf"',
+                `Content-Disposition: attachment; filename="${sanitizeName(user.full_name)}_Cover_Letter.pdf"`,
                 '',
                 coverLetterBase64,
                 ''
@@ -312,7 +379,7 @@ async function sendEmailViaMicrosoft(user, recipientEmail, subject, emailBody, r
         if (resumePath && fsSync.existsSync(resumePath)) {
             const resumeBuffer = await fs.readFile(resumePath);
             const resumeBase64 = resumeBuffer.toString('base64');
-            const resumeFilename = path.basename(resumePath);
+            const resumeFilename = `${sanitizeName(user.full_name)}_Resume.pdf`;
             
             attachments.push({
                 '@odata.type': '#microsoft.graph.fileAttachment',
@@ -328,7 +395,7 @@ async function sendEmailViaMicrosoft(user, recipientEmail, subject, emailBody, r
             
             attachments.push({
                 '@odata.type': '#microsoft.graph.fileAttachment',
-                name: 'cover_letter.pdf',
+                name: `${sanitizeName(user.full_name)}_Cover_Letter.pdf`,
                 contentType: 'application/pdf',
                 contentBytes: coverLetterBase64
             });
@@ -339,8 +406,8 @@ async function sendEmailViaMicrosoft(user, recipientEmail, subject, emailBody, r
             message: {
                 subject: subject,
                 body: {
-                    contentType: 'Text',
-                    content: emailBody
+                    contentType: 'HTML',
+                    content: textToHtml(emailBody)
                 },
                 toRecipients: [
                     {
@@ -997,7 +1064,7 @@ const sendApplications = async (req, res) => {
 
                 const position = recipient.position || 'Position at your company';
                 const subject = `Application for ${position} - ${userData.fullName}`;
-                const emailBody = generateEmailBody(position, companyName, user.full_name);
+                const emailBody = await generateEmailBody(position, companyName, user.full_name);
 
                 // Read cover letter PDF buffer (needed for OAuth APIs)
                 const coverLetterPdfBuffer = await fs.readFile(filePath);
@@ -1118,11 +1185,11 @@ const sendApplications = async (req, res) => {
                         `,
                         attachments: [
                             {
-                                filename: fileName,
+                                filename: `${sanitizeName(user.full_name)}_Cover_Letter.pdf`,
                                 path: filePath,
                             },
                             {
-                                filename: path.basename(resumePath),
+                                filename: `${sanitizeName(user.full_name)}_Resume.pdf`,
                                 path: resumePath,
                             }
                         ],
@@ -1204,8 +1271,9 @@ const sendApplications = async (req, res) => {
 const sendSingleApplication = async (req, res) => {
     const userId = req.user.id;
     const { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress } = req.body;
+    const useAsync = process.env.USE_ASYNC_JOBS === 'true';
 
-    console.log('\n=== SEND SINGLE APPLICATION DEBUG ===');
+    console.log(`\n=== SEND SINGLE APPLICATION DEBUG (${useAsync ? 'ASYNC' : 'SYNC'}) ===`);
     console.log('User ID:', userId);
     console.log('Recipient:', recipientEmail);
     console.log('Company:', companyName);
@@ -1232,47 +1300,78 @@ const sendSingleApplication = async (req, res) => {
         for (const phrase of bannedPhrases) {
             if (coverLetterText.toLowerCase().includes(phrase.toLowerCase())) {
                 console.error(`❌ CRITICAL: Cover letter contains banned generic phrase: "${phrase}"`);
-                console.error('This indicates AI generation failed and fell back to a template.');
                 return res.status(400).json({ 
-                    error: `Cover letter quality check failed. The letter appears to be generated from a template rather than personalized AI content. Please regenerate the cover letter. Detected phrase: "${phrase}"` 
+                    error: `Cover letter quality check failed. Please regenerate the cover letter. Detected phrase: "${phrase}"` 
                 });
             }
         }
 
-        // Get user profile
+        // Get user profile (fast DB check)
         const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
-        
-        console.log('User found:', !!user);
-        console.log('User OAuth provider:', user?.oauth_provider);
-        console.log('User has Google access token:', !!user?.google_access_token);
-        console.log('User has SMTP email:', !!user?.smtp_email);
-        console.log('User has SMTP password:', !!user?.smtp_password);
-        console.log('ENV SMTP_USER:', process.env.SMTP_USER ? 'SET' : 'NOT SET');
-        console.log('ENV SMTP_PASS:', process.env.SMTP_PASS ? 'SET' : 'NOT SET');
-        console.log('=====================================\n');
         
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
         
         if (!user.resume_path || user.resume_path.trim() === '') {
-            // Create notification for missing resume
-            await notifyError(
-                userId,
-                'Resume Required',
+            await notifyError(userId, 'Resume Required',
                 'Please upload your resume before sending applications. Go to Profile (top right) to upload your resume.',
-                'upload_resume'
-            );
-            
+                'upload_resume');
             return res.status(400).json({ 
                 error: 'Resume required',
-                message: 'Please upload your resume before sending applications. Go to Profile (top right) to upload your resume.',
+                message: 'Please upload your resume before sending applications.',
                 action: 'upload_resume'
             });
         }
 
-        // Generate PDF
-        console.log('📄 Generating PDF with address:', companyAddress || 'NO ADDRESS PROVIDED');
+        if (useAsync) {
+            // ASYNC MODE: Create job and return immediately
+            const jobId = await jobService.createJob(userId, 'send_application', {
+                recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress
+            });
+            console.log(`🚀 Async send job created: ${jobId}`);
+
+            res.status(202).json({ jobId, status: 'pending' });
+
+            // Fire and forget
+            executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress })
+                .then(result => jobService.completeJob(jobId, result))
+                .catch(err => {
+                    console.error(`❌ Async send job ${jobId} failed:`, err.message);
+                    jobService.failJob(jobId, err.message).catch(console.error);
+                });
+        } else {
+            // SYNC MODE: Original behavior
+            const result = await executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress });
+            res.json(result);
+        }
+
+    } catch (error) {
+        console.error('Send single application error:', error);
+        if (error.code === 'ETIMEDOUT') {
+            return res.status(503).json({ error: 'Unable to connect to email server.', details: error.message });
+        }
+        res.status(500).json({ error: error.message || 'Failed to send application' });
+    }
+};
+
+/**
+ * Execute the actual email send work — used by both sync and async modes
+ */
+async function executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress }) {
+    const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+
+    console.log('User found:', !!user);
+    console.log('User OAuth provider:', user?.oauth_provider);
+    console.log('User has Google access token:', !!user?.google_access_token);
+    console.log('User has SMTP email:', !!user?.smtp_email);
+    console.log('User has SMTP password:', !!user?.smtp_password);
+    console.log('ENV SMTP_USER:', process.env.SMTP_USER ? 'SET' : 'NOT SET');
+    console.log('ENV SMTP_PASS:', process.env.SMTP_PASS ? 'SET' : 'NOT SET');
+    console.log('=====================================\n');
+
+    // Generate PDF
+    console.log('📄 Generating PDF with address:', companyAddress || 'NO ADDRESS PROVIDED');
         const { filePath, fileName } = await generateCoverLetterPDF(
             user,
             coverLetterText,
@@ -1285,7 +1384,7 @@ const sendSingleApplication = async (req, res) => {
         const coverLetterPdfBuffer = await fs.readFile(filePath);
 
         // Generate email body and subject
-        const emailBody = generateEmailBody(position, companyName, user.full_name);
+        const emailBody = await generateEmailBody(position, companyName, user.full_name);
         const subject = `Application for ${position} - ${user.full_name}`;
 
         // Priority 1: Try Microsoft Graph API if user logged in with Microsoft OAuth
@@ -1330,11 +1429,11 @@ const sendSingleApplication = async (req, res) => {
                 // Clean up
                 await fs.unlink(filePath);
 
-                return res.json({ 
+                return { 
                     success: true, 
                     message: 'Application sent successfully via Microsoft',
                     method: 'microsoft'
-                });
+                };
 
             } catch (microsoftError) {
                 console.error('❌ Microsoft Graph API error:', microsoftError.message);
@@ -1391,11 +1490,11 @@ const sendSingleApplication = async (req, res) => {
                 // Clean up
                 await fs.unlink(filePath);
 
-                return res.json({ 
+                return { 
                     success: true, 
                     message: 'Application sent successfully via Gmail',
                     method: 'gmail'
-                });
+                };
 
             } catch (gmailError) {
                 console.error('❌ Gmail API error:', gmailError.message);
@@ -1436,14 +1535,15 @@ const sendSingleApplication = async (req, res) => {
                         'Importance': 'Normal',
                         'List-Unsubscribe': `<mailto:${user.smtp_email}?subject=unsubscribe>`,
                     },
+                    html: textToHtml(emailBody),
                     text: emailBody,
                     attachments: [
                         {
-                            filename: fileName,
+                            filename: `${sanitizeName(user.full_name)}_Cover_Letter.pdf`,
                             path: filePath
                         },
                         {
-                            filename: path.basename(resumePath),
+                            filename: `${sanitizeName(user.full_name)}_Resume.pdf`,
                             path: resumePath
                         }
                     ]
@@ -1477,11 +1577,11 @@ const sendSingleApplication = async (req, res) => {
                 // Clean up
                 await fs.unlink(filePath);
 
-                return res.json({ 
+                return { 
                     success: true, 
                     message: 'Application sent successfully via SMTP',
                     method: 'smtp'
-                });
+                };
 
             } catch (smtpError) {
                 console.error('SMTP error:', smtpError.message);
@@ -1514,14 +1614,15 @@ const sendSingleApplication = async (req, res) => {
                         'Importance': 'Normal',
                         'List-Unsubscribe': `<mailto:${process.env.SMTP_USER}?subject=unsubscribe>`,
                     },
+                    html: textToHtml(emailBody),
                     text: emailBody,
                     attachments: [
                         {
-                            filename: fileName,
+                            filename: `${sanitizeName(user.full_name)}_Cover_Letter.pdf`,
                             path: filePath
                         },
                         {
-                            filename: path.basename(resumePath),
+                            filename: `${sanitizeName(user.full_name)}_Resume.pdf`,
                             path: resumePath
                         }
                     ]
@@ -1555,11 +1656,11 @@ const sendSingleApplication = async (req, res) => {
                 // Clean up
                 await fs.unlink(filePath);
 
-                return res.json({ 
+                return { 
                     success: true, 
                     message: 'Application sent successfully via default SMTP',
                     method: 'smtp-default'
-                });
+                };
 
             } catch (smtpError) {
                 console.error('Default SMTP error:', smtpError.message);
@@ -1595,14 +1696,15 @@ const sendSingleApplication = async (req, res) => {
                     replyTo: replyToEmail,
                     subject: subject,
                     textBody: emailBody,
+                    htmlBody: textToHtml(emailBody),
                     attachments: [
                         {
-                            filename: fileName,
+                            filename: `${sanitizeName(user.full_name)}_Cover_Letter.pdf`,
                             content: coverLetterBuffer.toString('base64'),
                             contentType: 'application/pdf'
                         },
                         {
-                            filename: path.basename(resumePath),
+                            filename: `${sanitizeName(user.full_name)}_Resume.pdf`,
                             content: resumeBuffer.toString('base64'),
                             contentType: 'application/pdf'
                         }
@@ -1635,11 +1737,11 @@ const sendSingleApplication = async (req, res) => {
                 // Clean up
                 await fs.unlink(filePath);
 
-                return res.json({ 
+                return { 
                     success: true, 
                     message: 'Application sent successfully via ZeptoMail',
                     method: 'zeptomail'
-                });
+                };
 
             } catch (zeptoError) {
                 console.error('ZeptoMail error:', zeptoError.message);
@@ -1647,25 +1749,9 @@ const sendSingleApplication = async (req, res) => {
             }
         }
 
-        // No sending method available
-        return res.status(400).json({ 
-            error: 'No email sending method configured. Please log in with Google to send emails.' 
-        });
-
-    } catch (error) {
-        console.error('Send single application error:', error);
-        
-        // Return helpful error messages
-        if (error.code === 'ETIMEDOUT') {
-            return res.status(503).json({ 
-                error: 'Unable to connect to email server. Please try logging in with Google instead.',
-                details: error.message
-            });
-        }
-        
-        res.status(500).json({ error: error.message || 'Failed to send application' });
-    }
-};
+    // No sending method available
+    throw new Error('No email sending method configured. Please log in with Google to send emails.');
+}
 
 // Check for email replies
 const checkEmailReplies = async (req, res) => {
@@ -2164,5 +2250,6 @@ const checkEmailReplies = async (req, res) => {
 module.exports = {
     sendApplications,
     sendSingleApplication,
-    checkEmailReplies
+    checkEmailReplies,
+    executeSendWork
 };
