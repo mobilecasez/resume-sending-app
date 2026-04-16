@@ -14,6 +14,7 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
 import * as AppleAuthentication from 'expo-apple-authentication';
+import * as SecureStore from 'expo-secure-store';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { API_BASE } from './config';
 import SplashScreen from './components/SplashScreen';
@@ -348,22 +349,65 @@ function AppContent() {
   const [error, setError] = useState('');
   const [user, setUser] = useState(null);
   const userRef = useRef(null);
+  const sessionRestoredRef = useRef(false);
   // Keep ref in sync so link handlers always have the latest token
   useEffect(() => { userRef.current = user; }, [user]);
+
+  // Save user session to SecureStore whenever user changes
+  useEffect(() => {
+    if (user?.token && user?.id) {
+      SecureStore.setItemAsync('userSession', JSON.stringify(user)).catch(err => 
+        console.log('Failed to save session:', err)
+      );
+    }
+  }, [user]);
+
+  // Restore saved session on app start
+  useEffect(() => {
+    const restoreSession = async () => {
+      try {
+        const stored = await SecureStore.getItemAsync('userSession');
+        if (!stored) return;
+        
+        const savedUser = JSON.parse(stored);
+        if (!savedUser?.token) return;
+        
+        // Validate token with server
+        const response = await fetch(`${API_BASE}/users/profile`, {
+          headers: {
+            'Authorization': `Bearer ${savedUser.token}`,
+            'Content-Type': 'application/json',
+          }
+        });
+        
+        if (response.ok) {
+          const profileData = await response.json();
+          // Merge server profile data with saved session (server data is more up-to-date)
+          const restoredUser = {
+            ...savedUser,
+            fullName: profileData.fullName || savedUser.fullName,
+            email: profileData.email || savedUser.email,
+            oauth_provider: profileData.oauth_provider || savedUser.oauth_provider,
+          };
+          setUser(restoredUser);
+          sessionRestoredRef.current = true;
+          setScreen('dashboard');
+          console.log('✅ Session restored for:', restoredUser.email);
+        } else {
+          // Token expired or invalid — clear stored session
+          await SecureStore.deleteItemAsync('userSession');
+          console.log('🔑 Stored session expired, showing login');
+        }
+      } catch (err) {
+        console.log('Session restore error:', err);
+      }
+    };
+    restoreSession();
+  }, []);
   
-  // Track app background/foreground state to handle iOS suspending network requests
+  // Track app background/foreground state
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
-      if (appStateRef.current === 'active' && nextAppState.match(/inactive|background/)) {
-        // App going to background — mark if a request is in progress
-        if (requestInProgressRef.current) {
-          wasBackgroundedDuringRequestRef.current = true;
-          console.log('📱 App backgrounded during active request');
-        }
-      }
-      if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
-        console.log('📱 App returned to foreground');
-      }
       appStateRef.current = nextAppState;
     });
     return () => subscription?.remove();
@@ -533,10 +577,9 @@ function AppContent() {
   const abortControllerRef = useRef(null);
   const isCancelledRef = useRef(false);
   
-  // Background state tracking - detect when iOS suspends the app during a request
+  // Background state tracking
   const appStateRef = useRef(AppState.currentState);
   const requestInProgressRef = useRef(false);
-  const wasBackgroundedDuringRequestRef = useRef(false);
   
   // Packages screen state
   const [userPackages, setUserPackages] = useState([]);
@@ -1503,9 +1546,8 @@ function AppContent() {
         isCancelledRef.current = false;
       }
       
-      // Track active request for background state detection
+      // Track active request
       requestInProgressRef.current = true;
-      wasBackgroundedDuringRequestRef.current = false;
       
       setReviewGeneratingIndex(recipientIndex);
       
@@ -1717,7 +1759,6 @@ function AppContent() {
       console.log(`   Message: ${error.message}`);
       console.log(`   Stack: ${error.stack?.split('\n')[0]}`);
       console.log(`   Retry count: ${retryCount}`);
-      console.log(`   Was backgrounded: ${wasBackgroundedDuringRequestRef.current}`);
 
       // Handle user cancellation (user explicitly pressed Cancel)
       if (error.name === 'AbortError' && isCancelledRef.current) {
@@ -1725,19 +1766,11 @@ function AppContent() {
         return;
       }
       
-      // Handle app backgrounding — iOS killed the request, auto-retry
-      if (wasBackgroundedDuringRequestRef.current && retryCount < 2) {
-        wasBackgroundedDuringRequestRef.current = false;
-        console.log(`📱 [${requestId}] App was backgrounded during request - auto-retrying...`);
-        setTimeout(() => generateCoverLetterForReview(recipientIndex, retryCount + 1), 1500);
-        return;
-      }
-      
       if (error.name === 'AbortError' || error.message.includes('timeout') || error.message.includes('Network request failed')) {
         if (retryCount < 2) {
           console.log(`🔄 [${requestId}] Retrying attempt ${retryCount + 1}...`);
-          Alert.alert('Network Timeout', 'Retrying...');
-          setTimeout(() => generateCoverLetterForReview(recipientIndex, retryCount + 1), 1000);
+          Alert.alert('Network Issue', 'Retrying automatically...');
+          setTimeout(() => generateCoverLetterForReview(recipientIndex, retryCount + 1), 1500);
           return;
         } else {
           console.log(`❌ [${requestId}] Max retries exceeded`);
@@ -2006,7 +2039,6 @@ function AppContent() {
       
       // Track active request and keep app awake
       requestInProgressRef.current = true;
-      wasBackgroundedDuringRequestRef.current = false;
       await activateKeepAwakeAsync();
       
       console.log(`\n=== [SEND ${recipientIndex}] MOBILE: SENDING APPLICATION ===`);
@@ -2068,7 +2100,18 @@ function AppContent() {
       if (!response.ok) {
         const errorText = await response.text();
         console.log(`❌ [SEND ${recipientIndex}] Response not OK:`, response.status, errorText);
-        throw new Error(`Server error: ${response.status}`);
+        // Try to parse error message from server
+        let errorMsg = `Server error: ${response.status}`;
+        try {
+          const errorData = JSON.parse(errorText);
+          if (errorData.error) errorMsg = errorData.error;
+          if (errorData.message) errorMsg = errorData.message;
+        } catch (e) {}
+        // If OAuth token issue, update user state to show disconnected
+        if (errorMsg.includes('OAuth') || errorMsg.includes('token expired') || errorMsg.includes('log in again')) {
+          setUser(prev => ({ ...prev, oauth_provider: null }));
+        }
+        throw new Error(errorMsg);
       }
       
       // Get response as text first to see what we're dealing with
@@ -2122,20 +2165,11 @@ function AppContent() {
       console.log('Error stack:', error.stack);
       console.log('Error type:', typeof error);
       console.log('Full error object:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
-      console.log('Was backgrounded:', wasBackgroundedDuringRequestRef.current);
       console.log('================================\n');
 
       // Handle user cancellation
       if (error.name === 'AbortError' && isCancelledRef.current) {
         console.log('🛑 Request cancelled by user');
-        return false;
-      }
-      
-      // Handle app backgrounding — iOS killed the request, auto-retry once
-      if (wasBackgroundedDuringRequestRef.current) {
-        wasBackgroundedDuringRequestRef.current = false;
-        console.log(`📱 [SEND ${recipientIndex}] App was backgrounded - auto-retrying...`);
-        setTimeout(() => sendApplicationFromReview(recipientIndex, silent, coverLetterOverride), 1500);
         return false;
       }
 
@@ -2162,7 +2196,6 @@ function AppContent() {
       
       // Track active request and keep app awake
       requestInProgressRef.current = true;
-      wasBackgroundedDuringRequestRef.current = false;
       await activateKeepAwakeAsync();
 
       // Create new AbortController for this request
@@ -2222,14 +2255,6 @@ function AppContent() {
       // Handle user cancellation
       if (error.name === 'AbortError' && isCancelledRef.current) {
         console.log('🛑 Download cancelled by user');
-        return;
-      }
-      
-      // Handle app backgrounding — auto-retry once
-      if (wasBackgroundedDuringRequestRef.current) {
-        wasBackgroundedDuringRequestRef.current = false;
-        console.log(`📱 [DOWNLOAD ${recipientIndex}] App was backgrounded - auto-retrying...`);
-        setTimeout(() => downloadCoverLetterPDFFromReview(recipientIndex), 1500);
         return;
       }
       
@@ -3120,7 +3145,8 @@ function AppContent() {
         name: data.user?.name || data.user?.fullName,
         token: data.token,
         createdAt: data.user?.createdAt,
-        provider: data.user?.provider || 'email'
+        provider: data.user?.provider || 'email',
+        oauth_provider: data.user?.oauth_provider || null
       };
       
       console.log('Login User:', userData);
@@ -3320,7 +3346,8 @@ function AppContent() {
         name: data.user?.name || data.user?.fullName,
         token: data.token,
         createdAt: data.user?.createdAt,
-        provider: data.user?.provider || 'email'
+        provider: data.user?.provider || 'email',
+        oauth_provider: data.user?.oauth_provider || null
       };
       
       console.log('Registered User:', userData);
@@ -3364,6 +3391,13 @@ function AppContent() {
   };
 
   const handleLogout = async () => {
+    // Clear saved session from SecureStore
+    try {
+      await SecureStore.deleteItemAsync('userSession');
+      console.log('🔑 Cleared saved session');
+    } catch (error) {
+      console.error('Failed to clear session:', error);
+    }
     // Clear all user-specific data from AsyncStorage
     if (user?.email) {
       try {
@@ -4935,7 +4969,7 @@ function AppContent() {
                           </Text>
                         </View>
                         
-                        {app.replyReceived && (
+                        {app.replyReceived && app.replyDate && (
                           <>
                             <View style={styles.dateSeparator} />
                             <View style={styles.dateItem}>
@@ -5131,14 +5165,20 @@ function AppContent() {
                             });
 
                             if (response.ok) {
+                              const replyDateISO = selectedReplyDateRef.current.toISOString();
                               // Update local application history
-                              setApplicationHistory(prev =>
-                                prev.map(item =>
+                              setApplicationHistory(prev => {
+                                const updated = prev.map(item =>
                                   item.id === replyAppId
-                                    ? { ...item, replyReceived: true, replyDate: selectedReplyDateRef.current.toISOString() }
+                                    ? { ...item, replyReceived: true, replyDate: replyDateISO }
                                     : item
-                                )
-                              );
+                                );
+                                // Also update AsyncStorage cache to survive page changes
+                                if (user?.email) {
+                                  AsyncStorage.setItem(`applicationHistory_${user.email}`, JSON.stringify(updated)).catch(() => {});
+                                }
+                                return updated;
+                              });
                               // Update dashboard counters immediately
                               setTotalReplied(prev => prev + 1);
                               setShowReplyDatePicker(false);

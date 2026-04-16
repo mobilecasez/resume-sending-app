@@ -6,7 +6,7 @@ const getProfile = async (req, res) => {
     const userId = req.user.id;
     
     try {
-        const user = await dbConfig.get('SELECT full_name as "fullName", email, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath", phone_number as "phoneNumber", address, date_of_birth as "dateOfBirth", created_at as "createdAt" FROM users WHERE id = ?', [userId]);
+        const user = await dbConfig.get('SELECT full_name as "fullName", email, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath", phone_number as "phoneNumber", address, date_of_birth as "dateOfBirth", created_at as "createdAt", oauth_provider as "oauthProvider" FROM users WHERE id = ?', [userId]);
         
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
@@ -32,7 +32,8 @@ const getProfile = async (req, res) => {
             profileImage: user.photoPath ? `${baseUrl}/${user.photoPath}` : null,
             resume: user.resumePath ? `${baseUrl}/${user.resumePath}` : null,
             signature: user.signaturePath ? `${baseUrl}/${user.signaturePath}` : null,
-            createdAt: user.createdAt
+            createdAt: user.createdAt,
+            oauth_provider: user.oauthProvider || null
         });
     } catch (err) {
         return res.status(500).json({ error: err.message });
