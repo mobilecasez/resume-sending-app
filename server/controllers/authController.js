@@ -652,11 +652,51 @@ const microsoftCallback = (req, res) => {
 const microsoftAuth = async (req, res) => {
     try {
         console.log('Microsoft OAuth Request Body:', req.body);
-        const { accessToken } = req.body;
+        const { accessToken, code, codeVerifier, redirectUri: clientRedirectUri } = req.body;
         
-        if (!accessToken) {
-            console.log('Missing accessToken in request');
-            return res.status(400).json({ error: 'Access token is required' });
+        let finalAccessToken = accessToken;
+        let finalRefreshToken = null;
+        
+        // If authorization code provided, exchange for tokens (mobile PKCE flow)
+        if (code) {
+            console.log('Authorization code provided, exchanging for tokens...');
+            const redirectUri = clientRedirectUri || 'msauth://com.cvapplyr.app/callback';
+            
+            const tokenParams = new URLSearchParams({
+                client_id: process.env.MICROSOFT_CLIENT_ID,
+                grant_type: 'authorization_code',
+                code: code,
+                redirect_uri: redirectUri,
+                scope: 'user.read Mail.Read Mail.Send offline_access',
+            });
+            if (codeVerifier) {
+                tokenParams.append('code_verifier', codeVerifier);
+            } else {
+                tokenParams.append('client_secret', process.env.MICROSOFT_CLIENT_SECRET);
+            }
+            
+            const tokenResponse = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: tokenParams
+            });
+            
+            if (!tokenResponse.ok) {
+                const errorData = await tokenResponse.json();
+                console.error('Microsoft token exchange error:', errorData);
+                return res.status(401).json({ error: 'Failed to exchange authorization code', details: errorData });
+            }
+            
+            const tokenData = await tokenResponse.json();
+            console.log('Token exchange successful! Keys:', Object.keys(tokenData));
+            console.log('Refresh token present:', !!tokenData.refresh_token);
+            finalAccessToken = tokenData.access_token;
+            finalRefreshToken = tokenData.refresh_token;
+        }
+        
+        if (!finalAccessToken) {
+            console.log('Missing accessToken and code in request');
+            return res.status(400).json({ error: 'Access token or authorization code is required' });
         }
 
         console.log('Verifying access token with Microsoft Graph API...');
@@ -691,15 +731,16 @@ const microsoftAuth = async (req, res) => {
             const result = await dbConfig.run(
                 `INSERT INTO users (
                     email, full_name, password, oauth_provider, 
-                    microsoft_access_token,
+                    microsoft_access_token, microsoft_refresh_token,
                     microsoft_token_issued_at, microsoft_token_expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
                 [
                     microsoftUser.mail || microsoftUser.userPrincipalName, 
                     microsoftUser.displayName, 
                     hashedPassword, 
                     'microsoft', 
-                    encryptOAuthToken(accessToken),
+                    encryptOAuthToken(finalAccessToken),
+                    finalRefreshToken ? encryptOAuthToken(finalRefreshToken) : null,
                     issuedAt.toISOString(),
                     expiresAt.toISOString()
                 ]
@@ -740,20 +781,28 @@ const microsoftAuth = async (req, res) => {
             });
         } else {
             // User exists, update OAuth tokens (ENCRYPTED for security)
+            const updateFields = [
+                'oauth_provider = ?',
+                'microsoft_access_token = ?',
+                'microsoft_token_issued_at = ?',
+                'microsoft_token_expires_at = ?'
+            ];
+            const updateParams = [
+                'microsoft',
+                encryptOAuthToken(finalAccessToken),
+                issuedAt.toISOString(),
+                expiresAt.toISOString()
+            ];
+            
+            if (finalRefreshToken) {
+                updateFields.push('microsoft_refresh_token = ?');
+                updateParams.push(encryptOAuthToken(finalRefreshToken));
+            }
+            
+            updateParams.push(user.id);
             await dbConfig.run(
-                `UPDATE users SET 
-                    oauth_provider = ?, 
-                    microsoft_access_token = ?,
-                    microsoft_token_issued_at = ?,
-                    microsoft_token_expires_at = ?
-                WHERE id = ?`,
-                [
-                    'microsoft', 
-                    encryptOAuthToken(accessToken),
-                    issuedAt.toISOString(),
-                    expiresAt.toISOString(),
-                    user.id
-                ]
+                `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`,
+                updateParams
             );
             
             // Log OAuth token refresh
@@ -1241,15 +1290,52 @@ const linkGoogle = async (req, res) => {
 const linkMicrosoft = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { accessToken } = req.body;
+        const { accessToken, code, codeVerifier, redirectUri: clientRedirectUri } = req.body;
 
-        if (!accessToken) {
-            return res.status(400).json({ error: 'Access token is required' });
+        let finalAccessToken = accessToken;
+        let finalRefreshToken = null;
+        
+        // If authorization code provided, exchange for tokens (PKCE flow)
+        if (code) {
+            const redirectUri = clientRedirectUri || 'msauth://com.cvapplyr.app/callback';
+            
+            const tokenParams = new URLSearchParams({
+                client_id: process.env.MICROSOFT_CLIENT_ID,
+                grant_type: 'authorization_code',
+                code: code,
+                redirect_uri: redirectUri,
+                scope: 'user.read Mail.Read Mail.Send offline_access',
+            });
+            if (codeVerifier) {
+                tokenParams.append('code_verifier', codeVerifier);
+            } else {
+                tokenParams.append('client_secret', process.env.MICROSOFT_CLIENT_SECRET);
+            }
+            
+            const tokenResponse = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: tokenParams
+            });
+            
+            if (!tokenResponse.ok) {
+                const errorData = await tokenResponse.json();
+                console.error('Microsoft token exchange error (link):', errorData);
+                return res.status(401).json({ error: 'Failed to exchange authorization code', details: errorData });
+            }
+            
+            const tokenData = await tokenResponse.json();
+            finalAccessToken = tokenData.access_token;
+            finalRefreshToken = tokenData.refresh_token;
+        }
+        
+        if (!finalAccessToken) {
+            return res.status(400).json({ error: 'Access token or authorization code is required' });
         }
 
         // Verify the access token with Microsoft Graph API
         const response = await fetch('https://graph.microsoft.com/v1.0/me', {
-            headers: { 'Authorization': `Bearer ${accessToken}` }
+            headers: { 'Authorization': `Bearer ${finalAccessToken}` }
         });
 
         if (!response.ok) {
@@ -1263,20 +1349,28 @@ const linkMicrosoft = async (req, res) => {
         const issuedAt = new Date();
         const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000);
 
+        const updateFields = [
+            'oauth_provider = ?',
+            'microsoft_access_token = ?',
+            'microsoft_token_issued_at = ?',
+            'microsoft_token_expires_at = ?'
+        ];
+        const updateParams = [
+            'microsoft',
+            encryptOAuthToken(finalAccessToken),
+            issuedAt.toISOString(),
+            expiresAt.toISOString()
+        ];
+        
+        if (finalRefreshToken) {
+            updateFields.push('microsoft_refresh_token = ?');
+            updateParams.push(encryptOAuthToken(finalRefreshToken));
+        }
+        
+        updateParams.push(userId);
         await dbConfig.run(
-            `UPDATE users SET 
-                oauth_provider = ?,
-                microsoft_access_token = ?,
-                microsoft_token_issued_at = ?,
-                microsoft_token_expires_at = ?
-            WHERE id = ?`,
-            [
-                'microsoft',
-                encryptOAuthToken(accessToken),
-                issuedAt.toISOString(),
-                expiresAt.toISOString(),
-                userId
-            ]
+            `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`,
+            updateParams
         );
 
         await logSecurityEvent(userId, 'OAUTH_ACCOUNT_LINKED', 'oauth', {

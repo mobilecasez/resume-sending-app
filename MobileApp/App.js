@@ -6,6 +6,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
+import * as AuthSession from 'expo-auth-session';
+import * as Crypto from 'expo-crypto';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,6 +28,20 @@ const GOOGLE_CLIENT_ID_WEB = '151384459549-ujnpfbck9e0q2jkmt2q4l0lv1s41lp04.apps
 
 // Microsoft OAuth Client ID from Azure Portal
 const MICROSOFT_CLIENT_ID = '9205782b-1a57-4c2f-bbfd-8136b5378e96';
+
+// Generate PKCE code verifier + challenge for Microsoft OAuth
+async function generatePKCE() {
+  const randomBytes = await Crypto.getRandomBytesAsync(32);
+  const verifier = btoa(String.fromCharCode(...randomBytes))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const digest = await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    verifier,
+    { encoding: Crypto.CryptoEncoding.BASE64 }
+  );
+  const challenge = digest.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return { verifier, challenge };
+}
 
 const { width, height} = Dimensions.get('window');
 
@@ -556,6 +572,7 @@ function AppContent() {
     webClientId: GOOGLE_CLIENT_ID_WEB,
     redirectUri: Platform.OS === 'ios' ? iosRedirectUri : undefined,
     scopes: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.send'], // gmail.readonly removed — re-enable after CASA
+    extraParams: { access_type: 'offline', prompt: 'consent' }, // Request refresh token for persistent access
   });
   const [selectedCoverLetterIndex, setSelectedCoverLetterIndex] = useState(null);
   const [showCoverLetterPreview, setShowCoverLetterPreview] = useState(false);
@@ -3968,18 +3985,18 @@ function AppContent() {
     }
   };
 
-  const handleMicrosoftAuthResponse = async (accessToken) => {
+  const handleMicrosoftAuthResponse = async (code, codeVerifier, redirectUri) => {
     setLoading(true);
     setError('');
     try {
-      console.log('Microsoft Auth Response - Token length:', accessToken?.length || 0);
+      console.log('Microsoft Auth Response - Code length:', code?.length || 0);
       console.log('API Base:', API_BASE);
       
-      // Send access token to backend
+      // Send authorization code + PKCE verifier to backend for token exchange
       const response = await fetch(`${API_BASE}/auth/microsoft`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accessToken })
+        body: JSON.stringify({ code, codeVerifier, redirectUri })
       });
 
       console.log('Backend Response Status:', response.status);
@@ -4169,21 +4186,24 @@ function AppContent() {
   const handleLinkMicrosoft = async () => {
     try {
       const redirectUri = `msauth://com.cvapplyr.app/callback`;
+      const pkce = await generatePKCE();
       const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
         `client_id=${MICROSOFT_CLIENT_ID}` +
-        `&response_type=token` +
+        `&response_type=code` +
         `&redirect_uri=${encodeURIComponent(redirectUri)}` +
         `&scope=${encodeURIComponent('user.read Mail.Read Mail.Send offline_access')}` +
-        `&response_mode=fragment`;
+        `&response_mode=query` +
+        `&code_challenge=${pkce.challenge}` +
+        `&code_challenge_method=S256`;
 
       const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
 
       if (result.type === 'success') {
         const url = result.url;
-        const accessTokenMatch = url.match(/access_token=([^&]+)/);
+        const codeMatch = url.match(/[?&]code=([^&]+)/);
 
-        if (accessTokenMatch && accessTokenMatch[1]) {
-          const accessToken = accessTokenMatch[1];
+        if (codeMatch && codeMatch[1]) {
+          const code = decodeURIComponent(codeMatch[1]);
           setLoading(true);
           const response = await fetch(`${API_BASE}/auth/link-microsoft`, {
             method: 'POST',
@@ -4191,7 +4211,7 @@ function AppContent() {
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${userRef.current?.token}`,
             },
-            body: JSON.stringify({ accessToken }),
+            body: JSON.stringify({ code, codeVerifier: pkce.verifier, redirectUri }),
           });
           const data = await response.json();
           setLoading(false);
@@ -4202,7 +4222,7 @@ function AppContent() {
             Alert.alert('Error', data.error || 'Failed to connect Microsoft account');
           }
         } else {
-          Alert.alert('Error', 'No access token received from Microsoft');
+          Alert.alert('Error', 'No authorization code received from Microsoft');
         }
       } else if (result.type === 'cancel') {
         console.log('Microsoft link cancelled by user');
@@ -4383,14 +4403,17 @@ function AppContent() {
   const handleMicrosoftLogin = async () => {
     setLoading(true);
     try {
-      // Microsoft OAuth URL for mobile
+      // Microsoft OAuth URL for mobile — using auth code + PKCE for refresh tokens
       const redirectUri = `msauth://com.cvapplyr.app/callback`;
+      const pkce = await generatePKCE();
       const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
         `client_id=${MICROSOFT_CLIENT_ID}` +
-        `&response_type=token` +
+        `&response_type=code` +
         `&redirect_uri=${encodeURIComponent(redirectUri)}` +
         `&scope=${encodeURIComponent('user.read Mail.Read Mail.Send offline_access')}` +
-        `&response_mode=fragment`;
+        `&response_mode=query` +
+        `&code_challenge=${pkce.challenge}` +
+        `&code_challenge_method=S256`;
       
       console.log('Opening Microsoft auth URL...');
       const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
@@ -4398,16 +4421,17 @@ function AppContent() {
       console.log('Microsoft auth result:', result);
       
       if (result.type === 'success') {
-        // Extract access token from URL fragment
+        // Extract authorization code from URL query params
         const url = result.url;
-        const accessTokenMatch = url.match(/access_token=([^&]+)/);
+        const codeMatch = url.match(/[?&]code=([^&]+)/);
         
-        if (accessTokenMatch && accessTokenMatch[1]) {
-          const accessToken = accessTokenMatch[1];
-          console.log('Microsoft access token received');
-          await handleMicrosoftAuthResponse(accessToken);
+        if (codeMatch && codeMatch[1]) {
+          const code = decodeURIComponent(codeMatch[1]);
+          console.log('Microsoft authorization code received');
+          // Send code + verifier to server for token exchange
+          await handleMicrosoftAuthResponse(code, pkce.verifier, redirectUri);
         } else {
-          throw new Error('No access token received from Microsoft');
+          throw new Error('No authorization code received from Microsoft');
         }
       } else if (result.type === 'cancel') {
         setError('Microsoft login cancelled');

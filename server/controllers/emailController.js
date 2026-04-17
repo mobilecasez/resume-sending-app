@@ -77,6 +77,90 @@ function isTokenExpired(expiresAt) {
     return currentTime >= (expiryTime - bufferTime);
 }
 
+// Refresh Microsoft OAuth token using refresh_token
+async function refreshMicrosoftToken(user) {
+    try {
+        console.log('\n🔄 Refreshing Microsoft OAuth token for user', user.id);
+        
+        const refreshToken = decryptOAuthToken(user.microsoft_refresh_token);
+        if (!refreshToken) {
+            throw new Error('No Microsoft refresh token available');
+        }
+        
+        const tokenParams = new URLSearchParams({
+            client_id: process.env.MICROSOFT_CLIENT_ID,
+            grant_type: 'refresh_token',
+            refresh_token: refreshToken,
+            scope: 'user.read Mail.Read Mail.Send offline_access',
+        });
+        
+        const tokenResponse = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: tokenParams
+        });
+        
+        if (!tokenResponse.ok) {
+            const errorData = await tokenResponse.json();
+            console.error('❌ Microsoft token refresh failed:', errorData);
+            throw new Error('Microsoft token refresh failed: ' + (errorData.error_description || errorData.error));
+        }
+        
+        const tokenData = await tokenResponse.json();
+        const newAccessToken = tokenData.access_token;
+        const newRefreshToken = tokenData.refresh_token; // Microsoft may rotate refresh tokens
+        
+        const issuedAt = new Date();
+        const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000);
+        
+        // Update database with new tokens
+        const updateFields = [
+            'microsoft_access_token = ?',
+            'microsoft_token_issued_at = ?',
+            'microsoft_token_expires_at = ?'
+        ];
+        const updateParams = [
+            encryptOAuthToken(newAccessToken),
+            issuedAt.toISOString(),
+            expiresAt.toISOString()
+        ];
+        
+        if (newRefreshToken) {
+            updateFields.push('microsoft_refresh_token = ?');
+            updateParams.push(encryptOAuthToken(newRefreshToken));
+        }
+        
+        updateParams.push(user.id);
+        await dbConfig.run(
+            `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`,
+            updateParams
+        );
+        
+        console.log('✅ Microsoft token refreshed successfully, expires at:', expiresAt.toISOString());
+        
+        return {
+            ...user,
+            microsoft_access_token: encryptOAuthToken(newAccessToken),
+            microsoft_refresh_token: newRefreshToken ? encryptOAuthToken(newRefreshToken) : user.microsoft_refresh_token,
+            microsoft_token_issued_at: issuedAt.toISOString(),
+            microsoft_token_expires_at: expiresAt.toISOString()
+        };
+    } catch (error) {
+        console.error('❌ Failed to refresh Microsoft token:', error);
+        throw error;
+    }
+}
+
+// Get valid Microsoft access token (auto-refreshes if expired)
+async function getValidMicrosoftAccessToken(user) {
+    if (isTokenExpired(user.microsoft_token_expires_at)) {
+        console.log('⏰ Microsoft token expired, refreshing...');
+        const updatedUser = await refreshMicrosoftToken(user);
+        return decryptOAuthToken(updatedUser.microsoft_access_token);
+    }
+    return decryptOAuthToken(user.microsoft_access_token);
+}
+
 // Refresh Google OAuth token using refresh_token
 async function refreshGoogleToken(user) {
     try {
@@ -365,8 +449,8 @@ async function sendEmailViaGmail(user, recipientEmail, subject, emailBody, resum
 // Helper function: Send email via Microsoft Graph API
 async function sendEmailViaMicrosoft(user, recipientEmail, subject, emailBody, resumePath, coverLetterPdfBuffer) {
     try {
-        // SECURITY: Decrypt Microsoft access token before using
-        const accessToken = decryptOAuthToken(user.microsoft_access_token);
+        // SECURITY: Get valid Microsoft access token (auto-refreshes if expired)
+        const accessToken = await getValidMicrosoftAccessToken(user);
         
         if (!accessToken) {
             throw new Error('No Microsoft access token available');
