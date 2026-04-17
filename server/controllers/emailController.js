@@ -2007,16 +2007,24 @@ const checkEmailReplies = async (req, res) => {
                         const emailDate = new Date(email.receivedDateTime);
                         const sentDate = new Date(app.sent_date);
 
-                        console.log(`   📧 Checking message from: ${fromEmail}, date: ${emailDate.toISOString()}`);
+                        // Match by domain: reply may come from any address at the same company
+                        const companyDomain = companyEmail.split('@')[1];
+                        const fromDomain = fromEmail.split('@')[1];
 
-                        // CRITICAL FIX: Exclude user's own emails (test case handling)
                         // Check if:
-                        // 1. Email is from company email
-                        // 2. Email is NOT from user's own email (avoid matching sent emails in test cases)
+                        // 1. Email is from the same domain as the company OR exact match
+                        // 2. Email is NOT from user's own email (avoid matching sent emails)
                         // 3. Email was received after we sent the application
-                        const isFromCompany = fromEmail.includes(companyEmail);
+                        const isFromCompany = (fromDomain === companyDomain) || fromEmail.includes(companyEmail);
                         const isNotFromUser = !fromEmail.includes(user.email.toLowerCase());
                         const isAfterSent = emailDate > sentDate;
+
+                        if (!isFromCompany || !isNotFromUser || !isAfterSent) {
+                            // Only log first few non-matches to avoid spam
+                            if (emails.indexOf(email) < 3) {
+                                console.log(`   ❌ No match: from=${fromEmail} (domain=${fromDomain}), companyDomain=${companyDomain}, fromCompany=${isFromCompany}, notFromUser=${isNotFromUser}, afterSent=${isAfterSent}`);
+                            }
+                        }
 
                         if (isFromCompany && isNotFromUser && isAfterSent) {
                             console.log(`✅ [CHECK] MATCH FOUND! Reply from ${companyEmail} for ${app.company_name}`);
@@ -2114,11 +2122,6 @@ const checkEmailReplies = async (req, res) => {
                             }
                             
                             // Continue checking for more replies (don't break - there may be multiple replies)
-                        } else {
-                            // Log why it didn't match
-                            if (!isFromCompany || !isNotFromUser || !isAfterSent) {
-                                console.log(`   ❌ No match: fromCompany=${isFromCompany}, notFromUser=${isNotFromUser}, afterSent=${isAfterSent}`);
-                            }
                         }
                     }
                 }
@@ -2128,7 +2131,13 @@ const checkEmailReplies = async (req, res) => {
                 console.error('❌ [CHECK] Microsoft error stack:', error.stack);
                 console.error('❌ [CHECK] Microsoft error name:', error.name);
                 console.error('❌ [CHECK] Microsoft error message:', error.message);
-                // Continue to return partial results
+                // Return error to client instead of swallowing it
+                if (error.message?.includes('401') || error.message?.includes('InvalidAuthenticationToken') || error.message?.includes('refresh')) {
+                    return res.status(401).json({
+                        error: 'Microsoft token expired or invalid',
+                        message: 'Please revoke and reconnect your Microsoft account to refresh the connection.'
+                    });
+                }
             }
 
         } else if (user.oauth_provider === 'google' && user.google_access_token) {
