@@ -18,7 +18,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as SecureStore from 'expo-secure-store';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import { API_BASE } from './config';
+import { API_BASE, PRODUCTION_API_URL } from './config';
 import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
@@ -562,9 +562,8 @@ function AppContent() {
   const progressIntervalRef = useRef(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState('');
-  // iOS-ONLY: expo-auth-session Google hook builds the auth URL + PKCE code verifier.
-  // Android does NOT use this — it uses backend-mediated OAuth flow.
-  // The redirect URI is set only for iOS (reverse client ID scheme).
+  // expo-auth-session Google hook builds the auth URL + PKCE code verifier.
+  // iOS uses this for direct PKCE flow. Android uses backend-mediated flow instead.
   const iosRedirectUri = `com.googleusercontent.apps.${GOOGLE_CLIENT_ID_IOS.split('.apps.googleusercontent.com')[0]}:/oauth2redirect/google`;
   const [googleRequest, googleResponse, googlePromptAsync] = Google.useAuthRequest({
     iosClientId: GOOGLE_CLIENT_ID_IOS,
@@ -3939,17 +3938,19 @@ function AppContent() {
     setRecipients([]);
   };
 
-  const handleGoogleAuthResponse = async (code, codeVerifier, redirectUri) => {
+  const handleGoogleAuthResponse = async (code, codeVerifier, redirectUri, useProduction = false) => {
     setLoading(true);
     setError('');
     try {
       console.log('Google Auth Response - Code length:', code?.length || 0);
       console.log('Google Auth Response - Verifier length:', codeVerifier?.length || 0);
       console.log('Google Auth Response - Redirect URI:', redirectUri);
-      console.log('API Base:', API_BASE);
+      // Android always uses production API (local server unreachable from device/emulator)
+      const apiUrl = useProduction ? PRODUCTION_API_URL : API_BASE;
+      console.log('API Base:', apiUrl);
       
       // Send authorization code and PKCE verifier to backend for token exchange
-      const response = await fetch(`${API_BASE}/auth/google`, {
+      const response = await fetch(`${apiUrl}/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -3990,10 +3991,12 @@ function AppContent() {
     setError('');
     try {
       console.log('Microsoft Auth Response - Code length:', code?.length || 0);
-      console.log('API Base:', API_BASE);
+      // Android always uses production API (local server unreachable from device/emulator)
+      const apiUrl = Platform.OS === 'android' ? PRODUCTION_API_URL : API_BASE;
+      console.log('API Base:', apiUrl);
       
       // Send authorization code + PKCE verifier to backend for token exchange
-      const response = await fetch(`${API_BASE}/auth/microsoft`, {
+      const response = await fetch(`${apiUrl}/auth/microsoft`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code, codeVerifier, redirectUri })
@@ -4026,17 +4029,16 @@ function AppContent() {
   // ==========================================
   // ANDROID Google OAuth — Backend-mediated flow
   // Uses WebBrowser.openAuthSessionAsync (Chrome Custom Tab, stays in-app)
-  // Backend handles Google OAuth and redirects back via deep link
+  // Backend handles Google OAuth and redirects back via deep link.
+  // Requires https://cvapplyr.com/auth/google/mobile-callback to be registered
+  // as an authorized redirect URI in Google Cloud Console for the web client ID.
   // ==========================================
   const handleGoogleLoginAndroid = async () => {
-    // Derive backend URL from API_BASE so it always uses the correct IP
-    const baseUrl = API_BASE.replace('/api', '');
-    const mobileAuthUrl = `${baseUrl}/auth/google/mobile`;
-    // Return URL must match the deep link the backend redirects to after OAuth
-    const devIp = API_BASE.match(/\/\/([^:]+):/)?.[1] || '192.168.1.10';
-    const returnUrl = __DEV__
-      ? `exp://${devIp}:8081`
-      : 'cvapplyr://oauth-success';
+    // Always use production URL for backend-mediated Google OAuth on Android.
+    // The production server handles the full OAuth flow and redirects back via deep link.
+    const mobileAuthUrl = `${PRODUCTION_API_URL.replace('/api', '')}/auth/google/mobile`;
+    // Return URL must match the deep link the production server redirects to after OAuth
+    const returnUrl = 'cvapplyr://oauth-success';
     console.log('Android: Opening Google OAuth via backend Custom Tab...');
     console.log('Android: Auth URL:', mobileAuthUrl);
     console.log('Android: Return URL:', returnUrl);
@@ -4051,7 +4053,7 @@ function AppContent() {
           const userStr = urlObj.searchParams.get('user');
           if (token && userStr) {
             const userData = JSON.parse(decodeURIComponent(userStr));
-            console.log('✅ Android Google auth complete:', userData.email);
+            console.log('Android Google auth complete:', userData.email);
             setUser({ ...userData, token });
             setScreen('dashboard');
             Alert.alert('Success', `Welcome ${userData.fullName}!`);
@@ -4404,7 +4406,11 @@ function AppContent() {
     setLoading(true);
     try {
       // Microsoft OAuth URL for mobile — using auth code + PKCE for refresh tokens
-      const redirectUri = `msauth://com.cvapplyr.app/callback`;
+      // Android: use cvapplyr:// scheme (Chrome Custom Tabs can't intercept msauth://)
+      // iOS: use msauth:// scheme (ASWebAuthenticationSession handles it)
+      const redirectUri = Platform.OS === 'android'
+        ? 'cvapplyr://auth/microsoft/callback'
+        : `msauth://com.cvapplyr.app/callback`;
       const pkce = await generatePKCE();
       const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
         `client_id=${MICROSOFT_CLIENT_ID}` +

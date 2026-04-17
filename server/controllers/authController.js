@@ -704,7 +704,7 @@ const microsoftAuth = async (req, res) => {
         // Verify the access token with Microsoft Graph API
         const response = await fetch('https://graph.microsoft.com/v1.0/me', {
             headers: {
-                'Authorization': `Bearer ${accessToken}`
+                'Authorization': `Bearer ${finalAccessToken}`
             }
         });
 
