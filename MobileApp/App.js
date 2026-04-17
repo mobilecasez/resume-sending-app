@@ -2683,7 +2683,7 @@ function AppContent() {
         throw new Error('No download URL received');
       }
       
-      // Save to file system using ExpoFile.downloadFileAsync
+      // Save to file system using fetch + ExpoFile write
       const sanitizedName = (profileData?.fullName || 'Applicant').replace(/[^a-zA-Z0-9\s]/g, '').trim().replace(/\s+/g, '_');
       const fileName = `${sanitizedName}_Cover_Letter.pdf`;
       
@@ -2692,21 +2692,21 @@ function AppContent() {
       const fullUrl = `${API_BASE}${cleanUrl}`;
       console.log('📥 Downloading PDF from:', fullUrl);
       
-      const destination = new ExpoFile(Paths.cache, fileName);
-      // Delete existing file if present to avoid conflicts
-      if (destination.exists) {
-        destination.delete();
-      }
-      
-      const downloadedFile = await ExpoFile.downloadFileAsync(fullUrl, new ExpoFile(Paths.cache, fileName), {
+      const pdfResponse = await fetch(fullUrl, {
         headers: { 'Authorization': `Bearer ${user.token}` }
       });
+      if (!pdfResponse.ok) throw new Error('Failed to download PDF file');
+      const blob = await pdfResponse.blob();
       
-      console.log('📥 Downloaded file:', downloadedFile.uri, 'exists:', downloadedFile.exists, 'size:', downloadedFile.size);
+      const pdfFile = new ExpoFile(Paths.cache, fileName);
+      if (pdfFile.exists) pdfFile.delete();
+      await pdfFile.write(blob);
+      
+      console.log('📥 Downloaded file:', pdfFile.uri);
       
       // Share the file
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(downloadedFile.uri);
+        await Sharing.shareAsync(pdfFile.uri);
         Alert.alert('Success', 'PDF downloaded successfully!');
       } else {
         Alert.alert('Error', 'Sharing is not available on this device');
