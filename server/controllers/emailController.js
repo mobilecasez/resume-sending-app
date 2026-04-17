@@ -1271,7 +1271,7 @@ const sendApplications = async (req, res) => {
 const sendSingleApplication = async (req, res) => {
     const userId = req.user.id;
     const { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress } = req.body;
-    const useAsync = process.env.USE_ASYNC_JOBS === 'true';
+    const useAsync = process.env.USE_ASYNC_JOBS !== 'false';
 
     console.log(`\n=== SEND SINGLE APPLICATION DEBUG (${useAsync ? 'ASYNC' : 'SYNC'}) ===`);
     console.log('User ID:', userId);
@@ -1334,7 +1334,9 @@ const sendSingleApplication = async (req, res) => {
             res.status(202).json({ jobId, status: 'pending' });
 
             // Fire and forget
-            executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress })
+            jobService.startJob(jobId).then(() => {
+                return executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress });
+            })
                 .then(result => jobService.completeJob(jobId, result))
                 .catch(err => {
                     console.error(`❌ Async send job ${jobId} failed:`, err.message);

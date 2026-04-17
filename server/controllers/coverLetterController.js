@@ -588,7 +588,7 @@ const generateCoverLetters = async (req, res) => {
 const generateCoverLetterDetails = async (req, res) => {
     const requestId = Date.now();
     const startTime = Date.now();
-    const useAsync = process.env.USE_ASYNC_JOBS === 'true';
+    const useAsync = process.env.USE_ASYNC_JOBS !== 'false';
     
     try {
         const userId = req.user.id;

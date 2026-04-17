@@ -1972,6 +1972,8 @@ function AppContent() {
         if (retryCount < 2) {
           console.log(`🔄 [${requestId}] Retrying attempt ${retryCount + 1}...`);
           Alert.alert('Network Issue', 'Retrying automatically...');
+          // Don't let finally block clean up — retry will take over
+          requestInProgressRef.current = 'retrying';
           setTimeout(() => generateCoverLetterForReview(recipientIndex, retryCount + 1), 1500);
           return;
         } else {
@@ -1985,6 +1987,11 @@ function AppContent() {
       console.log(`${'='.repeat(60)}\n`);
       
     } finally {
+      // Don't clean up if a retry is pending — the retry will handle cleanup
+      if (requestInProgressRef.current === 'retrying') {
+        requestInProgressRef.current = true; // reset flag for the retry
+        return;
+      }
       // Always deactivate keep-awake when done
       requestInProgressRef.current = false;
       deactivateKeepAwake();
@@ -2401,7 +2408,17 @@ function AppContent() {
           if (sentCount > 0) {
             Alert.alert('Success', `Generated and sent ${sentCount} application${sentCount !== 1 ? 's' : ''}${genCount > sentCount ? `. ${genCount - sentCount} failed to send.` : ''}`);
           } else {
-            Alert.alert('Error', 'Failed to send any applications. Check console logs.');
+            // Extract actual error from results to show the user
+            let errorDetail = '';
+            if (batchResult.results) {
+              const firstError = Object.values(batchResult.results).find(r => r.error || r.sendError);
+              if (firstError) {
+                errorDetail = firstError.sendError || firstError.error || '';
+              }
+            }
+            Alert.alert('Error', errorDetail 
+              ? `Failed to send applications: ${errorDetail}` 
+              : 'Failed to send any applications. Please check your email connection in settings.');
           }
         }
       } else {
@@ -2421,7 +2438,7 @@ function AppContent() {
     }
   };
 
-  const sendApplicationFromReview = async (recipientIndex, silent = false, coverLetterOverride = null) => {
+  const sendApplicationFromReview = async (recipientIndex, silent = false, coverLetterOverride = null, retryCount = 0) => {
     const recipient = recipients[recipientIndex];
     const coverLetter = coverLetterOverride || reviewCoverLetters[recipientIndex];
     
@@ -2484,7 +2501,7 @@ function AppContent() {
       
       // Add timeout to prevent hanging
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Request timeout after 60 seconds')), 60000)
+        setTimeout(() => reject(new Error('Request timeout after 180 seconds')), 180000)
       );
 
       // Create new AbortController for this request
@@ -2519,8 +2536,8 @@ function AppContent() {
           return false;
         }
         
-        if (!result.success) {
-          throw new Error(result.error || 'Send failed');
+        if (!result || !result.success) {
+          throw new Error((result && result.error) || 'Send failed');
         }
         
         // Fall through to update state below
@@ -2609,9 +2626,28 @@ function AppContent() {
         return false;
       }
 
+      // Retry on network/timeout errors (up to 2 retries)
+      if (error.name === 'AbortError' || error.message.includes('timeout') || error.message.includes('Network request failed')) {
+        if (retryCount < 2) {
+          console.log(`🔄 [SEND ${recipientIndex}] Retrying attempt ${retryCount + 1}...`);
+          if (!silent) Alert.alert('Network Issue', 'Retrying automatically...');
+          requestInProgressRef.current = 'retrying';
+          return new Promise(resolve => {
+            setTimeout(async () => {
+              const result = await sendApplicationFromReview(recipientIndex, silent, coverLetterOverride, retryCount + 1);
+              resolve(result);
+            }, 1500);
+          });
+        }
+      }
+
       if (!silent) Alert.alert('Error', error.message || 'Failed to send application');
       return false;
     } finally {
+      if (requestInProgressRef.current === 'retrying') {
+        requestInProgressRef.current = true;
+        return;
+      }
       requestInProgressRef.current = false;
       deactivateKeepAwake();
       setReviewLoading(false);
