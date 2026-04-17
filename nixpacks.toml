@@ -1,0 +1,5 @@
+[phases.setup]
+aptPkgs = []
+
+[variables]
+PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
