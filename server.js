@@ -3719,44 +3719,6 @@ app.use('/api', coverLetterRoutes);
 app.use('/api', emailRoutes);
 app.use('/api', notificationsRoutes);
 app.use('/api', jobRoutes);
-
-// Temporary admin cleanup: remove mismatched reply data
-app.post('/api/admin/cleanup-replies', authenticateToken, async (req, res) => {
-    try {
-        const genericProviders = ['gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'live.com', 'icloud.com', 'aol.com', 'protonmail.com'];
-        const replies = await dbConfig.query(
-            'SELECT arh.id, arh.application_id, arh.reply_from_email, ah.recipient_email, ah.company_name ' +
-            'FROM application_reply_history arh JOIN application_history ah ON arh.application_id = ah.id WHERE ah.user_id = $1',
-            [req.user.id]
-        );
-        let deleted = 0;
-        for (const r of replies) {
-            const recipientDomain = r.recipient_email ? r.recipient_email.split('@')[1] : '';
-            const replyFrom = (r.reply_from_email || '').toLowerCase();
-            const recipientEmail = (r.recipient_email || '').toLowerCase();
-            if (genericProviders.includes(recipientDomain) && replyFrom !== recipientEmail) {
-                await dbConfig.run('DELETE FROM application_reply_history WHERE id = ?', [r.id]);
-                deleted++;
-            }
-        }
-        // Reset apps that no longer have valid replies
-        const validReplies = await dbConfig.query('SELECT DISTINCT application_id FROM application_reply_history');
-        const validIds = new Set(validReplies.map(a => a.application_id));
-        const repliedApps = await dbConfig.query('SELECT id FROM application_history WHERE user_id = $1 AND reply_received = 1', [req.user.id]);
-        let reset = 0;
-        for (const app of repliedApps) {
-            if (validIds.has(app.id) === false) {
-                await dbConfig.run('UPDATE application_history SET reply_received = 0, reply_date = NULL, reply_subject = NULL, reply_snippet = NULL, reply_from_email = NULL WHERE id = ?', [app.id]);
-                reset++;
-            }
-        }
-        res.json({ success: true, deletedReplies: deleted, resetApps: reset });
-    } catch (error) {
-        console.error('Cleanup error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
 const batchRoutes = require('./server/routes/batchRoutes');
 app.use('/api', batchRoutes);
 
