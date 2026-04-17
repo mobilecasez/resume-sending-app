@@ -3719,6 +3719,16 @@ app.use('/api', coverLetterRoutes);
 app.use('/api', emailRoutes);
 app.use('/api', notificationsRoutes);
 app.use('/api', jobRoutes);
+
+// TEMP: Clear all reply data
+app.post('/api/admin/clear-replies', authenticateToken, async (req, res) => {
+    try {
+        const r1 = await dbConfig.run('DELETE FROM application_reply_history WHERE application_id IN (SELECT id FROM application_history WHERE user_id = ?)', [req.user.id]);
+        const r2 = await dbConfig.run('UPDATE application_history SET reply_received = 0, reply_date = NULL, reply_subject = NULL, reply_snippet = NULL, reply_from_email = NULL WHERE user_id = ?', [req.user.id]);
+        res.json({ success: true, deletedReplies: r1.changes, updatedApps: r2.changes });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 const batchRoutes = require('./server/routes/batchRoutes');
 app.use('/api', batchRoutes);
 
