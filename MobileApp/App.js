@@ -3435,7 +3435,7 @@ function AppContent() {
       loadNotifications(); // Load notifications
       
       // Auto-check for replies on login (Microsoft OAuth users only — Gmail disabled until CASA)
-      if (user.provider === 'microsoft') {
+      if (user.provider === 'microsoft' || user.oauth_provider === 'microsoft') {
         console.log('🔄 Microsoft OAuth user detected - starting auto-check for replies...');
         // Initial check after 10 seconds
         setTimeout(() => autoCheckForReplies(false), 10000);
@@ -3447,7 +3447,7 @@ function AppContent() {
   useEffect(() => {
     let replyCheckInterval = null;
     
-    if (user?.token && (user.provider === 'microsoft')) { // Gmail auto-check disabled until CASA
+    if (user?.token && (user.provider === 'microsoft' || user.oauth_provider === 'microsoft')) { // Gmail auto-check disabled until CASA
       console.log('🔄 Starting periodic reply check (every 10 minutes)');
       
       replyCheckInterval = setInterval(() => {
@@ -3722,7 +3722,7 @@ function AppContent() {
   // Check for email replies (manual button click)
   const checkEmailReplies = async () => {
     // Gmail auto-reply checking disabled until CASA — show info message
-    if (user.provider === 'google') {
+    if (user.provider === 'google' || user.oauth_provider === 'google') {
       Alert.alert(
         'Gmail — Coming Soon',
         'Automatic reply checking currently works only with Microsoft/Outlook email. Gmail feature coming soon.\n\nPlease check your mails manually and tap on the application card to mark it as replied.',
@@ -5401,7 +5401,7 @@ function AppContent() {
                     : 'Your latest job applications'}
                 </Text>
               </View>
-              {applicationHistory.length > 0 && (user.provider === 'google' || user.provider === 'microsoft') && (
+              {applicationHistory.length > 0 && (user.provider === 'microsoft' || user.oauth_provider === 'microsoft') && (
                 <TouchableOpacity 
                   style={styles.refreshButton}
                   onPress={checkEmailReplies}
