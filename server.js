@@ -3424,6 +3424,43 @@ app.get('/api/user/is-admin', authenticateToken, async (req, res) => {
 paymentRoutes.setDbConfig(dbConfig);
 app.use('/api/payment', paymentRoutes.router);
 
+// Android OAuth relay endpoints — receives code from Google/Microsoft via HTTPS callback,
+// then redirects to cvapplyr:// deep link so the app can extract the code.
+// These are placed BEFORE the rate-limited auth routes so they're not blocked.
+app.get('/auth/google/mobile-callback', (req, res, next) => {
+    if (req.query.state === 'android-relay') {
+        const code = req.query.code;
+        const error = req.query.error;
+        if (error) {
+            console.log('Google Android relay error:', error);
+            return res.redirect(`cvapplyr://oauth-error?error=${encodeURIComponent(error)}&provider=google`);
+        }
+        if (!code) {
+            return res.redirect('cvapplyr://oauth-error?error=no_code&provider=google');
+        }
+        console.log('Google Android relay: forwarding code to app via deep link');
+        return res.redirect(`cvapplyr://oauth-callback?code=${encodeURIComponent(code)}&provider=google`);
+    }
+    next();
+});
+
+app.get('/auth/microsoft/callback', (req, res, next) => {
+    if (req.query.state === 'android-relay') {
+        const code = req.query.code;
+        const error = req.query.error;
+        if (error) {
+            console.log('Microsoft Android relay error:', error);
+            return res.redirect(`cvapplyr://oauth-error?error=${encodeURIComponent(error)}&provider=microsoft`);
+        }
+        if (!code) {
+            return res.redirect('cvapplyr://oauth-error?error=no_code&provider=microsoft');
+        }
+        console.log('Microsoft Android relay: forwarding code to app via deep link');
+        return res.redirect(`cvapplyr://oauth-callback?code=${encodeURIComponent(code)}&provider=microsoft`);
+    }
+    next();
+});
+
 // Set up auth routes with rate limiting
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/auth', authLimiter, authRoutes);

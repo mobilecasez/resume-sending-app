@@ -29,13 +29,7 @@ router.get('/google/mobile', passport.authenticate('google-mobile', {
     prompt: 'consent',
 }));
 
-router.get('/google/mobile-callback', (req, res, next) => {
-    // Android relay: client builds auth URL directly, server just relays code back via deep link
-    if (req.query.state === 'android-relay') {
-        return authController.googleAndroidRelay(req, res);
-    }
-    next();
-},
+router.get('/google/mobile-callback',
     passport.authenticate('google-mobile', { failureRedirect: '/login.html' }),
     authController.googleMobileCallback
 );
@@ -49,13 +43,7 @@ router.get('/microsoft', passport.authenticate('microsoft', {
     prompt: 'consent'
 }));
 
-router.get('/microsoft/callback', (req, res, next) => {
-    // Android relay: client builds auth URL directly, server just relays code back via deep link
-    if (req.query.state === 'android-relay') {
-        return authController.microsoftAndroidRelay(req, res);
-    }
-    next();
-},
+router.get('/microsoft/callback', 
     passport.authenticate('microsoft', { failureRedirect: '/login.html' }), 
     authController.microsoftCallback
 );
