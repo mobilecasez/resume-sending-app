@@ -21,7 +21,10 @@ if (!ENCRYPTION_KEY) {
 // OAuth token decryption helper with backward compatibility
 function decryptOAuthToken(encryptedToken) {
     if (!encryptedToken) return null;
-    if (!ENCRYPTION_KEY) return encryptedToken; // Fallback for backward compatibility during migration
+    if (!ENCRYPTION_KEY) {
+        console.error('⚠️ ENCRYPTION_KEY not available for decryption!');
+        return encryptedToken;
+    }
     try {
         // BACKWARD COMPATIBILITY: Check if token is already decrypted (starts with 'ya29.' for Google)
         // This handles existing unencrypted tokens in the database from before this security fix
@@ -33,7 +36,17 @@ function decryptOAuthToken(encryptedToken) {
         
         const bytes = CryptoJS.AES.decrypt(encryptedToken, ENCRYPTION_KEY);
         const decrypted = bytes.toString(CryptoJS.enc.Utf8);
-        return decrypted || encryptedToken; // Fallback to original if decryption yields empty string
+        
+        if (!decrypted) {
+            console.error('⚠️ Decryption produced empty result! Encrypted token starts with:', encryptedToken.substring(0, 20));
+            console.error('⚠️ ENCRYPTION_KEY length:', ENCRYPTION_KEY.length, 'first 4 chars:', ENCRYPTION_KEY.substring(0, 4));
+            return encryptedToken;
+        }
+        
+        // Validate the decrypted token looks reasonable (should contain dots for JWTs or start with known prefixes)
+        console.log('🔑 Decrypted token starts with:', decrypted.substring(0, 10), 'length:', decrypted.length, 'has dots:', decrypted.includes('.'));
+        
+        return decrypted;
     } catch (error) {
         console.error('OAuth token decryption error:', error);
         // If decryption fails, token might be plain text - return it
@@ -1930,8 +1943,20 @@ const checkEmailReplies = async (req, res) => {
             console.log('📬 [CHECK] Checking Microsoft emails...');
             console.log('📬 [CHECK] Microsoft access token length:', user.microsoft_access_token.length);
             
-            // SECURITY: Decrypt Microsoft access token before using
-            const microsoftAccessToken = decryptOAuthToken(user.microsoft_access_token);
+            // Use getValidMicrosoftAccessToken which handles decryption + auto-refresh
+            let microsoftAccessToken;
+            try {
+                microsoftAccessToken = await getValidMicrosoftAccessToken(user);
+                console.log('📬 [CHECK] Decrypted token starts with:', microsoftAccessToken?.substring(0, 10) + '...');
+                console.log('📬 [CHECK] Decrypted token has dots:', microsoftAccessToken?.includes('.'));
+                console.log('📬 [CHECK] Decrypted token length:', microsoftAccessToken?.length);
+            } catch (refreshError) {
+                console.error('❌ [CHECK] Failed to get valid Microsoft token:', refreshError.message);
+                return res.status(401).json({ 
+                    error: 'Microsoft token expired',
+                    message: 'Please reconnect your Microsoft account (revoke and re-link)'
+                });
+            }
             
             try {
                 const apiUrl = 'https://graph.microsoft.com/v1.0/me/messages?$top=50&$orderby=receivedDateTime desc';
