@@ -2007,22 +2007,26 @@ const checkEmailReplies = async (req, res) => {
                         const emailDate = new Date(email.receivedDateTime);
                         const sentDate = new Date(app.sent_date);
 
-                        // Match by domain: reply may come from any address at the same company
+                        // Match by exact email for generic providers, by domain for company domains
                         const companyDomain = companyEmail.split('@')[1];
                         const fromDomain = fromEmail.split('@')[1];
-
-                        // Check if:
-                        // 1. Email is from the same domain as the company OR exact match
-                        // 2. Email is NOT from user's own email (avoid matching sent emails)
-                        // 3. Email was received after we sent the application
-                        const isFromCompany = (fromDomain === companyDomain) || fromEmail.includes(companyEmail);
-                        const isNotFromUser = !fromEmail.includes(user.email.toLowerCase());
+                        
+                        // Generic email providers where domain matching would be wrong
+                        const genericProviders = ['gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'live.com', 'icloud.com', 'aol.com', 'protonmail.com', 'mail.com', 'zoho.com'];
+                        const isGenericProvider = genericProviders.includes(companyDomain);
+                        
+                        // For generic providers: exact email match only
+                        // For company domains: any email from the same domain counts
+                        const isFromCompany = isGenericProvider
+                            ? (fromEmail === companyEmail)
+                            : (fromDomain === companyDomain);
+                        const isNotFromUser = fromEmail !== user.email.toLowerCase();
                         const isAfterSent = emailDate > sentDate;
 
                         if (!isFromCompany || !isNotFromUser || !isAfterSent) {
                             // Only log first few non-matches to avoid spam
                             if (emails.indexOf(email) < 3) {
-                                console.log(`   ❌ No match: from=${fromEmail} (domain=${fromDomain}), companyDomain=${companyDomain}, fromCompany=${isFromCompany}, notFromUser=${isNotFromUser}, afterSent=${isAfterSent}`);
+                                console.log(`   ❌ No match: from=${fromEmail} (domain=${fromDomain}), companyEmail=${companyEmail}, generic=${isGenericProvider}, fromCompany=${isFromCompany}, notFromUser=${isNotFromUser}, afterSent=${isAfterSent}`);
                             }
                         }
 
