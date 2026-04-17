@@ -493,6 +493,12 @@ const authLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: false, // Count all attempts
+    skip: (req) => {
+        // Don't rate-limit OAuth callback URLs — they are provider redirects, not user attempts
+        return req.method === 'GET' && (
+            req.path.includes('/callback') || req.path.includes('/mobile-callback')
+        );
+    },
     handler: async (req, res) => {
         // Log failed rate limit attempt
         console.warn('⚠️ Rate limit exceeded:', {
