@@ -3742,11 +3742,11 @@ app.post('/api/admin/cleanup-replies', authenticateToken, async (req, res) => {
         // Reset apps that no longer have valid replies
         const validReplies = await dbConfig.query('SELECT DISTINCT application_id FROM application_reply_history');
         const validIds = new Set(validReplies.map(a => a.application_id));
-        const repliedApps = await dbConfig.query('SELECT id FROM application_history WHERE user_id = $1 AND reply_received = true', [req.user.id]);
+        const repliedApps = await dbConfig.query('SELECT id FROM application_history WHERE user_id = $1 AND reply_received = 1', [req.user.id]);
         let reset = 0;
         for (const app of repliedApps) {
             if (validIds.has(app.id) === false) {
-                await dbConfig.run('UPDATE application_history SET reply_received = false, reply_date = NULL, reply_subject = NULL, reply_snippet = NULL, reply_from_email = NULL WHERE id = ?', [app.id]);
+                await dbConfig.run('UPDATE application_history SET reply_received = 0, reply_date = NULL, reply_subject = NULL, reply_snippet = NULL, reply_from_email = NULL WHERE id = ?', [app.id]);
                 reset++;
             }
         }
