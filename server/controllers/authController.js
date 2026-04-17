@@ -615,9 +615,6 @@ const googleAuth = async (req, res) => {
 
 // Microsoft OAuth callback handler
 const microsoftCallback = (req, res) => {
-    // Check if this is a mobile request
-    const isMobile = req.query.mobile === 'true' || req.headers['user-agent']?.includes('Expo');
-    
     // Generate JWT token for the user
     const token = jwt.sign(
         { id: req.user.id, email: req.user.email },
@@ -633,23 +630,14 @@ const microsoftCallback = (req, res) => {
         oauth_provider: 'microsoft'
     };
 
-    // For mobile apps, return JSON instead of HTML redirect
-    if (isMobile) {
-        res.json({
-            success: true,
-            token,
-            user: userData
-        });
-    } else {
-        // For web, set authToken cookie AND redirect to success page
-        res.cookie('authToken', token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            maxAge: 24 * 60 * 60 * 1000, // 24 hours
-            sameSite: 'strict'
-        });
-        res.redirect(`/auth-success.html?token=${token}&user=${encodeURIComponent(JSON.stringify(userData))}`);
-    }
+    // For web and mobile: redirect to auth-success page which handles deep link for mobile
+    res.cookie('authToken', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        sameSite: 'strict'
+    });
+    res.redirect(`/auth-success.html?token=${token}&user=${encodeURIComponent(JSON.stringify(userData))}`);
 };
 
 // Microsoft OAuth API endpoint for mobile (returns JSON)

@@ -4027,43 +4027,41 @@ function AppContent() {
   };
 
   // ==========================================
-  // ANDROID Google OAuth — Direct PKCE flow via server relay
-  // Builds auth URL client-side with the known Web client ID (avoids server env var issues).
-  // Google redirects to HTTPS server callback, server relays code to app via deep link.
-  // App then exchanges code via POST /api/auth/google (existing endpoint).
+  // ANDROID Google OAuth — Passport-mediated flow
+  // Opens the server's /auth/google/mobile endpoint in Chrome Custom Tab.
+  // Server handles everything via Passport (initiates OAuth, validates callback, exchanges tokens).
+  // Server redirects to cvapplyr://oauth-success?token=...&user=... deep link.
+  // The existing Linking handler (handleDeepLink) picks up the token and logs in the user.
   // ==========================================
   const handleGoogleLoginAndroid = async () => {
     try {
-      const pkce = await generatePKCE();
-      const redirectUri = 'https://cvapplyr.com/auth/google/mobile-callback';
-      const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
-        `client_id=${encodeURIComponent(GOOGLE_CLIENT_ID_WEB)}` +
-        `&response_type=code` +
-        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-        `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send')}` +
-        `&access_type=offline` +
-        `&prompt=consent` +
-        `&code_challenge=${pkce.challenge}` +
-        `&code_challenge_method=S256` +
-        `&state=android-relay`;
-      console.log('Android: Opening Google OAuth via relay...');
-      console.log('Android: Redirect URI:', redirectUri);
+      setLoading(true);
+      console.log('Android: Opening Google OAuth via Passport server flow...');
+      const authUrl = `${PRODUCTION_API_URL}/auth/google/mobile`;
+      console.log('Android: Auth URL:', authUrl);
       const result = await WebBrowser.openAuthSessionAsync(authUrl, 'cvapplyr://');
       console.log('Android: Auth result type:', result.type);
       if (result.type === 'success' && result.url) {
         console.log('Android: Deep link received:', result.url.substring(0, 80));
+        // The handleDeepLink useEffect listener will handle cvapplyr://oauth-success?token=...&user=...
+        // But also handle it here in case the Linking listener doesn't fire
         const urlObj = new URL(result.url);
-        const code = urlObj.searchParams.get('code');
-        const error = urlObj.searchParams.get('error');
-        if (error) {
-          Alert.alert('OAuth Error', error);
-          return;
-        }
-        if (code) {
-          console.log('Android: Got authorization code, exchanging via production API...');
-          handleGoogleAuthResponse(code, pkce.verifier, redirectUri, true);
+        const token = urlObj.searchParams.get('token');
+        const userStr = urlObj.searchParams.get('user');
+        if (token && userStr) {
+          const userData = JSON.parse(decodeURIComponent(userStr));
+          console.log('Android: Google auth complete, user:', userData.email);
+          setUser({ ...userData, token });
+          setScreen('dashboard');
+          Alert.alert('Success', `Welcome ${userData.fullName}!`);
         } else {
-          Alert.alert('OAuth Error', 'No authorization code received');
+          // Check for error
+          const error = urlObj.searchParams.get('error');
+          if (error) {
+            Alert.alert('OAuth Error', error);
+          } else {
+            console.log('Android: No token in deep link, Linking handler will pick it up');
+          }
         }
       } else if (result.type === 'cancel' || result.type === 'dismiss') {
         console.log('Android: Google login cancelled/dismissed');
@@ -4073,6 +4071,8 @@ function AppContent() {
     } catch (err) {
       console.error('Android Google login error:', err);
       Alert.alert('Error', 'Google login failed: ' + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -4406,49 +4406,70 @@ function AppContent() {
   const handleMicrosoftLogin = async () => {
     setLoading(true);
     try {
-      // Microsoft OAuth URL for mobile — using auth code + PKCE for refresh tokens
-      // Android: use HTTPS server relay (Chrome Custom Tabs can't intercept custom schemes reliably)
-      // iOS: use msauth:// scheme (ASWebAuthenticationSession handles it)
       const isAndroid = Platform.OS === 'android';
-      const redirectUri = isAndroid
-        ? 'https://cvapplyr.com/auth/microsoft/callback'
-        : `msauth://com.cvapplyr.app/callback`;
-      const pkce = await generatePKCE();
-      const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
-        `client_id=${MICROSOFT_CLIENT_ID}` +
-        `&response_type=code` +
-        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-        `&scope=${encodeURIComponent('user.read Mail.Read Mail.Send offline_access')}` +
-        `&response_mode=query` +
-        `&code_challenge=${pkce.challenge}` +
-        `&code_challenge_method=S256` +
-        (isAndroid ? `&state=android-relay` : '');
       
-      console.log('Opening Microsoft auth URL...');
-      console.log('Microsoft redirect URI:', redirectUri);
-      // Android: listen for cvapplyr:// deep link (server relays code via deep link)
-      // iOS: listen for msauth:// redirect directly
-      const returnUrl = isAndroid ? 'cvapplyr://' : redirectUri;
-      const result = await WebBrowser.openAuthSessionAsync(authUrl, returnUrl);
-      
-      console.log('Microsoft auth result type:', result.type);
-      
-      if (result.type === 'success') {
-        // Extract authorization code from URL query params
-        const url = result.url;
-        console.log('Microsoft result URL:', url?.substring(0, 80));
-        const codeMatch = url.match(/[?&]code=([^&]+)/);
-        
-        if (codeMatch && codeMatch[1]) {
-          const code = decodeURIComponent(codeMatch[1]);
-          console.log('Microsoft authorization code received');
-          // Send code + verifier to server for token exchange
-          await handleMicrosoftAuthResponse(code, pkce.verifier, redirectUri);
-        } else {
-          throw new Error('No authorization code received from Microsoft');
+      if (isAndroid) {
+        // Android: Passport-mediated flow via Chrome Custom Tab
+        // Server initiates OAuth, handles callback, redirects to auth-success.html
+        // auth-success.html detects mobile and redirects to cvapplyr://oauth-success?token=...&user=...
+        console.log('Android: Opening Microsoft OAuth via Passport server flow...');
+        const authUrl = `${PRODUCTION_API_URL}/auth/microsoft`;
+        const result = await WebBrowser.openAuthSessionAsync(authUrl, 'cvapplyr://');
+        console.log('Android: Microsoft auth result type:', result.type);
+        if (result.type === 'success' && result.url) {
+          console.log('Android: Microsoft deep link received:', result.url.substring(0, 80));
+          const urlObj = new URL(result.url);
+          const token = urlObj.searchParams.get('token');
+          const userStr = urlObj.searchParams.get('user');
+          if (token && userStr) {
+            const userData = JSON.parse(decodeURIComponent(userStr));
+            console.log('Android: Microsoft auth complete, user:', userData.email);
+            setUser({ ...userData, token });
+            setScreen('dashboard');
+            Alert.alert('Success', `Welcome ${userData.fullName}!`);
+          } else {
+            const error = urlObj.searchParams.get('error');
+            if (error) {
+              Alert.alert('OAuth Error', error);
+            }
+          }
+        } else if (result.type === 'cancel' || result.type === 'dismiss') {
+          setError('Microsoft login cancelled');
         }
-      } else if (result.type === 'cancel') {
-        setError('Microsoft login cancelled');
+      } else {
+        // iOS: Direct PKCE flow with msauth:// scheme
+        const redirectUri = `msauth://com.cvapplyr.app/callback`;
+        const pkce = await generatePKCE();
+        const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
+          `client_id=${MICROSOFT_CLIENT_ID}` +
+          `&response_type=code` +
+          `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+          `&scope=${encodeURIComponent('user.read Mail.Read Mail.Send offline_access')}` +
+          `&response_mode=query` +
+          `&code_challenge=${pkce.challenge}` +
+          `&code_challenge_method=S256`;
+        
+        console.log('iOS: Opening Microsoft auth URL...');
+        console.log('iOS: Microsoft redirect URI:', redirectUri);
+        const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+        
+        console.log('iOS: Microsoft auth result type:', result.type);
+        
+        if (result.type === 'success') {
+          const url = result.url;
+          console.log('iOS: Microsoft result URL:', url?.substring(0, 80));
+          const codeMatch = url.match(/[?&]code=([^&]+)/);
+          
+          if (codeMatch && codeMatch[1]) {
+            const code = decodeURIComponent(codeMatch[1]);
+            console.log('iOS: Microsoft authorization code received');
+            await handleMicrosoftAuthResponse(code, pkce.verifier, redirectUri);
+          } else {
+            throw new Error('No authorization code received from Microsoft');
+          }
+        } else if (result.type === 'cancel') {
+          setError('Microsoft login cancelled');
+        }
       }
     } catch (err) {
       console.error('Microsoft login error:', err);

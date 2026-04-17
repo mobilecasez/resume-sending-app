@@ -62,13 +62,25 @@
         if (token && userStr) {
             try {
                 const user = JSON.parse(decodeURIComponent(userStr));
-                
-                // Store in localStorage
-                localStorage.setItem('authToken', token);
-                localStorage.setItem('userData', JSON.stringify(user));
-                
-                // Redirect to dashboard
-                window.location.href = '/dashboard';
+
+                // Check if we're in a mobile browser / Custom Tab — try deep link first
+                const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+                if (isMobile) {
+                    // Redirect to app via deep link
+                    const deepLink = 'cvapplyr://oauth-success?token=' + encodeURIComponent(token) + '&user=' + encodeURIComponent(JSON.stringify(user));
+                    window.location.href = deepLink;
+                    // Fallback: if deep link doesn't work after 2 seconds, go to web dashboard
+                    setTimeout(function() {
+                        localStorage.setItem('authToken', token);
+                        localStorage.setItem('userData', JSON.stringify(user));
+                        window.location.href = '/dashboard';
+                    }, 2000);
+                } else {
+                    // Web browser: store and redirect
+                    localStorage.setItem('authToken', token);
+                    localStorage.setItem('userData', JSON.stringify(user));
+                    window.location.href = '/dashboard';
+                }
             } catch (error) {
                 console.error('Error parsing auth data:', error);
                 window.location.href = '/login?error=auth-failed';
