@@ -333,9 +333,12 @@ const googleAuth = async (req, res) => {
             console.log('Platform:', platform || 'not specified');
             console.log('Using PKCE:', codeVerifier ? 'YES' : 'NO');
             
-            // Use the correct client ID based on platform — iOS auth codes require the iOS client ID
+            // Use the correct client ID based on platform and redirect URI
             let clientId;
-            if (platform === 'ios') {
+            // Android relay flow uses HTTPS redirect URI with the web client ID
+            if (clientRedirectUri && clientRedirectUri.startsWith('https://')) {
+                clientId = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+            } else if (platform === 'ios') {
                 clientId = process.env.GOOGLE_IOS_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
             } else if (platform === 'android') {
                 clientId = process.env.GOOGLE_ANDROID_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
@@ -372,18 +375,19 @@ const googleAuth = async (req, res) => {
             
             // PKCE: use code_verifier if provided (mobile), otherwise use client_secret (web)
             if (codeVerifier) {
-                // Mobile PKCE flow - no client secret needed
                 tokenParams.code_verifier = codeVerifier;
                 console.log('Using PKCE code_verifier for token exchange');
-            } else {
-                // Web flow - requires client secret
-                const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-                if (!clientSecret) {
+            }
+            // Web client type (HTTPS redirect) requires client_secret even with PKCE
+            if (!codeVerifier || (clientRedirectUri && clientRedirectUri.startsWith('https://'))) {
+                const clientSecret = process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
+                if (clientSecret) {
+                    tokenParams.client_secret = clientSecret;
+                    console.log('Using client_secret for token exchange');
+                } else if (!codeVerifier) {
                     console.error('Google Client Secret not configured for web flow');
                     return res.status(500).json({ error: 'Server configuration error' });
                 }
-                tokenParams.client_secret = clientSecret;
-                console.log('Using client_secret for token exchange');
             }
             
             // Exchange authorization code for access token
@@ -1443,6 +1447,36 @@ const revokeEmailProvider = async (req, res) => {
     }
 };
 
+// Android OAuth relay — receives authorization code from provider via HTTPS callback,
+// then redirects to deep link so the app can extract the code and exchange it via API.
+const googleAndroidRelay = (req, res) => {
+    const code = req.query.code;
+    const error = req.query.error;
+    if (error) {
+        console.log('Google Android relay error:', error);
+        return res.redirect(`cvapplyr://oauth-error?error=${encodeURIComponent(error)}&provider=google`);
+    }
+    if (!code) {
+        return res.redirect('cvapplyr://oauth-error?error=no_code&provider=google');
+    }
+    console.log('Google Android relay: forwarding code to app via deep link');
+    res.redirect(`cvapplyr://oauth-callback?code=${encodeURIComponent(code)}&provider=google`);
+};
+
+const microsoftAndroidRelay = (req, res) => {
+    const code = req.query.code;
+    const error = req.query.error;
+    if (error) {
+        console.log('Microsoft Android relay error:', error);
+        return res.redirect(`cvapplyr://oauth-error?error=${encodeURIComponent(error)}&provider=microsoft`);
+    }
+    if (!code) {
+        return res.redirect('cvapplyr://oauth-error?error=no_code&provider=microsoft');
+    }
+    console.log('Microsoft Android relay: forwarding code to app via deep link');
+    res.redirect(`cvapplyr://oauth-callback?code=${encodeURIComponent(code)}&provider=microsoft`);
+};
+
 module.exports = {
     register,
     login,
@@ -1450,8 +1484,10 @@ module.exports = {
     googleCallback,
     googleMobileCallback,
     googleAuth,
+    googleAndroidRelay,
     microsoftCallback,
     microsoftAuth,
+    microsoftAndroidRelay,
     appleAuth,
     linkedinCallback,
     changePassword,

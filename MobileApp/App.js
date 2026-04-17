@@ -4027,42 +4027,43 @@ function AppContent() {
   };
 
   // ==========================================
-  // ANDROID Google OAuth — Backend-mediated flow
-  // Uses WebBrowser.openAuthSessionAsync (Chrome Custom Tab, stays in-app)
-  // Backend handles Google OAuth and redirects back via deep link.
-  // Requires https://cvapplyr.com/auth/google/mobile-callback to be registered
-  // as an authorized redirect URI in Google Cloud Console for the web client ID.
+  // ANDROID Google OAuth — Direct PKCE flow via server relay
+  // Builds auth URL client-side with the known Web client ID (avoids server env var issues).
+  // Google redirects to HTTPS server callback, server relays code to app via deep link.
+  // App then exchanges code via POST /api/auth/google (existing endpoint).
   // ==========================================
   const handleGoogleLoginAndroid = async () => {
-    // Always use production URL for backend-mediated Google OAuth on Android.
-    // The production server handles the full OAuth flow and redirects back via deep link.
-    const mobileAuthUrl = `${PRODUCTION_API_URL.replace('/api', '')}/auth/google/mobile`;
-    // Return URL must match the deep link the production server redirects to after OAuth
-    const returnUrl = 'cvapplyr://oauth-success';
-    console.log('Android: Opening Google OAuth via backend Custom Tab...');
-    console.log('Android: Auth URL:', mobileAuthUrl);
-    console.log('Android: Return URL:', returnUrl);
     try {
-      const result = await WebBrowser.openAuthSessionAsync(mobileAuthUrl, returnUrl);
+      const pkce = await generatePKCE();
+      const redirectUri = 'https://cvapplyr.com/auth/google/mobile-callback';
+      const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+        `client_id=${encodeURIComponent(GOOGLE_CLIENT_ID_WEB)}` +
+        `&response_type=code` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&scope=${encodeURIComponent('profile email https://www.googleapis.com/auth/gmail.send')}` +
+        `&access_type=offline` +
+        `&prompt=consent` +
+        `&code_challenge=${pkce.challenge}` +
+        `&code_challenge_method=S256` +
+        `&state=android-relay`;
+      console.log('Android: Opening Google OAuth via relay...');
+      console.log('Android: Redirect URI:', redirectUri);
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, 'cvapplyr://');
       console.log('Android: Auth result type:', result.type);
       if (result.type === 'success' && result.url) {
-        console.log('Android: Success URL received, parsing...');
-        try {
-          const urlObj = new URL(result.url);
-          const token = urlObj.searchParams.get('token');
-          const userStr = urlObj.searchParams.get('user');
-          if (token && userStr) {
-            const userData = JSON.parse(decodeURIComponent(userStr));
-            console.log('Android Google auth complete:', userData.email);
-            setUser({ ...userData, token });
-            setScreen('dashboard');
-            Alert.alert('Success', `Welcome ${userData.fullName}!`);
-          } else {
-            Alert.alert('OAuth Error', 'Missing token or user data in response');
-          }
-        } catch (parseErr) {
-          console.error('Android OAuth parse error:', parseErr);
-          Alert.alert('OAuth Error', 'Failed to parse auth response');
+        console.log('Android: Deep link received:', result.url.substring(0, 80));
+        const urlObj = new URL(result.url);
+        const code = urlObj.searchParams.get('code');
+        const error = urlObj.searchParams.get('error');
+        if (error) {
+          Alert.alert('OAuth Error', error);
+          return;
+        }
+        if (code) {
+          console.log('Android: Got authorization code, exchanging via production API...');
+          handleGoogleAuthResponse(code, pkce.verifier, redirectUri, true);
+        } else {
+          Alert.alert('OAuth Error', 'No authorization code received');
         }
       } else if (result.type === 'cancel' || result.type === 'dismiss') {
         console.log('Android: Google login cancelled/dismissed');
@@ -4406,10 +4407,11 @@ function AppContent() {
     setLoading(true);
     try {
       // Microsoft OAuth URL for mobile — using auth code + PKCE for refresh tokens
-      // Android: use cvapplyr:// scheme (Chrome Custom Tabs can't intercept msauth://)
+      // Android: use HTTPS server relay (Chrome Custom Tabs can't intercept custom schemes reliably)
       // iOS: use msauth:// scheme (ASWebAuthenticationSession handles it)
-      const redirectUri = Platform.OS === 'android'
-        ? 'cvapplyr://auth/microsoft/callback'
+      const isAndroid = Platform.OS === 'android';
+      const redirectUri = isAndroid
+        ? 'https://cvapplyr.com/auth/microsoft/callback'
         : `msauth://com.cvapplyr.app/callback`;
       const pkce = await generatePKCE();
       const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?` +
@@ -4419,16 +4421,22 @@ function AppContent() {
         `&scope=${encodeURIComponent('user.read Mail.Read Mail.Send offline_access')}` +
         `&response_mode=query` +
         `&code_challenge=${pkce.challenge}` +
-        `&code_challenge_method=S256`;
+        `&code_challenge_method=S256` +
+        (isAndroid ? `&state=android-relay` : '');
       
       console.log('Opening Microsoft auth URL...');
-      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+      console.log('Microsoft redirect URI:', redirectUri);
+      // Android: listen for cvapplyr:// deep link (server relays code via deep link)
+      // iOS: listen for msauth:// redirect directly
+      const returnUrl = isAndroid ? 'cvapplyr://' : redirectUri;
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, returnUrl);
       
-      console.log('Microsoft auth result:', result);
+      console.log('Microsoft auth result type:', result.type);
       
       if (result.type === 'success') {
         // Extract authorization code from URL query params
         const url = result.url;
+        console.log('Microsoft result URL:', url?.substring(0, 80));
         const codeMatch = url.match(/[?&]code=([^&]+)/);
         
         if (codeMatch && codeMatch[1]) {
