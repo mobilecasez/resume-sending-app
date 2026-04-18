@@ -1954,10 +1954,14 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             
             if (photoPath) {
         try {
+            // Clip to circle for circular profile photo
+            doc.save();
+            doc.circle(photoX, photoY, photoSize/2).clip();
             doc.image(photoPath, photoX - photoSize/2, photoY - photoSize/2, {
                 width: photoSize,
                 height: photoSize
             });
+            doc.restore();
         } catch (e) {
             // Draw initials circle if photo fails
             doc.circle(photoX, photoY, photoSize/2).stroke('#ffffff');

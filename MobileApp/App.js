@@ -2749,10 +2749,12 @@ function AppContent() {
       });
       if (!pdfResponse.ok) throw new Error('Failed to download PDF file');
       const blob = await pdfResponse.blob();
+      const arrayBuffer = await blob.arrayBuffer();
+      const uint8Array = new Uint8Array(arrayBuffer);
       
       const pdfFile = new ExpoFile(Paths.cache, fileName);
       if (pdfFile.exists) pdfFile.delete();
-      await pdfFile.write(blob);
+      await pdfFile.write(uint8Array);
       
       console.log('📥 Downloaded file:', pdfFile.uri);
       
