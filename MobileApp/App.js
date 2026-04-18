@@ -6687,7 +6687,7 @@ function AppContent() {
                 {profileData?.profileImage ? (
                   <Image 
                     source={{ uri: profileData.profileImage }}
-                    style={styles.uploadPreview}
+                    style={styles.profilePhotoPreview}
                   />
                 ) : (
                   <View style={styles.uploadPlaceholder}>
@@ -11586,6 +11586,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0d9488',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
   profileAvatarText: {
     fontSize: 32,
@@ -11731,6 +11732,13 @@ const styles = StyleSheet.create({
     height: 150,
     borderRadius: 8,
     resizeMode: 'contain',
+  },
+  profilePhotoPreview: {
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    alignSelf: 'center',
+    resizeMode: 'cover',
   },
   uploadPlaceholder: {
     alignItems: 'center',
