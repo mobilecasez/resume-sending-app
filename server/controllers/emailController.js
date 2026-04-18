@@ -179,13 +179,10 @@ async function refreshGoogleToken(user) {
     try {
         console.log('\n🔄 Refreshing Google OAuth token for user', user.id);
         
-        const isPkce = user.used_pkce === true || user.used_pkce === 1;
-        const clientId = isPkce 
-            ? process.env.GOOGLE_CLIENT_ID
-            : process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
-        const clientSecret = isPkce 
-            ? undefined 
-            : process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
+        // For token refresh, always use web client ID + secret
+        // PKCE only applies to initial auth code exchange, not token refresh
+        const clientId = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+        const clientSecret = process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
         
         const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
         oauth2Client.setCredentials({
@@ -242,19 +239,12 @@ const JWT_SECRET = process.env.JWT_SECRET || 'default-secret-key';
 async function createOAuth2Client(user) {
     // Support both PKCE (mobile) and standard OAuth (web) flows
     // PKCE: No client secret, uses iOS OAuth client
-    // Web: Uses client secret, uses Web OAuth client
-    const isPkce = user.used_pkce === true || user.used_pkce === 1;
-    
-    const clientId = isPkce 
-        ? process.env.GOOGLE_CLIENT_ID  // iOS OAuth Client
-        : process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;  // Web OAuth Client
-    
-    const clientSecret = isPkce
-        ? undefined  // PKCE doesn't use client secret
-        : process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;  // Web needs client secret
+    // Always use web client ID + secret for API calls and token refresh
+    // PKCE only applies to initial auth code exchange, not subsequent API usage
+    const clientId = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
     
     console.log('🔧 Creating OAuth2 client');
-    console.log('   - Flow type:', isPkce ? 'PKCE (mobile)' : 'Standard OAuth (web)');
     console.log('   - Client ID:', clientId);
     console.log('   - Has client secret:', !!clientSecret);
     console.log('   - User ID:', user.id);
