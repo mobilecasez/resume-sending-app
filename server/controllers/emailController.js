@@ -175,51 +175,85 @@ async function getValidMicrosoftAccessToken(user) {
 }
 
 // Refresh Google OAuth token using refresh_token
+// Tries multiple client IDs since the refresh token is bound to the client that issued it
 async function refreshGoogleToken(user) {
-    try {
-        console.log('\n🔄 Refreshing Google OAuth token for user', user.id);
-        
-        // For token refresh, always use web client ID + secret
-        // PKCE only applies to initial auth code exchange, not token refresh
-        const clientId = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
-        const clientSecret = process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
-        
-        const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
-        oauth2Client.setCredentials({
-            refresh_token: decryptOAuthToken(user.google_refresh_token)
+    console.log('\n🔄 Refreshing Google OAuth token for user', user.id);
+    
+    const refreshToken = decryptOAuthToken(user.google_refresh_token);
+    
+    // Build list of client configs to try — the refresh token is bound to whichever
+    // client ID was used during the original auth (web, iOS, or Android)
+    const clientConfigs = [];
+    
+    // iOS client (native — no secret needed)
+    if (process.env.GOOGLE_IOS_CLIENT_ID) {
+        clientConfigs.push({
+            clientId: process.env.GOOGLE_IOS_CLIENT_ID,
+            clientSecret: undefined,
+            label: 'iOS'
         });
-        
-        // Request new access token
-        const { credentials } = await oauth2Client.refreshAccessToken();
-        const newAccessToken = credentials.access_token;
-        
-        // Calculate new expiration (1 hour from now)
-        const issuedAt = new Date();
-        const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000);
-        
-        // Update database with encrypted new token
-        await dbConfig.run(
-            `UPDATE users SET 
-                google_access_token = ?,
-                google_token_issued_at = ?,
-                google_token_expires_at = ?
-            WHERE id = ?`,
-            [encryptOAuthToken(newAccessToken), issuedAt.toISOString(), expiresAt.toISOString(), user.id]
-        );
-        
-        console.log('✅ Token refreshed successfully, expires at:', expiresAt.toISOString());
-        
-        // Return updated user object
-        return {
-            ...user,
-            google_access_token: encryptOAuthToken(newAccessToken),
-            google_token_issued_at: issuedAt.toISOString(),
-            google_token_expires_at: expiresAt.toISOString()
-        };
-    } catch (error) {
-        console.error('❌ Failed to refresh Google token:', error);
-        throw new Error('Token refresh failed: ' + error.message);
     }
+    
+    // Web client (needs secret)
+    const webClientId = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+    const webClientSecret = process.env.GOOGLE_WEB_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
+    if (webClientId && webClientSecret) {
+        clientConfigs.push({
+            clientId: webClientId,
+            clientSecret: webClientSecret,
+            label: 'Web'
+        });
+    }
+    
+    // Android client (native — no secret needed)
+    if (process.env.GOOGLE_ANDROID_CLIENT_ID) {
+        clientConfigs.push({
+            clientId: process.env.GOOGLE_ANDROID_CLIENT_ID,
+            clientSecret: undefined,
+            label: 'Android'
+        });
+    }
+    
+    let lastError;
+    for (const config of clientConfigs) {
+        try {
+            console.log(`   Trying ${config.label} client (${config.clientId?.substring(0, 20)}...) secret: ${!!config.clientSecret}`);
+            
+            const oauth2Client = new google.auth.OAuth2(config.clientId, config.clientSecret);
+            oauth2Client.setCredentials({ refresh_token: refreshToken });
+            
+            const { credentials } = await oauth2Client.refreshAccessToken();
+            const newAccessToken = credentials.access_token;
+            
+            // Success — update database
+            const issuedAt = new Date();
+            const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000);
+            
+            await dbConfig.run(
+                `UPDATE users SET 
+                    google_access_token = ?,
+                    google_token_issued_at = ?,
+                    google_token_expires_at = ?
+                WHERE id = ?`,
+                [encryptOAuthToken(newAccessToken), issuedAt.toISOString(), expiresAt.toISOString(), user.id]
+            );
+            
+            console.log(`✅ Token refreshed via ${config.label} client, expires at:`, expiresAt.toISOString());
+            
+            return {
+                ...user,
+                google_access_token: encryptOAuthToken(newAccessToken),
+                google_token_issued_at: issuedAt.toISOString(),
+                google_token_expires_at: expiresAt.toISOString()
+            };
+        } catch (err) {
+            console.log(`   ❌ ${config.label} refresh failed: ${err.message}`);
+            lastError = err;
+        }
+    }
+    
+    console.error('❌ All client IDs failed to refresh token');
+    throw new Error('Token refresh failed with all clients: ' + (lastError?.message || 'unknown'));
 }
 
 // Get valid Google access token (auto-refreshes if expired)
