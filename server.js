@@ -494,9 +494,11 @@ const authLimiter = rateLimit({
     legacyHeaders: false,
     skipSuccessfulRequests: false, // Count all attempts
     skip: (req) => {
-        // Don't rate-limit OAuth callback URLs — they are provider redirects, not user attempts
+        // Don't rate-limit OAuth GET requests — they are provider redirects, not user attempts
+        // Only POST requests (login, register, token exchange) should be rate-limited
         return req.method === 'GET' && (
-            req.path.includes('/callback') || req.path.includes('/mobile-callback')
+            req.path.includes('/callback') || req.path.includes('/mobile-callback') ||
+            req.path.includes('/google') || req.path.includes('/microsoft')
         );
     },
     handler: async (req, res) => {

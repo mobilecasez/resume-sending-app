@@ -630,14 +630,27 @@ const microsoftCallback = (req, res) => {
         oauth_provider: 'microsoft'
     };
 
-    // For web and mobile: redirect to auth-success page which handles deep link for mobile
-    res.cookie('authToken', token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        maxAge: 24 * 60 * 60 * 1000, // 24 hours
-        sameSite: 'strict'
-    });
-    res.redirect(`/auth-success.html?token=${token}&user=${encodeURIComponent(JSON.stringify(userData))}`);
+    // Check if request is from mobile (Android Chrome Custom Tab or iOS Safari)
+    const userAgent = req.headers['user-agent'] || '';
+    const isMobile = /Android|iPhone|iPad/i.test(userAgent);
+
+    if (isMobile) {
+        // Mobile: server-side 302 redirect to deep link
+        // Chrome Custom Tabs can intercept 302 redirects to custom schemes,
+        // but NOT client-side JavaScript redirects (window.location.href)
+        const deepLink = `cvapplyr://oauth-success?token=${encodeURIComponent(token)}&user=${encodeURIComponent(JSON.stringify(userData))}`;
+        console.log('Microsoft Mobile OAuth: redirecting to deep link:', deepLink.substring(0, 100) + '...');
+        res.redirect(deepLink);
+    } else {
+        // Web: redirect to auth-success page
+        res.cookie('authToken', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            maxAge: 24 * 60 * 60 * 1000, // 24 hours
+            sameSite: 'strict'
+        });
+        res.redirect(`/auth-success.html?token=${token}&user=${encodeURIComponent(JSON.stringify(userData))}`);
+    }
 };
 
 // Microsoft OAuth API endpoint for mobile (returns JSON)
