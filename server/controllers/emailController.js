@@ -1173,9 +1173,9 @@ const sendApplications = async (req, res) => {
                 console.log('   - google_refresh_token:', user.google_refresh_token ? 'EXISTS' : 'NULL');
                 console.log('   - microsoft_access_token:', user.microsoft_access_token ? 'EXISTS' : 'NULL');
 
-                // Priority 1: Try Microsoft Graph API if user logged in with Microsoft OAuth
+                // Priority 1: Try Microsoft Graph API if Microsoft tokens are available
                 let emailSentViaOAuth = false;
-                if (user.oauth_provider === 'microsoft' && user.microsoft_access_token) {
+                if (user.microsoft_access_token) {
                     try {
                         console.log('📧 Sending via Microsoft Graph API (OAuth)...');
                         
@@ -1198,8 +1198,8 @@ const sendApplications = async (req, res) => {
                     }
                 }
 
-                // Priority 2: Try Gmail API if user logged in with Google OAuth
-                if (!emailSentViaOAuth && user.oauth_provider === 'google' && user.google_access_token) {
+                // Priority 2: Try Gmail API if Google tokens are available
+                if (!emailSentViaOAuth && user.google_access_token) {
                     try {
                         console.log('📧 Sending via Gmail API (OAuth)...');
                         
@@ -1486,8 +1486,8 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
         const emailBody = await generateEmailBody(position, companyName, user.full_name);
         const subject = `Application for ${position} - ${user.full_name}`;
 
-        // Priority 1: Try Microsoft Graph API if user logged in with Microsoft OAuth
-        if (user.oauth_provider === 'microsoft' && user.microsoft_access_token) {
+        // Priority 1: Try Microsoft Graph API if Microsoft tokens are available
+        if (user.microsoft_access_token) {
             try {
                 console.log('📧 Sending via Microsoft Graph API (OAuth)...');
                 
@@ -1547,8 +1547,8 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
             }
         }
 
-        // Priority 2: Try Gmail API if user logged in with OAuth
-        if (user.oauth_provider === 'google' && user.google_access_token) {
+        // Priority 2: Try Gmail API if Google tokens are available
+        if (user.google_access_token) {
             try {
                 console.log('📧 Sending via Gmail API (OAuth)...');
                 
