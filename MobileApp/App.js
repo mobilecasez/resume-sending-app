@@ -1303,8 +1303,9 @@ function AppContent() {
   }, [screen, user?.token]);
 
   // Handle password change
+  const isOAuthUser = user?.oauth_provider === 'google' || user?.oauth_provider === 'microsoft' || user?.oauth_provider === 'apple';
   const handleChangePassword = async () => {
-    if (!currentPassword || !newPassword || !confirmPassword) {
+    if ((!isOAuthUser && !currentPassword) || !newPassword || !confirmPassword) {
       Alert.alert('Error', 'Please fill in all password fields');
       return;
     }
@@ -1327,7 +1328,7 @@ function AppContent() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          currentPassword,
+          ...(isOAuthUser ? {} : { currentPassword }),
           newPassword,
         })
       });
@@ -6962,7 +6963,7 @@ function AppContent() {
               style={styles.actionButton}
               onPress={() => setShowChangePassword(true)}
             >
-              <Text style={styles.actionButtonText}>Change Password</Text>
+              <Text style={styles.actionButtonText}>{isOAuthUser ? 'Set Password' : 'Change Password'}</Text>
               <Text style={styles.actionButtonIcon}>→</Text>
             </TouchableOpacity>
             <TouchableOpacity 
@@ -7012,7 +7013,7 @@ function AppContent() {
                 >
                   <View style={styles.accountModalContent}>
                     <View style={styles.accountModalHeader}>
-                      <Text style={styles.accountModalTitle}>🔒 Change Password</Text>
+                      <Text style={styles.accountModalTitle}>{isOAuthUser ? '🔒 Set Password' : '🔒 Change Password'}</Text>
                       <TouchableOpacity onPress={() => setShowChangePassword(false)}>
                         <Text style={styles.accountModalCloseBtn}>✕</Text>
                       </TouchableOpacity>
@@ -7022,14 +7023,16 @@ function AppContent() {
                       showsVerticalScrollIndicator={false}
                       contentContainerStyle={styles.accountModalScrollContent}
                     >
-                      <TextInput
-                        style={styles.accountModalInput}
-                        placeholder="Current Password"
-                        placeholderTextColor="#9ca3af"
-                        secureTextEntry
-                        value={currentPassword}
-                        onChangeText={setCurrentPassword}
-                      />
+                      {!isOAuthUser && (
+                        <TextInput
+                          style={styles.accountModalInput}
+                          placeholder="Current Password"
+                          placeholderTextColor="#9ca3af"
+                          secureTextEntry
+                          value={currentPassword}
+                          onChangeText={setCurrentPassword}
+                        />
+                      )}
                       <TextInput
                         style={styles.accountModalInput}
                         placeholder="New Password"
@@ -7052,7 +7055,7 @@ function AppContent() {
                       style={styles.accountModalButton}
                       onPress={handleChangePassword}
                     >
-                      <Text style={styles.accountModalButtonText}>Change Password</Text>
+                      <Text style={styles.accountModalButtonText}>{isOAuthUser ? 'Set Password' : 'Change Password'}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity 
                       style={styles.accountModalButtonSecondary}

@@ -1449,28 +1449,32 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
         const userId = req.user.id;
         const { currentPassword, newPassword } = req.body;
 
-        // Validation
-        if (!currentPassword || !newPassword) {
-            return res.status(400).json({ error: 'Both current and new password are required' });
+        if (!newPassword) {
+            return res.status(400).json({ error: 'New password is required' });
         }
 
         if (newPassword.length < 6) {
             return res.status(400).json({ error: 'New password must be at least 6 characters long' });
         }
 
-        // Get current user password from database
-        const user = await dbConfig.get('SELECT password FROM users WHERE id = ?', [userId]);
+        // Get current user from database
+        const user = await dbConfig.get('SELECT password, oauth_provider FROM users WHERE id = ?', [userId]);
         
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        // Verify current password
-        const isValidPassword = await bcrypt.compare(currentPassword, user.password);
-        
-        if (!isValidPassword) {
-            return res.status(401).json({ error: 'Current password is incorrect' });
+        // If user has an existing password, verify current password
+        if (user.password) {
+            if (!currentPassword) {
+                return res.status(400).json({ error: 'Current password is required' });
+            }
+            const isValidPassword = await bcrypt.compare(currentPassword, user.password);
+            if (!isValidPassword) {
+                return res.status(401).json({ error: 'Current password is incorrect' });
+            }
         }
+        // OAuth users without a password can set one without providing currentPassword
 
         // Hash new password
         const salt = await bcrypt.genSalt(10);
