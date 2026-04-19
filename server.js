@@ -1465,8 +1465,9 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        // If user has an existing password, verify current password
-        if (user.password) {
+        // OAuth users can set a password without providing current password
+        // (their password field contains a JWT placeholder, not a real password)
+        if (!user.oauth_provider) {
             if (!currentPassword) {
                 return res.status(400).json({ error: 'Current password is required' });
             }
@@ -1475,7 +1476,6 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
                 return res.status(401).json({ error: 'Current password is incorrect' });
             }
         }
-        // OAuth users without a password can set one without providing currentPassword
 
         // Hash new password
         const salt = await bcrypt.genSalt(10);
