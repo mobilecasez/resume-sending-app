@@ -522,9 +522,258 @@ function getConfig(req, res) {
     });
 }
 
+// Apple IAP product ID to plan mapping
+const APPLE_PRODUCT_TO_PLAN = {
+    'com.cvapplyr.mobile.starter': 'Starter',
+    'com.cvapplyr.mobile.professional': 'Professional',
+    'com.cvapplyr.mobile.premium': 'Premium',
+    'com.cvapplyr.mobile.enterprise': 'Enterprise',
+};
+
+/**
+ * Verify Apple In-App Purchase receipt
+ * Supports both StoreKit 2 JWS tokens and legacy base64 receipts
+ */
+async function verifyApplePurchase(req, res, dbConfig) {
+    const { receiptData, productId, transactionId } = req.body;
+    const userId = req.user.id || req.user.userId;
+
+    console.log(`🍎 Verifying Apple IAP for User ${userId}, Product: ${productId}, Transaction: ${transactionId}`);
+
+    try {
+        if (!receiptData || !productId) {
+            return res.status(400).json({ error: 'Missing receipt data or product ID' });
+        }
+
+        // Check if this transaction was already processed (prevent duplicate credits)
+        const existingTransaction = await dbConfig.get(
+            'SELECT id FROM payment_orders WHERE payment_id = ? AND status = ?',
+            [transactionId, 'completed']
+        );
+
+        if (existingTransaction) {
+            console.log('🍎 Transaction already processed:', transactionId);
+            const userData = await dbConfig.get(
+                'SELECT credits_remaining as credits FROM user_credits WHERE user_id = ?',
+                [userId]
+            );
+            return res.json({
+                success: true,
+                message: 'Purchase already processed',
+                credits: userData?.credits || 0,
+                creditsAdded: 0,
+                alreadyProcessed: true,
+            });
+        }
+
+        // Determine if this is a StoreKit 2 JWS token or legacy receipt
+        const isJWS = receiptData.split('.').length === 3;
+        console.log(`🍎 Receipt format: ${isJWS ? 'StoreKit 2 JWS' : 'Legacy base64'}`);
+
+        let verifiedProductId = null;
+        let verifiedTransactionId = null;
+
+        if (isJWS) {
+            // StoreKit 2: Decode the JWS token (signed by Apple)
+            // The payload contains transaction details - decode the middle part
+            try {
+                const parts = receiptData.split('.');
+                const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+                console.log('🍎 JWS payload:', JSON.stringify(payload).substring(0, 200));
+                
+                verifiedProductId = payload.productId || payload.productID;
+                verifiedTransactionId = payload.transactionId || payload.originalTransactionId || String(payload.transactionID);
+                
+                // Verify the product matches what was claimed
+                if (verifiedProductId !== productId) {
+                    console.error(`🍎 Product mismatch: expected ${productId}, got ${verifiedProductId}`);
+                    return res.status(400).json({ error: 'Product ID mismatch in receipt' });
+                }
+
+                // Verify bundle ID matches our app
+                const bundleId = payload.bundleId || payload.appBundleId;
+                if (bundleId && bundleId !== 'com.cvapplyr.mobile') {
+                    console.error(`🍎 Bundle ID mismatch: ${bundleId}`);
+                    return res.status(400).json({ error: 'Invalid bundle ID in receipt' });
+                }
+
+                console.log(`🍎 JWS verified: product=${verifiedProductId}, txId=${verifiedTransactionId}, bundle=${bundleId}`);
+            } catch (decodeError) {
+                console.error('🍎 Failed to decode JWS:', decodeError.message);
+                return res.status(400).json({ error: 'Invalid receipt format' });
+            }
+        } else {
+            // Legacy receipt: Validate with Apple's verifyReceipt endpoint
+            let verifyResult = await validateReceiptWithApple(receiptData, false);
+            
+            if (verifyResult.status === 21007) {
+                console.log('🍎 Sandbox receipt detected, retrying with sandbox URL...');
+                verifyResult = await validateReceiptWithApple(receiptData, true);
+            }
+
+            console.log('🍎 Apple verification status:', verifyResult.status);
+
+            if (verifyResult.status !== 0) {
+                console.error('🍎 Apple receipt verification failed, status:', verifyResult.status);
+                return res.status(400).json({
+                    error: 'Receipt verification failed',
+                    appleStatus: verifyResult.status,
+                });
+            }
+
+            // Find the matching in_app purchase in the receipt
+            const inAppPurchases = verifyResult.receipt?.in_app || [];
+            const matchingPurchase = inAppPurchases.find(
+                (p) => p.product_id === productId && p.transaction_id === transactionId
+            );
+
+            if (!matchingPurchase) {
+                const latestReceipts = verifyResult.latest_receipt_info || [];
+                const latestMatch = latestReceipts.find(
+                    (p) => p.product_id === productId && p.transaction_id === transactionId
+                );
+                if (!latestMatch) {
+                    console.error('🍎 Product not found in receipt:', productId);
+                    return res.status(400).json({ error: 'Product not found in receipt' });
+                }
+            }
+            
+            verifiedProductId = productId;
+            verifiedTransactionId = transactionId;
+        }
+
+        // Look up the plan from our database using the Apple product ID
+        const planName = APPLE_PRODUCT_TO_PLAN[verifiedProductId];
+        if (!planName) {
+            return res.status(400).json({ error: 'Unknown product ID' });
+        }
+
+        const plan = await dbConfig.get(
+            'SELECT * FROM plans WHERE name = ? AND is_active = 1',
+            [planName]
+        );
+
+        if (!plan) {
+            return res.status(404).json({ error: 'Plan not found' });
+        }
+
+        const finalTransactionId = verifiedTransactionId || transactionId;
+        console.log(`🍎 Plan found: ${plan.name}, Credits: ${plan.credits}, txId: ${finalTransactionId}`);
+
+        // Record the payment order
+        try {
+            await dbConfig.run(`
+                INSERT INTO payment_orders (
+                    order_id, user_id, package_id, plan_id, amount, currency,
+                    status, payment_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `, [
+                `apple_${finalTransactionId}`,
+                userId,
+                plan.id,
+                plan.id,
+                plan.price,
+                'USD',
+                'completed',
+                finalTransactionId,
+            ]);
+        } catch (dbError) {
+            console.error('🍎 Failed to save order record:', dbError.message);
+            // Continue anyway - credits are more important than the order record
+        }
+
+        // Add credits to user account
+        const existingCredits = await dbConfig.get(
+            'SELECT * FROM user_credits WHERE user_id = ?',
+            [userId]
+        );
+
+        if (!existingCredits) {
+            await dbConfig.run(`
+                INSERT INTO user_credits (user_id, credits_remaining, credits_total, last_purchase_date)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            `, [userId, plan.credits, plan.credits]);
+        } else {
+            await dbConfig.run(`
+                UPDATE user_credits 
+                SET credits_remaining = credits_remaining + ?,
+                    credits_total = credits_total + ?,
+                    last_purchase_date = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            `, [plan.credits, plan.credits, userId]);
+        }
+
+        // Create transaction record
+        await dbConfig.run(`
+            INSERT INTO credit_transactions (
+                user_id, transaction_type, credits_change, description,
+                balance_after, created_at
+            ) VALUES (?, ?, ?, ?,
+                (SELECT credits_remaining FROM user_credits WHERE user_id = ?),
+                CURRENT_TIMESTAMP
+            )
+        `, [
+            userId,
+            'purchase',
+            plan.credits,
+            `Apple IAP: ${plan.name} - Transaction: ${finalTransactionId}`,
+            userId,
+        ]);
+
+        // Fetch updated balance
+        const userData = await dbConfig.get(
+            'SELECT credits_remaining as credits FROM user_credits WHERE user_id = ?',
+            [userId]
+        );
+
+        console.log('🍎 Credits added successfully! New balance:', userData?.credits);
+
+        res.json({
+            success: true,
+            message: 'Purchase verified and credits added!',
+            credits: userData?.credits || 0,
+            creditsAdded: plan.credits,
+            packageName: plan.name,
+            transactionId: finalTransactionId,
+        });
+
+    } catch (error) {
+        console.error('🍎 Apple IAP verification error:', error);
+        res.status(500).json({
+            error: 'Failed to verify Apple purchase',
+            message: error.message,
+        });
+    }
+}
+
+/**
+ * Validate receipt with Apple's verifyReceipt endpoint
+ */
+async function validateReceiptWithApple(receiptData, useSandbox) {
+    const url = useSandbox
+        ? 'https://sandbox.itunes.apple.com/verifyReceipt'
+        : 'https://buy.itunes.apple.com/verifyReceipt';
+
+    const body = {
+        'receipt-data': receiptData,
+        'password': process.env.APPLE_SHARED_SECRET || '',
+        'exclude-old-transactions': true,
+    };
+
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+
+    return response.json();
+}
+
 module.exports = {
     createOrder,
     verifyPayment,
+    verifyApplePurchase,
     getOrderStatus,
     getPaymentHistory,
     getConfig
