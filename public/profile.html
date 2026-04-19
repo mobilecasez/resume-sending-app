@@ -1009,7 +1009,7 @@
                 <p style="color: var(--text-secondary); margin-bottom: 20px;">
                     Manage your password and keep your account secure.
                 </p>
-                <button class="btn-secondary" onclick="showChangePasswordModal()" style="width: 100%;">
+                <button class="btn-secondary" id="changePasswordButton" onclick="showChangePasswordModal()" style="width: 100%;">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px;">
                         <path d="M12 7V5a4 4 0 10-8 0v2M3 7h10a1 1 0 011 1v6a1 1 0 01-1 1H3a1 1 0 01-1-1V8a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
@@ -1132,15 +1132,15 @@
     <div id="changePasswordModal" class="modal-overlay" style="display: none;">
         <div class="modal-content" style="max-width: 500px;">
             <div class="modal-header" style="background: var(--primary-color); color: white;">
-                <h3 style="margin: 0; font-size: 1.25rem;">🔐 Change Password</h3>
+                <h3 id="changePasswordTitle" style="margin: 0; font-size: 1.25rem;">🔐 Change Password</h3>
                 <button onclick="closeChangePasswordModal()" style="background: none; border: none; color: white; font-size: 1.5rem; cursor: pointer; padding: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;">&times;</button>
             </div>
             <div class="modal-body">
-                <p style="color: var(--text-secondary); margin-bottom: 24px;">
+                <p id="changePasswordDesc" style="color: var(--text-secondary); margin-bottom: 24px;">
                     Enter your current password and choose a new secure password.
                 </p>
                 
-                <div style="margin-bottom: 20px;">
+                <div id="currentPasswordGroup" style="margin-bottom: 20px;">
                     <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-primary);">
                         Current Password
                     </label>
@@ -1191,7 +1191,7 @@
                         class="btn-primary" 
                         onclick="handleChangePassword()"
                         style="flex: 1;">
-                        Change Password
+                        <span id="changePasswordBtnText">Change Password</span>
                     </button>
                 </div>
             </div>
@@ -1303,6 +1303,11 @@
         window.addEventListener('DOMContentLoaded', async () => {
             await loadUserProfile();
             loadApplicationStatistics();
+            // Update button text for OAuth users
+            if (isOAuthUser()) {
+                const btn = document.getElementById('changePasswordButton');
+                if (btn) btn.innerHTML = btn.innerHTML.replace('Change Password', 'Set Password');
+            }
         });
 
         // Load application statistics from localStorage
@@ -1755,12 +1760,24 @@
         }
 
         // Change Password Modal Functions
+        function isOAuthUser() {
+            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+            return userData.oauth_provider === 'google' || userData.oauth_provider === 'microsoft' || userData.oauth_provider === 'apple';
+        }
+
         function showChangePasswordModal() {
             const modal = document.getElementById('changePasswordModal');
+            const oAuth = isOAuthUser();
             // Reset form
             document.getElementById('currentPassword').value = '';
             document.getElementById('newPassword').value = '';
             document.getElementById('confirmPassword').value = '';
+            // Toggle current password field visibility
+            document.getElementById('currentPasswordGroup').style.display = oAuth ? 'none' : 'block';
+            // Update title and description
+            document.getElementById('changePasswordTitle').textContent = oAuth ? '🔐 Set Password' : '🔐 Change Password';
+            document.getElementById('changePasswordDesc').textContent = oAuth ? 'Set a password for your account so you can also sign in with email and password.' : 'Enter your current password and choose a new secure password.';
+            document.getElementById('changePasswordBtnText').textContent = oAuth ? 'Set Password' : 'Change Password';
             // Show modal
             modal.style.display = 'flex';
             setTimeout(() => modal.querySelector('.modal-content').style.opacity = '1', 10);
@@ -1772,14 +1789,19 @@
         }
 
         async function handleChangePassword() {
+            const oAuth = isOAuthUser();
             const currentPassword = document.getElementById('currentPassword').value.trim();
             const newPassword = document.getElementById('newPassword').value.trim();
             const confirmPassword = document.getElementById('confirmPassword').value.trim();
             const btn = document.getElementById('changePasswordBtn');
 
             // Validation
-            if (!currentPassword || !newPassword || !confirmPassword) {
-                showToast('All fields are required', 'error');
+            if (!oAuth && !currentPassword) {
+                showToast('Current password is required', 'error');
+                return;
+            }
+            if (!newPassword || !confirmPassword) {
+                showToast('Please fill in all required fields', 'error');
                 return;
             }
 
@@ -1795,26 +1817,27 @@
 
             // Disable button and show loading
             btn.disabled = true;
-            btn.innerHTML = '<span class="spinner"></span> Changing...';
+            const actionText = oAuth ? 'Setting' : 'Changing';
+            btn.innerHTML = `<span class="spinner"></span> ${actionText}...`;
 
             try {
                 const authToken = localStorage.getItem('authToken');
+                const body = { newPassword };
+                if (!oAuth) body.currentPassword = currentPassword;
+
                 const response = await fetch('/api/auth/change-password', {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${authToken}`,
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({
-                        currentPassword,
-                        newPassword
-                    })
+                    body: JSON.stringify(body)
                 });
 
                 const result = await response.json();
 
                 if (response.ok) {
-                    showToast('Password changed successfully!', 'success');
+                    showToast(oAuth ? 'Password set successfully!' : 'Password changed successfully!', 'success');
                     closeChangePasswordModal();
                     
                     // Clear form
@@ -1830,7 +1853,7 @@
             } finally {
                 // Re-enable button
                 btn.disabled = false;
-                btn.innerHTML = 'Change Password';
+                btn.innerHTML = `<span id="changePasswordBtnText">${isOAuthUser() ? 'Set Password' : 'Change Password'}</span>`;
             }
         }
 

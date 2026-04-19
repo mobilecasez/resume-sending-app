@@ -1338,7 +1338,7 @@ app.get('/api/user-profile', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
 
-        const user = await dbConfig.get('SELECT full_name as "fullName", email, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath", smtp_email as "smtpEmail", smtp_password as "smtpPassword", sender_name as "senderName", date_of_birth as "dateOfBirth", phone_number as "phoneNumber", address, created_at as "createdAt" FROM users WHERE id = ?', [userId]);
+        const user = await dbConfig.get('SELECT full_name as "fullName", email, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath", smtp_email as "smtpEmail", smtp_password as "smtpPassword", sender_name as "senderName", date_of_birth as "dateOfBirth", phone_number as "phoneNumber", address, created_at as "createdAt", oauth_provider as "oauthProvider" FROM users WHERE id = ?', [userId]);
 
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
@@ -1370,6 +1370,7 @@ app.get('/api/user-profile', authenticateToken, async (req, res) => {
         phoneNumber: user.phoneNumber,
         address: user.address,
         createdAt: user.createdAt,
+        oauthProvider: user.oauthProvider || null,
             }
         });
     } catch (error) {
