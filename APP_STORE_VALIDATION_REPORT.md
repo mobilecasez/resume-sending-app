@@ -745,7 +745,7 @@ If you have any questions during review, please contact support@cvapplyr.com
 #### 6. Version Information - READY ✅
 
 **Version**: 1.0.0 ✅
-**Copyright**: 2026 zSellr Enterprises LLP ✅
+**Copyright**: 2026 zSellr (OPC) Private Limited ✅
 **Release Type**: Manual Release ✅
 
 ---
@@ -924,7 +924,7 @@ Download CVApplyr and transform your job search experience. Generate your first 
 
 ---
 
-About zSellr Enterprises LLP:
+About zSellr (OPC) Private Limited:
 We build productivity tools that help professionals achieve their career goals. CVApplyr is designed by job seekers, for job seekers.
 
 Privacy Policy: https://cvapplyr.com/privacy-policy.html
@@ -999,7 +999,7 @@ Before clicking "Submit for Review":
 
 **Version Information**:
 - [x] Version number: 1.0.0
-- [x] Copyright: 2026 zSellr Enterprises LLP
+- [x] Copyright: 2026 zSellr (OPC) Private Limited
 - [x] Build number uploaded
 - [ ] Screenshots uploaded - **NEEDS CREATION**
 - [ ] Demo account created - **NEEDS CREATION**

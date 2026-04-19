@@ -49,13 +49,13 @@
                     <h6 class="text-white mb-3">Contact</h6>
                     <ul class="list-unstyled text-muted">
                         <li>Email: support@cvapplyr.com</li>
-                        <li>© 2026 zSellr Enterprises LLP</li>
+                        <li>© 2026 zSellr (OPC) Private Limited</li>
                     </ul>
                 </div>
             </div>
             <div class="row mt-4">
                 <div class="col-12 text-center">
-                    <p class="text-muted mb-0" style="font-size: 14px;">&copy; 2026 CVApplyr by zSellr Enterprises LLP. All Rights Reserved.</p>
+                    <p class="text-muted mb-0" style="font-size: 14px;">&copy; 2026 CVApplyr by zSellr (OPC) Private Limited. All Rights Reserved.</p>
                 </div>
             </div>
         </div>

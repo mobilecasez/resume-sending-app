@@ -13,6 +13,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView as SafeAreaViewContext, SafeAreaProvider } from 'react-native-safe-area-context';
 import { File as ExpoFile, Paths } from 'expo-file-system';
+import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
 import * as AppleAuthentication from 'expo-apple-authentication';
@@ -2735,7 +2736,7 @@ function AppContent() {
         throw new Error('No download URL received');
       }
       
-      // Save to file system using fetch + ExpoFile write
+      // Save to file system using legacy downloadAsync (reliable across all versions)
       const sanitizedName = (profileData?.fullName || 'Applicant').replace(/[^a-zA-Z0-9\s]/g, '').trim().replace(/\s+/g, '_');
       const fileName = `${sanitizedName}_Cover_Letter.pdf`;
       
@@ -2744,23 +2745,20 @@ function AppContent() {
       const fullUrl = `${API_BASE}${cleanUrl}`;
       console.log('📥 Downloading PDF from:', fullUrl);
       
-      const pdfResponse = await fetch(fullUrl, {
-        headers: { 'Authorization': `Bearer ${user.token}` }
+      const fileUri = cacheDirectory + fileName;
+      const downloadResult = await downloadAsync(fullUrl, fileUri, {
+        headers: { 'Authorization': `Bearer ${user.token}` },
       });
-      if (!pdfResponse.ok) throw new Error('Failed to download PDF file');
-      const blob = await pdfResponse.blob();
-      const arrayBuffer = await blob.arrayBuffer();
-      const uint8Array = new Uint8Array(arrayBuffer);
       
-      const pdfFile = new ExpoFile(Paths.cache, fileName);
-      if (pdfFile.exists) pdfFile.delete();
-      await pdfFile.write(uint8Array);
+      console.log('📥 Downloaded file:', downloadResult.uri, 'status:', downloadResult.status);
       
-      console.log('📥 Downloaded file:', pdfFile.uri);
+      if (downloadResult.status !== 200) {
+        throw new Error(`Download failed with status ${downloadResult.status}`);
+      }
       
       // Share the file
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(pdfFile.uri);
+        await Sharing.shareAsync(downloadResult.uri);
         Alert.alert('Success', 'PDF downloaded successfully!');
       } else {
         Alert.alert('Error', 'Sharing is not available on this device');

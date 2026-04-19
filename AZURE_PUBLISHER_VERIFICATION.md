@@ -84,7 +84,7 @@ Your app must already be registered in Azure AD (✅ Already done - CVApplyr app
 
 2. **Choose Account Type:**
    - Select: **"I am enrolling on behalf of my company"**
-   - Company Name: `zSellr Enterprises LLP`
+   - Company Name: `zSellr (OPC) Private Limited`
    - Country: India
    - Business Email: Your business email
 

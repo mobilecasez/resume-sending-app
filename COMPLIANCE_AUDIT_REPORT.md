@@ -444,7 +444,7 @@ if (age < 18) {
 8. **Complete Business Address**
 ```
 Update privacy policy with:
-zSellr Enterprises LLP
+zSellr (OPC) Private Limited
 [Full Street Address]
 Gurgaon, Haryana [Postal Code]
 India

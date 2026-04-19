@@ -117,7 +117,7 @@ Terms of Service: https://cvapplyr.com/terms
 Refund Policy: https://cvapplyr.com/refund
 
 Contact: support@cvapplyr.com
-Company: zSellr Enterprises LLP
+Company: zSellr (OPC) Private Limited
 ```
 
 **Visibility:**

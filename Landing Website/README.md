@@ -64,7 +64,7 @@ Edit the pricing section (line ~300) to match your current packages:
 ### Update Contact Info
 - Email: support@cvapplyr.com
 - Location: Gurgaon, Haryana, India
-- Company: zSellr Enterprises LLP
+- Company: zSellr (OPC) Private Limited
 
 ## 🎯 Google OAuth Verification
 
