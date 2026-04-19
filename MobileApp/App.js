@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking, AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView } from 'react-native-webview';
+// Razorpay - kept for Android, commented out for iOS (Apple IAP used instead)
+import RazorpayCheckout from 'react-native-razorpay';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import * as WebBrowser from 'expo-web-browser';
@@ -19,9 +21,27 @@ import * as Clipboard from 'expo-clipboard';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as SecureStore from 'expo-secure-store';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+// Apple In-App Purchase
+import { initConnection, fetchProducts, requestPurchase, finishTransaction, purchaseUpdatedListener, purchaseErrorListener, endConnection, getReceiptIOS } from 'react-native-iap';
 import { API_BASE, PRODUCTION_API_URL } from './config';
 import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
+
+// Apple IAP Product IDs - must match App Store Connect products
+const IAP_PRODUCT_IDS = [
+  'com.cvapplyr.mobile.starter',
+  'com.cvapplyr.mobile.professional',
+  'com.cvapplyr.mobile.premium',
+  'com.cvapplyr.mobile.enterprise',
+];
+
+// Map Apple product IDs to plan IDs (from database)
+const APPLE_PRODUCT_TO_PLAN = {
+  'com.cvapplyr.mobile.starter': 1,
+  'com.cvapplyr.mobile.professional': 2,
+  'com.cvapplyr.mobile.premium': 3,
+  'com.cvapplyr.mobile.enterprise': 4,
+};
 
 const GOOGLE_CLIENT_ID_IOS = '151384459549-3rm4atu5eu3ekh9h4rhds6gbd9ecgeb6.apps.googleusercontent.com';
 const GOOGLE_CLIENT_ID_ANDROID = '151384459549-ro8tqemri24dc3n2lh7ak5t3fjr365nl.apps.googleusercontent.com';
@@ -787,6 +807,149 @@ function AppContent() {
   const [userPackages, setUserPackages] = useState([]);
   const [loadingUserPackages, setLoadingUserPackages] = useState(false);
   
+  // Apple IAP state
+  const [iapProducts, setIapProducts] = useState([]);
+  const [iapConnected, setIapConnected] = useState(false);
+  const purchaseUpdateSubscription = useRef(null);
+  const purchaseErrorSubscription = useRef(null);
+
+  // Initialize Apple IAP connection (iOS only)
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+
+    let mounted = true;
+
+    const initIAP = async () => {
+      try {
+        console.log('🍎 Initializing Apple IAP connection...');
+        const result = await initConnection();
+        console.log('🍎 IAP connection result:', result);
+        if (mounted) setIapConnected(true);
+
+        // Fetch products from App Store
+        const products = await fetchProducts({ skus: IAP_PRODUCT_IDS });
+        console.log('🍎 IAP products fetched:', products.length, products.map(p => p.productId));
+        if (mounted) setIapProducts(products);
+      } catch (error) {
+        console.warn('🍎 IAP init error:', error.message);
+      }
+    };
+
+    initIAP();
+
+    // Listen for purchase updates (handles interrupted purchases on restart)
+    purchaseUpdateSubscription.current = purchaseUpdatedListener(async (purchase) => {
+      console.log('🍎 Purchase updated:', JSON.stringify({
+        productId: purchase.productId,
+        transactionId: purchase.transactionId,
+        id: purchase.id,
+        hasPurchaseToken: !!purchase.purchaseToken,
+        hasTransactionReceipt: !!purchase.transactionReceipt,
+        purchaseState: purchase.purchaseState,
+      }));
+      
+      // v15 StoreKit 2: try purchaseToken first, then transactionReceipt, then getReceiptIOS()
+      let receipt = purchase.purchaseToken || purchase.transactionReceipt;
+      if (!receipt) {
+        try {
+          console.log('🍎 No receipt on purchase object, fetching via getReceiptIOS()...');
+          receipt = await getReceiptIOS();
+          console.log('🍎 getReceiptIOS result length:', receipt?.length || 0);
+        } catch (e) {
+          console.warn('🍎 getReceiptIOS failed:', e.message);
+        }
+      }
+      
+      // Even without a receipt, try to verify with just transaction info
+      const txId = purchase.transactionId || purchase.id;
+      
+      if (receipt || txId) {
+        try {
+          // Validate receipt with our server
+          const verifyResponse = await fetch(`${API_BASE}/payment/verify-apple`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${user?.token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              receiptData: receipt || '',
+              productId: purchase.productId,
+              transactionId: txId,
+            }),
+          });
+
+          const verifyData = await verifyResponse.json();
+          console.log('🍎 Apple receipt verification:', verifyData);
+
+          if (verifyData.success) {
+            // Finish the transaction (tell Apple we've delivered the content)
+            await finishTransaction({ purchase, isConsumable: true });
+            console.log('🍎 Transaction finished');
+
+            // Reload credits
+            try {
+              const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
+                method: 'GET',
+                headers: {
+                  'Authorization': `Bearer ${user?.token}`,
+                  'Content-Type': 'application/json',
+                },
+              });
+              if (creditsResponse.ok) {
+                const creditsData = await creditsResponse.json();
+                if (creditsData.success) {
+                  setCreditBalance(creditsData.balance || 0);
+                }
+              }
+            } catch (e) {
+              console.log('Failed to reload credits after IAP');
+            }
+
+            setScreen('');
+            setTimeout(() => {
+              Alert.alert(
+                '🎉 Purchase Successful!',
+                `${verifyData.creditsAdded} credits have been added to your account!\n\nNew Balance: ${verifyData.credits} credits`,
+                [{ text: 'Awesome!', onPress: () => setScreen('dashboard') }]
+              );
+            }, 100);
+          } else {
+            await finishTransaction({ purchase, isConsumable: true });
+            Alert.alert('Purchase Error', verifyData.error || 'Failed to verify purchase. Please contact support.');
+          }
+        } catch (error) {
+          console.error('🍎 Receipt verification error:', error);
+          Alert.alert(
+            'Verification Pending',
+            'Purchase received! Credits will be added shortly. Please check your balance in a few minutes.',
+            [{ text: 'OK', onPress: () => setScreen('dashboard') }]
+          );
+        }
+      }
+    });
+
+    purchaseErrorSubscription.current = purchaseErrorListener((error) => {
+      console.warn('🍎 Purchase error:', error);
+      if (error.code !== 'E_USER_CANCELLED') {
+        Alert.alert('Purchase Error', error.message || 'Something went wrong with the purchase.');
+      }
+    });
+
+    return () => {
+      mounted = false;
+      if (purchaseUpdateSubscription.current) {
+        purchaseUpdateSubscription.current.remove();
+        purchaseUpdateSubscription.current = null;
+      }
+      if (purchaseErrorSubscription.current) {
+        purchaseErrorSubscription.current.remove();
+        purchaseErrorSubscription.current = null;
+      }
+      endConnection();
+    };
+  }, [user?.token]);
+  
   // Stat tile flip animation state
   const flipAnimSent = useRef(new Animated.Value(0)).current;
   const flipAnimGenerated = useRef(new Animated.Value(0)).current;
@@ -938,9 +1101,69 @@ function AppContent() {
     }
   };
 
-  // Handle Razorpay payment
+  // Handle package purchase - routes to Apple IAP on iOS, Razorpay on Android
   const handleBuyPackage = async (pkg) => {
     console.log('💳 Buy package clicked:', pkg);
+
+    if (Platform.OS === 'ios') {
+      // ===== APPLE IN-APP PURCHASE (iOS) =====
+      return handleBuyPackageApple(pkg);
+    } else {
+      // ===== RAZORPAY (Android) =====
+      return handleBuyPackageRazorpay(pkg);
+    }
+  };
+
+  // Apple IAP purchase handler (iOS only)
+  const handleBuyPackageApple = async (pkg) => {
+    try {
+      // Map plan name to Apple product ID
+      const nameToProductId = {
+        'Starter': 'com.cvapplyr.mobile.starter',
+        'Professional': 'com.cvapplyr.mobile.professional',
+        'Premium': 'com.cvapplyr.mobile.premium',
+        'Enterprise': 'com.cvapplyr.mobile.enterprise',
+      };
+
+      const productId = nameToProductId[pkg.name];
+      if (!productId) {
+        Alert.alert('Error', 'This package is not available for purchase on iOS.');
+        return;
+      }
+
+      if (!iapConnected) {
+        Alert.alert('Store Unavailable', 'Unable to connect to the App Store. Please try again.');
+        return;
+      }
+
+      console.log('🍎 Requesting Apple IAP purchase for:', productId);
+      // requestPurchase triggers the native iOS purchase dialog
+      // The result is handled by purchaseUpdatedListener above
+      // v15 API: requires { request: { apple: { sku } }, type: 'in-app' }
+      await requestPurchase({ request: { apple: { sku: productId } }, type: 'in-app' });
+    } catch (error) {
+      console.error('🍎 IAP purchase error:', error);
+      if (error.code === 'E_USER_CANCELLED') {
+        console.log('Purchase cancelled by user');
+        return;
+      }
+      Alert.alert(
+        'Purchase Error',
+        error.message || 'Failed to initiate purchase. Please try again.',
+        [{ text: 'OK' }]
+      );
+    }
+  };
+
+  // Razorpay payment handler (Android only, kept for reference)
+  /* --- RAZORPAY COMMENTED OUT FOR iOS (Apple IAP used instead) ---
+  const handleBuyPackageRazorpay_iOS = async (pkg) => {
+    // This was the original Razorpay flow for iOS - now replaced by Apple IAP
+    // Keeping for reference in case needed for Android
+  };
+  --- END RAZORPAY iOS COMMENT --- */
+  
+  const handleBuyPackageRazorpay = async (pkg) => {
     try {
       // Create Razorpay order
       console.log('📞 Calling create-order API...');
@@ -964,24 +1187,99 @@ function AppContent() {
         throw new Error(orderData.error || 'Failed to create order');
       }
 
-      // 🔥 Use prefill data from backend (fetched from database)
+      // Use prefill data from backend (fetched from database)
       const prefillData = orderData.prefill || {};
       console.log('👤 Prefill data from backend:', prefillData);
 
-      // Open Razorpay payment page in WebView modal with prefill data
-      const url = `${API_BASE.replace('/api', '')}/payment.html?orderId=${orderData.orderId}&amount=${orderData.amount}&currency=${orderData.currency}&keyId=${orderData.keyId}&packageName=${encodeURIComponent(pkg.name)}&credits=${pkg.credits}&email=${encodeURIComponent(prefillData.email || '')}&name=${encodeURIComponent(prefillData.name || '')}&phone=${encodeURIComponent(prefillData.contact || '')}`;
+      // Open Razorpay native checkout
+      const options = {
+        description: pkg.name || 'Credit Package',
+        currency: orderData.currency,
+        key: orderData.keyId,
+        amount: orderData.amount, // Already in paise from server
+        name: 'CVApplyr',
+        order_id: orderData.orderId,
+        prefill: {
+          email: prefillData.email || '',
+          contact: prefillData.contact || '',
+          name: prefillData.name || ''
+        },
+        theme: { color: '#667eea' }
+      };
+
+      console.log('📲 Opening Razorpay native checkout, amount (paise):', orderData.amount);
       
-      console.log('🌐 Opening payment URL with backend prefill data');
-      console.log('🔑 Key ID:', orderData.keyId);
-      console.log('📱 Current modal state before:', showPaymentModal);
-      setPaymentUrl(url);
-      setShowPaymentModal(true);
-      console.log('✅ Payment modal state updated');
+      const paymentData = await RazorpayCheckout.open(options);
+      console.log('✅ Payment successful:', paymentData);
+
+      // Verify payment with backend
+      try {
+        const verifyResponse = await fetch(`${API_BASE}/payment/verify`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${user.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            razorpay_order_id: paymentData.razorpay_order_id,
+            razorpay_payment_id: paymentData.razorpay_payment_id,
+            razorpay_signature: paymentData.razorpay_signature
+          })
+        });
+
+        const verifyData = await verifyResponse.json();
+        console.log('✅ Payment verification response:', verifyData);
+
+        if (verifyData.success) {
+          // Reload credits
+          try {
+            const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${user.token}`,
+                'Content-Type': 'application/json',
+              }
+            });
+            if (creditsResponse.ok) {
+              const creditsData = await creditsResponse.json();
+              if (creditsData.success) {
+                setCreditBalance(creditsData.balance || 0);
+              }
+            }
+          } catch (reloadError) {
+            console.log('Failed to reload credits, using verification response');
+            setCreditBalance(verifyData.credits);
+          }
+
+          setScreen('');
+          setTimeout(() => {
+            Alert.alert(
+              '🎉 Payment Successful!',
+              `${verifyData.creditsAdded} credits have been added to your account!\n\nNew Balance: ${verifyData.credits} credits`,
+              [{ text: 'Awesome!', onPress: () => setScreen('dashboard') }]
+            );
+          }, 100);
+        } else {
+          throw new Error(verifyData.error || 'Verification failed');
+        }
+      } catch (verifyError) {
+        console.error('❌ Payment verification error:', verifyError);
+        Alert.alert(
+          'Verification Pending',
+          'Payment received! Credits will be added shortly. Please check your balance in a few minutes.',
+          [{ text: 'OK', onPress: () => setScreen('dashboard') }]
+        );
+      }
     } catch (error) {
       console.error('❌ Payment error:', error);
+      // Razorpay returns error code 0 when user cancels
+      if (error.code === 0 || error.description === 'Payment cancelled') {
+        console.log('Payment cancelled by user');
+        return;
+      }
       Alert.alert(
         'Payment Error',
-        error.message || 'Failed to initiate payment. Please try again.',
+        error.description || error.message || 'Failed to initiate payment. Please try again.',
         [{ text: 'OK' }]
       );
     }
@@ -6427,8 +6725,26 @@ function AppContent() {
                     {/* Package Price - Large and Centered */}
                     <View style={styles.packagePriceSection}>
                       <View style={styles.packagePriceContainer}>
-                        <Text style={styles.packageCurrency}>$</Text>
-                        <Text style={styles.packagePrice}>{pkg.amount}</Text>
+                        {Platform.OS === 'ios' && iapProducts.length > 0 ? (
+                          // Show Apple IAP localized price on iOS
+                          <Text style={styles.packagePrice}>
+                            {(() => {
+                              const nameToProductId = {
+                                'Starter': 'com.cvapplyr.mobile.starter',
+                                'Professional': 'com.cvapplyr.mobile.professional',
+                                'Premium': 'com.cvapplyr.mobile.premium',
+                                'Enterprise': 'com.cvapplyr.mobile.enterprise',
+                              };
+                              const iapProduct = iapProducts.find(p => p.id === nameToProductId[pkg.name]);
+                              return iapProduct ? iapProduct.displayPrice : `$${pkg.amount}`;
+                            })()}
+                          </Text>
+                        ) : (
+                          <>
+                            <Text style={styles.packageCurrency}>$</Text>
+                            <Text style={styles.packagePrice}>{pkg.amount}</Text>
+                          </>
+                        )}
                       </View>
                     </View>
 
@@ -6476,140 +6792,7 @@ function AppContent() {
           )}
         </ScrollView>
 
-        {/* Payment WebView Modal */}
-        <Modal
-          visible={showPaymentModal}
-          animationType="slide"
-          transparent={false}
-          onRequestClose={() => {
-            console.log('🚫 Payment modal closed');
-            setShowPaymentModal(false);
-            setPaymentUrl('');
-          }}
-        >
-          <SafeAreaViewContext style={{flex: 1, backgroundColor: '#fff'}}>
-            <View style={{flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb', backgroundColor: '#fff'}}>
-              <TouchableOpacity 
-                onPress={() => {
-                  console.log('❌ Close button pressed');
-                  setShowPaymentModal(false);
-                  setPaymentUrl('');
-                }}
-                style={{padding: 8}}
-              >
-                <Text style={{fontSize: 18, color: '#3b82f6', fontWeight: '600'}}>✕ Close</Text>
-              </TouchableOpacity>
-              <Text style={{flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#1f2937'}}>Complete Payment</Text>
-              <View style={{width: 60}} />
-            </View>
-            {paymentUrl ? (
-              <WebView
-                source={{ uri: paymentUrl }}
-                style={{flex: 1}}
-                onNavigationStateChange={(navState) => {
-                  console.log('📱 Navigation:', navState.url);
-                  
-                  // Check if payment was successful
-                  if (navState.url.includes('/payment-success.html')) {
-                    // Extract payment details from URL (Razorpay returns payment_id, order_id, signature)
-                    const url = new URL(navState.url);
-                    const razorpay_payment_id = url.searchParams.get('payment_id');
-                    const razorpay_order_id = url.searchParams.get('order_id');
-                    const razorpay_signature = url.searchParams.get('signature');
-                    
-                    console.log('💳 Payment details:', { razorpay_payment_id, razorpay_order_id, razorpay_signature });
-                    
-                    // ✅ CLOSE MODAL IMMEDIATELY (non-blocking)
-                    setTimeout(async () => {
-                      setShowPaymentModal(false);
-                      setPaymentUrl('');
-                      
-                      try {
-                        // Verify payment with backend
-                        const verifyResponse = await fetch(`${API_BASE}/payment/verify`, {
-                          method: 'POST',
-                          headers: {
-                            'Authorization': `Bearer ${user.token}`,
-                            'Content-Type': 'application/json',
-                          },
-                          body: JSON.stringify({
-                            razorpay_order_id,
-                            razorpay_payment_id,
-                            razorpay_signature
-                          })
-                        });
-                        
-                        const verifyData = await verifyResponse.json();
-                        console.log('✅ Payment verification response:', verifyData);
-                        
-                        if (verifyData.success) {
-                          // Update credit balance from verification response
-                          // Also reload from API to ensure sync
-                          try {
-                            const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
-                              method: 'GET',
-                              headers: {
-                                'Authorization': `Bearer ${user.token}`,
-                                'Content-Type': 'application/json',
-                              }
-                            });
-                            
-                            if (creditsResponse.ok) {
-                              const creditsData = await creditsResponse.json();
-                              if (creditsData.success) {
-                                setCreditBalance(creditsData.balance || 0);
-                                console.log('💳 Reloaded credits after payment:', creditsData.balance);
-                              }
-                            }
-                          } catch (reloadError) {
-                            console.log('Failed to reload credits, using verification response');
-                            setCreditBalance(verifyData.credits);
-                          }
-                          
-                          // Force screen refresh by navigating away and back
-                          setScreen('');
-                          setTimeout(() => {
-                            // Close processing alert and show success
-                            Alert.alert(
-                              '🎉 Payment Successful!',
-                              `${verifyData.creditsAdded} credits have been added to your account!\n\nNew Balance: ${verifyData.credits} credits`,
-                              [{ text: 'Awesome!', onPress: () => setScreen('dashboard') }]
-                            );
-                          }, 100);
-                        } else {
-                          throw new Error(verifyData.error || 'Verification failed');
-                        }
-                      } catch (error) {
-                        console.error('❌ Payment verification error:', error);
-                        Alert.alert(
-                          'Verification Pending',
-                          'Payment received! Credits will be added shortly. Please check your balance in a few minutes.',
-                          [{ text: 'OK', onPress: () => setScreen('dashboard') }]
-                        );
-                      }
-                    }, 10);
-                  } else if (navState.url.includes('/payment-failure.html')) {
-                    // Close modal immediately on failure too
-                    setTimeout(() => {
-                      setShowPaymentModal(false);
-                      setPaymentUrl('');
-                      Alert.alert('Payment Failed', 'Payment was not completed. Please try again.', [{ text: 'OK' }]);
-                    }, 10);
-                  }
-                }}
-                javaScriptEnabled={true}
-                domStorageEnabled={true}
-                startInLoadingState={true}
-                scalesPageToFit={true}
-              />
-            ) : (
-              <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}>
-                <ActivityIndicator size="large" color="#3b82f6" />
-                <Text style={{marginTop: 16, color: '#6b7280'}}>Loading payment...</Text>
-              </View>
-            )}
-          </SafeAreaViewContext>
-        </Modal>
+        {/* Payment handled by native Razorpay SDK - no WebView needed */}
       </SafeAreaViewContext>
     );
   }

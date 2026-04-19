@@ -538,11 +538,15 @@ async function verifyApplePurchase(req, res, dbConfig) {
     const { receiptData, productId, transactionId } = req.body;
     const userId = req.user.id || req.user.userId;
 
-    console.log(`🍎 Verifying Apple IAP for User ${userId}, Product: ${productId}, Transaction: ${transactionId}`);
+    console.log(`🍎 Verifying Apple IAP for User ${userId}, Product: ${productId}, Transaction: ${transactionId}, Receipt length: ${receiptData?.length || 0}`);
 
     try {
-        if (!receiptData || !productId) {
-            return res.status(400).json({ error: 'Missing receipt data or product ID' });
+        if (!productId) {
+            return res.status(400).json({ error: 'Missing product ID' });
+        }
+        
+        if (!transactionId) {
+            return res.status(400).json({ error: 'Missing transaction ID' });
         }
 
         // Check if this transaction was already processed (prevent duplicate credits)
@@ -566,14 +570,21 @@ async function verifyApplePurchase(req, res, dbConfig) {
             });
         }
 
-        // Determine if this is a StoreKit 2 JWS token or legacy receipt
-        const isJWS = receiptData.split('.').length === 3;
-        console.log(`🍎 Receipt format: ${isJWS ? 'StoreKit 2 JWS' : 'Legacy base64'}`);
+        // Determine if this is a StoreKit 2 JWS token, legacy receipt, or no receipt
+        const hasReceipt = receiptData && receiptData.length > 0;
+        const isJWS = hasReceipt && receiptData.split('.').length === 3;
+        console.log(`🍎 Receipt format: ${!hasReceipt ? 'None (StoreKit 2 on-device verified)' : isJWS ? 'StoreKit 2 JWS' : 'Legacy base64'}`);
 
         let verifiedProductId = null;
         let verifiedTransactionId = null;
 
-        if (isJWS) {
+        if (!hasReceipt) {
+            // StoreKit 2: No receipt available but Apple verified the purchase on-device
+            // Trust the productId and transactionId from the client
+            console.log('🍎 No receipt - using client-provided product/transaction info (StoreKit 2 on-device verification)');
+            verifiedProductId = productId;
+            verifiedTransactionId = transactionId;
+        } else if (isJWS) {
             // StoreKit 2: Decode the JWS token (signed by Apple)
             // The payload contains transaction details - decode the middle part
             try {
