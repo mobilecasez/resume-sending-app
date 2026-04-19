@@ -380,7 +380,7 @@
         // Check if already logged in - redirect to dashboard
         const token = localStorage.getItem('authToken');
         if (token) {
-            window.location.href = '/';
+            window.location.href = '/dashboard';
         }
 
         async function handleRegister(event) {

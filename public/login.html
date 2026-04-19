@@ -444,7 +444,7 @@
         // Check if already logged in - redirect to dashboard
         const token = localStorage.getItem('authToken');
         if (token) {
-            window.location.href = '/';
+            window.location.href = '/dashboard';
         }
 
         async function handleLogin(event) {
@@ -474,7 +474,7 @@
                 if (response.ok) {
                     localStorage.setItem('authToken', data.token);
                     localStorage.setItem('userData', JSON.stringify(data.user));
-                    window.location.href = '/';
+                    window.location.href = '/dashboard';
                 } else {
                     errorMessage.textContent = data.error || 'Login failed. Please try again.';
                     errorMessage.style.display = 'block';
