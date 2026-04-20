@@ -22,7 +22,7 @@ import * as AppleAuthentication from 'expo-apple-authentication';
 import * as SecureStore from 'expo-secure-store';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 // Apple In-App Purchase
-import { initConnection, fetchProducts, requestPurchase, finishTransaction, purchaseUpdatedListener, purchaseErrorListener, endConnection, getReceiptIOS } from 'react-native-iap';
+import { initConnection, fetchProducts, requestPurchase, finishTransaction, purchaseUpdatedListener, purchaseErrorListener, endConnection, getReceiptIOS, getAvailablePurchases } from 'react-native-iap';
 import { API_BASE, PRODUCTION_API_URL } from './config';
 import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -382,6 +382,7 @@ function AppContent() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [termsAccepted, setTermsAccepted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [user, setUser] = useState(null);
@@ -812,6 +813,120 @@ function AppContent() {
   const [iapConnected, setIapConnected] = useState(false);
   const purchaseUpdateSubscription = useRef(null);
   const purchaseErrorSubscription = useRef(null);
+  const userTokenRef = useRef(null);
+  const processedTransactionsRef = useRef(new Set());
+
+  // Keep userTokenRef in sync with current token
+  useEffect(() => {
+    userTokenRef.current = user?.token || null;
+  }, [user?.token]);
+
+  // Shared Apple IAP verification function — called from both listener and requestPurchase result
+  const verifyAndCreditApplePurchase = async (purchase) => {
+    const txId = purchase.transactionId || purchase.id;
+    if (!txId) {
+      console.warn('🍎 No transaction ID on purchase, skipping');
+      return;
+    }
+
+    // Guard against duplicate processing (listener + requestPurchase return may both fire)
+    if (processedTransactionsRef.current.has(txId)) {
+      console.log('🍎 Transaction already processed:', txId);
+      return;
+    }
+    processedTransactionsRef.current.add(txId);
+
+    console.log('🍎 Processing purchase:', JSON.stringify({
+      productId: purchase.productId,
+      transactionId: txId,
+      hasPurchaseToken: !!purchase.purchaseToken,
+      purchaseState: purchase.purchaseState,
+    }));
+
+    // v15 StoreKit 2: purchaseToken is the only receipt field (no transactionReceipt)
+    let receipt = purchase.purchaseToken || null;
+    if (!receipt) {
+      try {
+        console.log('🍎 No purchaseToken, trying getReceiptIOS()...');
+        receipt = await getReceiptIOS();
+        console.log('🍎 getReceiptIOS length:', receipt?.length || 0);
+      } catch (e) {
+        console.warn('🍎 getReceiptIOS failed:', e.message);
+      }
+    }
+
+    const token = userTokenRef.current;
+    if (!token) {
+      console.error('🍎 No user token for verification — user may not be logged in');
+      Alert.alert('Error', 'Please log in and try again.');
+      processedTransactionsRef.current.delete(txId);
+      return;
+    }
+
+    try {
+      console.log('🍎 Sending verification to server...');
+      const verifyResponse = await fetch(`${API_BASE}/payment/verify-apple`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          receiptData: receipt || '',
+          productId: purchase.productId,
+          transactionId: txId,
+        }),
+      });
+
+      const verifyData = await verifyResponse.json();
+      console.log('🍎 Server verification response:', verifyData);
+
+      if (verifyData.success) {
+        try {
+          await finishTransaction({ purchase, isConsumable: true });
+          console.log('🍎 Transaction finished with Apple');
+        } catch (finishErr) {
+          console.warn('🍎 finishTransaction error (non-fatal):', finishErr.message);
+        }
+
+        // Reload credit balance
+        try {
+          const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+          });
+          if (creditsResponse.ok) {
+            const creditsData = await creditsResponse.json();
+            if (creditsData.success) {
+              setCreditBalance(creditsData.balance || 0);
+            }
+          }
+        } catch (e) {
+          console.log('🍎 Failed to reload credits (non-fatal)');
+        }
+
+        setScreen('');
+        setTimeout(() => {
+          Alert.alert(
+            '🎉 Purchase Successful!',
+            `${verifyData.creditsAdded} credits have been added to your account!\n\nNew Balance: ${verifyData.credits} credits`,
+            [{ text: 'Awesome!', onPress: () => setScreen('dashboard') }]
+          );
+        }, 100);
+      } else {
+        try {
+          await finishTransaction({ purchase, isConsumable: true });
+        } catch (e) { /* ignore */ }
+        Alert.alert('Purchase Error', verifyData.error || 'Failed to verify purchase. Please contact support.');
+      }
+    } catch (error) {
+      console.error('🍎 Server verification network error:', error);
+      Alert.alert(
+        'Verification Pending',
+        'Purchase received! Credits will be added shortly.',
+        [{ text: 'OK', onPress: () => setScreen('dashboard') }]
+      );
+    }
+  };
 
   // Initialize Apple IAP connection (iOS only)
   useEffect(() => {
@@ -826,115 +941,44 @@ function AppContent() {
         console.log('🍎 IAP connection result:', result);
         if (mounted) setIapConnected(true);
 
+        // Register listeners AFTER initConnection() so Nitro runtime is ready
+        console.log('🍎 Registering purchase listeners...');
+        purchaseUpdateSubscription.current = purchaseUpdatedListener(async (purchase) => {
+          console.log('🍎 purchaseUpdatedListener fired:', purchase.productId, purchase.transactionId || purchase.id);
+          await verifyAndCreditApplePurchase(purchase);
+        });
+
+        purchaseErrorSubscription.current = purchaseErrorListener((error) => {
+          console.warn('🍎 Purchase error:', error);
+          if (error.code !== 'E_USER_CANCELLED') {
+            Alert.alert('Purchase Error', error.message || 'Something went wrong with the purchase.');
+          }
+        });
+        console.log('🍎 Purchase listeners registered successfully');
+
         // Fetch products from App Store
         const products = await fetchProducts({ skus: IAP_PRODUCT_IDS });
-        console.log('🍎 IAP products fetched:', products.length, products.map(p => p.productId));
+        console.log('🍎 IAP products fetched:', products.length, products.map(p => p.id));
         if (mounted) setIapProducts(products);
+
+        // Process any unfinished purchases from previous sessions
+        try {
+          const available = await getAvailablePurchases({ alsoPublishToEventListenerIOS: false });
+          console.log('🍎 Unfinished purchases found:', available?.length || 0);
+          if (available && available.length > 0) {
+            for (const p of available) {
+              await verifyAndCreditApplePurchase(p);
+            }
+          }
+        } catch (e) {
+          console.log('🍎 getAvailablePurchases error (non-fatal):', e.message);
+        }
       } catch (error) {
         console.warn('🍎 IAP init error:', error.message);
       }
     };
 
     initIAP();
-
-    // Listen for purchase updates (handles interrupted purchases on restart)
-    purchaseUpdateSubscription.current = purchaseUpdatedListener(async (purchase) => {
-      console.log('🍎 Purchase updated:', JSON.stringify({
-        productId: purchase.productId,
-        transactionId: purchase.transactionId,
-        id: purchase.id,
-        hasPurchaseToken: !!purchase.purchaseToken,
-        hasTransactionReceipt: !!purchase.transactionReceipt,
-        purchaseState: purchase.purchaseState,
-      }));
-      
-      // v15 StoreKit 2: try purchaseToken first, then transactionReceipt, then getReceiptIOS()
-      let receipt = purchase.purchaseToken || purchase.transactionReceipt;
-      if (!receipt) {
-        try {
-          console.log('🍎 No receipt on purchase object, fetching via getReceiptIOS()...');
-          receipt = await getReceiptIOS();
-          console.log('🍎 getReceiptIOS result length:', receipt?.length || 0);
-        } catch (e) {
-          console.warn('🍎 getReceiptIOS failed:', e.message);
-        }
-      }
-      
-      // Even without a receipt, try to verify with just transaction info
-      const txId = purchase.transactionId || purchase.id;
-      
-      if (receipt || txId) {
-        try {
-          // Validate receipt with our server
-          const verifyResponse = await fetch(`${API_BASE}/payment/verify-apple`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${user?.token}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              receiptData: receipt || '',
-              productId: purchase.productId,
-              transactionId: txId,
-            }),
-          });
-
-          const verifyData = await verifyResponse.json();
-          console.log('🍎 Apple receipt verification:', verifyData);
-
-          if (verifyData.success) {
-            // Finish the transaction (tell Apple we've delivered the content)
-            await finishTransaction({ purchase, isConsumable: true });
-            console.log('🍎 Transaction finished');
-
-            // Reload credits
-            try {
-              const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
-                method: 'GET',
-                headers: {
-                  'Authorization': `Bearer ${user?.token}`,
-                  'Content-Type': 'application/json',
-                },
-              });
-              if (creditsResponse.ok) {
-                const creditsData = await creditsResponse.json();
-                if (creditsData.success) {
-                  setCreditBalance(creditsData.balance || 0);
-                }
-              }
-            } catch (e) {
-              console.log('Failed to reload credits after IAP');
-            }
-
-            setScreen('');
-            setTimeout(() => {
-              Alert.alert(
-                '🎉 Purchase Successful!',
-                `${verifyData.creditsAdded} credits have been added to your account!\n\nNew Balance: ${verifyData.credits} credits`,
-                [{ text: 'Awesome!', onPress: () => setScreen('dashboard') }]
-              );
-            }, 100);
-          } else {
-            await finishTransaction({ purchase, isConsumable: true });
-            Alert.alert('Purchase Error', verifyData.error || 'Failed to verify purchase. Please contact support.');
-          }
-        } catch (error) {
-          console.error('🍎 Receipt verification error:', error);
-          Alert.alert(
-            'Verification Pending',
-            'Purchase received! Credits will be added shortly. Please check your balance in a few minutes.',
-            [{ text: 'OK', onPress: () => setScreen('dashboard') }]
-          );
-        }
-      }
-    });
-
-    purchaseErrorSubscription.current = purchaseErrorListener((error) => {
-      console.warn('🍎 Purchase error:', error);
-      if (error.code !== 'E_USER_CANCELLED') {
-        Alert.alert('Purchase Error', error.message || 'Something went wrong with the purchase.');
-      }
-    });
 
     return () => {
       mounted = false;
@@ -946,7 +990,8 @@ function AppContent() {
         purchaseErrorSubscription.current.remove();
         purchaseErrorSubscription.current = null;
       }
-      endConnection();
+      // Do NOT call endConnection() — keep IAP connection alive to avoid race conditions
+      // (matches react-native-iap v15 useIAP hook pattern)
     };
   }, [user?.token]);
   
@@ -1137,10 +1182,20 @@ function AppContent() {
       }
 
       console.log('🍎 Requesting Apple IAP purchase for:', productId);
-      // requestPurchase triggers the native iOS purchase dialog
-      // The result is handled by purchaseUpdatedListener above
-      // v15 API: requires { request: { apple: { sku } }, type: 'in-app' }
-      await requestPurchase({ request: { apple: { sku: productId } }, type: 'in-app' });
+      // v15 API: requestPurchase may return the Purchase directly (StoreKit 2)
+      // The listener also fires — processedTransactionsRef guards against double-processing
+      const purchaseResult = await requestPurchase({ request: { apple: { sku: productId } }, type: 'in-app' });
+      console.log('🍎 requestPurchase returned:', purchaseResult ? 'purchase object' : 'null/undefined');
+
+      // Handle purchase returned directly from requestPurchase (v15 StoreKit 2 path)
+      if (purchaseResult) {
+        const purchases = Array.isArray(purchaseResult) ? purchaseResult : [purchaseResult];
+        for (const purchase of purchases) {
+          if (purchase && purchase.productId) {
+            await verifyAndCreditApplePurchase(purchase);
+          }
+        }
+      }
     } catch (error) {
       console.error('🍎 IAP purchase error:', error);
       if (error.code === 'E_USER_CANCELLED') {
@@ -4129,6 +4184,10 @@ function AppContent() {
       setError('Please fill in all fields');
       return;
     }
+    if (!termsAccepted) {
+      setError('Please agree to the Terms of Service and Privacy Policy');
+      return;
+    }
     
     setLoading(true);
     setError('');
@@ -5016,6 +5075,28 @@ function AppContent() {
                 />
               </View>
             </View>
+
+            {/* Terms & Privacy Checkbox */}
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 16, marginTop: 4 }}
+              onPress={() => setTermsAccepted(!termsAccepted)}
+              activeOpacity={0.7}
+            >
+              <View style={{
+                width: 22, height: 22, borderRadius: 4, borderWidth: 2,
+                borderColor: termsAccepted ? '#059669' : '#cbd5e0',
+                backgroundColor: termsAccepted ? '#059669' : 'transparent',
+                alignItems: 'center', justifyContent: 'center', marginRight: 10, marginTop: 1,
+              }}>
+                {termsAccepted && <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>✓</Text>}
+              </View>
+              <Text style={{ flex: 1, fontSize: 13, color: '#64748b', lineHeight: 18 }}>
+                I agree to the{' '}
+                <Text style={{ color: '#059669', fontWeight: '600' }} onPress={() => Linking.openURL('https://cvapplyr.com/terms-of-service')}>Terms of Service</Text>
+                {' '}and{' '}
+                <Text style={{ color: '#059669', fontWeight: '600' }} onPress={() => Linking.openURL('https://cvapplyr.com/privacy-policy')}>Privacy Policy</Text>
+              </Text>
+            </TouchableOpacity>
 
             {/* Register Button */}
             <TouchableOpacity

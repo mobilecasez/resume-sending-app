@@ -164,7 +164,7 @@
             document.getElementById('credits').textContent = `${credits} Credits`;
         }
         if (amount) {
-            document.getElementById('amount').textContent = amount;
+            document.getElementById('amount').textContent = Math.round(parseFloat(amount) / 100);
         }
 
         // Check if all required parameters are present
@@ -188,7 +188,7 @@
 
             const options = {
                 key: keyId,
-                amount: Math.round(parseFloat(amount) * 100), // Convert to paise
+                amount: parseFloat(amount), // Already in paise from server
                 currency: currency,
                 name: 'cvapplyr',
                 description: packageName || 'Credit Package',
@@ -207,6 +207,19 @@
                     name: userName ? true : false,
                     email: userEmail ? true : false,
                     contact: userPhone ? true : false
+                },
+                method: {
+                    upi: true,
+                    card: true,
+                    netbanking: true,
+                    wallet: true
+                },
+                config: {
+                    display: {
+                        preferences: {
+                            show_default_blocks: true
+                        }
+                    }
                 },
                 theme: {
                     color: '#667eea'

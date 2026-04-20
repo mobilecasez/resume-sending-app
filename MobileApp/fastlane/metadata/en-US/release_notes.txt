@@ -1,0 +1,4 @@
+Bug fixes and performance improvements.
+- Fixed password change/set for OAuth users (Google, Microsoft, Apple Sign-In)
+- Improved post-login navigation
+- General stability improvements

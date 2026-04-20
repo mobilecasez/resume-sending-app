@@ -43,6 +43,7 @@
                         <li><a href="${baseUrl}/privacy" class="text-muted" style="text-decoration: none;">Privacy Policy</a></li>
                         <li><a href="${baseUrl}/terms" class="text-muted" style="text-decoration: none;">Terms of Service</a></li>
                         <li><a href="${baseUrl}/refund" class="text-muted" style="text-decoration: none;">Refund Policy</a></li>
+                        <li><a href="${baseUrl}/support" class="text-muted" style="text-decoration: none;">Support</a></li>
                     </ul>
                 </div>
                 <div class="col-md-3 col-sm-12 mb-4">

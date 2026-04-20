@@ -1,0 +1,11 @@
+MobileApp/node_modules
+MobileApp/ios
+MobileApp/android
+MobileApp/.expo
+MobileApp/build-*.ipa
+MobileApp.backup
+mobile-apps
+temp
+uploads
+*.ipa
+.git

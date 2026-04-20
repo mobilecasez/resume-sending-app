@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.cvapplyr.mobile",
-      "buildNumber": "24",
+      "buildNumber": "33",
       "usesAppleSignIn": true,
       "infoPlist": {
         "CFBundleURLTypes": [
@@ -75,6 +75,7 @@
     "plugins": [
       "expo-router",
       "expo-apple-authentication",
+      "react-native-iap",
       [
         "expo-splash-screen",
         {
@@ -91,7 +92,8 @@
           "photosPermission": "CVApplyr uses your photo library to set a profile picture and attach images to emails.",
           "cameraPermission": "CVApplyr uses your camera to take a profile photo."
         }
-      ]
+      ],
+      "react-native-iap"
     ],
     "experiments": {
       "typedRoutes": true,

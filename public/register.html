@@ -318,6 +318,13 @@
                                 >
                             </div>
 
+                            <div class="form-group" style="margin-bottom: 20px;">
+                                <label style="display: flex; align-items: flex-start; cursor: pointer; font-size: 13px; color: #555; line-height: 1.5;">
+                                    <input type="checkbox" id="termsCheckbox" style="margin-top: 4px; margin-right: 8px; min-width: 16px;">
+                                    <span>I agree to the <a href="/terms-of-service" target="_blank" style="color: #667eea;">Terms of Service</a> and <a href="/privacy-policy" target="_blank" style="color: #667eea;">Privacy Policy</a></span>
+                                </label>
+                            </div>
+
                             <button type="submit" class="btn-auth" id="registerBtn">
                                 Create Account
                             </button>
@@ -396,6 +403,14 @@
 
             errorMessage.style.display = 'none';
             successMessage.style.display = 'none';
+
+            // Validate terms accepted
+            const termsAccepted = document.getElementById('termsCheckbox').checked;
+            if (!termsAccepted) {
+                errorMessage.textContent = 'Please accept the Terms of Service and Privacy Policy';
+                errorMessage.style.display = 'block';
+                return;
+            }
 
             // Validate passwords match
             if (password !== confirmPassword) {

@@ -720,6 +720,10 @@ app.get('/terms-of-service', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'terms-of-service.html'));
 });
 
+app.get('/support', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'support.html'));
+});
+
 app.get('/refund', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'refund-policy.html'));
 });

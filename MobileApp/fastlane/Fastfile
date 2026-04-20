@@ -1,0 +1,65 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Upload metadata to App Store Connect"
+  lane :upload_metadata do
+    deliver(
+      app_identifier: "com.cvapplyr.mobile",
+      skip_binary_upload: true,
+      skip_screenshots: true,
+      force: true,
+      automatic_release: false,
+      submit_for_review: false,
+      precheck_include_in_app_purchases: false,
+      submission_information: {
+        add_id_info_uses_idfa: false,
+        export_compliance_uses_encryption: false,
+        export_compliance_encryption_updated: false,
+      },
+      app_review_information: {
+        first_name: "Rishi",
+        last_name: "Samadhiya",
+        email_address: "zsellr.in@gmail.com",
+        phone_number: "+919970020596",
+        demo_user: "cvapplyrtest@gmail.com",
+        demo_password: "test!123",
+        notes: "To test the app:\n1. Log in with the demo credentials above (use 'Log In with Email' option, not Google/Apple)\n2. The app generates AI-powered cover letters for job applications\n3. Upload a resume PDF from the profile section\n4. Enter a company name and job description to generate a cover letter\n5. Review the generated cover letter and send the application via email\n\nThe app requires an internet connection to function."
+      }
+    )
+  end
+
+  desc "Set app category and age rating"
+  lane :set_category do
+    deliver(
+      app_identifier: "com.cvapplyr.mobile",
+      skip_binary_upload: true,
+      skip_screenshots: true,
+      skip_metadata: true,
+      force: true,
+      automatic_release: false,
+      submit_for_review: false,
+      primary_category: "BUSINESS",
+      secondary_category: "PRODUCTIVITY",
+      app_rating_config_path: "./fastlane/rating_config.json"
+    )
+  end
+
+  desc "Submit app for App Store review"
+  lane :submit_for_review do
+    deliver(
+      app_identifier: "com.cvapplyr.mobile",
+      skip_binary_upload: true,
+      skip_screenshots: true,
+      skip_metadata: true,
+      force: true,
+      automatic_release: false,
+      submit_for_review: true,
+      precheck_include_in_app_purchases: false,
+      submission_information: {
+        add_id_info_uses_idfa: false,
+        export_compliance_uses_encryption: false,
+        export_compliance_encryption_updated: false,
+      }
+    )
+  end
+end

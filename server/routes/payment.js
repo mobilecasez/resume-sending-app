@@ -20,6 +20,11 @@ router.post('/verify', authenticateToken, (req, res) => {
     paymentController.verifyPayment(req, res, dbConfig);
 });
 
+// Verify Apple In-App Purchase
+router.post('/verify-apple', authenticateToken, (req, res) => {
+    paymentController.verifyApplePurchase(req, res, dbConfig);
+});
+
 // Get payment order status
 router.get('/status/:orderId', authenticateToken, (req, res) => {
     paymentController.getOrderStatus(req, res, dbConfig);

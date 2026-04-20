@@ -1,0 +1,5 @@
+{
+  "demo_user": "cvapplyrtest@gmail.com",
+  "demo_password": "test!123",
+  "notes": "To test the app:\n1. Log in with the demo credentials above (use Email login, not Google/Apple)\n2. The app generates AI-powered cover letters for job applications\n3. Upload a resume PDF from the profile section\n4. Enter a company name and job description to generate a cover letter\n5. Review the generated cover letter and send the application via email\n\nThe app requires an internet connection to function. All AI generation happens server-side."
+}
