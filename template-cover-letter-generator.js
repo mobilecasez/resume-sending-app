@@ -581,6 +581,8 @@ Meta Description: ${metaDescription || 'N/A'}
 IMPORTANT RULES:
 - Return ONLY the company name, nothing else
 - DO NOT return generic words like: Home, Careers, Jobs, Welcome, About, Contact
+- You MUST research the EXACT domain provided — the TLD matters (.ch is NOT .com, .co.uk is NOT .com)
+- If the URL has a subdomain like "career.limeflight.com", the company is likely "Limeflight" (ignore generic subdomains like career/jobs/hiring)
 - If the URL is like "jobsatcompany.com", extract "Company" as the name
 - If the URL is like "companyname-careers.com", extract "CompanyName"
 - If you cannot determine the company name with certainty, return "UNKNOWN"
@@ -616,7 +618,21 @@ Company name:`;
         try {
             const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
             let hostname = urlObj.hostname.replace('www.', '').toLowerCase();
-            let name = hostname.split('.')[0];
+            const hostParts = hostname.split('.');
+            let name = hostParts[0];
+            
+            // Generic subdomains that indicate the real company is in the next part
+            const genericSubdomains = [
+                'career', 'careers', 'jobs', 'job', 'hiring', 'recruit', 'recruiting',
+                'recruitment', 'talent', 'join', 'work', 'apply', 'opportunities',
+                'portal', 'app', 'hr', 'people', 'team', 'boards', 'board'
+            ];
+            
+            // If first part is a generic subdomain and there are more parts, use the next part
+            // e.g., career.limeflight.com -> limeflight
+            if (genericSubdomains.includes(name) && hostParts.length >= 3) {
+                name = hostParts[1];
+            }
             
             // Common job portal patterns to extract actual company name
             const jobPatterns = [
@@ -897,8 +913,15 @@ Be professional and factual. If you don't have specific information, make reason
             const researchPrompt = `Role: You are an expert Headhunter performing deep company research to extract SPECIFIC PROPER NOUNS.
 
 **Company to Research:**
-- Domain/URL: ${websiteUrl}
+- EXACT Domain/URL: ${websiteUrl}
 - URL-extracted name: ${companyName}
+
+**ABSOLUTELY CRITICAL - DOMAIN ACCURACY:**
+You MUST research the EXACT domain "${websiteUrl}" — NOT any similar-sounding domain.
+- The TLD matters: .ch is NOT .com, .co.uk is NOT .com, .de is NOT .com
+- For example, if given "icmag.ch", research ONLY icmag.ch (a Swiss company), NOT icmag.com (a completely different company)
+- NEVER substitute or guess a different domain. The user provided this exact URL for a reason.
+- If you cannot find information about the exact domain, say so — do NOT return information about a different company on a different domain.
 
 **MOST CRITICAL - Company Name Extraction:**
 The first and MOST IMPORTANT task is to find the EXACT, OFFICIAL company name with proper spacing and capitalization.
@@ -1113,7 +1136,8 @@ Research ${websiteUrl} now and extract these details. Return ONLY the JSON, no o
 
             const prompt = `You are an expert Executive Recruiter and Career Storyteller. Write a highly personalized, narrative-driven cover letter that proves deep research was done.
 
-**TARGET COMPANY:** ${companyName}
+**TARGET COMPANY:** ${companyName} (EXACT website: ${websiteUrl})
+**IMPORTANT:** This cover letter is for the company at the EXACT domain ${websiteUrl}. Do NOT confuse with any similar domain names (e.g. .ch is NOT .com, .co.uk is NOT .com). The company name "${companyName}" refers ONLY to the entity operating at ${websiteUrl}.
 **POSITION:** ${position}
 **COMPANY LOCATION:** ${locationText}
 
@@ -1137,6 +1161,16 @@ ${resumeText}
 **INSTRUCTIONS:**
 
 Write a 3-4 paragraph cover letter following this EXACT structure:
+
+**CRITICAL FORMATTING:** Separate each paragraph with a double newline (blank line). Each paragraph should appear on its own with clear visual separation.
+Example format:
+Paragraph 1 text here...
+
+Paragraph 2 text here...
+
+Paragraph 3 text here...
+
+Paragraph 4 text here...
 
 **Paragraph 1 - The Hook with Experience:**
 MUST START with years of experience and current role level. Then reference a specific product/initiative from company research.
@@ -1232,10 +1266,15 @@ ${hasAIExperience ? '3. MUST dedicate 2-3 sentences to AI/ML capabilities and bu
 - Return ONLY the cover letter content itself
 - Do NOT include any preambles like "Here's the cover letter" or "Okay, here's..." or "tailored to..."
 - Do NOT include any explanations about what you're doing
-- Do NOT include any meta-commentary
+- Do NOT include any meta-commentary or research notes
+- Do NOT dump your research findings or search results into the output
+- Do NOT include bullet points summarizing what you found about the company
+- Do NOT include any non-English words or phrases (translate everything to English)
+- Even if the company website is in German, French, or any other language, the cover letter MUST be 100% in PROFESSIONAL ENGLISH
 - Start directly with the opening paragraph of the letter
 - Write ONLY the body (no "Dear Hiring Manager" or signature)
 - **NO BULLET POINTS, NO LISTS** - pure narrative paragraphs only
+- **NO FOREIGN LANGUAGE WORDS** - everything must be in English
 
 Generate the narrative-driven cover letter now:`;
 
@@ -1264,11 +1303,52 @@ Generate the narrative-driven cover letter now:`;
                     throw new Error('Gemini returned empty cover letter after 3 attempts');
                 }
                 
-                // Clean up any meta commentary the AI might have added
+                // Clean up any meta commentary, thinking notes, or research dumps the AI might have added
+                // Strip everything before the actual cover letter starts (first paragraph with years of experience)
+                
+                // 1. Remove common preambles
                 coverLetterText = coverLetterText
                     .replace(/^(Okay,?\s+)?(Here's|Here is) (the|a) cover letter.*?[\n:]+/i, '')
                     .replace(/^.*?tailored to.*?[\n:]+/i, '')
                     .trim();
+                
+                // 2. Remove AI thinking/research notes that leak before the actual letter
+                // These typically start with phrases like "The search results...", "Based on my research...", etc.
+                // The actual letter should start with "With over X years..." or similar experience statement
+                const thinkingPatterns = [
+                    /^.*?(?:The search results?|My research|Based on (?:my |the )?research|I (?:found|discovered|confirmed)|Let me|I will proceed|One crucial detail|Here's what I found).*?\n+/gis,
+                    /^.*?(?:•\s+[^\n]+\n)+/gm,  // Remove bullet point lists at the start
+                ];
+                
+                for (const pattern of thinkingPatterns) {
+                    coverLetterText = coverLetterText.replace(pattern, '').trim();
+                }
+                
+                // 3. Find the actual letter start - should begin with "With over" or a capital letter starting a proper paragraph
+                // If there's still research junk before the letter, find where the letter actually starts
+                const letterStartMatch = coverLetterText.match(/(?:^|\n)(With (?:over|more than)|Having (?:spent|dedicated|accumulated)|Throughout my|Over the (?:past|last)|As a (?:seasoned|senior|experienced)|My \d+\+?\s*years?|For (?:over|more than)|Drawing (?:on|from)|Bringing (?:over|more than))/i);
+                if (letterStartMatch && letterStartMatch.index > 50) {
+                    // There's significant text before the actual letter start - strip it
+                    console.log(`⚠️ Stripped ${letterStartMatch.index} chars of AI thinking notes before letter start`);
+                    coverLetterText = coverLetterText.substring(letterStartMatch.index).trim();
+                }
+                
+                // 4. Remove any non-English text that leaked in (German, French, etc.)
+                // Replace foreign phrases in parentheses like "Personaldienstleistungen (personnel services)"
+                // Keep the English translation, remove the foreign word
+                coverLetterText = coverLetterText
+                    .replace(/\b[A-ZÄÖÜ][a-zäöüß]+(?:dienstleistungen|umgebungen|landschaften|anwendungen|leitung|ierung|ierung|stellung|schaft)\b/g, '')  // German compound words
+                    .replace(/\s*\([^)]*(?:personnel|services|host|modern|programming|migration|project|management|virtualization|environments|landscapes)[^)]*\)\s*/gi, '')  // Remove parenthetical translations
+                    .replace(/[""][^""]*(?:Erfolg|suchen|finden|Fähigkeiten|gefragt)[^""]*[""]/g, '')  // Remove German quoted phrases
+                    .replace(/\s{2,}/g, ' ')  // Clean up double spaces
+                    .trim();
+                
+                // 5. Ensure the cover letter is in English - check for excessive non-English content
+                const nonEnglishWords = coverLetterText.match(/\b(?:für|und|der|die|das|ist|mit|von|zur|zum|ein|eine|sich|auf|bei|nach|über|unter|durch|gegen|ohne|bis|seit)\b/gi) || [];
+                if (nonEnglishWords.length > 5) {
+                    console.warn(`⚠️ Attempt ${attempt}: Cover letter contains ${nonEnglishWords.length} non-English words, rejecting`);
+                    if (attempt < 3) continue;
+                }
                 
                 console.log('\n========================================');
                 console.log(`GEMINI AI RESPONSE (Attempt ${attempt}):`);
@@ -1284,7 +1364,14 @@ Generate the narrative-driven cover letter now:`;
                     'I am eager to relocate to',
                     'excellent fit for',
                     'I am keen to discuss how my expertise',
-                    'Not specified' // Reject if location is "Not specified"
+                    'Not specified', // Reject if location is "Not specified"
+                    'The search results confirm',
+                    'The search results show',
+                    'Based on my research',
+                    'I will proceed with generating',
+                    'Let me proceed',
+                    'Here\'s what I found',
+                    'One crucial detail from',
                 ];
                 
                 const foundGeneric = genericPhrases.filter(phrase => 
