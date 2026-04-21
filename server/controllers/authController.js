@@ -1125,6 +1125,182 @@ const appleAuth = async (req, res) => {
     }
 };
 
+// Apple Sign-In Web: redirect to Apple authorization URL
+const appleWebRedirect = (req, res) => {
+    const APPLE_SERVICE_ID = process.env.APPLE_SERVICE_ID;
+    if (!APPLE_SERVICE_ID) {
+        return res.status(500).send('Apple Sign-In is not configured. APPLE_SERVICE_ID env var is missing.');
+    }
+    const redirectUri = process.env.NODE_ENV === 'production'
+        ? 'https://cvapplyr.com/auth/apple/callback'
+        : 'http://localhost:3000/auth/apple/callback';
+
+    const state = require('crypto').randomBytes(16).toString('hex');
+    req.session.appleState = state;
+
+    const params = new URLSearchParams({
+        client_id: APPLE_SERVICE_ID,
+        redirect_uri: redirectUri,
+        response_type: 'code id_token',
+        scope: 'name email',
+        response_mode: 'form_post',
+        state: state,
+    });
+
+    res.redirect(`https://appleid.apple.com/auth/authorize?${params.toString()}`);
+};
+
+// Apple Sign-In Web: handle POST callback from Apple
+const appleWebCallback = async (req, res) => {
+    try {
+        const { id_token, user: userJson, state } = req.body;
+
+        if (!id_token) {
+            return res.redirect('/login?error=apple_no_token');
+        }
+
+        // Verify state to prevent CSRF
+        if (!state || state !== req.session?.appleState) {
+            console.warn('Apple web callback: state mismatch');
+            return res.redirect('/login?error=apple_state_mismatch');
+        }
+        delete req.session.appleState;
+
+        // Decode header to get kid
+        const tokenParts = id_token.split('.');
+        if (tokenParts.length !== 3) {
+            return res.redirect('/login?error=apple_invalid_token');
+        }
+
+        let header;
+        try {
+            header = JSON.parse(Buffer.from(tokenParts[0], 'base64url').toString());
+        } catch (e) {
+            header = JSON.parse(Buffer.from(tokenParts[0], 'base64').toString());
+        }
+
+        let payload;
+        try {
+            payload = JSON.parse(Buffer.from(tokenParts[1], 'base64url').toString());
+        } catch (e) {
+            payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString());
+        }
+
+        // Verify the token
+        const signingKey = await getAppleSigningKey(header.kid);
+        const decoded = jwt.verify(id_token, signingKey, {
+            algorithms: ['RS256'],
+            issuer: 'https://appleid.apple.com',
+            audience: process.env.APPLE_SERVICE_ID,
+            clockTolerance: 120,
+        });
+
+        // Apple sends user info (name) only on first authorization, as a JSON string
+        let fullName = null;
+        if (userJson) {
+            try {
+                const userData = typeof userJson === 'string' ? JSON.parse(userJson) : userJson;
+                if (userData.name) {
+                    fullName = [userData.name.firstName, userData.name.lastName].filter(Boolean).join(' ');
+                }
+            } catch (e) {
+                console.log('Could not parse Apple user data:', e.message);
+            }
+        }
+
+        const email = decoded.email;
+        if (!email) {
+            return res.redirect('/login?error=apple_no_email');
+        }
+
+        const displayName = fullName || 'Apple User';
+        const isPrivateRelay = email.includes('privaterelay.appleid.com');
+
+        // Find or create user (same logic as mobile appleAuth)
+        let existingUser = await dbConfig.get('SELECT * FROM users WHERE apple_user_id = ?', [decoded.sub]);
+        if (!existingUser) {
+            existingUser = await dbConfig.get('SELECT * FROM users WHERE email = ?', [email]);
+        }
+        if (!existingUser) {
+            existingUser = await dbConfig.get('SELECT * FROM users WHERE email LIKE ? AND oauth_provider = ?', ['%privaterelay.appleid.com', 'apple']);
+        }
+
+        const issuedAt = new Date();
+        const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000);
+
+        let userId, userEmail, userName;
+
+        if (!existingUser) {
+            // Create new user
+            const hashedPassword = await bcrypt.hash('apple-oauth-' + decoded.sub, 10);
+            const result = await dbConfig.run(
+                `INSERT INTO users (
+                    email, full_name, password, oauth_provider,
+                    apple_user_id, apple_identity_token,
+                    apple_token_issued_at, apple_token_expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                [email, displayName, hashedPassword, 'apple',
+                 decoded.sub, encryptOAuthToken(id_token),
+                 issuedAt.toISOString(), expiresAt.toISOString()]
+            );
+            userId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
+            userEmail = email;
+            userName = displayName;
+
+            // Give 2 free credits
+            try {
+                await dbConfig.run('INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)', [userId, 2, 2]);
+                await dbConfig.run(
+                    `INSERT INTO credit_transactions (user_id, transaction_type, credits_change, balance_after, description) VALUES (?, ?, ?, ?, ?)`,
+                    [userId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                );
+            } catch (creditErr) {
+                console.error('Failed to add welcome credits:', creditErr);
+            }
+        } else {
+            // Update existing user's Apple tokens
+            const preserveProvider = existingUser.oauth_provider === 'google' || existingUser.oauth_provider === 'microsoft';
+            await dbConfig.run(
+                `UPDATE users SET 
+                    ${preserveProvider ? '' : 'oauth_provider = ?,'}
+                    apple_user_id = ?,
+                    apple_identity_token = ?,
+                    apple_token_issued_at = ?,
+                    apple_token_expires_at = ?
+                WHERE id = ?`,
+                preserveProvider
+                    ? [decoded.sub, encryptOAuthToken(id_token), issuedAt.toISOString(), expiresAt.toISOString(), existingUser.id]
+                    : ['apple', decoded.sub, encryptOAuthToken(id_token), issuedAt.toISOString(), expiresAt.toISOString(), existingUser.id]
+            );
+            userId = existingUser.id;
+            userEmail = existingUser.email;
+            userName = existingUser.full_name || displayName;
+        }
+
+        // Generate JWT and redirect same as Google/Microsoft
+        const token = jwt.sign({ id: userId, email: userEmail }, JWT_SECRET, { expiresIn: '24h' });
+
+        const userDataObj = {
+            id: userId,
+            fullName: userName,
+            email: userEmail,
+            provider: 'apple',
+            oauth_provider: 'apple'
+        };
+
+        res.cookie('authToken', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            maxAge: 24 * 60 * 60 * 1000,
+            sameSite: 'strict'
+        });
+        res.redirect(`/auth-success.html?token=${token}&user=${encodeURIComponent(JSON.stringify(userDataObj))}`);
+    } catch (error) {
+        console.error('Apple Web Sign-In error:', error.name, error.message);
+        res.redirect('/login?error=apple_auth_failed');
+    }
+};
+
 // Change password
 const changePassword = async (req, res) => {
     try {
@@ -1490,6 +1666,8 @@ module.exports = {
     microsoftAuth,
     microsoftAndroidRelay,
     appleAuth,
+    appleWebRedirect,
+    appleWebCallback,
     linkedinCallback,
     changePassword,
     linkGoogle,

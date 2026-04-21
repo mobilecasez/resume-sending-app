@@ -52,7 +52,12 @@ router.get('/microsoft/callback',
 router.post('/microsoft', authController.microsoftAuth);
 
 // Apple Sign-In API endpoint for mobile
+// Apple Sign-In API endpoint for mobile
 router.post('/apple', authController.appleAuth);
+
+// Apple Sign-In Web Routes
+router.get('/apple', authController.appleWebRedirect);
+router.post('/apple/callback', authController.appleWebCallback);
 
 // Link Google account to existing user (for Apple Sign-In users who need Gmail sending)
 router.post('/link-google', authenticateToken, authController.linkGoogle);

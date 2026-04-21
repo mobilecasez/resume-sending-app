@@ -23,6 +23,8 @@ const CryptoJS = require('crypto-js');
 const { Pool } = require('pg');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
+const helmet = require('helmet');
+const compression = require('compression');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const MicrosoftStrategy = require('passport-microsoft').Strategy;
@@ -60,7 +62,19 @@ const app = express();
 // Trust Railway's reverse proxy for rate limiting and IP detection
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
+
+// Security headers
+app.use(helmet({
+  contentSecurityPolicy: false, // Disabled because inline scripts are used in HTML pages
+  crossOriginEmbedderPolicy: false,
+}));
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
+
+// Apple Sign in with Apple (Web) configuration
+const APPLE_SERVICE_ID = process.env.APPLE_SERVICE_ID; // e.g., com.cvapplyr.web
+const APPLE_REDIRECT_URI = process.env.NODE_ENV === 'production'
+    ? 'https://cvapplyr.com/auth/apple/callback'
+    : 'http://localhost:3000/auth/apple/callback';
 
 // SECURITY: Encryption key is REQUIRED - no fallback allowed
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
@@ -444,6 +458,7 @@ const upload = multer({
 });
 
 // Middleware
+app.use(compression());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser());
@@ -476,7 +491,7 @@ app.use(session({
     secret: JWT_SECRET,
     resave: false,
     saveUninitialized: false,
-    cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 } // 24 hours
+    cookie: { secure: process.env.NODE_ENV === 'production', maxAge: 24 * 60 * 60 * 1000 } // 24 hours
 }));
 app.use(passport.initialize());
 app.use(passport.session());
@@ -733,18 +748,19 @@ app.get('/refund-policy', (req, res) => {
 });
 
 // Static files for landing page resources
-app.use('/bootstrap-4.1.1-dist', express.static('bootstrap-4.1.1-dist'));
-app.use('/css', express.static('css'));
-app.use('/js', express.static('js'));
-app.use('/imgs', express.static('imgs'));
-app.use('/Screenshots', express.static('Screenshots'));
+const staticOptions = { maxAge: '7d', etag: true };
+app.use('/bootstrap-4.1.1-dist', express.static('bootstrap-4.1.1-dist', staticOptions));
+app.use('/css', express.static('css', staticOptions));
+app.use('/js', express.static('js', staticOptions));
+app.use('/imgs', express.static('imgs', staticOptions));
+app.use('/Screenshots', express.static('Screenshots', staticOptions));
 
 // Serve .well-known directory for domain verification (Microsoft, Apple, etc.)
 app.use('/.well-known', express.static('.well-known'));
 
 // Static files for public access
-app.use(express.static('public'));
-app.use('/uploads', express.static('uploads'));
+app.use(express.static('public', { maxAge: '1d', etag: true }));
+app.use('/uploads', express.static('uploads', { maxAge: '7d', etag: true }));
 
 // Passport Google OAuth Configuration
 // Mobile flow always uses production callback so Chrome on Android emulator can reach it.
@@ -2897,7 +2913,12 @@ app.post('/api/generate-cover-letter-pdf', authenticateToken, async (req, res) =
     
     try {
         const userId = req.user.id;
-        const { recipientEmail, websiteUrl, position } = req.body;
+        let { recipientEmail, websiteUrl, position } = req.body;
+
+        // Normalize website URL - auto-prepend https:// if missing
+        if (websiteUrl && !websiteUrl.match(/^https?:\/\//)) {
+            websiteUrl = 'https://' + websiteUrl;
+        }
 
         console.log(`🔍 [${requestId}] Parsing request body:`, { userId, recipientEmail, websiteUrl, position });
 
@@ -2950,8 +2971,20 @@ app.post('/api/generate-cover-letter-pdf', authenticateToken, async (req, res) =
         // First, generate hiring manager name, all locations, and subject using AI
         console.log(`⏳ [${requestId}] Generating additional details (calling Gemini AI - may take 30-60 seconds)...`);
         const additionalDetailsStart = Date.now();
-        // Extract company name from URL for initial lookup
-        const urlCompanyName = websiteUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0];
+        // Extract company name from URL for initial lookup (handles subdomains like career.limeflight.com)
+        let urlCompanyName;
+        try {
+            const parsedUrl = new URL(websiteUrl.startsWith('http') ? websiteUrl : `https://${websiteUrl}`);
+            const hostname = parsedUrl.hostname.replace('www.', '').toLowerCase();
+            const hostParts = hostname.split('.');
+            const genericSubdomains = ['career', 'careers', 'jobs', 'job', 'hiring', 'recruit', 'recruiting', 'recruitment', 'talent', 'join', 'work', 'apply', 'opportunities', 'portal', 'app', 'hr', 'people', 'team', 'boards', 'board'];
+            urlCompanyName = hostParts[0];
+            if (genericSubdomains.includes(urlCompanyName) && hostParts.length >= 3) {
+                urlCompanyName = hostParts[1];
+            }
+        } catch {
+            urlCompanyName = websiteUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0];
+        }
         const initialCompanyName = urlCompanyName.charAt(0).toUpperCase() + urlCompanyName.slice(1);
         const { hiringManager, locations, subject } = await generateAdditionalDetails(websiteUrl, initialCompanyName, position);
         const additionalDetailsDuration = Date.now() - additionalDetailsStart;
@@ -3251,6 +3284,13 @@ async function generateAdditionalDetails(websiteUrl, companyName, position = 'Po
         console.log(`✅ [GEMINI] Model initialized, preparing prompt...`);
 
         const prompt = `You are a research assistant. Find the ACTUAL headquarters location and address for the company "${companyName}" (website: ${websiteUrl}).
+
+ABSOLUTELY CRITICAL - DOMAIN ACCURACY:
+You MUST research the EXACT domain "${websiteUrl}" — NOT any similar-sounding domain.
+- The TLD matters: .ch is NOT .com, .co.uk is NOT .com, .de is NOT .com
+- For example, if given "icmag.ch", research ONLY icmag.ch (a Swiss company), NOT icmag.com (a completely different company)
+- NEVER substitute or guess a different domain. The user provided this exact URL for a reason.
+- If you cannot find information about the exact domain, state what you can determine from the URL alone — do NOT return information about a different company.
 
 CRITICAL INSTRUCTIONS:
 1. Visit the company's ACTUAL website at ${websiteUrl}

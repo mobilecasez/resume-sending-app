@@ -811,6 +811,7 @@ function AppContent() {
   // Apple IAP state
   const [iapProducts, setIapProducts] = useState([]);
   const [iapConnected, setIapConnected] = useState(false);
+  const [restoringPurchases, setRestoringPurchases] = useState(false);
   const purchaseUpdateSubscription = useRef(null);
   const purchaseErrorSubscription = useRef(null);
   const userTokenRef = useRef(null);
@@ -1039,7 +1040,9 @@ function AppContent() {
 
   const isValidURL = (url) => {
     try {
-      new URL(url);
+      // Auto-accept domain-like strings (e.g. "xyz.com", "abc.co.uk")
+      const urlToTest = url.match(/^https?:\/\//) ? url : `https://${url}`;
+      new URL(urlToTest);
       return true;
     } catch {
       return false;
@@ -1107,7 +1110,7 @@ function AppContent() {
         if (field === 'email' && value && !isValidEmail(value)) {
           error = 'Invalid email format';
         } else if (field === 'website' && value && !isValidURL(value)) {
-          error = 'Invalid URL (use https://...)';
+          error = 'Invalid URL (e.g. example.com)';
         }
         
         return { ...r, [field]: value, error };
@@ -1143,6 +1146,31 @@ function AppContent() {
       // Don't clear existing cover letters - preserve sent/generated status
       setCurrentReviewTab(0);
       setScreen('review');
+    }
+  };
+
+  // Restore purchases handler (Apple IAP)
+  const handleRestorePurchases = async () => {
+    if (Platform.OS !== 'ios') return;
+    setRestoringPurchases(true);
+    try {
+      const available = await getAvailablePurchases({ alsoPublishToEventListenerIOS: false });
+      console.log('🍎 Restore: found purchases:', available?.length || 0);
+      if (available && available.length > 0) {
+        let restored = 0;
+        for (const p of available) {
+          const result = await verifyAndCreditApplePurchase(p);
+          if (result) restored++;
+        }
+        Alert.alert('Restore Complete', restored > 0 ? `Successfully restored ${restored} purchase(s). Your credits have been updated.` : 'All purchases were already applied to your account.');
+      } else {
+        Alert.alert('No Purchases Found', 'There are no previous purchases to restore.');
+      }
+    } catch (error) {
+      console.log('🍎 Restore error:', error.message);
+      Alert.alert('Restore Failed', 'Unable to restore purchases. Please try again later.');
+    } finally {
+      setRestoringPurchases(false);
     }
   };
 
@@ -1761,6 +1789,7 @@ function AppContent() {
           onPress: async () => {
             // Clear all local data
             await AsyncStorage.clear();
+            await SecureStore.deleteItemAsync('userSession').catch(() => {});
             setUser(null);
             setShowDeleteAccount(false);
             setDeleteConfirmText('');
@@ -1961,7 +1990,18 @@ function AppContent() {
   // REVIEW SCREEN HANDLERS
   // Progressive loading functions
   const startProgressiveLoading = (companyUrl) => {
-    const companyName = companyUrl ? companyUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0] : 'the company';
+    let companyName = 'the company';
+    try {
+      const urlStr = companyUrl && companyUrl.match(/^https?:\/\//) ? companyUrl : `https://${companyUrl}`;
+      const hostname = new URL(urlStr).hostname.replace('www.', '');
+      const hostParts = hostname.split('.');
+      const genericSubs = ['career', 'careers', 'jobs', 'job', 'hiring', 'recruit', 'talent', 'join', 'work', 'apply', 'portal', 'app', 'hr', 'people', 'team'];
+      let name = hostParts[0];
+      if (genericSubs.includes(name) && hostParts.length >= 3) {
+        name = hostParts[1];
+      }
+      companyName = name.charAt(0).toUpperCase() + name.slice(1);
+    } catch { }
     const steps = [
       { time: 0, message: '🔍 Fetching your profile details...', progress: 0 },
       { time: 3000, message: `🌐 Researching about ${companyName}...`, progress: 15 },
@@ -2140,7 +2180,7 @@ function AppContent() {
         signal: abortControllerRef.current.signal,
         body: JSON.stringify({
           recipientEmail: recipient.email,
-          websiteUrl: recipient.website,
+          websiteUrl: recipient.website.match(/^https?:\/\//) ? recipient.website : `https://${recipient.website}`,
           position: recipient.position
         })
       });
@@ -6870,6 +6910,19 @@ function AppContent() {
               <Text style={styles.emptyPackagesText}>No packages available</Text>
               <Text style={styles.emptyPackagesSubtext}>Please check back later</Text>
             </View>
+          )}
+
+          {/* Restore Purchases Button (iOS only) */}
+          {Platform.OS === 'ios' && (
+            <TouchableOpacity
+              style={{ alignItems: 'center', paddingVertical: 16, marginBottom: 20 }}
+              onPress={handleRestorePurchases}
+              disabled={restoringPurchases}
+            >
+              <Text style={{ color: '#6366f1', fontSize: 14, fontWeight: '500' }}>
+                {restoringPurchases ? 'Restoring...' : 'Restore Purchases'}
+              </Text>
+            </TouchableOpacity>
           )}
         </ScrollView>
 

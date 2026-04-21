@@ -241,7 +241,21 @@ class AICoverLetterGenerator {
         try {
             const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
             let hostname = urlObj.hostname.replace('www.', '').toLowerCase();
-            let name = hostname.split('.')[0];
+            const hostParts = hostname.split('.');
+            let name = hostParts[0];
+            
+            // Generic subdomains that indicate the real company is in the next part
+            const genericSubdomains = [
+                'career', 'careers', 'jobs', 'job', 'hiring', 'recruit', 'recruiting',
+                'recruitment', 'talent', 'join', 'work', 'apply', 'opportunities',
+                'portal', 'app', 'hr', 'people', 'team', 'boards', 'board'
+            ];
+            
+            // If first part is a generic subdomain and there are more parts, use the next part
+            // e.g., career.limeflight.com -> limeflight
+            if (genericSubdomains.includes(name) && hostParts.length >= 3) {
+                name = hostParts[1];
+            }
             
             // Common job portal patterns
             const jobPatterns = [

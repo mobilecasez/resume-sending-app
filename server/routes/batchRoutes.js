@@ -105,12 +105,28 @@ async function processBatchJob(jobId, userId, user, validRecipients, mode, cover
     // Store generated cover letters for generate-and-send mode
     const generatedCoverLetters = {};
 
-    for (const recipient of validRecipients) {
-        const idx = recipient.originalIndex;
+    const GENERATE_CONCURRENCY = Math.max(1, Math.min(parseInt(process.env.BATCH_GENERATE_CONCURRENCY || '3', 10), 6));
 
-        try {
-            // ---- GENERATE phase ----
-            if (mode === 'generate' || mode === 'generate-and-send') {
+    // Small worker-pool helper for safe bounded parallelism
+    const processWithConcurrency = async (items, limit, worker) => {
+        let cursor = 0;
+        const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+            while (true) {
+                const current = cursor++;
+                if (current >= items.length) break;
+                await worker(items[current]);
+            }
+        });
+        await Promise.all(workers);
+    };
+
+    // ---- GENERATE phase ----
+    if (mode === 'generate' || mode === 'generate-and-send') {
+        console.log(`[Batch ${jobId}] Starting parallel generation with concurrency=${GENERATE_CONCURRENCY}`);
+
+        await processWithConcurrency(validRecipients, GENERATE_CONCURRENCY, async (recipient) => {
+            const idx = recipient.originalIndex;
+            try {
                 console.log(`[Batch ${jobId}] Generating for recipient ${idx}: ${recipient.email}`);
                 const genResult = await executeGenerationWork(userId, user, {
                     recipientEmail: recipient.email,
@@ -119,17 +135,31 @@ async function processBatchJob(jobId, userId, user, validRecipients, mode, cover
                 });
 
                 generatedCoverLetters[idx] = genResult;
-                results[idx] = { generated: true, generationData: genResult };
+                results[idx] = { ...(results[idx] || {}), generated: true, generationData: genResult };
+            } catch (err) {
+                console.error(`[Batch ${jobId}] Error generating recipient ${idx}:`, err.message);
+                results[idx] = {
+                    ...(results[idx] || {}),
+                    generated: false,
+                    error: err.message
+                };
+            } finally {
                 completedSteps++;
                 generatesDone++;
                 await updateProgress();
             }
+        });
+    }
 
-            // ---- SEND phase ----
-            if (mode === 'send' || mode === 'generate-and-send') {
+    // ---- SEND phase ----
+    if (mode === 'send' || mode === 'generate-and-send') {
+        for (const recipient of validRecipients) {
+            const idx = recipient.originalIndex;
+
+            try {
                 // Use generated cover letter or the one provided by client
                 const cl = generatedCoverLetters[idx] || coverLetters[String(idx)];
-                
+
                 if (!cl || !cl.coverLetterHtml) {
                     results[idx] = {
                         ...(results[idx] || {}),
@@ -182,24 +212,18 @@ async function processBatchJob(jobId, userId, user, validRecipients, mode, cover
                     sent: true,
                     sendData: sendResult
                 };
+            } catch (err) {
+                console.error(`[Batch ${jobId}] Error sending recipient ${idx}:`, err.message);
+                results[idx] = {
+                    ...(results[idx] || {}),
+                    sent: false,
+                    sendError: err.message
+                };
+            } finally {
                 completedSteps++;
                 sendsDone++;
                 await updateProgress();
             }
-        } catch (err) {
-            console.error(`[Batch ${jobId}] Error processing recipient ${idx}:`, err.message);
-            const failedAtGenerate = mode === 'generate' || (mode === 'generate-and-send' && !generatedCoverLetters[idx]);
-            results[idx] = {
-                ...(results[idx] || {}),
-                error: err.message,
-                ...(failedAtGenerate
-                    ? { generated: false }
-                    : { sent: false, sendError: err.message })
-            };
-            completedSteps++;
-            if (failedAtGenerate) generatesDone++; else sendsDone++;
-            await updateProgress();
-            // Continue with next recipient — don't abort the batch
         }
     }
 

@@ -8,9 +8,9 @@
     "scheme": "cvapplyr",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.cvapplyr.mobile",
-      "buildNumber": "33",
+      "buildNumber": "36",
       "usesAppleSignIn": true,
       "infoPlist": {
         "CFBundleURLTypes": [
@@ -92,8 +92,7 @@
           "photosPermission": "CVApplyr uses your photo library to set a profile picture and attach images to emails.",
           "cameraPermission": "CVApplyr uses your camera to take a profile photo."
         }
-      ],
-      "react-native-iap"
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

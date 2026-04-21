@@ -479,69 +479,65 @@ class TemplateCoverLetterGenerator {
      */
     async extractBestCompanyName(websiteUrl, $, pageTitle, metaDescription) {
         const candidates = [];
+
+        const addCandidate = (source, rawName, priority) => {
+            const cleanedName = this.cleanCompanyNameCandidate(rawName);
+            if (cleanedName && this.isValidCompanyName(cleanedName)) {
+                candidates.push({ source, name: cleanedName, priority });
+            }
+        };
+
+        // 0. Try extracting legal/full entity name from WordPress API pages (often includes Impressum/legal text)
+        const wpLegalName = await this.extractLegalCompanyNameFromWordPress(websiteUrl);
+        if (wpLegalName) {
+            addCandidate('wp-legal', wpLegalName, -1); // Highest priority
+        }
         
         // 1. Try extracting from page title (split by common separators)
         if (pageTitle) {
             // Split by common separators: |, -, –, —, :, >
             const titleParts = pageTitle.split(/\s*[\|\-–—:>]\s*/);
             for (const part of titleParts) {
-                const cleaned = part.trim();
-                if (this.isValidCompanyName(cleaned)) {
-                    candidates.push({ source: 'title', name: cleaned, priority: 1 });
-                }
+                addCandidate('title', part.trim(), 1);
             }
         }
         
         // 2. Try OG site name (often the most reliable)
         if ($) {
             const ogSiteName = $('meta[property="og:site_name"]').attr('content');
-            if (ogSiteName && this.isValidCompanyName(ogSiteName.trim())) {
-                candidates.push({ source: 'og:site_name', name: ogSiteName.trim(), priority: 0 }); // Highest priority
-            }
+            addCandidate('og:site_name', ogSiteName, 0);
             
             // 3. Try structured data (JSON-LD)
             $('script[type="application/ld+json"]').each((i, el) => {
                 try {
                     const jsonLd = JSON.parse($(el).html());
-                    if (jsonLd.name && this.isValidCompanyName(jsonLd.name)) {
-                        candidates.push({ source: 'json-ld', name: jsonLd.name, priority: 0 });
-                    }
-                    if (jsonLd.hiringOrganization?.name && this.isValidCompanyName(jsonLd.hiringOrganization.name)) {
-                        candidates.push({ source: 'json-ld-hiring', name: jsonLd.hiringOrganization.name, priority: 0 });
-                    }
-                    if (jsonLd.organization?.name && this.isValidCompanyName(jsonLd.organization.name)) {
-                        candidates.push({ source: 'json-ld-org', name: jsonLd.organization.name, priority: 0 });
-                    }
+                    addCandidate('json-ld', jsonLd.name, 0);
+                    addCandidate('json-ld-hiring', jsonLd.hiringOrganization?.name, 0);
+                    addCandidate('json-ld-org', jsonLd.organization?.name, 0);
                 } catch (e) { /* ignore parse errors */ }
             });
             
             // 4. Look for company name in footer copyright
             const footerText = $('footer').text();
             const copyrightMatch = footerText.match(/(?:©|copyright|\(c\))\s*(?:\d{4})?\s*([A-Z][A-Za-z0-9\s&\.]+?)(?:\.|\s*all|\s*rights|,|$)/i);
-            if (copyrightMatch && copyrightMatch[1] && this.isValidCompanyName(copyrightMatch[1].trim())) {
-                candidates.push({ source: 'copyright', name: copyrightMatch[1].trim(), priority: 2 });
-            }
+            addCandidate('copyright', copyrightMatch?.[1], 2);
             
             // 5. Look for logo alt text
             const logoAlt = $('img[class*="logo"], img[id*="logo"], .logo img, #logo img, header img').first().attr('alt');
-            if (logoAlt && this.isValidCompanyName(logoAlt.trim())) {
-                candidates.push({ source: 'logo-alt', name: logoAlt.trim(), priority: 2 });
-            }
+            addCandidate('logo-alt', logoAlt, 2);
         }
         
         // 6. Extract from URL
         const urlName = this.extractCompanyFromUrl(websiteUrl);
         if (urlName) {
-            candidates.push({ source: 'url', name: urlName, priority: 3 });
+            addCandidate('url', urlName, 3);
         }
         
         // 7. Try extracting from meta description
         if (metaDescription) {
             // Look for patterns like "Company Name is..." or "At Company Name,..."
             const descMatch = metaDescription.match(/^(?:at\s+)?([A-Z][A-Za-z0-9\s&\.]+?)(?:\s+is\s|\s+we\s|,|\.|\s+-)/i);
-            if (descMatch && descMatch[1] && this.isValidCompanyName(descMatch[1].trim())) {
-                candidates.push({ source: 'meta-desc', name: descMatch[1].trim(), priority: 2 });
-            }
+            addCandidate('meta-desc', descMatch?.[1], 2);
         }
         
         // Sort by priority (lower = better) and pick the best
@@ -555,6 +551,141 @@ class TemplateCoverLetterGenerator {
         
         // 8. Last resort: Use AI to extract company name
         return await this.aiExtractCompanyName(websiteUrl, pageTitle, metaDescription);
+    }
+
+    /**
+     * Try extracting legal/full employer name from WordPress JSON API pages.
+     */
+    async extractLegalCompanyNameFromWordPress(websiteUrl) {
+        try {
+            const normalizedUrl = websiteUrl.startsWith('http') ? websiteUrl : `https://${websiteUrl}`;
+            const origin = new URL(normalizedUrl).origin;
+            const apiUrl = `${origin}/wp-json/wp/v2/pages?per_page=100`;
+
+            const response = await axios.get(apiUrl, {
+                timeout: 10000,
+                headers: { 'User-Agent': 'Mozilla/5.0' },
+                validateStatus: (status) => status >= 200 && status < 400
+            });
+
+            const raw = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+            const decoded = raw
+                .replace(/&amp;/gi, '&')
+                .replace(/&#8211;|&ndash;/gi, '-')
+                .replace(/&#8212;|&mdash;/gi, '-');
+
+            const legalNameRegex = /\b([A-Z][A-Za-z0-9&'.-]*(?:\s+[A-Z][A-Za-z0-9&'.-]*){0,7}\s+(?:AG|GmbH|Ltd|Limited|Inc|LLC|S\.?A\.?|SARL|BV|UG|KG|GbR))\b/g;
+            const matches = [];
+            let match;
+
+            while ((match = legalNameRegex.exec(decoded)) !== null) {
+                const candidate = this.cleanCompanyNameCandidate(match[1]);
+                if (candidate && this.isValidCompanyName(candidate)) {
+                    matches.push(candidate);
+                }
+            }
+
+            if (matches.length === 0) return null;
+
+            const urlName = (this.extractCompanyFromUrl(websiteUrl) || '').toLowerCase().replace(/\s+/g, '');
+            const related = matches.filter((name) => {
+                const normalized = name.toLowerCase().replace(/\s+/g, '');
+                if (!urlName) return true;
+                return normalized.includes(urlName.slice(0, 3)) || urlName.includes(normalized.slice(0, 3));
+            });
+
+            const pool = related.length > 0 ? related : matches;
+            pool.sort((a, b) => {
+                const aWords = a.split(/\s+/).length;
+                const bWords = b.split(/\s+/).length;
+                return bWords - aWords || b.length - a.length;
+            });
+            return pool[0];
+        } catch (error) {
+            return null;
+        }
+    }
+
+    /**
+     * Clean noisy title/metadata values into a likely company name.
+     */
+    cleanCompanyNameCandidate(name) {
+        if (!name || typeof name !== 'string') return null;
+
+        let cleaned = name
+            .replace(/&amp;/gi, '&')
+            .replace(/&#8211;|&ndash;/gi, '-')
+            .replace(/&#8212;|&mdash;/gi, '-')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        const legalMatch = cleaned.match(/([A-Z][A-Za-z0-9&'.-]*(?:\s+[A-Z][A-Za-z0-9&'.-]*){0,7}\s+(?:AG|GmbH|Ltd|Limited|Inc|LLC|S\.?A\.?|SARL|BV|UG|KG|GbR))/i);
+        if (legalMatch && legalMatch[1]) {
+            return legalMatch[1].trim();
+        }
+
+        // Drop slogan tails such as "SIE suchen - WIR finden" after separators.
+        cleaned = cleaned.split(/\s*[\|\-–—:>]\s*/)[0].trim();
+
+        // Remove obvious slogan/boilerplate fragments.
+        cleaned = cleaned
+            .replace(/\b(sie suchen|wir finden|home|welcome|startseite)\b/gi, '')
+            .replace(/\s{2,}/g, ' ')
+            .replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '')
+            .trim();
+
+        return cleaned || null;
+    }
+
+    isSloganLikeName(name) {
+        if (!name || typeof name !== 'string') return true;
+        const lower = name.toLowerCase();
+        return /(sie suchen|wir finden|home|startseite|comment feed|\bfeed\b|willkommen|you search|we find)/i.test(lower);
+    }
+
+    scoreCompanyNameCandidate(name, urlCompanyName) {
+        if (!name || typeof name !== 'string') return -999;
+
+        const cleaned = this.cleanCompanyNameCandidate(name);
+        if (!cleaned || !this.isValidCompanyName(cleaned)) return -999;
+
+        let score = 0;
+        const lower = cleaned.toLowerCase();
+        const words = cleaned.split(/\s+/).length;
+        const urlStem = (urlCompanyName || '').toLowerCase().replace(/\s+/g, '');
+        const normalized = lower.replace(/\s+/g, '');
+
+        if (/(ag|gmbh|ltd|limited|inc|llc|s\.?a\.?|sarl|bv|ug|kg|gbr)$/i.test(cleaned)) score += 80;
+        if (words >= 2) score += 15;
+        if (words >= 3) score += 10;
+        if (cleaned.length >= 6 && cleaned.length <= 80) score += 10;
+        if (urlStem && (normalized.includes(urlStem.slice(0, 3)) || urlStem.includes(normalized.slice(0, 3)))) score += 20;
+
+        if (this.isSloganLikeName(cleaned)) score -= 120;
+        if (/[\-–—|]/.test(cleaned)) score -= 15;
+
+        return score;
+    }
+
+    chooseBestCompanyName(candidates, urlCompanyName, fallback = 'the Company') {
+        let best = null;
+        let bestScore = -999;
+
+        for (const candidate of candidates) {
+            const cleaned = this.cleanCompanyNameCandidate(candidate);
+            const score = this.scoreCompanyNameCandidate(cleaned, urlCompanyName);
+            if (score > bestScore) {
+                bestScore = score;
+                best = cleaned;
+            }
+        }
+
+        if (best && this.isValidCompanyName(best) && !this.isSloganLikeName(best)) {
+            return best;
+        }
+
+        const fallbackClean = this.cleanCompanyNameCandidate(fallback);
+        return (fallbackClean && this.isValidCompanyName(fallbackClean)) ? fallbackClean : 'the Company';
     }
     
     /**
@@ -680,6 +811,7 @@ Company name:`;
         const cleaned = name.trim().toLowerCase();
         if (cleaned.length < 2) return false;
         if (this.invalidCompanyNames.includes(cleaned)) return false;
+        if (/\b(sie suchen|wir finden|home|startseite|comment feed|feed)\b/i.test(cleaned)) return false;
         // Check if it's mostly numbers
         if (/^\d+$/.test(cleaned)) return false;
         return true;
@@ -910,6 +1042,72 @@ Be professional and factual. If you don't have specific information, make reason
                 }
             });
 
+                        const scrapedCompanyData = await this.deepScrapeCompany(websiteUrl, []);
+                        const anchoredCompanyName = scrapedCompanyData?.companyName || companyName;
+
+                        const exactSitePrompt = scrapedCompanyData ? `Role: You are an expert Headhunter performing deep company research to extract SPECIFIC PROPER NOUNS.
+
+You must use ONLY the exact website content provided below. Do NOT use external knowledge, do NOT use search results, and do NOT infer details from similarly named domains.
+
+**Company to Research:**
+- EXACT Domain/URL: ${websiteUrl}
+- URL-extracted name: ${companyName}
+- Site-extracted company name: ${anchoredCompanyName}
+- Site hostname: ${scrapedCompanyData.domain || websiteUrl}
+
+**ABSOLUTELY CRITICAL - DOMAIN ACCURACY:**
+You MUST stay anchored to the exact domain "${websiteUrl}".
+- The TLD matters: .ch is NOT .com, .co.uk is NOT .com, .de is NOT .com
+- Use ONLY the content below from the exact site we fetched
+- If the exact site content does not mention products, clients, or partners, return "Not found" or "Could not find specific ... names"
+- NEVER substitute facts from another company, another country, or another domain
+
+**EXACT SITE CONTENT:**
+- Title: ${scrapedCompanyData.homepage?.title || 'Not found'}
+- Meta Description: ${scrapedCompanyData.homepage?.description || 'Not found'}
+- Headings: ${(scrapedCompanyData.homepage?.headings || []).join(' | ') || 'Not found'}
+- Subheadings: ${(scrapedCompanyData.homepage?.subheadings || []).join(' | ') || 'Not found'}
+- About Page: ${scrapedCompanyData.about || 'Not found'}
+- Mission: ${scrapedCompanyData.mission || 'Not found'}
+- Tech Stack from site: ${(scrapedCompanyData.techStack || []).join(', ') || 'Not found'}
+- Unique Site Details: ${(scrapedCompanyData.uniqueInsights || []).join(' | ') || 'Not found'}
+- Careers Matches: ${scrapedCompanyData.careers?.count || 0}
+- Contact Address: ${scrapedCompanyData.contact?.address || 'Not found'}
+
+**MOST CRITICAL - Company Name Extraction:**
+1. Find the FULL, OFFICIAL employer name as shown on the exact website (prefer legal/company-register style names)
+2. Check title, footer copyright, contact page, legal notice, impressum, and about sections for the legal entity name
+3. Prefer the longest valid official form when available (e.g., "ICMAG AG" over "ICMAG")
+4. Do NOT replace it with a company from another domain
+5. If unsure, keep the company name anchored to "${anchoredCompanyName}"
+
+**EXTRACTION GOALS:**
+1. Specific Product Names: only if explicitly visible in the exact site content
+2. Specific Client Names: only if explicitly visible in the exact site content
+3. Specific Partners/Tools/Technologies: only if explicitly visible in the exact site content
+4. Founder/Leadership Background: only if explicitly visible in the exact site content
+5. Company Focus & Methodology: summarize from the exact site content only
+
+**VALIDATION RULES:**
+- Do NOT invent or guess names
+- Do NOT use generic terms like "their software" if the site gives no branded name
+- If a category is missing from the site content, say "Could not find specific [category] names"
+
+**Output Format (JSON):**
+{
+    "companyName": "Full official employer name with proper spacing and capitalization (prefer legal suffixes like AG, GmbH, Ltd, Inc, LLC when present on site)",
+    "products": ["Product 1", "Product 2"],
+    "clients": ["Client 1", "Client 2"],
+    "technologies": ["Tech 1", "Tech 2", "Tech 3"],
+    "partnerships": ["Partner 1", "Partner 2"],
+    "businessModel": "Brief description of what they do",
+    "mission": "Their mission statement or vision",
+    "uniqueDetails": ["Unique fact 1", "Unique fact 2"],
+    "industryFocus": "Industries they serve"
+}
+
+Return ONLY the JSON, no other text.` : null;
+
             const researchPrompt = `Role: You are an expert Headhunter performing deep company research to extract SPECIFIC PROPER NOUNS.
 
 **Company to Research:**
@@ -1000,11 +1198,19 @@ After confirming the correct company name, extract the following "Proper Nouns":
 
 Research ${websiteUrl} now and extract these details. Return ONLY the JSON, no other text.`;
 
-            console.log('🔍 Step 1: Researching company with Gemini AI + Google Search...');
-            const result = await model.generateContent({
-                contents: [{ role: 'user', parts: [{ text: researchPrompt }] }],
-                tools: [{ googleSearch: {} }]
-            });
+            console.log(scrapedCompanyData
+                ? '🔍 Step 1: Researching company from exact scraped website content...'
+                : '🔍 Step 1: Researching company with Gemini AI + Google Search...');
+
+            const generationRequest = {
+                contents: [{ role: 'user', parts: [{ text: exactSitePrompt || researchPrompt }] }]
+            };
+
+            if (!scrapedCompanyData) {
+                generationRequest.tools = [{ googleSearch: {} }];
+            }
+
+            const result = await model.generateContent(generationRequest);
             const response = await result.response;
             let researchText = response.text();
             
@@ -1034,6 +1240,36 @@ Research ${websiteUrl} now and extract these details. Return ONLY the JSON, no o
             
             try {
                 const companyIntel = JSON.parse(jsonMatch[0]);
+
+                const aiCompanyName = typeof companyIntel.companyName === 'string'
+                    ? companyIntel.companyName.trim()
+                    : '';
+                const scrapedCompanyName = typeof scrapedCompanyData?.companyName === 'string'
+                    ? scrapedCompanyData.companyName.trim()
+                    : '';
+
+                companyIntel.companyName = this.chooseBestCompanyName(
+                    [aiCompanyName, scrapedCompanyName, companyName],
+                    companyName,
+                    companyName
+                );
+
+                if ((!Array.isArray(companyIntel.technologies) || companyIntel.technologies.length === 0) && scrapedCompanyData?.techStack?.length) {
+                    companyIntel.technologies = scrapedCompanyData.techStack;
+                }
+
+                if ((!companyIntel.mission || companyIntel.mission === 'Not found') && scrapedCompanyData?.mission) {
+                    companyIntel.mission = scrapedCompanyData.mission;
+                }
+
+                if ((!Array.isArray(companyIntel.uniqueDetails) || companyIntel.uniqueDetails.length === 0) && scrapedCompanyData?.uniqueInsights?.length) {
+                    companyIntel.uniqueDetails = scrapedCompanyData.uniqueInsights;
+                }
+
+                if ((!companyIntel.businessModel || companyIntel.businessModel === 'Not found') && scrapedCompanyData?.about) {
+                    companyIntel.businessModel = scrapedCompanyData.about.substring(0, 240);
+                }
+
                 console.log('✅ Company research complete:');
                 console.log('   Products:', companyIntel.products?.length || 0);
                 console.log('   Technologies:', companyIntel.technologies?.length || 0);
@@ -1275,6 +1511,9 @@ ${hasAIExperience ? '3. MUST dedicate 2-3 sentences to AI/ML capabilities and bu
 - Write ONLY the body (no "Dear Hiring Manager" or signature)
 - **NO BULLET POINTS, NO LISTS** - pure narrative paragraphs only
 - **NO FOREIGN LANGUAGE WORDS** - everything must be in English
+- Mention ONLY company-specific entities that exist in the provided COMPANY RESEARCH block
+- If COMPANY RESEARCH fields are "Not available" or "Could not find specific...", do NOT invent product/client/partner names
+- Never introduce unrelated industries or domains (e.g., cannabis/forum topics) unless explicitly present in COMPANY RESEARCH
 
 Generate the narrative-driven cover letter now:`;
 
@@ -1340,7 +1579,8 @@ Generate the narrative-driven cover letter now:`;
                     .replace(/\b[A-ZÄÖÜ][a-zäöüß]+(?:dienstleistungen|umgebungen|landschaften|anwendungen|leitung|ierung|ierung|stellung|schaft)\b/g, '')  // German compound words
                     .replace(/\s*\([^)]*(?:personnel|services|host|modern|programming|migration|project|management|virtualization|environments|landscapes)[^)]*\)\s*/gi, '')  // Remove parenthetical translations
                     .replace(/[""][^""]*(?:Erfolg|suchen|finden|Fähigkeiten|gefragt)[^""]*[""]/g, '')  // Remove German quoted phrases
-                    .replace(/\s{2,}/g, ' ')  // Clean up double spaces
+                    .replace(/[ \t]{2,}/g, ' ')  // Clean up repeated spaces without destroying paragraph breaks
+                    .replace(/\n{3,}/g, '\n\n')  // Keep paragraph separation stable
                     .trim();
                 
                 // 5. Ensure the cover letter is in English - check for excessive non-English content
@@ -1443,26 +1683,12 @@ Generate the narrative-driven cover letter now:`;
                 
                 // Use AI-extracted company name ONLY if it's related to the URL name
                 if (companyIntel && companyIntel.companyName) {
-                    const aiName = companyIntel.companyName;
-                    const urlNameLower = urlCompanyName.toLowerCase().replace(/\s+/g, '');
-                    const aiNameLower = aiName.toLowerCase().replace(/\s+/g, '');
-                    
-                    // Validate: AI name should contain significant portion of URL name or vice versa
-                    const isRelated = urlNameLower.includes(aiNameLower.substring(0, Math.min(5, aiNameLower.length))) || 
-                                     aiNameLower.includes(urlNameLower.substring(0, Math.min(5, urlNameLower.length)));
-                    
-                    if (isRelated || aiNameLower.length > 0 && urlNameLower.startsWith(aiNameLower.substring(0, 3))) {
-                        finalCompanyName = aiName;
-                        console.log(`✅ Using AI-extracted company name: ${finalCompanyName}`);
-                    } else {
-                        console.log(`⚠️ AI name "${aiName}" doesn't match URL name "${urlCompanyName}", using URL name with proper spacing`);
-                        // Try to add proper spacing to URL name
-                        finalCompanyName = urlCompanyName
-                            .replace(/([a-z])([A-Z])/g, '$1 $2') // Add space before capital letters
-                            .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2') // Handle consecutive capitals
-                            .trim();
-                        console.log(`✅ Using formatted URL name: ${finalCompanyName}`);
-                    }
+                    finalCompanyName = this.chooseBestCompanyName(
+                        [companyIntel.companyName, finalCompanyName, urlCompanyName],
+                        urlCompanyName,
+                        urlCompanyName
+                    );
+                    console.log(`✅ Using normalized company name: ${finalCompanyName}`);
                 }
                 
                 // STEP 2: Generate cover letter using researched intelligence

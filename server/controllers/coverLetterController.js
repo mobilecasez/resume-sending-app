@@ -144,7 +144,7 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
     
     // Create PDF
     const pdfDoc = await PDFDocument.create();
-    const page = pdfDoc.addPage([595.28, 841.89]); // A4 size
+    let page = pdfDoc.addPage([595.28, 841.89]); // A4 size
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
     
@@ -212,16 +212,42 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
     });
     yPosition -= 25;
     
-    // Body text with word wrapping
+    // Body text with word wrapping (preserve paragraph breaks)
     const maxWidth = page.getWidth() - (margin * 2);
-    const words = coverLetterText.split(/\s+/);
-    let line = '';
-    
-    for (const word of words) {
-        const testLine = line + (line ? ' ' : '') + word;
-        const width = font.widthOfTextAtSize(testLine, fontSize);
-        
-        if (width > maxWidth && line) {
+    const paragraphs = coverLetterText
+        .split(/\n\s*\n/)
+        .map(p => p.trim())
+        .filter(Boolean);
+
+    for (const paragraph of paragraphs) {
+        const words = paragraph.split(/\s+/);
+        let line = '';
+
+        for (const word of words) {
+            const testLine = line + (line ? ' ' : '') + word;
+            const width = font.widthOfTextAtSize(testLine, fontSize);
+
+            if (width > maxWidth && line) {
+                page.drawText(line, {
+                    x: margin,
+                    y: yPosition,
+                    size: fontSize,
+                    font: font
+                });
+                yPosition -= lineHeight;
+                line = word;
+
+                // Add new page if needed
+                if (yPosition < margin + 100) {
+                    page = pdfDoc.addPage([595.28, 841.89]);
+                    yPosition = page.getHeight() - margin;
+                }
+            } else {
+                line = testLine;
+            }
+        }
+
+        if (line) {
             page.drawText(line, {
                 x: margin,
                 y: yPosition,
@@ -229,27 +255,15 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
                 font: font
             });
             yPosition -= lineHeight;
-            line = word;
-            
-            // Add new page if needed
-            if (yPosition < margin + 100) {
-                const newPage = pdfDoc.addPage([595.28, 841.89]);
-                yPosition = newPage.getHeight() - margin;
-            }
-        } else {
-            line = testLine;
         }
-    }
-    
-    // Draw remaining line
-    if (line) {
-        page.drawText(line, {
-            x: margin,
-            y: yPosition,
-            size: fontSize,
-            font: font
-        });
-        yPosition -= 25;
+
+        // Paragraph spacing
+        yPosition -= 9;
+
+        if (yPosition < margin + 100) {
+            page = pdfDoc.addPage([595.28, 841.89]);
+            yPosition = page.getHeight() - margin;
+        }
     }
     
     // Closing
@@ -680,17 +694,34 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
 
     const resumePath = path.join(__dirname, '../../', user.resume_path);
 
-    // Generate hiring manager, locations, and subject
-    const urlCompanyName = websiteUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0];
+    // Normalize website URL and derive company name safely (handles career.jobs subdomains)
+    const normalizedWebsiteUrl = websiteUrl && websiteUrl.match(/^https?:\/\//) ? websiteUrl : `https://${websiteUrl}`;
+    let urlCompanyName;
+    try {
+        const parsedUrl = new URL(normalizedWebsiteUrl);
+        const hostname = parsedUrl.hostname.replace('www.', '').toLowerCase();
+        const hostParts = hostname.split('.');
+        const genericSubdomains = [
+            'career', 'careers', 'jobs', 'job', 'hiring', 'recruit', 'recruiting',
+            'recruitment', 'talent', 'join', 'work', 'apply', 'opportunities',
+            'portal', 'app', 'hr', 'people', 'team', 'boards', 'board'
+        ];
+        urlCompanyName = hostParts[0];
+        if (genericSubdomains.includes(urlCompanyName) && hostParts.length >= 3) {
+            urlCompanyName = hostParts[1];
+        }
+    } catch {
+        urlCompanyName = normalizedWebsiteUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0];
+    }
     const initialCompanyName = urlCompanyName.charAt(0).toUpperCase() + urlCompanyName.slice(1);
-    const { hiringManager, locations, subject } = await generateAdditionalDetails(websiteUrl, initialCompanyName, position, userData.fullName);
+    const { hiringManager, locations, subject } = await generateAdditionalDetails(normalizedWebsiteUrl, initialCompanyName, position, userData.fullName);
 
     // Generate cover letter with AI
     const result = await templateGenerator.generateCoverLetter(
         userData,
         resumePath,
         recipientEmail,
-        websiteUrl,
+        normalizedWebsiteUrl,
         position,
         locations
     );
@@ -726,7 +757,7 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
 
     // Create notification
     try {
-        await notifyCoverLetterGenerated(userId, result.companyName, position, websiteUrl);
+        await notifyCoverLetterGenerated(userId, result.companyName, position, normalizedWebsiteUrl);
     } catch (notifError) {
         console.error('Failed to create notification:', notifError);
     }
