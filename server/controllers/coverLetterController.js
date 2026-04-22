@@ -2,11 +2,9 @@ const dbConfig = require('../../db-config');
 const path = require('path');
 const fs = require('fs').promises;
 const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
-const TemplateCoverLetterGenerator = require('../../template-cover-letter-generator');
+const { generateCoverLetter: generateCoverLetterV2 } = require('../../ai-cover-letter-v2');
 const { notifyCoverLetterGenerated, notifyError } = require('./notificationsController');
 const jobService = require('../services/jobService');
-
-const templateGenerator = new TemplateCoverLetterGenerator();
 
 // Helper function: Check user credits
 async function checkUserCredits(userId, creditsRequired = 1) {
@@ -108,19 +106,29 @@ async function deductCredits(userId, creditsToDeduct = 1, actionType = 'cover_le
 
 // Helper function: Format cover letter with HTML highlighting
 function formatCoverLetterWithHTML(coverLetterText, metadata) {
+    if (!coverLetterText) return '';
+
+    // Normalise line endings and collapse 3+ newlines to 2
+    const normalized = coverLetterText
+        .replace(/\r\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n');
+
+    // Split on double newlines (paragraph breaks)
+    const paragraphs = normalized.split(/\n\n+/);
+
     let html = '';
-    const paragraphs = coverLetterText.split('\n\n');
-    
     paragraphs.forEach(para => {
-        if (!para.trim()) return;
-        
-        // Replace **text** with <strong>text</strong> for bolding
-        let formatted = para.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-        
-        // Wrap in paragraph tag
+        const trimmed = para.trim();
+        if (!trimmed) return;
+
+        // Within a paragraph, replace single \n with <br> for soft line breaks
+        let formatted = trimmed
+            .replace(/\n/g, '<br>')
+            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
         html += `<p style="margin-bottom: 15px; line-height: 1.6;">${formatted}</p>`;
     });
-    
+
     return html;
 }
 
@@ -133,12 +141,12 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
     let coverLetterText = coverLetterHtmlOrText;
     if (isHtml) {
         coverLetterText = coverLetterHtmlOrText
-            .replace(/<br\s*\/?>/gi, '\n')
-            .replace(/<\/p>/gi, '\n\n')
-            .replace(/<strong>/gi, '')
-            .replace(/<\/strong>/gi, '')
-            .replace(/<[^>]+>/g, '')
+            .replace(/<br\s*\/?>/gi, ' ')   // soft break → space (PDF word-wraps itself)
+            .replace(/<\/p>/gi, '\n\n')     // paragraph end → blank line
+            .replace(/<strong>(.*?)<\/strong>/gi, '$1')  // strip bold tags, keep text
+            .replace(/<[^>]+>/g, '')        // strip any remaining tags
             .replace(/&nbsp;/g, ' ')
+            .replace(/\n{3,}/g, '\n\n')    // collapse excess blank lines
             .trim();
     }
     
@@ -490,36 +498,34 @@ const generateCoverLetters = async (req, res) => {
                 });
             }
 
-            const userData = {
-                fullName: user.full_name,
-                email: user.email,
-                phoneNumber: user.phone_number,
-                city: user.city,
-                country: user.country
-            };
-
-            const resumePath = path.join(__dirname, '../../', user.resume_path);
             const results = [];
             let creditsDeducted = 0;
+
+            // Load resume metadata once for all recipients
+            const resumeMetadata = await dbConfig.get(
+                'SELECT * FROM resume_metadata WHERE user_id = ?',
+                [userId]
+            );
+
+            if (!resumeMetadata) {
+                return res.status(400).json({
+                    error: 'Resume not processed yet',
+                    message: 'Your resume is still being analyzed. Please wait a moment and try again.'
+                });
+            }
 
             for (const recipient of recipients) {
                 try {
                     console.log(`\n📤 Processing: ${recipient.email}`);
 
-                    const coverLetterResult = await templateGenerator.generateCoverLetter(
-                        userData,
-                        resumePath,
-                        recipient.email,
+                    const aiResult = await generateCoverLetterV2(
+                        resumeMetadata,
                         recipient.website,
                         recipient.position || 'Position'
                     );
 
-                    if (!coverLetterResult.success) {
-                        throw new Error(`Cover letter generation failed: ${coverLetterResult.error}`);
-                    }
-
-                    const companyName = coverLetterResult.companyName;
-                    const coverLetterText = coverLetterResult.coverLetter;
+                    const companyName = aiResult.employer_name || recipient.website;
+                    const coverLetterText = aiResult.cover_letter;
                     
                     console.log(`✅ Generated personalized cover letter for ${companyName}`);
 
@@ -536,7 +542,7 @@ const generateCoverLetters = async (req, res) => {
                     }
 
                     // Format and generate PDF
-                    const coverLetterHtml = formatCoverLetterWithHTML(coverLetterText, coverLetterResult.metadata);
+                    const coverLetterHtml = formatCoverLetterWithHTML(coverLetterText, {});
                     const { filePath, fileName } = await generateCoverLetterPDF(
                         user,
                         coverLetterHtml,
@@ -554,7 +560,7 @@ const generateCoverLetters = async (req, res) => {
                         fileName: fileName,
                         downloadUrl: downloadUrl,
                         status: 'generated',
-                        metadata: coverLetterResult.metadata
+                        metadata: {}
                     });
 
                 } catch (error) {
@@ -684,59 +690,55 @@ const generateCoverLetterDetails = async (req, res) => {
  * The actual heavy generation work — used by both sync and async modes
  */
 async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position }) {
-    const userData = {
-        fullName: user.full_name,
-        email: user.email,
-        phoneNumber: user.phone_number,
-        city: user.city,
-        country: user.country
-    };
-
-    const resumePath = path.join(__dirname, '../../', user.resume_path);
-
-    // Normalize website URL and derive company name safely (handles career.jobs subdomains)
+    // Normalize URL
     const normalizedWebsiteUrl = websiteUrl && websiteUrl.match(/^https?:\/\//) ? websiteUrl : `https://${websiteUrl}`;
-    let urlCompanyName;
-    try {
-        const parsedUrl = new URL(normalizedWebsiteUrl);
-        const hostname = parsedUrl.hostname.replace('www.', '').toLowerCase();
-        const hostParts = hostname.split('.');
-        const genericSubdomains = [
-            'career', 'careers', 'jobs', 'job', 'hiring', 'recruit', 'recruiting',
-            'recruitment', 'talent', 'join', 'work', 'apply', 'opportunities',
-            'portal', 'app', 'hr', 'people', 'team', 'boards', 'board'
-        ];
-        urlCompanyName = hostParts[0];
-        if (genericSubdomains.includes(urlCompanyName) && hostParts.length >= 3) {
-            urlCompanyName = hostParts[1];
-        }
-    } catch {
-        urlCompanyName = normalizedWebsiteUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0];
-    }
-    const initialCompanyName = urlCompanyName.charAt(0).toUpperCase() + urlCompanyName.slice(1);
-    const { hiringManager, locations, subject } = await generateAdditionalDetails(normalizedWebsiteUrl, initialCompanyName, position, userData.fullName);
 
-    // Generate cover letter with AI
-    const result = await templateGenerator.generateCoverLetter(
-        userData,
-        resumePath,
-        recipientEmail,
-        normalizedWebsiteUrl,
-        position,
-        locations
-    );
-
-    if (!result.success) {
-        throw new Error('Failed to generate cover letter');
+    // Load pre-parsed resume metadata (generated by resumeParserService after upload)
+    // Retry a few times in case the background parser is still running
+    let resumeMetadata = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        resumeMetadata = await dbConfig.get(
+            'SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = ?',
+            [userId, 'done']
+        );
+        if (resumeMetadata) break;
+        if (attempt < 2) await new Promise(r => setTimeout(r, 4000)); // wait 4s before retry
     }
+
+    if (!resumeMetadata) {
+        throw new Error('Resume not processed yet. Please wait a moment after uploading and try again.');
+    }
+
+    console.log(`[coverLetterController] Calling AI v2 for user ${userId}, url=${normalizedWebsiteUrl}, position=${position}`);
+
+    // Single AI call: deep-researches the employer and generates the full letter
+    const aiResult = await generateCoverLetterV2(resumeMetadata, normalizedWebsiteUrl, position);
+
+    const companyName = aiResult.employer_name || normalizedWebsiteUrl;
+    const hiringManager = aiResult.to || 'Hiring Manager';
+    const subject = aiResult.subject || `Application for ${position}`;
+
+    // Map addresses array → locations format expected by the mobile app
+    const locations = (aiResult.addresses || []).map((addr, i) => ({
+        address: addr,
+        city: '',
+        country: '',
+        isHeadquarters: i === 0
+    }));
+    if (locations.length === 0) {
+        locations.push({ address: 'Address not available', city: '', country: '', isHeadquarters: true });
+    }
+
+    // Format markdown cover letter body as HTML
+    const coverLetterHtml = formatCoverLetterWithHTML(aiResult.cover_letter || '', {});
 
     // DEDUCT CREDIT
     try {
         console.log(`💳 Deducting 1 credit from user ${userId}...`);
         await deductCredits(userId, 1, 'cover_letter_generation', {
-            companyName: result.companyName,
-            position: position,
-            recipientEmail: recipientEmail
+            companyName,
+            position,
+            recipientEmail
         });
         console.log(`✅ Credit deducted successfully`);
 
@@ -748,28 +750,25 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
         console.error('❌ Failed to deduct credit:', creditError);
     }
 
-    // Format cover letter
-    const coverLetterHtml = formatCoverLetterWithHTML(result.coverLetter, result.metadata);
-
     // Get updated credits
     const creditCheck = await checkUserCredits(userId, 0);
     console.log(`💰 User ${userId} now has ${creditCheck.remaining} credits remaining`);
 
     // Create notification
     try {
-        await notifyCoverLetterGenerated(userId, result.companyName, position, normalizedWebsiteUrl);
+        await notifyCoverLetterGenerated(userId, companyName, position, normalizedWebsiteUrl);
     } catch (notifError) {
         console.error('Failed to create notification:', notifError);
     }
 
     return {
         success: true,
-        companyName: result.companyName,
-        hiringManager: hiringManager,
-        subject: subject,
-        locations: locations,
-        coverLetterHtml: coverLetterHtml,
-        metadata: result.metadata,
+        companyName,
+        hiringManager,
+        subject,
+        locations,
+        coverLetterHtml,
+        metadata: {},
         creditsUsed: 1,
         creditsRemaining: creditCheck.remaining
     };

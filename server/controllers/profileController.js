@@ -1,5 +1,6 @@
 const dbConfig = require('../../db-config');
 const { notifyProfileUpdated } = require('./notificationsController');
+const { triggerResumeParsingBackground } = require('../../services/resumeParserService');
 
 // Get user profile data
 const getProfile = async (req, res) => {
@@ -78,6 +79,9 @@ const uploadResume = async (req, res) => {
         const filePath = req.file.path.replace(process.cwd() + '/', '');
         
         await dbConfig.run('UPDATE users SET resume_path = ? WHERE id = ?', [filePath, userId]);
+
+        // Run resume metadata extraction in the background without delaying the upload response.
+        triggerResumeParsingBackground(userId, filePath);
         
         const protocol = req.get('x-forwarded-proto') || req.protocol;
         const baseUrl = `${protocol}://${req.get('host')}`;

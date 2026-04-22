@@ -294,6 +294,35 @@ async function runPostgresMigrations(db) {
             CREATE INDEX IF NOT EXISTS idx_async_jobs_status ON async_jobs(status);
         `);
 
+        // Migration: Create resume_metadata table for background resume parsing
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS resume_metadata (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL UNIQUE,
+                raw_text TEXT,
+                summary TEXT,
+                skills TEXT[],
+                technical_skills JSONB,
+                soft_skills TEXT[],
+                experience_years NUMERIC(4,1),
+                experience_summary TEXT,
+                education JSONB,
+                certifications JSONB,
+                languages TEXT[],
+                job_titles TEXT[],
+                industries TEXT[],
+                parse_status TEXT NOT NULL DEFAULT 'pending',
+                parse_error TEXT,
+                parsed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_resume_metadata_user_id ON resume_metadata(user_id);
+            CREATE INDEX IF NOT EXISTS idx_resume_metadata_parse_status ON resume_metadata(parse_status);
+        `);
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

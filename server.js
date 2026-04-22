@@ -42,6 +42,8 @@ const dbConfig = require('./db-config');
 const { initializeDatabase } = require('./db-init');
 const Razorpay = require('razorpay');
 
+const { triggerResumeParsingBackground } = require('./services/resumeParserService');
+
 // Import modular routes
 const paymentRoutes = require('./server/routes/payment');
 const authRoutes = require('./server/routes/authRoutes');
@@ -1306,6 +1308,7 @@ app.post('/api/upload-profile', authenticateToken, upload.fields([
             updates.push('resume_path = ?');
             params.push(files.resume);
         }
+        const resumeUploaded = !!files.resume;
         if (files.photo) {
             updates.push('photo_path = ?');
             params.push(files.photo);
@@ -1321,6 +1324,11 @@ app.post('/api/upload-profile', authenticateToken, upload.fields([
 
             try {
         await dbConfig.run(sql, params);
+
+        // Trigger background resume metadata extraction (fire-and-forget)
+        if (resumeUploaded) {
+            triggerResumeParsingBackground(userId, files.resume);
+        }
 
         res.json({
             success: true,
@@ -1910,8 +1918,11 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             
             // First, calculate the required height by parsing content
             const $ = cheerio.load(coverLetterHtml);
-            const bodyHtml = $('body').html() || coverLetterHtml;
-            const paragraphs = bodyHtml.split(/<br\s*\/?>/gi);
+            // Extract each <p> block as a paragraph; fall back to <br>-split for legacy plain HTML
+            const pTags = $('p');
+            const paragraphs = pTags.length > 0
+                ? pTags.toArray().map(el => $.html(el))
+                : ($('body').html() || coverLetterHtml).split(/<br\s*\/?>/gi);
             
             // Estimate content height
             const pageWidth = 595;
@@ -2142,7 +2153,7 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             // Process paragraphs for rendering (already parsed above)
             for (const paraHtml of paragraphs) {
         // Parse this paragraph for bold/regular segments
-        const $para = cheerio.load(`<div>${paraHtml}</div>`);
+        const $para = cheerio.load(`<div>${paraHtml.replace(/<\/?p[^>]*>/gi, '')}</div>`);
         const segments = [];
         
         $para('div').contents().each((i, elem) => {
@@ -3216,7 +3227,7 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
     let coverLetterHtml = coverLetterHtmlOrText;
     
     // If text contains **markdown** but no HTML tags, convert markdown to HTML
-    if (!coverLetterHtml.includes('<p>') && !coverLetterHtml.includes('<div>')) {
+    if (!coverLetterHtml.includes('<p') && !coverLetterHtml.includes('<div')) {
         console.log('  📝 Converting plain text with markdown to HTML...');
         
         // Split by double newlines for paragraphs

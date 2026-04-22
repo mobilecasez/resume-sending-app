@@ -2,10 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking, AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView } from 'react-native-webview';
-// Razorpay - kept for Android, commented out for iOS (Apple IAP used instead)
-import RazorpayCheckout from 'react-native-razorpay';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
+import Constants from 'expo-constants';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
 import * as AuthSession from 'expo-auth-session';
@@ -21,8 +20,6 @@ import * as Clipboard from 'expo-clipboard';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as SecureStore from 'expo-secure-store';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-// Apple In-App Purchase
-import { initConnection, fetchProducts, requestPurchase, finishTransaction, purchaseUpdatedListener, purchaseErrorListener, endConnection, getReceiptIOS, getAvailablePurchases } from 'react-native-iap';
 import { API_BASE, PRODUCTION_API_URL } from './config';
 import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -67,6 +64,49 @@ async function generatePKCE() {
 const { width, height} = Dimensions.get('window');
 
 WebBrowser.maybeCompleteAuthSession();
+
+const isExpoGo = Constants.appOwnership === 'expo';
+const createNoopSubscription = () => ({ remove: () => {} });
+
+let RazorpayCheckout = null;
+let nativeIapAvailable = false;
+
+// Fallbacks for Expo Go / missing native module scenarios
+let initConnection = async () => false;
+let fetchProducts = async () => [];
+let requestPurchase = async () => null;
+let finishTransaction = async () => {};
+let purchaseUpdatedListener = () => createNoopSubscription();
+let purchaseErrorListener = () => createNoopSubscription();
+let endConnection = async () => {};
+let getReceiptIOS = async () => null;
+let getAvailablePurchases = async () => [];
+
+if (!isExpoGo) {
+  try {
+    const razorpayModule = require('react-native-razorpay');
+    RazorpayCheckout = razorpayModule.default || razorpayModule;
+  } catch (error) {
+    console.warn('Razorpay native module unavailable:', error?.message || error);
+  }
+
+  try {
+    const iapModule = require('react-native-iap');
+    nativeIapAvailable = true;
+
+    initConnection = iapModule.initConnection;
+    fetchProducts = iapModule.fetchProducts;
+    requestPurchase = iapModule.requestPurchase;
+    finishTransaction = iapModule.finishTransaction;
+    purchaseUpdatedListener = iapModule.purchaseUpdatedListener;
+    purchaseErrorListener = iapModule.purchaseErrorListener;
+    endConnection = iapModule.endConnection;
+    getReceiptIOS = iapModule.getReceiptIOS;
+    getAvailablePurchases = iapModule.getAvailablePurchases;
+  } catch (error) {
+    console.warn('IAP native module unavailable:', error?.message || error);
+  }
+}
 
 // Component to render formatted HTML cover letter with bold text
 // Helper function to normalize HTML - convert <br><br> to proper paragraphs
@@ -931,7 +971,7 @@ function AppContent() {
 
   // Initialize Apple IAP connection (iOS only)
   useEffect(() => {
-    if (Platform.OS !== 'ios') return;
+    if (Platform.OS !== 'ios' || isExpoGo || !nativeIapAvailable) return;
 
     let mounted = true;
 
@@ -1189,6 +1229,14 @@ function AppContent() {
 
   // Apple IAP purchase handler (iOS only)
   const handleBuyPackageApple = async (pkg) => {
+    if (isExpoGo || !nativeIapAvailable) {
+      Alert.alert(
+        'Not Available in Expo Go',
+        'Apple In-App Purchases require a development or production build. Please use TestFlight or a dev client build.'
+      );
+      return;
+    }
+
     try {
       // Map plan name to Apple product ID
       const nameToProductId = {
@@ -1247,6 +1295,14 @@ function AppContent() {
   --- END RAZORPAY iOS COMMENT --- */
   
   const handleBuyPackageRazorpay = async (pkg) => {
+    if (!RazorpayCheckout || typeof RazorpayCheckout.open !== 'function') {
+      Alert.alert(
+        'Not Available in Expo Go',
+        'Razorpay native checkout requires a development or production build. Please use Android build or TestFlight/production app.'
+      );
+      return;
+    }
+
     try {
       // Create Razorpay order
       console.log('📞 Calling create-order API...');
