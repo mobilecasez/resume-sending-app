@@ -1,89 +1,116 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 
+import axios from 'axios';
+import * as SecureStore from 'expo-secure-store';
+import { API_BASE } from '../config';
 import type { Contact, Employer } from '../types/aiHub';
+
+const API_BASE_URL = `${API_BASE}`;
+
+async function getAuthHeader(): Promise<{ Authorization: string } | Record<string, never>> {
+  try {
+    const raw = await SecureStore.getItemAsync('userSession');
+    if (!raw) return {};
+    const session = JSON.parse(raw);
+    if (!session?.token) return {};
+    return { Authorization: `Bearer ${session.token}` };
+  } catch {
+    return {};
+  }
+}
 
 /**
  * Analyzes the user's wishlist of target companies.
- * When connected to the real backend, this will call the AI analysis endpoint
- * which scrapes each company's careers page, identifies open roles, and scores
- * them against the user's stored resume using an LLM similarity model.
- *
- * @param companies - Array of company names or career page URLs to analyze.
- * @returns Object containing the number of matches found and sources scanned.
+ * Calls POST /api/ai-hub/analyze-wishlist with the list of company names/URLs.
+ * Returns the number of matches found and sources scanned.
  */
 export async function analyzeWishlist(
   companies: string[]
 ): Promise<{ matches: number; sources: number }> {
-  // Mock — replace with: POST /api/ai-hub/analyze { companies }
-  await new Promise<void>((resolve) => setTimeout(resolve, 400));
-  return { matches: 12, sources: companies.length };
+  try {
+    const headers = await getAuthHeader();
+    const response = await axios.post(
+      `${API_BASE_URL}/ai-hub/analyze-wishlist`,
+      { companies },
+      { headers }
+    );
+    return response.data;
+  } catch (error: unknown) {
+    const msg = axios.isAxiosError(error)
+      ? error.response?.data?.error ?? error.message
+      : 'Failed to analyze wishlist';
+    throw new Error(msg);
+  }
 }
 
 /**
  * Fetches AI-curated job matches for a specific company.
- * When connected to the real backend, this will return live job postings
- * scraped from the company's careers portal, ranked by resume-match score,
- * with verified hiring manager contacts pre-populated.
- *
- * @param companyName - The company name or URL to fetch job matches for.
- * @returns A full Employer object with nested job and contact data.
+ * Calls GET /api/ai-hub/jobs?company={companyName}.
+ * Returns a full Employer object with nested job and contact data.
  */
 export async function fetchJobMatches(companyName: string): Promise<Employer> {
-  // Mock — replace with: GET /api/ai-hub/matches?company=<companyName>
-  await new Promise<void>((resolve) => setTimeout(resolve, 300));
-  return {
-    id: `mock-${Date.now()}`,
-    name: companyName,
-    subInfo: 'Location TBD · Industry TBD',
-    logoColor: ['#06B6D4', '#3B82F6'],
-    logoInitial: companyName.charAt(0).toUpperCase(),
-    status: 'watching',
-    jobs: [],
-  };
+  try {
+    const headers = await getAuthHeader();
+    const response = await axios.get(`${API_BASE_URL}/ai-hub/jobs`, {
+      params: { company: companyName },
+      headers,
+    });
+    return response.data;
+  } catch (error: unknown) {
+    const msg = axios.isAxiosError(error)
+      ? error.response?.data?.error ?? error.message
+      : `Failed to fetch job matches for ${companyName}`;
+    throw new Error(msg);
+  }
 }
 
 /**
- * Verifies whether a given email address is deliverable and belongs to an
- * active employee at the target company.
- * When connected to the real backend, this will call the email verification
- * microservice which uses SMTP handshake probing combined with LinkedIn
- * cross-referencing.
- *
- * @param email - The email address to verify.
- * @returns Object containing verified status and confidence score (0–1).
+ * Verifies whether a given email address is deliverable.
+ * Calls POST /api/ai-hub/verify-email with the email address.
+ * Returns verified status and confidence score (0–1).
  */
 export async function verifyEmail(
   email: string
 ): Promise<{ verified: boolean; confidence: number }> {
-  // Mock — replace with: POST /api/ai-hub/verify-email { email }
-  await new Promise<void>((resolve) => setTimeout(resolve, 200));
-  console.log(`[aiHubService] Verifying email: ${email}`);
-  return { verified: true, confidence: 0.94 };
+  try {
+    const headers = await getAuthHeader();
+    const response = await axios.post(
+      `${API_BASE_URL}/ai-hub/verify-email`,
+      { email },
+      { headers }
+    );
+    return response.data;
+  } catch (error: unknown) {
+    const msg = axios.isAxiosError(error)
+      ? error.response?.data?.error ?? error.message
+      : `Failed to verify email ${email}`;
+    throw new Error(msg);
+  }
 }
 
 /**
- * Adds a manually-entered contact to a specific job in the user's AI Hub.
- * When connected to the real backend, this will persist the contact to the
- * database, trigger async email verification, and optionally attempt to
- * find additional social profiles for the contact.
- *
- * @param jobId - The ID of the job this contact is associated with.
- * @param contact - The contact details (without id, verified, or avatarColor).
- * @returns The newly created Contact object with generated ID and default state.
+ * Adds a manually-entered contact to a specific job.
+ * Calls POST /api/ai-hub/jobs/{jobId}/contacts with the contact data.
+ * Returns the newly created Contact object with server-generated ID and state.
  */
 export async function addContactToJob(
   jobId: string,
   contact: Omit<Contact, 'id' | 'verified' | 'avatarColor'>
 ): Promise<Contact> {
-  // Mock — replace with: POST /api/ai-hub/jobs/:jobId/contacts { contact }
-  await new Promise<void>((resolve) => setTimeout(resolve, 250));
-  console.log(`[aiHubService] Adding contact to job ${jobId}:`, contact.name);
-  return {
-    ...contact,
-    id: `contact-${Date.now()}`,
-    verified: false,
-    avatarColor: ['#64748B', '#475569'],
-  };
+  try {
+    const headers = await getAuthHeader();
+    const response = await axios.post(
+      `${API_BASE_URL}/ai-hub/jobs/${jobId}/contacts`,
+      contact,
+      { headers }
+    );
+    return response.data;
+  } catch (error: unknown) {
+    const msg = axios.isAxiosError(error)
+      ? error.response?.data?.error ?? error.message
+      : `Failed to add contact to job ${jobId}`;
+    throw new Error(msg);
+  }
 }
 
 const aiHubService = {
