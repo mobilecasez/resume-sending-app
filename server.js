@@ -56,6 +56,7 @@ const emailRoutes = require('./server/routes/emailRoutes');
 const notificationsRoutes = require('./server/routes/notificationsRoutes');
 const usageRoutes = require('./server/routes/usageRoutes');
 const jobRoutes = require('./server/routes/jobRoutes');
+const aiHubRoutes = require('./server/routes/aiHub');
 
 // Import authentication middleware
 const { authenticateToken, authenticateAdmin } = require('./server/middleware/auth');
@@ -3848,6 +3849,7 @@ app.use('/api', coverLetterRoutes);
 app.use('/api', emailRoutes);
 app.use('/api', notificationsRoutes);
 app.use('/api', jobRoutes);
+app.use('/api/ai-hub', aiHubRoutes);
 const batchRoutes = require('./server/routes/batchRoutes');
 app.use('/api', batchRoutes);
 
