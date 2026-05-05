@@ -471,9 +471,12 @@ export default function AIHubScreen() {
     setModalVisible(false);
   }, [inputValue]);
 
-  const handleApply = useCallback((job: Job) => {
-    Alert.alert('Apply', `Opening application for ${job.title}`);
-  }, []);
+  const handleApply = useCallback(
+    (job: Job) => {
+      router.push({ pathname: '/(ai-hub)/job-detail', params: { jobId: job.id } });
+    },
+    [router]
+  );
 
   const handleAddContact = useCallback(
     (jobId: string) => {
