@@ -25,6 +25,8 @@ export type Job = {
   urgent: boolean;
   skills: string[];
   contacts: Contact[];
+  matchScore?: number;   // 0–100, AI-computed resume match
+  applyUrl?: string | null;
 };
 
 /**

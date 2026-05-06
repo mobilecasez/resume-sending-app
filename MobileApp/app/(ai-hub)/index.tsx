@@ -324,7 +324,20 @@ const JobCard: React.FC<JobCardProps> = ({ job, onApply, onAddContact }) => (
   <View style={styles.card}>
     {/* ── Card Body ── */}
     <View style={styles.cardBody}>
-      <Text style={styles.jobTitle}>{job.title}</Text>
+      <View style={styles.jobTitleRow}>
+        <Text style={[styles.jobTitle, { flex: 1 }]}>{job.title}</Text>
+        {job.matchScore != null && (
+          <View style={[
+            styles.matchScoreBadge,
+            { backgroundColor: job.matchScore >= 70 ? 'rgba(16,185,129,0.12)' : job.matchScore >= 40 ? 'rgba(251,146,60,0.12)' : 'rgba(148,163,184,0.12)' }
+          ]}>
+            <Text style={[
+              styles.matchScoreText,
+              { color: job.matchScore >= 70 ? '#059669' : job.matchScore >= 40 ? '#EA580C' : '#64748B' }
+            ]}>{job.matchScore}% match</Text>
+          </View>
+        )}
+      </View>
 
       <View style={styles.badgesRow}>
         <View style={[styles.badge, styles.badgeLocation]}>
@@ -801,12 +814,28 @@ const styles = StyleSheet.create({
   cardBody: {
     padding: 18,
   },
+  jobTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 10,
+    gap: 8,
+  },
   jobTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: '#0F172A',
     letterSpacing: -0.4,
-    marginBottom: 10,
+  },
+  matchScoreBadge: {
+    borderRadius: 20,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    alignSelf: 'flex-start',
+    marginTop: 2,
+  },
+  matchScoreText: {
+    fontSize: 11,
+    fontWeight: '700',
   },
   badgesRow: {
     flexDirection: 'row',
