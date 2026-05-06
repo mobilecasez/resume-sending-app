@@ -27,8 +27,45 @@ async function analyzeWishlist(req, res) {
     }
 }
 
+// Deterministic logo colour from company name initial
+const LOGO_COLORS = [
+    ['#06B6D4', '#3B82F6'],
+    ['#8B5CF6', '#6D28D9'],
+    ['#10B981', '#059669'],
+    ['#F59E0B', '#D97706'],
+    ['#EF4444', '#DC2626'],
+    ['#635BFF', '#4338CA'],
+    ['#EC4899', '#DB2777'],
+];
+
+function parseCompanyInput(input) {
+    let companyName = input;
+    let domain = input;
+    let subInfo = `${input} · Careers Portal`;
+
+    try {
+        const urlStr = input.startsWith('http') ? input : `https://${input}`;
+        const url = new URL(urlStr);
+        domain = url.hostname.replace(/^www\./, '');
+
+        // Strip common prefixes like "jobs.", "careers.", "jobsat"
+        const cleanDomain = domain
+            .replace(/^(jobs\.|careers\.|jobsat)/, '');
+
+        // Derive company name from first segment of domain
+        const baseName = cleanDomain.split('.')[0];
+        companyName = baseName.charAt(0).toUpperCase() + baseName.slice(1);
+        subInfo = `${domain} · Careers Portal`;
+    } catch {
+        // Not a URL — treat as plain company name
+    }
+
+    const colorIndex = companyName.charCodeAt(0) % LOGO_COLORS.length;
+    return { companyName, domain, subInfo, logoColor: LOGO_COLORS[colorIndex] };
+}
+
 /**
- * GET /api/ai-hub/jobs?company={companyName}
+ * GET /api/ai-hub/jobs?company={companyName|URL}
  *
  * TODO: Query the ai_hub_jobs table for jobs belonging to this user and
  *       company. If stale (>24h), re-trigger the scrape/LLM pipeline and
@@ -42,27 +79,62 @@ async function getJobMatches(req, res) {
             return res.status(400).json({ error: 'company query parameter is required' });
         }
 
-        // Mock Employer object — replace with DB query
+        const { companyName, domain, subInfo, logoColor } = parseCompanyInput(company);
+
+        // TODO: replace with real DB query + scrape pipeline
+        const jobs = [
+            {
+                id: `${domain}-job-1`,
+                title: `Software Engineer`,
+                location: 'Remote',
+                experience: '3–5 years',
+                salary: '$120K–$160K',
+                jobType: 'Full-time',
+                urgent: false,
+                skills: ['JavaScript', 'TypeScript', 'React', 'Node.js'],
+                contacts: [
+                    {
+                        id: `${domain}-c1`,
+                        name: 'Hiring Manager',
+                        role: 'Engineering Manager',
+                        email: `hiring@${domain}`,
+                        verified: false,
+                        avatarColor: ['#06B6D4', '#3B82F6'],
+                    },
+                ],
+            },
+            {
+                id: `${domain}-job-2`,
+                title: `Product Manager`,
+                location: 'Hybrid',
+                experience: '5+ years',
+                salary: '$130K–$180K',
+                jobType: 'Full-time',
+                urgent: false,
+                skills: ['Product Strategy', 'Analytics', 'Agile', 'Roadmapping'],
+                contacts: [],
+            },
+            {
+                id: `${domain}-job-3`,
+                title: `Senior UX Designer`,
+                location: 'Remote',
+                experience: '4+ years',
+                salary: '$100K–$140K',
+                jobType: 'Full-time',
+                urgent: true,
+                skills: ['Figma', 'User Research', 'Prototyping', 'Design Systems'],
+                contacts: [],
+            },
+        ];
+
         const employer = {
-            id: `emp-${Buffer.from(company).toString('base64').slice(0, 8)}`,
-            name: company,
-            subInfo: 'Location TBD · Industry TBD',
-            logoColor: ['#06B6D4', '#3B82F6'],
-            logoInitial: company.charAt(0).toUpperCase(),
+            id: `emp-${domain}`,
+            name: companyName,
+            subInfo,
+            logoColor,
+            logoInitial: companyName.charAt(0).toUpperCase(),
             status: 'watching',
-            jobs: [
-                {
-                    id: `job-${Date.now()}`,
-                    title: `Software Engineer at ${company}`,
-                    location: 'Remote',
-                    experience: '3+ years',
-                    salary: 'Competitive',
-                    jobType: 'Full-time',
-                    urgent: false,
-                    skills: ['TypeScript', 'React', 'Node.js'],
-                    contacts: [],
-                },
-            ],
+            jobs,
         };
 
         return res.json(employer);

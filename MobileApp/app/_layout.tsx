@@ -1,11 +1,17 @@
 import { Stack } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
 
 export default function RootLayout() {
   return (
-    <>
-      <Stack screenOptions={{ headerShown: false }} />
-      <StatusBar style="auto" />
-    </>
+    <Stack
+      initialRouteName="index"
+      screenOptions={{
+        headerShown: false,
+        contentStyle: { backgroundColor: '#f5f7fa' },
+        animation: 'slide_from_right',
+      }}
+    >
+      <Stack.Screen name="index" options={{ animation: 'none' }} />
+      <Stack.Screen name="(ai-hub)" options={{ headerShown: false }} />
+    </Stack>
   );
 }

@@ -16,6 +16,7 @@ import {
   StyleSheet,
   Animated,
   Alert,
+  ActivityIndicator,
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -23,6 +24,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type { Contact, Job, Employer, WishlistPill } from '../../types/aiHub';
+import { fetchJobMatches } from '../../services/aiHubService';
 
 // ─────────────────────────────────────────────────────────────────
 // MOCK DATA
@@ -133,7 +135,7 @@ const INITIAL_PILLS: WishlistPill[] = [
   { id: '3', label: 'careers.openai.com', colorVariant: 'emerald' },
 ];
 
-const STATS = { matches: 12, contacts: 7, verifiedPct: 94 };
+const INITIAL_STATS = { matches: 12, contacts: 7, verifiedPct: 94 };
 
 // ─────────────────────────────────────────────────────────────────
 // PILL COLOR MAP
@@ -249,18 +251,20 @@ const WishlistBar: React.FC<WishlistBarProps> = ({
 // STATS STRIP
 // ─────────────────────────────────────────────────────────────────
 
-const StatsStrip: React.FC = () => (
+type StatsStripProps = { matches: number; contacts: number; verifiedPct: number };
+
+const StatsStrip: React.FC<StatsStripProps> = ({ matches, contacts, verifiedPct }) => (
   <View style={styles.statsStrip}>
     <View style={styles.statCard}>
-      <Text style={[styles.statValue, { color: '#22D3EE' }]}>{STATS.matches}</Text>
+      <Text style={[styles.statValue, { color: '#22D3EE' }]}>{matches}</Text>
       <Text style={styles.statLabel}>MATCHES</Text>
     </View>
     <View style={styles.statCard}>
-      <Text style={[styles.statValue, { color: '#A78BFA' }]}>{STATS.contacts}</Text>
+      <Text style={[styles.statValue, { color: '#A78BFA' }]}>{contacts}</Text>
       <Text style={styles.statLabel}>CONTACTS</Text>
     </View>
     <View style={styles.statCard}>
-      <Text style={[styles.statValue, { color: '#34D399' }]}>{STATS.verifiedPct}%</Text>
+      <Text style={[styles.statValue, { color: '#34D399' }]}>{verifiedPct}%</Text>
       <Text style={styles.statLabel}>VERIFIED %</Text>
     </View>
   </View>
@@ -452,6 +456,9 @@ export default function AIHubScreen() {
   const [pills, setPills] = useState<WishlistPill[]>(INITIAL_PILLS);
   const [modalVisible, setModalVisible] = useState(false);
   const [inputValue, setInputValue] = useState('');
+  const [employers, setEmployers] = useState<Employer[]>(MOCK_EMPLOYERS);
+  const [loadingCompanies, setLoadingCompanies] = useState<string[]>([]);
+  const [stats, setStats] = useState(INITIAL_STATS);
 
   const handleRemovePill = useCallback((id: string) => {
     setPills((prev) => prev.filter((p) => p.id !== id));
@@ -460,15 +467,33 @@ export default function AIHubScreen() {
   const handleAddPill = useCallback(() => {
     const trimmed = inputValue.trim();
     if (!trimmed) return;
+
     setPills((prev) => {
       const nextVariant = COLOR_CYCLE[prev.length % 3];
-      return [
-        ...prev,
-        { id: `pill-${Date.now()}`, label: trimmed, colorVariant: nextVariant },
-      ];
+      return [...prev, { id: `pill-${Date.now()}`, label: trimmed, colorVariant: nextVariant }];
     });
     setInputValue('');
     setModalVisible(false);
+
+    setLoadingCompanies((prev) => [...prev, trimmed]);
+    fetchJobMatches(trimmed)
+      .then((employer) => {
+        setEmployers((prev) => {
+          const exists = prev.some((e) => e.id === employer.id);
+          return exists ? prev : [...prev, employer];
+        });
+        setStats((prev) => ({
+          ...prev,
+          matches: prev.matches + employer.jobs.length,
+          contacts: prev.contacts + employer.jobs.reduce((sum, j) => sum + j.contacts.length, 0),
+        }));
+      })
+      .catch(() => {
+        Alert.alert('Could not fetch jobs', `No results found for "${trimmed}". Try a full URL like https://careers.company.com`);
+      })
+      .finally(() => {
+        setLoadingCompanies((prev) => prev.filter((c) => c !== trimmed));
+      });
   }, [inputValue]);
 
   const handleApply = useCallback(
@@ -498,22 +523,29 @@ export default function AIHubScreen() {
           onRemove={handleRemovePill}
           onAddPress={() => setModalVisible(true)}
           sources={pills.length}
-          matches={STATS.matches}
+          matches={stats.matches}
         />
 
-        <StatsStrip />
+        <StatsStrip matches={stats.matches} contacts={stats.contacts} verifiedPct={stats.verifiedPct} />
 
         {/* ── Light feed section ── */}
         <View style={styles.feedSection}>
           <Text style={styles.feedLabel}>JOB MATCHES</Text>
 
-          {MOCK_EMPLOYERS.map((employer) => (
+          {employers.map((employer) => (
             <EmployerSection
               key={employer.id}
               employer={employer}
               onApply={handleApply}
               onAddContact={handleAddContact}
             />
+          ))}
+
+          {loadingCompanies.map((company) => (
+            <View key={company} style={styles.loadingCard}>
+              <ActivityIndicator size="small" color="#06B6D4" />
+              <Text style={styles.loadingCardText}>Searching jobs at "{company}"...</Text>
+            </View>
           ))}
         </View>
       </ScrollView>
@@ -921,6 +953,28 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: 'white',
+  },
+
+  // ── Loading Card ──
+  loadingCard: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    marginBottom: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 18,
+    gap: 12,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
+    elevation: 4,
+  },
+  loadingCardText: {
+    fontSize: 13,
+    color: '#64748B',
+    fontStyle: 'italic',
+    flex: 1,
   },
 
   // ── Modal ──
