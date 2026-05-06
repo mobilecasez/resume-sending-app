@@ -21,6 +21,7 @@ import * as AppleAuthentication from 'expo-apple-authentication';
 import * as SecureStore from 'expo-secure-store';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { API_BASE, PRODUCTION_API_URL } from './config';
+import { router as expoRouter } from 'expo-router'; // AI Hub navigation
 import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
@@ -5427,8 +5428,8 @@ function AppContent() {
 
                   {/* Menu Items */}
                   <View style={styles.sideMenuItems}>
-                    <TouchableOpacity 
-                      style={styles.sideMenuItem} 
+                    <TouchableOpacity
+                      style={styles.sideMenuItem}
                       onPress={() => {
                         setShowSettings(false);
                         setScreen('profile');
@@ -5440,6 +5441,23 @@ function AppContent() {
                       <View style={styles.sideMenuItemContent}>
                         <Text style={styles.sideMenuItemTitle}>Account Settings</Text>
                         <Text style={styles.sideMenuItemDesc}>View your profile</Text>
+                      </View>
+                    </TouchableOpacity>
+
+                    {/* AI Hub — new feature. Safe to delete without affecting existing app. */}
+                    <TouchableOpacity
+                      style={styles.sideMenuItem}
+                      onPress={() => {
+                        setShowSettings(false);
+                        expoRouter.push('/(ai-hub)');
+                      }}
+                    >
+                      <View style={styles.sideMenuItemIconBox}>
+                        <Text style={styles.sideMenuItemIconText}>🎯</Text>
+                      </View>
+                      <View style={styles.sideMenuItemContent}>
+                        <Text style={styles.sideMenuItemTitle}>Jobs Dashboard</Text>
+                        <Text style={styles.sideMenuItemDesc}>AI-powered job search hub</Text>
                       </View>
                     </TouchableOpacity>
 
