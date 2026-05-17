@@ -30,19 +30,19 @@
                 <div class="col-md-2 col-sm-6 mb-4">
                     <h6 class="text-white mb-3">Quick Links</h6>
                     <ul class="list-unstyled">
-                        <li><a href="/about#home" class="text-muted" style="text-decoration: none;">Home</a></li>
-                        <li><a href="/about#services" class="text-muted" style="text-decoration: none;">Why CVApplyr</a></li>
-                        <li><a href="/about#features" class="text-muted" style="text-decoration: none;">Features</a></li>
-                        <li><a href="/about#prices" class="text-muted" style="text-decoration: none;">Pricing</a></li>
-                        <li><a href="/about#contact" class="text-muted" style="text-decoration: none;">Contact</a></li>
+                        <li><a href="/#home" class="text-muted" style="text-decoration: none;">Home</a></li>
+                        <li><a href="/#why" class="text-muted" style="text-decoration: none;">Why CVApplyr</a></li>
+                        <li><a href="/#features" class="text-muted" style="text-decoration: none;">Features</a></li>
+                        <li><a href="/#pricing" class="text-muted" style="text-decoration: none;">Pricing</a></li>
+                        <li><a href="/#contact" class="text-muted" style="text-decoration: none;">Contact</a></li>
                     </ul>
                 </div>
                 <div class="col-md-3 col-sm-6 mb-4">
                     <h6 class="text-white mb-3">Legal</h6>
                     <ul class="list-unstyled">
-                        <li><a href="${baseUrl}/privacy" class="text-muted" style="text-decoration: none;">Privacy Policy</a></li>
-                        <li><a href="${baseUrl}/terms" class="text-muted" style="text-decoration: none;">Terms of Service</a></li>
-                        <li><a href="${baseUrl}/refund" class="text-muted" style="text-decoration: none;">Refund Policy</a></li>
+                        <li><a href="${baseUrl}/privacy-policy" class="text-muted" style="text-decoration: none;">Privacy Policy</a></li>
+                        <li><a href="${baseUrl}/terms-of-service" class="text-muted" style="text-decoration: none;">Terms of Service</a></li>
+                        <li><a href="${baseUrl}/refund-policy" class="text-muted" style="text-decoration: none;">Refund Policy</a></li>
                         <li><a href="${baseUrl}/support" class="text-muted" style="text-decoration: none;">Support</a></li>
                     </ul>
                 </div>

@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dashboard — CVApplyr</title>
+<link rel="stylesheet" href="/css/dashboard_new.css">
+</head>
+<body>
+
+<!-- ============== SHELL ============== -->
+<div class="dash-shell">
+
+  <!-- ============== SIDEBAR ============== -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <a href="dashboard.html" class="brand">
+        <div class="brand-icon"></div>
+        <div class="brand-text"><span class="cv">cv</span><span class="applyr">applyr</span></div>
+      </a>
+    </div>
+
+    <nav class="sidebar-nav">
+      <a href="#" class="active" data-route="dashboard">
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        </span>
+        Dashboard
+      </a>
+      <a href="#" data-route="applications">
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7l9-5 9 5v10l-9 5-9-5V7z"/><path d="M13 12l9-5"/><path d="M13 12L4 7"/><path d="M13 12v10"/></svg>
+        </span>
+        Applications
+      </a>
+      <a href="#" data-route="recipients">
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><path d="M3 21v-2a5 5 0 0 1 5-5h2a5 5 0 0 1 5 5v2"/><circle cx="18" cy="8" r="2.5"/><path d="M21 21v-1.5a3.5 3.5 0 0 0-3.5-3.5"/></svg>
+        </span>
+        Recipients
+      </a>
+      <a href="#" data-route="history">
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        </span>
+        History
+      </a>
+
+      <div class="nav-label">Account</div>
+
+      <a href="#" data-modal-open="profileModal">
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a7 7 0 0 1 7-7h2a7 7 0 0 1 7 7v1"/></svg>
+        </span>
+        Profile
+      </a>
+      <a href="#" data-modal-open="emailModal">
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+        </span>
+        Email Settings
+      </a>
+      <a href="index.html#pricing">
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        </span>
+        Buy Credits
+      </a>
+      <a href="support.html">
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-.7.5-1.5 1-1.5 2"/><circle cx="12" cy="17" r="0.5"/></svg>
+        </span>
+        Support
+      </a>
+    </nav>
+
+    <!-- Credits widget -->
+    <div class="credits-widget">
+      <div class="cw-head">
+        <span>Credits balance</span>
+        <span style="color: var(--brand-bright);">●</span>
+      </div>
+      <div class="cw-amount">28 <span>credits</span></div>
+      <div class="cw-bar"><div></div></div>
+      <a href="index.html#pricing" class="cw-cta">Buy more credits</a>
+    </div>
+
+    <!-- User -->
+    <div class="sidebar-foot">
+      <div class="user-mini" id="userMini">
+        <div class="user-avatar" id="dashboardUserInitials">AS</div>
+        <div class="user-meta">
+          <strong id="dashboardUserName">Aaradhya Singh</strong>
+          <span id="dashboardUserEmail">aaradhya@example.com</span>
+        </div>
+        <span class="chev">⌄</span>
+      </div>
+    </div>
+  </aside>
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+  <!-- ============== MAIN COLUMN ============== -->
+  <div class="dash-main">
+
+    <!-- TOP BAR -->
+    <header class="topbar">
+      <div style="display:flex; align-items:center; gap:12px; min-width:0;">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+          <span class="mobile-menu-btn-icon"></span>
+        </button>
+        <h1><span class="greeting">Welcome,</span> <span>Aaradhya 👋</span></h1>
+      </div>
+
+      <div class="topbar-actions">
+        <div class="topbar-search">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input type="text" placeholder="Search applications, recipients..." />
+          <kbd>⌘K</kbd>
+        </div>
+        <button class="icon-btn" aria-label="Notifications">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+          <span class="dot"></span>
+        </button>
+        <button class="icon-btn always-show" data-modal-open="emailModal" aria-label="Email settings">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- CONTENT -->
+    <main class="dash-content">
+
+      <!-- WELCOME -->
+      <div class="welcome">
+        <h2>Send applications with <span class="accent">AI-generated cover letters.</span></h2>
+        <p>Add your recipients below and we'll draft a personalised cover letter for each one — then send them all in one click.</p>
+      </div>
+
+      <!-- STATS -->
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-head">
+            <span class="stat-label">Total applications sent</span>
+            <span class="stat-icon">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7z"/></svg>
+            </span>
+          </div>
+          <div class="stat-value" id="dashboardTotalSent">12</div>
+          <div class="stat-delta"><span class="up">↑ 4</span> from last week</div>
+        </div>
+        <div class="stat">
+          <div class="stat-head">
+            <span class="stat-label">Cover letters generated</span>
+            <span class="stat-icon green">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            </span>
+          </div>
+          <div class="stat-value" id="dashboardTotalGenerated">12</div>
+          <div class="stat-delta">Average <span style="color:var(--text-secondary); font-weight:600;">2.4s</span> per letter</div>
+        </div>
+        <div class="stat">
+          <div class="stat-head">
+            <span class="stat-label">Credits remaining</span>
+            <span class="stat-icon amber">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9 10h4a2 2 0 1 1 0 4H9"/></svg>
+            </span>
+          </div>
+          <div class="stat-value" id="dashboardCreditsRemaining">28</div>
+          <div class="stat-delta">Of 40 in current pack</div>
+        </div>
+        <div class="stat">
+          <div class="stat-head">
+            <span class="stat-label">Reply rate</span>
+            <span class="stat-icon purple">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 12 9 12 12 4 15 20 18 12 21 12"/></svg>
+            </span>
+          </div>
+          <div class="stat-value">25<span class="unit">%</span></div>
+          <div class="stat-delta"><span class="up">↑ 6%</span> vs. last month</div>
+        </div>
+      </div>
+
+      <!-- RECIPIENTS PANEL -->
+      <section class="panel">
+        <div class="panel-head">
+          <div class="panel-title">
+            <div class="panel-title-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+            </div>
+            <div class="panel-title-text">
+              <h3>Recipients</h3>
+              <p>Add the hiring managers you want to apply to in this batch.</p>
+            </div>
+          </div>
+          <div class="panel-actions" id="checkRepliesContainer">
+            <span class="count-pill" id="recipientCount">1 recipient</span>
+          </div>
+        </div>
+
+        <div class="recipients" id="recipients">
+          <!-- Recipient row template (1st row) -->
+          <div class="recipient-row" data-row="1">
+            <div class="recipient-row-head">
+              <div class="row-num">
+                <span class="badge">01</span>
+                <span>Recipient</span>
+              </div>
+              <button class="row-remove" data-remove-row title="Remove">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                Remove
+              </button>
+            </div>
+            <div class="row-fields">
+              <div class="field">
+                <label>Hiring Manager's Email <span class="req">*</span></label>
+                <input type="email" name="email" placeholder="recruiter@company.com" required />
+              </div>
+              <div class="field">
+                <label>Company Website <span class="req">*</span></label>
+                <input type="url" name="website" placeholder="https://company.com" required />
+              </div>
+              <div class="field">
+                <label>Position / Job Title</label>
+                <input type="text" name="position" placeholder="Senior Product Manager" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <button class="add-row" id="addRowBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Add another recipient
+        </button>
+
+        <div class="panel-foot">
+          <div class="panel-foot-info">
+            Each recipient costs <strong>1 credit</strong>. You'll have <strong id="creditsAfter">27 credits</strong> after sending this batch.
+          </div>
+          <button class="btn btn-primary btn-lg" onclick="reviewAndSend()">
+            🚀 Review &amp; generate
+            <span class="arrow">→</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- RECENT APPLICATIONS PANEL -->
+      <section class="panel">
+        <div class="panel-head">
+          <div class="panel-title">
+            <div class="panel-title-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+            </div>
+            <div class="panel-title-text">
+              <h3>Recent applications</h3>
+              <p>Sent applications, statuses and replies — all in one place.</p>
+            </div>
+          </div>
+          <div class="panel-actions" id="checkRepliesContainer">
+            <span class="count-pill" id="employersBadge">0 sent</span>
+            <button class="btn btn-secondary btn-sm" id="checkRepliesBtn" onclick="checkReplies()">
+              📬 Check for replies
+            </button>
+          </div>
+        </div>
+
+        <div class="apps-toolbar">
+          <div class="apps-filter" role="tablist">
+            <button class="active" data-filter="all">All <span style="color:var(--text-muted); margin-left:4px;">3</span></button>
+            <button data-filter="sent">Sent</button>
+            <button data-filter="replied">Replied</button>
+            <button data-filter="pending">Pending</button>
+          </div>
+        </div>
+
+        <!-- Application list (example items showing the design with real data) -->
+        <div class="applications" id="employersContainer">
+
+          <div class="app-item" data-status="replied">
+            <div class="app-co">St</div>
+            <div class="app-body">
+              <div class="app-position">Senior Product Manager</div>
+              <div class="app-meta">
+                <span>Stripe</span> · <a href="https://stripe.com/jobs">stripe.com/jobs</a> · <span>recruiter@stripe.com</span>
+              </div>
+            </div>
+            <span class="app-date">May 14</span>
+            <span class="status-pill replied"><span class="dot"></span> Replied</span>
+            <div class="app-actions">
+              <button class="icon-btn" title="View cover letter">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              </button>
+              <button class="icon-btn" title="View details">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="app-item" data-status="sent">
+            <div class="app-co">No</div>
+            <div class="app-body">
+              <div class="app-position">Group PM, Growth</div>
+              <div class="app-meta">
+                <span>Notion</span> · <a href="https://notion.so/careers">notion.so/careers</a> · <span>talent@notion.so</span>
+              </div>
+            </div>
+            <span class="app-date">May 13</span>
+            <span class="status-pill sent"><span class="dot"></span> Sent</span>
+            <div class="app-actions">
+              <button class="icon-btn" data-modal-open="replyModal" title="Mark as replied">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </button>
+              <button class="icon-btn" title="View details">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="app-item" data-status="pending">
+            <div class="app-co">Li</div>
+            <div class="app-body">
+              <div class="app-position">Product Lead</div>
+              <div class="app-meta">
+                <span>Linear</span> · <a href="https://linear.app/careers">linear.app/careers</a> · <span>hiring@linear.app</span>
+              </div>
+            </div>
+            <span class="app-date">May 12</span>
+            <span class="status-pill pending"><span class="dot"></span> Pending</span>
+            <div class="app-actions">
+              <button class="icon-btn" title="Retry send">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/></svg>
+              </button>
+              <button class="icon-btn" title="View details">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+              </button>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Empty state — shown when no applications. Uncomment / toggle from JS -->
+        <div class="empty-state" id="emptyState" style="display:none;">
+          <div class="empty-state-icon">📭</div>
+          <h4>No applications yet</h4>
+          <p>Your recent job applications will appear here once you send your first batch.</p>
+          <button class="btn btn-primary">Send first application <span class="arrow">→</span></button>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- ============== MODAL: EMAIL SETTINGS ============== -->
+<div class="modal-overlay" id="emailModal" data-modal>
+  <div class="modal" role="dialog" aria-labelledby="emailModalTitle">
+    <div class="modal-head">
+      <div class="modal-head-text">
+        <h3 id="emailModalTitle">Email settings</h3>
+        <p>SMTP configuration for sending applications from your email.</p>
+      </div>
+      <button class="modal-close" data-modal-close aria-label="Close">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>Your email address <span class="req">*</span></label>
+        <input type="email" id="smtpEmail" placeholder="you@gmail.com" required />
+      </div>
+      <div class="field">
+        <label>App password <span class="req">*</span></label>
+        <input type="password" id="smtpPassword" placeholder="••••••••••••••••" required />
+        <p class="field-hint">For Gmail: <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">Generate an app password →</a></p>
+      </div>
+      <div class="field">
+        <label>Your name <span class="req">*</span></label>
+        <input type="text" id="senderName" placeholder="Aaradhya Singh" required />
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-modal-close>Cancel</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Save settings <span class="arrow">→</span></button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: PROFILE SETTINGS ============== -->
+<div class="modal-overlay" id="profileModal" data-modal>
+  <div class="modal modal-lg" role="dialog" aria-labelledby="profileModalTitle">
+    <div class="modal-head">
+      <div class="modal-head-text">
+        <h3 id="profileModalTitle">Profile settings</h3>
+        <p>Upload your documents — they're attached to every application you send.</p>
+      </div>
+      <button class="modal-close" data-modal-close aria-label="Close">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      
+      
+      <div class="upload-grid">
+
+        <div class="upload-row">
+          <label>Resume<br/><span style="font-weight:500; color:var(--text-muted); font-size:11.5px;">PDF · required</span></label>
+          <div class="upload-zone has-file" id="resumeUpload">
+            <div class="preview">📄</div>
+            <div class="file-meta" id="resumeFileInfo">
+              <strong id="resumeName">Aaradhya_Singh_Resume.pdf</strong>
+              <span id="resumeDate">284 KB · uploaded May 12, 2026</span>
+            </div>
+            <div class="file-actions">
+              <a href="#" download id="resumeDownload">Download</a>
+              <a href="#" id="replaceResumeBtn">Replace</a>
+            </div>
+            <input type="file" accept="application/pdf" id="resumeInput" hidden />
+          </div>
+        </div>
+
+        <div class="upload-row">
+          <label>Profile photo<br/><span style="font-weight:500; color:var(--text-muted); font-size:11.5px;">JPG or PNG</span></label>
+          <div class="upload-zone" id="photoUpload">
+            <div class="uz-icon">📷</div>
+            <div class="uz-text">Click to upload photo</div>
+            <div class="uz-hint">JPG or PNG · max 2 MB</div>
+            <input type="file" accept="image/jpeg,image/png" id="photoInput" hidden />
+          </div>
+        </div>
+
+        <div class="upload-row">
+          <label>Signature<br/><span style="font-weight:500; color:var(--text-muted); font-size:11.5px;">PNG, transparent</span></label>
+          <div class="upload-zone" id="signatureUpload">
+            <div class="uz-icon">✍️</div>
+            <div class="uz-text">Click to upload signature</div>
+            <div class="uz-hint">PNG with transparent background</div>
+            <input type="file" accept="image/png" id="signatureInput" hidden />
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-modal-close>Cancel</button>
+      <button class="btn btn-primary" onclick="saveProfile()">Save profile <span class="arrow">→</span></button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MODAL: MARK AS REPLIED ============== -->
+<div class="modal-overlay" id="replyModal" data-modal>
+  <div class="modal" role="dialog" aria-labelledby="replyModalTitle">
+    <div class="modal-head">
+      <div class="modal-head-text">
+        <h3 id="replyModalTitle">Mark as replied</h3>
+        <p>Did you receive a reply from <strong style="color:var(--text);" id="replyModalCompany">...</strong>?</p>
+      </div>
+      <button class="modal-close" data-modal-close aria-label="Close">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>Reply date <span class="req">*</span></label>
+        <input type="date" id="replyDateInput" name="reply_date" required />
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-modal-close>Cancel</button>
+      <button class="btn btn-primary" onclick="confirmMarkAsReplied()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        Mark as replied
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== JS ============== -->
+<script>
+  // ----- Sidebar (mobile drawer) -----
+  const sidebar = document.getElementById('sidebar');
+  const sidebarOverlay = document.getElementById('sidebarOverlay');
+  const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+  function openSidebar() { sidebar.classList.add('open'); sidebarOverlay.classList.add('open'); }
+  function closeSidebar() { sidebar.classList.remove('open'); sidebarOverlay.classList.remove('open'); }
+  mobileMenuBtn?.addEventListener('click', openSidebar);
+  sidebarOverlay?.addEventListener('click', closeSidebar);
+  // Close after tapping any sidebar link on mobile
+  sidebar?.querySelectorAll('a').forEach(a => {
+    a.addEventListener('click', () => {
+      if (window.innerWidth <= 1024) closeSidebar();
+    });
+  });
+
+  // ----- Modals -----
+  document.querySelectorAll('[data-modal-open]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const id = btn.dataset.modalOpen;
+      const m = document.getElementById(id);
+      if (m) m.classList.add('open');
+    });
+  });
+  document.querySelectorAll('[data-modal-close]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      btn.closest('[data-modal]')?.classList.remove('open');
+    });
+  });
+  // Click-outside to close
+  document.querySelectorAll('[data-modal]').forEach(overlay => {
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.classList.remove('open');
+    });
+  });
+  // Esc to close
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open'));
+  });
+
+  // ----- Recipients: add / remove -----
+  const recipientsEl = document.getElementById('recipients');
+  const addRowBtn = document.getElementById('addRowBtn');
+  const countPill = document.getElementById('recipientCount');
+  const creditsAfter = document.getElementById('creditsAfter');
+  const CREDIT_BALANCE = 28;
+
+  function pad(n) { return String(n).padStart(2, '0'); }
+  function renumber() {
+    const rows = recipientsEl.querySelectorAll('.recipient-row');
+    rows.forEach((r, i) => {
+      r.dataset.row = i + 1;
+      const badge = r.querySelector('.row-num .badge');
+      if (badge) badge.textContent = pad(i + 1);
+    });
+    const n = rows.length;
+    countPill.textContent = `${n} recipient${n === 1 ? '' : 's'}`;
+    creditsAfter.textContent = `${Math.max(0, CREDIT_BALANCE - n)} credits`;
+    // Show / hide remove button on the only row
+    rows.forEach((r, i) => {
+      const rm = r.querySelector('.row-remove');
+      if (rm) rm.style.visibility = (rows.length > 1) ? 'visible' : 'hidden';
+    });
+  }
+  function buildRow() {
+    const tpl = document.createElement('div');
+    tpl.className = 'recipient-row';
+    tpl.innerHTML = `
+      <div class="recipient-row-head">
+        <div class="row-num"><span class="badge">--</span><span>Recipient</span></div>
+        <button class="row-remove" data-remove-row title="Remove">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          Remove
+        </button>
+      </div>
+      <div class="row-fields">
+        <div class="field">
+          <label>Hiring Manager's Email <span class="req">*</span></label>
+          <input type="email" name="email" placeholder="recruiter@company.com" required />
+        </div>
+        <div class="field">
+          <label>Company Website <span class="req">*</span></label>
+          <input type="url" name="website" placeholder="https://company.com" required />
+        </div>
+        <div class="field">
+          <label>Position / Job Title</label>
+          <input type="text" name="position" placeholder="Senior Product Manager" />
+        </div>
+      </div>
+    `;
+    return tpl;
+  }
+  addRowBtn?.addEventListener('click', () => {
+    recipientsEl.appendChild(buildRow());
+    renumber();
+  });
+  recipientsEl?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-remove-row]');
+    if (!btn) return;
+    const rows = recipientsEl.querySelectorAll('.recipient-row');
+    if (rows.length <= 1) return; // keep at least 1
+    btn.closest('.recipient-row').remove();
+    renumber();
+  });
+  renumber();
+
+  // ----- Applications: filter tabs -----
+  document.querySelectorAll('.apps-filter button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.apps-filter button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const f = btn.dataset.filter;
+      document.querySelectorAll('.app-item').forEach(item => {
+        item.style.display = (f === 'all' || item.dataset.status === f) ? '' : 'none';
+      });
+    });
+  });
+
+  // ----- Upload zones (profile modal): show file when picked -----
+  function wireUpload(zoneId, inputId, iconFallback) {
+    const zone = document.getElementById(zoneId);
+    const inp = document.getElementById(inputId);
+    if (!zone || !inp) return;
+    zone.addEventListener('click', () => inp.click());
+    inp.addEventListener('change', () => {
+      const f = inp.files?.[0];
+      if (!f) return;
+      const url = URL.createObjectURL(f);
+      const isImg = f.type.startsWith('image/');
+      zone.classList.add('has-file');
+      zone.innerHTML = `
+        <div class="preview" ${isImg ? `style="background-image:url('${url}')"` : ''}>${isImg ? '' : iconFallback}</div>
+        <div class="file-meta" id="resumeFileInfo">
+          <strong>${f.name}</strong>
+          <span>${(f.size/1024).toFixed(0)} KB · just now</span>
+        </div>
+        <div class="file-actions">
+          <a href="${url}" download="${f.name}">Download</a>
+          <a href="#" data-replace>Replace</a>
+        </div>
+      `;
+      zone.querySelector('[data-replace]')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        inp.click();
+      });
+    });
+  }
+  wireUpload('photoUpload', 'photoInput', '📷');
+  wireUpload('signatureUpload', 'signatureInput', '✍️');
+
+  // Resume "Replace" link (existing has-file zone)
+  document.getElementById('replaceResumeBtn')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    document.getElementById('resumeInput').click();
+  });
+</script>
+
+
+<script src="/js/dashboard-app.js"></script>
+</body>
+</html>

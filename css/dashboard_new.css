@@ -1,0 +1,32 @@
+/* ============================================================
+   CVApplyr — Dashboard background theme
+   Drop this in alongside your existing dashboard CSS.
+   Only sets the page background gradient (and ensures text stays
+   readable on dark bg). Nothing structural changes.
+   ============================================================ */
+
+body {
+  background:
+    radial-gradient(ellipse 90% 60% at 50% 0%,    rgba(59, 130, 246, 0.20), transparent 70%),
+    radial-gradient(ellipse 70% 50% at 100% 100%, rgba(167, 139, 250, 0.14), transparent 70%),
+    radial-gradient(ellipse 60% 45% at 0% 100%,   rgba(96, 165, 250, 0.10), transparent 70%),
+    linear-gradient(180deg, #0F1530 0%, #161D33 55%, #1A2240 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
+  color: #ECEFF7;
+}
+
+/* Make sure default text reads on the new dark gradient.
+   Remove these if your existing CSS already handles it. */
+body, h1, h2, h3, h4, h5, h6, p, span, label, li, a { color: inherit; }
+h1, h2, h3, h4, h5, h6 { color: #ECEFF7; }
+p, span, label, li { color: #A6AEC4; }
+a { color: #60A5FA; }
+
+/* Keep card surfaces sitting cleanly above the gradient
+   (only applies if you already have a .card / .panel wrapper) */
+.card, .panel, .modal {
+  background-color: rgba(30, 39, 71, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}

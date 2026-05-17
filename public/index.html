@@ -1,2451 +1,403 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-
 <head>
-    <!-- Required meta tags -->
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-
-    <title>CVApplyr - Dashboard</title>
-
-    <!-- Favicons -->
-    <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icon_light_background.png">
-
-    <!-- Bootstrap CSS -->
-    <link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
-    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css" integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
-    <!-- ANIMATE CSS -->
-    <link rel="stylesheet" href="/css/animate.css">
-    <!-- Main CSS -->
-    <link rel="stylesheet" href="/css/style.css">
-
-    <style>
-        :root {
-            --primary-color: #1e40af;
-            --primary-hover: #1e3a8a;
-            --secondary-color: #059669;
-            --secondary-hover: #047857;
-            --danger-color: #dc2626;
-            --bg-color: #f8fafc;
-            --card-bg: #FFFFFF;
-            --text-primary: #0f172a;
-            --text-secondary: #475569;
-            --border-color: #e2e8f0;
-            --accent-color: #3b82f6;
-            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
-            --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-        }
-
-        /* Apply gradient to entire page */
-        body {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%) !important;
-            background-attachment: fixed !important;
-            min-height: 100vh;
-            margin: 0;
-            padding: 0;
-        }
-
-        /* Override navbar to make it transparent */
-        .navbar,
-        .navbar-light,
-        #home .navbar {
-            background: transparent !important;
-            box-shadow: none !important;
-        }
-
-        /* Ensure navbar stays transparent on mobile */
-        @media (max-width: 991px) {
-            #home .navbar {
-                background: transparent !important;
-            }
-        }
-
-        /* Dashboard Section */
-        .dashboard-section {
-            padding: 40px 0 80px 0;
-            min-height: calc(100vh - 70px);
-        }
-
-        .dashboard-container {
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 0 20px;
-        }
-
-        /* Welcome Section */
-        .app-header {
-            text-align: center;
-            margin-bottom: 32px;
-            animation: fadeInDown 0.6s ease-out;
-        }
-
-        .app-title {
-            font-size: 2rem;
-            font-weight: 700;
-            color: white;
-            margin-bottom: 8px;
-            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-
-        .app-subtitle {
-            font-size: 1rem;
-            color: rgba(255, 255, 255, 0.95);
-            font-weight: 400;
-        }
-
-        /* Card Styles */
-        .card {
-            background: white;
-            border-radius: 16px;
-            padding: 32px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
-            margin-bottom: 24px;
-            border: none;
-            animation: fadeInUp 0.6s ease-out;
-        }
-
-        .section-title {
-            font-size: 1.25rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 24px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .section-title::before {
-            content: '';
-            width: 3px;
-            height: 20px;
-            background: var(--primary-color);
-            border-radius: 1.5px;
-        }
-
-        /* Stats Grid */
-        .stats-grid-dashboard {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 0;
-            background: white;
-        }
-
-        .stat-card-dashboard {
-            padding: 24px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            text-align: center;
-        }
-
-        .stat-card-dashboard:last-child {
-            border-left: 1px solid #E5E7EB;
-        }
-
-        .stat-value-dashboard {
-            font-size: 2.5rem;
-            font-weight: 700;
-            color: #1e293b;
-            margin-bottom: 8px;
-        }
-
-        .stat-label-dashboard {
-            font-size: 0.875rem;
-            color: #64748b;
-            font-weight: 500;
-        }
-
-        /* Recipients Section */
-        .recipient-list {
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-            margin-bottom: 24px;
-        }
-
-        .recipient-item {
-            background: #fafbfc;
-            border: 1px solid var(--border-color);
-            border-radius: 10px;
-            padding: 24px;
-            position: relative;
-            transition: all 0.2s ease;
-            animation: slideIn 0.4s ease-out;
-        }
-
-        .recipient-item:hover {
-            border-color: #cbd5e1;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-            background: white;
-        }
-
-        .recipient-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-        }
-
-        .recipient-number {
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
-            color: white;
-            width: 36px;
-            height: 36px;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 600;
-            font-size: 0.875rem;
-            box-shadow: 0 2px 4px rgba(30, 64, 175, 0.2);
-        }
-
-        .remove-btn {
-            background: transparent;
-            color: var(--text-secondary);
-            border: 1px solid #e2e8f0;
-            padding: 6px 14px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.8125rem;
-            font-weight: 500;
-            transition: all 0.2s ease;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .remove-btn:hover {
-            background: #fee;
-            border-color: var(--danger-color);
-            color: var(--danger-color);
-        }
-
-        /* Form Styles */
-        .form-group {
-            margin-bottom: 16px;
-        }
-
-        .form-label {
-            display: block;
-            font-size: 0.8125rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 8px;
-        }
-
-        .form-label .required {
-            color: var(--danger-color);
-            margin-left: 2px;
-        }
-
-        .form-input {
-            width: 100%;
-            padding: 11px 14px;
-            border: 1px solid var(--border-color);
-            border-radius: 7px;
-            font-size: 0.9375rem;
-            transition: all 0.2s ease;
-            background: white;
-        }
-
-        .form-input:focus {
-            outline: none;
-            border-color: var(--primary-color);
-            box-shadow: 0 0 0 3px rgba(30, 64, 175, 0.08);
-            background: white;
-        }
-
-        .form-input::placeholder {
-            color: #9CA3AF;
-        }
-
-        /* Button Styles */
-        .add-recipient-btn {
-            width: 100%;
-            padding: 12px 24px;
-            background: white;
-            border: 1.5px dashed #cbd5e1;
-            color: var(--text-secondary);
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 0.9375rem;
-            font-weight: 500;
-            transition: all 0.2s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            margin-bottom: 32px;
-        }
-
-        .add-recipient-btn:hover {
-            background: var(--bg-color);
-            border-color: var(--primary-color);
-            color: var(--primary-color);
-        }
-
-        .btn {
-            padding: 13px 28px;
-            border: none;
-            border-radius: 8px;
-            font-size: 0.9375rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-
-        .btn-primary {
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
-            color: white;
-            box-shadow: 0 4px 6px -1px rgba(30, 64, 175, 0.3);
-        }
-
-        .btn-primary:hover {
-            box-shadow: 0 10px 15px -3px rgba(30, 64, 175, 0.4);
-            transform: translateY(-1px);
-        }
-
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none !important;
-        }
-
-        /* Recent Applications */
-        .employers-section-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-
-        .employers-badge {
-            background: #0d9488;
-            color: white;
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 0.875rem;
-            font-weight: 700;
-        }
-
-        .employers-container {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 40px 20px;
-            color: var(--text-secondary);
-        }
-
-        .empty-icon {
-            font-size: 3rem;
-            margin-bottom: 12px;
-            opacity: 0.5;
-        }
-
-        .empty-title {
-            font-size: 1rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 6px;
-        }
-
-        .empty-subtitle {
-            font-size: 0.875rem;
-            color: var(--text-secondary);
-        }
-
-        .employer-card {
-            background: white;
-            border: 1px solid var(--border-color);
-            border-radius: 10px;
-            overflow: hidden;
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }
-
-        .employer-card:hover {
-            transform: translateY(-2px);
-            box-shadow: var(--shadow-lg);
-        }
-
-        .employer-card-clickable {
-            cursor: pointer;
-        }
-
-        .employer-card-clickable:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
-            border-color: #0d9488;
-        }
-
-        .employer-card-clickable:active {
-            transform: translateY(0);
-        }
-
-        .action-hint {
-            margin-top: 12px;
-            padding-top: 12px;
-            border-top: 1px solid #e5e7eb;
-            text-align: center;
-        }
-
-        .status-indicator {
-            height: 4px;
-            width: 100%;
-        }
-
-        .status-pending {
-            background: linear-gradient(90deg, #fee2e2 0%, #fecaca 100%);
-        }
-
-        .status-replied {
-            background: linear-gradient(90deg, #d1fae5 0%, #a7f3d0 100%);
-        }
-
-        .employer-card-content {
-            padding: 16px;
-        }
-
-        .employer-header {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            margin-bottom: 12px;
-        }
-
-        .employer-info {
-            flex: 1;
-        }
-
-        .employer-number-badge {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 28px;
-            height: 28px;
-            background: linear-gradient(135deg, #0d9488 0%, #14b8a6 100%);
-            color: white;
-            border-radius: 50%;
-            font-size: 0.75rem;
-            font-weight: 700;
-            margin-right: 12px;
-            flex-shrink: 0;
-        }
-
-        .employer-company-name {
-            font-size: 1rem;
-            font-weight: 700;
-            color: var(--text-primary);
-            margin-bottom: 4px;
-        }
-
-        .employer-job-position {
-            font-size: 0.875rem;
-            color: var(--text-secondary);
-            margin-bottom: 8px;
-        }
-
-        .status-badge {
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 0.75rem;
-            font-weight: 600;
-            flex-shrink: 0;
-        }
-
-        .status-badge-pending {
-            background: #fee2e2;
-            color: #dc2626;
-        }
-
-        .status-badge-replied {
-            background: #d1fae5;
-            color: #059669;
-        }
-
-        .employer-dates {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 16px;
-            padding-top: 12px;
-            border-top: 1px solid var(--border-color);
-        }
-
-        .employer-date-item {
-            min-width: 0;
-        }
-
-        .employer-date-label {
-            font-size: 0.75rem;
-            color: var(--text-secondary);
-            margin-bottom: 4px;
-            white-space: nowrap;
-        }
-
-        .employer-date-value {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            white-space: nowrap;
-        }
-
-        /* Modal Styles */
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.6);
-            backdrop-filter: blur(4px);
-            z-index: 1000;
-            align-items: center;
-            justify-content: center;
-            animation: fadeIn 0.2s ease-out;
-        }
-
-        .modal.active {
-            display: flex;
-        }
-
-        .modal-content {
-            background: white;
-            border-radius: 12px;
-            width: 90%;
-            max-width: 600px;
-            max-height: 85vh;
-            overflow-y: auto;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-            animation: slideInModal 0.3s ease-out;
-        }
-
-        #profileModal .modal-content {
-            max-width: 450px;
-        }
-
-        .modal-header {
-            padding: 24px 28px;
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .modal-title {
-            font-size: 1.25rem;
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-
-        .close-btn {
-            width: 32px;
-            height: 32px;
-            border-radius: 6px;
-            background: transparent;
-            border: none;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: all 0.2s ease;
-            font-size: 1.5rem;
-            color: var(--text-secondary);
-        }
-
-        .close-btn:hover {
-            background: var(--bg-color);
-            color: var(--text-primary);
-        }
-
-        .modal-body {
-            padding: 16px;
-        }
-
-        .settings-section {
-            margin-bottom: 16px;
-        }
-
-        .settings-section:last-child {
-            margin-bottom: 0;
-        }
-
-        .section-header {
-            font-size: 0.75rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 8px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .profile-grid {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        /* Upload Area Styles */
-        .upload-area {
-            border: 2px dashed var(--border-color);
-            border-radius: 8px;
-            padding: 16px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            background: var(--bg-color);
-            position: relative;
-            min-height: 80px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .upload-area:hover {
-            border-color: var(--primary-color);
-            background: white;
-        }
-
-        .upload-area.has-file {
-            border-style: solid;
-            border-color: var(--secondary-color);
-            background: #f0fdf4;
-        }
-
-        .upload-area.has-preview {
-            padding: 0;
-            overflow: hidden;
-        }
-
-        .image-preview {
-            width: 100%;
-            height: 100%;
-            display: none;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-        }
-
-        .image-preview.active {
-            display: flex;
-        }
-
-        .preview-photo {
-            width: 80px;
-            height: 80px;
-            border-radius: 50%;
-            object-fit: cover;
-            border: 3px solid white;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-            background: white;
-        }
-
-        .preview-signature {
-            max-width: 100%;
-            max-height: 60px;
-            object-fit: contain;
-            padding: 8px;
-            background: white;
-            border-radius: 8px;
-        }
-
-        .preview-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.5);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            opacity: 0;
-            transition: opacity 0.2s ease;
-        }
-
-        .upload-area:hover .preview-overlay {
-            opacity: 1;
-        }
-
-        .change-photo-btn {
-            background: white;
-            color: var(--text-primary);
-            padding: 8px 16px;
-            border-radius: 6px;
-            font-size: 0.875rem;
-            font-weight: 600;
-            border: none;
-            cursor: pointer;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-
-        .upload-content {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .upload-content.hidden {
-            display: none;
-        }
-
-        .upload-icon {
-            font-size: 1.5rem;
-            margin-bottom: 6px;
-            color: var(--text-secondary);
-        }
-
-        .upload-text {
-            font-size: 0.8125rem;
-            color: var(--text-primary);
-            font-weight: 500;
-            margin-bottom: 4px;
-        }
-
-        .upload-subtext {
-            font-size: 0.6875rem;
-            color: var(--text-secondary);
-        }
-
-        #resumeFileInfo {
-            display: none;
-            margin-top: 8px;
-            padding: 8px 12px;
-            background: #f0fdf4;
-            border-radius: 6px;
-            border: 1px solid #86efac;
-        }
-
-        #resumeFileInfo.active {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-        }
-
-        .resume-info {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex: 1;
-            min-width: 0;
-        }
-
-        .resume-icon {
-            font-size: 1.25rem;
-            flex-shrink: 0;
-        }
-
-        .resume-details {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .resume-name {
-            font-size: 0.75rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .resume-date {
-            font-size: 0.6875rem;
-            color: var(--text-secondary);
-        }
-
-        .resume-download {
-            background: var(--primary-color);
-            color: white;
-            padding: 4px 10px;
-            border-radius: 4px;
-            font-size: 0.6875rem;
-            font-weight: 600;
-            border: none;
-            cursor: pointer;
-            text-decoration: none;
-            display: inline-block;
-            flex-shrink: 0;
-            transition: background 0.2s ease;
-        }
-
-        .resume-download:hover {
-            background: var(--primary-hover);
-        }
-
-        .file-info {
-            display: none !important;
-        }
-
-        .file-name {
-            font-size: 0.875rem;
-            color: var(--text-primary);
-            font-weight: 500;
-        }
-
-        .remove-file-btn {
-            background: transparent;
-            border: none;
-            color: var(--danger-color);
-            cursor: pointer;
-            font-size: 0.875rem;
-            padding: 4px 8px;
-            border-radius: 4px;
-            transition: all 0.2s ease;
-        }
-
-        .remove-file-btn:hover {
-            background: #fee;
-        }
-
-        .modal-footer {
-            padding: 20px 28px;
-            display: flex;
-            justify-content: flex-end;
-            gap: 12px;
-        }
-
-        .btn-cancel {
-            background: white;
-            color: var(--text-primary);
-            border: 1px solid var(--border-color);
-        }
-
-        .btn-cancel:hover {
-            background: var(--bg-color);
-        }
-
-        .btn-save {
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
-            color: white;
-            box-shadow: 0 4px 6px -1px rgba(30, 64, 175, 0.3);
-        }
-
-        .btn-save:hover {
-            box-shadow: 0 10px 15px -3px rgba(30, 64, 175, 0.4);
-            transform: translateY(-1px);
-        }
-
-        /* Toast Notification */
-        .toast {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            background: white;
-            padding: 16px 24px;
-            border-radius: 12px;
-            box-shadow: var(--shadow-lg);
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            animation: slideInRight 0.3s ease-out;
-            z-index: 1000;
-        }
-
-        .toast.success {
-            border-left: 4px solid var(--secondary-color);
-        }
-
-        .toast.error {
-            border-left: 4px solid var(--danger-color);
-        }
-
-        /* Animations */
-        @keyframes fadeInDown {
-            from {
-                opacity: 0;
-                transform: translateY(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        @keyframes slideIn {
-            from {
-                opacity: 0;
-                transform: translateX(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateX(0);
-            }
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
-
-        @keyframes slideInModal {
-            from {
-                transform: translateY(-50px);
-                opacity: 0;
-            }
-            to {
-                transform: translateY(0);
-                opacity: 1;
-            }
-        }
-
-        @keyframes slideInRight {
-            from {
-                transform: translateX(400px);
-                opacity: 0;
-            }
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        /* Loading Spinner */
-        .spinner {
-            border: 3px solid rgba(255, 255, 255, 0.3);
-            border-top: 3px solid white;
-            border-radius: 50%;
-            width: 20px;
-            height: 20px;
-            animation: spin 0.8s linear infinite;
-        }
-
-        /* Mobile Responsive */
-        @media (max-width: 640px) {
-            .dashboard-container {
-                padding: 0 12px;
-            }
-
-            .app-title {
-                font-size: 1.75rem;
-            }
-
-            .app-subtitle {
-                font-size: 0.95rem;
-            }
-
-            .card {
-                padding: 20px;
-            }
-
-            .recipient-item {
-                padding: 16px;
-            }
-        }
-    </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CVApplyr — AI-Powered Cover Letters & Bulk Job Applications</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/index_new.css">
 </head>
-
 <body>
-    <!-- Header Component -->
-    <div id="app-header"></div>
 
-    <!-- Dashboard Section -->
-    <section class="dashboard-section">
-        <div class="dashboard-container">
-            <!-- Welcome Section -->
-            <div class="app-header">
-                <h1 class="app-title">Welcome, <span id="dashboardUserName">User</span>!</h1>
-                <p class="app-subtitle">Send Applications with AI Generated Cover Letter</p>
-            </div>
+<!-- NEW NAV -->
+<nav class="nav">
+  <div class="nav-inner">
+    <div class="brand">
+      <div class="brand-icon"></div>
+      <div class="brand-text"><span class="cv">cv</span><span class="applyr">applyr</span></div>
+    </div>
+    <div class="nav-links">
+      <a href="/#home">Home</a>
+      <a href="/#why">Why CVApplyr</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/#contact">Contact</a>
+    </div>
+    <div class="nav-cta">
+      <a href="/login.html" class="btn btn-ghost">Sign in</a>
+      <a href="/register.html" class="btn btn-primary">Free trial <span class="arrow">→</span></a>
+      <button class="menu-btn" id="menuBtn" aria-label="Open menu">
+        <span class="menu-btn-icon"></span>
+      </button>
+    </div>
+  </div>
+</nav>
 
-            <!-- Stats Card -->
-            <div class="card">
-                <div class="stats-grid-dashboard">
-                    <div class="stat-card-dashboard">
-                        <div class="stat-value-dashboard" id="dashboardTotalSent">0</div>
-                        <div class="stat-label-dashboard">Total Application Sent</div>
-                    </div>
-                    <div class="stat-card-dashboard">
-                        <div class="stat-value-dashboard" id="dashboardTotalGenerated">0</div>
-                        <div class="stat-label-dashboard">Generated</div>
-                    </div>
-                </div>
-            </div>
+<!-- MOBILE MENU -->
+<div class="mobile-menu" id="mobileMenu">
+  <a href="/#home">Home <span>→</span></a>
+  <a href="/#why">Why CVApplyr <span>→</span></a>
+  <a href="/#features">Features <span>→</span></a>
+  <a href="/#pricing">Pricing <span>→</span></a>
+  <a href="/#contact">Contact <span>→</span></a>
+  <div class="mobile-cta">
+    <a href="/login.html" class="btn btn-ghost">Sign in</a>
+    <a href="/register.html" class="btn btn-primary">Free trial</a>
+  </div>
+</div>
 
-            <!-- Recipients Section -->
-            <div class="card">
-                <h2 class="section-title">📬 Recipients</h2>
+<!-- HERO -->
+<section class="hero" id="home">
+  <div class="hero-text">
+    <div class="hero-eyebrow">
+      <span class="tag">AI</span>
+      Powered by Google Gemini
+    </div>
+    <h1>
+      AI cover letters.<br/>
+      <span class="accent">Bulk applications.</span><br/>
+      <span class="gradient">Sent on autopilot.</span>
+    </h1>
+    <p class="lede">CVApplyr writes personalised cover letters in seconds, then sends your applications in bulk — each one uniquely tailored to the recipient. Stop copy-pasting. Start interviewing.</p>
+    <div class="hero-cta">
+      <a href="/register.html" class="btn btn-primary btn-lg">Start free trial <span class="arrow">→</span></a>
+      <a href="/#features" class="btn btn-ghost btn-lg">See how it works</a>
+    </div>
+    <div class="trust-row">
+      <div class="avatars">
+        <div class="avatar"></div>
+        <div class="avatar"></div>
+        <div class="avatar"></div>
+        <div class="avatar"></div>
+      </div>
+      <div class="trust-text">
+        <strong><span class="star">★★★★★</span> Loved by job seekers worldwide</strong>
+        Credits never expire · No monthly subscription
+      </div>
+    </div>
+  </div>
 
-                <!-- Recipients List -->
-                <div id="recipientList" class="recipient-list">
-                    <!-- Initial recipient -->
-                    <div class="recipient-item" data-index="0">
-                        <div class="recipient-header">
-                            <div class="recipient-number">1</div>
-                            <button class="remove-btn" onclick="removeRecipient(0)" style="display: none;">
-                                × Remove
-                            </button>
-                        </div>
-                        <div class="form-group">
-                            <label class="form-label">Hiring Manager's Email <span class="required">*</span></label>
-                            <input 
-                                type="email" 
-                                class="form-input" 
-                                placeholder="hiring@company.com"
-                                name="email"
-                                required
-                            >
-                        </div>
-                        <div class="form-group">
-                            <label class="form-label">Company Website <span class="required">*</span></label>
-                            <input 
-                                type="url" 
-                                class="form-input" 
-                                placeholder="https://www.company.com"
-                                name="website"
-                                required
-                            >
-                        </div>
-                        <div class="form-group">
-                            <label class="form-label">Position/Job Title</label>
-                            <input 
-                                type="text" 
-                                class="form-input" 
-                                placeholder="Software Engineer, Marketing Manager, etc."
-                                name="position"
-                            >
-                        </div>
-                    </div>
-                </div>
+  <div class="hero-visual">
+    <div class="hero-image"></div>
+    <div class="float-card notif">
+      <div class="notif-icon">✓</div>
+      <div class="notif-text">
+        <strong>Application sent</strong>
+        <span>Cover letter generated · just now</span>
+      </div>
+    </div>
+    <div class="float-card stat">
+      <div class="stat-num">47</div>
+      <div class="stat-label">bulk sent today</div>
+      <div class="stat-spark">
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+    </div>
+  </div>
+</section>
 
-                <!-- Add Recipient Button -->
-                <button class="add-recipient-btn" onclick="addRecipient()">
-                    <span style="font-size: 1.5rem;">+</span>
-                    Add Another Recipient
-                </button>
+<!-- POWERED BY -->
+<section class="powered">
+  <p>Built on industry-leading AI</p>
+  <div class="powered-row">
+    <span class="gemini-icon"></span>
+    <strong>Google Gemini</strong>
+    <span>· Advanced cover-letter generation</span>
+  </div>
+</section>
 
-                <!-- Action Button -->
-                <button class="btn btn-primary" style="width: 100%; padding: 16px; font-size: 1rem;" onclick="reviewAndSend()">
-                    <span style="font-size: 1.25rem;">🚀</span>
-                    <span>Review & Generate</span>
-                </button>
-            </div>
+<!-- FEATURES -->
+<section class="features" id="features">
+  <div class="section-head">
+    <span class="section-eyebrow">The platform</span>
+    <h2>Everything you need.<br/><span class="accent">Nothing you don't.</span></h2>
+    <p>Six tools, one dashboard — from cover-letter drafting to bulk sending and tracking.</p>
+  </div>
 
-            <!-- Recent Applications Section -->
-            <div class="card" id="employersSection">
-                <div class="employers-section-header">
-                    <h2 class="section-title">Recent Applications</h2>
-                    <span class="employers-badge" id="employersBadge">0</span>
-                </div>
-                
-                <!-- Check for Replies Button (OAuth users only) -->
-                <div id="checkRepliesContainer" style="display: none; margin: 16px 0;">
-                    <button class="btn btn-secondary" id="checkRepliesBtn" onclick="checkForReplies()" style="width: 100%; padding: 12px; display: flex; align-items: center; justify-content: center; gap: 8px;">
-                        <span style="font-size: 1.1rem;">📬</span>
-                        <span>Check for Replies</span>
-                    </button>
-                    <div id="repliesStatus" style="margin-top: 12px; padding: 12px; border-radius: 8px; display: none; font-size: 0.9rem;"></div>
-                </div>
-                
-                <div id="employersContainer" class="employers-container">
-                    <div class="empty-state">
-                        <div class="empty-icon">📭</div>
-                        <div class="empty-title">No Applications Yet</div>
-                        <div class="empty-subtitle">Your recent job applications will appear here</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Settings Modal -->
-    <div id="settingsModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 class="modal-title">Email Settings</h2>
-                <button class="close-btn" onclick="closeSettings()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="settings-section">
-                    <div class="section-header">SMTP Configuration</div>
-                    <div class="form-group">
-                        <label class="form-label">Your Email Address <span class="required">*</span></label>
-                        <input 
-                            type="email" 
-                            id="smtpEmail"
-                            class="form-input" 
-                            placeholder="your.email@gmail.com"
-                        >
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">App Password <span class="required">*</span></label>
-                        <input 
-                            type="password" 
-                            id="smtpPassword"
-                            class="form-input" 
-                            placeholder="Enter your app-specific password"
-                        >
-                        <p class="upload-subtext" style="margin-top: 8px;">
-                            For Gmail: <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color: var(--primary-color);">Generate App Password</a>
-                        </p>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Your Name <span class="required">*</span></label>
-                        <input 
-                            type="text" 
-                            id="senderName"
-                            class="form-input" 
-                            placeholder="Rishi Samadhiya"
-                        >
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-cancel" onclick="closeSettings()">Cancel</button>
-                <button class="btn btn-save" onclick="saveSettings()">Save Settings</button>
-            </div>
-        </div>
+  <div class="feature-grid">
+    <!-- AI Cover Letter (wide, with demo terminal) -->
+    <div class="feature wide">
+      <div class="feature-icon">✦</div>
+      <h3>AI Cover Letter Writer</h3>
+      <p>Powered by Google Gemini. Drop in a job description; we draft a personalised, recruiter-ready cover letter in seconds.</p>
+      <div class="demo-terminal">
+        <div class="demo-tab"><span></span><span></span><span></span></div>
+        <div class="demo-line"><span class="prompt">→</span> Reading job description...</div>
+        <div class="demo-line"><span class="prompt">→</span> Matching keywords from your profile</div>
+        <div class="demo-line"><span class="prompt">→</span> Drafting opening, body, closing</div>
+        <div class="demo-line"><span class="ok">✓</span> Cover letter ready in <span class="val">2.4s</span></div>
+        <div class="demo-line"><span class="ok">✓</span> Resume.pdf attached automatically</div>
+      </div>
     </div>
 
-    <!-- Profile Modal -->
-    <div id="profileModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 class="modal-title">Profile Settings</h2>
-                <button class="close-btn" onclick="closeProfile()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="profile-grid">
-                    <!-- Resume Upload -->
-                    <div class="settings-section">
-                        <div class="section-header" id="resumeLabel">Resume Document</div>
-                        <div class="upload-area" id="resumeUpload" onclick="document.getElementById('resumeFile').click()">
-                            <div class="upload-icon">📄</div>
-                            <div class="upload-text">Click to upload resume</div>
-                            <div class="upload-subtext">PDF format</div>
-                        </div>
-                        <input type="file" id="resumeFile" accept=".pdf" style="display: none;" onchange="handleResumeUpload(event)">
-                        <div id="resumeFileInfo">
-                            <div class="resume-info">
-                                <span class="resume-icon">📄</span>
-                                <div class="resume-details">
-                                    <div class="resume-name" id="resumeName"></div>
-                                    <div class="resume-date" id="resumeDate"></div>
-                                </div>
-                            </div>
-                            <a id="resumeDownload" class="resume-download" download>Download</a>
-                        </div>
-                    </div>
-
-                    <!-- Profile Picture Upload -->
-                    <div class="settings-section">
-                        <div class="section-header" id="photoLabel">Profile Picture</div>
-                        <div class="upload-area" id="photoUpload" onclick="document.getElementById('photoFile').click()">
-                            <div class="upload-content" id="photoUploadContent">
-                                <div class="upload-icon">📷</div>
-                                <div class="upload-text">Click to upload photo</div>
-                                <div class="upload-subtext">JPG or PNG</div>
-                            </div>
-                            <div class="image-preview" id="photoPreview">
-                                <img id="photoPreviewImg" class="preview-photo" alt="Profile Photo">
-                                <div class="preview-overlay">
-                                    <button class="change-photo-btn" onclick="event.stopPropagation(); document.getElementById('photoFile').click();">Change Photo</button>
-                                </div>
-                            </div>
-                        </div>
-                        <input type="file" id="photoFile" accept="image/*" style="display: none;" onchange="handlePhotoUpload(event)">
-                        <div id="photoFileInfo" style="display: none;"></div>
-                    </div>
-
-                    <!-- Signature Upload -->
-                    <div class="settings-section">
-                        <div class="section-header" id="signatureLabel">Signature</div>
-                        <div class="upload-area" id="signatureUpload" onclick="document.getElementById('signatureFile').click()">
-                            <div class="upload-content" id="signatureUploadContent">
-                                <div class="upload-icon">✍️</div>
-                                <div class="upload-text">Click to upload signature</div>
-                                <div class="upload-subtext">PNG with transparent background</div>
-                            </div>
-                            <div class="image-preview" id="signaturePreview">
-                                <img id="signaturePreviewImg" class="preview-signature" alt="Signature">
-                                <div class="preview-overlay">
-                                    <button class="change-photo-btn" onclick="event.stopPropagation(); document.getElementById('signatureFile').click();">Change Signature</button>
-                                </div>
-                            </div>
-                        </div>
-                        <input type="file" id="signatureFile" accept="image/*" style="display: none;" onchange="handleSignatureUpload(event)">
-                        <div id="signatureFileInfo" style="display: none;"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-cancel" onclick="closeProfile()">Cancel</button>
-                <button class="btn btn-save" onclick="saveProfile()">Save Profile</button>
-            </div>
+    <!-- Application History (narrow, with chart) -->
+    <div class="feature narrow">
+      <div class="feature-icon">▦</div>
+      <h3>Application History</h3>
+      <p>Every application, every cover letter, every timestamp — searchable from one dashboard.</p>
+      <div class="history-chart">
+        <div class="history-chart-head">
+          <strong>Last 7 days</strong>
+          <span>+38%</span>
         </div>
+        <svg class="history-chart-svg" viewBox="0 0 280 100" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#60A5FA" stop-opacity="0.35"/>
+              <stop offset="100%" stop-color="#60A5FA" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <!-- Area -->
+          <path d="M0,80 C30,70 50,55 80,45 C110,35 140,55 170,40 C200,28 230,20 280,12 L280,100 L0,100 Z"
+                fill="url(#chartFill)"/>
+          <!-- Line -->
+          <path d="M0,80 C30,70 50,55 80,45 C110,35 140,55 170,40 C200,28 230,20 280,12"
+                fill="none" stroke="#60A5FA" stroke-width="2" stroke-linecap="round"/>
+          <!-- End dot -->
+          <circle cx="280" cy="12" r="4" fill="#60A5FA"/>
+          <circle cx="280" cy="12" r="8" fill="#60A5FA" opacity="0.25"/>
+        </svg>
+        <div class="history-chart-legend">
+          <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+        </div>
+      </div>
     </div>
 
-    <!-- Mark as Replied Modal -->
-    <div id="replyModal" class="modal">
-        <div class="modal-content" style="max-width: 450px;">
-            <div class="modal-header">
-                <h2 class="modal-title">Mark as Replied</h2>
-                <button class="close-btn" onclick="closeReplyModal()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div style="margin-bottom: 20px;">
-                    <p style="color: var(--text-primary); font-size: 1rem; margin-bottom: 16px;">
-                        Did you receive a reply from <strong id="replyCompanyName"></strong>?
-                    </p>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Reply Date <span class="required">*</span></label>
-                    <input 
-                        type="date" 
-                        id="replyDateInput"
-                        class="form-input" 
-                        style="cursor: pointer;"
-                    >
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-cancel" onclick="closeReplyModal()">Cancel</button>
-                <button class="btn btn-save" onclick="confirmMarkAsReplied()" style="background: linear-gradient(135deg, #059669 0%, #10b981 100%);">
-                    Mark as Replied
-                </button>
-            </div>
-        </div>
+    <!-- Three uniform feature cards -->
+    <div class="feature third">
+      <div class="feature-icon">⇉</div>
+      <h3>Bulk Application Sending</h3>
+      <p>Send to dozens of recipients at once. Every email gets its own unique, AI-drafted cover letter — never a copy-paste.</p>
+    </div>
+    <div class="feature third">
+      <div class="feature-icon">📎</div>
+      <h3>Resume Auto-Attach</h3>
+      <p>Your resume rides along with every application, formatted and attached for you. Upload once, send forever.</p>
+    </div>
+    <div class="feature third">
+      <div class="feature-icon">◐</div>
+      <h3>Profile Management</h3>
+      <p>Store your professional details, photo, and digital signature in one secure place. Personalise every send without re-typing.</p>
     </div>
 
-    <!-- Show Reply Details Modal -->
-    <div id="replyDetailsModal" class="modal">
-        <div class="modal-content" style="max-width: 650px;">
-            <div class="modal-header" style="background: #f8fafc; border-bottom: 2px solid #e2e8f0;">
-                <h2 class="modal-title" style="display: flex; align-items: center; gap: 8px; color: #1e293b;">
-                    <span>📬</span>
-                    <span id="replyDetailsCompany"></span>
-                </h2>
-                <button class="close-btn" onclick="closeReplyDetailsModal()">&times;</button>
-            </div>
-            <div class="modal-body" style="padding: 16px;">
-                <!-- Replies Container -->
-                <div id="replyDetailsContent" style="max-height: 450px; overflow-y: auto;">
-                    <!-- Reply cards will be dynamically inserted here -->
-                </div>
-            </div>
-            <div class="modal-footer" style="padding: 12px 20px;">
-                <button class="btn btn-primary" onclick="closeReplyDetailsModal()" style="width: 100%;">Close</button>
-            </div>
-        </div>
+    <!-- Credit pricing teaser (wide footprint) -->
+    <div class="feature wide">
+      <div class="feature-icon">$</div>
+      <h3>Credit-based, never a subscription</h3>
+      <p>Pay only for the applications you send. Credits never expire, no monthly fees, no auto-renewals.</p>
+      <div class="credit-chips">
+        <div class="credit-chip"><span class="price">$4.99</span><span class="qty">· 11 credits</span></div>
+        <div class="credit-chip"><span class="price">$12.99</span><span class="qty">· 28 credits</span></div>
+        <div class="credit-chip"><span class="price">$34.99</span><span class="qty">· 100 credits</span></div>
+        <div class="credit-chip"><span class="price">$149.99</span><span class="qty">· 500 credits</span></div>
+        <div class="credit-chip"><span class="price">$499.99</span><span class="qty">· 2,000 credits</span></div>
+      </div>
     </div>
 
-    <!-- Footer Component -->
-    <div id="app-footer"></div>
+    <!-- Support card (narrow) -->
+    <div class="feature narrow">
+      <div class="feature-icon">⌬</div>
+      <h3>24/7 Support</h3>
+      <p>Real humans, real fast. Email <a href="mailto:support@cvapplyr.com" style="color: var(--brand-bright); font-weight: 600;">support@cvapplyr.com</a> any time — Premium and Enterprise plans get priority response.</p>
+    </div>
+  </div>
+</section>
 
-    <!-- Scripts -->
-    <!-- jQuery from CDN -->
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <!-- Bootstrap JS -->
-    <script src="/bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
-    <!-- WOW.js -->
-    <script src="/js/plugins/wow/wow.min.js"></script>
-    <!-- App Components -->
-    <script src="/js/app-header.js"></script>
-    <script src="/js/app-footer.js"></script>
-    <script src="/js/credit-validation.js"></script>
+<!-- PROCESS -->
+<section class="process" id="why">
+  <div class="section-head">
+    <span class="section-eyebrow">How it works</span>
+    <h2>Three steps to <span class="accent">your next interview.</span></h2>
+    <p>From sign-up to bulk-sent applications in under five minutes.</p>
+  </div>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">01</div>
+      <h3>Set up your profile</h3>
+      <p>Upload your resume, add your photo + digital signature, fill in your professional details once.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">02</div>
+      <h3>Generate cover letters</h3>
+      <p>Paste job descriptions or recipient lists. Gemini drafts unique, personalised cover letters for each one.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">03</div>
+      <h3>Bulk send + track</h3>
+      <p>Hit send. Every application goes out with the right cover letter + resume attached. Watch responses roll in.</p>
+    </div>
+  </div>
+</section>
 
-    <script>
-        // Flag to tell app header this is dashboard page
-        window.dashboardPage = true;
-        
-        console.log('🔧 Initializing dashboard page...');
-        
-        // Authentication check - GLOBAL authToken variable
-        let authToken = localStorage.getItem('authToken');
-        if (!authToken) {
-            console.log('⚠️ No auth token found, redirecting to login');
-            window.location.href = '/login';
-        } else {
-            console.log('✅ Auth token found');
-        }
+<!-- PRICING -->
+<section class="pricing" id="pricing">
+  <div class="section-head">
+    <span class="section-eyebrow">Pricing</span>
+    <h2>Pay as you apply.<br/><span class="accent">Credits never expire.</span></h2>
+    <p>Start small, scale when you need to. No subscriptions, no renewal traps.</p>
+  </div>
 
-        // Load user info
-        let userData = JSON.parse(localStorage.getItem('userData') || '{}');
-        console.log('👤 User data loaded:', userData);
+  <div class="pricing-grid">
+    <!-- Starter -->
+    <div class="price-card">
+      <div class="price-name">Starter</div>
+      <div class="price-amount"><span class="currency">$</span>4.99</div>
+      <div class="price-credits"><strong>11</strong> credits · ~ $0.45 / application</div>
+      <ul class="price-features">
+        <li>11 job applications</li>
+        <li>AI cover-letter generation</li>
+        <li>Resume auto-attach</li>
+        <li>Application history</li>
+        <li>24/7 email support</li>
+      </ul>
+      <a href="/signup?plan=starter" class="btn btn-ghost">Get started</a>
+    </div>
 
-        // File storage
-        let resumeFile = null;
-        let photoFile = null;
-        let signatureFile = null;
+    <!-- Professional - featured -->
+    <div class="price-card featured">
+      <div class="price-badge">Most popular</div>
+      <div class="price-name">Professional</div>
+      <div class="price-amount"><span class="currency">$</span>12.99</div>
+      <div class="price-credits"><strong>28</strong> credits · ~ $0.46 / application</div>
+      <ul class="price-features">
+        <li>28 job applications</li>
+        <li>AI cover-letter generation</li>
+        <li>Resume auto-attach</li>
+        <li>Application history</li>
+        <li>24/7 email support</li>
+      </ul>
+      <a href="/signup?plan=professional" class="btn btn-primary">Get started <span class="arrow">→</span></a>
+    </div>
 
-        // Recipients management
-        let recipientCount = 1;
+    <!-- Premium -->
+    <div class="price-card">
+      <div class="price-name">Premium</div>
+      <div class="price-amount"><span class="currency">$</span>34.99</div>
+      <div class="price-credits"><strong>100</strong> credits · ~ $0.35 / application</div>
+      <ul class="price-features">
+        <li>100 job applications</li>
+        <li>AI cover-letter generation</li>
+        <li>Resume auto-attach</li>
+        <li>Application history</li>
+        <li>Priority 24/7 support</li>
+      </ul>
+      <a href="/signup?plan=premium" class="btn btn-ghost">Get started</a>
+    </div>
+  </div>
 
-        function addRecipient() {
-            const recipientList = document.getElementById('recipientList');
-            const newRecipient = document.createElement('div');
-            newRecipient.className = 'recipient-item';
-            newRecipient.setAttribute('data-index', recipientCount);
-            
-            newRecipient.innerHTML = `
-                <div class="recipient-header">
-                    <div class="recipient-number">${recipientCount + 1}</div>
-                    <button class="remove-btn" onclick="removeRecipient(${recipientCount})">
-                        × Remove
-                    </button>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Hiring Manager's Email <span class="required">*</span></label>
-                    <input 
-                        type="email" 
-                        class="form-input" 
-                        placeholder="hiring@company.com"
-                        name="email"
-                        required
-                    >
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Company Website <span class="required">*</span></label>
-                    <input 
-                        type="url" 
-                        class="form-input" 
-                        placeholder="https://www.company.com"
-                        name="website"
-                        required
-                    >
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Position/Job Title</label>
-                    <input 
-                        type="text" 
-                        class="form-input" 
-                        placeholder="Software Engineer, Marketing Manager, etc."
-                        name="position"
-                    >
-                </div>
-            `;
-            
-            recipientList.appendChild(newRecipient);
-            recipientCount++;
-            
-            // Update first recipient's remove button visibility
-            updateRemoveButtons();
-        }
+  <div class="pricing-foot">
+    <strong>Need more?</strong> Enterprise (500 credits / $149.99) and Ultimate (2,000 credits / $499.99) packs available.
+    <a href="/#contact">See all plans →</a>
+  </div>
+</section>
 
-        function removeRecipient(index) {
-            const recipient = document.querySelector(`[data-index="${index}"]`);
-            if (recipient) {
-                recipient.remove();
-                // Renumber remaining recipients
-                renumberRecipients();
-                updateRemoveButtons();
-            }
-        }
+<!-- STATS -->
+<section class="stats-band">
+  <div class="stats-grid">
+    <div class="stat-cell">
+      <div class="stat-big">2.4s</div>
+      <div class="stat-cell-label">Avg. cover-letter time</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-big">100s</div>
+      <div class="stat-cell-label">Bulk-send capacity</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-big">$0</div>
+      <div class="stat-cell-label">Subscription fees</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-big">24/7</div>
+      <div class="stat-cell-label">Human support</div>
+    </div>
+  </div>
+</section>
 
-        function renumberRecipients() {
-            const recipients = document.querySelectorAll('.recipient-item');
-            recipients.forEach((recipient, index) => {
-                const number = recipient.querySelector('.recipient-number');
-                if (number) {
-                    number.textContent = index + 1;
-                }
-                recipient.setAttribute('data-index', index);
-                
-                // Update remove button onclick
-                const removeBtn = recipient.querySelector('.remove-btn');
-                if (removeBtn) {
-                    removeBtn.setAttribute('onclick', `removeRecipient(${index})`);
-                }
-            });
-            recipientCount = recipients.length;
-        }
+<!-- TESTIMONIAL -->
+<section class="testimonial">
+  <div class="testimonial-card">
+    <div class="quote-icon">"</div>
+    <blockquote>
+      CVApplyr drafted <span class="accent">47 unique cover letters</span> in minutes. I sent them all in one go and had six interviews scheduled that week. This is what job-hunting should feel like in 2026.
+    </blockquote>
+    <div class="author">
+      <div class="author-avatar"></div>
+      <div class="author-info">
+        <strong>Priya R.</strong>
+        <span>Product Manager · CVApplyr user</span>
+      </div>
+    </div>
+  </div>
+</section>
 
-        function updateRemoveButtons() {
-            const recipients = document.querySelectorAll('.recipient-item');
-            recipients.forEach((recipient, index) => {
-                const removeBtn = recipient.querySelector('.remove-btn');
-                if (removeBtn) {
-                    removeBtn.style.display = recipients.length > 1 ? 'flex' : 'none';
-                }
-            });
-        }
+<!-- CTA -->
+<section class="cta-band" id="contact">
+  <div class="cta-wrap">
+    <div class="cta-content">
+      <h2>Your next role is <span class="accent">one bulk-send away.</span></h2>
+      <p>Free trial. No credit card required. Credits never expire.</p>
+      <a href="/register.html" class="btn btn-primary btn-lg">Start free trial <span class="arrow">→</span></a>
+    </div>
+  </div>
+</section>
 
-        // Restore form values from backend API
-        async function restoreFormValues() {
-            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
-            if (!userData.email) return;
-            
-            try {
-                // Load recipients from backend API
-                const response = await fetch('/api/users/recipients', {
-                    method: 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                    }
-                });
+<!-- FOOTER -->
+<footer>
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <div class="brand">
+        <div class="brand-icon"></div>
+        <div class="brand-text"><span class="cv">cv</span><span class="applyr">applyr</span></div>
+      </div>
+      <p>AI-powered cover-letter generation & bulk job application sending.</p>
+      <div class="footer-co">
+        Built & owned by <strong>zSellr (OPC) Private Limited</strong>
+      </div>
+    </div>
+    <div class="footer-col">
+      <h4>Quick Links</h4>
+      <a href="/#home">Home</a>
+      <a href="/#why">Why CVApplyr</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/#contact">Contact</a>
+    </div>
+    <div class="footer-col">
+      <h4>Legal</h4>
+      <a href="/privacy-policy">Privacy Policy</a>
+      <a href="/terms-of-service">Terms of Service</a>
+      <a href="/refund-policy">Refund Policy</a>
+      <a href="/support">Support</a>
+    </div>
+    <div class="footer-col">
+      <h4>Contact</h4>
+      <a href="mailto:support@cvapplyr.com">support@cvapplyr.com</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 CVApplyr by zSellr (OPC) Private Limited · All rights reserved</span>
+    <span>Made in India · with care</span>
+  </div>
+</footer>
 
-                if (response.ok) {
-                    const data = await response.json();
-                    
-                    if (data.success && data.recipients && data.recipients.length > 0) {
-                        console.log(`✅ Loaded ${data.recipients.length} recipients from backend`);
-                        
-                        // Add recipient items if needed
-                        while (document.querySelectorAll('.recipient-item').length < data.recipients.length) {
-                            addRecipient();
-                        }
-                        
-                        // Fill in the values
-                        const items = document.querySelectorAll('.recipient-item');
-                        data.recipients.forEach((recipient, index) => {
-                            if (items[index]) {
-                                items[index].querySelector('input[name="email"]').value = recipient.email || '';
-                                items[index].querySelector('input[name="website"]').value = recipient.website || '';
-                                items[index].querySelector('input[name="position"]').value = recipient.position || '';
-                            }
-                        });
-                        
-                        console.log('✅ Form values restored from backend API');
-                    } else {
-                        console.log('ℹ️ No stored recipients found');
-                    }
-                } else {
-                    console.log('⚠️ Failed to load recipients from backend');
-                }
-            } catch (error) {
-                console.error('❌ Error loading recipients:', error);
-            }
-        }
+<script>
+  // Mobile menu toggle
+  const menuBtn = document.getElementById('menuBtn');
+  const mobileMenu = document.getElementById('mobileMenu');
+  menuBtn?.addEventListener('click', () => {
+    menuBtn.classList.toggle('open');
+    mobileMenu.classList.toggle('open');
+  });
+  // Close menu when a link is tapped
+  mobileMenu?.querySelectorAll('a').forEach(a => {
+    a.addEventListener('click', () => {
+      menuBtn.classList.remove('open');
+      mobileMenu.classList.remove('open');
+    });
+  });
+</script>
 
-        // Auto-save recipients function (debounced) - save to backend API
-        let saveTimer;
-        function autoSaveRecipients() {
-            clearTimeout(saveTimer);
-            saveTimer = setTimeout(async () => {
-                if (!authToken) return;
-                
-                const recipients = [];
-                const recipientItems = document.querySelectorAll('.recipient-item');
-                
-                recipientItems.forEach(item => {
-                    const email = item.querySelector('input[name="email"]').value.trim();
-                    const website = item.querySelector('input[name="website"]').value.trim();
-                    const position = item.querySelector('input[name="position"]').value.trim();
-                    
-                    if (email || website) {
-                        recipients.push({ email, website, position });
-                    }
-                });
-                
-                if (recipients.length > 0) {
-                    try {
-                        const response = await fetch('/api/users/recipients', {
-                            method: 'POST',
-                            headers: {
-                                'Authorization': `Bearer ${authToken}`,
-                                'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify({ recipients })
-                        });
-
-                        if (response.ok) {
-                            const data = await response.json();
-                            console.log(`✅ Auto-saved ${data.recipientsCount} recipients to backend`);
-                        } else {
-                            console.log('⚠️ Failed to auto-save recipients');
-                        }
-                    } catch (error) {
-                        console.error('❌ Error auto-saving recipients:', error);
-                    }
-                }
-            }, 2000); // 2 second debounce
-        }
-
-        // Add event listeners for auto-save
-        document.addEventListener('input', (e) => {
-            if (e.target.closest('.recipient-item')) {
-                autoSaveRecipients();
-            }
-        });
-
-        function reviewAndSend() {
-            console.log('🚀 Review and Send clicked');
-            
-            // Collect recipient data
-            const recipients = [];
-            const recipientItems = document.querySelectorAll('.recipient-item');
-            
-            let hasError = false;
-            recipientItems.forEach(item => {
-                const email = item.querySelector('input[name="email"]').value.trim();
-                const website = item.querySelector('input[name="website"]').value.trim();
-                const position = item.querySelector('input[name="position"]').value.trim();
-                
-                if (!email || !website) {
-                    hasError = true;
-                    return;
-                }
-                
-                recipients.push({ email, website, position });
-            });
-            
-            if (hasError) {
-                showToast('Please fill in all required fields (Email and Website)', 'error');
-                return;
-            }
-            
-            if (recipients.length === 0) {
-                showToast('Please add at least one recipient', 'error');
-                return;
-            }
-            
-            console.log('✅ Collected recipients:', recipients.length);
-            
-            // Store recipients and redirect to review page
-            localStorage.setItem('pendingRecipients', JSON.stringify(recipients));
-            console.log('✅ Stored recipients in localStorage');
-            window.location.href = '/review';
-        }
-
-        // Modal functions
-        function closeSettings() {
-            document.getElementById('settingsModal').classList.remove('active');
-        }
-
-        function closeProfile() {
-            document.getElementById('profileModal').classList.remove('active');
-        }
-
-        async function saveSettings() {
-            const email = document.getElementById('smtpEmail').value.trim();
-            const password = document.getElementById('smtpPassword').value.trim();
-            const name = document.getElementById('senderName').value.trim();
-            
-            if (!email || !password || !name) {
-                showToast('Please fill in all fields', 'error');
-                return;
-            }
-            
-            try {
-                const response = await fetch('/api/smtp/config', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ email, password, name }),
-                });
-                
-                const result = await response.json();
-                
-                if (response.ok) {
-                    showToast('Settings saved successfully!', 'success');
-                    closeSettings();
-                } else {
-                    showToast(result.error || 'Failed to save settings', 'error');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showToast('Failed to save settings. Please try again.', 'error');
-            }
-        }
-
-        // File upload handlers
-        function handleResumeUpload(event) {
-            const file = event.target.files[0];
-            if (file) {
-                resumeFile = file;
-                const userName = userData.fullName || userData.name || 'Resume';
-                const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-                const shortName = `${userName.replace(/\s+/g, '_')}_${date.replace(/\s+/g, '_')}.pdf`;
-                
-                document.getElementById('resumeName').textContent = shortName;
-                document.getElementById('resumeDate').textContent = `Uploaded: ${date}`;
-                document.getElementById('resumeFileInfo').classList.add('active');
-                document.getElementById('resumeUpload').classList.add('has-file');
-                
-                const blobUrl = URL.createObjectURL(file);
-                document.getElementById('resumeDownload').href = blobUrl;
-                document.getElementById('resumeDownload').download = shortName;
-            }
-        }
-
-        function handlePhotoUpload(event) {
-            const file = event.target.files[0];
-            if (file) {
-                photoFile = file;
-                
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    const photoPreview = document.getElementById('photoPreview');
-                    const photoPreviewImg = document.getElementById('photoPreviewImg');
-                    const photoUploadContent = document.getElementById('photoUploadContent');
-                    const photoUploadArea = document.getElementById('photoUpload');
-                    
-                    photoPreviewImg.src = e.target.result;
-                    photoUploadContent.classList.add('hidden');
-                    photoPreview.classList.add('active');
-                    photoUploadArea.classList.add('has-preview');
-                };
-                reader.readAsDataURL(file);
-                
-                document.getElementById('photoUpload').classList.add('has-file');
-            }
-        }
-
-        function handleSignatureUpload(event) {
-            const file = event.target.files[0];
-            if (file) {
-                signatureFile = file;
-                
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    const signaturePreview = document.getElementById('signaturePreview');
-                    const signaturePreviewImg = document.getElementById('signaturePreviewImg');
-                    const signatureUploadContent = document.getElementById('signatureUploadContent');
-                    const signatureUploadArea = document.getElementById('signatureUpload');
-                    
-                    signaturePreviewImg.src = e.target.result;
-                    signatureUploadContent.classList.add('hidden');
-                    signaturePreview.classList.add('active');
-                    signatureUploadArea.classList.add('has-preview');
-                };
-                reader.readAsDataURL(file);
-                
-                document.getElementById('signatureUpload').classList.add('has-file');
-            }
-        }
-
-        function removeFile(type) {
-            if (type === 'resume') {
-                resumeFile = null;
-                document.getElementById('resumeFileInfo').classList.remove('active');
-                document.getElementById('resumeUpload').classList.remove('has-file');
-                document.getElementById('resumeFile').value = '';
-            } else if (type === 'photo') {
-                photoFile = null;
-                document.getElementById('photoUpload').classList.remove('has-file', 'has-preview');
-                document.getElementById('photoFile').value = '';
-                document.getElementById('photoPreview').classList.remove('active');
-                document.getElementById('photoUploadContent').classList.remove('hidden');
-                document.getElementById('photoPreviewImg').src = '';
-            } else if (type === 'signature') {
-                signatureFile = null;
-                document.getElementById('signatureUpload').classList.remove('has-file', 'has-preview');
-                document.getElementById('signatureFile').value = '';
-                document.getElementById('signaturePreview').classList.remove('active');
-                document.getElementById('signatureUploadContent').classList.remove('hidden');
-                document.getElementById('signaturePreviewImg').src = '';
-            }
-        }
-
-        async function saveProfile() {
-            const formData = new FormData();
-            
-            if (resumeFile) formData.append('resume', resumeFile);
-            if (photoFile) formData.append('photo', photoFile);
-            if (signatureFile) formData.append('signature', signatureFile);
-
-            if (!resumeFile && !photoFile && !signatureFile) {
-                showToast('Please select at least one file to upload', 'error');
-                return;
-            }
-
-            try {
-                const response = await fetch('/api/upload-profile', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`
-                    },
-                    body: formData,
-                });
-
-                const result = await response.json();
-
-                if (response.ok) {
-                    showToast('Profile updated successfully!', 'success');
-                    
-                    resumeFile = null;
-                    photoFile = null;
-                    signatureFile = null;
-                    
-                    document.getElementById('resumeFile').value = '';
-                    document.getElementById('photoFile').value = '';
-                    document.getElementById('signatureFile').value = '';
-                    
-                    await loadProfile();
-                    closeProfile();
-                } else {
-                    showToast(result.error || 'Failed to upload files', 'error');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showToast('Failed to upload files. Please try again.', 'error');
-            }
-        }
-
-        async function loadProfile() {
-            try {
-                const token = localStorage.getItem('authToken');
-                const response = await fetch('/api/user-profile', {
-                    method: 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json',
-                    }
-                });
-
-                if (response.ok) {
-                    const result = await response.json();
-                    const profile = result.profile;
-                    
-                    if (profile.resumePath) {
-                        const fileName = profile.resumePath.split('/').pop();
-                        const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-                        
-                        document.getElementById('resumeName').textContent = fileName;
-                        document.getElementById('resumeDate').textContent = `Uploaded: ${date}`;
-                        document.getElementById('resumeFileInfo').classList.add('active');
-                        document.getElementById('resumeUpload').classList.add('has-file');
-                        
-                        const resumePath = profile.resumePath.replace('uploads/', '/uploads/');
-                        document.getElementById('resumeDownload').href = resumePath;
-                        document.getElementById('resumeDownload').download = fileName;
-                    }
-                    
-                    if (profile.photoPath) {
-                        const photoPath = profile.photoPath.replace('uploads/', '/uploads/');
-                        
-                        const imageResponse = await fetch(photoPath, {
-                            headers: { 'Authorization': `Bearer ${token}` }
-                        });
-                        
-                        if (imageResponse.ok) {
-                            const blob = await imageResponse.blob();
-                            const dataUrl = await blobToDataURL(blob);
-                            
-                            const photoPreview = document.getElementById('photoPreview');
-                            const photoPreviewImg = document.getElementById('photoPreviewImg');
-                            const photoUploadContent = document.getElementById('photoUploadContent');
-                            const photoUploadArea = document.getElementById('photoUpload');
-                            
-                            photoPreviewImg.src = dataUrl;
-                            photoUploadContent.classList.add('hidden');
-                            photoPreview.classList.add('active');
-                            photoUploadArea.classList.add('has-file', 'has-preview');
-                        }
-                    }
-                    
-                    if (profile.signaturePath) {
-                        const signaturePath = profile.signaturePath.replace('uploads/', '/uploads/');
-                        
-                        const imageResponse = await fetch(signaturePath, {
-                            headers: { 'Authorization': `Bearer ${token}` }
-                        });
-                        
-                        if (imageResponse.ok) {
-                            const blob = await imageResponse.blob();
-                            const dataUrl = await blobToDataURL(blob);
-                            
-                            const signaturePreview = document.getElementById('signaturePreview');
-                            const signaturePreviewImg = document.getElementById('signaturePreviewImg');
-                            const signatureUploadContent = document.getElementById('signatureUploadContent');
-                            const signatureUploadArea = document.getElementById('signatureUpload');
-                            
-                            signaturePreviewImg.src = dataUrl;
-                            signatureUploadContent.classList.add('hidden');
-                            signaturePreview.classList.add('active');
-                            signatureUploadArea.classList.add('has-file', 'has-preview');
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error('Error loading profile:', error);
-            }
-        }
-
-        function blobToDataURL(blob) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(reader.result);
-                reader.onerror = reject;
-                reader.readAsDataURL(blob);
-            });
-        }
-
-        // Load application history
-        async function loadApplicationHistory() {
-            console.log('📖 Loading application history...');
-            
-            // Refresh user data
-            userData = JSON.parse(localStorage.getItem('userData') || '{}');
-            
-            if (!userData.email) {
-                console.log('⚠️ No user email found, skipping application history');
-                return;
-            }
-            
-            console.log('👤 Loading history for user:', userData.email);
-            
-            try {
-                console.log('🔄 Fetching from /api/users/application-history...');
-                const response = await fetch('/api/users/application-history', {
-                    method: 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                    }
-                });
-
-                console.log('📡 Application history response status:', response.status);
-
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    console.log('⚠️ No application history found:', response.status, errorText);
-                    return;
-                }
-
-                const data = await response.json();
-                console.log('📦 Application history data received:', data);
-                
-                if (data.success && data.applicationHistory && data.applicationHistory.length > 0) {
-                    const applicationHistory = data.applicationHistory;
-                    console.log('✅ Loaded application history:', applicationHistory.length, 'items');
-                    console.log('📋 First application:', applicationHistory[0]);
-                    
-                    const badge = document.getElementById('employersBadge');
-                    const count = Math.min(applicationHistory.length, 5);
-                    badge.textContent = count;
-                    console.log('🔢 Updated badge count:', count);
-                    
-                    renderEmployers(applicationHistory.slice(0, 5));
-                    console.log('✅ Rendered employers');
-                } else {
-                    console.log('ℹ️ No application history found or empty array');
-                }
-            } catch (error) {
-                console.error('❌ Error loading application history:', error);
-            }
-        }
-
-        // Mark application as replied - Global variables for modal
-        let currentReplyAppId = null;
-        let currentReplyCompanyName = '';
-
-        function markAsReplied(appId, companyName) {
-            currentReplyAppId = appId;
-            currentReplyCompanyName = companyName;
-            
-            // Set the company name in the modal
-            document.getElementById('replyCompanyName').textContent = companyName;
-            
-            // Set default date to today
-            const today = new Date().toISOString().split('T')[0];
-            document.getElementById('replyDateInput').value = today;
-            
-            // Show the modal
-            document.getElementById('replyModal').classList.add('active');
-        }
-
-        function closeReplyModal() {
-            document.getElementById('replyModal').classList.remove('active');
-            currentReplyAppId = null;
-            currentReplyCompanyName = '';
-        }
-
-        // Show all replies for an application (fetch from API)
-        async function showAllReplies(applicationId, companyName) {
-            try {
-                const response = await fetch(`/api/users/application-history/${applicationId}/replies`, {
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`
-                    }
-                });
-
-                if (!response.ok) {
-                    throw new Error('Failed to fetch replies');
-                }
-
-                const result = await response.json();
-                
-                if (result.success && result.replies && result.replies.length > 0) {
-                    // Build HTML for all replies with compact card design
-                    const repliesHtml = result.replies.map((reply, index) => {
-                        const replyDate = new Date(reply.replyDate).toLocaleString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric',
-                            hour: 'numeric',
-                            minute: '2-digit'
-                        });
-                        
-                        // Subtle color variations
-                        const colors = [
-                            { bg: '#eff6ff', accent: '#3b82f6' },
-                            { bg: '#f5f3ff', accent: '#8b5cf6' },
-                            { bg: '#ecfdf5', accent: '#10b981' },
-                            { bg: '#fef3c7', accent: '#f59e0b' }
-                        ];
-                        const color = colors[index % colors.length];
-                        
-                        return `
-                            <div style="background: ${color.bg}; border-left: 3px solid ${color.accent}; border-radius: 6px; padding: 12px 14px; margin-bottom: 12px;">
-                                <!-- Header: Badge + From + Date -->
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
-                                    <div style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;">
-                                        <span style="background: ${color.accent}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; flex-shrink: 0;">#${result.replies.length - index}</span>
-                                        <span style="font-size: 0.875rem; color: #374151; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">✉️ ${reply.replyFromEmail}</span>
-                                    </div>
-                                    <span style="font-size: 0.8rem; color: #6b7280; white-space: nowrap;">📅 ${replyDate}</span>
-                                </div>
-                                
-                                <!-- Subject -->
-                                <div style="font-size: 0.875rem; color: #1f2937; font-weight: 500; margin-bottom: 8px; line-height: 1.4;">
-                                    ${reply.replySubject || '(No Subject)'}
-                                </div>
-                                
-                                <!-- Preview -->
-                                <div style="background: white; border-radius: 4px; padding: 10px; font-size: 0.85rem; color: #4b5563; line-height: 1.5; max-height: 100px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word;">${reply.replySnippet || '(No preview available)'}</div>
-                            </div>
-                        `;
-                    }).join('');
-
-                    // Update modal content
-                    document.getElementById('replyDetailsCompany').textContent = companyName;
-                    document.getElementById('replyDetailsContent').innerHTML = `
-                        <div style="background: #f1f5f9; padding: 10px 14px; border-radius: 6px; margin-bottom: 14px;">
-                            <span style="font-size: 0.95rem; font-weight: 600; color: #374151;">
-                                ${result.count} ${result.count === 1 ? 'Reply' : 'Replies'} Received
-                            </span>
-                        </div>
-                        ${repliesHtml}
-                    `;
-                    
-                    // Show modal
-                    document.getElementById('replyDetailsModal').classList.add('active');
-                } else {
-                    showToast('No replies found', 'info');
-                }
-            } catch (error) {
-                console.error('Error fetching replies:', error);
-                showToast('Failed to load replies', 'error');
-            }
-        }
-
-        // Show reply details (legacy - for single reply)
-        function showReplyDetails(companyName, fromEmail, subject, snippet, replyDate) {
-            document.getElementById('replyDetailsCompany').textContent = companyName;
-            document.getElementById('replyDetailsFrom').textContent = fromEmail || 'N/A';
-            document.getElementById('replyDetailsSubject').textContent = subject || '(No Subject)';
-            document.getElementById('replyDetailsDate').textContent = replyDate || 'N/A';
-            document.getElementById('replyDetailsSnippet').textContent = snippet || 'No preview available';
-            
-            // Show detail fields
-            document.getElementById('replyDetailsSubject').style.display = 'block';
-            document.getElementById('replyDetailsDate').style.display = 'block';
-            document.getElementById('replyDetailsSnippet').style.display = 'block';
-            
-            document.getElementById('replyDetailsModal').classList.add('active');
-        }
-
-        function closeReplyDetailsModal() {
-            document.getElementById('replyDetailsModal').classList.remove('active');
-        }
-
-        async function confirmMarkAsReplied() {
-            const replyDate = document.getElementById('replyDateInput').value;
-            
-            if (!replyDate) {
-                showToast('Please select a reply date', 'error');
-                return;
-            }
-
-            // Save the ID before closing the modal (which resets it to null)
-            const appId = currentReplyAppId;
-            
-            if (!appId) {
-                showToast('Error: Application ID not found', 'error');
-                return;
-            }
-
-            try {
-                // Close the modal
-                closeReplyModal();
-                
-                console.log('🔄 Marking as replied:', { id: appId, replyDate });
-                
-                // Update the specific application using PATCH
-                const response = await fetch(`/api/users/application-history/${appId}`, {
-                    method: 'PATCH',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        replyReceived: true,
-                        replyDate: replyDate
-                    })
-                });
-
-                console.log('📡 Response status:', response.status, response.statusText);
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    console.log('✅ Success:', data);
-                    showToast('Application marked as replied!', 'success');
-                    // Reload the application history to reflect changes
-                    loadApplicationHistory();
-                } else {
-                    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-                    console.error('❌ Error response:', response.status, errorData);
-                    showToast('Failed to save changes: ' + (errorData.error || 'Unknown error'), 'error');
-                }
-            } catch (error) {
-                console.error('❌ Error marking as replied:', error);
-                showToast('Failed to update application: ' + error.message, 'error');
-            }
-        }
-
-        function renderEmployers(employers) {
-            console.log('🎨 Rendering employers...', employers ? employers.length : 0);
-            const container = document.getElementById('employersContainer');
-            
-            if (!container) {
-                console.error('❌ employersContainer element not found!');
-                return;
-            }
-            
-            if (!employers || employers.length === 0) {
-                console.log('📭 No employers to display, showing empty state');
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-icon">📭</div>
-                        <div class="empty-title">No Applications Yet</div>
-                        <div class="empty-subtitle">Your recent job applications will appear here</div>
-                    </div>
-                `;
-                return;
-            }
-
-            console.log('📊 Processing', employers.length, 'employers');
-            
-            const html = employers.map((employer, index) => {
-                console.log(`  Processing employer ${index + 1}:`, employer);
-                
-                // Format sentDate
-                let sentDate = 'N/A';
-                if (employer.sentDate) {
-                    try {
-                        const date = new Date(employer.sentDate);
-                        if (!isNaN(date.getTime())) {
-                            sentDate = date.toLocaleDateString('en-US', { 
-                                month: 'short', 
-                                day: 'numeric', 
-                                year: 'numeric' 
-                            });
-                        }
-                    } catch (e) {
-                        console.error('Error parsing sentDate:', e);
-                    }
-                }
-                
-                // Format replyDate
-                const replyDate = employer.replyReceived && employer.replyDate 
-                    ? (() => {
-                        try {
-                            const date = new Date(employer.replyDate);
-                            return !isNaN(date.getTime()) ? date.toLocaleDateString('en-US', { 
-                                month: 'short', 
-                                day: 'numeric', 
-                                year: 'numeric' 
-                            }) : null;
-                        } catch (e) {
-                            return null;
-                        }
-                    })()
-                    : null;
-                
-                const isClickable = !employer.replyReceived;
-                const clickableClass = isClickable ? 'employer-card-clickable' : '';
-                
-                return `
-                    <div class="employer-card ${clickableClass}" data-app-id="${employer.id}" onclick="${isClickable ? `markAsReplied(${employer.id}, '${employer.companyName}')` : ''}">
-                        <div class="status-indicator ${employer.replyReceived ? 'status-replied' : 'status-pending'}"></div>
-                        <div class="employer-card-content">
-                            <div class="employer-header">
-                                <div style="display: flex; align-items: start;">
-                                    <span class="employer-number-badge">${index + 1}</span>
-                                    <div class="employer-info">
-                                        <div class="employer-company-name">${employer.companyName}</div>
-                                        <div class="employer-job-position">${employer.position}</div>
-                                    </div>
-                                </div>
-                                <span class="status-badge ${employer.replyReceived ? 'status-badge-replied' : 'status-badge-pending'}">
-                                    ${employer.replyReceived ? '✓ Replied' : '⏳ Pending'}
-                                </span>
-                            </div>
-                            <div class="employer-dates">
-                                <div style="display: flex; gap: 12px; flex-wrap: nowrap;">
-                                    <div class="employer-date-item">
-                                        <div class="employer-date-label">Sent</div>
-                                        <div class="employer-date-value">${sentDate}</div>
-                                    </div>
-                                    ${employer.replyReceived && replyDate ? `
-                                        <div class="employer-date-item">
-                                            <div class="employer-date-label">Latest Reply</div>
-                                            <div class="employer-date-value">${replyDate}</div>
-                                        </div>
-                                    ` : ''}
-                                </div>
-                                ${!employer.replyReceived ? `
-                                    <div style="font-size: 0.875rem; color: #059669; font-weight: 500; white-space: nowrap;">
-                                        ✓ Tap to mark as replied
-                                    </div>
-                                ` : employer.replySnippet ? `
-                                    <button class="btn btn-secondary" onclick="event.stopPropagation(); showAllReplies(${employer.id}, '${employer.companyName}')" style="padding: 6px 12px; font-size: 0.875rem; margin-top: 8px;">
-                                        📬 Show ${employer.replyCount > 1 ? employer.replyCount + ' Replies' : 'Reply'}
-                                    </button>
-                                ` : ''}
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-            
-            console.log('📝 Setting innerHTML for employers');
-            container.innerHTML = html;
-            console.log('✅ Employers rendered successfully');
-        }
-
-        // Load statistics
-        async function loadDashboardStatistics() {
-            console.log('📊 Loading dashboard statistics...');
-            
-            // Refresh user data from localStorage
-            userData = JSON.parse(localStorage.getItem('userData') || '{}');
-            
-            const userName = userData.fullName || userData.name || userData.email || 'User';
-            console.log('👤 Setting welcome message for:', userName);
-            document.getElementById('dashboardUserName').textContent = userName;
-            
-            // Show "Check for Replies" button for OAuth users (Google or Microsoft)
-            const provider = userData.provider || userData.oauth_provider;
-            console.log('🔐 User OAuth provider:', provider);
-            
-            if (provider === 'microsoft') {
-                console.log('✅ Microsoft OAuth user - showing Check for Replies button');
-                document.getElementById('checkRepliesContainer').style.display = 'block';
-            } else {
-                console.log('ℹ️ Non-Microsoft user - hiding Check for Replies button');
-                document.getElementById('checkRepliesContainer').style.display = 'none';
-            }
-            
-            try {
-                console.log('🔄 Fetching counters from /api/users/counters...');
-                const countersResponse = await fetch('/api/users/counters', {
-                    method: 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                    }
-                });
-
-                let totalSent = 0, totalGenerated = 0;
-                
-                console.log('📡 Counters response status:', countersResponse.status);
-                
-                if (countersResponse.ok) {
-                    const countersData = await countersResponse.json();
-                    console.log('📊 Counters data received:', countersData);
-                    
-                    totalSent = countersData.totalSent || 0;
-                    totalGenerated = countersData.totalGenerated || 0;
-                    console.log('✅ Loaded counters - Sent:', totalSent, 'Generated:', totalGenerated);
-                } else {
-                    const errorText = await countersResponse.text();
-                    console.log('⚠️ Failed to load counters:', countersResponse.status, errorText);
-                }
-                
-                console.log('📝 Setting dashboard values - Sent:', totalSent, 'Generated:', totalGenerated);
-                document.getElementById('dashboardTotalSent').textContent = totalSent;
-                document.getElementById('dashboardTotalGenerated').textContent = totalGenerated;
-                console.log('✅ Dashboard statistics updated');
-            } catch (error) {
-                console.error('❌ Error loading statistics:', error);
-                document.getElementById('dashboardTotalSent').textContent = '0';
-                document.getElementById('dashboardTotalGenerated').textContent = '0';
-            }
-        }
-
-        // Toast notification
-        function showToast(message, type = 'success') {
-            const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-            toast.innerHTML = `
-                <span>${type === 'success' ? '✓' : '✗'}</span>
-                <span>${message}</span>
-            `;
-            
-            document.body.appendChild(toast);
-            
-            setTimeout(() => {
-                toast.style.animation = 'slideInRight 0.3s ease-out reverse';
-                setTimeout(() => toast.remove(), 300);
-            }, 3000);
-        }
-
-        // Silent auto-check for replies (no UI updates, runs in background)
-        async function autoCheckForReplies(showNotification = false) {
-            try {
-                console.log('🔄 Auto-checking for email replies...');
-                const response = await fetch('/api/check-replies', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                    }
-                });
-
-                const result = await response.json();
-                
-                if (response.ok) {
-                    const repliesCount = result.repliesFound || 0;
-                    console.log(`✅ Auto-check complete: ${repliesCount} replies found`);
-                    
-                    if (repliesCount > 0) {
-                        // Reload application history to show updated reply status
-                        await loadApplicationHistory();
-                        
-                        if (showNotification) {
-                            showToast(`Auto-sync: Found ${repliesCount} new ${repliesCount === 1 ? 'reply' : 'replies'}!`, 'success');
-                        }
-                    }
-                } else {
-                    console.error('❌ Auto-check error:', result.error || result.message);
-                }
-            } catch (error) {
-                console.error('❌ Auto-check network error:', error);
-            }
-        }
-
-        // Check for email replies (OAuth users only) - Manual button click
-        async function checkForReplies() {
-            const btn = document.getElementById('checkRepliesBtn');
-            const status = document.getElementById('repliesStatus');
-            
-            // Gmail auto-reply checking disabled until CASA — show info message
-            const currentUserData = JSON.parse(localStorage.getItem('userData') || '{}');
-            const currentProvider = currentUserData.provider || currentUserData.oauth_provider;
-            if (currentProvider === 'google') {
-                status.innerHTML = '<strong>📬 Gmail — Coming Soon</strong><br>Automatic reply checking currently works only with Microsoft/Outlook email. Gmail feature coming soon.<br><br>Please check your mails manually and click on the application card to mark it as replied.';
-                status.style.backgroundColor = '#fff3cd';
-                status.style.color = '#856404';
-                status.style.border = '1px solid #ffc107';
-                status.style.display = 'block';
-                return;
-            }
-            
-            // Disable button and show loading state
-            btn.disabled = true;
-            btn.innerHTML = '<span>⏳</span><span>Checking...</span>';
-            status.style.display = 'none';
-            
-            try {
-                const response = await fetch('/api/check-replies', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json',
-                    }
-                });
-
-                const result = await response.json();
-                
-                if (response.ok) {
-                    const repliesCount = result.repliesFound || 0;
-                    
-                    // Show success message
-                    status.innerHTML = `<strong>✓ Check Complete</strong><br>${repliesCount} ${repliesCount === 1 ? 'reply' : 'replies'} found`;
-                    status.style.backgroundColor = '#d4edda';
-                    status.style.color = '#155724';
-                    status.style.border = '1px solid #c3e6cb';
-                    status.style.display = 'block';
-                    
-                    if (repliesCount > 0) {
-                        showToast(`Found ${repliesCount} ${repliesCount === 1 ? 'reply' : 'replies'}!`, 'success');
-                        
-                        // Reload application history to show updated reply status
-                        setTimeout(() => {
-                            loadApplicationHistory();
-                        }, 1000);
-                    } else {
-                        showToast('No new replies found', 'success');
-                    }
-                } else {
-                    // Show error message
-                    const errorMsg = result.error || result.message || 'Failed to check for replies';
-                    status.innerHTML = `<strong>✗ Error</strong><br>${errorMsg}`;
-                    status.style.backgroundColor = '#f8d7da';
-                    status.style.color = '#721c24';
-                    status.style.border = '1px solid #f5c6cb';
-                    status.style.display = 'block';
-                    
-                    showToast(errorMsg, 'error');
-                }
-            } catch (error) {
-                console.error('Error checking replies:', error);
-                
-                status.innerHTML = '<strong>✗ Error</strong><br>Network error. Please try again.';
-                status.style.backgroundColor = '#f8d7da';
-                status.style.color = '#721c24';
-                status.style.border = '1px solid #f5c6cb';
-                status.style.display = 'block';
-                
-                showToast('Network error. Please try again.', 'error');
-            } finally {
-                // Re-enable button
-                btn.disabled = false;
-                btn.innerHTML = '<span style="font-size: 1.1rem;">📬</span><span>Check for Replies</span>';
-            }
-        }
-
-        // Start periodic reply checking (every 10 minutes)
-        let replyCheckInterval = null;
-        function startPeriodicReplyCheck() {
-            const userData = JSON.parse(localStorage.getItem('userData') || '{}');
-            const isMicrosoftUser = userData.provider === 'microsoft';
-            
-            if (isMicrosoftUser && !replyCheckInterval) {
-                console.log('🔄 Starting periodic reply check (every 10 minutes)');
-                
-                // Initial check after 30 seconds
-                setTimeout(() => autoCheckForReplies(false), 30000);
-                
-                // Then check every 10 minutes
-                replyCheckInterval = setInterval(() => {
-                    autoCheckForReplies(true); // Show notification on periodic checks
-                }, 10 * 60 * 1000); // 10 minutes
-            }
-        }
-
-        function stopPeriodicReplyCheck() {
-            if (replyCheckInterval) {
-                console.log('⏸️ Stopping periodic reply check');
-                clearInterval(replyCheckInterval);
-                replyCheckInterval = null;
-            }
-        }
-
-        // Initialize on page load
-        document.addEventListener('DOMContentLoaded', () => {
-            console.log('🚀 ========================================');
-            console.log('🚀 Initializing dashboard...');
-            console.log('🚀 ========================================');
-            
-            // Check all required elements
-            const requiredElements = {
-                'dashboardUserName': document.getElementById('dashboardUserName'),
-                'dashboardTotalSent': document.getElementById('dashboardTotalSent'),
-                'dashboardTotalGenerated': document.getElementById('dashboardTotalGenerated'),
-                'employersContainer': document.getElementById('employersContainer'),
-                'employersBadge': document.getElementById('employersBadge'),
-            };
-            
-            console.log('🔍 Checking required elements:');
-            Object.entries(requiredElements).forEach(([name, element]) => {
-                if (element) {
-                    console.log(`  ✅ ${name} found`);
-                } else {
-                    console.error(`  ❌ ${name} NOT FOUND!`);
-                }
-            });
-            
-            // Initialize WOW.js for animations
-            console.log('✨ Initializing WOW.js animations');
-            new WOW().init();
-            
-            // Load all data
-            console.log('📊 Loading dashboard data...');
-            Promise.all([
-                restoreFormValues(),
-                loadDashboardStatistics(),
-                loadApplicationHistory(),
-                loadProfile()
-            ]).then(() => {
-                console.log('✅ All data loaded successfully');
-                console.log('🚀 ========================================');
-                
-                // Auto-check for replies on load (OAuth users only)
-                const userData = JSON.parse(localStorage.getItem('userData') || '{}');
-                const isOAuthUser = userData.provider === 'google' || userData.provider === 'microsoft';
-                if (isOAuthUser) {
-                    console.log('🔄 Starting auto-check for replies...');
-                    autoCheckForReplies(false);
-                    startPeriodicReplyCheck();
-                }
-            }).catch(error => {
-                console.error('❌ Error loading data:', error);
-            });
-            
-            // Close modals on click outside
-            const settingsModal = document.getElementById('settingsModal');
-            const profileModal = document.getElementById('profileModal');
-            const replyModal = document.getElementById('replyModal');
-            const replyDetailsModal = document.getElementById('replyDetailsModal');
-            
-            if (settingsModal) {
-                settingsModal.addEventListener('click', function(e) {
-                    if (e.target === this) closeSettings();
-                });
-                console.log('✅ Settings modal event listener added');
-            }
-            
-            if (profileModal) {
-                profileModal.addEventListener('click', function(e) {
-                    if (e.target === this) closeProfile();
-                });
-                console.log('✅ Profile modal event listener added');
-            }
-            
-            if (replyModal) {
-                replyModal.addEventListener('click', function(e) {
-                    if (e.target === this) closeReplyModal();
-                });
-                console.log('✅ Reply modal event listener added');
-            }
-            
-            if (replyDetailsModal) {
-                replyDetailsModal.addEventListener('click', function(e) {
-                    if (e.target === this) closeReplyDetailsModal();
-                });
-                console.log('✅ Reply details modal event listener added');
-            }
-            
-            console.log('✅ Dashboard initialized');
-            console.log('🚀 ========================================');
-        });
-    </script>
 </body>
 </html>

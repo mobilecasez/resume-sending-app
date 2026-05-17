@@ -1,0 +1,9 @@
+
+
+/* Stacked OAuth (Registration) */
+.oauth-stacked { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }
+.oauth-stacked .oauth-btn { width: 100%; padding: 14px; font-size: 14px; justify-content: center; }
+.auth-toggle-link { color: var(--brand-bright); cursor: pointer; text-decoration: none; }
+.auth-toggle-link:hover { text-decoration: underline; }
+.why-message { background: rgba(59, 130, 246, 0.1); border: 1px solid var(--border-blue); padding: 14px 18px; border-radius: 12px; color: var(--text-secondary); font-size: 13.5px; margin-bottom: 24px; line-height: 1.5; }
+.why-message strong { color: var(--text); display: block; margin-bottom: 4px; }

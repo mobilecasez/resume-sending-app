@@ -89,7 +89,7 @@
                         <a class="nav-link" href="javascript:void(0)" onclick="navigateToApp('/login')">Sign In</a>
                     </li>
                     <li class="nav-item auth-item">
-                        <a href="javascript:void(0)" onclick="navigateToApp('/register')" class="btn btn-primary btn-sm">Sign Up Free</a>
+                        <a href="javascript:void(0)" onclick="navigateToApp('/login?mode=register')" class="btn btn-primary btn-sm">Sign Up Free</a>
                     </li>
                 `;
                 navbarNav.insertAdjacentHTML('beforeend', authHTML);
@@ -268,19 +268,19 @@
                 <div class="collapse navbar-collapse" id="navbarNav">
                     <ul class="nav navbar-nav ml-auto">
                         <li class="nav-item">
-                            <a class="nav-link page-scroll" href="#home" onclick="navigateHome(event)">Home</a>
+                            <a class="nav-link page-scroll" href="/#home" onclick="navigateHome(event)">Home</a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link page-scroll" href="#services">Why CVApplyr</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link page-scroll" href="#features">Features</a>
+                            <a class="nav-link page-scroll" href="/#features">Features</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link page-scroll" href="#pricing">Pricing</a>
+                            <a class="nav-link page-scroll" href="/#pricing">Pricing</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link page-scroll" href="#contact">Contact</a>
+                            <a class="nav-link page-scroll" href="/#contact">Contact</a>
                         </li>
                         <!-- Auth links will be dynamically inserted as sibling li elements -->
                     </ul>
@@ -296,7 +296,7 @@
                         <div class="caption">
                             <h1>AI-Powered Cover Letter Generation and Application Sending App</h1>
                             <p class="sub">Create professional cover letters instantly, send job applications in bulk, and track your progress. Land more interviews with intelligent automation.</p>
-                            <a class="btn btn-primary" href="javascript:void(0)" onclick="navigateToApp('/register')">Get Started - Free Trial</a>
+                            <a class="btn btn-primary" href="javascript:void(0)" onclick="navigateToApp('/login?mode=register')">Get Started - Free Trial</a>
                             <img class="img-fluid mx-auto wow fadeInUp" data-wow-duration="1s" data-wow-delay=".3s" src="imgs/macbook.png" alt="CVApplyr Dashboard">
                         </div>
                     </div>
@@ -692,11 +692,11 @@
                 <div class="col-md-2 col-sm-6 mb-4">
                     <h6 class="text-white mb-3">Quick Links</h6>
                     <ul class="list-unstyled">
-                        <li><a href="#home" onclick="navigateHome(event)" class="text-muted" style="text-decoration: none;">Home</a></li>
+                        <li><a href="/#home" onclick="navigateHome(event)" class="text-muted" style="text-decoration: none;">Home</a></li>
                         <li><a href="#services" class="text-muted" style="text-decoration: none;">Why CVApplyr</a></li>
-                        <li><a href="#features" class="text-muted" style="text-decoration: none;">Features</a></li>
-                        <li><a href="#pricing" class="text-muted" style="text-decoration: none;">Pricing</a></li>
-                        <li><a href="#contact" class="text-muted" style="text-decoration: none;">Contact</a></li>
+                        <li><a href="/#features" class="text-muted" style="text-decoration: none;">Features</a></li>
+                        <li><a href="/#pricing" class="text-muted" style="text-decoration: none;">Pricing</a></li>
+                        <li><a href="/#contact" class="text-muted" style="text-decoration: none;">Contact</a></li>
                     </ul>
                 </div>
                 <div class="col-md-3 col-sm-6 mb-4">

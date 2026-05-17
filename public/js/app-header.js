@@ -133,26 +133,26 @@
         <!-- Navbar -->
         <nav class="navbar navbar-expand-lg" style="background: transparent !important; box-shadow: none !important;">
             <div class="container-fluid" style="padding: 0 40px !important;">
-                <a class="navbar-brand" href="/about">CV<span>Applyr</span></a>
+                <a class="navbar-brand" href="/">CV<span>Applyr</span></a>
                 <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav">
                     <i class="material-icons">menu</i>
                 </button>
                 <div class="collapse navbar-collapse" id="navbarNav">
                     <ul class="nav navbar-nav ml-auto">
                         <li class="nav-item">
-                            <a class="nav-link" href="/about#home">Home</a>
+                            <a class="nav-link" href="/#home">Home</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link" href="/about#services">Why CVApplyr</a>
+                            <a class="nav-link" href="/#why">Why CVApplyr</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link" href="/about#features">Features</a>
+                            <a class="nav-link" href="/#features">Features</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link" href="/about#pricing">Pricing</a>
+                            <a class="nav-link" href="/#pricing">Pricing</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link" href="/about#contact">Contact</a>
+                            <a class="nav-link" href="/#contact">Contact</a>
                         </li>${authLinksHTML}
                     </ul>
                 </div>

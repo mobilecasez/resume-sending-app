@@ -1,539 +1,448 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-
 <head>
-    <!-- Required meta tags -->
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sign in — CVApplyr</title>
+<link rel="stylesheet" href="/css/login_new.css">
+<style>
+  /* View switching */
+  .view { transition: opacity 0.22s ease, transform 0.22s ease; }
+  .view.hidden {
+    display: none;
+  }
+  .view.fade-out {
+    opacity: 0;
+    transform: translateY(6px);
+    pointer-events: none;
+  }
 
-    <!-- Favicons -->
-    <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+  .terms-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 4px 0 20px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+  .terms-row input[type="checkbox"] {
+    margin-top: 2px;
+    flex-shrink: 0;
+    accent-color: var(--brand-bright);
+    width: 15px;
+    height: 15px;
+    cursor: pointer;
+  }
+  .terms-row a { color: var(--brand-bright); text-decoration: none; }
+  .terms-row a:hover { text-decoration: underline; }
 
-    <!-- // CSS FILES // -->
-
-    <!-- Bootstrap CSS -->
-    <link rel="stylesheet" href="../bootstrap-4.1.1-dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
-    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css" integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
-    <!-- ANIMATE CSS -->
-    <link rel="stylesheet" href="../css/animate.css">
-    <!-- PRELOADER -->
-    <link rel="stylesheet" href="../css/preloader.css">
-    <!-- Main CSS -->
-    <link rel="stylesheet" href="../css/style.css">
-
-    <style>
-        /* Auth Card Styles */
-        .auth-section {
-            padding: 100px 0;
-            min-height: calc(100vh - 70px);
-            display: flex;
-            align-items: center;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
-        }
-
-        .auth-card {
-            background: white;
-            border-radius: 16px;
-            padding: 50px 45px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
-            max-width: 500px;
-            margin: 0 auto;
-        }
-
-        .auth-header {
-            text-align: center;
-            margin-bottom: 40px;
-        }
-
-        .auth-header img {
-            height: 60px;
-            margin-bottom: 15px;
-        }
-
-        .auth-title {
-            font-size: 2rem;
-            font-weight: 700;
-            color: #1e40af;
-            margin-bottom: 10px;
-        }
-
-        .auth-subtitle {
-            font-size: 1rem;
-            color: #64748b;
-        }
-
-        .form-group {
-            margin-bottom: 25px;
-        }
-
-        .form-label {
-            display: block;
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: #0f172a;
-            margin-bottom: 8px;
-        }
-
-        .form-input {
-            width: 100%;
-            padding: 12px 16px;
-            border: 2px solid #e2e8f0;
-            border-radius: 8px;
-            font-size: 1rem;
-            transition: all 0.3s ease;
-            background: white;
-        }
-
-        .form-input:focus {
-            outline: none;
-            border-color: #1e40af;
-            box-shadow: 0 0 0 4px rgba(30, 64, 175, 0.1);
-        }
-
-        .btn-auth {
-            width: 100%;
-            padding: 14px 28px;
-            border: none;
-            border-radius: 8px;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
-            color: white;
-            margin-top: 10px;
-        }
-
-        .btn-auth:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px rgba(30, 64, 175, 0.4);
-        }
-
-        .btn-auth:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        .oauth-section {
-            margin-bottom: 30px;
-        }
-
-        .oauth-title {
-            text-align: center;
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: #64748b;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 20px;
-        }
-
-        .oauth-btn {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            padding: 14px 20px;
-            border: 2px solid #e2e8f0;
-            border-radius: 8px;
-            font-size: 1rem;
-            font-weight: 600;
-            text-decoration: none;
-            transition: all 0.3s ease;
-            color: #0f172a;
-            background: white;
-            width: 100%;
-        }
-
-        .oauth-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
-            border-color: #4285F4;
-            text-decoration: none;
-        }
-
-        .oauth-btn svg {
-            width: 22px;
-            height: 22px;
-        }
-
-        .divider {
-            position: relative;
-            margin: 25px 0;
-            text-align: center;
-        }
-
-        .divider::before {
-            content: '';
-            position: absolute;
-            top: 50%;
-            left: 0;
-            right: 0;
-            height: 1px;
-            background: #e2e8f0;
-        }
-
-        .divider span {
-            position: relative;
-            background: white;
-            padding: 0 15px;
-            color: #64748b;
-            font-size: 0.875rem;
-            font-weight: 600;
-        }
-
-        .auth-footer {
-            text-align: center;
-            margin-top: 30px;
-            padding-top: 25px;
-            border-top: 1px solid #e2e8f0;
-        }
-
-        .auth-link {
-            color: #64748b;
-            font-size: 1rem;
-        }
-
-        .auth-link a {
-            color: #1e40af;
-            text-decoration: none;
-            font-weight: 600;
-            transition: color 0.2s ease;
-        }
-
-        .auth-link a:hover {
-            color: #1e3a8a;
-            text-decoration: underline;
-        }
-
-        .error-message, .success-message {
-            padding: 14px 18px;
-            border-radius: 8px;
-            font-size: 0.9375rem;
-            margin-bottom: 25px;
-            display: none;
-            border-left: 4px solid;
-        }
-
-        .error-message {
-            background: #fee;
-            color: #dc2626;
-            border-color: #dc2626;
-        }
-
-        .success-message {
-            background: #f0fdf4;
-            color: #059669;
-            border-color: #059669;
-        }
-
-        .spinner {
-            border: 3px solid rgba(255, 255, 255, 0.3);
-            border-top: 3px solid white;
-            border-radius: 50%;
-            width: 20px;
-            height: 20px;
-            animation: spin 0.8s linear infinite;
-            display: inline-block;
-            margin-right: 8px;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        @media (max-width: 640px) {
-            .auth-card {
-                padding: 35px 25px;
-            }
-        }
-    </style>
-
-    <title>Login - CVApplyr</title>
+  /* Stacked oauth in register */
+  #register-view .oauth-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 13px 16px;
+    background: var(--bg-1);
+    border: 1px solid var(--border-bright);
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    text-decoration: none;
+    box-sizing: border-box;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    margin-bottom: 12px;
+  }
+  #register-view .oauth-btn:last-child { margin-bottom: 0; }
+  #register-view .oauth-btn:hover { border-color: var(--brand-bright); background: var(--bg-2); }
+  #register-view .oauth-btn.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+  #register-view .oauth-btn svg { width: 18px; height: 18px; flex-shrink: 0; }
+</style>
 </head>
+<body>
 
-<body data-spy="scroll" data-target=".navbar">
+<div class="split">
 
-    <script>
-        // Helper function to navigate to app pages using relative paths
-        function navigateToApp(path) {
-            window.location.href = path;
-        }
-    </script>
+  <!-- ============== LEFT IMAGE PANEL ============== -->
+  <aside class="visual-panel">
+    <div class="visual-inner">
 
-    <!-- PRELOADER -->
-    <div class="preloader-holder">
-        <div class="loading">
-            <div class="finger finger-1">
-                <div class="finger-item"><span></span><i></i></div>
-            </div>
-            <div class="finger finger-2">
-                <div class="finger-item"><span></span><i></i></div>
-            </div>
-            <div class="finger finger-3">
-                <div class="finger-item"><span></span><i></i></div>
-            </div>
-            <div class="finger finger-4">
-                <div class="finger-item"><span></span><i></i></div>
-            </div>
-            <div class="last-finger">
-                <div class="last-finger-item"><i></i></div>
-            </div>
+      <div class="visual-top">
+        <div class="brand">
+          <div class="brand-icon"></div>
+          <div class="brand-text"><span class="cv">cv</span><span class="applyr">applyr</span></div>
         </div>
+      </div>
+
+      <div class="visual-stats">
+        <div class="stat-pill">
+          <span class="live-dot"></span>
+          <span><span class="num">12,438</span> jobs applied today</span>
+        </div>
+        <div class="stat-pill">
+          <span class="star">★</span>
+          <span class="num">4.9</span>
+          <span style="color: rgba(255,255,255,0.6);">· 50k+ users</span>
+        </div>
+      </div>
+
+      <div class="visual-bottom">
+        <div class="quote-icon">"</div>
+        <h2>Job hunting, but you're <span class="accent">actually winning.</span></h2>
+        <div class="visual-attribution">
+          <div class="attribution-avatar"></div>
+          <div class="attribution-text">
+            <strong>Aaradhya Singh</strong>
+            <span>Hired at Notion in 11 days — 47 applications, 6 offers</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- ============== RIGHT FORM PANEL ============== -->
+  <main class="form-panel">
+
+    <div class="form-top" id="formTopBar">
+      <span id="topBarLabel">New here?</span>
+      <a href="#" id="topBarLink" onclick="showRegister(); return false;">Create an account</a>
     </div>
 
-    <!-- HEADER -->
-    <header id="home">
-        <!-- Navbar -->
-        <nav class="navbar navbar-expand-lg fixed-top">
-            <div class="container">
-                <a class="navbar-brand" href="/about">CV<span>Applyr</span></a>
-                <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav">
-                    <i class="material-icons">menu</i>
-                </button>
-                <div class="collapse navbar-collapse" id="navbarNav">
-                    <ul class="nav navbar-nav ml-auto">
-                        <li class="nav-item">
-                            <a class="nav-link" href="/about#home">Home</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="/about#services">Why CVApplyr</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="/about#features">Features</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="/about#pricing">Pricing</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="/about#contact">Contact</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="javascript:void(0)" onclick="navigateToApp('/login')">Sign In</a>
-                        </li>
-                        <li>
-                            <a href="javascript:void(0)" onclick="navigateToApp('/register')" class="btn btn-primary">Sign Up Free</a>
-                        </li>
-                    </ul>
-                </div>
+    <div class="form-wrap">
+      <div class="form-card">
+
+        <!-- ========== LOGIN VIEW ========== -->
+        <div id="login-view" class="view">
+
+          <div class="form-eyebrow">
+            <span class="dot"></span>
+            Welcome back
+          </div>
+          <h1>Sign in to your <span class="accent">career copilot.</span></h1>
+          <p class="lede" style="font-size:13px; margin-bottom:20px;">Pick up where you left off. Your auto-apply engine is ready to go.</p>
+
+          <div class="oauth-row">
+            <a href="/auth/google" class="oauth-btn" title="Continue with Google" style="text-decoration: none;">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M22.5 12.27c0-.78-.07-1.53-.2-2.27H12v4.51h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.32z" fill="#4285F4"/>
+                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.99.66-2.25 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z" fill="#34A853"/>
+                <path d="M5.84 14.09a6.6 6.6 0 0 1 0-4.18V7.07H2.18a11 11 0 0 0 0 9.86l3.66-2.84z" fill="#FBBC05"/>
+                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1A11 11 0 0 0 2.18 7.07l3.66 2.84C6.71 7.31 9.14 5.38 12 5.38z" fill="#EA4335"/>
+              </svg>
+              Google
+            </a>
+            <a href="/auth/microsoft" class="oauth-btn" title="Continue with Microsoft" style="text-decoration: none;">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M1 1h10.5v10.5H1z" fill="#F25022"/>
+                <path d="M12.5 1H23v10.5H12.5z" fill="#7FBA00"/>
+                <path d="M1 12.5h10.5V23H1z" fill="#00A4EF"/>
+                <path d="M12.5 12.5H23V23H12.5z" fill="#FFB900"/>
+              </svg>
+              Microsoft
+            </a>
+          </div>
+
+          <div class="divider">or with email</div>
+          <div id="loginError" class="error-message" style="display:none; background:rgba(255,95,87,.1); color:#FF5F57; padding:12px; border-radius:8px; margin-bottom:20px; font-size:14px; border:1px solid rgba(255,95,87,.3);"></div>
+
+          <form id="loginForm" onsubmit="handleLogin(event)">
+            <div class="field">
+              <label for="loginEmail">Work email</label>
+              <div class="input-wrap">
+                <span class="input-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="5" width="18" height="14" rx="2"/>
+                    <path d="m3 7 9 6 9-6"/>
+                  </svg>
+                </span>
+                <input type="email" id="loginEmail" required placeholder="you@company.com" autocomplete="email" />
+              </div>
             </div>
-        </nav>
-    </header>
 
-    <!-- AUTH SECTION -->
-    <section class="auth-section">
-        <div class="container">
-            <div class="row">
-                <div class="col-lg-6 offset-lg-3 col-md-8 offset-md-2">
-                    <div class="auth-card wow fadeInUp" data-wow-duration="1s">
-                        <div class="auth-header">
-                            <img src="/icon_light_background.png" alt="CVApplyr" onerror="this.style.display='none'">
-                            <h2 class="auth-title">Welcome Back</h2>
-                            <p class="auth-subtitle">Turn applications into opportunities</p>
-                        </div>
-
-                        <div id="errorMessage" class="error-message"></div>
-                        <div id="successMessage" class="success-message"></div>
-
-                        <!-- OAuth Options -->
-                        <div class="oauth-section">
-                            <h3 class="oauth-title">Quick Sign In</h3>
-                            <a href="/auth/google" class="oauth-btn">
-                                <svg viewBox="0 0 24 24" width="22" height="22">
-                                    <path fill="currentColor" d="M12.545,10.239v3.821h5.445c-0.712,2.315-2.647,3.972-5.445,3.972c-3.332,0-6.033-2.701-6.033-6.032 c0-3.331,2.701-6.032,6.033-6.032c1.498,0,2.866,0.549,3.921,1.453l2.814-2.814C17.461,2.268,15.365,1.25,12.545,1.25 c-6.343,0-11.5,5.157-11.5,11.5c0,6.343,5.157,11.5,11.5,11.5c6.343,0,11.5-5.157,11.5-11.5c0-0.828-0.084-1.628-0.239-2.405H12.545z"/>
-                                </svg>
-                                Continue with Google
-                            </a>
-                            <a href="/auth/microsoft" class="oauth-btn" style="margin-top: 12px;">
-                                <svg viewBox="0 0 24 24" width="22" height="22">
-                                    <path fill="currentColor" d="M11.4,24H0V12.6h11.4V24z M24,24H12.6V12.6H24V24z M11.4,11.4H0V0h11.4V11.4z M24,11.4H12.6V0H24V11.4z"/>
-                                </svg>
-                                Continue with Microsoft
-                            </a>
-                            <a href="/auth/apple" class="oauth-btn" style="margin-top: 12px; background: #000; color: #fff; border-color: #000;">
-                                <svg viewBox="0 0 24 24" width="22" height="22">
-                                    <path fill="currentColor" d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/>
-                                </svg>
-                                Continue with Apple
-                            </a>
-                            <div class="divider">
-                                <span>or</span>
-                            </div>
-                        </div>
-
-                        <form id="loginForm" onsubmit="handleLogin(event)">
-                            <div class="form-group">
-                                <label class="form-label">Email Address</label>
-                                <input 
-                                    type="email" 
-                                    class="form-input" 
-                                    id="email"
-                                    placeholder="your.email@example.com"
-                                    required
-                                >
-                            </div>
-
-                            <div class="form-group">
-                                <label class="form-label">Password</label>
-                                <input 
-                                    type="password" 
-                                    class="form-input" 
-                                    id="password"
-                                    placeholder="Enter your password"
-                                    required
-                                >
-                            </div>
-
-                            <button type="submit" class="btn-auth" id="loginBtn">
-                                Sign In
-                            </button>
-                        </form>
-
-                        <div class="auth-footer">
-                            <p class="auth-link">
-                                Don't have an account? <a href="javascript:void(0)" onclick="navigateToApp('/register')">Create account</a>
-                            </p>
-                        </div>
-                    </div>
-                </div>
+            <div class="field">
+              <label for="loginPassword">Password</label>
+              <div class="input-wrap">
+                <span class="input-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2"/>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                  </svg>
+                </span>
+                <input type="password" id="loginPassword" required placeholder="Enter your password" autocomplete="current-password" />
+                <span class="toggle-eye" onclick="togglePw('loginPassword', this)">Show</span>
+              </div>
             </div>
-        </div>
-    </section>
 
-    <!-- FOOTER -->
-    <footer id="footer" class="footer" style="background: #1e1e2f; padding: 60px 0 30px 0; margin-top: 0;">
-        <div class="container">
-            <div class="row">
-                <div class="col-md-4 col-sm-12 mb-4">
-                    <h5 class="text-white mb-3">CVApplyr</h5>
-                    <p class="text-muted">AI-Powered Cover Letter Generation and Application Sending App</p>
-                </div>
-                <div class="col-md-2 col-sm-6 mb-4">
-                    <h6 class="text-white mb-3">Quick Links</h6>
-                    <ul class="list-unstyled">
-                        <li><a href="/about#home" class="text-muted" style="text-decoration: none;">Home</a></li>
-                        <li><a href="/about#services" class="text-muted" style="text-decoration: none;">Why CVApplyr</a></li>
-                        <li><a href="/about#features" class="text-muted" style="text-decoration: none;">Features</a></li>
-                        <li><a href="/about#pricing" class="text-muted" style="text-decoration: none;">Pricing</a></li>
-                        <li><a href="/about#contact" class="text-muted" style="text-decoration: none;">Contact</a></li>
-                    </ul>
-                </div>
-                <div class="col-md-3 col-sm-6 mb-4">
-                    <h6 class="text-white mb-3">Legal</h6>
-                    <ul class="list-unstyled">
-                        <li><a href="https://cvapplyr.com/privacy-policy" class="text-muted" style="text-decoration: none;">Privacy Policy</a></li>
-                        <li><a href="https://cvapplyr.com/terms-of-service" class="text-muted" style="text-decoration: none;">Terms of Service</a></li>
-                        <li><a href="https://cvapplyr.com/refund-policy" class="text-muted" style="text-decoration: none;">Refund Policy</a></li>
-                        <li><a href="https://cvapplyr.com/support" class="text-muted" style="text-decoration: none;">Support</a></li>
-                    </ul>
-                </div>
-                <div class="col-md-3 col-sm-12 mb-4">
-                    <h6 class="text-white mb-3">Contact</h6>
-                    <ul class="list-unstyled text-muted">
-                        <li>Email: support@cvapplyr.com</li>
-                        <li>© 2026 zSellr (OPC) Private Limited</li>
-                    </ul>
-                </div>
+            <div class="options-row">
+              <label class="checkbox">
+                <input type="checkbox" checked /> Remember me
+              </label>
+              <a href="/forgot" class="forgot">Forgot password?</a>
             </div>
-            <div class="row mt-4">
-                <div class="col-12 text-center">
-                    <p class="text-muted mb-0" style="font-size: 14px;">&copy; 2026 CVApplyr by zSellr (OPC) Private Limited. All Rights Reserved.</p>
-                </div>
+
+            <button type="submit" class="submit-btn" id="loginBtn">
+              Sign in <span class="arrow">→</span>
+            </button>
+
+            <p class="form-footer-hint">
+              Don't have an account? <a href="#" onclick="showRegister(); return false;">Start free →</a>
+            </p>
+          </form>
+
+        </div><!-- /login-view -->
+
+        <!-- ========== REGISTER VIEW ========== -->
+        <div id="register-view" class="view hidden">
+
+          <div class="form-eyebrow">
+            <span class="dot"></span>
+            Get started
+          </div>
+          <h1>Create your <span class="accent">account.</span></h1>
+          <p style="font-size:12.5px; color:var(--text-secondary); margin:0 0 18px; line-height:1.45;">CVApplyr sends applications on your behalf — connect your email provider or sign up with email below.</p>
+
+          <!-- Stacked OAuth for registration -->
+          <div class="oauth-stacked" style="margin-bottom: 20px; gap: 0;">
+            <a href="/auth/google" class="oauth-btn">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M22.5 12.27c0-.78-.07-1.53-.2-2.27H12v4.51h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.32z" fill="#4285F4"/>
+                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.99.66-2.25 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z" fill="#34A853"/>
+                <path d="M5.84 14.09a6.6 6.6 0 0 1 0-4.18V7.07H2.18a11 11 0 0 0 0 9.86l3.66-2.84z" fill="#FBBC05"/>
+                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1A11 11 0 0 0 2.18 7.07l3.66 2.84C6.71 7.31 9.14 5.38 12 5.38z" fill="#EA4335"/>
+              </svg>
+              Continue with Google
+            </a>
+            <a href="/auth/microsoft" class="oauth-btn">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M1 1h10.5v10.5H1z" fill="#F25022"/>
+                <path d="M12.5 1H23v10.5H12.5z" fill="#7FBA00"/>
+                <path d="M1 12.5h10.5V23H1z" fill="#00A4EF"/>
+                <path d="M12.5 12.5H23V23H12.5z" fill="#FFB900"/>
+              </svg>
+              Continue with Microsoft
+            </a>
+            <a href="#" class="oauth-btn disabled" onclick="return false;" title="LinkedIn (Coming soon)">
+              <svg viewBox="0 0 24 24" fill="#0A66C2">
+                <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
+              </svg>
+              Continue with LinkedIn <span style="opacity:.55; font-weight:400; font-size:12px;">(soon)</span>
+            </a>
+          </div>
+
+          <div class="divider">or with email</div>
+          <div id="registerError" class="error-message" style="display:none; background:rgba(255,95,87,.1); color:#FF5F57; padding:12px; border-radius:8px; margin-bottom:20px; font-size:14px; border:1px solid rgba(255,95,87,.3);"></div>
+          <div id="registerSuccess" style="display:none; background:rgba(52,211,153,.1); color:#34d399; padding:12px; border-radius:8px; margin-bottom:20px; font-size:14px; border:1px solid rgba(52,211,153,.3);"></div>
+
+          <form id="registerForm" onsubmit="handleRegister(event)">
+            <div class="field" style="margin-bottom:12px;">
+              <div class="input-wrap">
+                <span class="input-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+                  </svg>
+                </span>
+                <input type="text" id="regName" required placeholder="Full name" autocomplete="name" />
+              </div>
             </div>
-        </div>
-    </footer>
 
-    <script>
-        // Check if already logged in - redirect to dashboard
-        const token = localStorage.getItem('authToken');
-        if (token) {
-            window.location.href = '/dashboard';
-        }
+            <div class="field" style="margin-bottom:12px;">
+              <div class="input-wrap">
+                <span class="input-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="5" width="18" height="14" rx="2"/>
+                    <path d="m3 7 9 6 9-6"/>
+                  </svg>
+                </span>
+                <input type="email" id="regEmail" required placeholder="Work email" autocomplete="email" />
+              </div>
+            </div>
 
-        // Show error from Apple/OAuth redirect
-        const urlParams = new URLSearchParams(window.location.search);
-        const oauthError = urlParams.get('error');
-        if (oauthError) {
-            const errorMap = {
-                'apple_no_token': 'Apple Sign-In failed. No token received.',
-                'apple_state_mismatch': 'Apple Sign-In failed. Please try again.',
-                'apple_invalid_token': 'Apple Sign-In failed. Invalid token.',
-                'apple_no_email': 'Apple Sign-In failed. No email provided.',
-                'apple_auth_failed': 'Apple Sign-In failed. Please try again.',
-            };
-            const errorMessage = document.getElementById('errorMessage');
-            if (errorMessage) {
-                errorMessage.textContent = errorMap[oauthError] || 'Authentication failed. Please try again.';
-                errorMessage.style.display = 'block';
-            }
-        }
+            <div class="field" style="margin-bottom:12px;">
+              <div class="input-wrap">
+                <span class="input-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2"/>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                  </svg>
+                </span>
+                <input type="password" id="regPassword" required placeholder="Password (min. 6 chars)" autocomplete="new-password" />
+                <span class="toggle-eye" onclick="togglePw('regPassword', this)">Show</span>
+              </div>
+            </div>
 
-        async function handleLogin(event) {
-            event.preventDefault();
+            <div class="terms-row">
+              <input type="checkbox" id="regTerms" required />
+              <label for="regTerms">I agree to the <a href="/terms-of-service" target="_blank">Terms of Service</a> &amp; <a href="/privacy-policy" target="_blank">Privacy Policy</a></label>
+            </div>
 
-            const email = document.getElementById('email').value.trim();
-            const password = document.getElementById('password').value;
-            const loginBtn = document.getElementById('loginBtn');
-            const errorMessage = document.getElementById('errorMessage');
+            <button type="submit" class="submit-btn" id="registerBtn">
+              Create account <span class="arrow">→</span>
+            </button>
 
-            errorMessage.style.display = 'none';
+            <p class="form-footer-hint">
+              Already have an account? <a href="#" onclick="showLogin(); return false;">Sign in →</a>
+            </p>
+          </form>
 
-            loginBtn.disabled = true;
-            loginBtn.innerHTML = '<span class="spinner"></span> Signing in...';
+        </div><!-- /register-view -->
 
-            try {
-                const response = await fetch('/api/auth/login', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ email, password }),
-                });
+      </div>
+    </div>
 
-                const data = await response.json();
+    <div class="form-bottom">
+      <div>© 2026 CVApplyr · <a href="#">Privacy</a> · <a href="#">Terms</a></div>
+      <div class="lang-pill">🌐 English (IN)</div>
+    </div>
 
-                if (response.ok) {
-                    localStorage.setItem('authToken', data.token);
-                    localStorage.setItem('userData', JSON.stringify(data.user));
-                    window.location.href = '/dashboard';
-                } else {
-                    errorMessage.textContent = data.error || 'Login failed. Please try again.';
-                    errorMessage.style.display = 'block';
-                }
-            } catch (error) {
-                console.error('Login error:', error);
-                errorMessage.textContent = 'Connection error. Please try again.';
-                errorMessage.style.display = 'block';
-            } finally {
-                loginBtn.disabled = false;
-                loginBtn.innerHTML = 'Sign In';
-            }
-        }
-    </script>
+  </main>
+</div>
 
-    <!-- jQuery -->
-    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js"></script>
-    <!-- Popper.js -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.3/umd/popper.min.js" integrity="sha384-ZMP7rVo3mIykV+2+9J3UJ46jBk0WLaUAdn689aCwoqbBJiSnjAK/l8WvCWPIPm49" crossorigin="anonymous"></script>
-    <!-- Bootstrap JS -->
-    <script src="../bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
-    <!-- WOW Animation -->
-    <script src="../js/plugins/wow/wow.min.js"></script>
-    <script>
-        new WOW().init();
-    </script>
-    <!-- Easing -->
-    <script src="../js/plugins/jquery.easing.min.js"></script>
-    <!-- Preloader -->
-    <script>
-        $(window).on('load', function() {
-            $('.preloader-holder').fadeOut('slow');
-        });
-    </script>
+<script>
+  /* ---------- shared toggle password ---------- */
+  function togglePw(fieldId, btn) {
+    const inp = document.getElementById(fieldId);
+    if (inp.type === 'password') {
+      inp.type = 'text';
+      btn.textContent = 'Hide';
+    } else {
+      inp.type = 'password';
+      btn.textContent = 'Show';
+    }
+  }
 
+  /* ---------- view switching ---------- */
+  function showRegister() {
+    document.getElementById('login-view').classList.add('hidden');
+    document.getElementById('register-view').classList.remove('hidden');
+    document.getElementById('topBarLabel').textContent = 'Already have an account?';
+    document.getElementById('topBarLink').textContent = 'Sign in';
+    document.getElementById('topBarLink').onclick = function(){ showLogin(); return false; };
+    document.title = 'Create account — CVApplyr';
+  }
+
+  function showLogin() {
+    document.getElementById('register-view').classList.add('hidden');
+    document.getElementById('login-view').classList.remove('hidden');
+    document.getElementById('topBarLabel').textContent = 'New here?';
+    document.getElementById('topBarLink').textContent = 'Create an account';
+    document.getElementById('topBarLink').onclick = function(){ showRegister(); return false; };
+    document.title = 'Sign in — CVApplyr';
+  }
+
+  /* ---------- redirect if already logged in ---------- */
+  if (localStorage.getItem('authToken')) {
+    window.location.href = '/dashboard';
+  }
+
+  /* ---------- OAuth error from redirect ---------- */
+  const urlParams = new URLSearchParams(window.location.search);
+  const oauthError = urlParams.get('error');
+  if (oauthError) {
+    const errorMap = {
+      apple_no_token: 'Apple Sign-In failed. No token received.',
+      apple_state_mismatch: 'Apple Sign-In failed. Please try again.',
+      apple_invalid_token: 'Apple Sign-In failed. Invalid token.',
+      apple_no_email: 'Apple Sign-In failed. No email provided.',
+      apple_auth_failed: 'Apple Sign-In failed. Please try again.',
+    };
+    const el = document.getElementById('loginError');
+    if (el) {
+      el.textContent = errorMap[oauthError] || 'Authentication failed. Please try again.';
+      el.style.display = 'block';
+    }
+  }
+
+  /* ---------- show register view if ?mode=register ---------- */
+  if (urlParams.get('mode') === 'register') {
+    showRegister();
+  }
+
+  /* ---------- login ---------- */
+  async function handleLogin(event) {
+    event.preventDefault();
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    const btn = document.getElementById('loginBtn');
+    const err = document.getElementById('loginError');
+
+    err.style.display = 'none';
+    btn.disabled = true;
+    const orig = btn.innerHTML;
+    btn.innerHTML = 'Signing in…';
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        localStorage.setItem('authToken', data.token);
+        localStorage.setItem('userData', JSON.stringify(data.user));
+        window.location.href = '/dashboard';
+      } else {
+        err.textContent = data.error || 'Login failed. Please try again.';
+        err.style.display = 'block';
+      }
+    } catch {
+      err.textContent = 'Connection error. Please try again.';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = orig;
+    }
+  }
+
+  /* ---------- register ---------- */
+  async function handleRegister(event) {
+    event.preventDefault();
+    const fullName = document.getElementById('regName').value.trim();
+    const email = document.getElementById('regEmail').value.trim();
+    const password = document.getElementById('regPassword').value;
+    const btn = document.getElementById('registerBtn');
+    const err = document.getElementById('registerError');
+    const suc = document.getElementById('registerSuccess');
+
+    err.style.display = 'none';
+    suc.style.display = 'none';
+
+    btn.disabled = true;
+    const orig = btn.innerHTML;
+    btn.innerHTML = 'Creating account…';
+
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fullName, email, password }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        localStorage.setItem('authToken', data.token);
+        localStorage.setItem('userData', JSON.stringify(data.user));
+        window.location.href = '/dashboard';
+      } else {
+        err.textContent = data.error || 'Registration failed. Please try again.';
+        err.style.display = 'block';
+      }
+    } catch {
+      err.textContent = 'Connection error. Please try again.';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = orig;
+    }
+  }
+</script>
 </body>
 </html>
