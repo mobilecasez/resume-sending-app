@@ -323,6 +323,97 @@ async function runPostgresMigrations(db) {
             CREATE INDEX IF NOT EXISTS idx_resume_metadata_parse_status ON resume_metadata(parse_status);
         `);
 
+        // AI Hub Job Portal Tables
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS employers (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                domain VARCHAR(255) UNIQUE NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                sub_info VARCHAR(255),
+                logo_color JSONB,
+                logo_initial VARCHAR(10),
+                last_scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS locations (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                area VARCHAR(255),
+                city VARCHAR(255),
+                state VARCHAR(255),
+                country VARCHAR(255),
+                zip VARCHAR(50),
+                raw_text VARCHAR(255) UNIQUE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS jobs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                employer_id UUID NOT NULL REFERENCES employers(id) ON DELETE CASCADE,
+                location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
+                title VARCHAR(255) NOT NULL,
+                job_url VARCHAR(2000) UNIQUE NOT NULL,
+                experience VARCHAR(255),
+                salary VARCHAR(255),
+                job_type VARCHAR(255),
+                urgent BOOLEAN DEFAULT FALSE,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_jobs_employer_id ON jobs(employer_id);
+
+            CREATE TABLE IF NOT EXISTS skills (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name VARCHAR(255) UNIQUE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS job_skills (
+                job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+                PRIMARY KEY (job_id, skill_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS user_skills (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+                PRIMARY KEY (user_id, skill_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS job_contacts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                name VARCHAR(255),
+                role VARCHAR(255),
+                email VARCHAR(255),
+                phone VARCHAR(255),
+                avatar_url VARCHAR(1000),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS user_tracked_employers (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                employer_id UUID NOT NULL REFERENCES employers(id) ON DELETE CASCADE,
+                status VARCHAR(50) DEFAULT 'watching',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, employer_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS user_job_matches (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                match_score INTEGER DEFAULT 0,
+                status VARCHAR(50) DEFAULT 'new',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, job_id)
+            );
+        `);
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

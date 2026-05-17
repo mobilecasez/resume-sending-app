@@ -19,7 +19,8 @@ router.get('/job-status/:jobId', authenticateToken, async (req, res) => {
             createdAt: job.created_at
         };
 
-        if (job.status === 'completed' && job.result) {
+        // Return partial data during processing too (for progressive streaming)
+        if (job.result) {
             response.data = typeof job.result === 'string' ? JSON.parse(job.result) : job.result;
         }
 

@@ -7,31 +7,27 @@ export default function AIHubLayout() {
   return (
     <Stack
       screenOptions={{
-        headerStyle: { backgroundColor: '#0B1120' },
-        headerTintColor: '#FFFFFF',
-        headerTitleStyle: { fontWeight: '700', color: '#FFFFFF' },
-        headerBackTitle: 'Back',
         contentStyle: { backgroundColor: '#0B1120' },
       }}
     >
+      {/* index has its own WishlistBar header — no Stack header needed */}
       <Stack.Screen
         name="index"
-        options={{
-          title: 'AI Hub',
-          headerLargeTitle: false,
-        }}
+        options={{ headerShown: false }}
       />
+      {/* job-detail has its own hero back-button — no Stack header needed */}
       <Stack.Screen
         name="job-detail"
-        options={{
-          title: 'Job Detail',
-          headerBackTitle: 'Hub',
-        }}
+        options={{ headerShown: false }}
       />
+      {/* add-contact is a modal — keep the Stack header with back/close */}
       <Stack.Screen
         name="add-contact"
         options={{
           title: 'Add Contact',
+          headerStyle: { backgroundColor: '#0B1120' },
+          headerTintColor: '#FFFFFF',
+          headerTitleStyle: { fontWeight: '700', color: '#FFFFFF' },
           headerBackTitle: 'Back',
           presentation: 'modal',
         }}

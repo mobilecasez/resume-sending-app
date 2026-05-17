@@ -8,8 +8,12 @@ const {
     getJobMatches,
     verifyEmail,
     addContactToJob,
+    getDashboard,
+    removeDashboardItem,
 } = require('../controllers/aiHubController');
 
+router.get('/dashboard', authenticateToken, getDashboard);
+router.delete('/dashboard/:jobId', authenticateToken, removeDashboardItem);
 router.post('/analyze-wishlist', authenticateToken, analyzeWishlist);
 router.get('/jobs', authenticateToken, getJobMatches);
 router.post('/verify-email', authenticateToken, verifyEmail);

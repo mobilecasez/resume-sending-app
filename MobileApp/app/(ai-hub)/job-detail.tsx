@@ -7,7 +7,9 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
+  Linking,
   Platform,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -132,19 +134,28 @@ const ContactRow: React.FC<{ contact: Contact }> = ({ contact }) => {
 
   return (
     <View style={styles.contactRow}>
-      <LinearGradient colors={contact.avatarColor} style={styles.avatar}>
-        <Text style={styles.avatarInitials}>{initials}</Text>
-      </LinearGradient>
+      {contact.avatarUrl ? (
+        <Image source={{ uri: contact.avatarUrl }} style={styles.avatar} />
+      ) : (
+        <LinearGradient colors={contact.avatarColor} style={styles.avatar}>
+          <Text style={styles.avatarInitials}>{initials}</Text>
+        </LinearGradient>
+      )}
 
       <View style={styles.contactMid}>
         <Text style={styles.contactName}>{contact.name}</Text>
         <Text style={styles.contactRole}>{contact.role}</Text>
+        {!!contact.phone && (
+          <Text style={styles.contactPhone}>{contact.phone}</Text>
+        )}
       </View>
 
       <View style={styles.contactRight}>
-        <Text style={styles.contactEmail} numberOfLines={1}>
-          {contact.email}
-        </Text>
+        {!!contact.email && (
+          <Text style={styles.contactEmail} numberOfLines={1}>
+            {contact.email}
+          </Text>
+        )}
         {contact.verified && (
           <LinearGradient
             colors={['#10B981', '#059669']}
@@ -164,16 +175,27 @@ const ContactRow: React.FC<{ contact: Contact }> = ({ contact }) => {
 
 export default function JobDetailScreen() {
   const router = useRouter();
-  const { jobId } = useLocalSearchParams<{ jobId: string }>();
+  const { jobId, jobStr, employerStr } = useLocalSearchParams<{ jobId?: string; jobStr?: string; employerStr?: string }>();
 
   let foundJob: Job | null = null;
   let foundEmployer: Employer | null = null;
-  for (const employer of MOCK_EMPLOYERS) {
-    const job = employer.jobs.find((j) => j.id === jobId);
-    if (job) {
-      foundJob = job;
-      foundEmployer = employer;
-      break;
+
+  try {
+    if (jobStr) foundJob = JSON.parse(jobStr);
+    if (employerStr) foundEmployer = JSON.parse(employerStr);
+  } catch (e) {
+    console.error("Failed to parse job params", e);
+  }
+
+  // Fallback to mock data if no params passed (for testing)
+  if (!foundJob && jobId) {
+    for (const employer of MOCK_EMPLOYERS) {
+      const job = employer.jobs.find((j) => j.id === jobId);
+      if (job) {
+        foundJob = job;
+        foundEmployer = employer;
+        break;
+      }
     }
   }
 
@@ -283,9 +305,13 @@ export default function JobDetailScreen() {
           {/* B) CONTACTS */}
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>HIRING CONTACTS</Text>
-            {job.contacts.map((contact) => (
-              <ContactRow key={contact.id} contact={contact} />
-            ))}
+            {job.contacts.length > 0 ? (
+              job.contacts.map((contact) => (
+                <ContactRow key={contact.id} contact={contact} />
+              ))
+            ) : (
+              <Text style={styles.noContactsText}>No contact details found for this listing</Text>
+            )}
             <TouchableOpacity
               onPress={() =>
                 router.push({ pathname: '/(ai-hub)/add-contact', params: { jobId: job.id } })
@@ -312,7 +338,17 @@ export default function JobDetailScreen() {
 
       {/* ── 4. STICKY FOOTER ── */}
       <View style={styles.stickyFooter}>
-        <TouchableOpacity activeOpacity={0.85} style={styles.applyBtnOuter}>
+        {!!job.applyUrl && (
+          <TouchableOpacity
+            onPress={() => Linking.openURL(job.applyUrl!)}
+            style={styles.visitJobBtnOuter}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="open-outline" size={16} color="#3B82F6" />
+            <Text style={styles.visitJobBtnText}>Visit Job</Text>
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity activeOpacity={0.85} style={[styles.applyBtnOuter, { flex: 1 }]}>
           <LinearGradient
             colors={['#06B6D4', '#3B82F6']}
             start={{ x: 0, y: 0 }}
@@ -553,6 +589,11 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     marginTop: 1,
   },
+  contactPhone: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 1,
+  },
   contactRight: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -604,6 +645,13 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
 
+  noContactsText: {
+    fontSize: 12,
+    color: '#CBD5E1',
+    fontStyle: 'italic',
+    marginBottom: 10,
+  },
+
   // ── Sticky Footer ──
   stickyFooter: {
     backgroundColor: 'white',
@@ -611,6 +659,25 @@ const styles = StyleSheet.create({
     borderTopColor: '#F1F5F9',
     padding: 16,
     paddingBottom: Platform.select({ ios: 24, default: 16 }),
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'center',
+  },
+  visitJobBtnOuter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    gap: 6,
+  },
+  visitJobBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#3B82F6',
   },
   applyBtnOuter: {
     borderRadius: 16,

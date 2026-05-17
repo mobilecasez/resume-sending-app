@@ -15,6 +15,7 @@ const fs   = require('fs').promises;
 const pdf  = require('pdf-parse');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const dbConfig = require('../db-config');
+const jobService = require('../server/services/jobService');
 
 function ensureDbConnection() {
     if (!dbConfig.rawDb()) {
@@ -218,7 +219,39 @@ async function _parseResume(userId, relativeResumePath) {
 
         // 5. Persist
         await saveParsed(userId, rawText, parsed);
-        console.log(`[resumeParser] Metadata saved for user ${userId} ✅`);
+
+        // 6. Update user_skills normalized table
+        if (parsed.skills && Array.isArray(parsed.skills)) {
+            for (const skill of parsed.skills) {
+                if (!skill) continue;
+                const skillId = await jobService.upsertSkill(skill);
+                await jobService.linkUserSkill(userId, skillId);
+            }
+        }
+
+        // Also add technical and soft skills to the unified user_skills table
+        if (parsed.soft_skills && Array.isArray(parsed.soft_skills)) {
+            for (const skill of parsed.soft_skills) {
+                if (!skill) continue;
+                const skillId = await jobService.upsertSkill(skill);
+                await jobService.linkUserSkill(userId, skillId);
+            }
+        }
+
+        if (parsed.technical_skills) {
+            for (const category in parsed.technical_skills) {
+                const skillsList = parsed.technical_skills[category];
+                if (Array.isArray(skillsList)) {
+                    for (const skill of skillsList) {
+                        if (!skill) continue;
+                        const skillId = await jobService.upsertSkill(skill);
+                        await jobService.linkUserSkill(userId, skillId);
+                    }
+                }
+            }
+        }
+
+        console.log(`[resumeParser] Metadata and normalized skills saved for user ${userId} ✅`);
 
     } catch (err) {
         console.error(`[resumeParser] Failed for user ${userId}:`, err.message);

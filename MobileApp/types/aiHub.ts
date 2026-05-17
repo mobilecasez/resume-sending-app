@@ -8,6 +8,8 @@ export type Contact = {
   name: string;
   role: string;
   email: string;
+  phone?: string | null;
+  avatarUrl?: string | null;
   verified: boolean;
   avatarColor: [string, string]; // gradient tuple for LinearGradient [from, to]
 };
@@ -34,6 +36,7 @@ export type Job = {
  */
 export type Employer = {
   id: string;
+  jobId?: string; // Optional reference to the async_jobs ID
   name: string;
   subInfo: string;
   logoColor: [string, string]; // gradient tuple for LinearGradient [from, to]
@@ -49,4 +52,5 @@ export type WishlistPill = {
   id: string;
   label: string;
   colorVariant: 'cyan' | 'violet' | 'emerald';
+  employerId?: string; // set once Gemini resolves, used to remove cards on pill delete
 };

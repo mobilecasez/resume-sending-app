@@ -17,6 +17,7 @@ import {
   Animated,
   Alert,
   ActivityIndicator,
+  Linking,
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -24,7 +25,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type { Contact, Job, Employer, WishlistPill } from '../../types/aiHub';
-import { fetchJobMatches } from '../../services/aiHubService';
+import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem } from '../../services/aiHubService';
+import { LoadingTips } from './LoadingTips';
 
 // ─────────────────────────────────────────────────────────────────
 // MOCK DATA
@@ -130,8 +132,8 @@ const MOCK_EMPLOYERS: Employer[] = [
 ];
 
 const INITIAL_PILLS: WishlistPill[] = [
-  { id: '1', label: 'Apple Inc.', colorVariant: 'cyan' },
-  { id: '2', label: 'Stripe', colorVariant: 'violet' },
+  { id: '1', label: 'Apple Inc.', colorVariant: 'cyan', employerId: 'apple' },
+  { id: '2', label: 'Stripe', colorVariant: 'violet', employerId: 'stripe' },
   { id: '3', label: 'careers.openai.com', colorVariant: 'emerald' },
 ];
 
@@ -180,6 +182,7 @@ const WishlistBar: React.FC<WishlistBarProps> = ({
   sources,
   matches,
 }) => {
+  const router = useRouter();
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
@@ -203,7 +206,12 @@ const WishlistBar: React.FC<WishlistBarProps> = ({
 
   return (
     <View style={styles.wishlistBar}>
-      <Text style={styles.wishlistLabel}>TARGET COMPANIES</Text>
+      <View style={styles.topHeader}>
+        <TouchableOpacity style={styles.backButton} onPress={() => router.replace('/(tabs)')}>
+          <Ionicons name="arrow-back" size={24} color="#FFF" />
+        </TouchableOpacity>
+        <Text style={styles.wishlistLabel}>JOBS DASHBOARD</Text>
+      </View>
 
       <ScrollView
         horizontal
@@ -291,12 +299,17 @@ const ContactRow: React.FC<{ contact: Contact }> = ({ contact }) => {
       <View style={styles.contactMid}>
         <Text style={styles.contactName}>{contact.name}</Text>
         <Text style={styles.contactRole}>{contact.role}</Text>
+        {!!contact.phone && (
+          <Text style={styles.contactPhone}>{contact.phone}</Text>
+        )}
       </View>
 
       <View style={styles.contactRight}>
-        <Text style={styles.contactEmail} numberOfLines={1}>
-          {contact.email}
-        </Text>
+        {!!contact.email && (
+          <Text style={styles.contactEmail} numberOfLines={1}>
+            {contact.email}
+          </Text>
+        )}
         {contact.verified && (
           <LinearGradient
             colors={['#10B981', '#059669']}
@@ -318,9 +331,10 @@ type JobCardProps = {
   job: Job;
   onApply: () => void;
   onAddContact: () => void;
+  onVisitJob?: () => void;
 };
 
-const JobCard: React.FC<JobCardProps> = ({ job, onApply, onAddContact }) => (
+const JobCard: React.FC<JobCardProps> = ({ job, onApply, onAddContact, onVisitJob }) => (
   <View style={styles.card}>
     {/* ── Card Body ── */}
     <View style={styles.cardBody}>
@@ -329,12 +343,16 @@ const JobCard: React.FC<JobCardProps> = ({ job, onApply, onAddContact }) => (
         {job.matchScore != null && (
           <View style={[
             styles.matchScoreBadge,
-            { backgroundColor: job.matchScore >= 70 ? 'rgba(16,185,129,0.12)' : job.matchScore >= 40 ? 'rgba(251,146,60,0.12)' : 'rgba(148,163,184,0.12)' }
+            { backgroundColor: job.matchScore > 0 ? (job.matchScore >= 70 ? 'rgba(16,185,129,0.12)' : job.matchScore >= 40 ? 'rgba(251,146,60,0.12)' : 'rgba(148,163,184,0.12)') : '#F1F5F9' }
           ]}>
-            <Text style={[
-              styles.matchScoreText,
-              { color: job.matchScore >= 70 ? '#059669' : job.matchScore >= 40 ? '#EA580C' : '#64748B' }
-            ]}>{job.matchScore}% match</Text>
+            {job.matchScore > 0 ? (
+              <Text style={[
+                styles.matchScoreText,
+                { color: job.matchScore >= 70 ? '#059669' : job.matchScore >= 40 ? '#EA580C' : '#64748B' }
+              ]}>{job.matchScore}% match</Text>
+            ) : (
+              <Text style={[styles.matchScoreText, { color: '#94A3B8' }]}>Evaluating...</Text>
+            )}
           </View>
         )}
       </View>
@@ -375,18 +393,30 @@ const JobCard: React.FC<JobCardProps> = ({ job, onApply, onAddContact }) => (
     <View style={styles.contactsZone}>
       <View style={styles.contactsInner}>
         <Text style={styles.contactsLabel}>HIRING CONTACTS</Text>
-        {job.contacts.map((contact) => (
-          <ContactRow key={contact.id} contact={contact} />
-        ))}
+        {(job.contacts || []).length > 0 ? (
+          (job.contacts || []).map((contact) => (
+            <ContactRow key={contact.id} contact={contact} />
+          ))
+        ) : (
+          <Text style={styles.noContactsText}>No contact details found for this listing</Text>
+        )}
       </View>
     </View>
 
     {/* ── Card Footer ── */}
     <View style={styles.cardFooter}>
-      <TouchableOpacity onPress={onAddContact} style={styles.addContactBtn}>
-        <Ionicons name="add-outline" size={13} color="#64748B" />
-        <Text style={styles.addContactBtnText}>Add Contact</Text>
-      </TouchableOpacity>
+      <View style={styles.cardFooterLeft}>
+        <TouchableOpacity onPress={onAddContact} style={styles.addContactBtn}>
+          <Ionicons name="add-outline" size={13} color="#64748B" />
+          <Text style={styles.addContactBtnText}>Add Contact</Text>
+        </TouchableOpacity>
+        {!!job.applyUrl && (
+          <TouchableOpacity onPress={onVisitJob} style={styles.visitJobBtn}>
+            <Ionicons name="open-outline" size={13} color="#3B82F6" />
+            <Text style={styles.visitJobBtnText}>Visit Job</Text>
+          </TouchableOpacity>
+        )}
+      </View>
 
       <TouchableOpacity onPress={onApply} style={styles.applyBtnWrapper}>
         <LinearGradient
@@ -409,20 +439,24 @@ const JobCard: React.FC<JobCardProps> = ({ job, onApply, onAddContact }) => (
 
 type EmployerSectionProps = {
   employer: Employer;
-  onApply: (job: Job) => void;
+  isProcessing: boolean;
+  onApply: (employer: Employer, job: Job) => void;
   onAddContact: (jobId: string) => void;
 };
 
 const EmployerSection: React.FC<EmployerSectionProps> = ({
   employer,
+  isProcessing,
   onApply,
   onAddContact,
 }) => {
   const isActive = employer.status === 'active';
+  const jobsCount = (employer.jobs || []).length;
+  
   return (
     <View style={styles.employerSection}>
       <View style={styles.employerHeader}>
-        <LinearGradient colors={employer.logoColor} style={styles.employerLogo}>
+        <LinearGradient colors={employer.logoColor || ['#555555', '#1C1C1E']} style={styles.employerLogo}>
           <Text style={styles.employerLogoInitial}>{employer.logoInitial}</Text>
         </LinearGradient>
 
@@ -443,19 +477,27 @@ const EmployerSection: React.FC<EmployerSectionProps> = ({
               isActive ? styles.matchBadgeTextActive : styles.matchBadgeTextWatching,
             ]}
           >
-            {employer.jobs.length} match{employer.jobs.length !== 1 ? 'es' : ''}
+            {jobsCount} match{jobsCount !== 1 ? 'es' : ''}
           </Text>
         </View>
       </View>
 
-      {employer.jobs.map((job) => (
+      {(employer.jobs || []).map((job) => (
         <JobCard
           key={job.id}
           job={job}
-          onApply={() => onApply(job)}
+          onApply={() => onApply(employer, job)}
           onAddContact={() => onAddContact(job.id)}
+          onVisitJob={job.applyUrl ? () => Linking.openURL(job.applyUrl!) : undefined}
         />
       ))}
+
+      {isProcessing && (
+        <View style={styles.loadingMoreRow}>
+          <ActivityIndicator size="small" color="#06B6D4" />
+          <Text style={styles.loadingMoreText}>Finding more positions...</Text>
+        </View>
+      )}
     </View>
   );
 };
@@ -466,42 +508,184 @@ const EmployerSection: React.FC<EmployerSectionProps> = ({
 
 export default function AIHubScreen() {
   const router = useRouter();
-  const [pills, setPills] = useState<WishlistPill[]>(INITIAL_PILLS);
+  const [pills, setPills] = useState<WishlistPill[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [inputValue, setInputValue] = useState('');
-  const [employers, setEmployers] = useState<Employer[]>(MOCK_EMPLOYERS);
+  const [employers, setEmployers] = useState<Employer[]>([]);
   const [loadingCompanies, setLoadingCompanies] = useState<string[]>([]);
-  const [stats, setStats] = useState(INITIAL_STATS);
+  const [processingEmployerIds, setProcessingEmployerIds] = useState<Set<string>>(new Set());
+  const [stats, setStats] = useState({ sources: 0, matches: 0, contacts: 0, verifiedPct: 0 });
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  // Recalculate stats whenever employers list changes
+  useEffect(() => {
+    let newMatches = 0;
+    let newContacts = 0;
+    employers.forEach(emp => {
+      newMatches += (emp.jobs || []).length;
+      newContacts += (emp.jobs || []).reduce((sum, j) => sum + (j.contacts || []).length, 0);
+    });
+    // Hardcode verifiedPct to something static like 94 for now, since it was static before
+    setStats({ sources: employers.length, matches: newMatches, contacts: newContacts, verifiedPct: 94 });
+  }, [employers]);
+
+  useEffect(() => {
+    async function loadDashboard() {
+      try {
+        const dashboard = await fetchDashboard();
+        
+        const loadedEmployers: Employer[] = [];
+        const loadedPills: WishlistPill[] = [];
+        const loadedStats = { sources: dashboard.length, matches: 0, contacts: 0 };
+        const currentlyProcessing = new Set<string>();
+        
+        dashboard.forEach((entry, i) => {
+          const emp = entry.employer;
+          loadedEmployers.push(emp);
+          loadedPills.push({
+            id: `pill-${emp.id}`,
+            label: emp.name,
+            colorVariant: COLOR_CYCLE[i % 3],
+            employerId: emp.id
+          });
+          loadedStats.matches += (emp.jobs || []).length;
+          loadedStats.contacts += (emp.jobs || []).reduce((sum, j) => sum + (j.contacts || []).length, 0);
+          
+          if (entry.status === 'processing' || entry.status === 'pending') {
+            currentlyProcessing.add(emp.id);
+            resumePolling(entry.jobId, emp.name);
+          }
+        });
+        
+        setEmployers(loadedEmployers);
+        setPills(loadedPills);
+        setProcessingEmployerIds(currentlyProcessing);
+      } catch (e) {
+        console.error('Failed to load dashboard', e);
+      } finally {
+        setInitialLoading(false);
+      }
+    }
+    loadDashboard();
+  }, []);
+
+  const resumePolling = (jobId: string, companyName: string) => {
+    let firstPartialReceived = false;
+
+    const onPartialUpdate = (partialEmployer: Employer) => {
+      if (!firstPartialReceived) {
+        firstPartialReceived = true;
+      }
+      setEmployers((prev) => {
+        const idx = prev.findIndex((e) => e.id === partialEmployer.id);
+        if (idx >= 0) {
+          const arr = [...prev];
+          arr[idx] = partialEmployer;
+          return arr;
+        }
+        return [partialEmployer, ...prev];
+      });
+    };
+
+    resumeJobPolling(jobId, onPartialUpdate)
+      .then((finalEmployer) => {
+        setProcessingEmployerIds((prev) => {
+          const next = new Set(prev);
+          next.delete(finalEmployer.id);
+          return next;
+        });
+        setEmployers((prev) => {
+          const idx = prev.findIndex((e) => e.id === finalEmployer.id);
+          if (idx >= 0) {
+            const arr = [...prev];
+            arr[idx] = finalEmployer;
+            return arr;
+          }
+          return [finalEmployer, ...prev];
+        });
+      })
+      .catch((err) => {
+        setProcessingEmployerIds((prev) => {
+          // If we fail, try to figure out which employer ID it was to clear it.
+          // Since we might only have the name, we just clear everything for simplicity if it fails.
+          // Or we can just find it by name.
+          const next = new Set(prev);
+          // Just let it be, or show error
+          return next;
+        });
+        Alert.alert('Error', `Failed to resume tracking jobs for ${companyName}`);
+      });
+  };
 
   const handleRemovePill = useCallback((id: string) => {
-    setPills((prev) => prev.filter((p) => p.id !== id));
-  }, []);
+    setPills((prev) => {
+      const pill = prev.find((p) => p.id === id);
+      if (pill?.employerId) {
+        // Also remove from backend
+        const targetEmployer = employers.find((e) => e.id === pill.employerId);
+        if (targetEmployer?.jobId) {
+          removeDashboardItem(targetEmployer.jobId).catch(console.error);
+        }
+        setEmployers((emp) => emp.filter((e) => e.id !== pill.employerId));
+      }
+      return prev.filter((p) => p.id !== id);
+    });
+  }, [employers]);
 
   const handleAddPill = useCallback(() => {
     const trimmed = inputValue.trim();
     if (!trimmed) return;
 
+    const pillId = `pill-${Date.now()}`;
+
     setPills((prev) => {
       const nextVariant = COLOR_CYCLE[prev.length % 3];
-      return [...prev, { id: `pill-${Date.now()}`, label: trimmed, colorVariant: nextVariant }];
+      return [...prev, { id: pillId, label: trimmed, colorVariant: nextVariant }];
     });
+    setLoadingCompanies((prev) => [...prev, trimmed]);
     setInputValue('');
     setModalVisible(false);
 
-    setLoadingCompanies((prev) => [...prev, trimmed]);
-    fetchJobMatches(trimmed)
+    let firstPartialReceived = false;
+
+    const onPartialUpdate = (partialEmployer: Employer) => {
+      if (!firstPartialReceived) {
+        firstPartialReceived = true;
+        setLoadingCompanies((prev) => prev.filter((c) => c !== trimmed));
+        setProcessingEmployerIds((prev) => new Set([...prev, partialEmployer.id]));
+        setPills((prev) =>
+          prev.map((p) => (p.id === pillId ? { ...p, employerId: partialEmployer.id } : p))
+        );
+      }
+      setEmployers((prev) => {
+        const idx = prev.findIndex((e) => e.id === partialEmployer.id);
+        if (idx >= 0) {
+          const arr = [...prev];
+          arr[idx] = partialEmployer;
+          return arr;
+        }
+        return [partialEmployer, ...prev];
+      });
+    };
+
+    fetchJobMatches(trimmed, onPartialUpdate)
       .then((employer) => {
-        setEmployers((prev) => {
-          const exists = prev.some((e) => e.id === employer.id);
-          return exists ? prev : [...prev, employer];
+        setProcessingEmployerIds((prev) => {
+          const next = new Set(prev);
+          next.delete(employer.id);
+          return next;
         });
-        setStats((prev) => ({
-          ...prev,
-          matches: prev.matches + employer.jobs.length,
-          contacts: prev.contacts + employer.jobs.reduce((sum, j) => sum + j.contacts.length, 0),
-        }));
+        setEmployers((prev) => {
+          const idx = prev.findIndex((e) => e.id === employer.id);
+          return idx >= 0
+            ? prev.map((e, i) => (i === idx ? employer : e))
+            : [...prev, employer];
+        });
+        setPills((prev) =>
+          prev.map((p) => (p.id === pillId ? { ...p, employerId: employer.id } : p))
+        );
       })
-      .catch(() => {
+      .catch((err) => {
         Alert.alert('Could not fetch jobs', `No results found for "${trimmed}". Try a full URL like https://careers.company.com`);
       })
       .finally(() => {
@@ -510,8 +694,20 @@ export default function AIHubScreen() {
   }, [inputValue]);
 
   const handleApply = useCallback(
-    (job: Job) => {
-      router.push({ pathname: '/(ai-hub)/job-detail', params: { jobId: job.id } });
+    (employer: Employer, job: Job) => {
+      router.push({ 
+        pathname: '/(ai-hub)/job-detail', 
+        params: { 
+          jobStr: JSON.stringify(job), 
+          employerStr: JSON.stringify({
+            id: employer.id,
+            name: employer.name,
+            subInfo: employer.subInfo,
+            logoColor: employer.logoColor,
+            logoInitial: employer.logoInitial
+          }) 
+        } 
+      });
     },
     [router]
   );
@@ -527,6 +723,7 @@ export default function AIHubScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <ScrollView
         style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
@@ -545,21 +742,66 @@ export default function AIHubScreen() {
         <View style={styles.feedSection}>
           <Text style={styles.feedLabel}>JOB MATCHES</Text>
 
-          {employers.map((employer) => (
-            <EmployerSection
-              key={employer.id}
-              employer={employer}
-              onApply={handleApply}
-              onAddContact={handleAddContact}
-            />
-          ))}
-
-          {loadingCompanies.map((company) => (
-            <View key={company} style={styles.loadingCard}>
-              <ActivityIndicator size="small" color="#06B6D4" />
-              <Text style={styles.loadingCardText}>Searching jobs at "{company}"...</Text>
+          {initialLoading ? (
+            <View style={styles.emptyStateContainer}>
+              <ActivityIndicator size="large" color="#06B6D4" />
+              <Text style={styles.emptyStateTitle}>Loading your dashboard...</Text>
             </View>
-          ))}
+          ) : employers.length === 0 && loadingCompanies.length === 0 ? (
+            <View style={styles.emptyStateContainer}>
+              <View style={styles.emptyStateIconCircle}>
+                <Ionicons name="briefcase-outline" size={48} color="#94A3B8" />
+              </View>
+              <Text style={styles.emptyStateTitle}>No jobs tracked yet</Text>
+              <Text style={styles.emptyStateSubtitle}>
+                Add a company career page URL or company name above to let AI automatically extract jobs and hiring contacts that match your profile.
+              </Text>
+              <TouchableOpacity onPress={() => setModalVisible(true)} style={styles.emptyStateButton}>
+                <LinearGradient
+                  colors={['#06B6D4', '#3B82F6']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.emptyStateButtonGradient}
+                >
+                  <Ionicons name="add" size={18} color="white" />
+                  <Text style={styles.emptyStateButtonText}>Add target company</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              {loadingCompanies.map((company) => (
+                <View key={company} style={styles.modernLoaderCard}>
+                  <View style={styles.loaderHeader}>
+                    <View style={styles.loaderIconWrapper}>
+                      <ActivityIndicator size="small" color="#FFF" />
+                    </View>
+                    <View style={styles.loaderTexts}>
+                      <Text style={styles.loaderTitle}>Analyzing {company}...</Text>
+                      <Text style={styles.loaderSub}>AI is scraping and matching jobs</Text>
+                    </View>
+                  </View>
+                  <View style={styles.loaderProgressBg}>
+                    <Animated.View style={[styles.loaderProgressFill, { width: '40%' }]} />
+                  </View>
+                  <Text style={styles.loaderFootnote}>This can take a minute. You can safely leave this app, we will notify you when it's done.</Text>
+                </View>
+              ))}
+
+              {/* Interesting AI Tips / Suggestions - Shown separately at the top if something is loading */}
+              {loadingCompanies.length > 0 && <LoadingTips />}
+
+              {employers.map((employer) => (
+                <EmployerSection
+                  key={employer.id}
+                  employer={employer}
+                  isProcessing={processingEmployerIds.has(employer.id)}
+                  onApply={handleApply}
+                  onAddContact={handleAddContact}
+                />
+              ))}
+            </>
+          )}
         </View>
       </ScrollView>
 
@@ -629,10 +871,13 @@ const styles = StyleSheet.create({
   // ── Root ──
   safeArea: {
     flex: 1,
-    backgroundColor: '#0B1120',
+    backgroundColor: '#0A0F24',
   },
   scrollView: {
     flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
   },
 
   // ── Wishlist Bar ──
@@ -641,11 +886,24 @@ const styles = StyleSheet.create({
     paddingTop: 18,
     paddingBottom: 16,
   },
+  topHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+    marginTop: 10,
+  },
+  backButton: {
+    marginRight: 12,
+    marginLeft: -8,
+    padding: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   wishlistLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: 'rgba(255,255,255,0.35)',
-    letterSpacing: 1.2,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFF',
+    letterSpacing: 0.5,
     marginBottom: 10,
   },
   pillsRow: {
@@ -733,6 +991,7 @@ const styles = StyleSheet.create({
 
   // ── Feed Section ──
   feedSection: {
+    flex: 1, // Let it expand to fill the bottom of the screen
     backgroundColor: '#F0F4FA',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
@@ -917,6 +1176,17 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#94A3B8',
   },
+  contactPhone: {
+    fontSize: 10,
+    color: '#64748B',
+    marginTop: 1,
+  },
+  noContactsText: {
+    fontSize: 11,
+    color: '#CBD5E1',
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
   contactRight: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -946,6 +1216,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
     paddingHorizontal: 18,
+  },
+  cardFooterLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  visitJobBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    borderRadius: 20,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    gap: 4,
+  },
+  visitJobBtnText: {
+    fontSize: 12,
+    color: '#3B82F6',
+    fontWeight: '600',
   },
   addContactBtn: {
     flexDirection: 'row',
@@ -982,6 +1273,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: 'white',
+  },
+
+  // ── Loading More (inside employer section) ──
+  loadingMoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'white',
+    borderRadius: 16,
+    marginBottom: 14,
+    padding: 16,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#E0F2FE',
+    shadowColor: '#06B6D4',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  loadingMoreText: {
+    fontSize: 13,
+    color: '#0EA5E9',
+    fontStyle: 'italic',
+    flex: 1,
   },
 
   // ── Loading Card ──
@@ -1063,4 +1378,111 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: 'white',
   },
+  emptyStateContainer: {
+    padding: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 40,
+    backgroundColor: 'white',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderStyle: 'dashed',
+  },
+  emptyStateIconCircle: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  emptyStateTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1E293B',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  emptyStateSubtitle: {
+    fontSize: 15,
+    color: '#64748B',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 22,
+  },
+  emptyStateButton: {
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  emptyStateButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    gap: 8,
+  },
+  emptyStateButtonText: {
+    color: 'white',
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  modernLoaderCard: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  loaderHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  loaderIconWrapper: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#06B6D4',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 16,
+  },
+  loaderTexts: {
+    flex: 1,
+  },
+  loaderTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 4,
+  },
+  loaderSub: {
+    fontSize: 13,
+    color: '#64748B',
+  },
+  loaderProgressBg: {
+    height: 6,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 3,
+    marginBottom: 12,
+    overflow: 'hidden',
+  },
+  loaderProgressFill: {
+    height: '100%',
+    backgroundColor: '#06B6D4',
+    borderRadius: 3,
+  },
+  loaderFootnote: {
+    fontSize: 12,
+    color: '#94A3B8',
+    fontStyle: 'italic',
+  }
 });
