@@ -45,6 +45,17 @@ body {
     color: #686b75;
 }
 
+/* Space page content below the fixed app header when present */
+body > #app-header + * {
+    padding-top: 92px;
+}
+
+@media (max-width: 768px) {
+    body > #app-header + * {
+        padding-top: 82px;
+    }
+}
+
 /*=======================================================
 			COLORS(Only Visible In Scss File):
 ========================================================*/
@@ -812,3 +823,5 @@ h4 {
         display: none;
     }
 }
+/* Navbar scale +20% */
+.navbar-nav .nav-link, .nav-btn-landing, .credit-number, .user-name-nav { font-size: 110% !important; }

@@ -1,12 +1,11 @@
 /**
  * App Header Component for CVApplyr
- * Landing page style header with enhanced navigation
+ * Dynamically renders the new sleek navigation with auth states
  */
 
 (function() {
     'use strict';
 
-    // Dynamic base URL detection
     const BASE_URL = (
         window.location.protocol === 'file:' ||
         window.location.hostname === 'localhost' || 
@@ -19,812 +18,474 @@
     window.CVA_BASE_URL = BASE_URL;
 
     window.navigateToApp = function(path) {
-        window.location.href = BASE_URL + path;
+        window.location.href = path; // Native relative routing
     };
 
     window.insertAppHeader = function(targetId = 'app-header') {
         const targetElement = document.getElementById(targetId);
-        if (!targetElement) {
-            console.error('App header target element not found:', targetId);
-            return;
-        }
+        if (!targetElement) return;
 
         const token = localStorage.getItem('authToken');
         const userData = JSON.parse(localStorage.getItem('userData') || '{}');
         
-        let authLinksHTML = '';
+        let authLinksDesktop = '';
+        let authLinksMobile = '';
+        
         if (token && userData.email) {
-            // User is logged in - show enhanced navigation
             const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2) : 'U';
             
-            authLinksHTML = `
-                        <!-- Credit Badge -->
-                        <li class="nav-item credit-item">
-                            <a href="/usage" class="credit-badge-nav" id="creditBadgeNav" title="View usage & credits">
-                                <span class="credit-icon">💳</span>
-                                <span class="credit-number" id="creditNumber">0</span>
-                            </a>
-                        </li>
-                        
-                        <!-- User Profile -->
-                        <li class="nav-item user-item">
-                            <div class="user-section-nav">
-                                <div class="user-avatar-nav" id="userAvatarNav">${initials}</div>
-                                <div class="user-details-nav">
-                                    <div class="user-name-nav" id="userNameNav">${userData.fullName || 'User'}</div>
-                                </div>
-                            </div>
-                        </li>
-                        
-                        <!-- Admin Button (hidden by default) -->
-                        <li class="nav-item" id="adminNavItem" style="display: none;">
-                            <a href="/admin-packages" class="nav-btn-landing" title="Admin Panel">
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                                </svg>
-                            </a>
-                        </li>
-                        
-                        <!-- Dashboard Button -->
-                        <li class="nav-item">
-                            <a href="/dashboard" class="nav-btn-landing" title="Dashboard">
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-                                </svg>
-                            </a>
-                        </li>
-                        
-                        <!-- Notifications Bell -->
-                        <li class="nav-item notification-item">
-                            <button class="nav-btn-landing notification-btn" id="notificationBtn" title="Notifications" onclick="window.appHeader.toggleNotifications(event)">
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-                                </svg>
-                                <span class="notification-badge" id="notificationBadge" style="display: none;">0</span>
-                            </button>
-                            <div class="notification-dropdown" id="notificationDropdown">
-                                <div class="notification-dropdown-header">
-                                    <h6>Notifications</h6>
-                                    <button class="mark-all-read-btn" onclick="window.appHeader.markAllNotificationsRead()" title="Mark all as read">
-                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div class="notification-dropdown-body" id="notificationDropdownBody">
-                                    <div class="notification-loading">
-                                        <div class="spinner-border spinner-border-sm" role="status"></div>
-                                        <span>Loading...</span>
-                                    </div>
-                                </div>
-                                <div class="notification-dropdown-footer">
-                                    <a href="/notifications" class="view-all-notifications">View All Notifications</a>
-                                </div>
-                            </div>
-                        </li>
-                        
-                        <!-- Profile Button -->
-                        <li class="nav-item">
-                            <a href="/profile" class="nav-btn-landing" title="Profile">
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                                </svg>
-                            </a>
-                        </li>
-                        
-                        <!-- Logout Button -->
-                        <li class="nav-item">
-                            <button class="btn btn-logout" id="logoutBtn" onclick="window.appHeader.handleLogout()">Logout</button>
-                        </li>`;
+            // Logged in state
+            authLinksDesktop = `
+                <!-- Credit Badge -->
+                <a href="/usage" class="hdr-credit-badge" id="creditBadgeNav" title="View usage & credits">
+                    <span>💳</span>
+                    <span id="creditNumber">--</span>
+                </a>
+
+                <!-- User Profile -->
+                <div class="hdr-user-pill">
+                    <div class="hdr-avatar" id="userAvatarNav">${initials}</div>
+                    <span class="hdr-user-name" id="userNameNav">${userData.fullName || 'User'}</span>
+                </div>
+
+                <!-- Admin Button -->
+                <a href="/admin-packages" class="hdr-icon-btn" id="adminNavItem" style="display:none;" title="Admin Panel">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                </a>
+
+                <!-- Dashboard -->
+                <a href="/dashboard" class="hdr-icon-btn" title="Dashboard">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg>
+                </a>
+
+                <!-- Notifications -->
+                <div style="position:relative;">
+                    <button class="hdr-icon-btn" id="notificationBtn" title="Notifications" onclick="window.appHeader.toggleNotifications(event)">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
+                        <span class="hdr-notif-dot" id="notificationBadge" style="display:none;">0</span>
+                    </button>
+                    <!-- Dropdown structure -->
+                    <div class="hdr-notif-dropdown" id="notificationDropdown">
+                        <div class="hdr-notif-header">
+                            <h6>Notifications</h6>
+                            <button class="hdr-mark-read" onclick="window.appHeader.markAllNotificationsRead()" title="Mark all read"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></button>
+                        </div>
+                        <div class="hdr-notif-body" id="notificationDropdownBody">
+                            <div class="hdr-notif-empty">Loading...</div>
+                        </div>
+                        <div class="hdr-notif-footer">
+                            <a href="/notifications" class="hdr-notif-all">View All Notifications</a>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Profile -->
+                <a href="/profile" class="hdr-icon-btn" title="Profile">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
+                </a>
+
+                <!-- Logout -->
+                <button class="hdr-logout-btn" id="logoutBtn" onclick="window.appHeader.handleLogout()">Logout</button>
+            `;
+            
+            authLinksMobile = `
+                <a href="/dashboard" class="mobile-nav-link">Dashboard</a>
+                <a href="/profile" class="mobile-nav-link">Profile</a>
+                <a href="/usage" class="mobile-nav-link">💳 Credits (<span id="mobileCredits">...</span>)</a>
+                <a href="/notifications" class="mobile-nav-link">🔔 Notifications</a>
+                <button class="mobile-auth-btn hdr-mobile-logout" onclick="window.appHeader.handleLogout()">Logout</button>
+            `;
         } else {
-            // User not logged in
-            authLinksHTML = `
-                        <li class="nav-item">
-                            <a class="nav-link" href="javascript:void(0)" onclick="navigateToApp('/login')">Sign In</a>
-                        </li>
-                        <li>
-                            <a href="javascript:void(0)" onclick="navigateToApp('/register')" class="btn btn-primary">Sign Up Free</a>
-                        </li>`;
+            // Logged out state
+            authLinksDesktop = `
+                <a href="/login.html" class="btn btn-ghost">Sign In</a>
+                <a href="/register.html" class="btn btn-primary">Free trial <span class="arrow">→</span></a>
+            `;
+            authLinksMobile = `
+                <div class="mobile-cta">
+                    <a href="/login.html" class="btn btn-ghost">Sign in</a>
+                    <a href="/register.html" class="btn btn-primary">Free trial</a>
+                </div>
+            `;
         }
+
+        const navStyle = `
+<style>
+/* New Sleek Navigation CSS overrides */
+.nav {
+    position: fixed; top: 0; left: 0; right: 0;
+    z-index: 1000;
+    padding: 14px 40px;
+    background: rgba(22, 29, 51, 0.72);
+    backdrop-filter: blur(22px) saturate(180%);
+    -webkit-backdrop-filter: blur(22px) saturate(180%);
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.nav-inner {
+    max-width: 1280px; margin: 0 auto;
+    display: flex; align-items: center; justify-content: space-between; gap: 24px;
+}
+.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
+.brand-icon {
+    width: 30px; height: 30px;
+    background-image: url('/assets/logo_img.png');
+    background-size: contain; background-repeat: no-repeat; background-position: center;
+    filter: brightness(0) invert(1);
+}
+.brand-text { font-size: 19px; font-weight: 700; letter-spacing: -0.025em; line-height: 1; }
+.brand-text .cv { color: #ECEFF7; }
+.brand-text .applyr { color: #3B82F6; }
+
+.nav-links { display: flex; gap: 2px; flex: 1; justify-content: center; margin-left: 48px; }
+.nav-links a {
+    font-size: 14px; font-weight: 500; color: #A6AEC4; padding: 9px 16px;
+    border-radius: 8px; transition: all 0.2s; text-decoration: none;
+}
+.nav-links a:hover { color: #ECEFF7; background: rgba(255,255,255,0.05); text-decoration: none; }
+
+.nav-cta { display: flex; gap: 10px; align-items: center; }
+
+/* Buttons */
+.btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 9px 18px; border-radius: 10px; font-size: 13.5px; font-weight: 600;
+    transition: all 0.2s; cursor: pointer; text-decoration: none; border: none; font-family: inherit;
+}
+.btn-ghost { color: #ECEFF7; background: transparent; }
+.btn-ghost:hover { background: rgba(255,255,255,0.08); color: #fff; }
+.btn-primary {
+    background: #3B82F6; color: #fff;
+    box-shadow: 0 4px 14px rgba(59,130,246,0.3), inset 0 1px 0 rgba(255,255,255,0.2);
+}
+.btn-primary:hover { background: #2563EB; transform: translateY(-1px); box-shadow: 0 6px 20px rgba(59,130,246,0.4); color: #fff; }
+
+/* Auth States */
+.hdr-icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; border-radius: 8px; background: rgba(255,255,255,0.08);
+    border: none; color: #ECEFF7; cursor: pointer; transition: background 0.15s, transform 0.15s;
+    flex-shrink: 0; text-decoration: none;
+}
+.hdr-icon-btn:hover { background: rgba(255,255,255,0.15); transform: translateY(-1px); color: #fff; }
+.hdr-icon-btn svg { width: 18px; height: 18px; }
+
+.hdr-credit-badge {
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px;
+    background: linear-gradient(135deg, #8B5CF6, #7C3AED); border-radius: 20px;
+    font-size: 13px; font-weight: 700; color: #fff; text-decoration: none;
+    box-shadow: 0 3px 10px rgba(139,92,246,0.3); transition: transform 0.15s;
+}
+.hdr-credit-badge:hover { transform: translateY(-1px); color: #fff; }
+
+.hdr-user-pill {
+    display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 4px;
+    background: rgba(255,255,255,0.08); border-radius: 20px; margin-right: 6px;
+}
+.hdr-avatar {
+    width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, #667eea, #764ba2);
+    display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 700;
+}
+.hdr-user-name { font-size: 13px; font-weight: 600; color: #ECEFF7; white-space: nowrap; }
+
+.hdr-notif-dot {
+    position: absolute; top: -3px; right: -3px; background: #ef4444; color: #fff;
+    font-size: 10px; font-weight: 700; min-width: 17px; height: 17px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(239,68,68,0.4);
+}
+
+.hdr-logout-btn {
+    padding: 7px 14px; font-size: 13px; font-weight: 500; background: rgba(220,38,38,0.12);
+    border: 1px solid rgba(254,202,202,0.25); border-radius: 8px; color: #fca5a5; cursor: pointer;
+    transition: background 0.15s; margin-left: 6px;
+}
+.hdr-logout-btn:hover { background: rgba(220,38,38,0.22); color: #fca5a5; }
+
+/* Notification Dropdown */
+.hdr-notif-dropdown {
+    position: absolute; top: calc(100% + 10px); right: 0; width: 340px; max-width: 90vw;
+    background: #1E2747; border: 1px solid rgba(255,255,255,0.15); border-radius: 14px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5); display: none; z-index: 1001; overflow: hidden;
+}
+.hdr-notif-dropdown.show { display: block; }
+.hdr-notif-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.07); }
+.hdr-notif-header h6 { margin: 0; font-size: 13px; font-weight: 700; color: #ECEFF7; }
+.hdr-mark-read { background: none; border: none; color: #60A5FA; cursor: pointer; padding: 4px; border-radius: 6px; }
+.hdr-mark-read:hover { background: rgba(255,255,255,0.08); }
+.hdr-notif-body { max-height: 320px; overflow-y: auto; }
+.hdr-notif-empty { padding: 28px; text-align: center; color: #757D98; font-size: 13px; }
+.hdr-notif-card { display: flex; gap: 12px; padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); cursor: pointer; }
+.hdr-notif-card:hover { background: rgba(255,255,255,0.04); }
+.hdr-notif-card.unread { background: rgba(59,130,246,0.07); }
+.hdr-notif-icon { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+.hdr-notif-content { flex: 1; min-width: 0; }
+.hdr-notif-title { font-size: 13px; font-weight: 600; color: #ECEFF7; margin: 0 0 3px; }
+.hdr-notif-msg { font-size: 12px; color: #A6AEC4; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hdr-notif-time { font-size: 11px; color: #757D98; margin-top: 3px; }
+.hdr-notif-footer { padding: 10px 16px; border-top: 1px solid rgba(255,255,255,0.07); text-align: center; }
+.hdr-notif-all { font-size: 13px; font-weight: 600; color: #60A5FA; text-decoration: none; }
+
+/* Mobile Menu */
+.menu-btn {
+    display: none; width: 40px; height: 40px; background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; cursor: pointer;
+    align-items: center; justify-content: center; padding: 0;
+}
+.menu-btn-icon {
+    display: block; position: relative; width: 16px; height: 2px; background: #ECEFF7; border-radius: 2px;
+}
+.menu-btn-icon::before, .menu-btn-icon::after {
+    content: ''; position: absolute; left: 0; width: 100%; height: 2px; background: #ECEFF7; border-radius: 2px;
+}
+.menu-btn-icon::before { top: -6px; }
+.menu-btn-icon::after { top: 6px; }
+
+.mobile-menu {
+    position: fixed; top: 70px; left: 12px; right: 12px; z-index: 999;
+    background: rgba(22, 29, 51, 0.95); backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; padding: 14px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5); transform: translateY(-12px); opacity: 0; pointer-events: none;
+    transition: all 0.25s ease;
+}
+.mobile-menu.open { transform: translateY(0); opacity: 1; pointer-events: auto; }
+.mobile-nav-link, .mobile-menu > a {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 14px; font-size: 15px; font-weight: 500; color: #ECEFF7;
+    border-radius: 10px; text-decoration: none; border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.mobile-nav-link:hover, .mobile-menu > a:hover { background: rgba(255,255,255,0.05); text-decoration: none; color: #fff; }
+.mobile-menu .mobile-cta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.07); }
+.mobile-menu .mobile-cta a { justify-content: center; text-decoration: none; }
+.mobile-auth-btn { width: 100%; display: flex; align-items: center; padding: 14px; font-size: 15px; font-weight: 500; background: none; border: none; color: #ECEFF7; border-bottom: 1px solid rgba(255,255,255,0.05); cursor: pointer; text-align: left; }
+.hdr-mobile-logout { color: #fca5a5 !important; border-bottom: none !important; }
+
+@media (max-width: 1024px) {
+    .nav-links { display: none; }
+    .menu-btn { display: flex; }
+    .nav-cta .btn-ghost { display: none; }
+}
+@media (max-width: 768px) {
+    .nav-cta { display: none; }
+}
+</style>
+        `;
 
         const headerHTML = `
-    <!-- HEADER -->
-    <header id="home">
-        <!-- Navbar -->
-        <nav class="navbar navbar-expand-lg" style="background: transparent !important; box-shadow: none !important;">
-            <div class="container-fluid" style="padding: 0 40px !important;">
-                <a class="navbar-brand" href="/">CV<span>Applyr</span></a>
-                <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav">
-                    <i class="material-icons">menu</i>
-                </button>
-                <div class="collapse navbar-collapse" id="navbarNav">
-                    <ul class="nav navbar-nav ml-auto">
-                        <li class="nav-item">
-                            <a class="nav-link" href="/#home">Home</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="/#why">Why CVApplyr</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="/#features">Features</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="/#pricing">Pricing</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="/#contact">Contact</a>
-                        </li>${authLinksHTML}
-                    </ul>
+            <header class="nav">
+                <div class="nav-inner">
+                    <a href="/public/index_new.html" class="brand">
+                        <span class="brand-icon"></span>
+                        <span class="brand-text"><span class="cv">CV</span><span class="applyr">Applyr</span></span>
+                    </a>
+                    <div class="nav-links">
+                        <a href="/public/index_new.html">Home</a>
+                        <a href="/public/index_new.html#about">About</a>
+                        <a href="/public/index_new.html#services">Services</a>
+                        <a href="/public/index_new.html#pricing">Pricing</a>
+                        <a href="/public/index_new.html#contact">Contact</a>
+                    </div>
+                    <div class="nav-cta">
+                        ${authLinksDesktop}
+                    </div>
+                    <button class="mobile-menu-btn" onclick="window.appHeader.toggleMobileMenu()">
+                        <span class="menu-btn-icon"></span>
+                    </button>
                 </div>
-            </div>
-        </nav>
-    </header>
-    
-    <style>
-        /* Full width navbar optimization */
-        .navbar-nav {
-            align-items: center;
-            gap: 5px;
-        }
-        
-        .nav-item {
-            margin-left: 5px !important;
-        }
-        
-        /* Credit Badge in Navbar */
-        .credit-item {
-            display: flex;
-            align-items: center;
-            margin-left: 8px;
-        }
-        
-        .credit-badge-nav {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 6px 12px;
-            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
-            border-radius: 20px;
-            text-decoration: none;
-            transition: all 0.3s ease;
-            box-shadow: 0 3px 10px rgba(139, 92, 246, 0.3);
-        }
-        
-        .credit-badge-nav:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(139, 92, 246, 0.4);
-            text-decoration: none;
-        }
-        
-        .credit-icon {
-            font-size: 16px;
-        }
-        
-        .credit-number {
-            font-size: 14px;
-            font-weight: 700;
-            color: white;
-            min-width: 20px;
-            text-align: center;
-        }
-        
-        /* User Section in Navbar */
-        .user-item {
-            display: flex;
-            align-items: center;
-            margin-left: 8px;
-        }
-        
-        .user-section-nav {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 4px 12px;
-            background: rgba(255, 255, 255, 0.15);
-            border-radius: 20px;
-            backdrop-filter: blur(10px);
-        }
-        
-        .user-avatar-nav {
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: 600;
-            font-size: 0.7rem;
-        }
-        
-        .user-details-nav {
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .user-name-nav {
-            font-size: 0.75rem;
-            font-weight: 600;
-            color: white;
-            line-height: 1.2;
-        }
-        
-        /* Notifications */
-        .notification-item {
-            position: relative;
-            display: flex;
-            align-items: center;
-        }
-        
-        .notification-btn {
-            position: relative;
-            border: none;
-            background: transparent;
-            cursor: pointer;
-            padding: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: all 0.3s ease;
-        }
-        
-        .notification-btn:hover {
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 8px;
-        }
-        
-        .notification-btn:focus {
-            outline: none;
-        }
-        
-        .notification-btn svg {
-            width: 20px;
-            height: 20px;
-            stroke: white;
-        }
-        
-        .notification-badge {
-            position: absolute;
-            top: -4px;
-            right: -4px;
-            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-            color: white;
-            font-size: 10px;
-            font-weight: 700;
-            padding: 2px 6px;
-            border-radius: 10px;
-            min-width: 18px;
-            height: 18px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-shadow: 0 2px 6px rgba(239, 68, 68, 0.4);
-        }
-        
-        .notification-dropdown {
-            position: absolute;
-            top: calc(100% + 12px);
-            right: 0;
-            width: 360px;
-            max-width: 90vw;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
-            display: none;
-            z-index: 1000;
-            animation: slideDown 0.3s ease-out;
-        }
-        
-        .notification-dropdown.show {
-            display: block;
-        }
-        
-        @keyframes slideDown {
-            from {
-                opacity: 0;
-                transform: translateY(-10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
-        .notification-dropdown-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 16px;
-            border-bottom: 1px solid #e5e7eb;
-        }
-        
-        .notification-dropdown-header h6 {
-            margin: 0;
-            font-size: 14px;
-            font-weight: 700;
-            color: #1f2937;
-        }
-        
-        .mark-all-read-btn {
-            background: none;
-            border: none;
-            color: #667eea;
-            cursor: pointer;
-            padding: 4px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 6px;
-            transition: all 0.2s;
-        }
-        
-        .mark-all-read-btn:hover {
-            background: #f3f4f6;
-        }
-        
-        .mark-all-read-btn svg {
-            width: 18px;
-            height: 18px;
-        }
-        
-        .notification-dropdown-body {
-            max-height: 400px;
-            overflow-y: auto;
-        }
-        
-        .notification-loading {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-            padding: 32px;
-            color: #6b7280;
-            font-size: 14px;
-        }
-        
-        .notification-empty {
-            text-align: center;
-            padding: 32px;
-            color: #9ca3af;
-        }
-        
-        .notification-empty svg {
-            width: 48px;
-            height: 48px;
-            margin: 0 auto 12px;
-            opacity: 0.5;
-        }
-        
-        .notification-empty p {
-            margin: 0;
-            font-size: 14px;
-        }
-        
-        .notification-item-card {
-            padding: 12px 16px;
-            border-bottom: 1px solid #f3f4f6;
-            cursor: pointer;
-            transition: all 0.2s;
-            display: flex;
-            gap: 12px;
-        }
-        
-        .notification-item-card:hover {
-            background: #f9fafb;
-        }
-        
-        .notification-item-card.unread {
-            background: #eff6ff;
-        }
-        
-        .notification-item-card.unread:hover {
-            background: #dbeafe;
-        }
-        
-        .notification-icon-wrapper {
-            flex-shrink: 0;
-            width: 36px;
-            height: 36px;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-        }
-        
-        .notification-icon-wrapper.email {
-            background: #dbeafe;
-            color: #3b82f6;
-        }
-        
-        .notification-icon-wrapper.cover_letter {
-            background: #d1fae5;
-            color: #10b981;
-        }
-        
-        .notification-icon-wrapper.credits {
-            background: #fed7aa;
-            color: #f97316;
-        }
-        
-        .notification-icon-wrapper.profile {
-            background: #e9d5ff;
-            color: #a855f7;
-        }
-        
-        .notification-content {
-            flex: 1;
-            min-width: 0;
-        }
-        
-        .notification-title {
-            font-size: 13px;
-            font-weight: 600;
-            color: #1f2937;
-            margin: 0 0 4px 0;
-            line-height: 1.3;
-        }
-        
-        .notification-message {
-            font-size: 12px;
-            color: #6b7280;
-            margin: 0;
-            line-height: 1.4;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        
-        .notification-time {
-            font-size: 11px;
-            color: #9ca3af;
-            margin-top: 4px;
-        }
-        
-        .notification-dropdown-footer {
-            padding: 12px;
-            border-top: 1px solid #e5e7eb;
-            text-align: center;
-        }
-        
-        .view-all-notifications {
-            display: block;
-            color: #667eea;
-            font-size: 13px;
-            font-weight: 600;
-            text-decoration: none;
-            padding: 4px;
-            border-radius: 6px;
-            transition: all 0.2s;
-        }
-        
-        .view-all-notifications:hover {
-            background: #f3f4f6;
-            text-decoration: none;
-            color: #5568d3;
-        }
-        
-        /* Navigation Buttons */
-        .nav-btn-landing {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 36px;
-            height: 36px;
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.15);
-            backdrop-filter: blur(10px);
-            transition: all 0.2s ease;
-            text-decoration: none;
-            color: white;
-            margin-left: 6px;
-        }
-        
-        .nav-btn-landing:hover {
-            background: rgba(255, 255, 255, 0.25);
-            transform: translateY(-2px);
-            text-decoration: none;
-            color: white;
-        }
-        
-        .nav-btn-landing svg {
-            width: 18px;
-            height: 18px;
-        }
-        
-        /* Logout Button */
-        .btn-logout {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 8px 16px;
-            background: rgba(220, 38, 38, 0.15);
-            border: 1px solid rgba(254, 202, 202, 0.5);
-            border-radius: 20px;
-            font-size: 0.75rem;
-            color: white;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            font-weight: 500;
-            margin-left: 8px;
-            height: 36px;
-            position: relative;
-            top: 0 !important;
-        }
-        
-        .btn-logout:hover {
-            background: rgba(220, 38, 38, 0.25);
-            border-color: rgba(254, 202, 202, 0.8);
-        }
-        
-        /* Mobile Responsive */
-        @media (max-width: 991px) {
-            .credit-item,
-            .user-item,
-            .notification-item,
-            .nav-btn-landing,
-            .btn-logout {
-                margin-left: 0;
-                margin-top: 10px;
-            }
-            
-            .credit-badge-nav,
-            .user-section-nav,
-            .nav-btn-landing {
-                width: 100%;
-                justify-content: center;
-            }
-            
-            .btn-logout {
-                width: 100%;
-            }
-            
-            .notification-dropdown {
-                position: fixed;
-                top: auto;
-                right: 10px;
-                left: 10px;
-                width: auto;
-                max-width: none;
-            }
-        }
-    </style>
+            </header>
+
+            <nav class="mobile-nav" id="mobileNav">
+                <div class="mobile-nav-inner">
+                    <a href="/public/index_new.html" class="mobile-nav-link">Home</a>
+                    <a href="/public/index_new.html#about" class="mobile-nav-link">About</a>
+                    <a href="/public/index_new.html#services" class="mobile-nav-link">Services</a>
+                    <a href="/public/index_new.html#pricing" class="mobile-nav-link">Pricing</a>
+                    <a href="/public/index_new.html#contact" class="mobile-nav-link">Contact</a>
+                    <hr class="mobile-divider" />
+                    ${authLinksMobile}
+                </div>
+            </nav>
         `;
-        
+
         targetElement.innerHTML = headerHTML;
-        
-        // Load user data and credits
-        if (token && userData.email) {
-            window.appHeader.loadCredits();
-            window.appHeader.checkAdminStatus();
-            window.appHeader.loadNotifications();
+
+        // Hook up menu interactions
+        setTimeout(() => {
+            const menuBtn = document.getElementById('menuBtn');
+            const mobileMenu = document.getElementById('mobileMenu');
             
-            // Refresh notifications every 30 seconds
-            setInterval(() => {
-                window.appHeader.loadNotifications();
-            }, 30000);
+            if (menuBtn && mobileMenu) {
+                menuBtn.addEventListener('click', () => {
+                    menuBtn.classList.toggle('open');
+                    mobileMenu.classList.toggle('open');
+                });
+                
+                // Close menu when a link is clicked
+                mobileMenu.querySelectorAll('a').forEach(a => {
+                    a.addEventListener('click', () => {
+                        menuBtn.classList.remove('open');
+                        mobileMenu.classList.remove('open');
+                    });
+                });
+            }
             
-            // Close dropdown when clicking outside
-            document.addEventListener('click', function(e) {
-                const dropdown = document.getElementById('notificationDropdown');
-                const btn = document.getElementById('notificationBtn');
-                if (dropdown && btn && !dropdown.contains(e.target) && !btn.contains(e.target)) {
-                    dropdown.classList.remove('show');
-                }
-            });
-        }
+            // Only fetch dynamically if user is logged in
+            if (token) {
+                window.appHeader.checkAdminStatus();
+                window.appHeader.fetchCredits();
+                window.appHeader.fetchNotifications();
+            }
+        }, 0);
     };
 
-    // App Header Object with helper functions
+    // Make global methods for auth interactions
     window.appHeader = {
-        loadCredits: async function() {
-            const token = localStorage.getItem('authToken');
-            if (!token) return;
-
-            try {
-                const response = await fetch('/api/user/credits', {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.success) {
-                        const credits = data.balance || (data.credits && typeof data.credits === 'object' ? data.credits.remaining : data.credits) || 0;
-                        const creditNumber = document.getElementById('creditNumber');
-                        if (creditNumber) {
-                            creditNumber.textContent = credits;
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error('Error loading credits:', error);
-            }
-        },
-
-        checkAdminStatus: async function() {
-            const token = localStorage.getItem('authToken');
-            if (!token) return;
-
-            try {
-                const response = await fetch('/api/user/is-admin', {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.isAdmin) {
-                        const adminNavItem = document.getElementById('adminNavItem');
-                        if (adminNavItem) {
-                            adminNavItem.style.display = 'flex';
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error('Error checking admin status:', error);
-            }
-        },
-
         handleLogout: function() {
             localStorage.removeItem('authToken');
             localStorage.removeItem('userData');
-            sessionStorage.clear();
-            window.location.href = '/login';
+            window.location.href = '/login.html';
         },
-
-        loadNotifications: async function() {
-            const token = localStorage.getItem('authToken');
-            if (!token) return;
-
+        toggleNotifications: function(e) {
+            if (e) e.stopPropagation();
+            const dropdown = document.getElementById('notificationDropdown');
+            if (dropdown) dropdown.classList.toggle('show');
+            
+            // Close when clicking outside
+            document.addEventListener('click', function closeNotif(e) {
+                if (!e.target.closest('#notificationDropdown') && !e.target.closest('#notificationBtn')) {
+                    dropdown.classList.remove('show');
+                    document.removeEventListener('click', closeNotif);
+                }
+            });
+        },
+        async checkAdminStatus() {
             try {
-                const response = await fetch('/api/notifications?limit=5', {
+                const token = localStorage.getItem('authToken');
+                if (!token) return;
+                
+                const response = await fetch('/api/user/is-admin', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const data = await response.json();
+                if (data.isAdmin) {
+                    const adminNavItem = document.getElementById('adminNavItem');
+                    if (adminNavItem) adminNavItem.style.display = 'inline-flex';
+                }
+            } catch (err) {
+                console.error('Error checking admin status', err);
+            }
+        },
+        async fetchCredits() {
+            try {
+                const token = localStorage.getItem('authToken');
+                if (!token) return;
+                
+                const response = await fetch('/api/user/credits', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    const credits = data.balance || 0;
+                    
+                    const badge = document.getElementById('creditNumber');
+                    if (badge) badge.textContent = credits;
+                    
+                    const mobileBadge = document.getElementById('mobileCredits');
+                    if (mobileBadge) mobileBadge.textContent = credits;
+                }
+            } catch (err) {
+                console.error('Error fetching credits', err);
+            }
+        },
+        async fetchNotifications() {
+            try {
+                const token = localStorage.getItem('authToken');
+                if (!token) return;
+                
+                const response = await fetch('/api/notifications', {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
                 
                 if (response.ok) {
                     const data = await response.json();
-                    if (data.success) {
-                        window.appHeader.updateNotificationBadge(data.unreadCount || 0);
-                        window.appHeader.renderNotifications(data.notifications || []);
-                    }
+                    window.appHeader.updateNotificationsUI(data.notifications || [], data.unreadCount || 0);
                 }
-            } catch (error) {
-                console.error('Error loading notifications:', error);
+            } catch (err) {
+                console.error('Error fetching notifications', err);
             }
         },
-
-        updateNotificationBadge: function(count) {
+        updateNotificationsUI(notifications, unreadCount) {
             const badge = document.getElementById('notificationBadge');
+            const body = document.getElementById('notificationDropdownBody');
+            
             if (badge) {
-                if (count > 0) {
-                    badge.textContent = count > 99 ? '99+' : count;
+                if (unreadCount > 0) {
+                    badge.textContent = unreadCount > 99 ? '99+' : unreadCount;
                     badge.style.display = 'flex';
                 } else {
                     badge.style.display = 'none';
                 }
             }
-        },
-
-        renderNotifications: function(notifications) {
-            const body = document.getElementById('notificationDropdownBody');
-            if (!body) return;
-
-            if (notifications.length === 0) {
-                body.innerHTML = `
-                    <div class="notification-empty">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-                        </svg>
-                        <p>No notifications yet</p>
-                    </div>
-                `;
-                return;
-            }
-
-            const notificationIcons = {
-                email: '📧',
-                cover_letter: '📄',
-                credits: '💳',
-                profile: '👤'
-            };
-
-            const html = notifications.map(notif => {
-                const timeAgo = window.appHeader.getTimeAgo(notif.created_at);
-                const unreadClass = notif.is_read ? '' : 'unread';
-                const icon = notificationIcons[notif.type] || '🔔';
-                
-                return `
-                    <div class="notification-item-card ${unreadClass}" onclick="window.appHeader.handleNotificationClick(${notif.id})">
-                        <div class="notification-icon-wrapper ${notif.type}">
-                            ${icon}
-                        </div>
-                        <div class="notification-content">
-                            <p class="notification-title">${notif.title}</p>
-                            <p class="notification-message">${notif.message}</p>
-                            <div class="notification-time">${timeAgo}</div>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-
-            body.innerHTML = html;
-        },
-
-        getTimeAgo: function(timestamp) {
-            const now = new Date();
-            const then = new Date(timestamp);
-            const seconds = Math.floor((now - then) / 1000);
             
-            if (seconds < 60) return 'Just now';
-            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-            if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
-            return then.toLocaleDateString();
-        },
-
-        toggleNotifications: function(event) {
-            event.stopPropagation();
-            const dropdown = document.getElementById('notificationDropdown');
-            if (dropdown) {
-                dropdown.classList.toggle('show');
-                if (dropdown.classList.contains('show')) {
-                    window.appHeader.loadNotifications();
+            if (body) {
+                if (notifications.length === 0) {
+                    body.innerHTML = '<div class="hdr-notif-empty">No notifications</div>';
+                    return;
                 }
+                
+                let html = '';
+                notifications.slice(0, 5).forEach(notif => {
+                    const isUnread = !notif.is_read;
+                    // Provide a default icon fallback
+                    let icon = '🔔';
+                    let typeClass = 'profile';
+                    if (notif.type) {
+                        if (notif.type.includes('letter')) { icon = '📄'; typeClass = 'cover_letter'; }
+                        else if (notif.type.includes('reply')) { icon = '📬'; typeClass = 'reply'; }
+                        else if (notif.type.includes('profile')) { icon = '👤'; typeClass = 'profile'; }
+                    }
+
+                    html += `
+                        <div class="hdr-notif-card ${isUnread ? 'unread' : ''}" onclick="window.appHeader.handleNotificationClick(${notif.id})">
+                            <div class="hdr-notif-icon ${typeClass}">${icon}</div>
+                            <div class="hdr-notif-content">
+                                <p class="hdr-notif-title">${notif.title}</p>
+                                <p class="hdr-notif-msg">${notif.message}</p>
+                                <div class="hdr-notif-time">${new Date(notif.created_at).toLocaleDateString()}</div>
+                            </div>
+                        </div>
+                    `;
+                });
+                body.innerHTML = html;
             }
         },
-
-        handleNotificationClick: async function(notificationId) {
-            const token = localStorage.getItem('authToken');
-            if (!token) return;
-
+        async handleNotificationClick(id) {
             try {
-                // Mark as read
-                await fetch(`/api/notifications/${notificationId}/read`, {
-                    method: 'PATCH',
+                const token = localStorage.getItem('authToken');
+                await fetch(`/api/notifications/${id}/read`, {
+                    method: 'PUT',
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
-                
-                // Reload notifications
-                await window.appHeader.loadNotifications();
-                
-                // Navigate to notifications page
                 window.location.href = '/notifications';
-            } catch (error) {
-                console.error('Error marking notification as read:', error);
+            } catch (err) {
+                window.location.href = '/notifications';
             }
         },
-
-        markAllNotificationsRead: async function() {
-            const token = localStorage.getItem('authToken');
-            if (!token) return;
-
+        async markAllNotificationsRead() {
             try {
-                const response = await fetch('/api/notifications/mark-all-read', {
-                    method: 'PATCH',
+                const token = localStorage.getItem('authToken');
+                await fetch('/api/notifications/mark-all-read', {
+                    method: 'PUT',
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
-                
-                if (response.ok) {
-                    await window.appHeader.loadNotifications();
-                }
-            } catch (error) {
-                console.error('Error marking all as read:', error);
+                window.appHeader.fetchNotifications();
+            } catch (err) {
+                console.error(err);
             }
         }
     };
 
-    // Auto-insert header when DOM is ready
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function() {
-            const autoInsert = document.getElementById('app-header');
-            if (autoInsert) {
-                window.insertAppHeader();
-            }
-        });
-    } else {
-        const autoInsert = document.getElementById('app-header');
-        if (autoInsert) {
-            window.insertAppHeader();
-        }
-    }
+    // Auto-init on script load
+    document.addEventListener('DOMContentLoaded', () => {
+        window.insertAppHeader();
+    });
 })();

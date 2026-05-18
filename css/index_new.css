@@ -31,7 +31,7 @@
   html { scroll-behavior: smooth; height: 100%; }
 body { min-height: 100%; display: flex; flex-direction: column; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+    font-family: 'Montserrat', sans-serif;
     background: var(--bg);
     color: var(--text);
     line-height: 1.5;
@@ -110,6 +110,15 @@ body { min-height: 100%; display: flex; flex-direction: column; }
     background: rgba(255,255,255,0.05);
   }
   .nav-cta { display: flex; gap: 10px; align-items: center; }
+
+  body > #app-header + * {
+    padding-top: 88px;
+  }
+  @media (max-width: 768px) {
+    body > #app-header + * {
+      padding-top: 76px;
+    }
+  }
 
   /* Hamburger button — mobile only */
   .menu-btn {
@@ -1094,3 +1103,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
 
 /* Fix anchor scrolling offset */
 section { scroll-margin-top: 80px; }
+
+/* app-header fixes */
+#app-header { position: sticky; top: 0; z-index: 1000; }
+body { padding-top: 0 !important; }

@@ -23,7 +23,7 @@
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+    font-family: 'Montserrat', sans-serif;
     background: var(--bg);
     color: var(--text);
     font-feature-settings: 'cv11', 'ss01', 'ss03';
@@ -34,6 +34,15 @@
   }
   a { text-decoration: none; color: inherit; }
   img { max-width: 100%; }
+
+  body > #app-header + * {
+    padding-top: 88px;
+  }
+  @media (max-width: 768px) {
+    body > #app-header + * {
+      padding-top: 76px;
+    }
+  }
 
   /* ============ BRAND ============ */
   .brand { display: inline-flex; align-items: center; gap: 10px; }
@@ -99,7 +108,7 @@
     flex-direction: column; align-items: flex-end;
   }
   .stat-pill {
-    display: inline-flex; align-items: center; gap: 8px;
+    display: inline-flex; align-items: center; gap: 7px;
     padding: 8px 14px;
     background: rgba(30, 39, 71, 0.6);
     backdrop-filter: blur(20px) saturate(180%);
@@ -552,9 +561,9 @@
     .visual-inner { background-position: center 14%; }
     .visual-top { top: 16px; left: 20px; }
     .visual-stats { top: 16px; right: 20px; }
-    .stat-pill { padding: 5px 10px; font-size: 11px; }
+    .stat-pill { padding: 5px 8px; font-size: 10px; }
     /* Hide the second stat pill on tiny screens to avoid crowding */
-    .visual-stats .stat-pill:nth-child(2) { display: none; }
+    /* .visual-stats .stat-pill:nth-child(2) { display: none; } */
     .visual-bottom { bottom: 18px; left: 20px; right: 20px; }
     .visual-bottom h2 {
       font-size: 16.5px;
