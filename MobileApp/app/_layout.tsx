@@ -6,7 +6,7 @@ export default function RootLayout() {
       initialRouteName="index"
       screenOptions={{
         headerShown: false,
-        contentStyle: { backgroundColor: '#f5f7fa' },
+        contentStyle: { backgroundColor: '#06091B' },
         animation: 'slide_from_right',
       }}
     >

@@ -34,7 +34,7 @@ cat > "$CONFIG_FILE" << EOF
 // This file is updated automatically by start-all.sh
 
 const LOCAL_API_URL = 'http://${LOCAL_IP}:3000/api';
-const PRODUCTION_API_URL = 'https://your-production-domain.com/api';
+const PRODUCTION_API_URL = 'https://cvapplyr-website-production.up.railway.app/api';
 
 const API_BASE = __DEV__ ? LOCAL_API_URL : PRODUCTION_API_URL;
 

@@ -1,37 +1,19 @@
-# dependencies
-node_modules/
+# Old build artifacts - these inflate the upload to ~600MB
+*.ipa
+*.apk
+*.aab
 
-# Expo
-.expo/
+# Build output folders
+build/
 dist/
-web-build/
-expo-env.d.ts
 
-# Native (signing files only - NOT the android/ios source)
-.kotlin/
-*.orig.*
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
+# Fastlane metadata/screenshots (not needed for build)
+fastlane/screenshots/
+fastlane/metadata/
 
-# Metro
-.metro-health-check*
+# Logs
+*.log
+expo.log
 
-# debug
-npm-debug.*
-yarn-debug.*
-yarn-error.*
-
-# macOS
+# OS files
 .DS_Store
-*.pem
-
-# local env files
-.env*.local
-
-# typescript
-*.tsbuildinfo
-
-app-example
