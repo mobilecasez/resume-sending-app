@@ -317,7 +317,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
   }
   .hero-image {
     position: absolute; inset: 0;
-    background-image: url('/assets/Swati.png');
+    background-image: url('/assets/Swati.jpg');
     background-size: cover;
     background-position: center 30%;
   }
