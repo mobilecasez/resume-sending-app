@@ -700,7 +700,7 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
     for (let attempt = 0; attempt < 5; attempt++) { // Increased to 5 retries
         resumeMetadata = await dbConfig.get(
             'SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = ?',
-            [userId, 'completed'] // Corrected status to 'completed'
+            [userId, 'done'] // Corrected status to 'done' to match the parser
         );
         if (resumeMetadata) break;
         // Wait longer before retrying
