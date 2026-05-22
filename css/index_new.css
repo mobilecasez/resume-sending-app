@@ -298,7 +298,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
   .avatar:nth-child(2) { background: linear-gradient(135deg, #60A5FA, #1E40AF); }
   .avatar:nth-child(3) { background: linear-gradient(135deg, #A78BFA, #6D28D9); }
   .avatar:nth-child(4) { background: linear-gradient(135deg, #E6E9F2, #6B7290); }
-  .trust-text { font-size: 13px; color: var(--text-muted); }
+  .trust-text { font-size: 13px; color: var(--text-muted); font-weight: 500; }
   .trust-text strong {
     color: var(--text);
     display: block; font-weight: 600;
@@ -359,9 +359,9 @@ body { min-height: 100%; display: flex; flex-direction: column; }
     font-size: 16px; font-weight: 700;
     flex-shrink: 0;
   }
-  .notif-text { font-size: 12.5px; min-width: 0; }
+  .notif-text { font-size: 12.5px; min-width: 0; font-weight: 500; }
   .notif-text strong { display: block; font-size: 13px; color: #fff; font-weight: 600; }
-  .notif-text span { color: rgba(255,255,255,0.65); font-size: 11.5px; }
+  .notif-text span { color: rgba(255,255,255,0.65); font-size: 11.5px; font-weight: 500; }
 
   .float-card.stat {
     bottom: 32px; right: 24px;
@@ -445,7 +445,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
     z-index: 1;
   }
   .powered-row strong { font-weight: 700; letter-spacing: -0.01em; font-size: 15px; }
-  .powered-row span { color: var(--text-secondary); font-size: 14px; }
+  .powered-row span { color: var(--text-secondary); font-size: 14px; font-weight: 500; }
 
   /* ============ SECTION HEAD ============ */
   .section-head {
@@ -536,6 +536,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
     padding: 14px 16px;
     font-family: 'JetBrains Mono', monospace;
     font-size: 12px;
+    font-weight: 500;
     line-height: 1.8;
     overflow-x: auto;
   }
@@ -582,6 +583,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
     margin-top: 8px;
     font-size: 10.5px; color: var(--text-muted);
     font-family: 'JetBrains Mono', monospace;
+    font-weight: 500;
   }
 
   /* Credit chips inside the credit feature */
@@ -707,6 +709,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
   .price-credits {
     font-size: 14px; color: var(--text-secondary);
     margin-bottom: 24px;
+    font-weight: 500;
   }
   .price-credits strong { color: var(--brand-bright); font-weight: 700; }
   .price-features {
@@ -719,6 +722,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
   .price-features li {
     font-size: 13.5px; color: var(--text-secondary);
     display: flex; align-items: flex-start; gap: 10px;
+    font-weight: 500;
   }
   .price-features li::before {
     content: '✓';
@@ -737,6 +741,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
     text-align: center;
     font-size: 14px;
     color: var(--text-muted);
+    font-weight: 500;
   }
   .pricing-foot strong { color: var(--text-secondary); font-weight: 600; }
   .pricing-foot a {
@@ -817,7 +822,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
   }
   .author-info { text-align: left; }
   .author-info strong { display: block; font-size: 14.5px; font-weight: 600; }
-  .author-info span { font-size: 13px; color: var(--text-muted); }
+  .author-info span { font-size: 13px; color: var(--text-muted); font-weight: 500; }
 
   /* ============ CTA ============ */
   .cta-band {
@@ -881,11 +886,13 @@ body { min-height: 100%; display: flex; flex-direction: column; }
     font-size: 14px;
     max-width: 280px;
     margin-top: 14px;
+    font-weight: 500;
   }
   .footer-brand .footer-co {
     margin-top: 16px;
     font-size: 12.5px;
     color: var(--text-muted);
+    font-weight: 500;
   }
   .footer-brand .footer-co strong { color: var(--text-secondary); font-weight: 600; }
   .footer-col h4 {
@@ -902,6 +909,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
     padding: 5px 0;
     color: var(--text-secondary);
     transition: color 0.2s;
+    font-weight: 500;
   }
   .footer-col a:hover { color: var(--brand-bright); }
   .footer-bottom {
@@ -909,6 +917,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
     display: flex; justify-content: space-between; align-items: center;
     flex-wrap: wrap; gap: 8px;
     font-size: 12.5px; color: var(--text-muted);
+    font-weight: 500;
   }
 
   /* ============================================== */
@@ -922,7 +931,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
     .powered, footer { padding-left: 32px; padding-right: 32px; }
     .nav { padding: 12px 24px; }
     .nav-links { margin-left: 24px; }
-    .nav-links a { padding: 8px 12px; font-size: 13.5px; }
+    .nav-links a { padding: 8px 12px; font-size: 13.5px; font-weight: 500; }
   }
 
   @media (max-width: 1024px) {
@@ -988,16 +997,16 @@ body { min-height: 100%; display: flex; flex-direction: column; }
       padding: 8px 12px;
       max-width: calc(50% - 24px);
     }
-    .notif-icon { width: 28px; height: 28px; font-size: 13px; }
-    .notif-text strong { font-size: 11.5px; }
-    .notif-text span { font-size: 10.5px; }
+    .notif-icon { width: 28px; height: 28px; font-size: 13px; font-weight: 500; }
+    .notif-text strong { font-size: 11.5px; font-weight: 500; }
+    .notif-text span { font-size: 10.5px; font-weight: 500; }
     .float-card.stat {
       bottom: 16px; right: 14px;
       min-width: auto;
       padding: 10px 14px;
     }
     .stat-num { font-size: 22px; }
-    .stat-label { font-size: 9.5px; margin-top: 3px; }
+    .stat-label { font-size: 9.5px; margin-top: 3px; font-weight: 500; }
     .stat-spark { height: 16px; margin-top: 8px; }
 
     .nav { padding: 10px 16px; }
@@ -1025,9 +1034,9 @@ body { min-height: 100%; display: flex; flex-direction: column; }
       padding: 7px 11px;
       max-width: 45%;
     }
-    .notif-icon { width: 24px; height: 24px; font-size: 11px; }
-    .notif-text strong { font-size: 10.5px; }
-    .notif-text span { font-size: 9.5px; }
+    .notif-icon { width: 24px; height: 24px; font-size: 11px; font-weight: 500; }
+    .notif-text strong { font-size: 10.5px; font-weight: 500; }
+    .notif-text span { font-size: 9.5px; font-weight: 500; }
     .float-card.stat { padding: 8px 12px; }
     .stat-num { font-size: 18px; }
     .price-amount { font-size: 38px; }
@@ -1051,6 +1060,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
   color: var(--text-muted);
   font-size: 14px;
   margin-bottom: 40px;
+  font-weight: 500;
 }
 .page-wrap h2 {
   font-size: 24px;

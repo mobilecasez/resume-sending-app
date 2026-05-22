@@ -25,8 +25,8 @@
     </h1>
     <p class="lede">CVApplyr writes personalised cover letters in seconds, then sends your applications in bulk — each one uniquely tailored to the recipient. Stop copy-pasting. Start interviewing.</p>
     <div class="hero-cta">
-      <a href="/register.html" class="btn btn-primary btn-lg">Start free trial <span class="arrow">→</span></a>
-      <a href="/#features" class="btn btn-ghost btn-lg">See how it works</a>
+      <a href="/register" class="btn btn-primary btn-lg">Start free trial <span class="arrow">→</span></a>
+      <a href="/index.html#features" class="btn btn-ghost btn-lg">See how it works</a>
     </div>
     <div class="trust-row">
       <div class="avatars">
@@ -58,16 +58,6 @@
         <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
       </div>
     </div>
-  </div>
-</section>
-
-<!-- POWERED BY -->
-<section class="powered">
-  <p>Built on industry-leading AI</p>
-  <div class="powered-row">
-    <span class="gemini-icon"></span>
-    <strong>Google Gemini</strong>
-    <span>· Advanced cover-letter generation</span>
   </div>
 </section>
 
@@ -252,7 +242,7 @@
 
   <div class="pricing-foot">
     <strong>Need more?</strong> Enterprise (500 credits / $149.99) and Ultimate (2,000 credits / $499.99) packs available.
-    <a href="/#contact">See all plans →</a>
+    <a href="/index.html#contact">See all plans →</a>
   </div>
 </section>
 
@@ -301,50 +291,43 @@
     <div class="cta-content">
       <h2>Your next role is <span class="accent">one bulk-send away.</span></h2>
       <p>Free trial. No credit card required. Credits never expire.</p>
-      <a href="/register.html" class="btn btn-primary btn-lg">Start free trial <span class="arrow">→</span></a>
+      <a href="/register" class="btn btn-primary btn-lg">Start free trial <span class="arrow">→</span></a>
     </div>
   </div>
 </section>
 
-<!-- FOOTER -->
-<footer>
-  <div class="footer-grid">
-    <div class="footer-brand">
-      <div class="brand">
-        <div class="brand-icon"></div>
-        <div class="brand-text"><span class="cv">cv</span><span class="applyr">applyr</span></div>
-      </div>
-      <p>AI-powered cover-letter generation & bulk job application sending.</p>
-      <div class="footer-co">
-        Built & owned by <strong>zSellr (OPC) Private Limited</strong>
-      </div>
-    </div>
-    <div class="footer-col">
-      <h4>Quick Links</h4>
-      <a href="/#home">Home</a>
-      <a href="/#why">Why CVApplyr</a>
-      <a href="/#features">Features</a>
-      <a href="/#pricing">Pricing</a>
-      <a href="/#contact">Contact</a>
-    </div>
-    <div class="footer-col">
-      <h4>Legal</h4>
-      <a href="/privacy-policy">Privacy Policy</a>
-      <a href="/terms-of-service">Terms of Service</a>
-      <a href="/refund-policy">Refund Policy</a>
-      <a href="/support">Support</a>
-    </div>
-    <div class="footer-col">
-      <h4>Contact</h4>
-      <a href="mailto:support@cvapplyr.com">support@cvapplyr.com</a>
-    </div>
+<!-- POWERED BY -->
+<section class="powered">
+  <p>Built on industry-leading AI</p>
+  <div class="powered-row">
+    <span class="gemini-icon"></span>
+    <strong>Google Gemini</strong>
+    <span>· Advanced cover-letter generation</span>
   </div>
-  <div class="footer-bottom">
-    <span>© 2026 CVApplyr by zSellr (OPC) Private Limited · All rights reserved</span>
-    <span>Made in India · with care</span>
-  </div>
-</footer>
+</section>
 
-    <script src="/js/app-header.js"></script>
+<!-- FOOTER -->
+<div id="app-footer"></div>
+
+    <script src="/js/app-header.js?v=3"></script>
+    <script src="/js/app-footer.js?v=2"></script>
+    <script>
+        // Swap hero CTA for logged-in users
+        (function() {
+            const token = localStorage.getItem('authToken');
+            if (token) {
+                const primaryBtn = document.querySelector('.hero-cta .btn-primary');
+                if (primaryBtn) {
+                    primaryBtn.href = '/dashboard';
+                    primaryBtn.innerHTML = 'Go to Dashboard <span class="arrow">→</span>';
+                }
+                const ctaBandBtn = document.querySelector('.cta-band .btn-primary');
+                if (ctaBandBtn) {
+                    ctaBandBtn.href = '/dashboard';
+                    ctaBandBtn.innerHTML = 'Go to Dashboard <span class="arrow">→</span>';
+                }
+            }
+        })();
+    </script>
 </body>
 </html>

@@ -1,6 +1,7 @@
 const dbConfig = require('./db-config');
 const { initializeAdminUser } = require('./scripts/init-admin');
 const fs = require('fs').promises;
+const path = require('path');
 
 /**
  * Initialize PostgreSQL database schema
@@ -30,8 +31,20 @@ async function initializeDatabase() {
 async function initializePostgres() {
     console.log('📋 Creating PostgreSQL tables...');
     
-    const schema = await fs.readFile('./database/postgres-schema.sql', 'utf8');
     const db = dbConfig.rawDb();
+    const schemaPath = path.join(__dirname, 'database', 'postgres-schema.sql');
+
+    let schema;
+    try {
+        schema = await fs.readFile(schemaPath, 'utf8');
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.warn(`⚠️ PostgreSQL schema file not found at ${schemaPath}. Skipping schema creation and continuing with migrations only.`);
+            await runPostgresMigrations(db);
+            return;
+        }
+        throw error;
+    }
     
     // Execute schema
     await db.query(schema);

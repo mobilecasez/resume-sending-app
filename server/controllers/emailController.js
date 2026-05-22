@@ -873,7 +873,8 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             
             // Designation
             doc.font('Lato').fontSize(11).fillColor('#666666');
-            doc.text('Project Manager', contentX, contentY, { lineBreak: false });
+            const designation = userData.designation || 'Applicant';
+            doc.text(designation, contentX, contentY, { lineBreak: false });
             
             contentY += 25;
             
@@ -1033,28 +1034,42 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
     const photoPath = user.photo_path ? path.join(__dirname, '../..', user.photo_path) : null;
     const signaturePath = user.signature_path ? path.join(__dirname, '../..', user.signature_path) : null;
 
-    // CRITICAL FIX: Convert markdown **bold** to HTML <strong>bold</strong>
-    // Mobile sends plain text with **markdown**, web sends HTML
-    // Ensure consistent HTML format for PDF generation
+    // Normalise cover letter to <p>-based HTML for consistent PDF rendering.
+    // Three possible input formats:
+    //   1. Plain text with **markdown** and \n\n paragraph breaks (sent by mobile / send-flow)
+    //   2. HTML with <br> line-breaks and <strong> bold but NO <p>/<div> (sent by web innerHTML)
+    //   3. Proper HTML already wrapped in <p> or <div> tags
     let coverLetterHtml = coverLetterHtmlOrText;
-    
-    // If text contains **markdown** but no HTML tags, convert markdown to HTML
+
     if (!coverLetterHtml.includes('<p') && !coverLetterHtml.includes('<div')) {
-        console.log('  📝 Converting plain text with markdown to HTML...');
-        
-        // Split by double newlines for paragraphs
-        const paragraphs = coverLetterHtml.split('\n\n').filter(p => p.trim());
-        
-        coverLetterHtml = paragraphs.map(para => {
-            // Convert **text** to <strong>text</strong>
-            let formatted = para.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-            // Wrap in paragraph tag
-            return `<p>${formatted}</p>`;
-        }).join('');
-        
-        console.log('  ✅ Converted to HTML with bold tags');
+        if (coverLetterHtml.includes('<br') || coverLetterHtml.includes('<strong')) {
+            // Format 2: web innerHTML — split on double-<br> for paragraphs,
+            // treat single <br> as a space so lines within a paragraph merge cleanly
+            console.log('  📝 Normalising <br>-based HTML to <p> paragraphs...');
+            coverLetterHtml = coverLetterHtml
+                // Double <br> (paragraph break) → paragraph separator sentinel
+                .replace(/(<br\s*\/?>){2,}/gi, '|||PARA|||')
+                // Single remaining <br> → space
+                .replace(/<br\s*\/?>/gi, ' ')
+                // Split on sentinels and wrap each block in <p>
+                .split('|||PARA|||')
+                .map(p => p.trim())
+                .filter(Boolean)
+                .map(p => `<p>${p}</p>`)
+                .join('');
+            console.log('  ✅ Converted <br>-HTML to <p> paragraphs');
+        } else {
+            // Format 1: plain text with **markdown** and \n\n paragraph breaks
+            console.log('  📝 Converting plain text with markdown to HTML...');
+            const paragraphs = coverLetterHtml.split('\n\n').filter(p => p.trim());
+            coverLetterHtml = paragraphs.map(para => {
+                let formatted = para.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                return `<p>${formatted}</p>`;
+            }).join('');
+            console.log('  ✅ Converted to HTML with bold tags');
+        }
     } else {
-        console.log('  ✅ Already HTML format');
+        console.log('  ✅ Already <p>-based HTML format');
     }
 
     // Generate PDF using HTML-based method (supports bold formatting)
@@ -2406,5 +2421,7 @@ module.exports = {
     sendApplications,
     sendSingleApplication,
     checkEmailReplies,
-    executeSendWork
+    executeSendWork,
+    createCoverLetterPDFFromHTML,
+    generateCoverLetterPDF
 };

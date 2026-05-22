@@ -5,6 +5,7 @@ const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
 const { generateCoverLetter: generateCoverLetterV2 } = require('../../ai-cover-letter-v2');
 const { notifyCoverLetterGenerated, notifyError } = require('./notificationsController');
 const jobService = require('../services/jobService');
+const { generateCoverLetterPDF: generateRichCoverLetterPDF } = require('./emailController');
 
 // Helper function: Check user credits
 async function checkUserCredits(userId, creditsRequired = 1) {
@@ -804,6 +805,12 @@ const generateCoverLetterPdf = async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
 
+        // Use the EXACT same PDF generator as the email attachment flow
+        console.log('🖨️ [PDF DOWNLOAD] generateRichCoverLetterPDF type:', typeof generateRichCoverLetterPDF);
+        console.log('🖨️ [PDF DOWNLOAD] companyName:', companyName, '| companyAddress:', companyAddress);
+        console.log('🖨️ [PDF DOWNLOAD] html length:', coverLetterHtml?.length, '| preview:', coverLetterHtml?.slice(0, 80));
+        const generateRichPDF = () => generateRichCoverLetterPDF(user, coverLetterHtml, companyName, companyAddress || '');
+
         if (useAsync) {
             const jobId = await jobService.createJob(userId, 'generate_pdf', {
                 coverLetterHtml, companyName, companyAddress
@@ -815,7 +822,7 @@ const generateCoverLetterPdf = async (req, res) => {
             (async () => {
                 try {
                     await jobService.startJob(jobId);
-                    const { filePath, fileName } = await generateCoverLetterPDF(user, coverLetterHtml, companyName, companyAddress);
+                    const { filePath, fileName } = await generateRichPDF();
                     const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
                     await jobService.completeJob(jobId, { success: true, downloadUrl, fileName });
                 } catch (err) {
@@ -823,7 +830,7 @@ const generateCoverLetterPdf = async (req, res) => {
                 }
             })();
         } else {
-            const { filePath, fileName } = await generateCoverLetterPDF(user, coverLetterHtml, companyName, companyAddress);
+            const { filePath, fileName } = await generateRichPDF();
             const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
             res.json({ success: true, downloadUrl, fileName });
         }

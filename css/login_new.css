@@ -120,7 +120,7 @@
     white-space: nowrap;
   }
   .stat-pill .num { font-weight: 700; color: var(--brand-bright); letter-spacing: -0.01em; }
-  .stat-pill .star { color: #FBBF24; font-size: 11px; }
+  .stat-pill .star { color: #FBBF24; font-size: 11px; font-weight: 500; }
   .stat-pill .live-dot {
     width: 7px; height: 7px; border-radius: 50%;
     background: var(--success);
@@ -178,6 +178,7 @@
   .attribution-text span {
     font-size: 13px; color: rgba(255,255,255,0.65);
     margin-top: 2px; display: block;
+    font-weight: 500;
   }
 
   /* ============ RIGHT FORM PANEL ============ */
@@ -214,6 +215,7 @@
     display: flex; justify-content: flex-end; align-items: center;
     gap: 10px;
     font-size: 13.5px; color: var(--text-muted);
+    font-weight: 500;
   }
   .form-top a {
     font-weight: 600; color: var(--text);
@@ -393,6 +395,7 @@
     font-size: 13px;
     gap: 12px;
     flex-wrap: wrap;
+    font-weight: 500;
   }
   .checkbox {
     display: flex; align-items: center; gap: 8px;
@@ -456,6 +459,7 @@
     text-align: center;
     font-size: 13.5px;
     color: var(--text-muted);
+    font-weight: 500;
   }
   .form-footer-hint a { color: var(--brand-bright); font-weight: 600; }
   .form-footer-hint a:hover { color: var(--brand); }
@@ -465,6 +469,7 @@
     display: flex; justify-content: space-between; align-items: center;
     flex-wrap: wrap; gap: 10px;
     font-size: 12px; color: var(--text-muted);
+    font-weight: 500;
   }
   .form-bottom a { color: var(--text-muted); transition: color 0.2s; }
   .form-bottom a:hover { color: var(--text-secondary); }
@@ -525,7 +530,7 @@
       flex-direction: column;
       gap: 6px;
     }
-    .stat-pill { padding: 6px 12px; font-size: 11.5px; }
+    .stat-pill { padding: 6px 12px; font-size: 11.5px; font-weight: 500; }
     /* Headline restored at this size — quote-icon stays hidden to save vertical space */
     .visual-bottom { bottom: 22px; left: 24px; right: 24px; }
     .visual-bottom .quote-icon { display: none; }
@@ -542,16 +547,16 @@
       max-width: 100%;
     }
     .attribution-avatar { width: 36px; height: 36px; }
-    .attribution-text strong { font-size: 13px; }
-    .attribution-text span { font-size: 11.5px; }
+    .attribution-text strong { font-size: 13px; font-weight: 500; }
+    .attribution-text span { font-size: 11.5px; font-weight: 500; }
     .form-panel { padding: 16px 20px 20px; }
-    .form-top { font-size: 12.5px; }
-    .form-top a { padding: 6px 12px; font-size: 12.5px; }
+    .form-top { font-size: 12.5px; font-weight: 500; }
+    .form-top a { padding: 6px 12px; font-size: 12.5px; font-weight: 500; }
     .form-wrap { padding: 12px 0; }
     .form-card { padding: 32px 24px; border-radius: 20px; }
     .form-card h1 { font-size: 24px; }
-    .oauth-btn { font-size: 13px; padding: 11px 8px; gap: 8px; }
-    .form-bottom { font-size: 11.5px; }
+    .oauth-btn { font-size: 13px; padding: 11px 8px; gap: 8px; font-weight: 500; }
+    .form-bottom { font-size: 11.5px; font-weight: 500; }
   }
 
   /* Mobile */
@@ -561,7 +566,7 @@
     .visual-inner { background-position: center 14%; }
     .visual-top { top: 16px; left: 20px; }
     .visual-stats { top: 16px; right: 20px; }
-    .stat-pill { padding: 5px 8px; font-size: 10px; }
+    .stat-pill { padding: 5px 8px; font-size: 10px; font-weight: 500; }
     /* Hide the second stat pill on tiny screens to avoid crowding */
     /* .visual-stats .stat-pill:nth-child(2) { display: none; } */
     .visual-bottom { bottom: 18px; left: 20px; right: 20px; }
@@ -577,12 +582,12 @@
     .form-wrap { padding: 10px 0; }
     .form-card { padding: 28px 20px; border-radius: 18px; }
     .form-card h1 { font-size: 22px; }
-    .form-card > .lede { font-size: 13.5px; margin-bottom: 22px; }
+    .form-card > .lede { font-size: 13.5px; margin-bottom: 22px; font-weight: 500; }
     /* OAuth: show text because we have space with only 2 columns now */
-    .oauth-btn { padding: 11px 0; font-size: 13px; gap: 8px; }
+    .oauth-btn { padding: 11px 0; font-size: 13px; gap: 8px; font-weight: 500; }
     .oauth-btn svg { width: 18px; height: 18px; }
-    .input-wrap input { font-size: 14px; padding: 12px 14px 12px 40px; }
-    .submit-btn { font-size: 14px; padding: 13px 20px; }
+    .input-wrap input { font-size: 14px; padding: 12px 14px 12px 40px; font-weight: 500; }
+    .submit-btn { font-size: 14px; padding: 13px 20px; font-weight: 500; }
     .form-bottom { justify-content: center; text-align: center; }
     .form-bottom div:first-child { width: 100%; text-align: center; }
   }

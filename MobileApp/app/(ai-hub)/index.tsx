@@ -503,6 +503,71 @@ const EmployerSection: React.FC<EmployerSectionProps> = ({
 };
 
 // ─────────────────────────────────────────────────────────────────
+// INDETERMINATE PROGRESS BAR — smooth shuttle animation, no flicker
+// ─────────────────────────────────────────────────────────────────
+
+function IndeterminateBar() {
+  const translateX = useRef(new Animated.Value(-1)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(translateX, {
+          toValue: 1,
+          duration: 1400,
+          useNativeDriver: true,
+        }),
+        Animated.timing(translateX, {
+          toValue: -1,
+          duration: 1400,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [translateX]);
+
+  return (
+    <View style={indeterminateStyles.track}>
+      <Animated.View
+        style={[
+          indeterminateStyles.fill,
+          {
+            transform: [
+              {
+                translateX: translateX.interpolate({
+                  inputRange: [-1, 1],
+                  outputRange: ['-100%' as unknown as number, '100%' as unknown as number],
+                }),
+              },
+            ],
+          },
+        ]}
+      />
+    </View>
+  );
+}
+
+const indeterminateStyles = StyleSheet.create({
+  track: {
+    height: 6,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 3,
+    marginBottom: 12,
+    overflow: 'hidden',
+  },
+  fill: {
+    position: 'absolute',
+    left: 0,
+    width: '50%',
+    height: '100%',
+    backgroundColor: '#06B6D4',
+    borderRadius: 3,
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────
 // MAIN SCREEN
 // ─────────────────────────────────────────────────────────────────
 
@@ -781,9 +846,7 @@ export default function AIHubScreen() {
                       <Text style={styles.loaderSub}>AI is scraping and matching jobs</Text>
                     </View>
                   </View>
-                  <View style={styles.loaderProgressBg}>
-                    <Animated.View style={[styles.loaderProgressFill, { width: '40%' }]} />
-                  </View>
+                  <IndeterminateBar />
                   <Text style={styles.loaderFootnote}>This can take a minute. You can safely leave this app, we will notify you when it's done.</Text>
                 </View>
               ))}

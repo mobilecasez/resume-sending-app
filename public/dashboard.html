@@ -1275,7 +1275,7 @@
     <!-- WOW.js -->
     <script src="/js/plugins/wow/wow.min.js"></script>
     <!-- App Components -->
-    <script src="/js/app-header.js"></script>
+    <script src="/js/app-header.js?v=3"></script>
     <script src="/js/app-footer.js"></script>
     <script src="/js/credit-validation.js"></script>
 
@@ -1288,8 +1288,8 @@
         // Authentication check - GLOBAL authToken variable
         let authToken = localStorage.getItem('authToken');
         if (!authToken) {
-            console.log('⚠️ No auth token found, redirecting to login');
-            window.location.href = '/login';
+            // Not logged in — send to landing page (replaces history so back button works)
+            window.location.replace('/index.html');
         } else {
             console.log('✅ Auth token found');
         }

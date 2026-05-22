@@ -34,6 +34,16 @@
         if (token && userData.email) {
             const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2) : 'U';
             
+            // Generate avatar HTML - use image if available, else initials
+            const avatarSrc = userData.photoPath
+                ? (userData.photoPath.startsWith('http://') || userData.photoPath.startsWith('https://')
+                    ? userData.photoPath
+                    : `/${userData.photoPath.replace(/^[\/\\]/, '')}`)
+                : null;
+            const avatarHtml = avatarSrc
+                ? `<img src="${avatarSrc}" alt="Profile" class="hdr-avatar" id="userAvatarNav" style="object-fit: cover;">`
+                : `<div class="hdr-avatar" id="userAvatarNav">${initials}</div>`;
+            
             // Logged in state
             authLinksDesktop = `
                 <!-- Credit Badge -->
@@ -41,12 +51,6 @@
                     <span>💳</span>
                     <span id="creditNumber">--</span>
                 </a>
-
-                <!-- User Profile -->
-                <div class="hdr-user-pill">
-                    <div class="hdr-avatar" id="userAvatarNav">${initials}</div>
-                    <span class="hdr-user-name" id="userNameNav">${userData.fullName || 'User'}</span>
-                </div>
 
                 <!-- Admin Button -->
                 <a href="/admin-packages" class="hdr-icon-btn" id="adminNavItem" style="display:none;" title="Admin Panel">
@@ -80,8 +84,8 @@
                 </div>
 
                 <!-- Profile -->
-                <a href="/profile" class="hdr-icon-btn" title="Profile">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
+                <a href="/profile" class="hdr-icon-btn hdr-profile-link" title="Profile Section" style="padding: 0; background: transparent; border-radius: 50%;">
+                    ${avatarHtml}
                 </a>
 
                 <!-- Logout -->
@@ -98,13 +102,13 @@
         } else {
             // Logged out state
             authLinksDesktop = `
-                <a href="/login.html" class="btn btn-ghost">Sign In</a>
-                <a href="/register.html" class="btn btn-primary">Free trial <span class="arrow">→</span></a>
+                <a href="/login" class="btn btn-ghost">Sign In</a>
+                <a href="/register" class="btn btn-primary">Free trial <span class="arrow">→</span></a>
             `;
             authLinksMobile = `
                 <div class="mobile-cta">
-                    <a href="/login.html" class="btn btn-ghost">Sign in</a>
-                    <a href="/register.html" class="btn btn-primary">Free trial</a>
+                    <a href="/login" class="btn btn-ghost">Sign in</a>
+                    <a href="/register" class="btn btn-primary">Free trial</a>
                 </div>
             `;
         }
@@ -175,18 +179,14 @@
     background: linear-gradient(135deg, #8B5CF6, #7C3AED); border-radius: 20px;
     font-size: 13px; font-weight: 700; color: #fff; text-decoration: none;
     box-shadow: 0 3px 10px rgba(139,92,246,0.3); transition: transform 0.15s;
+    margin-right: 6px;
 }
 .hdr-credit-badge:hover { transform: translateY(-1px); color: #fff; }
 
-.hdr-user-pill {
-    display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 4px;
-    background: rgba(255,255,255,0.08); border-radius: 20px; margin-right: 6px;
-}
 .hdr-avatar {
-    width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, #667eea, #764ba2);
-    display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 700;
+    width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #667eea, #764ba2);
+    display: flex; align-items: center; justify-content: center; color: #fff; font-size: 14px; font-weight: 700;
 }
-.hdr-user-name { font-size: 13px; font-weight: 600; color: #ECEFF7; white-space: nowrap; }
 
 .hdr-notif-dot {
     position: absolute; top: -3px; right: -3px; background: #ef4444; color: #fff;
@@ -270,40 +270,39 @@
 </style>
         `;
 
+        document.head.insertAdjacentHTML('beforeend', navStyle);
+
         const headerHTML = `
             <header class="nav">
                 <div class="nav-inner">
-                    <a href="/public/index_new.html" class="brand">
+                    <a href="/index.html" class="brand">
                         <span class="brand-icon"></span>
                         <span class="brand-text"><span class="cv">CV</span><span class="applyr">Applyr</span></span>
                     </a>
                     <div class="nav-links">
-                        <a href="/public/index_new.html">Home</a>
-                        <a href="/public/index_new.html#about">About</a>
-                        <a href="/public/index_new.html#services">Services</a>
-                        <a href="/public/index_new.html#pricing">Pricing</a>
-                        <a href="/public/index_new.html#contact">Contact</a>
+                        <a href="/index.html">Home</a>
+                        <a href="/index.html#why">Why CVApplyr</a>
+                        <a href="/index.html#features">Features</a>
+                        <a href="/index.html#pricing">Pricing</a>
+                        <a href="/index.html#contact">Contact</a>
                     </div>
                     <div class="nav-cta">
                         ${authLinksDesktop}
                     </div>
-                    <button class="mobile-menu-btn" onclick="window.appHeader.toggleMobileMenu()">
+                    <button class="menu-btn" id="menuBtn">
                         <span class="menu-btn-icon"></span>
                     </button>
                 </div>
             </header>
 
-            <nav class="mobile-nav" id="mobileNav">
-                <div class="mobile-nav-inner">
-                    <a href="/public/index_new.html" class="mobile-nav-link">Home</a>
-                    <a href="/public/index_new.html#about" class="mobile-nav-link">About</a>
-                    <a href="/public/index_new.html#services" class="mobile-nav-link">Services</a>
-                    <a href="/public/index_new.html#pricing" class="mobile-nav-link">Pricing</a>
-                    <a href="/public/index_new.html#contact" class="mobile-nav-link">Contact</a>
-                    <hr class="mobile-divider" />
-                    ${authLinksMobile}
-                </div>
-            </nav>
+            <div class="mobile-menu" id="mobileMenu">
+                <a href="/index.html" class="mobile-nav-link">Home</a>
+                <a href="/index.html#why" class="mobile-nav-link">Why CVApplyr</a>
+                <a href="/index.html#features" class="mobile-nav-link">Features</a>
+                <a href="/index.html#pricing" class="mobile-nav-link">Pricing</a>
+                <a href="/index.html#contact" class="mobile-nav-link">Contact</a>
+                ${authLinksMobile}
+            </div>
         `;
 
         targetElement.innerHTML = headerHTML;
@@ -342,7 +341,7 @@
         handleLogout: function() {
             localStorage.removeItem('authToken');
             localStorage.removeItem('userData');
-            window.location.href = '/login.html';
+            window.location.href = '/login';
         },
         toggleNotifications: function(e) {
             if (e) e.stopPropagation();

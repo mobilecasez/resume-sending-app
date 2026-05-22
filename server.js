@@ -706,9 +706,17 @@ app.get('/favicon.ico', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'favicon.ico'));
 });
 
-// Root route - serve about page as home page
+// Root route - serve landing page
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Auth pages
+app.get('/login', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+app.get('/register', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'register.html'));
 });
 
 // About page route
@@ -716,7 +724,7 @@ app.get('/about', (req, res) => {
     res.sendFile(path.join(__dirname, 'about.html'));
 });
 
-// Dashboard route - serve index.html
+// Dashboard route
 app.get('/dashboard', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
 });
@@ -1629,109 +1637,52 @@ async function createCoverLetter(companyName, position, recipientEmail) {
         color: rgb(0.15, 0.15, 0.2),
     });
 
-    // Photo circle at top (centered in sidebar)
-    const photoSize = 100;
+    // Photo/Initials circle at top
     const photoX = sidebarWidth / 2;
-    const photoY = pageHeight - 120;
-
-    // Add user photo (already circular from upload)
+    const photoY = 70;
+    const photoSize = 80;
+    
     if (photoPath) {
         try {
-            const photoBytes = await fs.readFile(photoPath);
-            let photoImage;
-            
-            // Try to embed as PNG (circular images are saved as PNG)
-            try {
-        photoImage = await pdfDoc.embedPng(photoBytes);
-            } catch (pngError) {
-        try {
-            photoImage = await pdfDoc.embedJpg(photoBytes);
-        } catch (jpgError) {
-            console.error('Could not embed photo:', jpgError);
-        }
-            }
-            
-            if (photoImage) {
-        // Simply draw the circular image - no masking needed
-        page.drawImage(photoImage, {
-            x: photoX - photoSize / 2,
-            y: photoY,
-            width: photoSize,
-            height: photoSize,
-        });
-            } else {
-        throw new Error('Could not load photo');
-            }
-        } catch (error) {
-            console.error('Error loading photo, using initials:', error.message);
-            // Fallback: Draw circle with initials
-            page.drawCircle({
-        x: photoX,
-        y: photoY + photoSize / 2,
-        size: photoSize / 2,
-        borderColor: rgb(1, 1, 1),
-        borderWidth: 2,
-        color: rgb(0.25, 0.25, 0.3),
+            // Clip to circle for circular profile photo
+            doc.save();
+            doc.circle(photoX, photoY, photoSize/2).clip();
+            doc.image(photoPath, photoX - photoSize/2, photoY - photoSize/2, {
+                width: photoSize,
+                height: photoSize
             });
-            
+            doc.restore();
+        } catch (e) {
+            // Draw initials circle if photo fails
+            doc.circle(photoX, photoY, photoSize/2).stroke('#ffffff');
             const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
-            const initialsWidth = helveticaBold.widthOfTextAtSize(initials, 24);
-            page.drawText(initials, {
-        x: photoX - initialsWidth / 2,
-        y: photoY + photoSize / 2 - 8,
-        size: 24,
-        font: helveticaBold,
-        color: rgb(1, 1, 1),
-            });
+            doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+            doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
         }
     } else {
         // No photo - draw circle with initials
-        page.drawCircle({
-            x: photoX,
-            y: photoY + photoSize / 2,
-            size: photoSize / 2,
-            borderColor: rgb(1, 1, 1),
-            borderWidth: 2,
-            color: rgb(0.25, 0.25, 0.3),
-        });
-        
+        doc.circle(photoX, photoY, photoSize/2).lineWidth(2).stroke('#ffffff');
         const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
-        const initialsWidth = helveticaBold.widthOfTextAtSize(initials, 24);
-        page.drawText(initials, {
-            x: photoX - initialsWidth / 2,
-            y: photoY + photoSize / 2 - 8,
-            size: 24,
-            font: helveticaBold,
-            color: rgb(1, 1, 1),
-        });
+        doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+        doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
     }
 
     // Sidebar sections - START LOWER (gap after photo)
-    let sidebarY = photoY - 40;
-    const maxSidebarWidth = sidebarWidth - 40;
-
+    let sidebarY = photoY + photoSize/2 + 40;
+    
     // TO section
-    page.drawText('TO', {
-        x: 20,
-        y: sidebarY,
-        size: 11,
-        font: helveticaBold,
-        color: rgb(1, 1, 1),
-    });
-    sidebarY -= 22;
-    page.drawText('Hiring Manager', {
-        x: 20,
-        y: sidebarY,
-        size: 10,
-        font: helvetica,
-        color: rgb(1, 1, 1),
-    });
-    sidebarY -= 16;
+    doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+    doc.text('TO', 20, sidebarY);
+    sidebarY += 20;
+    
+    doc.font('Lato').fontSize(10).fillColor('#ffffff');
+    doc.text('Hiring Manager,', 20, sidebarY);
+    sidebarY += 16;
     
     // Wrap company name if too long
     const companyNameLines = wrapText(companyName, maxSidebarWidth, helvetica, 10);
     for (const line of companyNameLines) {
-        page.drawText(line, {
+        doc.text(line, {
             x: 20,
             y: sidebarY,
             size: 10,
@@ -1744,49 +1695,24 @@ async function createCoverLetter(companyName, position, recipientEmail) {
     sidebarY -= 4;
     
     // Separator line after TO section
-    page.drawLine({
-        start: { x: 20, y: sidebarY },
-        end: { x: sidebarWidth - 20, y: sidebarY },
-        thickness: 0.5,
-        color: rgb(0.5, 0.5, 0.5),
-    });
-
-    sidebarY -= 25;
-
-    // FROM section
-    page.drawText('FROM', {
-        x: 20,
-        y: sidebarY,
-        size: 11,
-        font: helveticaBold,
-        color: rgb(1, 1, 1),
-    });
-    sidebarY -= 22;
+    doc.moveTo(20, sidebarY).lineTo(sidebarWidth - 20, sidebarY).lineWidth(0.5).stroke('#808080');
+    sidebarY += 20;
     
-    const nameLines = wrapText(userData.fullName || 'Applicant', maxSidebarWidth, helvetica, 10);
-    for (const line of nameLines) {
-        page.drawText(line.toUpperCase(), {
-            x: 20,
-            y: sidebarY,
-            size: 10,
-            font: helvetica,
-            color: rgb(1, 1, 1),
-        });
-        sidebarY -= 16;
-    }
-
-    sidebarY -= 20;
+    // FROM section
+    doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+    doc.text('FROM', 20, sidebarY);
+    sidebarY += 20;
+    
+    doc.font('Lato').fontSize(10).fillColor('#ffffff');
+    doc.text((userData.fullName || 'Applicant').toUpperCase(), 20, sidebarY, { width: sidebarWidth - 40 });
+    sidebarY += 20;
+    
+    sidebarY += 10;
     
     // Separator line after FROM section
-    page.drawLine({
-        start: { x: 20, y: sidebarY },
-        end: { x: sidebarWidth - 20, y: sidebarY },
-        thickness: 0.5,
-        color: rgb(0.5, 0.5, 0.5),
-    });
-
-    sidebarY -= 25;
-
+    doc.moveTo(20, sidebarY).lineTo(sidebarWidth - 20, sidebarY).lineWidth(0.5).stroke('#808080');
+    sidebarY += 20;
+    
     // DATE section
     const today = new Date();
     const dateStr = today.toLocaleDateString('en-US', { 
@@ -1794,67 +1720,34 @@ async function createCoverLetter(companyName, position, recipientEmail) {
         day: '2-digit', 
         year: 'numeric' 
     }).replace(',', '');
-
-    page.drawText('DATE', {
-        x: 20,
-        y: sidebarY,
-        size: 11,
-        font: helveticaBold,
-        color: rgb(1, 1, 1),
-    });
-    sidebarY -= 22;
-    page.drawText(dateStr, {
-        x: 20,
-        y: sidebarY,
-        size: 10,
-        font: helvetica,
-        color: rgb(1, 1, 1),
-    });
-
+    
+    doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+    doc.text('DATE', 20, sidebarY);
+    sidebarY += 20;
+    
+    doc.font('Lato').fontSize(10).fillColor('#ffffff');
+    doc.text(dateStr, 20, sidebarY);
+    
     // Contact info at bottom of sidebar
     const contactY = 100;
+    doc.font('Lato').fontSize(8).fillColor('#ffffff');
     if (userData.email) {
-        page.drawText(userData.email, {
-            x: 20,
-            y: contactY,
-            size: 8,
-            font: helvetica,
-            color: rgb(1, 1, 1),
-        });
+        doc.text(userData.email, 20, contactY, { lineBreak: false });
     }
     if (userData.phoneNumber) {
-        page.drawText(userData.phoneNumber, {
-            x: 20,
-            y: contactY - 15,
-            size: 8,
-            font: helvetica,
-            color: rgb(1, 1, 1),
-        });
+        doc.text(userData.phoneNumber, 20, contactY + 12, { lineBreak: false });
     }
     if (userData.city) {
-        page.drawText(userData.city, {
-            x: 20,
-            y: contactY - 30,
-            size: 8,
-            font: helvetica,
-            color: rgb(1, 1, 1),
-        });
+        doc.text(userData.city, 20, contactY + 24, { lineBreak: false });
     }
     if (userData.country) {
-        page.drawText(userData.country, {
-            x: 20,
-            y: contactY - 45,
-            size: 8,
-            font: helvetica,
-            color: rgb(1, 1, 1),
-        });
+        doc.text(userData.country, 20, contactY + 36, { lineBreak: false });
     }
-
+    
     // RIGHT CONTENT AREA
     const contentX = sidebarWidth + 40;
-    const contentWidth = pageWidth - sidebarWidth - 80;
-    let contentY = pageHeight - 80;
-
+    let contentY = 50;
+    
     // Header with name (LEFT) and contact details (RIGHT) on SAME ROW
     const headerY = contentY;
     const nameText = (userData.fullName || 'APPLICANT').toUpperCase().trim();
@@ -1911,7 +1804,7 @@ async function createCoverLetter(companyName, position, recipientEmail) {
     contentY = headerY - 15;
     
     // Designation below name - EXACTLY at contentX (same as name)
-    const designation = 'Project Manager';
+    const designation = userData.designation || 'Applicant';
     page.drawText(designation, {
         x: contentX,
         y: contentY,
@@ -2069,13 +1962,13 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             
             // Estimate paragraph heights (rough calculation)
             for (const paraHtml of paragraphs) {
-        const plainText = cheerio.load(`<div>${paraHtml}</div>`).text().trim();
-        if (!plainText) continue;
-        
-        // Estimate lines needed (approx 80 chars per line at font size 10)
-        const charsPerLine = 75;
-        const numLines = Math.ceil(plainText.length / charsPerLine);
-        estimatedContentHeight += (numLines * lineHeight) + 10; // + paragraph spacing
+                const plainText = cheerio.load(`<div>${paraHtml}</div>`).text().trim();
+                if (!plainText) continue;
+                
+                // Estimate lines needed (approx 80 chars per line at font size 10)
+                const charsPerLine = 75;
+                const numLines = Math.ceil(plainText.length / charsPerLine);
+                estimatedContentHeight += (numLines * lineHeight) + 10; // + paragraph spacing
             }
             
             estimatedContentHeight += 10; // Before closing
@@ -2090,9 +1983,9 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             
             // Create PDF with calculated size - autoFirstPage false to control page creation
             const doc = new PDFKit({
-        size: [pageWidth, pageHeight],
-        margins: { top: 0, bottom: 0, left: 0, right: 0 },
-        autoFirstPage: false
+                size: [pageWidth, pageHeight],
+                margins: { top: 0, bottom: 0, left: 0, right: 0 },
+                autoFirstPage: false
             });
             
             // Add single page with exact size
@@ -2117,28 +2010,28 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             const photoSize = 80;
             
             if (photoPath) {
-        try {
-            // Clip to circle for circular profile photo
-            doc.save();
-            doc.circle(photoX, photoY, photoSize/2).clip();
-            doc.image(photoPath, photoX - photoSize/2, photoY - photoSize/2, {
-                width: photoSize,
-                height: photoSize
-            });
-            doc.restore();
-        } catch (e) {
-            // Draw initials circle if photo fails
-            doc.circle(photoX, photoY, photoSize/2).stroke('#ffffff');
-            const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
-            doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
-            doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
-        }
+                try {
+                    // Clip to circle for circular profile photo
+                    doc.save();
+                    doc.circle(photoX, photoY, photoSize/2).clip();
+                    doc.image(photoPath, photoX - photoSize/2, photoY - photoSize/2, {
+                        width: photoSize,
+                        height: photoSize
+                    });
+                    doc.restore();
+                } catch (e) {
+                    // Draw initials circle if photo fails
+                    doc.circle(photoX, photoY, photoSize/2).stroke('#ffffff');
+                    const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
+                    doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+                    doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
+                }
             } else {
-        // No photo - draw circle with initials
-        doc.circle(photoX, photoY, photoSize/2).lineWidth(2).stroke('#ffffff');
-        const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
-        doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
-        doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
+                // No photo - draw circle with initials
+                doc.circle(photoX, photoY, photoSize/2).lineWidth(2).stroke('#ffffff');
+                const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
+                doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+                doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
             }
             
             let sidebarY = photoY + photoSize/2 + 40;
@@ -2178,9 +2071,9 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             // DATE section
             const today = new Date();
             const dateStr = today.toLocaleDateString('en-US', { 
-        month: 'short', 
-        day: '2-digit', 
-        year: 'numeric' 
+                month: 'short', 
+                day: '2-digit', 
+                year: 'numeric' 
             }).replace(',', '');
             
             doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
@@ -2194,16 +2087,16 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             const contactY = 100;
             doc.font('Lato').fontSize(8).fillColor('#ffffff');
             if (userData.email) {
-        doc.text(userData.email, 20, contactY, { lineBreak: false });
+                doc.text(userData.email, 20, contactY, { lineBreak: false });
             }
             if (userData.phoneNumber) {
-        doc.text(userData.phoneNumber, 20, contactY + 12, { lineBreak: false });
+                doc.text(userData.phoneNumber, 20, contactY + 12, { lineBreak: false });
             }
             if (userData.city) {
-        doc.text(userData.city, 20, contactY + 24, { lineBreak: false });
+                doc.text(userData.city, 20, contactY + 24, { lineBreak: false });
             }
             if (userData.country) {
-        doc.text(userData.country, 20, contactY + 36, { lineBreak: false });
+                doc.text(userData.country, 20, contactY + 36, { lineBreak: false });
             }
             
             // RIGHT CONTENT AREA
@@ -2243,7 +2136,8 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             // Designation below name
             contentY = headerY + 22;
             doc.font('Lato').fontSize(11).fillColor('#666666');
-            doc.text('Project Manager', contentX, contentY, { lineBreak: false });
+            const designation = userData.designation || 'Applicant';
+            doc.text(designation, contentX, contentY, { lineBreak: false });
 
             contentY += 25;
 
@@ -2258,17 +2152,84 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
 
             contentY += 40;
 
-            // Cover letter body — extract plain text from the parsed HTML paragraphs
-            doc.font('Lato').fontSize(10).fillColor('#000000');
+            // Helper function to extract text segments with bold info
+            function extractTextSegments(node, segments, inheritBold = false) {
+                if (node.type === 'text') {
+                    const text = node.data;
+                    if (text) {
+                        segments.push({ text: text, bold: inheritBold });
+                    }
+                } else if (node.type === 'tag') {
+                    const isBold = inheritBold || node.name === 'strong' || node.name === 'b';
+                    if (node.children) {
+                        node.children.forEach(child => {
+                            extractTextSegments(child, segments, isBold);
+                        });
+                    }
+                }
+            }
+            
+            // Process paragraphs for rendering
             for (const paraHtml of paragraphs) {
-                const plainText = cheerio.load(`<div>${paraHtml}</div>`).text().trim();
-                if (!plainText) continue;
-                doc.text(plainText, contentX, contentY, {
-                    width: contentWidth,
-                    lineBreak: true,
-                    paragraphGap: 0
+                // Parse this paragraph for bold/regular segments
+                const $para = cheerio.load(`<div>${paraHtml.replace(/<\/?p[^>]*>/gi, '')}</div>`);  // strip <p> wrapper, keep inner HTML
+                const segments = [];
+                
+                $para('div').contents().each((i, elem) => {
+                    extractTextSegments(elem, segments, false);
                 });
-                contentY = doc.y + 8;
+                
+                // If no segments found, try plain text
+                if (segments.length === 0) {
+                    const plainText = $para.text().trim();
+                    if (plainText) {
+                        segments.push({ text: plainText, bold: false });
+                    }
+                }
+                
+                if (segments.length === 0) continue;
+                
+                // Render segments with proper formatting
+                let currentX = contentX;
+                let lineStartY = contentY;
+                const maxX = contentX + contentWidth;
+                
+                for (const segment of segments) {
+                    const fontName = segment.bold ? 'Lato-Bold' : 'Lato';
+                    doc.font(fontName).fontSize(10).fillColor('#000000');
+                    
+                    // Split text into words
+                    const words = segment.text.split(/(\s+)/);
+                    
+                    for (const word of words) {
+                        if (!word) continue;
+                        
+                        // Skip leading spaces at the start of a new line
+                        if (currentX === contentX && /^\s+$/.test(word)) {
+                            continue;
+                        }
+                        
+                        const wordWidth = doc.widthOfString(word);
+                        
+                        // Check if word fits on current line
+                        if (currentX + wordWidth > maxX && currentX > contentX) {
+                            // Move to next line
+                            currentX = contentX;
+                            lineStartY += lineHeight;
+                            
+                            // Skip this word if it's just whitespace (don't render space at line start)
+                            if (/^\s+$/.test(word)) {
+                                continue;
+                            }
+                        }
+                        
+                        // Draw the word
+                        doc.text(word, currentX, lineStartY, { lineBreak: false, continued: false });
+                        currentX += wordWidth;
+                    }
+                }
+                
+                contentY = lineStartY + lineHeight + 10;
             }
 
             // Closing
@@ -2290,18 +2251,20 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
 
             // Applicant name
             doc.font('Lato-Bold').fontSize(10).fillColor('#000000');
-            doc.text((userData.fullName || 'APPLICANT').toUpperCase(), contentX, contentY, { lineBreak: false });
-
-            // Finalize PDF and wait for the write stream to flush
-            await new Promise((streamResolve, streamReject) => {
-                doc.end();
-                writeStream.on('finish', streamResolve);
-                writeStream.on('error', streamReject);
+            doc.text((userData.fullName || 'APPLICANT').toUpperCase(), contentX, contentY);
+            
+            // Finalize PDF
+            doc.end();
+            
+            writeStream.on('finish', () => {
+                console.log(`✅ PDF created with PDFKit: ${fileName}`);
+                resolve({ filePath, fileName });
             });
-
-            console.log(`✅ PDF created: ${fileName}`);
-
-            resolve({ filePath, fileName });
+            
+            writeStream.on('error', (err) => {
+                reject(err);
+            });
+            
         } catch (error) {
             reject(error);
         }
@@ -2538,7 +2501,7 @@ async function createCoverLetterPDF(userData, coverLetterText, companyName, phot
     contentY = headerY - 15;
     
     // Designation below name - EXACTLY at contentX (same as name)
-    const designation = 'Project Manager';
+    const designation = userData.designation || 'Applicant';
     page.drawText(designation, {
         x: contentX,
         y: contentY,
@@ -3097,55 +3060,9 @@ COMMENTED OUT DUPLICATE ENDPOINT - END */
 
 // API endpoint to generate cover letter PDF for download
 app.post('/api/generate-cover-letter-pdf', authenticateToken, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { coverLetterHtml, companyName, companyAddress } = req.body;
-
-        console.log('Generate PDF request:', { userId, companyName, companyAddress });
-
-        // Get user profile
-        try {
-            const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
-            
-            if (!user) {
-        console.error('User not found:', userId);
-        return res.status(500).json({ error: 'User not found' });
-            }
-
-            try {
-        // Use common PDF generation function
-        const { filePath, fileName } = await generateCoverLetterPDF(
-            user,
-            coverLetterHtml,
-            companyName,
-            companyAddress
-        );
-
-        console.log(`📄 Generated PDF: ${fileName}`);
-
-        // Generate download URL
-        const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
-
-        res.json({
-            success: true,
-            downloadUrl: downloadUrl,
-            fileName: fileName
-        });
-
-            } catch (error) {
-        console.error('Error generating PDF:', error);
-        console.error('Error stack:', error.stack);
-        return res.status(500).json({ error: error.message || 'Failed to generate PDF' });
-            }
-        } catch (error) {
-            console.error('Database error:', error);
-            return res.status(500).json({ error: 'Failed to load user profile' });
-        }
-    } catch (error) {
-        console.error('Server error:', error);
-        console.error('Server error stack:', error.stack);
-        return res.status(500).json({ error: error.message || 'Server error' });
-    }
+    // REDIRECT to coverLetterController to ensure we use the same refined logic as the send-flow
+    const coverLetterController = require('./server/controllers/coverLetterController');
+    return coverLetterController.generateCoverLetterPdf(req, res);
 });
 
 // Helper function to format cover letter with HTML highlighting
@@ -3215,28 +3132,38 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
     const photoPath = user.photo_path ? path.join(__dirname, user.photo_path) : null;
     const signaturePath = user.signature_path ? path.join(__dirname, user.signature_path) : null;
 
-    // CRITICAL FIX: Convert markdown **bold** to HTML <strong>bold</strong>
-    // Mobile sends plain text with **markdown**, web sends HTML
-    // Ensure consistent HTML format for PDF generation
+    // Normalise cover letter to <p>-based HTML for consistent PDF rendering.
+    // Three possible input formats:
+    //   1. Plain text with **markdown** and \n\n paragraph breaks (mobile / send-flow)
+    //   2. HTML with <br> line-breaks and <strong> bold but NO <p>/<div> (web innerHTML)
+    //   3. Proper HTML already wrapped in <p> or <div> tags
     let coverLetterHtml = coverLetterHtmlOrText;
-    
-    // If text contains **markdown** but no HTML tags, convert markdown to HTML
+
     if (!coverLetterHtml.includes('<p') && !coverLetterHtml.includes('<div')) {
-        console.log('  📝 Converting plain text with markdown to HTML...');
-        
-        // Split by double newlines for paragraphs
-        const paragraphs = coverLetterHtml.split('\n\n').filter(p => p.trim());
-        
-        coverLetterHtml = paragraphs.map(para => {
-            // Convert **text** to <strong>text</strong>
-            let formatted = para.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-            // Wrap in paragraph tag
-            return `<p>${formatted}</p>`;
-        }).join('');
-        
-        console.log('  ✅ Converted to HTML with bold tags');
+        if (coverLetterHtml.includes('<br') || coverLetterHtml.includes('<strong')) {
+            // Format 2: web innerHTML — double-<br> = paragraph break, single <br> = space
+            console.log('  📝 Normalising <br>-based HTML to <p> paragraphs...');
+            coverLetterHtml = coverLetterHtml
+                .replace(/(<br\s*\/?>){2,}/gi, '|||PARA|||')
+                .replace(/<br\s*\/?>/gi, ' ')
+                .split('|||PARA|||')
+                .map(p => p.trim())
+                .filter(Boolean)
+                .map(p => `<p>${p}</p>`)
+                .join('');
+            console.log('  ✅ Converted <br>-HTML to <p> paragraphs');
+        } else {
+            // Format 1: plain text with **markdown** and \n\n paragraph breaks
+            console.log('  📝 Converting plain text with markdown to HTML...');
+            const paragraphs = coverLetterHtml.split('\n\n').filter(p => p.trim());
+            coverLetterHtml = paragraphs.map(para => {
+                let formatted = para.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                return `<p>${formatted}</p>`;
+            }).join('');
+            console.log('  ✅ Converted to HTML with bold tags');
+        }
     } else {
-        console.log('  ✅ Already HTML format');
+        console.log('  ✅ Already <p>-based HTML format');
     }
 
     // Generate PDF using HTML-based method (supports bold formatting)

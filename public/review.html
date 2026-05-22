@@ -802,7 +802,7 @@
             }
         }
     </style>
-    <script src="/js/app-header.js"></script>
+    <script src="/js/app-header.js?v=3"></script>
     <script src="/js/credit-validation.js"></script>
     <script src="/js/app-footer.js"></script>
 </head>
@@ -1071,7 +1071,7 @@
                 { time: 0, message: '🔍 Fetching your profile details...' },
                 { time: 3000, message: `🌐 Researching about ${companyName}...` },
                 { time: 8000, message: `🏢 Analyzing company culture and requirements...` },
-                { time: 15000, message: '🤝 Matching your skills with job requirements...' },
+                { time: 15000, message: '🤝 Fetching skills & matching requirements...' },
                 { time: 22000, message: '✍️ Crafting your personalized cover letter...' },
                 { time: 30000, message: '✨ Adding final touches and formatting...' },
                 { time: 40000, message: '⏳ Almost done, finalizing content...' }
@@ -1588,6 +1588,49 @@
             }
         }
 
+        async function pollJobUntilDone(jobId, intervalMs = 2000, timeoutMs = 120000) {
+            const start = Date.now();
+            while (true) {
+                if (isCancelled) {
+                    hideLoading();
+                    return null;
+                }
+                if (Date.now() - start > timeoutMs) {
+                    hideLoading();
+                    showToast('Cover letter generation timed out. Please try again.', 'error');
+                    return null;
+                }
+                await new Promise(r => setTimeout(r, intervalMs));
+                if (isCancelled) { hideLoading(); return null; }
+
+                try {
+                    const res = await fetch(`/api/job-status/${jobId}`, {
+                        headers: { 'Authorization': `Bearer ${token}` },
+                        signal: abortController.signal
+                    });
+                    if (!res.ok) {
+                        hideLoading();
+                        showToast('Failed to check generation status.', 'error');
+                        return null;
+                    }
+                    const job = await res.json();
+                    console.log(`🔄 Job ${jobId} status: ${job.status} (${job.progress || 0}%)`);
+
+                    if (job.status === 'completed' && job.data) {
+                        return job.data;
+                    }
+                    if (job.status === 'failed') {
+                        hideLoading();
+                        showToast(job.error || 'Cover letter generation failed. Please try again.', 'error');
+                        return null;
+                    }
+                } catch (err) {
+                    if (err.name === 'AbortError') { hideLoading(); return null; }
+                    console.error('Polling error:', err);
+                }
+            }
+        }
+
         async function generateCoverLetter(index, isRegenerate = false) {
             const recipient = recipients[index];
             const loading = document.querySelector(`#tab-${index} .loading`);
@@ -1645,7 +1688,14 @@
                     throw new Error(errorData.message || errorData.error || 'Failed to generate cover letter');
                 }
 
-                const data = await response.json();
+                let data = await response.json();
+
+                // Handle async job mode (202 response with jobId)
+                if (response.status === 202 && data.jobId) {
+                    console.log('⏳ Async job started:', data.jobId);
+                    data = await pollJobUntilDone(data.jobId);
+                    if (!data) return; // cancelled or failed
+                }
 
                 console.log('📦 API Response data:', data);
                 console.log('📍 Locations in response:', data.locations?.length || 0);
@@ -1738,6 +1788,10 @@
                     formContent.style.display = 'block';
                 }
                 hideLoading();
+                
+                if (!isCancelled) {
+                    showToast('Cover Letter Generated Successfully!', 'success');
+                }
                 return true; // Indicate success
 
             } catch (error) {
@@ -1853,19 +1907,21 @@
                 }
 
                 // Check response status FIRST before parsing
-                if (!response.ok) {
+                if (response.status !== 200 && response.status !== 202) {
                     const errorText = await response.text();
                     throw new Error(`Server error: ${response.status} - ${errorText}`);
                 }
 
-                // Try to parse JSON, but treat 200 as success even if parsing fails
-                let responseData;
-                try {
-                    const responseText = await response.text();
-                    responseData = JSON.parse(responseText);
-                    console.log('✅ Response data:', responseData);
-                } catch (jsonError) {
-                    console.log('✅ Email sent (response OK despite parse error)');
+                let responseData = await response.json();
+                console.log('✅ Response data:', responseData);
+
+                // Handle async 202 job mode — poll until the job completes
+                if (response.status === 202 && responseData.jobId) {
+                    responseData = await pollJobUntilDone(responseData.jobId);
+                    if (!responseData) return;
+                }
+
+                if (!responseData) {
                     responseData = { method: 'email', success: true };
                 }
 
@@ -1903,7 +1959,9 @@
                 console.log('✅ Application sent successfully via:', responseData.method);
                 if (!skipLoadingUI) {
                     hideLoading();
-                    showToast(`Application sent successfully via ${responseData.method}!`, 'success');
+                    // Provide a cleaner fallback if method is missing to avoid "via undefined"
+                    const method = responseData.method || 'email';
+                    showToast(`Application sent successfully via ${method}!`, 'success');
                 }
                 
                 // Disable send button
@@ -1967,9 +2025,15 @@
                     })
                 });
 
-                if (!response.ok) throw new Error('Failed to generate PDF');
+                if (response.status !== 200 && response.status !== 202) throw new Error('Failed to generate PDF');
 
-                const data = await response.json();
+                let data = await response.json();
+
+                // Handle async 202 job mode
+                if (response.status === 202 && data.jobId) {
+                    data = await pollJobUntilDone(data.jobId);
+                    if (!data) return;
+                }
                 
                 // Download the PDF using fetch with auth token
                 const downloadResponse = await fetch(data.downloadUrl, {
@@ -2206,7 +2270,7 @@
                     }
 
                     const status = await statusResp.json();
-                    updateLoadingMessage(`Generating cover letters... ${status.progress || 0}%`);
+                    updateLoadingMessage(`Generating cover letters... please wait`);
 
                     if (status.status === 'completed') {
                         finalData = status.data;

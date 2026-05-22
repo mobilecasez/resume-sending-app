@@ -219,6 +219,7 @@ const login = async (req, res) => {
                 id: user.id,
                 fullName: user.full_name,
                 email: user.email,
+                photoPath: user.photo_path || null,
                 oauth_provider: user.oauth_provider || null,
                 provider: user.oauth_provider || 'email' // alias for mobile app
             }
@@ -250,6 +251,7 @@ const googleCallback = (req, res) => {
     const userData = {
         id: req.user.id,
         fullName: req.user.full_name,
+        photoPath: req.user.photo_path || null,
         email: req.user.email,
         provider: 'google',
         oauth_provider: 'google'
@@ -284,6 +286,7 @@ const googleMobileCallback = (req, res) => {
     const userData = {
         id: req.user.id,
         fullName: req.user.full_name,
+        photoPath: req.user.photo_path || null,
         email: req.user.email,
         provider: 'google',
         oauth_provider: 'google'
@@ -625,6 +628,7 @@ const microsoftCallback = (req, res) => {
     const userData = {
         id: req.user.id,
         fullName: req.user.full_name,
+        photoPath: req.user.photo_path || null,
         email: req.user.email,
         provider: 'microsoft',
         oauth_provider: 'microsoft'
@@ -854,6 +858,7 @@ const linkedinCallback = (req, res) => {
     res.redirect(`/auth-success.html?token=${token}&user=${encodeURIComponent(JSON.stringify({
         id: req.user.id,
         fullName: req.user.full_name,
+        photoPath: req.user.photo_path || null,
         email: req.user.email
     }))}`);
 };

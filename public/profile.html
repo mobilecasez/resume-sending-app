@@ -1288,7 +1288,7 @@
     <script src="/bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
     
     <!-- Header & Footer Components -->
-    <script src="/js/app-header.js"></script>
+    <script src="/js/app-header.js?v=3"></script>
     <script src="/js/app-footer.js"></script>
 
     <script>
@@ -1379,7 +1379,23 @@
 
                 if (response.ok) {
                     const data = await response.json();
-                    const profile = data.profile;
+                    const profile = data.profile || data; // Handle both wrapper and direct object responses
+                    
+                    // Update userData in localStorage to keep avatar sync
+                    try {
+                        const existingUserData = JSON.parse(localStorage.getItem('userData') || '{}');
+                        const updatedUserData = {
+                            ...existingUserData,
+                            fullName: profile.fullName || existingUserData.fullName,
+                            email: profile.email || existingUserData.email,
+                            photoPath: profile.photoPath || existingUserData.photoPath
+                        };
+                        localStorage.setItem('userData', JSON.stringify(updatedUserData));
+                        // Re-render header if possible
+                        if (window.insertAppHeader) window.insertAppHeader();
+                    } catch (e) {
+                        console.error('Error updating userData from profile:', e);
+                    }
                     
                     // Update user details form
                     document.getElementById('fullName').value = profile.fullName || '';

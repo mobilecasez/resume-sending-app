@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, SafeAreaView, Animated, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking, AppState } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, ImageBackground, SafeAreaView, Animated, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking, AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView } from 'react-native-webview';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -78,171 +78,20 @@ let fetchProducts = async () => [];
 let requestPurchase = async () => null;
 let finishTransaction = async () => {};
 let purchaseUpdatedListener = () => createNoopSubscription();
-let purchaseErrorListener = () => createNoopSubscription();
-let endConnection = async () => {};
-let getReceiptIOS = async () => null;
-let getAvailablePurchases = async () => [];
 
-if (!isExpoGo) {
-  try {
-    const razorpayModule = require('react-native-razorpay');
-    RazorpayCheckout = razorpayModule.default || razorpayModule;
-  } catch (error) {
-    console.warn('Razorpay native module unavailable:', error?.message || error);
-  }
-
-  try {
-    const iapModule = require('react-native-iap');
-    nativeIapAvailable = true;
-
-    initConnection = iapModule.initConnection;
-    fetchProducts = iapModule.fetchProducts;
-    requestPurchase = iapModule.requestPurchase;
-    finishTransaction = iapModule.finishTransaction;
-    purchaseUpdatedListener = iapModule.purchaseUpdatedListener;
-    purchaseErrorListener = iapModule.purchaseErrorListener;
-    endConnection = iapModule.endConnection;
-    getReceiptIOS = iapModule.getReceiptIOS;
-    getAvailablePurchases = iapModule.getAvailablePurchases;
-  } catch (error) {
-    console.warn('IAP native module unavailable:', error?.message || error);
-  }
-}
-
-// Component to render formatted HTML cover letter with bold text
-// Helper function to normalize HTML - convert <br><br> to proper paragraphs
 const normalizeHTML = (html) => {
-  if (!html) return '<p></p>';
-  
-  // Remove wrapping <p> tags if the entire content is in one <p>
-  let content = html.trim();
-  if (content.startsWith('<p>') && content.endsWith('</p>')) {
-    content = content.slice(3, -4); // Remove opening <p> and closing </p>
-  }
-  
-  // Split by <br><br> or <br/><br/> or <br /><br /> to create paragraphs
-  const paragraphs = content.split(/<br\s*\/?>\s*<br\s*\/?>/gi);
-  
-  // Wrap each paragraph in <p> tags, preserving internal formatting
-  const normalized = paragraphs
-    .map(p => p.trim())
-    .filter(p => p.length > 0)
-    .map(p => `<p>${p}</p>`)
-    .join('\n');
-  
-  console.log('Normalized HTML (first 300 chars):', normalized.substring(0, 300));
-  return normalized || '<p></p>';
+  if (!html) return '';
+  let result = html
+    .replace(/<br\s*\/?>\s*<br\s*\/?>/gi, '</p><p>')
+    .replace(/\n\n+/g, '</p><p>')
+    .replace(/\n/g, '<br/>');
+  if (!result.startsWith('<p>')) result = '<p>' + result + '</p>';
+  return result.replace(/<p><\/p>/gi, '');
 };
 
-// HTML Content Display Component
-const HTMLContentViewer = ({ htmlContent, onEdit }) => {
+const RichTextEditorWebView = ({ initialHtml, onContentChange }) => {
   const webViewRef = useRef(null);
 
-  // Debug log to see what HTML we're receiving
-  console.log('HTMLContentViewer - Raw HTML Content:', htmlContent?.substring(0, 500));
-  
-  // Normalize the HTML to have proper paragraph structure
-  const normalizedContent = normalizeHTML(htmlContent);
-
-  const htmlTemplate = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-      <style>
-        * {
-          box-sizing: border-box;
-        }
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-          line-height: 1.7;
-          margin: 0;
-          padding: 0px 12px 12px 12px;
-          font-size: 15px;
-          color: #333;
-          background: white;
-        }
-        p {
-          display: block;
-          margin: 0 0 20px 0;
-          padding: 0;
-          line-height: 1.7;
-        }
-        p:last-child {
-          margin-bottom: 0;
-        }
-        strong {
-          font-weight: 700;
-          color: #1e40af;
-        }
-        br {
-          display: block;
-          content: "";
-        }
-        /* Style consecutive br tags as paragraph breaks */
-        br + br {
-          display: block;
-          margin-bottom: 16px;
-          content: "";
-        }
-        ul, ol {
-          margin: 12px 0;
-          padding-left: 24px;
-        }
-        li {
-          margin: 6px 0;
-        }
-        em, i {
-          font-style: italic;
-        }
-        u {
-          text-decoration: underline;
-        }
-      </style>
-    </head>
-    <body>
-      ${normalizedContent || '<p>No content available</p>'}
-    </body>
-    </html>
-  `;
-
-  return (
-    <View style={{ flex: 1, borderRadius: 12, borderWidth: 1.5, borderColor: '#e2e8f0', overflow: 'hidden', backgroundColor: '#f8fafc' }}>
-      <WebView
-        ref={webViewRef}
-        source={{ html: htmlTemplate }}
-        scrollEnabled={true}
-        bounces={false}
-        style={{ flex: 1, backgroundColor: 'white' }}
-        originWhitelist={['*']}
-        javaScriptEnabled={true}
-        contentInset={{ top: 0, left: 0, bottom: 0, right: 0 }}
-      />
-      {onEdit && (
-        <TouchableOpacity
-          onPress={onEdit}
-          style={{
-            padding: 12,
-            backgroundColor: '#1e40af',
-            alignItems: 'center',
-            justifyContent: 'center'
-          }}
-        >
-          <Text style={{ color: 'white', fontWeight: '600', fontSize: 14 }}>✏️ Edit</Text>
-        </TouchableOpacity>
-      )}
-    </View>
-  );
-};
-
-// Rich Text Editor Component using WebView + contenteditable
-const RichTextEditorWebView = ({ initialHtml, onContentChange, height = 400 }) => {
-  const webViewRef = useRef(null);
-
-  // Debug log
-  console.log('RichTextEditorWebView - Initial HTML:', initialHtml?.substring(0, 300));
-  
   // Normalize the HTML to have proper paragraph structure
   const normalizedHtml = normalizeHTML(initialHtml);
 
@@ -417,6 +266,31 @@ const FormattedCoverLetterPreview = ({ htmlContent, style }) => {
   );
 };
 
+const HTMLContentViewer = ({ htmlContent, style }) => {
+  const styledHtml = `
+    <!DOCTYPE html><html><head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+             font-size: 15px; line-height: 1.7; color: #1a1a2e;
+             padding: 12px 16px; margin: 0; background: transparent; }
+      p { margin: 0 0 14px 0; }
+      strong { font-weight: 700; color: #1e40af; }
+      ul, ol { margin: 10px 0; padding-left: 22px; }
+      li { margin: 5px 0; }
+    </style></head>
+    <body>${htmlContent || ''}</body></html>`;
+  return (
+    <WebView
+      source={{ html: styledHtml }}
+      style={[{ flex: 1, backgroundColor: 'transparent' }, style]}
+      scrollEnabled={true}
+      originWhitelist={['*']}
+      javaScriptEnabled={false}
+    />
+  );
+};
+
 function AppContent() {
   const [showSplash, setShowSplash] = useState(true);
   const [screen, setScreen] = useState('login');
@@ -425,12 +299,72 @@ function AppContent() {
   const [fullName, setFullName] = useState('');
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState('');
   const [user, setUser] = useState(null);
+  const heroAnim = useRef(new Animated.Value(0)).current;
+  const [proTipText, setProTipText] = useState('');
+  const proTipTimerRef = useRef(null);
   const userRef = useRef(null);
   const sessionRestoredRef = useRef(false);
   // Keep ref in sync so link handlers always have the latest token
   useEffect(() => { userRef.current = user; }, [user]);
+
+  // Slow zoom + drift animation for login/register hero
+  useEffect(() => {
+    if (screen === 'login' || screen === 'register') {
+      heroAnim.setValue(0);
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(heroAnim, { toValue: 1, duration: 9000, useNativeDriver: true }),
+          Animated.timing(heroAnim, { toValue: 0, duration: 9000, useNativeDriver: true }),
+        ])
+      ).start();
+    }
+  }, [screen]);
+
+  // Rotating pro tips with typing animation
+  const PRO_TIPS = [
+    'Upload your resume once, send 100s of tailored applications.',
+    'AI drafts each cover letter uniquely — never copy-paste.',
+    'Credits never expire — apply at your own pace.',
+    'Bulk-send to dozens of recruiters in a single click.',
+    'Track every application from one clean dashboard.',
+    'Powered by Google Gemini for recruiter-ready letters.',
+  ];
+  useEffect(() => {
+    if (screen !== 'login' && screen !== 'register') return;
+    let tipIdx = 0;
+    let charIdx = 0;
+    let isDeleting = false;
+    const tick = () => {
+      const full = PRO_TIPS[tipIdx];
+      if (!isDeleting) {
+        charIdx++;
+        setProTipText(full.slice(0, charIdx));
+        if (charIdx === full.length) {
+          isDeleting = true;
+          proTipTimerRef.current = setTimeout(tick, 2200);
+        } else {
+          proTipTimerRef.current = setTimeout(tick, 45);
+        }
+      } else {
+        charIdx--;
+        setProTipText(full.slice(0, charIdx));
+        if (charIdx === 0) {
+          isDeleting = false;
+          tipIdx = (tipIdx + 1) % PRO_TIPS.length;
+          proTipTimerRef.current = setTimeout(tick, 400);
+        } else {
+          proTipTimerRef.current = setTimeout(tick, 22);
+        }
+      }
+    };
+    proTipTimerRef.current = setTimeout(tick, 600);
+    return () => clearTimeout(proTipTimerRef.current);
+  }, [screen]);
 
   // Save user session to SecureStore whenever user changes
   useEffect(() => {
@@ -683,6 +617,29 @@ function AppContent() {
       
       // Detailed message steps for each batch type
       const batchMessages = {
+        generate: [
+          { at: 1,  msg: '🔍 Fetching your profile details...' },
+          { at: 10, msg: '🌐 Researching employer details...' },
+          { at: 24, msg: '🏢 Analyzing company culture & requirements...' },
+          { at: 40, msg: '🤝 Fetching skills & matching requirements...' },
+          { at: 60, msg: '✍️ Crafting your personalized cover letter...' },
+          { at: 80, msg: '🎨 Formatting and adding final touches...' },
+          { at: 90, msg: '📄 Generating PDF document...' },
+          { at: 95, msg: '✨ Almost done, finalizing content...' },
+        ],
+        send: [
+          { at: 1,  msg: '🚀 Preparing to send...' },
+          { at: 30, msg: '🔒 Setting up secure email delivery...' },
+          { at: 60, msg: '📧 Sending application to employer...' },
+          { at: 85, msg: '✅ Confirming delivery status...' },
+          { at: 95, msg: '✨ Finalizing and saving records...' },
+        ],
+        pdf: [
+          { at: 1,  msg: '📄 Gathering cover letter data...' },
+          { at: 30, msg: '🎨 Formatting PDF layout...' },
+          { at: 60, msg: '🖨️ Generating PDF document...' },
+          { at: 90, msg: '💾 Finalizing download...' },
+        ],
         batch_generate_and_send: [
           { at: 1,  msg: '🚀 Starting auto process...' },
           { at: 4,  msg: '🔍 Fetching your profile details...' },
@@ -746,6 +703,11 @@ function AppContent() {
       const startDrift = () => {
         if (driftInterval) return; // already running
         driftInterval = setInterval(() => {
+          // Slowly raise the ceiling over time if it's stuck below 95%
+          if (ceiling < 95) {
+             ceiling = Math.min(ceiling + 0.5, 95);
+          }
+          
           const remaining = ceiling - displayProgress;
           if (remaining <= 0.2) return; // close enough, just wait for next ceiling bump
           // Move ~4% of the remaining gap each tick → fast at first, decelerates smoothly
@@ -766,7 +728,12 @@ function AppContent() {
       // When server reports new progress, raise the ceiling so the drift speeds up toward it
       const nudgeCeiling = (serverPct) => {
         // Set ceiling slightly ahead of server value to keep bar always moving
-        ceiling = Math.min(serverPct + 5, 95);
+        // Don't lower the ceiling if it has already drifted past this point
+        const newCeiling = Math.min(serverPct + 5, 95);
+        if (newCeiling > ceiling) {
+          ceiling = newCeiling;
+        }
+        
         // If display is already past the new server value, just keep going
         if (displayProgress < serverPct) {
           // Boost a little so the user sees a visible acceleration
@@ -781,6 +748,13 @@ function AppContent() {
       
       // Start drifting immediately so the bar moves from the very first moment
       startDrift();
+      
+      // STOP the simulated progressive loading interval if it's running
+      // This prevents two intervals from fighting over the same progress state
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
       
       const poll = async () => {
         if (cancelled || isCancelledRef.current) {
@@ -2421,6 +2395,11 @@ function AppContent() {
       const totalTime = Date.now() - startTime;
       console.log(`✅ [${requestId}] COMPLETE - Cover letter ready! Total time: ${totalTime}ms`);
       console.log(`${'='.repeat(60)}\n`);
+      
+      // Don't show alert if it's a bulk operation, only for single clicks
+      if (!reviewGeneratingAll && !reviewGeneratingAndSendingAll) {
+        Alert.alert('Success', 'Cover Letter Generated Successfully');
+      }
       
     } catch (error) {
       const errorTime = Date.now();
@@ -4941,298 +4920,310 @@ function AppContent() {
   // LOGIN SCREEN
   if (screen === 'login') {
     return (
-        <View style={styles.loginContainer}>
-          <StatusBar barStyle={showSplash ? 'dark-content' : 'light-content'} backgroundColor="transparent" translucent={true} />
-          <LinearGradient
-            colors={['#1a1a2e', '#16213e', '#0f3460']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 0, y: 1 }}
-            style={styles.loginGradientBg}
-          >
-            <SafeAreaViewContext style={{ flex: 1 }} edges={['top', 'bottom']}>
-              <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-                style={{ flex: 1 }}
-              >
-                <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-                  <View style={styles.loginInnerContainer}>
-                {/* Logo Section */}
-                <View style={styles.loginLogoSection}>
-                  <Image 
-                    source={require('./assets/images/logo_hd_no_background_white_small.png')} 
-                    style={styles.loginLogoImage}
-                    resizeMode="contain"
-                  />
-                  <Text style={styles.loginTagline}>Turn applications into opportunities</Text>
+      <SafeAreaViewContext style={{ flex: 1, backgroundColor: '#06091B' }} edges={['top', 'bottom']}>
+        <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} />
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+          <View style={{ flex: 1, paddingHorizontal: 11, paddingTop: 8, paddingBottom: 0 }}>
+            {/* Hero card */}
+            <View style={{ height: 220, borderRadius: 18, overflow: 'hidden', marginBottom: 12 }}>
+              <Animated.View style={{
+                position: 'absolute', top: -15, left: -20, right: -20, bottom: -60,
+                transform: [
+                  { scale: heroAnim.interpolate({ inputRange: [0, 1], outputRange: [1.0, 1.10] }) },
+                  { translateX: heroAnim.interpolate({ inputRange: [0, 1], outputRange: [0, -10] }) },
+                  { translateY: heroAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 8] }) },
+                ]
+              }}>
+                <Image source={require('./assets/images/login_hero.jpg')} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+              </Animated.View>
+              <LinearGradient
+                colors={['rgba(7,10,28,0.10)', 'rgba(7,10,28,0.15)', 'rgba(7,10,28,0.80)']}
+                locations={[0, 0.5, 1]}
+                style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+              />
+              <View style={{ position: 'absolute', top: 14, left: 14, right: 14, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(13,18,38,0.55)', borderWidth: 0.5, borderColor: 'rgba(91,149,255,0.2)', borderRadius: 12, paddingVertical: 7, paddingHorizontal: 13 }}>
+                  <Image source={require('./assets/images/logo_img_white.png')} style={{ width: 22, height: 22 }} resizeMode="contain" />
+                  <Text style={{ fontSize: 18, fontWeight: '600' }}>
+                    <Text style={{ color: '#ffffff' }}>cv</Text><Text style={{ color: '#5B95FF' }}>applyr</Text>
+                  </Text>
                 </View>
-
-                {/* Welcome Text */}
-                <View style={styles.loginWelcomeSection}>
-                  <Text style={styles.loginCardTitle}>Welcome back</Text>
-                  <Text style={styles.loginCardSubtitle}>Sign in to your account</Text>
-                </View>
-
-                {/* Error Message */}
-                {error ? (
-                  <View style={styles.loginErrorContainer}>
-                    <Text style={styles.loginErrorText}>{error}</Text>
-                  </View>
-                ) : null}
-
-                {/* Form Section */}
-                <View style={styles.loginFormSection}>
-                  {/* Email Input */}
-                  <View style={styles.loginInputGroup}>
-                    <Text style={styles.loginInputLabel}>Email</Text>
-                    <TextInput
-                      style={styles.loginInput}
-                      placeholder="you@example.com"
-                      value={email}
-                      onChangeText={setEmail}
-                      editable={!loading}
-                      keyboardType="email-address"
-                      placeholderTextColor="rgba(255, 255, 255, 0.3)"
-                      autoCapitalize="none"
-                    />
-                  </View>
-
-                  {/* Password Input */}
-                  <View style={styles.loginInputGroup}>
-                    <Text style={styles.loginInputLabel}>Password</Text>
-                    <TextInput
-                      style={styles.loginInput}
-                      placeholder="Enter your password"
-                      value={password}
-                      onChangeText={setPassword}
-                      editable={!loading}
-                      secureTextEntry
-                      placeholderTextColor="rgba(255, 255, 255, 0.3)"
-                      autoCapitalize="none"
-                    />
-                  </View>
-
-                  {/* Sign In Button */}
-                  <TouchableOpacity
-                    style={[styles.loginSignInButton, loading && styles.loginButtonDisabled]}
-                    onPress={handleLogin}
-                    disabled={loading}
-                    activeOpacity={0.85}
-                  >
-                    <LinearGradient
-                      colors={loading ? ['#64748b', '#475569'] : ['#e94560', '#c81d4e']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
-                      style={styles.loginSignInGradient}
-                    >
-                      <Text style={styles.loginSignInText}>
-                        {loading ? 'Signing in...' : 'Sign In'}
-                      </Text>
-                    </LinearGradient>
-                  </TouchableOpacity>
-                </View>
-
-                {/* Divider */}
-                <View style={styles.loginDividerContainer}>
-                  <View style={styles.loginDividerLine} />
-                  <Text style={styles.loginDividerText}>or continue with</Text>
-                  <View style={styles.loginDividerLine} />
-                </View>
-
-                {/* Social buttons — horizontal row */}
-                <View style={styles.loginSocialButtonsContainer}>
-                  <TouchableOpacity
-                    style={[styles.loginSocialButton, loading && styles.loginSocialButtonDisabled]}
-                    onPress={handleGoogleLogin}
-                    disabled={loading}
-                    activeOpacity={0.7}
-                  >
-                    <Image 
-                      source={require('./assets/images/google.png')} 
-                      style={styles.loginSocialIcon}
-                      resizeMode="contain"
-                    />
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.loginSocialButton, loading && styles.loginSocialButtonDisabled]}
-                    onPress={() => handleMicrosoftLogin()}
-                    disabled={loading}
-                    activeOpacity={0.7}
-                  >
-                    <Image 
-                      source={require('./assets/images/microsoft.png')} 
-                      style={styles.loginSocialIcon}
-                      resizeMode="contain"
-                    />
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.loginSocialButton, styles.loginAppleButton, loading && styles.loginSocialButtonDisabled]}
-                    onPress={handleAppleLogin}
-                    disabled={loading}
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons name="logo-apple" size={26} color="#ffffff" />
-                  </TouchableOpacity>
-                </View>
-
-                {/* Register Link */}
-                <View style={styles.loginFooter}>
-                  <Text style={styles.loginFooterText}>Don't have an account? </Text>
-                  <TouchableOpacity onPress={() => { setScreen('register'); setError(''); }}>
-                    <Text style={styles.loginFooterLink}>Sign up</Text>
-                  </TouchableOpacity>
+                <View style={{ backgroundColor: 'rgba(13,18,38,0.55)', borderWidth: 0.5, borderColor: 'rgba(160,180,220,0.18)', borderRadius: 999, paddingVertical: 3, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                  <Ionicons name="star" size={11} color="#FFC857" />
+                  <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 11 }}>4.9</Text>
+                  <Text style={{ color: '#8995AC', fontSize: 11 }}> · 70+</Text>
                 </View>
               </View>
-            </TouchableWithoutFeedback>
-          </KeyboardAvoidingView>
-          </SafeAreaViewContext>
-        </LinearGradient>
+              <View style={{ position: 'absolute', bottom: 14, left: 14, right: 14 }}>
+                <Text style={{ fontSize: 15, fontWeight: '500', color: '#ffffff', lineHeight: 20, marginBottom: 8 }}>
+                  Job hunting, but you're <Text style={{ color: '#5B95FF' }}>actually winning.</Text>
+                </Text>
+                <View style={{ height: 0.5, backgroundColor: 'rgba(255,255,255,0.18)', marginBottom: 7 }} />
+                <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', lineHeight: 15 }}>
+                  <Text style={{ color: '#5B95FF', fontWeight: '600' }}>Pro tip · </Text>{proTipText}<Text style={{ color: '#5B95FF' }}>|</Text>
+                </Text>
+              </View>
+            </View>
+
+            {/* Form card — flex:1 fills remaining screen space */}
+            <View style={{ flex: 1, backgroundColor: '#0E1430', borderWidth: 0.5, borderColor: '#1F2A4A', borderRadius: 18, padding: 16 }}>
+              <Text style={{ fontSize: 20, fontWeight: '500', color: '#ffffff', marginBottom: 3, letterSpacing: -0.3 }}>
+                Sign in to your <Text style={{ color: '#5B95FF' }}>career copilot.</Text>
+              </Text>
+              <Text style={{ fontSize: 15, color: '#8995AC', marginBottom: 14 }}>Pick up where you left off.</Text>
+
+              {error ? (
+                <View style={{ backgroundColor: 'rgba(239,68,68,0.12)', borderRadius: 10, borderLeftWidth: 3, borderLeftColor: '#ef4444', padding: 10, marginBottom: 13 }}>
+                  <Text style={{ fontSize: 13, color: '#fecaca' }}>{error}</Text>
+                </View>
+              ) : null}
+
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 13 }}>
+                <TouchableOpacity style={styles.newSocBtn} onPress={handleGoogleLogin} disabled={loading} activeOpacity={0.7}>
+                  <Image source={require('./assets/images/google.png')} style={{ width: 22, height: 22 }} resizeMode="contain" />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.newSocBtn} onPress={handleAppleLogin} disabled={loading} activeOpacity={0.7}>
+                  <Ionicons name="logo-apple" size={22} color="#ffffff" />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.newSocBtn} onPress={() => handleMicrosoftLogin()} disabled={loading} activeOpacity={0.7}>
+                  <Image source={require('./assets/images/microsoft.png')} style={{ width: 20, height: 20 }} resizeMode="contain" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 11 }}>
+                <View style={{ flex: 1, height: 0.5, backgroundColor: '#1F2A4A' }} />
+                <Text style={{ fontSize: 11, color: '#6A748A', letterSpacing: 1.4, fontWeight: '500' }}>OR EMAIL</Text>
+                <View style={{ flex: 1, height: 0.5, backgroundColor: '#1F2A4A' }} />
+              </View>
+
+              <View style={[styles.newInputWrap, { marginBottom: 10 }]}>
+                <Ionicons name="mail-outline" size={16} color="#6A748A" />
+                <TextInput
+                  style={styles.newInput}
+                  placeholder="you@company.com"
+                  value={email}
+                  onChangeText={setEmail}
+                  editable={!loading}
+                  keyboardType="email-address"
+                  placeholderTextColor="#5D6781"
+                  autoCapitalize="none"
+                />
+              </View>
+
+              <View style={[styles.newInputWrap, { marginBottom: 6, justifyContent: 'space-between' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                  <Ionicons name="lock-closed-outline" size={16} color="#6A748A" />
+                  <TextInput
+                    style={[styles.newInput, { flex: 1 }]}
+                    placeholder="Password"
+                    value={password}
+                    onChangeText={setPassword}
+                    editable={!loading}
+                    secureTextEntry={!showLoginPassword}
+                    placeholderTextColor="#5D6781"
+                    autoCapitalize="none"
+                  />
+                </View>
+                <TouchableOpacity onPress={() => setShowLoginPassword(!showLoginPassword)}>
+                  <Text style={{ fontSize: 12, color: '#5B95FF', fontWeight: '500', letterSpacing: 0.8 }}>{showLoginPassword ? 'HIDE' : 'SHOW'}</Text>
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity style={{ alignSelf: 'flex-end', marginBottom: 12 }} onPress={() => Alert.alert('Reset Password', 'Please contact support@cvapplyr.com to reset your password.')}>
+                <Text style={{ fontSize: 14, color: '#5B95FF', fontWeight: '500' }}>Forgot password?</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 14 }} onPress={() => setRememberMe(!rememberMe)} activeOpacity={0.7}>
+                <View style={{ width: 15, height: 15, backgroundColor: rememberMe ? '#3D7EFC' : 'transparent', borderRadius: 3, borderWidth: rememberMe ? 0 : 1, borderColor: '#5D6781', alignItems: 'center', justifyContent: 'center' }}>
+                  {rememberMe && <Ionicons name="checkmark" size={10} color="#fff" />}
+                </View>
+                <Text style={{ fontSize: 14, color: '#B6BFD3' }}>Remember me</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={{ height: 58, borderRadius: 13, backgroundColor: '#3D7EFC', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8, opacity: loading ? 0.6 : 1, marginBottom: 13 }}
+                onPress={handleLogin}
+                disabled={loading}
+                activeOpacity={0.85}
+              >
+                <Text style={{ fontSize: 16, fontWeight: '500', color: '#fff' }}>{loading ? 'Signing in...' : 'Sign in'}</Text>
+                {!loading && <Ionicons name="arrow-forward" size={19} color="#fff" />}
+              </TouchableOpacity>
+
+              <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center' }}>
+                <Text style={{ fontSize: 13, color: '#8995AC' }}>New here? </Text>
+                <TouchableOpacity onPress={() => { setScreen('register'); setError(''); }}>
+                  <Text style={{ fontSize: 13, color: '#5B95FF', fontWeight: '500' }}>Create account →</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </TouchableWithoutFeedback>
         {splashOverlay}
-      </View>
+      </SafeAreaViewContext>
     );
   }
 
   // REGISTER SCREEN
   if (screen === 'register') {
     return (
-      <SafeAreaViewContext style={styles.container}>
-        <StatusBar barStyle="light-content" backgroundColor="#059669" translucent={false} />
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {/* Header with gradient effect */}
-          <View style={[styles.gradientHeader, { backgroundColor: '#059669' }]}>
-            <View style={styles.logoContainer}>
-              <Image 
-                source={require('./assets/images/logo_hd_no_background_white_small.png')} 
-                style={{ width: 200, height: 60 }}
-                resizeMode="contain"
+      <SafeAreaViewContext style={{ flex: 1, backgroundColor: '#06091B' }} edges={['top', 'bottom']}>
+        <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} />
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+          <View style={{ flex: 1, paddingHorizontal: 11, paddingTop: 8, paddingBottom: 0 }}>
+            {/* Hero card */}
+            <View style={{ height: 220, borderRadius: 18, overflow: 'hidden', marginBottom: 12 }}>
+              <Animated.View style={{
+                position: 'absolute', top: -15, left: -20, right: -20, bottom: -60,
+                transform: [
+                  { scale: heroAnim.interpolate({ inputRange: [0, 1], outputRange: [1.0, 1.10] }) },
+                  { translateX: heroAnim.interpolate({ inputRange: [0, 1], outputRange: [0, -10] }) },
+                  { translateY: heroAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 8] }) },
+                ]
+              }}>
+                <Image source={require('./assets/images/login_hero.jpg')} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+              </Animated.View>
+              <LinearGradient
+                colors={['rgba(7,10,28,0.10)', 'rgba(7,10,28,0.15)', 'rgba(7,10,28,0.80)']}
+                locations={[0, 0.5, 1]}
+                style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
               />
-            </View>
-            <Text style={styles.headerSubtitle}>Join the community</Text>
-          </View>
-
-          {/* Main Content Card */}
-          <View style={styles.mainCard}>
-            <Text style={styles.cardTitle}>Create Account</Text>
-            <Text style={styles.cardSubtitle}>Get started in seconds</Text>
-
-            {error ? (
-              <View style={styles.errorContainer}>
-                <Text style={styles.errorIcon}>⚠️</Text>
-                <Text style={styles.errorText}>{error}</Text>
+              <View style={{ position: 'absolute', top: 14, left: 14, right: 14, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(13,18,38,0.55)', borderWidth: 0.5, borderColor: 'rgba(91,149,255,0.2)', borderRadius: 12, paddingVertical: 7, paddingHorizontal: 13 }}>
+                  <Image source={require('./assets/images/logo_img_white.png')} style={{ width: 22, height: 22 }} resizeMode="contain" />
+                  <Text style={{ fontSize: 18, fontWeight: '600' }}>
+                    <Text style={{ color: '#ffffff' }}>cv</Text><Text style={{ color: '#5B95FF' }}>applyr</Text>
+                  </Text>
+                </View>
+                <View style={{ backgroundColor: 'rgba(13,18,38,0.55)', borderWidth: 0.5, borderColor: 'rgba(160,180,220,0.18)', borderRadius: 999, paddingVertical: 3, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                  <Ionicons name="star" size={11} color="#FFC857" />
+                  <Text style={{ color: '#ffffff', fontWeight: '600', fontSize: 11 }}>4.9</Text>
+                  <Text style={{ color: '#8995AC', fontSize: 11 }}> · 70+</Text>
+                </View>
               </View>
-            ) : null}
+              <View style={{ position: 'absolute', bottom: 14, left: 14, right: 14 }}>
+                <Text style={{ fontSize: 15, fontWeight: '500', color: '#ffffff', lineHeight: 20, marginBottom: 8 }}>
+                  Job hunting, but you're <Text style={{ color: '#5B95FF' }}>actually winning.</Text>
+                </Text>
+                <View style={{ height: 0.5, backgroundColor: 'rgba(255,255,255,0.18)', marginBottom: 7 }} />
+                <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', lineHeight: 15 }}>
+                  <Text style={{ color: '#5B95FF', fontWeight: '600' }}>Pro tip · </Text>{proTipText}<Text style={{ color: '#5B95FF' }}>|</Text>
+                </Text>
+              </View>
+            </View>
 
-            {/* Full Name Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Full Name</Text>
-              <View style={styles.inputWrapper}>
-                <Text style={styles.inputIcon}>👤</Text>
+            {/* Form card — flex:1 fills remaining screen space */}
+            <View style={{ flex: 1, backgroundColor: '#0E1430', borderWidth: 0.5, borderColor: '#1F2A4A', borderRadius: 18, padding: 16 }}>
+              <Text style={{ fontSize: 20, fontWeight: '500', color: '#ffffff', marginBottom: 3, letterSpacing: -0.3 }}>
+                Create your <Text style={{ color: '#5B95FF' }}>account.</Text>
+              </Text>
+              <Text style={{ fontSize: 15, color: '#8995AC', marginBottom: 14 }}>Auto-apply to roles on your behalf.</Text>
+
+              {error ? (
+                <View style={{ backgroundColor: 'rgba(239,68,68,0.12)', borderRadius: 10, borderLeftWidth: 3, borderLeftColor: '#ef4444', padding: 10, marginBottom: 13 }}>
+                  <Text style={{ fontSize: 13, color: '#fecaca' }}>{error}</Text>
+                </View>
+              ) : null}
+
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 13 }}>
+                <TouchableOpacity style={styles.newSocBtn} onPress={handleGoogleLogin} disabled={loading} activeOpacity={0.7}>
+                  <Image source={require('./assets/images/google.png')} style={{ width: 22, height: 22 }} resizeMode="contain" />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.newSocBtn} onPress={handleAppleLogin} disabled={loading} activeOpacity={0.7}>
+                  <Ionicons name="logo-apple" size={22} color="#ffffff" />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.newSocBtn} onPress={() => handleMicrosoftLogin()} disabled={loading} activeOpacity={0.7}>
+                  <Image source={require('./assets/images/microsoft.png')} style={{ width: 20, height: 20 }} resizeMode="contain" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 11 }}>
+                <View style={{ flex: 1, height: 0.5, backgroundColor: '#1F2A4A' }} />
+                <Text style={{ fontSize: 11, color: '#6A748A', letterSpacing: 1.4, fontWeight: '500' }}>OR EMAIL</Text>
+                <View style={{ flex: 1, height: 0.5, backgroundColor: '#1F2A4A' }} />
+              </View>
+
+              <View style={[styles.newInputWrap, { marginBottom: 10 }]}>
+                <Ionicons name="person-outline" size={16} color="#6A748A" />
                 <TextInput
-                  style={styles.input}
-                  placeholder="John Doe"
+                  style={styles.newInput}
+                  placeholder="Full name"
                   value={fullName}
                   onChangeText={setFullName}
                   editable={!loading}
-                  placeholderTextColor="#a0aec0"
+                  placeholderTextColor="#5D6781"
+                  autoCapitalize="words"
                 />
               </View>
-            </View>
 
-            {/* Email Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Email Address</Text>
-              <View style={styles.inputWrapper}>
-                <Text style={styles.inputIcon}>📧</Text>
+              <View style={[styles.newInputWrap, { marginBottom: 10 }]}>
+                <Ionicons name="mail-outline" size={16} color="#6A748A" />
                 <TextInput
-                  style={styles.input}
-                  placeholder="you@example.com"
+                  style={styles.newInput}
+                  placeholder="Work email"
                   value={email}
                   onChangeText={setEmail}
                   editable={!loading}
                   keyboardType="email-address"
-                  placeholderTextColor="#a0aec0"
+                  placeholderTextColor="#5D6781"
+                  autoCapitalize="none"
                 />
               </View>
-            </View>
 
-            {/* Password Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Password</Text>
-              <View style={styles.inputWrapper}>
-                <Text style={styles.inputIcon}>🔐</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="••••••••"
-                  value={password}
-                  onChangeText={setPassword}
-                  editable={!loading}
-                  secureTextEntry
-                  placeholderTextColor="#a0aec0"
-                />
+              <View style={[styles.newInputWrap, { marginBottom: 14, justifyContent: 'space-between' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                  <Ionicons name="lock-closed-outline" size={16} color="#6A748A" />
+                  <TextInput
+                    style={[styles.newInput, { flex: 1 }]}
+                    placeholder="Password (min. 6)"
+                    value={password}
+                    onChangeText={setPassword}
+                    editable={!loading}
+                    secureTextEntry={!showRegisterPassword}
+                    placeholderTextColor="#5D6781"
+                    autoCapitalize="none"
+                  />
+                </View>
+                <TouchableOpacity onPress={() => setShowRegisterPassword(!showRegisterPassword)}>
+                  <Text style={{ fontSize: 12, color: '#5B95FF', fontWeight: '500', letterSpacing: 0.8 }}>{showRegisterPassword ? 'HIDE' : 'SHOW'}</Text>
+                </TouchableOpacity>
               </View>
-            </View>
 
-            {/* Terms & Privacy Checkbox */}
-            <TouchableOpacity
-              style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 16, marginTop: 4 }}
-              onPress={() => setTermsAccepted(!termsAccepted)}
-              activeOpacity={0.7}
-            >
-              <View style={{
-                width: 22, height: 22, borderRadius: 4, borderWidth: 2,
-                borderColor: termsAccepted ? '#059669' : '#cbd5e0',
-                backgroundColor: termsAccepted ? '#059669' : 'transparent',
-                alignItems: 'center', justifyContent: 'center', marginRight: 10, marginTop: 1,
-              }}>
-                {termsAccepted && <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>✓</Text>}
-              </View>
-              <Text style={{ flex: 1, fontSize: 13, color: '#64748b', lineHeight: 18 }}>
-                I agree to the{' '}
-                <Text style={{ color: '#059669', fontWeight: '600' }} onPress={() => Linking.openURL('https://cvapplyr.com/terms-of-service')}>Terms of Service</Text>
-                {' '}and{' '}
-                <Text style={{ color: '#059669', fontWeight: '600' }} onPress={() => Linking.openURL('https://cvapplyr.com/privacy-policy')}>Privacy Policy</Text>
-              </Text>
-            </TouchableOpacity>
-
-            {/* Register Button */}
-            <TouchableOpacity
-              style={[styles.primaryButton, { backgroundColor: '#059669' }, loading && styles.buttonDisabled]}
-              onPress={handleRegister}
-              disabled={loading}
-            >
-              <Text style={styles.primaryButtonText}>
-                {loading ? '⏳ Creating account...' : '→ Create Account'}
-              </Text>
-            </TouchableOpacity>
-
-            {/* Divider */}
-            <View style={styles.dividerContainer}>
-              <View style={styles.dividerLine} />
-              <Text style={styles.dividerText}>or continue with</Text>
-              <View style={styles.dividerLine} />
-            </View>
-
-            {/* Google Sign Up Button */}
-            <TouchableOpacity
-              style={styles.googleButton}
-              onPress={handleGoogleLogin}
-              disabled={loading}
-            >
-              <Text style={styles.googleButtonIcon}>🔐</Text>
-              <Text style={styles.googleButtonText}>Sign up with Google</Text>
-            </TouchableOpacity>
-
-            {/* Login Link */}
-            <View style={styles.footerText}>
-              <Text style={styles.footerLabel}>Already have an account? </Text>
-              <TouchableOpacity onPress={() => { setScreen('login'); setError(''); }}>
-                <Text style={styles.footerLink}>Sign In</Text>
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 7, marginBottom: 14 }}
+                onPress={() => setTermsAccepted(!termsAccepted)}
+                activeOpacity={0.7}
+              >
+                <View style={{ width: 15, height: 15, backgroundColor: termsAccepted ? '#3D7EFC' : 'transparent', borderRadius: 3, borderWidth: termsAccepted ? 0 : 1, borderColor: '#5D6781', alignItems: 'center', justifyContent: 'center', marginTop: 1, flexShrink: 0 }}>
+                  {termsAccepted && <Ionicons name="checkmark" size={10} color="#fff" />}
+                </View>
+                <Text style={{ fontSize: 14, color: '#B6BFD3', lineHeight: 20, flex: 1 }}>
+                  {'I agree to the '}
+                  <Text style={{ color: '#5B95FF', fontWeight: '500' }} onPress={() => Linking.openURL('https://cvapplyr.com/terms-of-service')}>Terms</Text>
+                  {' & '}
+                  <Text style={{ color: '#5B95FF', fontWeight: '500' }} onPress={() => Linking.openURL('https://cvapplyr.com/privacy-policy')}>Privacy</Text>
+                </Text>
               </TouchableOpacity>
+
+              <TouchableOpacity
+                style={{ height: 58, borderRadius: 13, backgroundColor: '#3D7EFC', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8, opacity: loading ? 0.6 : 1, marginBottom: 13 }}
+                onPress={handleRegister}
+                disabled={loading}
+                activeOpacity={0.85}
+              >
+                <Text style={{ fontSize: 16, fontWeight: '500', color: '#fff' }}>{loading ? 'Creating account...' : 'Create account'}</Text>
+                {!loading && <Ionicons name="arrow-forward" size={19} color="#fff" />}
+              </TouchableOpacity>
+
+              <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center' }}>
+                <Text style={{ fontSize: 13, color: '#8995AC' }}>Have an account? </Text>
+                <TouchableOpacity onPress={() => { setScreen('login'); setError(''); }}>
+                  <Text style={{ fontSize: 13, color: '#5B95FF', fontWeight: '500' }}>Sign in →</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        </ScrollView>
-
+        </TouchableWithoutFeedback>
       </SafeAreaViewContext>
     );
   }
@@ -13653,6 +13644,35 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   
+  newSocBtn: {
+    flex: 1,
+    height: 44,
+    backgroundColor: '#131A30',
+    borderWidth: 0.5,
+    borderColor: '#243153',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  newInputWrap: {
+    backgroundColor: '#0A1226',
+    borderWidth: 0.5,
+    borderColor: '#1F2A4A',
+    borderRadius: 11,
+    height: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    gap: 8,
+    marginBottom: 0,
+  },
+  newInput: {
+    flex: 1,
+    fontSize: 16,
+    color: '#E5EAF5',
+    paddingVertical: 0,
+  },
+
   // Login Screen Styles
   loginContainer: {
     flex: 1,
