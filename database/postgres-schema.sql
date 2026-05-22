@@ -235,3 +235,22 @@ CREATE INDEX IF NOT EXISTS idx_monthly_usage_stats_user_id ON monthly_usage_stat
 CREATE INDEX IF NOT EXISTS idx_credit_usage_history_user_id ON credit_usage_history(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at DESC);
+
+-- Resume metadata table
+CREATE TABLE IF NOT EXISTS resume_metadata (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL UNIQUE,
+    parse_status TEXT NOT NULL DEFAULT 'pending',
+    full_text TEXT,
+    sections JSONB,
+    summary TEXT,
+    experience TEXT,
+    education TEXT,
+    skills TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_resume_metadata_user_id ON resume_metadata(user_id);
+CREATE INDEX IF NOT EXISTS idx_resume_metadata_parse_status ON resume_metadata(parse_status);
