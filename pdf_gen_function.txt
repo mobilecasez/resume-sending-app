@@ -1,0 +1,683 @@
+async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, companyAddress = '') {
+    console.log('\n📄 [COMMON] Generating PDF with:');
+    console.log('  User:', user.email);
+    console.log('  Company:', companyName);
+    console.log('  Address:', companyAddress);
+    console.log('  Content length:', coverLetterHtmlOrText?.length);
+    console.log('  Content type:', coverLetterHtmlOrText?.includes('<') ? 'HTML' : 'TEXT');
+    
+    // Prepare user data
+    const userData = {
+        fullName: user.full_name,
+        email: user.email,
+        phoneNumber: user.phone_number,
+        city: user.city,
+        country: user.country
+    };
+
+    // Get photo and signature paths
+    const photoPath = user.photo_path ? path.join(__dirname, user.photo_path) : null;
+    const signaturePath = user.signature_path ? path.join(__dirname, user.signature_path) : null;
+
+    // CRITICAL FIX: Convert markdown **bold** to HTML <strong>bold</strong>
+    // Mobile sends plain text with **markdown**, web sends HTML
+    // Ensure consistent HTML format for PDF generation
+    let coverLetterHtml = coverLetterHtmlOrText;
+    
+    // If text contains **markdown** but no HTML tags, convert markdown to HTML
+    if (!coverLetterHtml.includes('<p') && !coverLetterHtml.includes('<div')) {
+        console.log('  📝 Converting plain text with markdown to HTML...');
+        
+        // Split by double newlines for paragraphs
+        const paragraphs = coverLetterHtml.split('\n\n').filter(p => p.trim());
+        
+        coverLetterHtml = paragraphs.map(para => {
+            // Convert **text** to <strong>text</strong>
+            let formatted = para.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            // Wrap in paragraph tag
+            return `<p>${formatted}</p>`;
+        }).join('');
+        
+        console.log('  ✅ Converted to HTML with bold tags');
+    } else {
+        console.log('  ✅ Already HTML format');
+    }
+
+    // Generate PDF using HTML-based method (supports bold formatting)
+    const { filePath, fileName } = await createCoverLetterPDFFromHTML(
+        userData,
+        coverLetterHtml,
+        companyName,
+        companyAddress || '',
+        photoPath,
+        signaturePath
+    );
+
+    console.log(`✅ [COMMON] PDF generated: ${fileName} at ${filePath}\n`);
+    
+    return { filePath, fileName };
+}
+
+// Helper function to generate hiring manager name and all company locations using AI
+async function generateAdditionalDetails(websiteUrl, companyName, position = 'Position') {
+    console.log(`\n🤖 [GEMINI] Starting location and hiring manager generation for ${companyName}...`);
+    console.log(`🔑 [GEMINI] API Key Status: ${process.env.GEMINI_API_KEY ? '✅ LOADED (starts with: ' + process.env.GEMINI_API_KEY.substring(0, 10) + '...)' : '❌ MISSING'}`);
+    const startTime = Date.now();
+    const geminiKey = process.env.GEMINI_API_KEY;
+    
+    if (!geminiKey || geminiKey === 'your_gemini_api_key_here') {
+        console.log(`❌ [GEMINI] API key not found or is placeholder, returning GENERIC defaults`);
+        console.log(`⚠️  [GEMINI] This is why you're getting generic content in 175ms!`);
+        return {
+            hiringManager: 'Hiring Manager',
+            subject: `Application for ${position}`,
+            locations: [{
+        country: 'N/A',
+        city: 'N/A',
+        address: 'N/A',
+        isHeadquarters: true
+            }]
+        };
+    }
+    
+    console.log(`✅ [GEMINI] Valid API key detected, proceeding with AI generation...`);
+
+    try {
+        console.log(`📦 [GEMINI] Loading GoogleGenerativeAI package...`);
+        const { GoogleGenerativeAI } = require('@google/generative-ai');
+        console.log(`🔧 [GEMINI] Initializing Gemini with key: ${geminiKey.substring(0, 15)}...`);
+        const genAI = new GoogleGenerativeAI(geminiKey);
+        const model = genAI.getGenerativeModel({ 
+            model: 'gemini-2.5-flash'
+        });
+        console.log(`✅ [GEMINI] Model initialized, preparing prompt...`);
+
+        const prompt = `You are a research assistant. Find the ACTUAL headquarters location and address for the company "${companyName}" (website: ${websiteUrl}).
+
+ABSOLUTELY CRITICAL - DOMAIN ACCURACY:
+You MUST research the EXACT domain "${websiteUrl}" — NOT any similar-sounding domain.
+- The TLD matters: .ch is NOT .com, .co.uk is NOT .com, .de is NOT .com
+- For example, if given "icmag.ch", research ONLY icmag.ch (a Swiss company), NOT icmag.com (a completely different company)
+- NEVER substitute or guess a different domain. The user provided this exact URL for a reason.
+- If you cannot find information about the exact domain, state what you can determine from the URL alone — do NOT return information about a different company.
+
+CRITICAL INSTRUCTIONS:
+1. Visit the company's ACTUAL website at ${websiteUrl}
+2. Look SPECIFICALLY at: Contact page, About Us page, Impressum/Legal Notice, Company Registry information
+3. Find the PRIMARY headquarters (main office) - NOT branch offices or historical addresses
+4. Verify the address is CURRENT and ACTIVE
+5. If company has multiple offices, identify which one is the TRUE headquarters
+6. Double-check country is CORRECT - do not guess or assume
+
+IMPORTANT: Many companies may MENTION other countries in their content (clients, partners, expansion plans) - ignore those references. Find the ACTUAL physical headquarters where the company is registered and operates from.
+
+FOR US COMPANIES: Look for addresses in format "1234 Street Name, City, State ZIP, USA" or "City, State ZIP"
+FOR SWISS COMPANIES: Look for addresses in format "Street Number, CH-PostalCode City"
+FOR OTHER COUNTRIES: Use the country's standard address format
+
+Generate a realistic hiring manager name based on the company's headquarters country/culture.
+
+REQUIRED OUTPUT (JSON format only):
+{
+    "hiringManager": "Realistic Full Name (culturally appropriate for headquarters country)",
+    "subject": "Professional Email Subject Line for Application",
+    "locations": [
+        {
+            "country": "Full Country Name (e.g., 'United States', 'Switzerland', 'Germany')",
+            "city": "City Name",
+            "address": "Complete Street Address with Postal/ZIP Code",
+            "isHeadquarters": true
+        }
+    ]
+}
+
+VALIDATION CHECKLIST:
+- Is the country CORRECT? (Double-check website's actual location, not just mentioned countries)
+- Is this the PRIMARY headquarters, not a branch office?
+- Is the address CURRENT and COMPLETE?
+- Does the hiring manager name match the headquarters country's culture?
+
+Example for US company in Florida:
+{
+    "hiringManager": "Michael Johnson",
+    "subject": "Application for ${position} Position at ${companyName}",
+    "locations": [
+        {
+            "country": "United States",
+            "city": "Miami",
+            "address": "1234 Brickell Avenue, Miami, FL 33131, USA",
+            "isHeadquarters": true
+        }
+    ]
+}
+
+Example for Swiss company:
+{
+    "hiringManager": "Hans Mueller",
+    "subject": "Application for ${position} Position at ${companyName}",
+    "locations": [
+        {
+            "country": "Switzerland",
+            "city": "Zürich",
+            "address": "Birmensdorferstrasse 108, CH-8003 Zürich",
+            "isHeadquarters": true
+        }
+    ]
+}
+
+Return ONLY valid JSON, no additional text.`;
+
+        console.log(`🤖 Calling Gemini API for ${companyName}...`);
+        const geminiStart = Date.now();
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
+        const geminiDuration = Date.now() - geminiStart;
+        console.log(`✅ Gemini response received in ${geminiDuration}ms`);
+        console.log('📝 Gemini response (first 200 chars):', text.substring(0, 200));
+        
+        // Try to extract JSON from the response
+        let jsonMatch = text.match(/\{[\s\S]*\}/);
+        
+        // If no match, try to clean the response
+        if (!jsonMatch) {
+            // Remove markdown code blocks if present
+            const cleanedText = text.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+            jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+        }
+        
+        if (jsonMatch) {
+            try {
+        const data = JSON.parse(jsonMatch[0]);
+        console.log('Parsed location data:', JSON.stringify(data, null, 2));
+        
+        return {
+            hiringManager: data.hiringManager || 'Hiring Manager',
+            subject: data.subject || `Application for ${position}`,
+            locations: data.locations && data.locations.length > 0 ? data.locations.map(loc => ({
+                country: loc.country || 'N/A',
+                city: loc.city || 'N/A',
+                address: loc.address || `${loc.city || 'N/A'}, ${loc.country || 'N/A'}`,
+                isHeadquarters: loc.isHeadquarters !== undefined ? loc.isHeadquarters : true
+            })) : [{
+                country: 'N/A',
+                city: 'N/A',
+                address: 'N/A',
+                isHeadquarters: true
+            }]
+        };
+            } catch (parseError) {
+        console.error('JSON parse error:', parseError.message);
+        console.error('Attempted to parse:', jsonMatch[0].substring(0, 200));
+            }
+        } else {
+            console.error('No JSON found in Gemini response');
+        }
+    } catch (error) {
+        console.error('Error generating additional details:', error.message);
+        if (error.stack) {
+            console.error('Error stack:', error.stack);
+        }
+    }
+
+    return {
+        hiringManager: 'Hiring Manager',
+        subject: `Application for ${position}`,
+        locations: [{
+            country: 'N/A',
+            city: 'N/A',
+            address: 'N/A',
+            isHeadquarters: true
+        }]
+    };
+}
+
+// API endpoint to download generated cover letter
+app.get('/api/download-cover-letter/:filename', authenticateToken, async (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const filePath = path.join(__dirname, 'temp', filename);
+        
+        // Check if file exists
+        try {
+            await fs.access(filePath);
+        } catch {
+            return res.status(404).json({ error: 'Cover letter not found' });
+        }
+
+        res.download(filePath, filename);
+    } catch (error) {
+        console.error('Download error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================
+// EMAIL SENDING ENDPOINTS - NOW USING REFACTORED CONTROLLERS
+// Endpoints: /api/send-applications, /api/send-single-application
+// Location: server/controllers/emailController.js
+// Routes: server/routes/emailRoutes.js (mounted at bottom of this file)
+// ============================================
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+    res.json({ 
+        status: 'ok',
+        message: 'Server is running. Configure your email settings to send applications.',
+    });
+});
+
+// ============================================
+// ADMIN - CREDIT PACKAGE MANAGEMENT
+// ============================================
+
+// Get all packages (public - for users to see available packages)
+// Check if user is admin
+app.get('/api/user/is-admin', authenticateToken, async (req, res) => {
+    try {
+        const row = await dbConfig.get('SELECT role FROM users WHERE id = ?', [req.user.id]);
+        res.json({ isAdmin: row && row.role === 'admin' });
+    } catch (error) {
+        res.status(500).json({ error: 'Database error' });
+    }
+});
+
+// ============================================
+// ============================================
+// PAYMENT ENDPOINTS - Now Modularized
+// ============================================
+// Payment routes are now in server/routes/payment.js
+// Payment controllers are in server/controllers/paymentController.js
+// Auth middleware is in server/middleware/auth.js
+
+// Set up payment routes with dbConfig access
+paymentRoutes.setDbConfig(dbConfig);
+app.use('/api/payment', paymentRoutes.router);
+
+// Diagnostic endpoint to verify deployment version
+app.get('/api/relay-test', (req, res) => {
+    res.json({ relay: 'v2', timestamp: new Date().toISOString() });
+});
+
+// Android OAuth relay endpoints — receives code from Google/Microsoft via HTTPS callback,
+// then redirects to cvapplyr:// deep link so the app can extract the code.
+// These are placed BEFORE the rate-limited auth routes so they're not blocked.
+app.get('/auth/google/mobile-callback', (req, res, next) => {
+    if (req.query.state === 'android-relay') {
+        const code = req.query.code;
+        const error = req.query.error;
+        console.log('Google Android relay hit:', { code: code ? 'present' : 'missing', error });
+        try {
+            if (error) {
+                console.log('Google Android relay error:', error);
+                return res.redirect(`cvapplyr://oauth-error?error=${encodeURIComponent(error)}&provider=google`);
+            }
+            if (!code) {
+                return res.redirect('cvapplyr://oauth-error?error=no_code&provider=google');
+            }
+            console.log('Google Android relay: forwarding code to app via deep link');
+            // Use manual 302 instead of res.redirect() in case Railway edge doesn't like custom schemes
+            res.writeHead(302, { 'Location': `cvapplyr://oauth-callback?code=${encodeURIComponent(code)}&provider=google` });
+            return res.end();
+        } catch (e) {
+            console.error('Google Android relay CRASH:', e);
+            return res.status(500).json({ error: 'Relay failed', details: e.message });
+        }
+    }
+    next();
+});
+
+app.get('/auth/microsoft/callback', (req, res, next) => {
+    if (req.query.state === 'android-relay') {
+        const code = req.query.code;
+        const error = req.query.error;
+        console.log('Microsoft Android relay hit:', { code: code ? 'present' : 'missing', error });
+        try {
+            if (error) {
+                console.log('Microsoft Android relay error:', error);
+                return res.redirect(`cvapplyr://oauth-error?error=${encodeURIComponent(error)}&provider=microsoft`);
+            }
+            if (!code) {
+                return res.redirect('cvapplyr://oauth-error?error=no_code&provider=microsoft');
+            }
+            console.log('Microsoft Android relay: forwarding code to app via deep link');
+            res.writeHead(302, { 'Location': `cvapplyr://oauth-callback?code=${encodeURIComponent(code)}&provider=microsoft` });
+            return res.end();
+        } catch (e) {
+            console.error('Microsoft Android relay CRASH:', e);
+            return res.status(500).json({ error: 'Relay failed', details: e.message });
+        }
+    }
+    next();
+});
+
+// Set up auth routes with rate limiting
+app.use('/api/auth', authLimiter, authRoutes);
+app.use('/auth', authLimiter, authRoutes);
+
+// Account deletion endpoint (GDPR/CCPA compliance) with OAuth revocation
+app.delete('/api/account/delete', authenticateToken, sensitiveLimiter, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { confirmText } = req.body;
+
+        // Require explicit confirmation
+        if (confirmText !== 'DELETE') {
+            await logSecurityEvent('account', 'ACCOUNT_DELETE_FAILED', userId, false, {
+                reason: 'Invalid confirmation'
+            });
+            return res.status(400).json({ 
+                error: 'Invalid confirmation. Please type DELETE to confirm.' 
+            });
+        }
+
+        console.log(`🗑️ [ACCOUNT DELETE] Starting deletion process for user ${userId}`);
+
+        // Get user data before deletion for logging
+        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        
+        if (!user) {
+            await logSecurityEvent('account', 'ACCOUNT_DELETE_FAILED', userId, false, {
+                reason: 'User not found'
+            });
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Revoke OAuth tokens with providers (CASA Tier 2 requirement)
+        const revokeResults = { google: 'skipped', microsoft: 'skipped', apple: 'skipped' };
+        
+        // Revoke Google OAuth token
+        if (user.google_access_token) {
+            try {
+                const tokenToRevoke = decryptOAuthToken(user.google_access_token) || user.google_access_token;
+                const revokeResponse = await axios.post('https://oauth2.googleapis.com/revoke', null, {
+                    params: { token: tokenToRevoke },
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+                });
+                revokeResults.google = 'success';
+                console.log(`🔒 [ACCOUNT DELETE] Revoked Google OAuth token for user ${userId}`);
+            } catch (error) {
+                // Token might already be invalid, continue with deletion
+                revokeResults.google = 'failed: ' + (error.response?.data?.error || error.message);
+                console.error(`⚠️ [ACCOUNT DELETE] Failed to revoke Google token:`, error.message);
+            }
+        }
+
+        // Revoke Microsoft OAuth token
+        if (user.microsoft_access_token) {
+            try {
+                const tokenToRevoke = decryptOAuthToken(user.microsoft_access_token) || user.microsoft_access_token;
+                const revokeResponse = await axios.post(
+                    'https://graph.microsoft.com/v1.0/me/revokeSignInSessions',
+                    {},
+                    { headers: { 'Authorization': `Bearer ${tokenToRevoke}` } }
+                );
+                revokeResults.microsoft = 'success';
+                console.log(`🔒 [ACCOUNT DELETE] Revoked Microsoft OAuth token for user ${userId}`);
+            } catch (error) {
+                // Token might already be invalid, continue with deletion
+                revokeResults.microsoft = 'failed: ' + (error.response?.data?.error?.message || error.message);
+                console.error(`⚠️ [ACCOUNT DELETE] Failed to revoke Microsoft token:`, error.message);
+            }
+        }
+
+        // Note Apple token cleanup (Apple doesn't provide a simple revocation endpoint for server-side)
+        if (user.apple_user_id) {
+            revokeResults.apple = 'token_cleared';
+            console.log(`🔒 [ACCOUNT DELETE] Cleared Apple credentials for user ${userId}`);
+        }
+
+        // Delete user data in correct order (foreign key constraints)
+        await dbConfig.run('DELETE FROM notifications WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted notifications for user ${userId}`);
+
+        await dbConfig.run('DELETE FROM application_history WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted applications for user ${userId}`);
+
+        await dbConfig.run('DELETE FROM payment_orders WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted payments for user ${userId}`);
+
+        await dbConfig.run('DELETE FROM review_cover_letters WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted cover letters for user ${userId}`);
+
+        // Delete security audit logs for user (GDPR compliance)
+        await dbConfig.run('DELETE FROM security_audit_log WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted security audit logs for user ${userId}`);
+
+        // Delete user files from disk
+        const userUploadPath = path.join(__dirname, 'uploads', `user_${userId}`);
+        try {
+            await fs.rm(userUploadPath, { recursive: true, force: true });
+            console.log(`🗑️ [ACCOUNT DELETE] Deleted user files at ${userUploadPath}`);
+        } catch (err) {
+            console.error('Error deleting user files:', err);
+            // Continue with deletion even if file deletion fails
+        }
+
+        // Log account deletion event before deleting user
+        await logSecurityEvent('account', 'ACCOUNT_DELETED', userId, true, {
+            email: user.email,
+            oauth_revoked: revokeResults
+        });
+
+        // Finally, delete the user account
+        await dbConfig.run('DELETE FROM users WHERE id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted user account ${userId} (${user.email})`);
+
+        // Clear auth cookie if it exists
+        res.clearCookie('authToken');
+
+        res.json({ 
+            success: true, 
+            message: 'Your account and all associated data have been permanently deleted.',
+            oauth_revocation: revokeResults
+        });
+
+        console.log(`✅ [ACCOUNT DELETE] Successfully deleted user ${userId} (${user.email})`);
+
+    } catch (error) {
+        console.error('❌ [ACCOUNT DELETE] Error:', error);
+        await logSecurityEvent('account', 'ACCOUNT_DELETE_FAILED', req.user?.id, false, {
+            error: error.message
+        });
+        res.status(500).json({ 
+            error: 'Failed to delete account. Please contact support if the issue persists.',
+            details: error.message 
+        });
+    }
+});
+
+// GDPR Data Export endpoint (CASA Tier 2 requirement)
+app.get('/api/account/export', authenticateToken, sensitiveLimiter, async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        console.log(`📦 [DATA EXPORT] Starting export for user ${userId}`);
+
+        // Get user data
+        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        
+        if (!user) {
+            await logSecurityEvent('account', 'DATA_EXPORT_FAILED', userId, false, {
+                reason: 'User not found'
+            });
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Get all related data (using correct table names)
+        const [applications, coverLetters, payments, notifications, auditLogs] = await Promise.all([
+            dbConfig.query('SELECT * FROM application_history WHERE user_id = ?', [userId]),
+            dbConfig.query('SELECT * FROM review_cover_letters WHERE user_id = ?', [userId]),
+            dbConfig.query('SELECT * FROM payment_orders WHERE user_id = ?', [userId]),
+            dbConfig.query('SELECT * FROM notifications WHERE user_id = ?', [userId]),
+            dbConfig.query('SELECT * FROM security_audit_log WHERE user_id = ?', [userId])
+        ]);
+
+        // Remove sensitive encrypted tokens from export (keep only metadata)
+        const exportData = {
+            export_date: new Date().toISOString(),
+            user_data: {
+                id: user.id,
+                email: user.email,
+                full_name: user.full_name,
+                phone: user.phone,
+                created_at: user.created_at,
+                oauth_providers: {
+                    google: {
+                        connected: !!user.google_access_token,
+                        email: user.google_email,
+                        token_issued_at: user.google_token_issued_at,
+                        token_expires_at: user.google_token_expires_at
+                    },
+                    microsoft: {
+                        connected: !!user.microsoft_access_token,
+                        email: user.microsoft_email,
+                        token_issued_at: user.microsoft_token_issued_at,
+                        token_expires_at: user.microsoft_token_expires_at
+                    },
+                    apple: {
+                        connected: !!user.apple_user_id,
+                        token_issued_at: user.apple_token_issued_at,
+                        token_expires_at: user.apple_token_expires_at
+                    }
+                },
+                credits: {
+                    total_credits: user.total_credits,
+                    used_credits: user.used_credits,
+                    remaining_credits: (user.total_credits || 0) - (user.used_credits || 0)
+                },
+                subscription: {
+                    package_id: user.package_id,
+                    package_name: user.package_name,
+                    package_start_date: user.package_start_date,
+                    package_end_date: user.package_end_date,
+                    auto_renew: user.auto_renew
+                }
+            },
+            applications: applications.map(app => ({
+                id: app.id,
+                company_name: app.company_name,
+                position: app.position,
+                recipient_email: app.recipient_email,
+                status: app.status,
+                sent_at: app.sent_at,
+                created_at: app.created_at
+            })),
+            cover_letters: coverLetters.map(cl => ({
+                id: cl.id,
+                company_name: cl.company_name,
+                position: cl.position,
+                content: cl.content,
+                model_used: cl.model_used,
+                created_at: cl.created_at
+            })),
+            payments: payments.map(payment => ({
+                id: payment.id,
+                amount: payment.amount,
+                currency: payment.currency,
+                status: payment.status,
+                package_id: payment.package_id,
+                package_name: payment.package_name,
+                razorpay_order_id: payment.razorpay_order_id,
+                razorpay_payment_id: payment.razorpay_payment_id,
+                created_at: payment.created_at
+            })),
+            notifications: notifications.map(notif => ({
+                id: notif.id,
+                type: notif.type,
+                title: notif.title,
+                message: notif.message,
+                read: notif.read,
+                created_at: notif.created_at
+            })),
+            security_audit_logs: auditLogs.map(log => ({
+                id: log.id,
+                event_type: log.event_type,
+                event_category: log.event_category,
+                success: log.success,
+                ip_address: log.ip_address,
+                user_agent: log.user_agent,
+                metadata: log.metadata,
+                created_at: log.created_at
+            }))
+        };
+
+        // Log export event
+        await logSecurityEvent('account', 'DATA_EXPORTED', userId, true, {
+            email: user.email,
+            records_count: {
+                applications: applications.length,
+                cover_letters: coverLetters.length,
+                payments: payments.length,
+                notifications: notifications.length,
+                audit_logs: auditLogs.length
+            }
+        });
+
+        console.log(`✅ [DATA EXPORT] Successfully exported data for user ${userId}`);
+
+        // Set headers for file download
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename="account-data-${userId}-${Date.now()}.json"`);
+        res.json(exportData);
+
+    } catch (error) {
+        console.error('❌ [DATA EXPORT] Error:', error);
+        await logSecurityEvent('account', 'DATA_EXPORT_FAILED', req.user?.id, false, {
+            error: error.message
+        });
+        res.status(500).json({ 
+            error: 'Failed to export account data. Please contact support if the issue persists.',
+            details: error.message 
+        });
+    }
+});
+
+// Set up profile routes with authentication
+app.use('/api/users', authenticateToken, profileRoutes);
+
+// Set up user data routes (both /api/users and /users for backward compatibility)
+app.use('/api/users', userDataRoutes);
+app.use('/users', userDataRoutes);
+// app.use('/api/user', usageRoutes);  // Commented out - using creditsRoutes instead for /api/user/usage-stats
+app.use('/api', creditsRoutes);
+app.use('/api', adminPackagesRoutes);
+app.use('/api', coverLetterRoutes);
+app.use('/api', emailRoutes);
+app.use('/api', notificationsRoutes);
+app.use('/api', jobRoutes);
+app.use('/api/ai-hub', aiHubRoutes);
+const batchRoutes = require('./server/routes/batchRoutes');
+app.use('/api', batchRoutes);
+
+// Async job startup maintenance (runs after DB is ready via app.listen)
+const { requeueStuckJobs, cleanupOldJobs } = require('./server/services/jobService');
+// Clean up old jobs every hour
+setInterval(() => cleanupOldJobs().catch(console.error), 60 * 60 * 1000);
+
+// Start email forwarding service
+const EmailForwardingService = require('./server/services/emailForwardingService');
+const emailForwarder = new EmailForwardingService();
+emailForwarder.start();
+
+// Start server
+const HOST = process.env.HOST || '0.0.0.0';
+app.listen(PORT, HOST, () => {
+    console.log(`
+╔═══════════════════════════════════════════════════════╗
+║        Resume Sender App - Server Running            ║
+╚═══════════════════════════════════════════════════════╝
+
+🌐 Server: http://${HOST}:${PORT}
+🌐 Local: http://localhost:${PORT}
+🌐 Network: http://192.168.1.14:${PORT}
+📧 Configure your email in Settings
+📬 Email forwarding: Active
+
+Open your browser and visit any of the above URLs
+    `);
+    
+    // Run async job maintenance after server (and DB) is ready
+    requeueStuckJobs().catch(err => console.error('Failed to requeue stuck jobs:', err));
+    cleanupOldJobs().catch(err => console.error('Failed to cleanup old jobs:', err));
+});

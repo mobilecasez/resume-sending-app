@@ -1,0 +1,1854 @@
+async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyName, companyAddress, photoPath, signaturePath) {
+    console.log('\n');
+    console.log('═══════════════════════════════════════════════════════');
+    console.log('📄 createCoverLetterPDFFromHTML CALLED');
+    console.log('═══════════════════════════════════════════════════════');
+    console.log('companyName:', companyName);
+    console.log('companyAddress:', companyAddress);
+    console.log('companyAddress length:', companyAddress?.length);
+    console.log('companyAddress is empty?:', !companyAddress);
+    console.log('═══════════════════════════════════════════════════════\n');
+    
+    return new Promise(async (resolve, reject) => {
+        try {
+            const currentDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+            const timestamp = Date.now(); // Add millisecond timestamp for uniqueness
+            const sanitizedCompanyName = companyName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+            const fileName = `Cover_Letter_${currentDate}_${sanitizedCompanyName}_${timestamp}.pdf`;
+            const filePath = path.join(__dirname, 'temp', fileName);
+            
+            await fs.mkdir(path.join(__dirname, 'temp'), { recursive: true });
+            
+            // First, calculate the required height by parsing content
+            const $ = cheerio.load(coverLetterHtml);
+            // Extract each <p> block as a paragraph; fall back to <br>-split for legacy plain HTML
+            const pTags = $('p');
+            const paragraphs = pTags.length > 0
+                ? pTags.toArray().map(el => $.html(el))
+                : ($('body').html() || coverLetterHtml).split(/<br\s*\/?>/gi);
+            
+            // Estimate content height
+            const pageWidth = 595;
+            const sidebarWidth = 180;
+            const contentWidth = pageWidth - sidebarWidth - 80;
+            const lineHeight = 14;
+            const fontSize = 10;
+            
+            // Calculate approximate height needed for content
+            let estimatedContentHeight = 50; // Starting Y
+            estimatedContentHeight += 25; // Name
+            estimatedContentHeight += 25; // Designation
+            estimatedContentHeight += 30; // Separator
+            estimatedContentHeight += 30; // Cover Letter heading
+            estimatedContentHeight += 25; // Dear Hiring Manager
+            
+            // Estimate paragraph heights (rough calculation)
+            for (const paraHtml of paragraphs) {
+        const plainText = cheerio.load(`<div>${paraHtml}</div>`).text().trim();
+        if (!plainText) continue;
+        
+        // Estimate lines needed (approx 80 chars per line at font size 10)
+        const charsPerLine = 75;
+        const numLines = Math.ceil(plainText.length / charsPerLine);
+        estimatedContentHeight += (numLines * lineHeight) + 10; // + paragraph spacing
+            }
+            
+            estimatedContentHeight += 10; // Before closing
+            estimatedContentHeight += 30; // Best regards
+            if (signaturePath) estimatedContentHeight += 50; // Signature
+            estimatedContentHeight += 30; // Name
+            estimatedContentHeight += 50; // Bottom margin
+            
+            // Ensure minimum height for sidebar content
+            const minHeight = 600;
+            const pageHeight = Math.max(minHeight, estimatedContentHeight);
+            
+            // Create PDF with calculated size - autoFirstPage false to control page creation
+            const doc = new PDFKit({
+        size: [pageWidth, pageHeight],
+        margins: { top: 0, bottom: 0, left: 0, right: 0 },
+        autoFirstPage: false
+            });
+            
+            // Add single page with exact size
+            doc.addPage({ size: [pageWidth, pageHeight], margins: { top: 0, bottom: 0, left: 0, right: 0 } });
+            
+            const writeStream = fsSync.createWriteStream(filePath);
+            doc.pipe(writeStream);
+            
+            // Register fonts
+            const latoRegularPath = path.join(__dirname, 'fonts', 'Lato-Regular.ttf');
+            const latoBoldPath = path.join(__dirname, 'fonts', 'Lato-Bold.ttf');
+            
+            doc.registerFont('Lato', latoRegularPath);
+            doc.registerFont('Lato-Bold', latoBoldPath);
+            
+            // LEFT SIDEBAR (dark background) - full height
+            doc.rect(0, 0, sidebarWidth, pageHeight).fill('#262633');
+            
+            // Photo/Initials circle at top
+            const photoX = sidebarWidth / 2;
+            const photoY = 70;
+            const photoSize = 80;
+            
+            if (photoPath) {
+        try {
+            // Clip to circle for circular profile photo
+            doc.save();
+            doc.circle(photoX, photoY, photoSize/2).clip();
+            doc.image(photoPath, photoX - photoSize/2, photoY - photoSize/2, {
+                width: photoSize,
+                height: photoSize
+            });
+            doc.restore();
+        } catch (e) {
+            // Draw initials circle if photo fails
+            doc.circle(photoX, photoY, photoSize/2).stroke('#ffffff');
+            const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
+            doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+            doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
+        }
+            } else {
+        // No photo - draw circle with initials
+        doc.circle(photoX, photoY, photoSize/2).lineWidth(2).stroke('#ffffff');
+        const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
+        doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+        doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
+            }
+            
+            let sidebarY = photoY + photoSize/2 + 40;
+            
+            // TO section
+            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+            doc.text('TO', 20, sidebarY);
+            sidebarY += 20;
+            
+            doc.font('Lato').fontSize(10).fillColor('#ffffff');
+            doc.text('Hiring Manager,', 20, sidebarY);
+            sidebarY += 16;
+            
+            // Company name (PDFKit auto-wraps with width option)
+            doc.text(companyName, 20, sidebarY, { width: sidebarWidth - 40 });
+            sidebarY = doc.y + 4;
+            
+            // Separator line after TO section
+            doc.moveTo(20, sidebarY).lineTo(sidebarWidth - 20, sidebarY).lineWidth(0.5).stroke('#808080');
+            sidebarY += 20;
+            
+            // FROM section
+            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+            doc.text('FROM', 20, sidebarY);
+            sidebarY += 20;
+            
+            doc.font('Lato').fontSize(10).fillColor('#ffffff');
+            doc.text((userData.fullName || 'Applicant').toUpperCase(), 20, sidebarY, { width: sidebarWidth - 40 });
+            sidebarY += 20;
+            
+            sidebarY += 10;
+            
+            // Separator line after FROM section
+            doc.moveTo(20, sidebarY).lineTo(sidebarWidth - 20, sidebarY).lineWidth(0.5).stroke('#808080');
+            sidebarY += 20;
+            
+            // DATE section
+            const today = new Date();
+            const dateStr = today.toLocaleDateString('en-US', { 
+        month: 'short', 
+        day: '2-digit', 
+        year: 'numeric' 
+            }).replace(',', '');
+            
+            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+            doc.text('DATE', 20, sidebarY);
+            sidebarY += 20;
+            
+            doc.font('Lato').fontSize(10).fillColor('#ffffff');
+            doc.text(dateStr, 20, sidebarY);
+            
+            // Contact info at bottom of sidebar
+            const contactY = 100;
+            doc.font('Lato').fontSize(8).fillColor('#ffffff');
+            if (userData.email) {
+        doc.text(userData.email, 20, contactY, { lineBreak: false });
+            }
+            if (userData.phoneNumber) {
+        doc.text(userData.phoneNumber, 20, contactY + 12, { lineBreak: false });
+            }
+            if (userData.city) {
+        doc.text(userData.city, 20, contactY + 24, { lineBreak: false });
+            }
+            if (userData.country) {
+        doc.text(userData.country, 20, contactY + 36, { lineBreak: false });
+            }
+            
+            // RIGHT CONTENT AREA
+            const contentX = sidebarWidth + 40;
+            let contentY = 50;
+            
+            // Header with name (LEFT) and contact details (RIGHT) on SAME ROW
+            const headerY = contentY;
+            const nameText = (userData.fullName || 'APPLICANT').toUpperCase().trim();
+            
+            // Name on left (bold, 18pt)
+            doc.font('Lato-Bold').fontSize(18).fillColor('#000000');
+            doc.text(nameText, contentX - 1, headerY, { lineBreak: false });
+
+            // Contact details on right
+            const rightContentWidth = pageWidth - 40 - contentX;
+            doc.font('Lato').fontSize(9).fillColor('#444444');
+            let contactPosY = headerY - 2;
+            if (userData.city && userData.country) {
+                doc.text(`${userData.city}, ${userData.country}`, contentX, contactPosY, {
+                    align: 'right', width: rightContentWidth, lineBreak: false
+                });
+                contactPosY += 13;
+            }
+            if (userData.phoneNumber) {
+                doc.text(userData.phoneNumber, contentX, contactPosY, {
+                    align: 'right', width: rightContentWidth, lineBreak: false
+                });
+                contactPosY += 13;
+            }
+            if (userData.email) {
+                doc.text(userData.email, contentX, contactPosY, {
+                    align: 'right', width: rightContentWidth, lineBreak: false
+                });
+            }
+
+            // Designation below name
+            contentY = headerY + 22;
+            doc.font('Lato').fontSize(11).fillColor('#666666');
+            doc.text('Project Manager', contentX, contentY, { lineBreak: false });
+
+            contentY += 25;
+
+            // Separator line
+            doc.moveTo(contentX, contentY).lineTo(pageWidth - 40, contentY).lineWidth(1).stroke('#cccccc');
+
+            contentY += 45;
+
+            // Cover Letter heading
+            doc.font('Lato-Bold').fontSize(14).fillColor('#333333');
+            doc.text('Cover Letter', contentX, contentY, { lineBreak: false });
+
+            contentY += 40;
+
+            // Cover letter body — extract plain text from the parsed HTML paragraphs
+            doc.font('Lato').fontSize(10).fillColor('#000000');
+            for (const paraHtml of paragraphs) {
+                const plainText = cheerio.load(`<div>${paraHtml}</div>`).text().trim();
+                if (!plainText) continue;
+                doc.text(plainText, contentX, contentY, {
+                    width: contentWidth,
+                    lineBreak: true,
+                    paragraphGap: 0
+                });
+                contentY = doc.y + 8;
+            }
+
+            // Closing
+            contentY += 12;
+            doc.font('Lato').fontSize(10).fillColor('#000000');
+            doc.text('Best regards,', contentX, contentY, { lineBreak: false });
+
+            contentY += 30;
+
+            // Signature if provided
+            if (signaturePath) {
+                try {
+                    doc.image(signaturePath, contentX, contentY, { width: 120, height: 40 });
+                    contentY += 50;
+                } catch (sigError) {
+                    console.log('Could not embed signature');
+                }
+            }
+
+            // Applicant name
+            doc.font('Lato-Bold').fontSize(10).fillColor('#000000');
+            doc.text((userData.fullName || 'APPLICANT').toUpperCase(), contentX, contentY, { lineBreak: false });
+
+            // Finalize PDF and wait for the write stream to flush
+            await new Promise((streamResolve, streamReject) => {
+                doc.end();
+                writeStream.on('finish', streamResolve);
+                writeStream.on('error', streamReject);
+            });
+
+            console.log(`✅ PDF created: ${fileName}`);
+
+            resolve({ filePath, fileName });
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
+// TWO-COLUMN cover letter PDF generator (like Cover_Letter_Google_New.pdf from Dec 4)
+async function createCoverLetterPDF(userData, coverLetterText, companyName, photoPath, signaturePath) {
+    const pdfDoc = await PDFDocument.create();
+    pdfDoc.registerFontkit(fontkit);
+    const pageWidth = 595;
+    const pageHeight = 1067;
+    const page = pdfDoc.addPage([pageWidth, pageHeight]);
+
+    // Embed Lato font
+    const latoRegularBytes = await fs.readFile(path.join(__dirname, 'fonts', 'Lato-Regular.ttf'));
+    const latoBoldBytes = await fs.readFile(path.join(__dirname, 'fonts', 'Lato-Bold.ttf'));
+    const helvetica = await pdfDoc.embedFont(latoRegularBytes);
+    const helveticaBold = await pdfDoc.embedFont(latoBoldBytes);
+
+    // Helper function for text wrapping - preserves sentence structure
+    function wrapText(text, maxWidth, font, fontSize) {
+        const lines = [];
+        
+        // Split by sentences first (better readability)
+        const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+        
+        for (const sentence of sentences) {
+            const sentenceWidth = font.widthOfTextAtSize(sentence.trim(), fontSize);
+            
+            // If sentence fits on one line, add it
+            if (sentenceWidth <= maxWidth) {
+        lines.push(sentence.trim());
+            } else {
+        // If sentence is too long, wrap by words
+        const words = sentence.trim().split(' ');
+        let currentLine = '';
+        
+        for (const word of words) {
+            const testLine = currentLine ? `${currentLine} ${word}` : word;
+            const testWidth = font.widthOfTextAtSize(testLine, fontSize);
+            
+            if (testWidth > maxWidth && currentLine) {
+                lines.push(currentLine);
+                currentLine = word;
+            } else {
+                currentLine = testLine;
+            }
+        }
+        
+        if (currentLine) {
+            lines.push(currentLine);
+        }
+            }
+        }
+        
+        return lines;
+    }
+
+    // LEFT SIDEBAR (dark background)
+    const sidebarWidth = 180;
+    page.drawRectangle({
+        x: 0,
+        y: 0,
+        width: sidebarWidth,
+        height: pageHeight,
+        color: rgb(0.15, 0.15, 0.2),
+    });
+
+    // Photo/Initials circle at top
+    const photoX = sidebarWidth / 2;
+    const photoY = 70;
+    const photoSize = 80;
+    
+    if (photoPath) {
+        try {
+            // Clip to circle for circular profile photo
+            doc.save();
+            doc.circle(photoX, photoY, photoSize/2).clip();
+            doc.image(photoPath, photoX - photoSize/2, photoY - photoSize/2, {
+                width: photoSize,
+                height: photoSize
+            });
+            doc.restore();
+        } catch (e) {
+            // Draw initials circle if photo fails
+            doc.circle(photoX, photoY, photoSize/2).stroke('#ffffff');
+            const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
+            doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+            doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
+        }
+    } else {
+        // No photo - draw circle with initials
+        doc.circle(photoX, photoY, photoSize/2).lineWidth(2).stroke('#ffffff');
+        const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
+        doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+        doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
+    }
+
+    // Sidebar sections - START LOWER (gap after photo)
+    let sidebarY = photoY + photoSize/2 + 40;
+    
+    // TO section
+    doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+    doc.text('TO', 20, sidebarY);
+    sidebarY += 20;
+    
+    doc.font('Lato').fontSize(10).fillColor('#ffffff');
+    doc.text('Hiring Manager,', 20, sidebarY);
+    sidebarY += 16;
+    
+    // Wrap company name if too long
+    const companyNameLines = wrapText(companyName, maxSidebarWidth, helvetica, 10);
+    for (const line of companyNameLines) {
+        doc.text(line, {
+            x: 20,
+            y: sidebarY,
+            size: 10,
+            font: helvetica,
+            color: rgb(1, 1, 1),
+        });
+        sidebarY -= 16;
+    }
+
+    sidebarY -= 4;
+    
+    // Separator line after TO section
+    doc.moveTo(20, sidebarY).lineTo(sidebarWidth - 20, sidebarY).lineWidth(0.5).stroke('#808080');
+    sidebarY += 20;
+    
+    // FROM section
+    doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+    doc.text('FROM', 20, sidebarY);
+    sidebarY += 20;
+    
+    doc.font('Lato').fontSize(10).fillColor('#ffffff');
+    doc.text((userData.fullName || 'Applicant').toUpperCase(), 20, sidebarY, { width: sidebarWidth - 40 });
+    sidebarY += 20;
+    
+    sidebarY += 10;
+    
+    // Separator line after FROM section
+    doc.moveTo(20, sidebarY).lineTo(sidebarWidth - 20, sidebarY).lineWidth(0.5).stroke('#808080');
+    sidebarY += 20;
+    
+    // DATE section
+    const today = new Date();
+    const dateStr = today.toLocaleDateString('en-US', { 
+        month: 'short', 
+        day: '2-digit', 
+        year: 'numeric' 
+    }).replace(',', '');
+    
+    doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+    doc.text('DATE', 20, sidebarY);
+    sidebarY += 20;
+    
+    doc.font('Lato').fontSize(10).fillColor('#ffffff');
+    doc.text(dateStr, 20, sidebarY);
+    
+    // Contact info at bottom of sidebar
+    const contactY = 100;
+    doc.font('Lato').fontSize(8).fillColor('#ffffff');
+    if (userData.email) {
+        doc.text(userData.email, 20, contactY, { lineBreak: false });
+    }
+    if (userData.phoneNumber) {
+        doc.text(userData.phoneNumber, 20, contactY + 12, { lineBreak: false });
+    }
+    if (userData.city) {
+        doc.text(userData.city, 20, contactY + 24, { lineBreak: false });
+    }
+    if (userData.country) {
+        doc.text(userData.country, 20, contactY + 36, { lineBreak: false });
+    }
+    
+    // RIGHT CONTENT AREA
+    const contentX = sidebarWidth + 40;
+    let contentY = 50;
+    
+    // Header with name (LEFT) and contact details (RIGHT) on SAME ROW
+    const headerY = contentY;
+    const nameText = (userData.fullName || 'APPLICANT').toUpperCase().trim();
+    
+    // Name on left - adjusted 1px left to align with designation
+    page.drawText(nameText, {
+        x: contentX - 1,
+        y: headerY,
+        size: 18,
+        font: helveticaBold,
+        color: rgb(0, 0, 0),
+    });
+    
+    // Contact details on right (moved up by 8px)
+    const rightAlignX = pageWidth - 40;
+    const contactFontSize = 9;
+    const contactStartY = headerY + 10; // Moved up by 8px
+    
+    if (userData.city && userData.country) {
+        const locationText = `${userData.city}, ${userData.country}`;
+        const locationWidth = helvetica.widthOfTextAtSize(locationText, contactFontSize);
+        page.drawText(locationText, {
+            x: rightAlignX - locationWidth,
+            y: contactStartY,
+            size: contactFontSize,
+            font: helvetica,
+            color: rgb(0.3, 0.3, 0.3),
+        });
+    }
+    
+    if (userData.phoneNumber) {
+        const phoneWidth = helvetica.widthOfTextAtSize(userData.phoneNumber, contactFontSize);
+        page.drawText(userData.phoneNumber, {
+            x: rightAlignX - phoneWidth,
+            y: contactStartY - 15,
+            size: contactFontSize,
+            font: helvetica,
+            color: rgb(0.3, 0.3, 0.3),
+        });
+    }
+    
+    if (userData.email) {
+        const emailWidth = helvetica.widthOfTextAtSize(userData.email, contactFontSize);
+        page.drawText(userData.email, {
+            x: rightAlignX - emailWidth,
+            y: contactStartY - 30,
+            size: contactFontSize,
+            font: helvetica,
+            color: rgb(0.3, 0.3, 0.3),
+        });
+    }
+    
+    // Move down for designation (below name) - reduced gap by 5px
+    contentY = headerY - 15;
+    
+    // Designation below name - EXACTLY at contentX (same as name)
+    const designation = 'Project Manager';
+    page.drawText(designation, {
+        x: contentX,
+        y: contentY,
+        size: 11,
+        font: helvetica,
+        color: rgb(0.4, 0.4, 0.4),
+    });
+
+    contentY -= 20; // Space before separator line
+
+    // Separator line
+    page.drawLine({
+        start: { x: contentX, y: contentY },
+        end: { x: pageWidth - 40, y: contentY },
+        thickness: 1,
+        color: rgb(0.8, 0.8, 0.8),
+    });
+
+    contentY -= 45; // Space before Cover Letter heading (increased by 20px)
+    
+    // "Cover Letter" heading
+    page.drawText('Cover Letter', {
+        x: contentX,
+        y: contentY,
+        size: 14,
+        font: helveticaBold,
+        color: rgb(0.2, 0.2, 0.2),
+    });
+
+    contentY -= 40; // Space before body (increased by 10px)
+
+    // Cover letter body
+    const paragraphs = ['Dear Hiring Manager,', ...coverLetterText.split('\n').filter(p => p.trim())];
+
+    const paragraphFontSize = 10;
+    const lineHeight = 16;
+
+    for (const para of paragraphs) {
+        const lines = wrapText(para, contentWidth, helvetica, paragraphFontSize);
+        for (const line of lines) {
+            if (contentY < 150) {
+        // Would need new page - for now just stop
+        break;
+            }
+            
+            page.drawText(line, {
+        x: contentX,
+        y: contentY,
+        size: paragraphFontSize,
+        font: helvetica,
+        color: rgb(0, 0, 0),
+            });
+            contentY -= lineHeight;
+        }
+        contentY -= 10;
+    }
+
+    // Closing
+    contentY -= 20;
+    page.drawText('Best regards,', {
+        x: contentX,
+        y: contentY,
+        size: 10,
+        font: helvetica,
+        color: rgb(0, 0, 0),
+    });
+    
+    contentY -= 30;
+
+    // Add signature if provided
+    if (signaturePath) {
+        try {
+            const signatureBytes = await fs.readFile(signaturePath);
+            const signatureImage = await pdfDoc.embedPng(signatureBytes);
+            page.drawImage(signatureImage, {
+        x: contentX,
+        y: contentY - 30,
+        width: 120,
+        height: 40,
+            });
+            contentY -= 50;
+        } catch (error) {
+            console.log('Could not embed signature');
+        }
+    }
+
+    page.drawText((userData.fullName || 'APPLICANT').toUpperCase(), {
+        x: contentX,
+        y: contentY,
+        size: 10,
+        font: helveticaBold,
+        color: rgb(0, 0, 0),
+    });
+
+    const pdfBytes = await pdfDoc.save();
+    const currentDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    const sanitizedCompanyName = companyName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+    const fileName = `Cover_Letter_${currentDate}_${sanitizedCompanyName}.pdf`;
+    const filePath = path.join(__dirname, 'temp', fileName);
+
+    await fs.mkdir(path.join(__dirname, 'temp'), { recursive: true });
+    await fs.writeFile(filePath, pdfBytes);
+    
+    console.log(`✅ PDF created: ${fileName} (${(pdfBytes.length / 1024).toFixed(2)} KB)`);
+
+    return { filePath, fileName };
+}
+
+// LEGACY: Old bulk-generate endpoint (now handled by batch routes and cover letter controller)
+// Renamed from GET /api/download-cover-letter/:filename to avoid shadowing the actual download route
+app.post('/api/generate-cover-letters-bulk', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { recipients } = req.body;
+
+        if (!recipients || recipients.length === 0) {
+            return res.status(400).json({ error: 'No recipients provided' });
+        }
+
+        // CHECK CREDITS - Each recipient requires 1 credit
+        const creditsRequired = recipients.length;
+        try {
+            const creditCheck = await checkUserCredits(userId, creditsRequired);
+            if (!creditCheck.hasCredits) {
+        return res.status(402).json({ 
+            error: creditCheck.message,
+            remainingCredits: creditCheck.remaining,
+            creditsRequired: creditsRequired
+        });
+            }
+        } catch (error) {
+            console.error('Credit check error:', error);
+            return res.status(500).json({ error: 'Failed to check credit balance' });
+        }
+
+        // Get user's complete profile and files from database
+        try {
+            const user = await dbConfig.get('SELECT full_name as "fullName", email, phone_number as "phoneNumber", city, country, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath" FROM users WHERE id = ?', [userId]);
+            
+            if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+            }
+
+            if (!user.resumePath) {
+        return res.status(400).json({ 
+            error: 'Resume is required. Please upload your resume in the Profile page.' 
+        });
+            }
+
+            const results = [];
+            let creditsDeducted = 0;
+
+            // Prepare user data for AI generation
+            const userData = {
+        fullName: user.fullName,
+        email: user.email,
+        phoneNumber: user.phoneNumber,
+        city: user.city,
+        country: user.country
+            };
+
+            const resumePath = path.join(__dirname, user.resumePath);
+            const photoPath = user.photoPath ? path.join(__dirname, user.photoPath) : null;
+            const signaturePath = user.signaturePath ? path.join(__dirname, user.signaturePath) : null;
+
+        console.log('\n📝 Generating cover letters...');
+        console.log(`📧 Generating for ${recipients.length} recipient(s)`);
+
+        for (const recipient of recipients) {
+            try {
+                console.log(`\n📤 Processing: ${recipient.email}`);
+
+                // Use template generator for DEEP RESEARCH, returns TEXT
+                const coverLetterResult = await templateGenerator.generateCoverLetter(
+                    userData,
+                    resumePath,
+                    recipient.email,
+                    recipient.website,
+                    recipient.position || 'Position'
+                );
+
+                if (!coverLetterResult.success) {
+                    throw new Error(`Cover letter generation failed: ${coverLetterResult.error}`);
+                }
+
+                const companyName = coverLetterResult.companyName;
+                const coverLetterText = coverLetterResult.coverLetter; // This is TEXT now
+                
+                console.log(`✅ Generated personalized cover letter for ${companyName}`);
+                console.log(`📊 Metadata:`, coverLetterResult.metadata);
+
+                // DEDUCT CREDIT for successful generation
+                try {
+                    await deductCredits(userId, 1, 'cover_letter_generation', {
+                        companyName: companyName,
+                        position: recipient.position,
+                        recipientEmail: recipient.email
+                    });
+                    creditsDeducted++;
+                    console.log(`💳 Deducted 1 credit (${creditsDeducted}/${recipients.length})`);
+                } catch (creditError) {
+                    console.error('Failed to deduct credit:', creditError);
+                    // Continue anyway - letter was generated
+                }
+
+                // Format cover letter with HTML (bold key points) - same as mobile
+                const coverLetterHtml = formatCoverLetterWithHTML(coverLetterText, coverLetterResult.metadata);
+                console.log(`📝 HTML formatted for PDF generation`);
+
+                // Use common PDF generation function (same as mobile)
+                const { filePath, fileName } = await generateCoverLetterPDF(
+                    user,
+                    coverLetterHtml,
+                    companyName,
+                    recipientEmail
+                );
+
+                console.log(`📄 Created PDF: ${fileName}`);
+
+                // Generate download URL
+                const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
+
+                results.push({
+                    email: recipient.email,
+                    company: companyName,
+                    position: recipient.position || 'Position',
+                    website: recipient.website,
+                    fileName: fileName,
+                    downloadUrl: downloadUrl,
+                    status: 'generated',
+                    metadata: coverLetterResult.metadata
+                });
+
+                console.log(`✅ Cover letter ready for ${recipient.email}`);
+
+            } catch (error) {
+                console.error(`❌ Failed to generate for ${recipient.email}:`, error.message);
+                results.push({
+                    email: recipient.email,
+                    status: 'failed',
+                    error: error.message,
+                });
+            }
+        }
+
+        const successCount = results.filter(r => r.status === 'generated').length;
+        
+        // Update total_generated counter
+        if (successCount > 0) {
+            try {
+                await dbConfig.run(
+                    'UPDATE users SET total_generated = total_generated + ? WHERE id = ?',
+                    [successCount, userId]
+                );
+                console.log(`📊 Updated total_generated counter: +${successCount}`);
+            } catch (error) {
+                console.error('⚠️ Failed to update counter:', error.message);
+            }
+        }
+        
+        console.log(`\n✅ Generated: ${successCount}/${recipients.length} cover letters`);
+        console.log(`💳 Total credits deducted: ${creditsDeducted}`);
+        
+        // Get updated credit balance
+        try {
+            const creditCheck = await checkUserCredits(userId, 0);
+            res.json({
+                success: true,
+                message: `Generated ${successCount}/${recipients.length} cover letters`,
+                results,
+                creditsUsed: creditsDeducted,
+                creditsRemaining: creditCheck.remaining
+            });
+        } catch {
+            res.json({
+                success: true,
+                message: `Generated ${successCount}/${recipients.length} cover letters`,
+                results,
+                creditsUsed: creditsDeducted
+            });
+        }
+        } catch (error) {
+            console.error('Database error:', error);
+            return res.status(500).json({ error: 'Failed to load user profile' });
+        }
+    } catch (error) {
+        console.error('Server error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================================================
+// COVER LETTER & EMAIL MODULES - Now properly separated into controllers
+// ============================================================================
+// All cover letter generation endpoints are now in:
+//   - server/controllers/coverLetterController.js
+//   - server/routes/coverLetterRoutes.js (mounted below)
+//
+// All email/application sending endpoints are now in:
+//   - server/controllers/emailController.js  
+//   - server/routes/emailRoutes.js (mounted below)
+//
+// These routes are mounted at lines ~3206-3207 with:
+//   app.use('/api', coverLetterRoutes);
+//   app.use('/api', emailRoutes);
+// ============================================================================
+// NOTE: The following lines are for debugging and should be removed in production
+
+// Debug endpoint to test cover letter generation
+app.post('/api/test-cover-letter', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { companyName, position, recipientEmail } = req.body;
+
+        if (!companyName || !position || !recipientEmail) {
+            return res.status(400).json({ error: 'All fields are required' });
+        }
+
+        // Get user profile
+        try {
+            const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+            
+            if (!user) {
+        console.error('User not found:', userId);
+        return res.status(500).json({ error: 'User not found' });
+            }
+
+            try {
+        // Use common PDF generation function
+        const { filePath, fileName } = await generateCoverLetterPDF(
+            user,
+            formatCoverLetterWithHTML('Dear Hiring Manager, I am writing to express my strong interest in the ${position} position at ${companyName}. With my extensive experience in ${RELEVANT_SKILLS}, I am confident that I would be a valuable addition to your team.', companyName),
+            companyName,
+            recipientEmail
+        );
+
+        console.log(`📄 Generated PDF: ${fileName}`);
+
+        res.json({
+            success: true,
+            downloadUrl: `/api/download-cover-letter/${encodeURIComponent(fileName)}`,
+            fileName: fileName
+        });
+
+            } catch (error) {
+        console.error('Error generating PDF:', error);
+        console.error('Error stack:', error.stack);
+        return res.status(500).json({ error: error.message || 'Failed to generate PDF' });
+            }
+        } catch (error) {
+            console.error('Database error:', error);
+            return res.status(500).json({ error: 'Failed to load user profile' });
+        }
+    } catch (error) {
+        console.error('Server error:', error);
+        console.error('Server error stack:', error.stack);
+        return res.status(500).json({ error: error.message || 'Server error' });
+    }
+});
+
+// ============================================================================
+// ADMIN - CREDIT PACKAGE MANAGEMENT
+// ============================================
+// Note: Admin package management endpoints would go here
+// The is-admin check endpoint is defined later in the file
+
+// Skipped duplicate/incorrect cover letter generation endpoint
+// (was mislabeled as /api/generate-cover-letter-pdf but had different implementation)
+
+/* COMMENTED OUT DUPLICATE ENDPOINT - START
+// API endpoint to generate cover letter PDF for download
+app.post('/api/generate-cover-letter-pdf', authenticateToken, async (req, res) => {
+    try {
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`📨 [${requestId}] REQUEST RECEIVED at ${new Date().toISOString()}`);
+    console.log(`   IP: ${req.ip}, UserAgent: ${req.get('user-agent')?.substring(0, 50)}...`);
+    console.log(`🔑 [${requestId}] GEMINI_API_KEY STATUS: ${process.env.GEMINI_API_KEY ? 'LOADED (length: ' + process.env.GEMINI_API_KEY.length + ')' : '❌ MISSING'}`);
+    
+    try {
+        const userId = req.user.id;
+        let { recipientEmail, websiteUrl, position } = req.body;
+
+        // Normalize website URL - auto-prepend https:// if missing
+        if (websiteUrl && !websiteUrl.match(/^https?:\/\//)) {
+            websiteUrl = 'https://' + websiteUrl;
+        }
+
+        console.log(`🔍 [${requestId}] Parsing request body:`, { userId, recipientEmail, websiteUrl, position });
+
+        // CHECK CREDITS - 1 credit required for generation
+        try {
+            const creditCheck = await checkUserCredits(userId, 1);
+            if (!creditCheck.hasCredits) {
+        console.warn(`⚠️ [${requestId}] Insufficient credits:`, creditCheck.message);
+        return res.status(402).json({ 
+            error: creditCheck.message,
+            remainingCredits: creditCheck.remaining,
+            creditsRequired: 1
+        });
+            }
+            console.log(`✅ [${requestId}] Credits available: ${creditCheck.remaining}`);
+        } catch (error) {
+            console.error(`❌ [${requestId}] Credit check error:`, error);
+            return res.status(500).json({ error: 'Failed to check credit balance' });
+        }
+
+        // Get user profile
+        try {
+            const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+            
+            if (!user) {
+        console.error(`❌ [${requestId}] User not found:`, userId);
+        return res.status(500).json({ error: 'User not found' });
+            }
+
+            console.log(`✅ [${requestId}] User loaded: ${user.email}`);
+
+            if (!user.resume_path) {
+        console.error(`❌ [${requestId}] Resume not found for user:`, userId);
+        return res.status(400).json({ error: 'Resume is required. Please upload your resume first.' });
+            }
+
+            try {
+        // Prepare user data
+        const userData = {
+            fullName: user.full_name,
+            email: user.email,
+            phoneNumber: user.phone_number,
+            city: user.city,
+            country: user.country
+        };
+
+        const resumePath = path.join(__dirname, user.resume_path);
+        console.log(`📂 [${requestId}] Resume path:`, resumePath);
+        
+        // First, generate hiring manager name, all locations, and subject using AI
+        console.log(`⏳ [${requestId}] Generating additional details (calling Gemini AI - may take 30-60 seconds)...`);
+        // Extract company name from URL for initial lookup (handles subdomains like career.limeflight.com)
+        let urlCompanyName;
+        try {
+            const parsedUrl = new URL(websiteUrl.startsWith('http') ? websiteUrl : `https://${websiteUrl}`);
+            const hostname = parsedUrl.hostname.replace('www.', '').toLowerCase();
+            const hostParts = hostname.split('.');
+            const genericSubdomains = ['career', 'careers', 'jobs', 'job', 'hiring', 'recruit', 'recruiting', 'recruitment', 'talent', 'join', 'work', 'apply', 'opportunities', 'portal', 'app', 'hr', 'people', 'team', 'boards', 'board'];
+            urlCompanyName = hostParts[0];
+            if (genericSubdomains.includes(urlCompanyName) && hostParts.length >= 3) {
+                urlCompanyName = hostParts[1];
+            }
+        } catch {
+            urlCompanyName = websiteUrl.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].split('.')[0];
+        }
+        const initialCompanyName = urlCompanyName.charAt(0).toUpperCase() + urlCompanyName.slice(1);
+        const { hiringManager, locations, subject } = await generateAdditionalDetails(websiteUrl, initialCompanyName, position);
+        const additionalDetailsDuration = Date.now() - additionalDetailsStart;
+        console.log(`✅ [${requestId}] Generated additional details in ${additionalDetailsDuration}ms`);
+        console.log(`   Locations: ${locations.length}, Headquarters: ${locations.find(l => l.isHeadquarters)?.country || 'Unknown'}`);
+        console.log(`   Subject: ${subject.substring(0, 50)}...`);
+        
+        // Generate cover letter with AI (pass locations for dynamic relocation text)
+        const generator = new TemplateCoverLetterGenerator();
+        console.log(`⏳ [${requestId}] Generating cover letter with location context...`);
+        
+        const result = await generator.generateCoverLetter(
+            userData,
+            resumePath,
+            recipientEmail,
+            websiteUrl,
+            position,
+            locations
+        );
+
+        console.log(`✅ [${requestId}] Cover letter generated successfully:`, result.success);
+
+        if (!result.success) {
+            console.error(`❌ [${requestId}] Cover letter generation failed`);
+            return res.status(500).json({ error: 'Failed to generate cover letter' });
+        }
+
+        // DEDUCT CREDIT for successful generation
+        try {
+            await deductCredits(userId, 1, 'cover_letter_generation', {
+                companyName: result.companyName,
+                position: position,
+                recipientEmail: recipientEmail
+            });
+            // Update total_generated counter
+            await dbConfig.run(
+                'UPDATE users SET total_generated = total_generated + 1 WHERE id = ?',
+                [userId]
+            );
+            console.log(`💳 [${requestId}] Deducted 1 credit and updated counter`);
+        } catch (creditError) {
+            console.error(`❌ [${requestId}] Failed to deduct credit:`, creditError);
+            // Continue anyway - letter was generated
+        }
+
+        // Format cover letter with HTML (bold key points)
+        const coverLetterHtml = formatCoverLetterWithHTML(result.coverLetter, result.metadata);
+        console.log(`📝 [${requestId}] HTML formatted, length: ${coverLetterHtml.length}`);
+
+        // Get updated credit balance
+        let creditsRemaining = null;
+        try {
+            const creditCheck = await checkUserCredits(userId, 0);
+            creditsRemaining = creditCheck.remaining;
+        } catch (error) {
+            console.error(`❌ [${requestId}] Failed to fetch updated credits:`, error);
+        }
+
+        const responseData = {
+            success: true,
+            companyName: result.companyName,
+            hiringManager: hiringManager,
+            subject: subject,
+            locations: locations,
+            coverLetterHtml: coverLetterHtml,
+            metadata: result.metadata,
+            creditsUsed: 1,
+            creditsRemaining: creditsRemaining
+        };
+
+        console.log(`📤 [${requestId}] Preparing response... data keys:`, Object.keys(responseData));
+        console.log(`📤 [${requestId}] Response size: ${JSON.stringify(responseData).length} bytes`);
+        console.log(`💳 [${requestId}] Credits remaining: ${creditsRemaining}`);
+        
+        // Log response before sending
+        console.log(`📤 [${requestId}] Setting response headers...`);
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Connection', 'keep-alive');
+        
+        console.log(`📤 [${requestId}] Calling res.json()...`);
+        res.json(responseData);
+        
+        const duration = Date.now() - startTime;
+        console.log(`✅ [${requestId}] RESPONSE SENT successfully in ${duration}ms`);
+        console.log(`${'='.repeat(60)}\n`);
+
+            } catch (error) {
+        const duration = Date.now() - startTime;
+        console.error(`❌ [${requestId}] Error generating cover letter details (after ${duration}ms):`, error.message);
+        console.error(`❌ [${requestId}] Error stack:`, error.stack);
+        return res.status(500).json({ error: error.message || 'Failed to generate cover letter' });
+            }
+        } catch (error) {
+            console.error('Database error:', error);
+            return res.status(500).json({ error: 'Failed to load user profile' });
+        }
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        console.error(`❌ [${requestId}] Server error (after ${duration}ms):`, error.message);
+        console.error(`❌ [${requestId}] Server error stack:`, error.stack);
+        return res.status(500).json({ error: error.message || 'Server error' });
+    }
+});
+COMMENTED OUT DUPLICATE ENDPOINT - END */
+
+// API endpoint to generate cover letter PDF for download
+app.post('/api/generate-cover-letter-pdf', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { coverLetterHtml, companyName, companyAddress } = req.body;
+
+        console.log('Generate PDF request:', { userId, companyName, companyAddress });
+
+        // Get user profile
+        try {
+            const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+            
+            if (!user) {
+        console.error('User not found:', userId);
+        return res.status(500).json({ error: 'User not found' });
+            }
+
+            try {
+        // Use common PDF generation function
+        const { filePath, fileName } = await generateCoverLetterPDF(
+            user,
+            coverLetterHtml,
+            companyName,
+            companyAddress
+        );
+
+        console.log(`📄 Generated PDF: ${fileName}`);
+
+        // Generate download URL
+        const downloadUrl = `/api/download-cover-letter/${encodeURIComponent(fileName)}`;
+
+        res.json({
+            success: true,
+            downloadUrl: downloadUrl,
+            fileName: fileName
+        });
+
+            } catch (error) {
+        console.error('Error generating PDF:', error);
+        console.error('Error stack:', error.stack);
+        return res.status(500).json({ error: error.message || 'Failed to generate PDF' });
+            }
+        } catch (error) {
+            console.error('Database error:', error);
+            return res.status(500).json({ error: 'Failed to load user profile' });
+        }
+    } catch (error) {
+        console.error('Server error:', error);
+        console.error('Server error stack:', error.stack);
+        return res.status(500).json({ error: error.message || 'Server error' });
+    }
+});
+
+// Helper function to format cover letter with HTML highlighting
+function formatCoverLetterWithHTML(coverLetterText, metadata) {
+    let html = '';
+    const paragraphs = coverLetterText.split('\n\n');
+    
+    paragraphs.forEach(para => {
+        if (!para.trim()) return;
+        
+        // FIRST: Convert markdown bold (**text**) to HTML bold (<strong>text</strong>)
+        // This is critical because AI generates cover letters with **Product Name** markdown syntax
+        let formattedPara = para.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        
+        // Bold skills if mentioned (but avoid double-bolding if already bolded by markdown)
+        if (metadata.techMatches && metadata.techMatches.length > 0) {
+            metadata.techMatches.forEach(skill => {
+        // Only bold if not already inside <strong> tags
+        const regex = new RegExp(`(?!<strong>)\\b${skill}\\b(?![^<]*<\/strong>)`, 'gi');
+        formattedPara = formattedPara.replace(regex, `<strong>${skill}</strong>`);
+            });
+        }
+        
+        // Bold years of experience (avoid double-bolding)
+        formattedPara = formattedPara.replace(/(?!<strong>)(\d+[\+]?\s+years?)(?![^<]*<\/strong>)/gi, '<strong>$1</strong>');
+        
+        // Bold company name (avoid double-bolding)
+        formattedPara = formattedPara.replace(/(?!<strong>)(\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*'s)(?![^<]*<\/strong>)/g, '<strong>$1</strong>');
+        
+        // Bold action verbs at sentence start (avoid double-bolding)
+        const actionVerbs = ['Led', 'Managed', 'Developed', 'Built', 'Created', 'Implemented', 'Designed', 'Achieved', 'Delivered'];
+        actionVerbs.forEach(verb => {
+            const regex = new RegExp(`^${verb}\\b`, 'g');
+            if (!formattedPara.startsWith('<strong>')) {
+        formattedPara = formattedPara.replace(regex, `<strong>${verb}</strong>`);
+            }
+        });
+        
+        html += `<p>${formattedPara}</p>`;
+    });
+    
+    return html;
+}
+
+// ============================================================================
+// COMMON PDF GENERATION FUNCTION - Used by both Web and Mobile
+// This function encapsulates the EXACT logic from the working mobile version
+// ============================================================================
+async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, companyAddress = '') {
+    console.log('\n📄 [COMMON] Generating PDF with:');
+    console.log('  User:', user.email);
+    console.log('  Company:', companyName);
+    console.log('  Address:', companyAddress);
+    console.log('  Content length:', coverLetterHtmlOrText?.length);
+    console.log('  Content type:', coverLetterHtmlOrText?.includes('<') ? 'HTML' : 'TEXT');
+    
+    // Prepare user data
+    const userData = {
+        fullName: user.full_name,
+        email: user.email,
+        phoneNumber: user.phone_number,
+        city: user.city,
+        country: user.country
+    };
+
+    // Get photo and signature paths
+    const photoPath = user.photo_path ? path.join(__dirname, user.photo_path) : null;
+    const signaturePath = user.signature_path ? path.join(__dirname, user.signature_path) : null;
+
+    // CRITICAL FIX: Convert markdown **bold** to HTML <strong>bold</strong>
+    // Mobile sends plain text with **markdown**, web sends HTML
+    // Ensure consistent HTML format for PDF generation
+    let coverLetterHtml = coverLetterHtmlOrText;
+    
+    // If text contains **markdown** but no HTML tags, convert markdown to HTML
+    if (!coverLetterHtml.includes('<p') && !coverLetterHtml.includes('<div')) {
+        console.log('  📝 Converting plain text with markdown to HTML...');
+        
+        // Split by double newlines for paragraphs
+        const paragraphs = coverLetterHtml.split('\n\n').filter(p => p.trim());
+        
+        coverLetterHtml = paragraphs.map(para => {
+            // Convert **text** to <strong>text</strong>
+            let formatted = para.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            // Wrap in paragraph tag
+            return `<p>${formatted}</p>`;
+        }).join('');
+        
+        console.log('  ✅ Converted to HTML with bold tags');
+    } else {
+        console.log('  ✅ Already HTML format');
+    }
+
+    // Generate PDF using HTML-based method (supports bold formatting)
+    const { filePath, fileName } = await createCoverLetterPDFFromHTML(
+        userData,
+        coverLetterHtml,
+        companyName,
+        companyAddress || '',
+        photoPath,
+        signaturePath
+    );
+
+    console.log(`✅ [COMMON] PDF generated: ${fileName} at ${filePath}\n`);
+    
+    return { filePath, fileName };
+}
+
+// Helper function to generate hiring manager name and all company locations using AI
+async function generateAdditionalDetails(websiteUrl, companyName, position = 'Position') {
+    console.log(`\n🤖 [GEMINI] Starting location and hiring manager generation for ${companyName}...`);
+    console.log(`🔑 [GEMINI] API Key Status: ${process.env.GEMINI_API_KEY ? '✅ LOADED (starts with: ' + process.env.GEMINI_API_KEY.substring(0, 10) + '...)' : '❌ MISSING'}`);
+    const startTime = Date.now();
+    const geminiKey = process.env.GEMINI_API_KEY;
+    
+    if (!geminiKey || geminiKey === 'your_gemini_api_key_here') {
+        console.log(`❌ [GEMINI] API key not found or is placeholder, returning GENERIC defaults`);
+        console.log(`⚠️  [GEMINI] This is why you're getting generic content in 175ms!`);
+        return {
+            hiringManager: 'Hiring Manager',
+            subject: `Application for ${position}`,
+            locations: [{
+        country: 'N/A',
+        city: 'N/A',
+        address: 'N/A',
+        isHeadquarters: true
+            }]
+        };
+    }
+    
+    console.log(`✅ [GEMINI] Valid API key detected, proceeding with AI generation...`);
+
+    try {
+        console.log(`📦 [GEMINI] Loading GoogleGenerativeAI package...`);
+        const { GoogleGenerativeAI } = require('@google/generative-ai');
+        console.log(`🔧 [GEMINI] Initializing Gemini with key: ${geminiKey.substring(0, 15)}...`);
+        const genAI = new GoogleGenerativeAI(geminiKey);
+        const model = genAI.getGenerativeModel({ 
+            model: 'gemini-2.5-flash'
+        });
+        console.log(`✅ [GEMINI] Model initialized, preparing prompt...`);
+
+        const prompt = `You are a research assistant. Find the ACTUAL headquarters location and address for the company "${companyName}" (website: ${websiteUrl}).
+
+ABSOLUTELY CRITICAL - DOMAIN ACCURACY:
+You MUST research the EXACT domain "${websiteUrl}" — NOT any similar-sounding domain.
+- The TLD matters: .ch is NOT .com, .co.uk is NOT .com, .de is NOT .com
+- For example, if given "icmag.ch", research ONLY icmag.ch (a Swiss company), NOT icmag.com (a completely different company)
+- NEVER substitute or guess a different domain. The user provided this exact URL for a reason.
+- If you cannot find information about the exact domain, state what you can determine from the URL alone — do NOT return information about a different company.
+
+CRITICAL INSTRUCTIONS:
+1. Visit the company's ACTUAL website at ${websiteUrl}
+2. Look SPECIFICALLY at: Contact page, About Us page, Impressum/Legal Notice, Company Registry information
+3. Find the PRIMARY headquarters (main office) - NOT branch offices or historical addresses
+4. Verify the address is CURRENT and ACTIVE
+5. If company has multiple offices, identify which one is the TRUE headquarters
+6. Double-check country is CORRECT - do not guess or assume
+
+IMPORTANT: Many companies may MENTION other countries in their content (clients, partners, expansion plans) - ignore those references. Find the ACTUAL physical headquarters where the company is registered and operates from.
+
+FOR US COMPANIES: Look for addresses in format "1234 Street Name, City, State ZIP, USA" or "City, State ZIP"
+FOR SWISS COMPANIES: Look for addresses in format "Street Number, CH-PostalCode City"
+FOR OTHER COUNTRIES: Use the country's standard address format
+
+Generate a realistic hiring manager name based on the company's headquarters country/culture.
+
+REQUIRED OUTPUT (JSON format only):
+{
+    "hiringManager": "Realistic Full Name (culturally appropriate for headquarters country)",
+    "subject": "Professional Email Subject Line for Application",
+    "locations": [
+        {
+            "country": "Full Country Name (e.g., 'United States', 'Switzerland', 'Germany')",
+            "city": "City Name",
+            "address": "Complete Street Address with Postal/ZIP Code",
+            "isHeadquarters": true
+        }
+    ]
+}
+
+VALIDATION CHECKLIST:
+- Is the country CORRECT? (Double-check website's actual location, not just mentioned countries)
+- Is this the PRIMARY headquarters, not a branch office?
+- Is the address CURRENT and COMPLETE?
+- Does the hiring manager name match the headquarters country's culture?
+
+Example for US company in Florida:
+{
+    "hiringManager": "Michael Johnson",
+    "subject": "Application for ${position} Position at ${companyName}",
+    "locations": [
+        {
+            "country": "United States",
+            "city": "Miami",
+            "address": "1234 Brickell Avenue, Miami, FL 33131, USA",
+            "isHeadquarters": true
+        }
+    ]
+}
+
+Example for Swiss company:
+{
+    "hiringManager": "Hans Mueller",
+    "subject": "Application for ${position} Position at ${companyName}",
+    "locations": [
+        {
+            "country": "Switzerland",
+            "city": "Zürich",
+            "address": "Birmensdorferstrasse 108, CH-8003 Zürich",
+            "isHeadquarters": true
+        }
+    ]
+}
+
+Return ONLY valid JSON, no additional text.`;
+
+        console.log(`🤖 Calling Gemini API for ${companyName}...`);
+        const geminiStart = Date.now();
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
+        const geminiDuration = Date.now() - geminiStart;
+        console.log(`✅ Gemini response received in ${geminiDuration}ms`);
+        console.log('📝 Gemini response (first 200 chars):', text.substring(0, 200));
+        
+        // Try to extract JSON from the response
+        let jsonMatch = text.match(/\{[\s\S]*\}/);
+        
+        // If no match, try to clean the response
+        if (!jsonMatch) {
+            // Remove markdown code blocks if present
+            const cleanedText = text.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+            jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+        }
+        
+        if (jsonMatch) {
+            try {
+        const data = JSON.parse(jsonMatch[0]);
+        console.log('Parsed location data:', JSON.stringify(data, null, 2));
+        
+        return {
+            hiringManager: data.hiringManager || 'Hiring Manager',
+            subject: data.subject || `Application for ${position}`,
+            locations: data.locations && data.locations.length > 0 ? data.locations.map(loc => ({
+                country: loc.country || 'N/A',
+                city: loc.city || 'N/A',
+                address: loc.address || `${loc.city || 'N/A'}, ${loc.country || 'N/A'}`,
+                isHeadquarters: loc.isHeadquarters !== undefined ? loc.isHeadquarters : true
+            })) : [{
+                country: 'N/A',
+                city: 'N/A',
+                address: 'N/A',
+                isHeadquarters: true
+            }]
+        };
+            } catch (parseError) {
+        console.error('JSON parse error:', parseError.message);
+        console.error('Attempted to parse:', jsonMatch[0].substring(0, 200));
+            }
+        } else {
+            console.error('No JSON found in Gemini response');
+        }
+    } catch (error) {
+        console.error('Error generating additional details:', error.message);
+        if (error.stack) {
+            console.error('Error stack:', error.stack);
+        }
+    }
+
+    return {
+        hiringManager: 'Hiring Manager',
+        subject: `Application for ${position}`,
+        locations: [{
+            country: 'N/A',
+            city: 'N/A',
+            address: 'N/A',
+            isHeadquarters: true
+        }]
+    };
+}
+
+// API endpoint to download generated cover letter
+app.get('/api/download-cover-letter/:filename', authenticateToken, async (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const filePath = path.join(__dirname, 'temp', filename);
+        
+        // Check if file exists
+        try {
+            await fs.access(filePath);
+        } catch {
+            return res.status(404).json({ error: 'Cover letter not found' });
+        }
+
+        res.download(filePath, filename);
+    } catch (error) {
+        console.error('Download error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================
+// EMAIL SENDING ENDPOINTS - NOW USING REFACTORED CONTROLLERS
+// Endpoints: /api/send-applications, /api/send-single-application
+// Location: server/controllers/emailController.js
+// Routes: server/routes/emailRoutes.js (mounted at bottom of this file)
+// ============================================
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+    res.json({ 
+        status: 'ok',
+        message: 'Server is running. Configure your email settings to send applications.',
+    });
+});
+
+// ============================================
+// ADMIN - CREDIT PACKAGE MANAGEMENT
+// ============================================
+
+// Get all packages (public - for users to see available packages)
+// Check if user is admin
+app.get('/api/user/is-admin', authenticateToken, async (req, res) => {
+    try {
+        const row = await dbConfig.get('SELECT role FROM users WHERE id = ?', [req.user.id]);
+        res.json({ isAdmin: row && row.role === 'admin' });
+    } catch (error) {
+        res.status(500).json({ error: 'Database error' });
+    }
+});
+
+// ============================================
+// ============================================
+// PAYMENT ENDPOINTS - Now Modularized
+// ============================================
+// Payment routes are now in server/routes/payment.js
+// Payment controllers are in server/controllers/paymentController.js
+// Auth middleware is in server/middleware/auth.js
+
+// Set up payment routes with dbConfig access
+paymentRoutes.setDbConfig(dbConfig);
+app.use('/api/payment', paymentRoutes.router);
+
+// Diagnostic endpoint to verify deployment version
+app.get('/api/relay-test', (req, res) => {
+    res.json({ relay: 'v2', timestamp: new Date().toISOString() });
+});
+
+// Android OAuth relay endpoints — receives code from Google/Microsoft via HTTPS callback,
+// then redirects to cvapplyr:// deep link so the app can extract the code.
+// These are placed BEFORE the rate-limited auth routes so they're not blocked.
+app.get('/auth/google/mobile-callback', (req, res, next) => {
+    if (req.query.state === 'android-relay') {
+        const code = req.query.code;
+        const error = req.query.error;
+        console.log('Google Android relay hit:', { code: code ? 'present' : 'missing', error });
+        try {
+            if (error) {
+                console.log('Google Android relay error:', error);
+                return res.redirect(`cvapplyr://oauth-error?error=${encodeURIComponent(error)}&provider=google`);
+            }
+            if (!code) {
+                return res.redirect('cvapplyr://oauth-error?error=no_code&provider=google');
+            }
+            console.log('Google Android relay: forwarding code to app via deep link');
+            // Use manual 302 instead of res.redirect() in case Railway edge doesn't like custom schemes
+            res.writeHead(302, { 'Location': `cvapplyr://oauth-callback?code=${encodeURIComponent(code)}&provider=google` });
+            return res.end();
+        } catch (e) {
+            console.error('Google Android relay CRASH:', e);
+            return res.status(500).json({ error: 'Relay failed', details: e.message });
+        }
+    }
+    next();
+});
+
+app.get('/auth/microsoft/callback', (req, res, next) => {
+    if (req.query.state === 'android-relay') {
+        const code = req.query.code;
+        const error = req.query.error;
+        console.log('Microsoft Android relay hit:', { code: code ? 'present' : 'missing', error });
+        try {
+            if (error) {
+                console.log('Microsoft Android relay error:', error);
+                return res.redirect(`cvapplyr://oauth-error?error=${encodeURIComponent(error)}&provider=microsoft`);
+            }
+            if (!code) {
+                return res.redirect('cvapplyr://oauth-error?error=no_code&provider=microsoft');
+            }
+            console.log('Microsoft Android relay: forwarding code to app via deep link');
+            res.writeHead(302, { 'Location': `cvapplyr://oauth-callback?code=${encodeURIComponent(code)}&provider=microsoft` });
+            return res.end();
+        } catch (e) {
+            console.error('Microsoft Android relay CRASH:', e);
+            return res.status(500).json({ error: 'Relay failed', details: e.message });
+        }
+    }
+    next();
+});
+
+// Set up auth routes with rate limiting
+app.use('/api/auth', authLimiter, authRoutes);
+app.use('/auth', authLimiter, authRoutes);
+
+// Account deletion endpoint (GDPR/CCPA compliance) with OAuth revocation
+app.delete('/api/account/delete', authenticateToken, sensitiveLimiter, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { confirmText } = req.body;
+
+        // Require explicit confirmation
+        if (confirmText !== 'DELETE') {
+            await logSecurityEvent('account', 'ACCOUNT_DELETE_FAILED', userId, false, {
+                reason: 'Invalid confirmation'
+            });
+            return res.status(400).json({ 
+                error: 'Invalid confirmation. Please type DELETE to confirm.' 
+            });
+        }
+
+        console.log(`🗑️ [ACCOUNT DELETE] Starting deletion process for user ${userId}`);
+
+        // Get user data before deletion for logging
+        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        
+        if (!user) {
+            await logSecurityEvent('account', 'ACCOUNT_DELETE_FAILED', userId, false, {
+                reason: 'User not found'
+            });
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Revoke OAuth tokens with providers (CASA Tier 2 requirement)
+        const revokeResults = { google: 'skipped', microsoft: 'skipped', apple: 'skipped' };
+        
+        // Revoke Google OAuth token
+        if (user.google_access_token) {
+            try {
+                const tokenToRevoke = decryptOAuthToken(user.google_access_token) || user.google_access_token;
+                const revokeResponse = await axios.post('https://oauth2.googleapis.com/revoke', null, {
+                    params: { token: tokenToRevoke },
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+                });
+                revokeResults.google = 'success';
+                console.log(`🔒 [ACCOUNT DELETE] Revoked Google OAuth token for user ${userId}`);
+            } catch (error) {
+                // Token might already be invalid, continue with deletion
+                revokeResults.google = 'failed: ' + (error.response?.data?.error || error.message);
+                console.error(`⚠️ [ACCOUNT DELETE] Failed to revoke Google token:`, error.message);
+            }
+        }
+
+        // Revoke Microsoft OAuth token
+        if (user.microsoft_access_token) {
+            try {
+                const tokenToRevoke = decryptOAuthToken(user.microsoft_access_token) || user.microsoft_access_token;
+                const revokeResponse = await axios.post(
+                    'https://graph.microsoft.com/v1.0/me/revokeSignInSessions',
+                    {},
+                    { headers: { 'Authorization': `Bearer ${tokenToRevoke}` } }
+                );
+                revokeResults.microsoft = 'success';
+                console.log(`🔒 [ACCOUNT DELETE] Revoked Microsoft OAuth token for user ${userId}`);
+            } catch (error) {
+                // Token might already be invalid, continue with deletion
+                revokeResults.microsoft = 'failed: ' + (error.response?.data?.error?.message || error.message);
+                console.error(`⚠️ [ACCOUNT DELETE] Failed to revoke Microsoft token:`, error.message);
+            }
+        }
+
+        // Note Apple token cleanup (Apple doesn't provide a simple revocation endpoint for server-side)
+        if (user.apple_user_id) {
+            revokeResults.apple = 'token_cleared';
+            console.log(`🔒 [ACCOUNT DELETE] Cleared Apple credentials for user ${userId}`);
+        }
+
+        // Delete user data in correct order (foreign key constraints)
+        await dbConfig.run('DELETE FROM notifications WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted notifications for user ${userId}`);
+
+        await dbConfig.run('DELETE FROM application_history WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted applications for user ${userId}`);
+
+        await dbConfig.run('DELETE FROM payment_orders WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted payments for user ${userId}`);
+
+        await dbConfig.run('DELETE FROM review_cover_letters WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted cover letters for user ${userId}`);
+
+        // Delete security audit logs for user (GDPR compliance)
+        await dbConfig.run('DELETE FROM security_audit_log WHERE user_id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted security audit logs for user ${userId}`);
+
+        // Delete user files from disk
+        const userUploadPath = path.join(__dirname, 'uploads', `user_${userId}`);
+        try {
+            await fs.rm(userUploadPath, { recursive: true, force: true });
+            console.log(`🗑️ [ACCOUNT DELETE] Deleted user files at ${userUploadPath}`);
+        } catch (err) {
+            console.error('Error deleting user files:', err);
+            // Continue with deletion even if file deletion fails
+        }
+
+        // Log account deletion event before deleting user
+        await logSecurityEvent('account', 'ACCOUNT_DELETED', userId, true, {
+            email: user.email,
+            oauth_revoked: revokeResults
+        });
+
+        // Finally, delete the user account
+        await dbConfig.run('DELETE FROM users WHERE id = ?', [userId]);
+        console.log(`🗑️ [ACCOUNT DELETE] Deleted user account ${userId} (${user.email})`);
+
+        // Clear auth cookie if it exists
+        res.clearCookie('authToken');
+
+        res.json({ 
+            success: true, 
+            message: 'Your account and all associated data have been permanently deleted.',
+            oauth_revocation: revokeResults
+        });
+
+        console.log(`✅ [ACCOUNT DELETE] Successfully deleted user ${userId} (${user.email})`);
+
+    } catch (error) {
+        console.error('❌ [ACCOUNT DELETE] Error:', error);
+        await logSecurityEvent('account', 'ACCOUNT_DELETE_FAILED', req.user?.id, false, {
+            error: error.message
+        });
+        res.status(500).json({ 
+            error: 'Failed to delete account. Please contact support if the issue persists.',
+            details: error.message 
+        });
+    }
+});
+
+// GDPR Data Export endpoint (CASA Tier 2 requirement)
+app.get('/api/account/export', authenticateToken, sensitiveLimiter, async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        console.log(`📦 [DATA EXPORT] Starting export for user ${userId}`);
+
+        // Get user data
+        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        
+        if (!user) {
+            await logSecurityEvent('account', 'DATA_EXPORT_FAILED', userId, false, {
+                reason: 'User not found'
+            });
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Get all related data (using correct table names)
+        const [applications, coverLetters, payments, notifications, auditLogs] = await Promise.all([
+            dbConfig.query('SELECT * FROM application_history WHERE user_id = ?', [userId]),
+            dbConfig.query('SELECT * FROM review_cover_letters WHERE user_id = ?', [userId]),
+            dbConfig.query('SELECT * FROM payment_orders WHERE user_id = ?', [userId]),
+            dbConfig.query('SELECT * FROM notifications WHERE user_id = ?', [userId]),
+            dbConfig.query('SELECT * FROM security_audit_log WHERE user_id = ?', [userId])
+        ]);
+
+        // Remove sensitive encrypted tokens from export (keep only metadata)
+        const exportData = {
+            export_date: new Date().toISOString(),
+            user_data: {
+                id: user.id,
+                email: user.email,
+                full_name: user.full_name,
+                phone: user.phone,
+                created_at: user.created_at,
+                oauth_providers: {
+                    google: {
+                        connected: !!user.google_access_token,
+                        email: user.google_email,
+                        token_issued_at: user.google_token_issued_at,
+                        token_expires_at: user.google_token_expires_at
+                    },
+                    microsoft: {
+                        connected: !!user.microsoft_access_token,
+                        email: user.microsoft_email,
+                        token_issued_at: user.microsoft_token_issued_at,
+                        token_expires_at: user.microsoft_token_expires_at
+                    },
+                    apple: {
+                        connected: !!user.apple_user_id,
+                        token_issued_at: user.apple_token_issued_at,
+                        token_expires_at: user.apple_token_expires_at
+                    }
+                },
+                credits: {
+                    total_credits: user.total_credits,
+                    used_credits: user.used_credits,
+                    remaining_credits: (user.total_credits || 0) - (user.used_credits || 0)
+                },
+                subscription: {
+                    package_id: user.package_id,
+                    package_name: user.package_name,
+                    package_start_date: user.package_start_date,
+                    package_end_date: user.package_end_date,
+                    auto_renew: user.auto_renew
+                }
+            },
+            applications: applications.map(app => ({
+                id: app.id,
+                company_name: app.company_name,
+                position: app.position,
+                recipient_email: app.recipient_email,
+                status: app.status,
+                sent_at: app.sent_at,
+                created_at: app.created_at
+            })),
+            cover_letters: coverLetters.map(cl => ({
+                id: cl.id,
+                company_name: cl.company_name,
+                position: cl.position,
+                content: cl.content,
+                model_used: cl.model_used,
+                created_at: cl.created_at
+            })),
+            payments: payments.map(payment => ({
+                id: payment.id,
+                amount: payment.amount,
+                currency: payment.currency,
+                status: payment.status,
+                package_id: payment.package_id,
+                package_name: payment.package_name,
+                razorpay_order_id: payment.razorpay_order_id,
+                razorpay_payment_id: payment.razorpay_payment_id,
+                created_at: payment.created_at
+            })),
+            notifications: notifications.map(notif => ({
+                id: notif.id,
+                type: notif.type,
+                title: notif.title,
+                message: notif.message,
+                read: notif.read,
+                created_at: notif.created_at
+            })),
+            security_audit_logs: auditLogs.map(log => ({
+                id: log.id,
+                event_type: log.event_type,
+                event_category: log.event_category,
+                success: log.success,
+                ip_address: log.ip_address,
+                user_agent: log.user_agent,
+                metadata: log.metadata,
+                created_at: log.created_at
+            }))
+        };
+
+        // Log export event
+        await logSecurityEvent('account', 'DATA_EXPORTED', userId, true, {
+            email: user.email,
+            records_count: {
+                applications: applications.length,
+                cover_letters: coverLetters.length,
+                payments: payments.length,
+                notifications: notifications.length,
+                audit_logs: auditLogs.length
+            }
+        });
+
+        console.log(`✅ [DATA EXPORT] Successfully exported data for user ${userId}`);
+
+        // Set headers for file download
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename="account-data-${userId}-${Date.now()}.json"`);
+        res.json(exportData);
+
+    } catch (error) {
+        console.error('❌ [DATA EXPORT] Error:', error);
+        await logSecurityEvent('account', 'DATA_EXPORT_FAILED', req.user?.id, false, {
+            error: error.message
+        });
+        res.status(500).json({ 
+            error: 'Failed to export account data. Please contact support if the issue persists.',
+            details: error.message 
+        });
+    }
+});
+
+// Set up profile routes with authentication
+app.use('/api/users', authenticateToken, profileRoutes);
+
+// Set up user data routes (both /api/users and /users for backward compatibility)
+app.use('/api/users', userDataRoutes);
+app.use('/users', userDataRoutes);
+// app.use('/api/user', usageRoutes);  // Commented out - using creditsRoutes instead for /api/user/usage-stats
+app.use('/api', creditsRoutes);
+app.use('/api', adminPackagesRoutes);
+app.use('/api', coverLetterRoutes);
+app.use('/api', emailRoutes);
+app.use('/api', notificationsRoutes);
+app.use('/api', jobRoutes);
+app.use('/api/ai-hub', aiHubRoutes);
+const batchRoutes = require('./server/routes/batchRoutes');
+app.use('/api', batchRoutes);
+
+// Async job startup maintenance (runs after DB is ready via app.listen)
+const { requeueStuckJobs, cleanupOldJobs } = require('./server/services/jobService');
+// Clean up old jobs every hour
+setInterval(() => cleanupOldJobs().catch(console.error), 60 * 60 * 1000);
+
+// Start email forwarding service
+const EmailForwardingService = require('./server/services/emailForwardingService');
+const emailForwarder = new EmailForwardingService();
+emailForwarder.start();
+
+// Start server
+const HOST = process.env.HOST || '0.0.0.0';
+app.listen(PORT, HOST, () => {
+    console.log(`
+╔═══════════════════════════════════════════════════════╗
+║        Resume Sender App - Server Running            ║
+╚═══════════════════════════════════════════════════════╝
+
+🌐 Server: http://${HOST}:${PORT}
+🌐 Local: http://localhost:${PORT}
+🌐 Network: http://192.168.1.14:${PORT}
+📧 Configure your email in Settings
+📬 Email forwarding: Active
+
+Open your browser and visit any of the above URLs
+    `);
+    
+    // Run async job maintenance after server (and DB) is ready
+    requeueStuckJobs().catch(err => console.error('Failed to requeue stuck jobs:', err));
+    cleanupOldJobs().catch(err => console.error('Failed to cleanup old jobs:', err));
+});

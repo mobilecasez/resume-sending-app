@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>cvApplyr — Dashboard Mockup</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.34.0/dist/tabler-icons.min.css" />
+<style>
+  :root {
+    --bg-page: #0E1015;
+    --bg-stage: #14171F;
+    --text-secondary: #9CA3AF;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg-page);
+    color: #E5EAF5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    min-height: 100vh;
+  }
+  .page-header {
+    text-align: center;
+    padding: 40px 20px 20px;
+  }
+  .page-header h1 { margin: 0 0 8px; font-size: 24px; font-weight: 500; letter-spacing: -0.3px; }
+  .page-header p { margin: 0; color: var(--text-secondary); font-size: 14px; }
+  .cv-stage {
+    background: var(--bg-stage);
+    padding: 28px 12px 40px;
+    border-radius: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+    align-items: center;
+    max-width: 720px;
+    margin: 24px auto 60px;
+  }
+  .cv-row { display: flex; gap: 22px; justify-content: center; flex-wrap: wrap; }
+  .cv-col { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .cv-platform {
+    font-size: 12px; color: var(--text-secondary); font-weight: 500;
+    letter-spacing: 0.2px; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .cv-section {
+    font-size: 13px; font-weight: 500; color: var(--text-secondary);
+    letter-spacing: 0.4px; text-transform: uppercase; align-self: flex-start; margin-left: 16px;
+  }
+  /* Phone shells */
+  .cv-phone {
+    width: 300px; height: 625px;
+    background: #06091B;
+    position: relative; overflow: hidden;
+    box-sizing: border-box; color: #fff;
+  }
+  .cv-ios { border-radius: 46px; border: 7px solid #15171E; }
+  .cv-and { border-radius: 30px; border: 6px solid #181B23; }
+
+  /* ─── Design tokens ─── */
+  .card { background: #0E1430; border: 0.5px solid #1F2A4A; border-radius: 18px; }
+  .accent { color: #5B95FF; }
+  .muted { color: #8995AC; }
+  .dim { color: #6A748A; }
+  .pill {
+    background: rgba(13,18,38,0.7); border: 0.5px solid rgba(91,149,255,0.2);
+    border-radius: 999px; display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 10px; font-size: 11px;
+  }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <h1>cvApplyr — Dashboard Redesign</h1>
+  <p>iOS and Android — same dark design language as Login / Register</p>
+</div>
+
+<div class="cv-stage">
+  <div class="cv-section">Dashboard</div>
+  <div class="cv-row">
+
+    <!-- ══════════════════════════════════════
+         iOS DASHBOARD
+    ══════════════════════════════════════ -->
+    <div class="cv-col">
+      <div class="cv-phone cv-ios">
+
+        <!-- Status bar -->
+        <div style="position:absolute;top:0;left:0;right:0;height:32px;padding:11px 22px 0;display:flex;justify-content:space-between;align-items:center;font-size:11.5px;font-weight:500;z-index:6">
+          <span>9:41</span>
+          <span style="display:flex;gap:5px;align-items:center">
+            <i class="ti ti-signal-5g" style="font-size:13px"></i>
+            <i class="ti ti-wifi" style="font-size:13px"></i>
+            <i class="ti ti-battery-3" style="font-size:15px"></i>
+          </span>
+        </div>
+        <div style="position:absolute;top:9px;left:50%;transform:translateX(-50%);width:90px;height:24px;background:#000;border-radius:14px;z-index:5"></div>
+
+        <!-- Scrollable content area -->
+        <div style="position:absolute;top:32px;left:0;right:0;bottom:0;overflow:hidden;display:flex;flex-direction:column;gap:10px;padding:10px 11px 20px">
+
+          <!-- ── Header card ── -->
+          <div class="card" style="padding:13px 14px 12px;flex-shrink:0">
+            <!-- Top row: logo + actions -->
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <div style="display:flex;align-items:center;gap:6px">
+                <img src="logo_img Small_white.png" style="width:20px;height:20px;object-fit:contain;filter:brightness(0) invert(1)" onerror="this.style.display='none'"/>
+                <span style="font-size:17px;font-weight:600"><span style="color:#fff">cv</span><span style="color:#5B95FF">applyr</span></span>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <!-- Notification -->
+                <div style="width:32px;height:32px;background:#131A30;border:0.5px solid #243153;border-radius:10px;display:flex;align-items:center;justify-content:center;position:relative">
+                  <i class="ti ti-bell" style="font-size:15px;color:#8995AC"></i>
+                  <div style="position:absolute;top:5px;right:5px;width:7px;height:7px;background:#5B95FF;border-radius:50%;border:1.5px solid #0E1430"></div>
+                </div>
+                <!-- Menu -->
+                <div style="width:32px;height:32px;background:#131A30;border:0.5px solid #243153;border-radius:10px;display:flex;align-items:center;justify-content:center">
+                  <i class="ti ti-menu-2" style="font-size:15px;color:#8995AC"></i>
+                </div>
+              </div>
+            </div>
+            <!-- Greeting + credits row -->
+            <div style="display:flex;justify-content:space-between;align-items:flex-end">
+              <div>
+                <div style="font-size:11px;color:#8995AC;margin-bottom:2px">Welcome back,</div>
+                <div style="font-size:16px;font-weight:600;color:#fff;letter-spacing:-0.3px">Rishi Samadhiya</div>
+              </div>
+              <!-- Credits badge -->
+              <div style="background:#131A30;border:0.5px solid #243153;border-radius:12px;padding:6px 10px;display:flex;align-items:center;gap:6px;cursor:pointer">
+                <span style="color:#5B95FF;font-size:13px">◆</span>
+                <div>
+                  <div style="font-size:9px;color:#6A748A;letter-spacing:0.4px">CREDITS</div>
+                  <div style="font-size:14px;font-weight:600;color:#fff;line-height:1">28</div>
+                </div>
+                <i class="ti ti-chevron-right" style="font-size:11px;color:#6A748A"></i>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Stats grid ── -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;flex-shrink:0">
+            <!-- Stat 1 -->
+            <div class="card" style="padding:12px;display:flex;flex-direction:column;gap:4px">
+              <div style="width:28px;height:28px;background:rgba(91,149,255,0.12);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:4px">
+                <i class="ti ti-send" style="color:#5B95FF;font-size:14px"></i>
+              </div>
+              <div style="font-size:22px;font-weight:600;color:#fff;letter-spacing:-0.5px">47</div>
+              <div style="font-size:10.5px;color:#8995AC">Applications Sent</div>
+            </div>
+            <!-- Stat 2 -->
+            <div class="card" style="padding:12px;display:flex;flex-direction:column;gap:4px">
+              <div style="width:28px;height:28px;background:rgba(91,149,255,0.12);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:4px">
+                <i class="ti ti-file-text" style="color:#5B95FF;font-size:14px"></i>
+              </div>
+              <div style="font-size:22px;font-weight:600;color:#fff;letter-spacing:-0.5px">47</div>
+              <div style="font-size:10.5px;color:#8995AC">Letters Generated</div>
+            </div>
+            <!-- Stat 3 -->
+            <div class="card" style="padding:12px;display:flex;flex-direction:column;gap:4px">
+              <div style="width:28px;height:28px;background:rgba(255,200,87,0.12);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:4px">
+                <i class="ti ti-clock" style="color:#FFC857;font-size:14px"></i>
+              </div>
+              <div style="font-size:22px;font-weight:600;color:#fff;letter-spacing:-0.5px">41</div>
+              <div style="font-size:10.5px;color:#8995AC">Pending Response</div>
+            </div>
+            <!-- Stat 4 -->
+            <div class="card" style="padding:12px;display:flex;flex-direction:column;gap:4px">
+              <div style="width:28px;height:28px;background:rgba(52,211,153,0.12);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:4px">
+                <i class="ti ti-check" style="color:#34D399;font-size:14px"></i>
+              </div>
+              <div style="font-size:22px;font-weight:600;color:#fff;letter-spacing:-0.5px">13<span style="font-size:13px;color:#8995AC;font-weight:400">%</span></div>
+              <div style="font-size:10.5px;color:#8995AC">Reply Rate</div>
+            </div>
+          </div>
+
+          <!-- ── Companies section ── -->
+          <div class="card" style="padding:12px 14px;flex:1;display:flex;flex-direction:column;min-height:0">
+            <!-- Section header -->
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <div>
+                <div style="font-size:13px;font-weight:600;color:#fff">Companies</div>
+                <div style="font-size:10px;color:#8995AC">Manage recipients</div>
+              </div>
+              <div style="background:rgba(91,149,255,0.12);border:0.5px solid rgba(91,149,255,0.25);border-radius:8px;padding:3px 8px;display:flex;align-items:center;gap:4px">
+                <span style="color:#5B95FF;font-size:10px">◆</span>
+                <span style="font-size:11px;color:#5B95FF;font-weight:600">3</span>
+              </div>
+            </div>
+
+            <!-- Recipient rows -->
+            <div style="display:flex;flex-direction:column;gap:7px;overflow:hidden">
+              <!-- Row 1 -->
+              <div style="background:#07112A;border:0.5px solid #1A2540;border-radius:12px;padding:9px 11px;display:flex;align-items:center;gap:9px">
+                <div style="width:28px;height:28px;background:rgba(91,149,255,0.15);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                  <span style="font-size:11px;font-weight:700;color:#5B95FF">1</span>
+                </div>
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:12px;font-weight:500;color:#E5EAF5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Google Inc.</div>
+                  <div style="font-size:10px;color:#6A748A">Senior Product Designer</div>
+                </div>
+                <i class="ti ti-chevron-right" style="color:#3D4F70;font-size:13px;flex-shrink:0"></i>
+              </div>
+              <!-- Row 2 -->
+              <div style="background:#07112A;border:0.5px solid #1A2540;border-radius:12px;padding:9px 11px;display:flex;align-items:center;gap:9px">
+                <div style="width:28px;height:28px;background:rgba(91,149,255,0.15);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                  <span style="font-size:11px;font-weight:700;color:#5B95FF">2</span>
+                </div>
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:12px;font-weight:500;color:#E5EAF5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Stripe</div>
+                  <div style="font-size:10px;color:#6A748A">Frontend Engineer</div>
+                </div>
+                <i class="ti ti-chevron-right" style="color:#3D4F70;font-size:13px;flex-shrink:0"></i>
+              </div>
+              <!-- Row 3 -->
+              <div style="background:#07112A;border:0.5px solid #1A2540;border-radius:12px;padding:9px 11px;display:flex;align-items:center;gap:9px">
+                <div style="width:28px;height:28px;background:rgba(91,149,255,0.15);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                  <span style="font-size:11px;font-weight:700;color:#5B95FF">3</span>
+                </div>
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:12px;font-weight:500;color:#E5EAF5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Notion Labs</div>
+                  <div style="font-size:10px;color:#6A748A">UX Researcher</div>
+                </div>
+                <i class="ti ti-chevron-right" style="color:#3D4F70;font-size:13px;flex-shrink:0"></i>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- end content area -->
+
+        <!-- iOS home bar -->
+        <div style="position:absolute;bottom:7px;left:50%;transform:translateX(-50%);width:108px;height:4px;background:rgba(255,255,255,0.85);border-radius:2px;z-index:4"></div>
+      </div>
+      <div class="cv-platform"><i class="ti ti-brand-apple-filled"></i>iOS</div>
+    </div>
+
+    <!-- ══════════════════════════════════════
+         ANDROID DASHBOARD
+    ══════════════════════════════════════ -->
+    <div class="cv-col">
+      <div class="cv-phone cv-and">
+
+        <!-- Status bar -->
+        <div style="position:absolute;top:0;left:0;right:0;height:32px;padding:10px 18px 0;display:flex;justify-content:space-between;align-items:center;font-size:11.5px;font-weight:500;z-index:6">
+          <span style="display:flex;gap:8px;align-items:center"><span>9:41</span></span>
+          <span style="display:flex;gap:5px;align-items:center">
+            <i class="ti ti-signal-4g" style="font-size:13px"></i>
+            <i class="ti ti-wifi" style="font-size:13px"></i>
+            <i class="ti ti-battery-3" style="font-size:15px"></i>
+          </span>
+        </div>
+        <div style="position:absolute;top:10px;left:50%;transform:translateX(-50%);width:8px;height:8px;background:#000;border-radius:50%;z-index:5"></div>
+
+        <!-- Scrollable content area -->
+        <div style="position:absolute;top:32px;left:0;right:0;bottom:24px;overflow:hidden;display:flex;flex-direction:column;gap:10px;padding:10px 11px 12px">
+
+          <!-- ── Header card ── -->
+          <div class="card" style="padding:13px 14px 12px;flex-shrink:0">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <div style="display:flex;align-items:center;gap:6px">
+                <img src="logo_img Small_white.png" style="width:20px;height:20px;object-fit:contain;filter:brightness(0) invert(1)" onerror="this.style.display='none'"/>
+                <span style="font-size:17px;font-weight:600"><span style="color:#fff">cv</span><span style="color:#5B95FF">applyr</span></span>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <div style="width:32px;height:32px;background:#131A30;border:0.5px solid #243153;border-radius:10px;display:flex;align-items:center;justify-content:center;position:relative">
+                  <i class="ti ti-bell" style="font-size:15px;color:#8995AC"></i>
+                  <div style="position:absolute;top:5px;right:5px;width:7px;height:7px;background:#5B95FF;border-radius:50%;border:1.5px solid #0E1430"></div>
+                </div>
+                <div style="width:32px;height:32px;background:#131A30;border:0.5px solid #243153;border-radius:10px;display:flex;align-items:center;justify-content:center">
+                  <i class="ti ti-menu-2" style="font-size:15px;color:#8995AC"></i>
+                </div>
+              </div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:flex-end">
+              <div>
+                <div style="font-size:11px;color:#8995AC;margin-bottom:2px">Welcome back,</div>
+                <div style="font-size:16px;font-weight:600;color:#fff;letter-spacing:-0.3px">Rishi Samadhiya</div>
+              </div>
+              <div style="background:#131A30;border:0.5px solid #243153;border-radius:12px;padding:6px 10px;display:flex;align-items:center;gap:6px">
+                <span style="color:#5B95FF;font-size:13px">◆</span>
+                <div>
+                  <div style="font-size:9px;color:#6A748A;letter-spacing:0.4px">CREDITS</div>
+                  <div style="font-size:14px;font-weight:600;color:#fff;line-height:1">28</div>
+                </div>
+                <i class="ti ti-chevron-right" style="font-size:11px;color:#6A748A"></i>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Stats grid ── -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;flex-shrink:0">
+            <div class="card" style="padding:12px;display:flex;flex-direction:column;gap:4px">
+              <div style="width:28px;height:28px;background:rgba(91,149,255,0.12);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:4px">
+                <i class="ti ti-send" style="color:#5B95FF;font-size:14px"></i>
+              </div>
+              <div style="font-size:22px;font-weight:600;color:#fff;letter-spacing:-0.5px">47</div>
+              <div style="font-size:10.5px;color:#8995AC">Applications Sent</div>
+            </div>
+            <div class="card" style="padding:12px;display:flex;flex-direction:column;gap:4px">
+              <div style="width:28px;height:28px;background:rgba(91,149,255,0.12);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:4px">
+                <i class="ti ti-file-text" style="color:#5B95FF;font-size:14px"></i>
+              </div>
+              <div style="font-size:22px;font-weight:600;color:#fff;letter-spacing:-0.5px">47</div>
+              <div style="font-size:10.5px;color:#8995AC">Letters Generated</div>
+            </div>
+            <div class="card" style="padding:12px;display:flex;flex-direction:column;gap:4px">
+              <div style="width:28px;height:28px;background:rgba(255,200,87,0.12);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:4px">
+                <i class="ti ti-clock" style="color:#FFC857;font-size:14px"></i>
+              </div>
+              <div style="font-size:22px;font-weight:600;color:#fff;letter-spacing:-0.5px">41</div>
+              <div style="font-size:10.5px;color:#8995AC">Pending Response</div>
+            </div>
+            <div class="card" style="padding:12px;display:flex;flex-direction:column;gap:4px">
+              <div style="width:28px;height:28px;background:rgba(52,211,153,0.12);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:4px">
+                <i class="ti ti-check" style="color:#34D399;font-size:14px"></i>
+              </div>
+              <div style="font-size:22px;font-weight:600;color:#fff;letter-spacing:-0.5px">13<span style="font-size:13px;color:#8995AC;font-weight:400">%</span></div>
+              <div style="font-size:10.5px;color:#8995AC">Reply Rate</div>
+            </div>
+          </div>
+
+          <!-- ── Companies section ── -->
+          <div class="card" style="padding:12px 14px;flex:1;display:flex;flex-direction:column;min-height:0">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <div>
+                <div style="font-size:13px;font-weight:600;color:#fff">Companies</div>
+                <div style="font-size:10px;color:#8995AC">Manage recipients</div>
+              </div>
+              <div style="background:rgba(91,149,255,0.12);border:0.5px solid rgba(91,149,255,0.25);border-radius:8px;padding:3px 8px;display:flex;align-items:center;gap:4px">
+                <span style="color:#5B95FF;font-size:10px">◆</span>
+                <span style="font-size:11px;color:#5B95FF;font-weight:600">3</span>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:7px;overflow:hidden">
+              <div style="background:#07112A;border:0.5px solid #1A2540;border-radius:12px;padding:9px 11px;display:flex;align-items:center;gap:9px">
+                <div style="width:28px;height:28px;background:rgba(91,149,255,0.15);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                  <span style="font-size:11px;font-weight:700;color:#5B95FF">1</span>
+                </div>
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:12px;font-weight:500;color:#E5EAF5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Google Inc.</div>
+                  <div style="font-size:10px;color:#6A748A">Senior Product Designer</div>
+                </div>
+                <i class="ti ti-chevron-right" style="color:#3D4F70;font-size:13px;flex-shrink:0"></i>
+              </div>
+              <div style="background:#07112A;border:0.5px solid #1A2540;border-radius:12px;padding:9px 11px;display:flex;align-items:center;gap:9px">
+                <div style="width:28px;height:28px;background:rgba(91,149,255,0.15);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                  <span style="font-size:11px;font-weight:700;color:#5B95FF">2</span>
+                </div>
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:12px;font-weight:500;color:#E5EAF5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Stripe</div>
+                  <div style="font-size:10px;color:#6A748A">Frontend Engineer</div>
+                </div>
+                <i class="ti ti-chevron-right" style="color:#3D4F70;font-size:13px;flex-shrink:0"></i>
+              </div>
+              <div style="background:#07112A;border:0.5px solid #1A2540;border-radius:12px;padding:9px 11px;display:flex;align-items:center;gap:9px">
+                <div style="width:28px;height:28px;background:rgba(91,149,255,0.15);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                  <span style="font-size:11px;font-weight:700;color:#5B95FF">3</span>
+                </div>
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:12px;font-weight:500;color:#E5EAF5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Notion Labs</div>
+                  <div style="font-size:10px;color:#6A748A">UX Researcher</div>
+                </div>
+                <i class="ti ti-chevron-right" style="color:#3D4F70;font-size:13px;flex-shrink:0"></i>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- end content -->
+
+        <!-- Android nav bar -->
+        <div style="position:absolute;bottom:0;left:0;right:0;height:24px;display:flex;justify-content:center;align-items:center;gap:42px;z-index:4">
+          <i class="ti ti-triangle" style="color:#7A8298;font-size:12px;transform:rotate(-90deg)"></i>
+          <i class="ti ti-circle" style="color:#7A8298;font-size:13px"></i>
+          <i class="ti ti-square" style="color:#7A8298;font-size:12px"></i>
+        </div>
+      </div>
+      <div class="cv-platform"><i class="ti ti-brand-android"></i>Android</div>
+    </div>
+
+  </div><!-- end cv-row -->
+
+  <!-- ══ Side menu preview ══ -->
+  <div class="cv-section" style="width:100%;max-width:640px">Side Menu</div>
+  <div style="width:100%;max-width:640px">
+    <div style="background:#0E1430;border:0.5px solid #1F2A4A;border-radius:18px;padding:16px;max-width:260px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;padding-bottom:12px;border-bottom:0.5px solid #1F2A4A">
+        <div style="width:38px;height:38px;background:rgba(91,149,255,0.12);border-radius:12px;display:flex;align-items:center;justify-content:center">
+          <i class="ti ti-user" style="color:#5B95FF;font-size:18px"></i>
+        </div>
+        <div>
+          <div style="font-size:13px;font-weight:600;color:#fff">Rishi Samadhiya</div>
+          <div style="font-size:10.5px;color:#8995AC">rishi@example.com</div>
+        </div>
+      </div>
+      <!-- Menu items -->
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 8px;border-radius:10px;background:rgba(91,149,255,0.08)">
+          <div style="width:28px;height:28px;background:rgba(91,149,255,0.15);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="ti ti-settings" style="color:#5B95FF;font-size:14px"></i>
+          </div>
+          <div>
+            <div style="font-size:12px;font-weight:500;color:#E5EAF5">Account Settings</div>
+            <div style="font-size:10px;color:#6A748A">View your profile</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 8px;border-radius:10px">
+          <div style="width:28px;height:28px;background:rgba(91,149,255,0.08);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="ti ti-target" style="color:#8995AC;font-size:14px"></i>
+          </div>
+          <div>
+            <div style="font-size:12px;font-weight:500;color:#E5EAF5">Jobs Dashboard</div>
+            <div style="font-size:10px;color:#6A748A">AI-powered job search</div>
+          </div>
+        </div>
+        <div style="height:0.5px;background:#1F2A4A;margin:6px 0"></div>
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 8px;border-radius:10px">
+          <div style="width:28px;height:28px;background:rgba(91,149,255,0.08);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="ti ti-file-description" style="color:#8995AC;font-size:14px"></i>
+          </div>
+          <div>
+            <div style="font-size:12px;font-weight:500;color:#E5EAF5">Terms & Conditions</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 8px;border-radius:10px">
+          <div style="width:28px;height:28px;background:rgba(91,149,255,0.08);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="ti ti-shield" style="color:#8995AC;font-size:14px"></i>
+          </div>
+          <div>
+            <div style="font-size:12px;font-weight:500;color:#E5EAF5">Privacy Policy</div>
+          </div>
+        </div>
+        <div style="height:0.5px;background:#1F2A4A;margin:6px 0"></div>
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 8px;border-radius:10px">
+          <div style="width:28px;height:28px;background:rgba(239,68,68,0.1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="ti ti-logout" style="color:#EF4444;font-size:14px"></i>
+          </div>
+          <div>
+            <div style="font-size:12px;font-weight:500;color:#EF4444">Sign Out</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end cv-stage -->
+
+<div style="text-align:center;color:#9CA3AF;font-size:12px;padding:0 20px 40px;line-height:1.6">
+  Open in any browser to preview. Uses the same dark palette as the Login / Register screens.
+</div>
+
+</body>
+</html>
