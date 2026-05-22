@@ -502,16 +502,21 @@ const generateCoverLetters = async (req, res) => {
             const results = [];
             let creditsDeducted = 0;
 
-            // Load resume metadata once for all recipients
-            const resumeMetadata = await dbConfig.get(
-                'SELECT * FROM resume_metadata WHERE user_id = ?',
-                [userId]
-            );
+            // Load resume metadata once for all recipients, with retries
+            let resumeMetadata = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
+                resumeMetadata = await dbConfig.get(
+                    'SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = ?',
+                    [userId, 'done']
+                );
+                if (resumeMetadata) break;
+                if (attempt < 4) await new Promise(r => setTimeout(r, 5000)); // wait 5s
+            }
 
             if (!resumeMetadata) {
                 return res.status(400).json({
                     error: 'Resume not processed yet',
-                    message: 'Your resume is still being analyzed. Please wait a moment and try again.'
+                    message: 'Your resume is still being analyzed. This can take up to a minute. Please wait a moment and try again.'
                 });
             }
 
