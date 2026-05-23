@@ -478,11 +478,12 @@ async function addContactToJob(req, res) {
 }
 
 const getDashboard = async (req, res) => {
-    // Return an empty array to show the empty state in the mobile app.
-    // This effectively disables the feature without crashing the app.
-    return res.json({
-        dashboard: []
-    });
+    // Return an empty array wrapped in the 'dashboard' property.
+    // This perfectly matches the TypeScript interface the mobile app expects:
+    // { dashboard: Array }
+    // An empty array prevents the .forEach() crash and triggers the UI's empty state.
+    res.setHeader('Content-Type', 'application/json');
+    return res.status(200).send(JSON.stringify({ dashboard: [] }));
 };
 
 const removeDashboardItem = async (req, res) => {
