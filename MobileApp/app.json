@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.cvapplyr.mobile",
-      "buildNumber": "40",
+      "buildNumber": "41",
       "usesAppleSignIn": true,
       "infoPlist": {
         "CFBundleURLTypes": [
@@ -26,7 +26,7 @@
     },
     "android": {
       "package": "com.cvapplyr.mobile",
-      "versionCode": 7,
+      "versionCode": 8,
       "intentFilters": [
         {
           "action": "VIEW",

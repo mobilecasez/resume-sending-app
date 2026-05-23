@@ -636,4 +636,45 @@ async function addContactToJob(req, res) {
     }
 }
 
-module.exports = { analyzeWishlist, getJobMatches, verifyEmail, addContactToJob, getDashboard: () => {}, removeDashboardItem: () => {} };
+const getDashboard = async (req, res) => {
+    // Return a dummy "Coming Soon" state so the mobile app renders a maintenance message
+    // without requiring an app store update.
+    return res.json({
+        dashboard: [
+            {
+                jobId: 'coming-soon-job',
+                status: 'completed',
+                progress: 100,
+                employer: {
+                    id: 'maintenance',
+                    name: 'Jobs Dashboard (Coming Soon)',
+                    subInfo: 'Feature Under Maintenance',
+                    logoColor: ['#F59E0B', '#D97706'],
+                    logoInitial: '🚧',
+                    status: 'active',
+                    jobs: [
+                        {
+                            id: 'maintenance-job-1',
+                            title: 'We are upgrading the AI Jobs Hub!',
+                            location: 'System Update',
+                            experience: 'N/A',
+                            salary: 'N/A',
+                            jobType: 'Maintenance',
+                            urgent: false,
+                            matchScore: 0,
+                            skills: ['This feature is currently being upgraded.', 'Please check back in our next release!'],
+                            contacts: []
+                        }
+                    ]
+                },
+                updatedAt: new Date().toISOString()
+            }
+        ]
+    });
+};
+
+const removeDashboardItem = async (req, res) => {
+    return res.json({ success: true });
+};
+
+module.exports = { analyzeWishlist, getJobMatches, verifyEmail, addContactToJob, getDashboard, removeDashboardItem };
