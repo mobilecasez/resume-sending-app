@@ -434,172 +434,13 @@ function buildJob(raw, index, slug, careersUrl) {
 // ─── route handlers ───────────────────────────────────────────────────────────
 
 async function analyzeWishlist(req, res) {
-    try {
-        const { companies } = req.body;
-        if (!Array.isArray(companies) || companies.length === 0) {
-            return res.status(400).json({ error: 'companies must be a non-empty array' });
-        }
-        return res.json({ matches: 0, sources: companies.length });
-    } catch (error) {
-        console.error('[aiHub] analyzeWishlist error:', error);
-        return res.status(500).json({ error: 'Failed to analyze wishlist' });
-    }
+    // Feature disabled
+    return res.json({ matches: 0, sources: 0 });
 }
 
-/**
- * GET /api/ai-hub/jobs?company={URL or name}
- *
- * Two-phase progressive streaming:
- *   Phase 1  — Gemini finds all job titles + their individual URLs (~15s)
- *   Phase 2  — Gemini visits each job URL in batches of 3, emitting partial results
- *              as each batch completes so the client sees jobs appear incrementally.
- *
- * Returns 202 { jobId } immediately. Client polls /api/job-status/:jobId.
- * During processing, polls return partial employer data (jobs found so far).
- */
 async function getJobMatches(req, res) {
-    try {
-        const { company } = req.query;
-        if (!company) {
-            return res.status(400).json({ error: 'company query parameter is required' });
-        }
-
-        const userId = req.user.id;
-
-        const resumeMetadata = await dbConfig.get(
-            'SELECT skills, technical_skills, soft_skills, experience_years, job_titles, industries, summary FROM resume_metadata WHERE user_id = ? AND parse_status = ?',
-            [userId, 'done']
-        );
-
-        if (!resumeMetadata) {
-            return res.status(400).json({
-                error: 'Resume not analysed yet. Please upload your resume in Profile → the system will process it automatically.',
-            });
-        }
-
-        const jobId = await jobService.createJob(userId, 'ai_hub_job_search', { company });
-        res.status(202).json({ jobId, status: 'pending' });
-
-        // ── Background processing ──────────────────────────────────────────────
-        (async () => {
-            try {
-                await jobService.startJob(jobId);
-
-                const candidateProfile = {
-                    skills: flattenSkills(resumeMetadata),
-                    experience_years: resumeMetadata.experience_years,
-                    job_titles: safeParseJSON(resumeMetadata.job_titles, []),
-                    industries: safeParseJSON(resumeMetadata.industries, []),
-                    summary: resumeMetadata.summary || '',
-                };
-
-                // ── Phase 1: get job list + URLs ──────────────────────────────
-                const careersUrl = company.startsWith('http') ? company : `https://${company}`;
-                const pageData = await fetchCareersPageData(careersUrl);
-
-                console.log(`[aiHub:${jobId}] Phase 1 — finding job listings at: ${company}`);
-                const listResult = await findJobListings(company, pageData, candidateProfile);
-                const resolvedCareersUrl = listResult.careers_page_url || careersUrl;
-
-                const name = listResult.company_name || company;
-                const slug = name.toLowerCase().replace(/\s+/g, '-');
-                const baseEmployer = {
-                    id: `emp-${slug}`,
-                    name,
-                    subInfo: listResult.sub_info || `${company} · Careers Portal`,
-                    logoColor: logoColorFor(name),
-                    logoInitial: name.charAt(0).toUpperCase(),
-                    status: 'watching',
-                };
-
-                const rawList = listResult.jobs || [];
-                const withUrl = rawList.filter(j => j.job_url && j.job_url.startsWith('http'));
-                const withoutUrl = rawList.filter(j => !j.job_url || !j.job_url.startsWith('http'));
-
-                console.log(`[aiHub:${jobId}] Phase 1 found ${rawList.length} jobs (${withUrl.length} with URLs)`);
-
-                // Emit jobs-without-URL immediately with basic info so user sees something fast
-                const immediateJobs = withoutUrl.map((j, i) =>
-                    buildJob({ ...j, job_url: resolvedCareersUrl }, i, slug, resolvedCareersUrl)
-                );
-
-                let completedJobs = [...immediateJobs];
-                let jobIndex = immediateJobs.length;
-
-                if (immediateJobs.length > 0) {
-                    await jobService.updateJobPartialResult(jobId, {
-                        ...baseEmployer,
-                        jobs: completedJobs,
-                    });
-                    await jobService.updateJobProgress(jobId, 15);
-                }
-
-                // ── Phase 2: visit each job URL in batches of 3 ───────────────
-                const BATCH_SIZE = 3;
-
-                for (let i = 0; i < withUrl.length; i += BATCH_SIZE) {
-                    const batch = withUrl.slice(i, i + BATCH_SIZE);
-                    console.log(`[aiHub:${jobId}] Phase 2 batch ${Math.floor(i / BATCH_SIZE) + 1} — visiting ${batch.length} job pages`);
-
-                    let detailedBatch = [];
-                    try {
-                        detailedBatch = await fetchJobDetailsBatch(batch, resolvedCareersUrl, candidateProfile);
-                    } catch (err) {
-                        console.error(`[aiHub:${jobId}] Phase 2 batch failed:`, err.message);
-                        // Fall back to basic job info from Phase 1 for this batch
-                        detailedBatch = batch.map(j => ({ ...j, contacts: [] }));
-                    }
-
-                    // Build job objects — job_url is ALWAYS from Phase 1 (scraped HTML), never from Gemini
-                    const batchJobs = batch.map((phase1Job, bi) => {
-                        const detail = detailedBatch[bi] || phase1Job;
-                        return buildJob(
-                            {
-                                title: detail.title || phase1Job.title,
-                                job_url: phase1Job.job_url,  // pinned to scraped URL — Gemini cannot change this
-                                location: detail.location,
-                                experience: detail.experience,
-                                salary: detail.salary,
-                                job_type: detail.job_type,
-                                urgent: detail.urgent,
-                                match_score: detail.match_score,
-                                skills: detail.skills,
-                                contacts: detail.contacts,
-                            },
-                            jobIndex + bi,
-                            slug,
-                            resolvedCareersUrl
-                        );
-                    });
-
-                    completedJobs = [...completedJobs, ...batchJobs];
-                    jobIndex += batchJobs.length;
-
-                    const progress = 15 + Math.floor(((i + BATCH_SIZE) / withUrl.length) * 80);
-                    await Promise.all([
-                        jobService.updateJobPartialResult(jobId, { ...baseEmployer, jobs: completedJobs }),
-                        jobService.updateJobProgress(jobId, Math.min(progress, 95)),
-                    ]);
-
-                    console.log(`[aiHub:${jobId}] Partial update: ${completedJobs.length} jobs so far`);
-                }
-
-                // Sort final list by match score descending
-                completedJobs.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
-
-                await jobService.completeJob(jobId, { ...baseEmployer, jobs: completedJobs });
-                console.log(`[aiHub:${jobId}] Done — ${completedJobs.length} total jobs`);
-
-            } catch (err) {
-                console.error(`[aiHub:${jobId}] Background job failed:`, err.message);
-                await jobService.failJob(jobId, err.message);
-            }
-        })();
-
-    } catch (error) {
-        console.error('[aiHub] getJobMatches error:', error.message);
-        return res.status(500).json({ error: `Failed to start job search: ${error.message}` });
-    }
+    // Feature disabled
+    return res.status(400).json({ error: 'This feature is currently under maintenance. Please check back later.' });
 }
 
 async function verifyEmail(req, res) {
@@ -637,39 +478,10 @@ async function addContactToJob(req, res) {
 }
 
 const getDashboard = async (req, res) => {
-    // Return a dummy "Coming Soon" state so the mobile app renders a maintenance message
-    // without requiring an app store update.
+    // Return an empty array to show the empty state in the mobile app.
+    // This effectively disables the feature without crashing the app.
     return res.json({
-        dashboard: [
-            {
-                jobId: 'coming-soon-job',
-                status: 'completed',
-                progress: 100,
-                employer: {
-                    id: 'maintenance',
-                    name: 'Jobs Dashboard (Coming Soon)',
-                    subInfo: 'Feature Under Maintenance',
-                    logoColor: ['#F59E0B', '#D97706'],
-                    logoInitial: '🚧',
-                    status: 'active',
-                    jobs: [
-                        {
-                            id: 'maintenance-job-1',
-                            title: 'We are upgrading the AI Jobs Hub!',
-                            location: 'System Update',
-                            experience: 'N/A',
-                            salary: 'N/A',
-                            jobType: 'Maintenance',
-                            urgent: false,
-                            matchScore: 0,
-                            skills: ['This feature is currently being upgraded.', 'Please check back in our next release!'],
-                            contacts: []
-                        }
-                    ]
-                },
-                updatedAt: new Date().toISOString()
-            }
-        ]
+        dashboard: []
     });
 };
 
