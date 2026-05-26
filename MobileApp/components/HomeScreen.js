@@ -75,7 +75,9 @@ function PulsingDot({ color = T.blue, size = 7 }) {
 }
 
 // ─── ActivityChart ────────────────────────────────────────────────────────────
-function ActivityChart({ applicationHistory }) {
+function ActivityChart({ applicationHistory, generatedCounts = {} }) {
+  const [tooltip, setTooltip] = useState(null); // { index, sent, generated, label }
+
   const days = useMemo(() => {
     const arr = [];
     for (let i = 6; i >= 0; i--) {
@@ -86,135 +88,270 @@ function ActivityChart({ applicationHistory }) {
         const s = a.sentDate ? new Date(a.sentDate).toLocaleDateString('en-CA') : null;
         return s === key;
       }).length;
-      arr.push({ label: weekDayLabel(i), sent, generated: sent });
+      // Generated = API-confirmed generations tracked in generatedCounts + historical sent
+      const generated = Math.max(sent, generatedCounts[key] || 0);
+      arr.push({ label: weekDayLabel(i), sent, generated, dateKey: key });
     }
     return arr;
-  }, [applicationHistory]);
+  }, [applicationHistory, generatedCounts]);
 
   const maxVal = Math.max(1, ...days.map(d => Math.max(d.sent, d.generated)));
   const BAR_H = 76;
 
+  function handleBarPress(d, i) {
+    if (tooltip && tooltip.index === i) { setTooltip(null); return; }
+    setTooltip({ index: i, sent: d.sent, generated: d.generated, label: d.label });
+  }
+
   return (
-    <View style={chartStyles.row}>
-      {days.map((d, i) => (
-        <View key={i} style={chartStyles.col}>
-          <View style={[chartStyles.barWrap, { height: BAR_H }]}>
-            {/* Generated bar (blue/purple) */}
-            {d.generated > 0 ? (
-              <LinearGradient
-                colors={[T.blue, T.purple]}
-                style={[chartStyles.groupBar, { height: Math.max(4, (d.generated / maxVal) * BAR_H) }]}
-                start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}
-              />
-            ) : (
-              <View style={[chartStyles.groupBar, chartStyles.emptyBar]} />
+    <View>
+      <View style={chartStyles.row}>
+        {days.map((d, i) => (
+          <TouchableOpacity
+            key={i}
+            style={chartStyles.col}
+            activeOpacity={0.75}
+            onPress={() => handleBarPress(d, i)}
+          >
+            {/* Tooltip above bar */}
+            {tooltip?.index === i && (
+              <View style={chartStyles.tooltip}>
+                <Text style={chartStyles.tooltipTitle}>{d.label}</Text>
+                <View style={chartStyles.tooltipRow}>
+                  <View style={[chartStyles.tooltipDot, { backgroundColor: T.blue }]} />
+                  <Text style={chartStyles.tooltipText}>Generated: {d.generated}</Text>
+                </View>
+                <View style={chartStyles.tooltipRow}>
+                  <View style={[chartStyles.tooltipDot, { backgroundColor: T.teal }]} />
+                  <Text style={chartStyles.tooltipText}>Sent: {d.sent}</Text>
+                </View>
+                <View style={chartStyles.tooltipArrow} />
+              </View>
             )}
-            {/* Sent bar (teal) — always shown */}
-            {d.sent > 0 ? (
-              <View style={[chartStyles.groupBar, chartStyles.sentBar, { height: Math.max(4, (d.sent / maxVal) * BAR_H) }]} />
-            ) : (
-              <View style={[chartStyles.groupBar, chartStyles.emptyBar]} />
-            )}
-          </View>
-          <Text style={chartStyles.label}>{d.label}</Text>
-        </View>
-      ))}
+
+            <View style={[chartStyles.barWrap, { height: BAR_H }]}>
+              {/* Generated bar (blue/purple) */}
+              {d.generated > 0 ? (
+                <LinearGradient
+                  colors={[T.blue, T.purple]}
+                  style={[chartStyles.groupBar, { height: Math.max(4, (d.generated / maxVal) * BAR_H) }]}
+                  start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}
+                />
+              ) : (
+                <View style={[chartStyles.groupBar, chartStyles.emptyBar]} />
+              )}
+              {/* Sent bar (teal) */}
+              {d.sent > 0 ? (
+                <View style={[chartStyles.groupBar, chartStyles.sentBar, { height: Math.max(4, (d.sent / maxVal) * BAR_H) }]} />
+              ) : (
+                <View style={[chartStyles.groupBar, chartStyles.emptyBar]} />
+              )}
+            </View>
+            <Text style={[chartStyles.label, tooltip?.index === i && { color: T.blue, fontWeight: '700' }]}>{d.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
     </View>
   );
 }
 const chartStyles = StyleSheet.create({
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
-  col: { alignItems: 'center', flex: 1 },
+  col: { alignItems: 'center', flex: 1, position: 'relative' },
   barWrap: { justifyContent: 'flex-end', flexDirection: 'row', alignItems: 'flex-end', gap: 2, width: '88%' },
   groupBar: { flex: 1, borderRadius: 4 },
   sentBar: { backgroundColor: T.teal },
   emptyBar: { height: 4, borderRadius: 2, backgroundColor: T.border },
   label: { marginTop: 6, fontSize: 11, color: T.textFaint, fontWeight: '600' },
+  // Tooltip
+  tooltip: {
+    position: 'absolute',
+    bottom: '110%',
+    backgroundColor: T.ink,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    zIndex: 99,
+    minWidth: 130,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  tooltipTitle: { fontSize: 11, fontWeight: '700', color: '#fff', marginBottom: 5, textAlign: 'center' },
+  tooltipRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 },
+  tooltipDot: { width: 6, height: 6, borderRadius: 3 },
+  tooltipText: { fontSize: 11, color: 'rgba(255,255,255,0.85)', fontWeight: '500' },
+  tooltipArrow: {
+    width: 0, height: 0,
+    borderLeftWidth: 5, borderRightWidth: 5, borderTopWidth: 6,
+    borderLeftColor: 'transparent', borderRightColor: 'transparent', borderTopColor: T.ink,
+    alignSelf: 'center', marginTop: 2,
+  },
 });
+
+// ─── FillButton — button with a liquid-fill progress animation ───────────────
+function FillButton({
+  onPress, disabled, label, labelDone, labelLoading,
+  icon, iconDone, fillColor, fillColorEnd,
+  state, progress, progressAnim, style,
+}) {
+  // state: 'idle' | 'loading' | 'done'
+  const fillWidth = progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+  const isDone = state === 'done';
+  const isLoading = state === 'loading';
+  const isIdle = state === 'idle';
+
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      disabled={disabled || isLoading}
+      activeOpacity={isLoading ? 1 : 0.82}
+      style={[{ borderRadius: 12, overflow: 'hidden', marginTop: 10 }, style]}
+    >
+      <View style={[
+        cardStyles.fillBtnOuter,
+        isDone && { borderColor: fillColor },
+      ]}>
+        {/* Liquid fill layer (always present, grows left→right) */}
+        <Animated.View style={[
+          StyleSheet.absoluteFill,
+          { right: undefined, width: fillWidth, borderRadius: 12 },
+          { backgroundColor: fillColor },
+        ]} />
+
+        {/* Idle base gradient (shown at 0%) */}
+        {isIdle && (
+          <LinearGradient
+            colors={[fillColor, fillColorEnd || fillColor]}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+            style={StyleSheet.absoluteFill}
+          />
+        )}
+
+        {/* Content on top */}
+        <View style={cardStyles.fillBtnContent}>
+          <Ionicons
+            name={isDone ? (iconDone || 'checkmark-circle') : icon}
+            size={14}
+            color="#fff"
+          />
+          <Text style={cardStyles.fillBtnText}>
+            {isDone ? (labelDone || label) : isLoading ? (labelLoading || label) : label}
+          </Text>
+          {isLoading && (
+            <Text style={cardStyles.fillBtnPct}>{Math.round(progress)}%</Text>
+          )}
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+// Phase labels for the generate button based on progress %
+function genPhaseLabel(pct) {
+  if (pct < 20) return 'Analyzing profile…';
+  if (pct < 45) return 'Matching skills…';
+  if (pct < 70) return 'Drafting letter…';
+  if (pct < 90) return 'Finalizing…';
+  return 'Almost done…';
+}
 
 // ─── CompanyCard ──────────────────────────────────────────────────────────────
 function CompanyCard({
   recipient, index, canRemove,
   onRemove, onUpdate,
-  user, API_BASE,
+  user, API_BASE, handleReview,
+  onGenerated,
 }) {
-  const [mode, setMode] = useState('edit'); // 'edit' | 'ready'
-  const [genState, setGenState] = useState('idle'); // 'idle' | 'generating' | 'done'
-  const [progress, setProgress] = useState(0);
+  const [mode, setMode] = useState('edit'); // 'edit' | 'view'
+  const [genState, setGenState] = useState('idle'); // 'idle' | 'loading' | 'done'
+  const [genProgress, setGenProgress] = useState(0);
+  const genAnim = useRef(new Animated.Value(0)).current;
+
+  const [dlState, setDlState] = useState('idle');
+  const [dlProgress, setDlProgress] = useState(0);
+  const dlAnim = useRef(new Animated.Value(0)).current;
+
+  const [sendState, setSendState] = useState('idle');
+  const [sendProgress, setSendProgress] = useState(0);
+  const sendAnim = useRef(new Animated.Value(0)).current;
+
   const [coverLetterText, setCoverLetterText] = useState('');
-  const progressAnim = useRef(new Animated.Value(0)).current;
   const pollRef = useRef(null);
 
   const domain = domainFrom(recipient.website);
-  const companyInitial = domain ? domain[0].toUpperCase() : (recipient.email ? recipient.email.split('@')[1]?.[0]?.toUpperCase() ?? 'C' : 'C');
+  const companyInitial = domain ? domain[0].toUpperCase()
+    : (recipient.email ? recipient.email.split('@')[1]?.[0]?.toUpperCase() ?? 'C' : 'C');
   const companyName = domain || (recipient.email ? recipient.email.split('@')[1] ?? 'New Company' : 'New Company');
-  const isReady = recipient.email && recipient.website;
+  const isReady = !!(recipient.email && recipient.website);
 
+  // Auto-transition to view when fields are filled
   useEffect(() => {
-    if (isReady) setMode('ready');
-    else setMode('edit');
+    if (isReady && mode === 'edit') setMode('view');
   }, [isReady]);
 
   useEffect(() => {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
-  function animateTo(val) {
-    Animated.timing(progressAnim, { toValue: val, duration: 350, useNativeDriver: false }).start();
+  function animTo(anim, val) {
+    Animated.timing(anim, { toValue: val, duration: 350, useNativeDriver: false }).start();
   }
 
+  // ── Generate ──────────────────────────────────────────────────────────────
   async function handleGenerate() {
-    if (genState === 'generating') return;
-    setGenState('generating');
-    setProgress(0);
-    progressAnim.setValue(0);
+    if (genState === 'loading') return;
+    setGenState('loading');
+    setGenProgress(0);
+    genAnim.setValue(0);
 
-    // Fake incremental progress until server responds
     let fake = 0;
     pollRef.current = setInterval(() => {
-      fake = Math.min(fake + Math.random() * 7 + 2, 88);
-      setProgress(Math.round(fake));
-      animateTo(fake / 100);
-    }, 900);
+      fake = Math.min(fake + Math.random() * 6 + 2, 87);
+      setGenProgress(Math.round(fake));
+      animTo(genAnim, fake / 100);
+    }, 950);
 
     try {
       const token = user?.token;
-      const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+      const hdrs = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
       const res = await fetch(`${API_BASE}/generate-cover-letter-details`, {
-        method: 'POST', headers,
+        method: 'POST', headers: hdrs,
         body: JSON.stringify({ recipientEmail: recipient.email, websiteUrl: recipient.website, position: recipient.position || '' }),
       });
       const data = await res.json();
 
       if (res.status === 202 && data.jobId) {
-        // Async — poll for completion
         clearInterval(pollRef.current);
         const jobId = data.jobId;
         const started = Date.now();
         pollRef.current = setInterval(async () => {
           if (Date.now() - started > 150000) { clearInterval(pollRef.current); setGenState('idle'); return; }
           try {
-            const sRes = await fetch(`${API_BASE}/job-status/${jobId}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-            const sData = await sRes.json();
-            if (sData.status === 'completed') {
+            const sr = await fetch(`${API_BASE}/job-status/${jobId}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+            const sd = await sr.json();
+            if (sd.status === 'completed') {
               clearInterval(pollRef.current);
-              setProgress(100); animateTo(1);
+              setGenProgress(100); animTo(genAnim, 1);
               setTimeout(() => {
-                setCoverLetterText(sData.result?.coverLetterText || sData.coverLetterText || '');
+                setCoverLetterText(sd.result?.coverLetterText || sd.coverLetterText || '');
                 setGenState('done');
+                onGenerated && onGenerated();
               }, 400);
-            } else if (sData.progress) {
-              const p = Math.min(sData.progress, 95);
-              setProgress(p); animateTo(p / 100);
+            } else if (sd.progress) {
+              const p = Math.min(sd.progress, 95);
+              setGenProgress(p); animTo(genAnim, p / 100);
             }
           } catch (_) {}
         }, 3000);
       } else if (res.ok) {
         clearInterval(pollRef.current);
-        setProgress(100); animateTo(1);
+        setGenProgress(100); animTo(genAnim, 1);
         setTimeout(() => {
           setCoverLetterText(data.coverLetterText || data.result?.coverLetterText || '');
           setGenState('done');
+          onGenerated && onGenerated();
         }, 400);
       } else {
         clearInterval(pollRef.current); setGenState('idle');
@@ -226,50 +363,80 @@ function CompanyCard({
     }
   }
 
+  // ── Download ──────────────────────────────────────────────────────────────
   async function handleDownload() {
+    if (dlState === 'loading') return;
+    setDlState('loading'); setDlProgress(0); dlAnim.setValue(0);
+
+    // Simulate progress while waiting
+    let fake = 0;
+    const fakeTimer = setInterval(() => {
+      fake = Math.min(fake + 15, 80);
+      setDlProgress(fake); animTo(dlAnim, fake / 100);
+    }, 400);
+
     try {
       const token = user?.token;
-      const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+      const hdrs = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
       const res = await fetch(`${API_BASE}/generate-cover-letter-pdf`, {
-        method: 'POST', headers,
+        method: 'POST', headers: hdrs,
         body: JSON.stringify({ coverLetterHtml: coverLetterText, companyName, companyAddress: '' }),
       });
+      clearInterval(fakeTimer);
       const data = await res.json();
       const pdfUrl = data.pdfUrl || data.url;
       if (pdfUrl) {
+        setDlProgress(90); animTo(dlAnim, 0.9);
         const FileSystem = require('expo-file-system');
         const Sharing = require('expo-sharing');
         const dest = FileSystem.documentDirectory + `cover_letter_${companyName.replace(/\s+/g, '_')}.pdf`;
         await FileSystem.downloadAsync(pdfUrl, dest);
+        setDlProgress(100); animTo(dlAnim, 1);
+        setTimeout(() => setDlState('done'), 300);
         await Sharing.shareAsync(dest);
       } else {
-        Alert.alert('Download failed', 'No PDF URL returned from server.');
+        clearInterval(fakeTimer); setDlState('idle');
+        Alert.alert('Download failed', 'No PDF returned from server.');
       }
     } catch (e) {
+      clearInterval(fakeTimer); setDlState('idle');
       Alert.alert('Download failed', 'Could not download PDF. Please try again.');
     }
   }
 
+  // ── Send ──────────────────────────────────────────────────────────────────
   async function handleSend() {
+    if (sendState === 'loading') return;
+    setSendState('loading'); setSendProgress(0); sendAnim.setValue(0);
+
+    let fake = 0;
+    const fakeTimer = setInterval(() => {
+      fake = Math.min(fake + 12, 75);
+      setSendProgress(fake); animTo(sendAnim, fake / 100);
+    }, 350);
+
     try {
       const token = user?.token;
-      const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+      const hdrs = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
       await fetch(`${API_BASE}/send-single-application`, {
-        method: 'POST', headers,
+        method: 'POST', headers: hdrs,
         body: JSON.stringify({ recipientEmail: recipient.email, websiteUrl: recipient.website, position: recipient.position || '', coverLetterText, companyName, companyAddress: '' }),
       });
+      clearInterval(fakeTimer);
+      setSendProgress(100); animTo(sendAnim, 1);
+      setTimeout(() => setSendState('done'), 300);
       Alert.alert('Sent! 🎉', `Application sent to ${companyName}`);
     } catch (e) {
+      clearInterval(fakeTimer); setSendState('idle');
       Alert.alert('Send failed', 'Could not send application. Please try again.');
     }
   }
 
   const eyebrow = mode === 'edit' ? 'NEW OUTREACH' : 'OUTREACH TO';
-  const progressWidth = progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
 
   return (
     <View style={cardStyles.card}>
-      {/* Envelope top row */}
+      {/* Top row */}
       <View style={cardStyles.topRow}>
         <Text style={cardStyles.eyebrow}>{eyebrow}</Text>
         <LinearGradient colors={[T.blue, T.purple]} style={cardStyles.creditStamp} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
@@ -281,31 +448,42 @@ function CompanyCard({
       {/* Watermark */}
       <Text style={cardStyles.watermark}>{companyInitial}</Text>
 
-      {/* Identity row */}
-      {mode === 'ready' ? (
-        <TouchableOpacity onPress={() => setMode('edit')} activeOpacity={0.8}>
-          <View style={cardStyles.identityRow}>
-            <View style={cardStyles.avatar}>
-              <Text style={cardStyles.avatarText}>{companyInitial}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={cardStyles.companyName}>{companyName}</Text>
-              <Text style={cardStyles.positionText} numberOfLines={1}>{recipient.position || 'Position not specified'}</Text>
-            </View>
-            {canRemove && (
-              <TouchableOpacity onPress={() => onRemove(recipient.id)} style={cardStyles.trashBtn}>
-                <Ionicons name="trash-outline" size={14} color={T.rose} />
-              </TouchableOpacity>
-            )}
+      {/* ── VIEW MODE ── */}
+      {mode === 'view' && (
+        <View style={cardStyles.identityRow}>
+          <View style={cardStyles.avatar}>
+            <Text style={cardStyles.avatarText}>{companyInitial}</Text>
           </View>
-        </TouchableOpacity>
-      ) : (
+          <View style={{ flex: 1 }}>
+            <Text style={cardStyles.companyName}>{companyName}</Text>
+            <Text style={cardStyles.positionText} numberOfLines={1}>{recipient.position || 'Position not specified'}</Text>
+          </View>
+          {/* Pencil edit button */}
+          <TouchableOpacity onPress={() => setMode('edit')} style={cardStyles.editIconBtn}>
+            <Ionicons name="create-outline" size={14} color={T.blue} />
+          </TouchableOpacity>
+          {canRemove && (
+            <TouchableOpacity onPress={() => onRemove(recipient.id)} style={cardStyles.trashBtn}>
+              <Ionicons name="trash-outline" size={14} color={T.rose} />
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
+      {/* ── EDIT MODE ── */}
+      {mode === 'edit' && (
         <View>
           <View style={cardStyles.editHeader}>
             <View style={cardStyles.editAvatarPlaceholder}>
               <Ionicons name="add" size={18} color={T.textFaint} />
             </View>
-            <Text style={cardStyles.editTitle}>New company</Text>
+            <Text style={cardStyles.editTitle}>{isReady ? companyName : 'New company'}</Text>
+            {/* Close (back to view) — only when already has data */}
+            {isReady && (
+              <TouchableOpacity onPress={() => setMode('view')} style={cardStyles.closeIconBtn}>
+                <Ionicons name="close" size={15} color={T.textMuted} />
+              </TouchableOpacity>
+            )}
             {canRemove && (
               <TouchableOpacity onPress={() => onRemove(recipient.id)} style={cardStyles.trashBtn}>
                 <Ionicons name="trash-outline" size={14} color={T.rose} />
@@ -350,78 +528,101 @@ function CompanyCard({
         </View>
       )}
 
-      {/* Perforation line */}
+      {/* Perforation */}
       <View style={cardStyles.perforation} />
 
-      {/* Recipient row (ready mode only) */}
-      {mode === 'ready' && (
-        <View style={cardStyles.recipientRow}>
-          <View style={cardStyles.mailTile}>
-            <Ionicons name="mail-outline" size={11} color={T.blue} />
+      {/* Email + status row (view mode only) */}
+      {mode === 'view' && (
+        <>
+          <View style={cardStyles.recipientRow}>
+            <View style={cardStyles.mailTile}>
+              <Ionicons name="mail-outline" size={11} color={T.blue} />
+            </View>
+            <Text style={cardStyles.emailText} numberOfLines={1}>{recipient.email}</Text>
           </View>
-          <Text style={cardStyles.emailText} numberOfLines={1}>{recipient.email}</Text>
-        </View>
+          <View style={cardStyles.statusRow}>
+            <Ionicons name="link-outline" size={10} color={T.textFaint} />
+            <Text style={cardStyles.websiteText}>{domain}</Text>
+            <View style={cardStyles.statusDot}>
+              {genState === 'done' ? (
+                <>
+                  <Ionicons name="checkmark-circle" size={12} color={T.emerald} />
+                  <Text style={[cardStyles.statusText, { color: T.emerald }]}>Letter ready</Text>
+                </>
+              ) : (
+                <>
+                  <PulsingDot color={T.blue} size={5} />
+                  <Text style={[cardStyles.statusText, { color: T.blue }]}>Ready to Generate</Text>
+                </>
+              )}
+            </View>
+          </View>
+        </>
       )}
 
-      {/* Status row (ready mode) */}
-      {mode === 'ready' && (
-        <View style={cardStyles.statusRow}>
-          <Ionicons name="link-outline" size={10} color={T.textFaint} />
-          <Text style={cardStyles.websiteText}>{domain}</Text>
-          <View style={cardStyles.statusDot}>
-            {genState === 'done' ? (
-              <>
-                <Ionicons name="checkmark-circle" size={12} color={T.emerald} />
-                <Text style={[cardStyles.statusText, { color: T.emerald }]}>Letter ready</Text>
-              </>
-            ) : (
-              <>
-                <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: T.blue }} />
-                <Text style={[cardStyles.statusText, { color: T.blue }]}>Ready to Generate</Text>
-              </>
-            )}
-          </View>
-        </View>
+      {/* ── ACTION BUTTONS (view mode only) ── */}
+      {mode === 'view' && genState !== 'done' && (
+        <FillButton
+          onPress={handleGenerate}
+          disabled={genState === 'loading'}
+          state={genState}
+          progress={genProgress}
+          progressAnim={genAnim}
+          icon="sparkles"
+          iconDone="checkmark-circle"
+          label={genState === 'loading' ? genPhaseLabel(genProgress) : 'Generate Cover Letter'}
+          labelDone="Generated ✓"
+          fillColor={T.blue}
+          fillColorEnd={T.purpleDeep}
+          style={{ marginTop: 12 }}
+        />
       )}
 
-      {/* ── Action area ── */}
-      {genState === 'idle' && (
-        <TouchableOpacity onPress={handleGenerate} activeOpacity={0.85} style={{ marginTop: 10 }}>
-          <LinearGradient colors={[T.blue, T.purple, T.purpleDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={cardStyles.generateBtn}>
-            <Ionicons name="sparkles" size={13} color="#fff" />
-            <Text style={cardStyles.generateBtnText}>Generate Cover Letter</Text>
-          </LinearGradient>
-        </TouchableOpacity>
-      )}
-
-      {genState === 'generating' && (
-        <View style={{ marginTop: 12 }}>
-          <View style={cardStyles.progressTrack}>
-            <Animated.View style={[cardStyles.progressBar, { width: progressWidth }]} />
-          </View>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
-            <Text style={cardStyles.progressLabel}>Generating cover letter…</Text>
-            <Text style={cardStyles.progressPct}>{progress}%</Text>
-          </View>
-        </View>
-      )}
-
-      {genState === 'done' && (
-        <View style={{ marginTop: 10, flexDirection: 'row', gap: 7 }}>
-          <TouchableOpacity style={cardStyles.actionBtn} onPress={() => Alert.alert('Edit', 'Open cover letter editor coming soon.')}>
+      {mode === 'view' && genState === 'done' && (
+        <View style={{ marginTop: 12, gap: 8 }}>
+          {/* Edit — navigates to review screen */}
+          <TouchableOpacity
+            onPress={() => handleReview && handleReview()}
+            style={cardStyles.editLetterBtn}
+            activeOpacity={0.85}
+          >
             <Ionicons name="create-outline" size={14} color={T.blue} />
-            <Text style={[cardStyles.actionBtnText, { color: T.blue }]}>Edit</Text>
+            <Text style={cardStyles.editLetterBtnText}>Edit Cover Letter</Text>
+            <Ionicons name="chevron-forward" size={13} color={T.blue} />
           </TouchableOpacity>
-          <TouchableOpacity style={cardStyles.actionBtn} onPress={handleDownload}>
-            <Ionicons name="download-outline" size={14} color={T.ink} />
-            <Text style={cardStyles.actionBtnText}>Download</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={{ flex: 1.4 }} onPress={handleSend} activeOpacity={0.85}>
-            <LinearGradient colors={[T.blue, T.blueDeep]} style={cardStyles.sendBtn} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
-              <Ionicons name="send" size={13} color="#fff" />
-              <Text style={cardStyles.sendBtnText}>Send Now</Text>
-            </LinearGradient>
-          </TouchableOpacity>
+
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {/* Download */}
+            <FillButton
+              onPress={handleDownload}
+              disabled={dlState === 'loading'}
+              state={dlState}
+              progress={dlProgress}
+              progressAnim={dlAnim}
+              icon="download-outline"
+              iconDone="checkmark-circle"
+              label={dlState === 'loading' ? `Downloading…` : 'Download PDF'}
+              labelDone="Downloaded ✓"
+              fillColor={T.ink}
+              fillColorEnd="#2D3748"
+              style={{ flex: 1, marginTop: 0 }}
+            />
+            {/* Send */}
+            <FillButton
+              onPress={handleSend}
+              disabled={sendState === 'loading'}
+              state={sendState}
+              progress={sendProgress}
+              progressAnim={sendAnim}
+              icon="send"
+              iconDone="checkmark-circle"
+              label={sendState === 'loading' ? 'Sending…' : 'Send Now'}
+              labelDone="Sent ✓"
+              fillColor={T.teal}
+              fillColorEnd={T.emerald}
+              style={{ flex: 1, marginTop: 0 }}
+            />
+          </View>
         </View>
       )}
     </View>
@@ -430,17 +631,10 @@ function CompanyCard({
 const cardStyles = StyleSheet.create({
   card: {
     backgroundColor: T.surface,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: T.border,
-    padding: 18,
-    marginBottom: 12,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
+    borderRadius: 16, borderWidth: 1, borderColor: T.border,
+    padding: 18, marginBottom: 12, overflow: 'hidden',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06, shadowRadius: 8, elevation: 2,
   },
   topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   eyebrow: { fontSize: 10, fontWeight: '700', letterSpacing: 1.4, color: T.textFaint },
@@ -448,20 +642,19 @@ const cardStyles = StyleSheet.create({
   creditStampText: { fontSize: 8, fontWeight: '700', color: '#fff', letterSpacing: 0.4 },
   watermark: {
     position: 'absolute', right: 14, top: 28,
-    fontSize: 72, fontWeight: '800', color: 'rgba(11,15,34,0.04)',
-    lineHeight: 80,
+    fontSize: 72, fontWeight: '800', color: 'rgba(11,15,34,0.04)', lineHeight: 80,
   },
-  identityRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 2 },
-  avatar: {
-    width: 36, height: 36, borderRadius: 10,
-    backgroundColor: T.blue + '22',
-    alignItems: 'center', justifyContent: 'center',
-  },
+  // View mode identity row
+  identityRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
+  avatar: { width: 36, height: 36, borderRadius: 10, backgroundColor: T.blue + '22', alignItems: 'center', justifyContent: 'center' },
   avatarText: { fontSize: 16, fontWeight: '700', color: T.blue },
   companyName: { fontSize: 14, fontWeight: '700', color: T.ink },
   positionText: { fontSize: 11, color: T.textMuted, marginTop: 1 },
+  editIconBtn: { width: 28, height: 28, borderRadius: 8, backgroundColor: T.blue + '12', alignItems: 'center', justifyContent: 'center' },
+  closeIconBtn: { width: 28, height: 28, borderRadius: 8, backgroundColor: T.inputBg, alignItems: 'center', justifyContent: 'center' },
   trashBtn: { width: 28, height: 28, borderRadius: 8, backgroundColor: T.rose + '15', alignItems: 'center', justifyContent: 'center' },
-  editHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
+  // Edit mode
+  editHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   editAvatarPlaceholder: {
     width: 36, height: 36, borderRadius: 10,
     borderWidth: 1.5, borderColor: T.border, borderStyle: 'dashed',
@@ -471,42 +664,37 @@ const cardStyles = StyleSheet.create({
   inputGroup: { marginBottom: 8 },
   inputLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.8, color: T.textFaint, marginBottom: 5, textTransform: 'uppercase' },
   input: {
-    backgroundColor: T.inputBg,
-    borderRadius: 8, borderWidth: 1, borderColor: T.border,
-    paddingHorizontal: 12, paddingVertical: 11,
-    fontSize: 14, color: T.ink,
+    backgroundColor: T.inputBg, borderRadius: 8, borderWidth: 1, borderColor: T.border,
+    paddingHorizontal: 12, paddingVertical: 11, fontSize: 14, color: T.ink,
   },
-  perforation: {
-    height: 0,
-    borderTopWidth: 1, borderStyle: 'dashed', borderColor: T.borderHi,
-    marginVertical: 10,
-  },
+  perforation: { height: 0, borderTopWidth: 1, borderStyle: 'dashed', borderColor: T.borderHi, marginVertical: 10 },
   recipientRow: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 6 },
-  mailTile: {
-    width: 22, height: 22, borderRadius: 5,
-    backgroundColor: T.blue + '15', alignItems: 'center', justifyContent: 'center',
-  },
+  mailTile: { width: 22, height: 22, borderRadius: 5, backgroundColor: T.blue + '15', alignItems: 'center', justifyContent: 'center' },
   emailText: { fontSize: 13, color: T.ink, fontFamily: 'Courier', flex: 1 },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   websiteText: { fontSize: 12, color: T.textFaint, flex: 1 },
   statusDot: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  statusText: { fontSize: 12, fontWeight: '600', color: T.emerald },
-  generateBtn: { borderRadius: 12, paddingVertical: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
-  generateBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
-  // Progress bar
-  progressTrack: { height: 6, backgroundColor: T.border, borderRadius: 3, overflow: 'hidden' },
-  progressBar: { height: 6, borderRadius: 3, backgroundColor: T.blue },
-  progressLabel: { fontSize: 12, color: T.textMuted, fontWeight: '500' },
-  progressPct: { fontSize: 12, color: T.blue, fontWeight: '700' },
-  // Letter-ready action buttons
-  actionBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5,
-    borderWidth: 1, borderColor: T.borderHi, borderRadius: 10,
-    paddingVertical: 11, backgroundColor: T.surface,
+  statusText: { fontSize: 12, fontWeight: '600' },
+  // FillButton
+  fillBtnOuter: {
+    borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(15,22,53,0.88)', overflow: 'hidden', position: 'relative',
+    minHeight: 48,
   },
-  actionBtnText: { fontSize: 13, fontWeight: '600', color: T.ink },
-  sendBtn: { borderRadius: 10, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  sendBtnText: { fontSize: 13, fontWeight: '700', color: '#fff' },
+  fillBtnContent: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 7, paddingVertical: 14, paddingHorizontal: 12, zIndex: 2,
+  },
+  fillBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+  fillBtnPct: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.75)', marginLeft: 2 },
+  // Edit letter button (after generation done)
+  editLetterBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: T.blue + '10', borderRadius: 10,
+    borderWidth: 1, borderColor: T.blue + '25',
+    paddingVertical: 12, paddingHorizontal: 14,
+  },
+  editLetterBtnText: { flex: 1, fontSize: 13, fontWeight: '600', color: T.blue },
 });
 
 // ─── AppCard ──────────────────────────────────────────────────────────────────
@@ -771,6 +959,13 @@ export default function HomeScreen({
 
   const hasPendingReady = recipients.some(r => r.email && r.website);
 
+  // Track locally-generated cover letters (date → count) so chart updates in real-time
+  const [generatedCounts, setGeneratedCounts] = useState({});
+  function handleCardGenerated() {
+    const key = new Date().toLocaleDateString('en-CA');
+    setGeneratedCounts(prev => ({ ...prev, [key]: (prev[key] || 0) + 1 }));
+  }
+
   function handleMarkReply(appId) {
     setReplyAppId(appId);
     const now = new Date();
@@ -902,7 +1097,7 @@ export default function HomeScreen({
             </View>
             <TouchableOpacity onPress={() => setScreen('usage')}><Text style={styles.detailsLink}>Details →</Text></TouchableOpacity>
           </View>
-          <ActivityChart applicationHistory={applicationHistory} />
+          <ActivityChart applicationHistory={applicationHistory} generatedCounts={generatedCounts} />
           <View style={styles.chartLegend}>
             <View style={styles.legendItem}>
               <LinearGradient colors={[T.blue, T.purple]} style={styles.legendSwatch} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
@@ -944,6 +1139,8 @@ export default function HomeScreen({
               onUpdate={updateRecipient}
               user={user}
               API_BASE={API_BASE}
+              handleReview={handleReview}
+              onGenerated={handleCardGenerated}
             />
           ))}
 
