@@ -92,7 +92,7 @@ function ActivityChart({ applicationHistory }) {
   }, [applicationHistory]);
 
   const maxVal = Math.max(1, ...days.map(d => Math.max(d.sent, d.generated)));
-  const BAR_H = 56;
+  const BAR_H = 76;
 
   return (
     <View style={chartStyles.row}>
@@ -126,7 +126,7 @@ const chartStyles = StyleSheet.create({
   bar: { width: '100%', borderRadius: 4 },
   sentBar: { width: '100%', borderRadius: 4, backgroundColor: T.teal },
   emptyBar: { width: '100%', height: 4, borderRadius: 2, backgroundColor: T.border },
-  label: { marginTop: 5, fontSize: 9, color: T.textFaint, fontWeight: '600' },
+  label: { marginTop: 6, fontSize: 11, color: T.textFaint, fontWeight: '600' },
 });
 
 // ─── CompanyCard ──────────────────────────────────────────────────────────────
@@ -272,8 +272,8 @@ const cardStyles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: T.border,
-    padding: 14,
-    marginBottom: 10,
+    padding: 18,
+    marginBottom: 12,
     overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -282,7 +282,7 @@ const cardStyles = StyleSheet.create({
     elevation: 2,
   },
   topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  eyebrow: { fontSize: 8, fontWeight: '700', letterSpacing: 1.6, color: T.textFaint },
+  eyebrow: { fontSize: 10, fontWeight: '700', letterSpacing: 1.4, color: T.textFaint },
   creditStamp: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, paddingHorizontal: 7, paddingVertical: 2 },
   creditStampText: { fontSize: 8, fontWeight: '700', color: '#fff', letterSpacing: 0.4 },
   watermark: {
@@ -308,12 +308,12 @@ const cardStyles = StyleSheet.create({
   },
   editTitle: { flex: 1, fontSize: 14, fontWeight: '600', color: T.textMuted },
   inputGroup: { marginBottom: 8 },
-  inputLabel: { fontSize: 9, fontWeight: '700', letterSpacing: 1, color: T.textFaint, marginBottom: 4, textTransform: 'uppercase' },
+  inputLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.8, color: T.textFaint, marginBottom: 5, textTransform: 'uppercase' },
   input: {
     backgroundColor: T.inputBg,
     borderRadius: 8, borderWidth: 1, borderColor: T.border,
-    paddingHorizontal: 10, paddingVertical: 8,
-    fontSize: 12, color: T.ink,
+    paddingHorizontal: 12, paddingVertical: 11,
+    fontSize: 14, color: T.ink,
   },
   perforation: {
     height: 0,
@@ -325,13 +325,13 @@ const cardStyles = StyleSheet.create({
     width: 22, height: 22, borderRadius: 5,
     backgroundColor: T.blue + '15', alignItems: 'center', justifyContent: 'center',
   },
-  emailText: { fontSize: 11, color: T.ink, fontFamily: 'Courier', flex: 1 },
+  emailText: { fontSize: 13, color: T.ink, fontFamily: 'Courier', flex: 1 },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  websiteText: { fontSize: 10, color: T.textFaint, flex: 1 },
+  websiteText: { fontSize: 12, color: T.textFaint, flex: 1 },
   statusDot: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  statusText: { fontSize: 10, fontWeight: '600', color: T.emerald },
-  generateBtn: { borderRadius: 10, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  generateBtnText: { fontSize: 12, fontWeight: '700', color: '#fff' },
+  statusText: { fontSize: 12, fontWeight: '600', color: T.emerald },
+  generateBtn: { borderRadius: 12, paddingVertical: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  generateBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
 });
 
 // ─── AppCard ──────────────────────────────────────────────────────────────────
@@ -470,42 +470,46 @@ const appStyles = StyleSheet.create({
     position: 'absolute', right: 14, top: 30,
     fontSize: 64, fontWeight: '800', color: 'rgba(11,15,34,0.04)',
   },
-  topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 14, paddingTop: 8, marginBottom: 8 },
-  eyebrow: { fontSize: 8, fontWeight: '700', letterSpacing: 1.4, color: T.textFaint },
-  statusBadge: { borderRadius: 6, borderWidth: 1, paddingHorizontal: 7, paddingVertical: 2 },
-  statusText: { fontSize: 9, fontWeight: '700', letterSpacing: 0.8 },
+  topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 14, paddingTop: 10, marginBottom: 8 },
+  eyebrow: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, color: T.textFaint },
+  statusBadge: { borderRadius: 6, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 3 },
+  statusText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.6 },
   companyRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, marginBottom: 4 },
-  avatar: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { fontSize: 15, fontWeight: '700' },
-  companyName: { fontSize: 14, fontWeight: '700', color: T.ink },
-  positionText: { fontSize: 10, color: T.textFaint, marginTop: 1 },
+  avatar: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  avatarText: { fontSize: 16, fontWeight: '700' },
+  companyName: { fontSize: 15, fontWeight: '700', color: T.ink },
+  positionText: { fontSize: 12, color: T.textFaint, marginTop: 1 },
   perforation: { height: 0, borderTopWidth: 1, borderStyle: 'dashed', borderColor: T.borderHi, marginVertical: 10, marginHorizontal: 14 },
   quoteBlock: { paddingHorizontal: 14, marginBottom: 4, position: 'relative' },
   quoteMark: { fontSize: 28, fontWeight: '800', color: T.blue + '30', lineHeight: 28, position: 'absolute', left: 12, top: -6 },
-  quoteText: { fontSize: 12, color: T.textMuted, lineHeight: 17, paddingLeft: 14 },
+  quoteText: { fontSize: 13, color: T.textMuted, lineHeight: 18, paddingLeft: 14 },
   senderRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, marginBottom: 8 },
-  senderCircle: { width: 18, height: 18, borderRadius: 9, backgroundColor: T.blue + '20', alignItems: 'center', justifyContent: 'center' },
-  senderInitial: { fontSize: 9, fontWeight: '700', color: T.blue },
-  senderText: { fontSize: 10, color: T.textFaint, flex: 1 },
-  countBadge: { backgroundColor: T.inputBg, borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2 },
-  countBadgeText: { fontSize: 9, color: T.textFaint, fontWeight: '600' },
-  actionHint: { paddingHorizontal: 14, marginBottom: 10, paddingVertical: 6, backgroundColor: T.inputBg, marginHorizontal: 14, borderRadius: 8 },
-  actionHintText: { fontSize: 11, color: T.textMuted, textAlign: 'center' },
-  journeyLabel: { fontSize: 8, fontWeight: '700', letterSpacing: 1.4, color: T.textFaint, paddingHorizontal: 14, marginBottom: 6 },
+  senderCircle: { width: 20, height: 20, borderRadius: 10, backgroundColor: T.blue + '20', alignItems: 'center', justifyContent: 'center' },
+  senderInitial: { fontSize: 10, fontWeight: '700', color: T.blue },
+  senderText: { fontSize: 12, color: T.textFaint, flex: 1 },
+  countBadge: { backgroundColor: T.inputBg, borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3 },
+  countBadgeText: { fontSize: 11, color: T.textFaint, fontWeight: '600' },
+  actionHint: {
+    paddingHorizontal: 14, marginBottom: 10, paddingVertical: 13,
+    backgroundColor: T.blue + '12', marginHorizontal: 14, borderRadius: 10,
+    borderWidth: 1, borderColor: T.blue + '25',
+  },
+  actionHintText: { fontSize: 13, color: T.blue, textAlign: 'center', fontWeight: '600' },
+  journeyLabel: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, color: T.textFaint, paddingHorizontal: 14, marginBottom: 7 },
   timeline: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, marginBottom: 12 },
   timelineItem: { alignItems: 'center', gap: 3 },
-  stepDot: { width: 14, height: 14, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
+  stepDot: { width: 15, height: 15, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   stepDotEmpty: { borderWidth: 1.5, borderColor: T.borderHi, backgroundColor: 'transparent' },
-  stepLabel: { fontSize: 8, fontWeight: '600', color: T.textFaint },
+  stepLabel: { fontSize: 10, fontWeight: '600', color: T.textFaint },
   stepLine: { flex: 1, height: 1.5, backgroundColor: T.borderHi, marginBottom: 12 },
-  footer: { flexDirection: 'row', gap: 8, padding: 12, backgroundColor: T.inputBg },
+  footer: { flexDirection: 'row', gap: 8, padding: 12, backgroundColor: T.surface },
   outlineBtn: {
-    flex: 1, borderWidth: 1, borderColor: T.borderHi, borderRadius: 10,
-    paddingVertical: 9, alignItems: 'center',
+    flex: 1, borderWidth: 1, borderColor: T.borderHi, borderRadius: 11,
+    paddingVertical: 13, alignItems: 'center',
   },
-  outlineBtnText: { fontSize: 12, fontWeight: '600', color: T.ink },
-  gradBtn: { flex: 1, borderRadius: 10, paddingVertical: 9, alignItems: 'center' },
-  gradBtnText: { fontSize: 12, fontWeight: '700', color: '#fff' },
+  outlineBtnText: { fontSize: 14, fontWeight: '600', color: T.ink },
+  gradBtn: { flex: 1, borderRadius: 11, paddingVertical: 13, alignItems: 'center' },
+  gradBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
 });
 
 // ─── StatChip ─────────────────────────────────────────────────────────────────
@@ -519,10 +523,10 @@ function StatChip({ label, value, sub, subColor }) {
   );
 }
 const chipStyles = StyleSheet.create({
-  chip: { flex: 1, alignItems: 'center', paddingVertical: 10 },
-  label: { fontSize: 8, fontWeight: '700', letterSpacing: 1, color: T.textFaint, textTransform: 'uppercase', marginBottom: 4 },
-  value: { fontSize: 16, fontWeight: '800', color: T.ink },
-  sub: { fontSize: 10, fontWeight: '600', color: T.textMuted, marginTop: 2 },
+  chip: { flex: 1, alignItems: 'center', paddingVertical: 12 },
+  label: { fontSize: 10, fontWeight: '700', letterSpacing: 0.8, color: T.textFaint, textTransform: 'uppercase', marginBottom: 5 },
+  value: { fontSize: 17, fontWeight: '800', color: T.ink },
+  sub: { fontSize: 12, fontWeight: '600', color: T.textMuted, marginTop: 2 },
 });
 
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
@@ -674,9 +678,18 @@ export default function HomeScreen({
             </View>
           </View>
 
-          {/* Credits big number */}
-          <Text style={styles.creditsNumber}>{creditBalance}</Text>
-          <Text style={styles.creditsLabel}>AVAILABLE CREDITS</Text>
+          {/* Credits row: big number left + reply mini-card right */}
+          <View style={styles.creditsRow}>
+            <View>
+              <Text style={styles.creditsNumber}>{creditBalance}</Text>
+              <Text style={styles.creditsLabel}>AVAILABLE CREDITS</Text>
+            </View>
+            <View style={styles.replyMiniCard}>
+              <Text style={styles.replyMiniLabel}>REPLIES</Text>
+              <Text style={styles.replyMiniValue}>{totalReplied}/{totalSent}</Text>
+              <Text style={styles.replyMiniRate}>{replyRate}%</Text>
+            </View>
+          </View>
 
           {/* Top up button */}
           <TouchableOpacity style={styles.topUpPill} onPress={() => setScreen('usage')} activeOpacity={0.85}>
@@ -697,8 +710,8 @@ export default function HomeScreen({
             </View>
             <View style={styles.heroStatDivider} />
             <View style={styles.heroStat}>
-              <Text style={styles.heroStatLabel}>REPLY</Text>
-              <Text style={[styles.heroStatValue, { color: T.teal }]}>{replyLabel}</Text>
+              <Text style={styles.heroStatLabel}>REPLY RATE</Text>
+              <Text style={[styles.heroStatValue, { color: T.teal }]}>{replyRate}%</Text>
             </View>
           </View>
         </View>
@@ -1097,68 +1110,79 @@ const styles = StyleSheet.create({
     bottom: -20, right: 40,
   },
   heroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  heroWelcome: { fontSize: 13, color: 'rgba(255,255,255,0.7)', fontWeight: '500' },
+  heroWelcome: { fontSize: 14, color: 'rgba(255,255,255,0.7)', fontWeight: '500' },
   heroName: { color: '#fff', fontWeight: '700' },
   streakPill: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 20,
-    paddingHorizontal: 10, paddingVertical: 4,
+    paddingHorizontal: 10, paddingVertical: 5,
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
   },
-  streakFlame: { fontSize: 12 },
-  streakText: { fontSize: 11, fontWeight: '600', color: '#fff' },
+  streakFlame: { fontSize: 13 },
+  streakText: { fontSize: 12, fontWeight: '600', color: '#fff' },
+  creditsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   creditsNumber: { fontSize: 64, fontWeight: '800', color: '#fff', lineHeight: 68, letterSpacing: -2 },
-  creditsLabel: { fontSize: 9, fontWeight: '700', letterSpacing: 2, color: 'rgba(255,255,255,0.5)', marginBottom: 10 },
+  creditsLabel: { fontSize: 10, fontWeight: '700', letterSpacing: 1.6, color: 'rgba(255,255,255,0.5)', marginBottom: 10, marginTop: 2 },
+  replyMiniCard: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 16, paddingVertical: 12,
+    alignItems: 'center', justifyContent: 'center',
+    alignSelf: 'flex-start', marginTop: 4,
+  },
+  replyMiniLabel: { fontSize: 9, fontWeight: '700', letterSpacing: 1.4, color: 'rgba(255,255,255,0.5)', marginBottom: 5 },
+  replyMiniValue: { fontSize: 22, fontWeight: '800', color: '#fff', lineHeight: 26 },
+  replyMiniRate: { fontSize: 12, fontWeight: '600', color: T.teal, marginTop: 3 },
   topUpPill: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
     backgroundColor: '#fff', borderRadius: 20,
-    paddingHorizontal: 12, paddingVertical: 5,
+    paddingHorizontal: 13, paddingVertical: 6,
     alignSelf: 'flex-start', marginBottom: 16,
   },
-  topUpText: { fontSize: 11, fontWeight: '700', color: T.ink },
+  topUpText: { fontSize: 12, fontWeight: '700', color: T.ink },
   heroStatStrip: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.10)',
     borderRadius: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)',
-    paddingVertical: 10,
+    paddingVertical: 12,
   },
   heroStat: { flex: 1, alignItems: 'center' },
-  heroStatLabel: { fontSize: 8, fontWeight: '700', letterSpacing: 1.2, color: 'rgba(255,255,255,0.5)', marginBottom: 3 },
-  heroStatValue: { fontSize: 14, fontWeight: '800', color: '#fff' },
+  heroStatLabel: { fontSize: 9, fontWeight: '700', letterSpacing: 1, color: 'rgba(255,255,255,0.5)', marginBottom: 4 },
+  heroStatValue: { fontSize: 15, fontWeight: '800', color: '#fff' },
   heroStatDivider: { width: 1, height: 28, backgroundColor: 'rgba(255,255,255,0.12)' },
 
   // Section card
   sectionCard: {
     backgroundColor: T.surface, borderRadius: 16, marginHorizontal: 16,
-    padding: 14, marginBottom: 12,
+    padding: 18, marginBottom: 14,
     borderWidth: 1, borderColor: T.border,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 1,
   },
-  section: { marginHorizontal: 16, marginBottom: 12 },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
-  sectionTitle: { fontSize: 16, fontWeight: '700', color: T.ink },
-  sectionSub: { fontSize: 11, color: T.textMuted, marginTop: 2 },
-  detailsLink: { fontSize: 11, color: T.blue, fontWeight: '600' },
-  chartLegend: { flexDirection: 'row', gap: 14, marginTop: 10 },
+  section: { marginHorizontal: 16, marginBottom: 14, marginTop: 6 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 },
+  sectionTitle: { fontSize: 17, fontWeight: '700', color: T.ink },
+  sectionSub: { fontSize: 12, color: T.textMuted, marginTop: 3 },
+  detailsLink: { fontSize: 12, color: T.blue, fontWeight: '600' },
+  chartLegend: { flexDirection: 'row', gap: 14, marginTop: 12 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  legendSwatch: { width: 20, height: 5, borderRadius: 3 },
-  legendText: { fontSize: 10, color: T.textMuted, fontWeight: '500' },
+  legendSwatch: { width: 22, height: 6, borderRadius: 3 },
+  legendText: { fontSize: 12, color: T.textMuted, fontWeight: '500' },
 
   // Count pill
-  countPill: { backgroundColor: T.ink, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 },
-  countPillText: { fontSize: 10, fontWeight: '700', color: '#fff' },
-  addPill: { borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6 },
-  addPillText: { fontSize: 11, fontWeight: '700', color: '#fff' },
+  countPill: { backgroundColor: T.ink, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 3 },
+  countPillText: { fontSize: 11, fontWeight: '700', color: '#fff' },
+  addPill: { borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8 },
+  addPillText: { fontSize: 13, fontWeight: '700', color: '#fff' },
 
   // Generate all button
-  generateAllBtn: { borderRadius: 14, paddingVertical: 14, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
-  generateAllText: { fontSize: 13, fontWeight: '700', color: '#fff' },
-  creditsBadge: { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 3 },
-  creditsBadgeText: { fontSize: 10, fontWeight: '700', color: '#fff' },
+  generateAllBtn: { borderRadius: 14, paddingVertical: 17, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
+  generateAllText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  creditsBadge: { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 10, paddingHorizontal: 9, paddingVertical: 4 },
+  creditsBadgeText: { fontSize: 12, fontWeight: '700', color: '#fff' },
 
   // Sync pill
-  syncPill: { backgroundColor: T.emerald, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 5, flexDirection: 'row', alignItems: 'center', gap: 4 },
-  syncText: { fontSize: 11, fontWeight: '700', color: '#fff' },
+  syncPill: { backgroundColor: T.emerald, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  syncText: { fontSize: 12, fontWeight: '700', color: '#fff' },
 
   // Stats strip
   statsStrip: {
