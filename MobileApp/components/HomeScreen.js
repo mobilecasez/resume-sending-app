@@ -190,72 +190,176 @@ const chartStyles = StyleSheet.create({
   },
 });
 
-// ─── FillButton — button with a liquid-fill progress animation ───────────────
-function FillButton({
-  onPress, disabled, label, labelDone, labelLoading,
-  icon, iconDone, fillColor, fillColorEnd,
-  state, progress, progressAnim, style,
-}) {
-  // state: 'idle' | 'loading' | 'done'
-  const fillWidth = progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
-  const isDone = state === 'done';
+// ─── GenerateButton — matches the HTML prototype exactly ────────────────────
+// idle:    full blue→purple gradient + "Generate Cover Letter" + glass arrow pill
+// loading: #9FB9E8 base + animated fill left→right + shimmer + spinner + % on right
+// done:    stays fully filled, checkmark + "Generated ✓"
+function GenerateButton({ state, progress, progressAnim, onPress }) {
+  const spinAnim = useRef(new Animated.Value(0)).current;
+  const shimAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (state === 'loading') {
+      Animated.loop(Animated.timing(spinAnim, { toValue: 1, duration: 800, useNativeDriver: true })).start();
+      Animated.loop(Animated.timing(shimAnim, { toValue: 1, duration: 2200, useNativeDriver: true })).start();
+    } else {
+      spinAnim.stopAnimation(); shimAnim.stopAnimation();
+    }
+  }, [state]);
+
+  const spin = spinAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  const shimX = shimAnim.interpolate({ inputRange: [0, 1], outputRange: [-160, 360] });
+  const fillW = progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+
+  if (state === 'idle') {
+    return (
+      <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={genBtnStyles.wrap}>
+        <LinearGradient colors={['#4F8DFF', '#7C6BFF', '#5B4FE8']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={StyleSheet.absoluteFill} />
+        <View style={genBtnStyles.idleContent}>
+          <Ionicons name="sparkles" size={14} color="#fff" />
+          <Text style={genBtnStyles.label}>Generate Cover Letter</Text>
+        </View>
+        <View style={genBtnStyles.arrowPill}>
+          <Ionicons name="arrow-forward" size={14} color="#fff" />
+        </View>
+      </TouchableOpacity>
+    );
+  }
+
+  if (state === 'loading') {
+    return (
+      <View style={[genBtnStyles.wrap, { backgroundColor: '#9FB9E8' }]}>
+        {/* Animated fill */}
+        <Animated.View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: fillW, overflow: 'hidden' }}>
+          <LinearGradient colors={[T.blue, T.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+        </Animated.View>
+        {/* Shimmer sweep */}
+        <Animated.View style={{ position: 'absolute', top: 0, bottom: 0, width: 80, transform: [{ translateX: shimX }] }}>
+          <LinearGradient colors={['transparent', 'rgba(255,255,255,0.28)', 'transparent']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+        </Animated.View>
+        {/* Content */}
+        <View style={[genBtnStyles.idleContent, { justifyContent: 'space-between', paddingRight: 14, zIndex: 2 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Animated.View style={[genBtnStyles.spinner, { transform: [{ rotate: spin }] }]} />
+            <Text style={genBtnStyles.label}>Generating cover letter…</Text>
+          </View>
+          <Text style={genBtnStyles.pct}>{Math.round(progress)}%</Text>
+        </View>
+      </View>
+    );
+  }
+
+  // done
+  return (
+    <View style={[genBtnStyles.wrap, { overflow: 'hidden' }]}>
+      <LinearGradient colors={[T.teal, T.emerald]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+      <View style={genBtnStyles.idleContent}>
+        <Ionicons name="checkmark-circle" size={14} color="#fff" />
+        <Text style={genBtnStyles.label}>Generated ✓</Text>
+      </View>
+    </View>
+  );
+}
+
+// ─── FillButton — for Download and Send (same liquid fill, simpler) ──────────
+function FillButton({ state, progress, progressAnim, onPress, label, labelLoading, labelDone, icon, colors, style }) {
+  const spinAnim = useRef(new Animated.Value(0)).current;
+  const shimAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (state === 'loading') {
+      Animated.loop(Animated.timing(spinAnim, { toValue: 1, duration: 800, useNativeDriver: true })).start();
+      Animated.loop(Animated.timing(shimAnim, { toValue: 1, duration: 2000, useNativeDriver: true })).start();
+    } else {
+      spinAnim.stopAnimation(); shimAnim.stopAnimation();
+    }
+  }, [state]);
+
+  const spin = spinAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  const shimX = shimAnim.interpolate({ inputRange: [0, 1], outputRange: [-120, 300] });
+  const fillW = progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+  const fillColors = colors || [T.ink, '#2D3748'];
+
   const isLoading = state === 'loading';
-  const isIdle = state === 'idle';
+  const isDone = state === 'done';
 
   return (
     <TouchableOpacity
       onPress={onPress}
-      disabled={disabled || isLoading}
+      disabled={isLoading}
       activeOpacity={isLoading ? 1 : 0.82}
-      style={[{ borderRadius: 12, overflow: 'hidden', marginTop: 10 }, style]}
+      style={[genBtnStyles.fillWrap, style]}
     >
-      <View style={[
-        cardStyles.fillBtnOuter,
-        isDone && { borderColor: fillColor },
-      ]}>
-        {/* Liquid fill layer (always present, grows left→right) */}
-        <Animated.View style={[
-          StyleSheet.absoluteFill,
-          { right: undefined, width: fillWidth, borderRadius: 12 },
-          { backgroundColor: fillColor },
-        ]} />
-
-        {/* Idle base gradient (shown at 0%) */}
-        {isIdle && (
-          <LinearGradient
-            colors={[fillColor, fillColorEnd || fillColor]}
-            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-            style={StyleSheet.absoluteFill}
-          />
+      {/* Base background */}
+      {isDone || isLoading ? (
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#9FB9E8', borderRadius: 12 }]} />
+      ) : (
+        <LinearGradient colors={fillColors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[StyleSheet.absoluteFill, { borderRadius: 12 }]} />
+      )}
+      {/* Fill */}
+      {(isLoading || isDone) && (
+        <Animated.View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: isDone ? '100%' : fillW, borderRadius: 12, overflow: 'hidden' }}>
+          <LinearGradient colors={fillColors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+        </Animated.View>
+      )}
+      {/* Shimmer */}
+      {isLoading && (
+        <Animated.View style={{ position: 'absolute', top: 0, bottom: 0, width: 60, transform: [{ translateX: shimX }], zIndex: 1 }}>
+          <LinearGradient colors={['transparent', 'rgba(255,255,255,0.22)', 'transparent']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+        </Animated.View>
+      )}
+      {/* Content */}
+      <View style={[genBtnStyles.fillContent, { zIndex: 2 }]}>
+        {isLoading ? (
+          <Animated.View style={[genBtnStyles.spinner, { transform: [{ rotate: spin }] }]} />
+        ) : (
+          <Ionicons name={isDone ? 'checkmark-circle' : icon} size={13} color="#fff" />
         )}
-
-        {/* Content on top */}
-        <View style={cardStyles.fillBtnContent}>
-          <Ionicons
-            name={isDone ? (iconDone || 'checkmark-circle') : icon}
-            size={14}
-            color="#fff"
-          />
-          <Text style={cardStyles.fillBtnText}>
-            {isDone ? (labelDone || label) : isLoading ? (labelLoading || label) : label}
-          </Text>
-          {isLoading && (
-            <Text style={cardStyles.fillBtnPct}>{Math.round(progress)}%</Text>
-          )}
-        </View>
+        <Text style={genBtnStyles.fillLabel}>
+          {isDone ? labelDone : isLoading ? (labelLoading || label) : label}
+        </Text>
+        {isLoading && <Text style={genBtnStyles.pct}>{Math.round(progress)}%</Text>}
       </View>
     </TouchableOpacity>
   );
 }
 
-// Phase labels for the generate button based on progress %
-function genPhaseLabel(pct) {
-  if (pct < 20) return 'Analyzing profile…';
-  if (pct < 45) return 'Matching skills…';
-  if (pct < 70) return 'Drafting letter…';
-  if (pct < 90) return 'Finalizing…';
-  return 'Almost done…';
-}
+const genBtnStyles = StyleSheet.create({
+  // GenerateButton
+  wrap: {
+    height: 46, borderRadius: 12, overflow: 'hidden',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingLeft: 16, paddingRight: 5, marginTop: 10,
+    shadowColor: 'rgba(79,141,255,0.34)', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 1, shadowRadius: 20, elevation: 6,
+  },
+  idleContent: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7,
+    paddingRight: 8,
+  },
+  label: { fontSize: 13, fontWeight: '700', color: '#fff', letterSpacing: -0.01 },
+  pct: { fontSize: 13, fontWeight: '800', color: '#fff', letterSpacing: -0.02, minWidth: 36, textAlign: 'right' },
+  arrowPill: {
+    width: 36, height: 36, borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.22)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  spinner: {
+    width: 14, height: 14, borderRadius: 7,
+    borderWidth: 2, borderColor: 'rgba(255,255,255,0.35)',
+    borderTopColor: '#fff',
+  },
+  // FillButton (Download / Send)
+  fillWrap: {
+    height: 46, borderRadius: 12, overflow: 'hidden',
+    flexDirection: 'row', alignItems: 'center',
+  },
+  fillContent: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, paddingHorizontal: 10,
+  },
+  fillLabel: { fontSize: 13, fontWeight: '700', color: '#fff', letterSpacing: -0.01 },
+});
 
 // ─── CompanyCard ──────────────────────────────────────────────────────────────
 function CompanyCard({
@@ -561,68 +665,61 @@ function CompanyCard({
       )}
 
       {/* ── ACTION BUTTONS (view mode only) ── */}
-      {mode === 'view' && genState !== 'done' && (
-        <FillButton
-          onPress={handleGenerate}
-          disabled={genState === 'loading'}
-          state={genState}
-          progress={genProgress}
-          progressAnim={genAnim}
-          icon="sparkles"
-          iconDone="checkmark-circle"
-          label={genState === 'loading' ? genPhaseLabel(genProgress) : 'Generate Cover Letter'}
-          labelDone="Generated ✓"
-          fillColor={T.blue}
-          fillColorEnd={T.purpleDeep}
-          style={{ marginTop: 12 }}
-        />
-      )}
-
-      {mode === 'view' && genState === 'done' && (
-        <View style={{ marginTop: 12, gap: 8 }}>
-          {/* Edit — navigates to review screen */}
-          <TouchableOpacity
-            onPress={() => handleReview && handleReview()}
-            style={cardStyles.editLetterBtn}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="create-outline" size={14} color={T.blue} />
-            <Text style={cardStyles.editLetterBtnText}>Edit Cover Letter</Text>
-            <Ionicons name="chevron-forward" size={13} color={T.blue} />
-          </TouchableOpacity>
-
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            {/* Download */}
-            <FillButton
-              onPress={handleDownload}
-              disabled={dlState === 'loading'}
-              state={dlState}
-              progress={dlProgress}
-              progressAnim={dlAnim}
-              icon="download-outline"
-              iconDone="checkmark-circle"
-              label={dlState === 'loading' ? `Downloading…` : 'Download PDF'}
-              labelDone="Downloaded ✓"
-              fillColor={T.ink}
-              fillColorEnd="#2D3748"
-              style={{ flex: 1, marginTop: 0 }}
+      {mode === 'view' && (
+        <View style={{ marginTop: 2 }}>
+          {/* Generate button — always visible, changes state in-place */}
+          {genState !== 'done' && (
+            <GenerateButton
+              state={genState}
+              progress={genProgress}
+              progressAnim={genAnim}
+              onPress={handleGenerate}
             />
-            {/* Send */}
-            <FillButton
-              onPress={handleSend}
-              disabled={sendState === 'loading'}
-              state={sendState}
-              progress={sendProgress}
-              progressAnim={sendAnim}
-              icon="send"
-              iconDone="checkmark-circle"
-              label={sendState === 'loading' ? 'Sending…' : 'Send Now'}
-              labelDone="Sent ✓"
-              fillColor={T.teal}
-              fillColorEnd={T.emerald}
-              style={{ flex: 1, marginTop: 0 }}
-            />
-          </View>
+          )}
+
+          {genState === 'done' && (
+            <View style={{ gap: 8 }}>
+              {/* Edit → review screen */}
+              <TouchableOpacity
+                onPress={() => handleReview && handleReview()}
+                style={cardStyles.editLetterBtn}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="create-outline" size={14} color={T.blue} />
+                <Text style={cardStyles.editLetterBtnText}>Edit Cover Letter</Text>
+                <Ionicons name="chevron-forward" size={13} color={T.blue} />
+              </TouchableOpacity>
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                {/* Download */}
+                <FillButton
+                  state={dlState}
+                  progress={dlProgress}
+                  progressAnim={dlAnim}
+                  onPress={handleDownload}
+                  label="Download"
+                  labelLoading="Downloading…"
+                  labelDone="Downloaded ✓"
+                  icon="download-outline"
+                  colors={[T.ink, '#2D3748']}
+                  style={{ flex: 1 }}
+                />
+                {/* Send Now */}
+                <FillButton
+                  state={sendState}
+                  progress={sendProgress}
+                  progressAnim={sendAnim}
+                  onPress={handleSend}
+                  label="Send Now"
+                  labelLoading="Sending…"
+                  labelDone="Sent ✓"
+                  icon="send"
+                  colors={[T.blue, T.purple, '#5B4FE8']}
+                  style={{ flex: 1.4 }}
+                />
+              </View>
+            </View>
+          )}
         </View>
       )}
     </View>
@@ -675,18 +772,6 @@ const cardStyles = StyleSheet.create({
   websiteText: { fontSize: 12, color: T.textFaint, flex: 1 },
   statusDot: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   statusText: { fontSize: 12, fontWeight: '600' },
-  // FillButton
-  fillBtnOuter: {
-    borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
-    backgroundColor: 'rgba(15,22,53,0.88)', overflow: 'hidden', position: 'relative',
-    minHeight: 48,
-  },
-  fillBtnContent: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 7, paddingVertical: 14, paddingHorizontal: 12, zIndex: 2,
-  },
-  fillBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
-  fillBtnPct: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.75)', marginLeft: 2 },
   // Edit letter button (after generation done)
   editLetterBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
