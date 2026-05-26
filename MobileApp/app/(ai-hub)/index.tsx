@@ -207,7 +207,7 @@ const WishlistBar: React.FC<WishlistBarProps> = ({
   return (
     <View style={styles.wishlistBar}>
       <View style={styles.topHeader}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.replace('/(tabs)')}>
+        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color="#FFF" />
         </TouchableOpacity>
         <Text style={styles.wishlistLabel}>JOBS DASHBOARD</Text>
@@ -243,14 +243,16 @@ const WishlistBar: React.FC<WishlistBarProps> = ({
         </TouchableOpacity>
       </ScrollView>
 
-      <View style={styles.aiStatusRow}>
-        <Animated.View
-          style={[styles.pulseDot, { transform: [{ scale: pulseAnim }] }]}
-        />
-        <Text style={styles.aiStatusText}>
-          {`AI is analyzing your wishlist · ${sources} sources · ${matches} matches`}
-        </Text>
-      </View>
+      {pills.length > 0 && (
+        <View style={styles.aiStatusRow}>
+          <Animated.View
+            style={[styles.pulseDot, { transform: [{ scale: pulseAnim }] }]}
+          />
+          <Text style={styles.aiStatusText}>
+            {`AI is analyzing your wishlist · ${sources} sources · ${matches} matches`}
+          </Text>
+        </View>
+      )}
     </View>
   );
 };
@@ -599,6 +601,14 @@ export default function AIHubScreen() {
       try {
         const dashboard = await fetchDashboard();
         
+        // Ensure initialLoading is false immediately if the array is empty or undefined
+        if (!dashboard || dashboard.length === 0) {
+           setEmployers([]);
+           setPills([]);
+           setInitialLoading(false);
+           return;
+        }
+
         const loadedEmployers: Employer[] = [];
         const loadedPills: WishlistPill[] = [];
         const loadedStats = { sources: dashboard.length, matches: 0, contacts: 0 };
