@@ -842,8 +842,53 @@ export default function HomeScreen({
           )}
         </View>
 
-        <View style={{ height: 80 }} />
+        <View style={{ height: 100 }} />
       </ScrollView>
+
+      {/* ── FLOATING TAB BAR ─────────────────────────────── */}
+      <View style={tabStyles.wrapper}>
+        <View style={tabStyles.bar}>
+          {/* Home — active */}
+          <LinearGradient
+            colors={[T.blue, T.blueDeep]}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+            style={tabStyles.activeTab}
+          >
+            <Ionicons name="home" size={16} color="#fff" />
+            <Text style={tabStyles.activeLabel}>Home</Text>
+          </LinearGradient>
+
+          {/* Jobs */}
+          <TouchableOpacity
+            style={tabStyles.tab}
+            onPress={() => require('expo-router').router?.push?.('/(ai-hub)')}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="briefcase-outline" size={20} color={T.textFaint} />
+            <Text style={tabStyles.label}>Jobs</Text>
+          </TouchableOpacity>
+
+          {/* Letters */}
+          <TouchableOpacity
+            style={tabStyles.tab}
+            onPress={() => handleReview()}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="document-text-outline" size={20} color={T.textFaint} />
+            <Text style={tabStyles.label}>Letters</Text>
+          </TouchableOpacity>
+
+          {/* Me */}
+          <TouchableOpacity
+            style={tabStyles.tab}
+            onPress={() => setScreen('profile')}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="person-outline" size={20} color={T.textFaint} />
+            <Text style={tabStyles.label}>Me</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
 
       {/* ── SIDE MENU MODAL ──────────────────────────────── */}
       <Modal visible={showSettings} transparent animationType="none" onRequestClose={() => setShowSettings(false)}>
@@ -1256,4 +1301,61 @@ const pickerStyles = StyleSheet.create({
   cancelText: { fontSize: 14, fontWeight: '600', color: T.ink },
   confirmBtn: { borderRadius: 12, paddingVertical: 13, alignItems: 'center' },
   confirmText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+});
+
+const tabStyles = StyleSheet.create({
+  wrapper: {
+    position: 'absolute',
+    bottom: 0, left: 0, right: 0,
+    paddingHorizontal: 20,
+    paddingBottom: 28,  // extra room above home indicator on iPhone
+    paddingTop: 8,
+    // soft gradient fade so scroll content doesn't hard-cut
+    backgroundColor: 'transparent',
+  },
+  bar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: T.surface,
+    borderRadius: 28,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    gap: 4,
+    shadowColor: '#0B0F22',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.14,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  // Active tab: gradient pill
+  activeTab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: 22,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  activeLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: -0.2,
+  },
+  // Inactive tab
+  tab: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    paddingVertical: 6,
+  },
+  label: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: T.textFaint,
+    letterSpacing: -0.1,
+  },
 });
