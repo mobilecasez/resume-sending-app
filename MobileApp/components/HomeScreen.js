@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView,
-  Animated, Modal, ActivityIndicator, SafeAreaView, StatusBar,
+  Animated, Modal, ActivityIndicator, SafeAreaView, StatusBar, Alert,
   TouchableWithoutFeedback, Image, Dimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -99,18 +99,21 @@ function ActivityChart({ applicationHistory }) {
       {days.map((d, i) => (
         <View key={i} style={chartStyles.col}>
           <View style={[chartStyles.barWrap, { height: BAR_H }]}>
-            {d.generated > 0 && (
+            {/* Generated bar (blue/purple) */}
+            {d.generated > 0 ? (
               <LinearGradient
                 colors={[T.blue, T.purple]}
-                style={[chartStyles.bar, { height: Math.max(4, (d.generated / maxVal) * BAR_H) }]}
+                style={[chartStyles.groupBar, { height: Math.max(4, (d.generated / maxVal) * BAR_H) }]}
                 start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}
               />
+            ) : (
+              <View style={[chartStyles.groupBar, chartStyles.emptyBar]} />
             )}
-            {d.sent > 0 && d.sent !== d.generated && (
-              <View style={[chartStyles.sentBar, { height: Math.max(4, (d.sent / maxVal) * BAR_H) }]} />
-            )}
-            {d.generated === 0 && (
-              <View style={chartStyles.emptyBar} />
+            {/* Sent bar (teal) — always shown */}
+            {d.sent > 0 ? (
+              <View style={[chartStyles.groupBar, chartStyles.sentBar, { height: Math.max(4, (d.sent / maxVal) * BAR_H) }]} />
+            ) : (
+              <View style={[chartStyles.groupBar, chartStyles.emptyBar]} />
             )}
           </View>
           <Text style={chartStyles.label}>{d.label}</Text>
@@ -122,19 +125,25 @@ function ActivityChart({ applicationHistory }) {
 const chartStyles = StyleSheet.create({
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
   col: { alignItems: 'center', flex: 1 },
-  barWrap: { justifyContent: 'flex-end', alignItems: 'center', width: '80%' },
-  bar: { width: '100%', borderRadius: 4 },
-  sentBar: { width: '100%', borderRadius: 4, backgroundColor: T.teal },
-  emptyBar: { width: '100%', height: 4, borderRadius: 2, backgroundColor: T.border },
+  barWrap: { justifyContent: 'flex-end', flexDirection: 'row', alignItems: 'flex-end', gap: 2, width: '88%' },
+  groupBar: { flex: 1, borderRadius: 4 },
+  sentBar: { backgroundColor: T.teal },
+  emptyBar: { height: 4, borderRadius: 2, backgroundColor: T.border },
   label: { marginTop: 6, fontSize: 11, color: T.textFaint, fontWeight: '600' },
 });
 
 // ─── CompanyCard ──────────────────────────────────────────────────────────────
 function CompanyCard({
   recipient, index, canRemove,
-  onRemove, onUpdate, onGenerate,
+  onRemove, onUpdate,
+  user, API_BASE,
 }) {
   const [mode, setMode] = useState('edit'); // 'edit' | 'ready'
+  const [genState, setGenState] = useState('idle'); // 'idle' | 'generating' | 'done'
+  const [progress, setProgress] = useState(0);
+  const [coverLetterText, setCoverLetterText] = useState('');
+  const progressAnim = useRef(new Animated.Value(0)).current;
+  const pollRef = useRef(null);
 
   const domain = domainFrom(recipient.website);
   const companyInitial = domain ? domain[0].toUpperCase() : (recipient.email ? recipient.email.split('@')[1]?.[0]?.toUpperCase() ?? 'C' : 'C');
@@ -146,7 +155,117 @@ function CompanyCard({
     else setMode('edit');
   }, [isReady]);
 
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
+  function animateTo(val) {
+    Animated.timing(progressAnim, { toValue: val, duration: 350, useNativeDriver: false }).start();
+  }
+
+  async function handleGenerate() {
+    if (genState === 'generating') return;
+    setGenState('generating');
+    setProgress(0);
+    progressAnim.setValue(0);
+
+    // Fake incremental progress until server responds
+    let fake = 0;
+    pollRef.current = setInterval(() => {
+      fake = Math.min(fake + Math.random() * 7 + 2, 88);
+      setProgress(Math.round(fake));
+      animateTo(fake / 100);
+    }, 900);
+
+    try {
+      const token = user?.token;
+      const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+      const res = await fetch(`${API_BASE}/generate-cover-letter-details`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ recipientEmail: recipient.email, websiteUrl: recipient.website, position: recipient.position || '' }),
+      });
+      const data = await res.json();
+
+      if (res.status === 202 && data.jobId) {
+        // Async — poll for completion
+        clearInterval(pollRef.current);
+        const jobId = data.jobId;
+        const started = Date.now();
+        pollRef.current = setInterval(async () => {
+          if (Date.now() - started > 150000) { clearInterval(pollRef.current); setGenState('idle'); return; }
+          try {
+            const sRes = await fetch(`${API_BASE}/job-status/${jobId}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+            const sData = await sRes.json();
+            if (sData.status === 'completed') {
+              clearInterval(pollRef.current);
+              setProgress(100); animateTo(1);
+              setTimeout(() => {
+                setCoverLetterText(sData.result?.coverLetterText || sData.coverLetterText || '');
+                setGenState('done');
+              }, 400);
+            } else if (sData.progress) {
+              const p = Math.min(sData.progress, 95);
+              setProgress(p); animateTo(p / 100);
+            }
+          } catch (_) {}
+        }, 3000);
+      } else if (res.ok) {
+        clearInterval(pollRef.current);
+        setProgress(100); animateTo(1);
+        setTimeout(() => {
+          setCoverLetterText(data.coverLetterText || data.result?.coverLetterText || '');
+          setGenState('done');
+        }, 400);
+      } else {
+        clearInterval(pollRef.current); setGenState('idle');
+        Alert.alert('Generation failed', data.message || 'Please try again.');
+      }
+    } catch (e) {
+      clearInterval(pollRef.current); setGenState('idle');
+      Alert.alert('Error', 'Could not generate cover letter. Check your connection.');
+    }
+  }
+
+  async function handleDownload() {
+    try {
+      const token = user?.token;
+      const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+      const res = await fetch(`${API_BASE}/generate-cover-letter-pdf`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ coverLetterHtml: coverLetterText, companyName, companyAddress: '' }),
+      });
+      const data = await res.json();
+      const pdfUrl = data.pdfUrl || data.url;
+      if (pdfUrl) {
+        const FileSystem = require('expo-file-system');
+        const Sharing = require('expo-sharing');
+        const dest = FileSystem.documentDirectory + `cover_letter_${companyName.replace(/\s+/g, '_')}.pdf`;
+        await FileSystem.downloadAsync(pdfUrl, dest);
+        await Sharing.shareAsync(dest);
+      } else {
+        Alert.alert('Download failed', 'No PDF URL returned from server.');
+      }
+    } catch (e) {
+      Alert.alert('Download failed', 'Could not download PDF. Please try again.');
+    }
+  }
+
+  async function handleSend() {
+    try {
+      const token = user?.token;
+      const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+      await fetch(`${API_BASE}/send-single-application`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ recipientEmail: recipient.email, websiteUrl: recipient.website, position: recipient.position || '', coverLetterText, companyName, companyAddress: '' }),
+      });
+      Alert.alert('Sent! 🎉', `Application sent to ${companyName}`);
+    } catch (e) {
+      Alert.alert('Send failed', 'Could not send application. Please try again.');
+    }
+  }
+
   const eyebrow = mode === 'edit' ? 'NEW OUTREACH' : 'OUTREACH TO';
+  const progressWidth = progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
 
   return (
     <View style={cardStyles.card}>
@@ -250,19 +369,61 @@ function CompanyCard({
           <Ionicons name="link-outline" size={10} color={T.textFaint} />
           <Text style={cardStyles.websiteText}>{domain}</Text>
           <View style={cardStyles.statusDot}>
-            <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: T.emerald }} />
-            <Text style={cardStyles.statusText}>Ready</Text>
+            {genState === 'done' ? (
+              <>
+                <Ionicons name="checkmark-circle" size={12} color={T.emerald} />
+                <Text style={[cardStyles.statusText, { color: T.emerald }]}>Letter ready</Text>
+              </>
+            ) : (
+              <>
+                <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: T.blue }} />
+                <Text style={[cardStyles.statusText, { color: T.blue }]}>Ready to Generate</Text>
+              </>
+            )}
           </View>
         </View>
       )}
 
-      {/* Generate button */}
-      <TouchableOpacity onPress={onGenerate} activeOpacity={0.85} style={{ marginTop: 10 }}>
-        <LinearGradient colors={[T.blue, T.purple, T.purpleDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={cardStyles.generateBtn}>
-          <Ionicons name="sparkles" size={13} color="#fff" />
-          <Text style={cardStyles.generateBtnText}>Generate Cover Letter</Text>
-        </LinearGradient>
-      </TouchableOpacity>
+      {/* ── Action area ── */}
+      {genState === 'idle' && (
+        <TouchableOpacity onPress={handleGenerate} activeOpacity={0.85} style={{ marginTop: 10 }}>
+          <LinearGradient colors={[T.blue, T.purple, T.purpleDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={cardStyles.generateBtn}>
+            <Ionicons name="sparkles" size={13} color="#fff" />
+            <Text style={cardStyles.generateBtnText}>Generate Cover Letter</Text>
+          </LinearGradient>
+        </TouchableOpacity>
+      )}
+
+      {genState === 'generating' && (
+        <View style={{ marginTop: 12 }}>
+          <View style={cardStyles.progressTrack}>
+            <Animated.View style={[cardStyles.progressBar, { width: progressWidth }]} />
+          </View>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
+            <Text style={cardStyles.progressLabel}>Generating cover letter…</Text>
+            <Text style={cardStyles.progressPct}>{progress}%</Text>
+          </View>
+        </View>
+      )}
+
+      {genState === 'done' && (
+        <View style={{ marginTop: 10, flexDirection: 'row', gap: 7 }}>
+          <TouchableOpacity style={cardStyles.actionBtn} onPress={() => Alert.alert('Edit', 'Open cover letter editor coming soon.')}>
+            <Ionicons name="create-outline" size={14} color={T.blue} />
+            <Text style={[cardStyles.actionBtnText, { color: T.blue }]}>Edit</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={cardStyles.actionBtn} onPress={handleDownload}>
+            <Ionicons name="download-outline" size={14} color={T.ink} />
+            <Text style={cardStyles.actionBtnText}>Download</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={{ flex: 1.4 }} onPress={handleSend} activeOpacity={0.85}>
+            <LinearGradient colors={[T.blue, T.blueDeep]} style={cardStyles.sendBtn} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+              <Ionicons name="send" size={13} color="#fff" />
+              <Text style={cardStyles.sendBtnText}>Send Now</Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -332,6 +493,20 @@ const cardStyles = StyleSheet.create({
   statusText: { fontSize: 12, fontWeight: '600', color: T.emerald },
   generateBtn: { borderRadius: 12, paddingVertical: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   generateBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+  // Progress bar
+  progressTrack: { height: 6, backgroundColor: T.border, borderRadius: 3, overflow: 'hidden' },
+  progressBar: { height: 6, borderRadius: 3, backgroundColor: T.blue },
+  progressLabel: { fontSize: 12, color: T.textMuted, fontWeight: '500' },
+  progressPct: { fontSize: 12, color: T.blue, fontWeight: '700' },
+  // Letter-ready action buttons
+  actionBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5,
+    borderWidth: 1, borderColor: T.borderHi, borderRadius: 10,
+    paddingVertical: 11, backgroundColor: T.surface,
+  },
+  actionBtnText: { fontSize: 13, fontWeight: '600', color: T.ink },
+  sendBtn: { borderRadius: 10, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  sendBtnText: { fontSize: 13, fontWeight: '700', color: '#fff' },
 });
 
 // ─── AppCard ──────────────────────────────────────────────────────────────────
@@ -725,7 +900,7 @@ export default function HomeScreen({
                 {deltaLetters >= 0 ? '+' : ''}{deltaLetters} letters vs last week
               </Text>
             </View>
-            <TouchableOpacity><Text style={styles.detailsLink}>Details →</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => setScreen('usage')}><Text style={styles.detailsLink}>Details →</Text></TouchableOpacity>
           </View>
           <ActivityChart applicationHistory={applicationHistory} />
           <View style={styles.chartLegend}>
@@ -767,7 +942,8 @@ export default function HomeScreen({
               canRemove={recipients.length > 1}
               onRemove={removeRecipient}
               onUpdate={updateRecipient}
-              onGenerate={handleReview}
+              user={user}
+              API_BASE={API_BASE}
             />
           ))}
 

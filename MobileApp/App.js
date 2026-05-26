@@ -25,6 +25,7 @@ import { router as expoRouter } from 'expo-router'; // AI Hub navigation
 import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import HomeScreen from './components/HomeScreen';
+import FloatingTabBar from './components/FloatingTabBar';
 
 // Apple IAP Product IDs - must match App Store Connect products
 const IAP_PRODUCT_IDS = [
@@ -1109,7 +1110,7 @@ function AppContent() {
 
   const addRecipient = () => {
     const newId = Math.max(...recipients.map(r => r.id), -1) + 1;
-    setRecipients([...recipients, { id: newId, email: '', website: '', position: '', error: '' }]);
+    setRecipients([{ id: newId, email: '', website: '', position: '', error: '' }, ...recipients]);
   };
 
   const removeRecipient = (id) => {
@@ -5624,6 +5625,7 @@ function AppContent() {
             </>
           )}
         </ScrollView>
+        <FloatingTabBar currentScreen="usage" setScreen={setScreen} handleReview={handleReview} />
       </SafeAreaViewContext>
     );
   }
@@ -5958,6 +5960,7 @@ function AppContent() {
         </ScrollView>
 
         {/* Payment handled by native Razorpay SDK - no WebView needed */}
+        <FloatingTabBar currentScreen="notifications" setScreen={setScreen} handleReview={handleReview} />
       </SafeAreaViewContext>
     );
   }
@@ -6627,6 +6630,7 @@ function AppContent() {
           </View>
         </Modal>
 
+        <FloatingTabBar currentScreen="profile" setScreen={setScreen} handleReview={handleReview} />
       </SafeAreaViewContext>
     );
   }
