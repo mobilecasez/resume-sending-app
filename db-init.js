@@ -425,6 +425,73 @@ async function runPostgresMigrations(db) {
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (user_id, job_id)
             );
+
+            -- Core employer identity (one row per employer website)
+            CREATE TABLE IF NOT EXISTS employer_profiles (
+                website_url TEXT PRIMARY KEY,
+                employer_name TEXT,
+                founded_year INTEGER,
+                company_size TEXT,
+                industry TEXT,
+                mission TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Brand color + font extracted from employer website
+            CREATE TABLE IF NOT EXISTS employer_brand_profiles (
+                website_url TEXT PRIMARY KEY REFERENCES employer_profiles(website_url) ON DELETE CASCADE,
+                brand_color VARCHAR(7) NOT NULL DEFAULT '#262633',
+                font_name VARCHAR(100) NOT NULL DEFAULT 'Lato',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Products, platforms, tech stack, languages, frameworks, cloud providers
+            CREATE TABLE IF NOT EXISTS employer_technologies (
+                id SERIAL PRIMARY KEY,
+                website_url TEXT NOT NULL REFERENCES employer_profiles(website_url) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                category TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Named clients, industries served, enterprise deals, government contracts
+            CREATE TABLE IF NOT EXISTS employer_clients (
+                id SERIAL PRIMARY KEY,
+                website_url TEXT NOT NULL REFERENCES employer_profiles(website_url) ON DELETE CASCADE,
+                client_name TEXT NOT NULL,
+                industry TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Recent news: launches, partnerships, funding, awards, expansions
+            CREATE TABLE IF NOT EXISTS employer_recent_activity (
+                id SERIAL PRIMARY KEY,
+                website_url TEXT NOT NULL REFERENCES employer_profiles(website_url) ON DELETE CASCADE,
+                activity_type TEXT,
+                description TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Office locations extracted during research
+            CREATE TABLE IF NOT EXISTS employer_locations (
+                id SERIAL PRIMARY KEY,
+                website_url TEXT NOT NULL REFERENCES employer_profiles(website_url) ON DELETE CASCADE,
+                address TEXT NOT NULL,
+                is_headquarters BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Key team members, hiring managers, leadership found during research
+            CREATE TABLE IF NOT EXISTS employer_contacts (
+                id SERIAL PRIMARY KEY,
+                website_url TEXT NOT NULL REFERENCES employer_profiles(website_url) ON DELETE CASCADE,
+                name TEXT,
+                role TEXT,
+                source TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         `);
 
         console.log('✅ PostgreSQL migrations completed successfully');

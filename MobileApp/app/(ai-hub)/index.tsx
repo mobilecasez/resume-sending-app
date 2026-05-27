@@ -26,6 +26,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type { Contact, Job, Employer, WishlistPill } from '../../types/aiHub';
 import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem } from '../../services/aiHubService';
+import { API_BASE } from '../../config';
+import axios from 'axios';
 import { LoadingTips } from './LoadingTips';
 
 // ─────────────────────────────────────────────────────────────────
@@ -584,6 +586,9 @@ export default function AIHubScreen() {
   const [stats, setStats] = useState({ sources: 0, matches: 0, contacts: 0, verifiedPct: 0 });
   const [initialLoading, setInitialLoading] = useState(true);
 
+  // Feature flag — controls "coming soon" overlay
+  const [featureFlag, setFeatureFlag] = useState<{ status: string; title: string | null; message: string | null } | null>(null);
+
   // Recalculate stats whenever employers list changes
   useEffect(() => {
     let newMatches = 0;
@@ -595,6 +600,13 @@ export default function AIHubScreen() {
     // Hardcode verifiedPct to something static like 94 for now, since it was static before
     setStats({ sources: employers.length, matches: newMatches, contacts: newContacts, verifiedPct: 94 });
   }, [employers]);
+
+  // Fetch feature flag for this page
+  useEffect(() => {
+    axios.get(`${API_BASE}/feature-flags/jobs_dashboard`)
+      .then(({ data }) => setFeatureFlag(data))
+      .catch(() => setFeatureFlag({ status: 'active', title: null, message: null })); // fail open
+  }, []);
 
   useEffect(() => {
     async function loadDashboard() {
@@ -878,6 +890,51 @@ export default function AIHubScreen() {
         </View>
       </ScrollView>
 
+      {/* ── Coming Soon Overlay (DB-controlled) ── */}
+      {featureFlag?.status === 'under_construction' && (
+        <View style={styles.comingSoonOverlay}>
+          <View style={styles.comingSoonCard}>
+            {/* Back button */}
+            <TouchableOpacity
+              style={styles.comingSoonBackBtn}
+              onPress={() => router.back()}
+              activeOpacity={0.75}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="arrow-back" size={18} color="#64748B" />
+              <Text style={styles.comingSoonBackText}>Go Back</Text>
+            </TouchableOpacity>
+
+            <LinearGradient
+              colors={['#06B6D4', '#3B82F6']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.comingSoonIconWrap}
+            >
+              <Ionicons name="rocket-outline" size={28} color="#fff" />
+            </LinearGradient>
+            <Text style={styles.comingSoonBadge}>COMING SOON</Text>
+            <Text style={styles.comingSoonTitle}>{featureFlag.title || 'AI Job Hub'}</Text>
+            <Text style={styles.comingSoonDesc}>
+              {featureFlag.message || "We're building something powerful — AI will automatically research companies, match jobs to your resume, and surface verified hiring contacts."}
+            </Text>
+            <View style={styles.comingSoonDivider} />
+            <View style={styles.comingSoonFeatureRow}>
+              <Ionicons name="checkmark-circle" size={14} color="#06B6D4" />
+              <Text style={styles.comingSoonFeatureText}>Auto job discovery from company pages</Text>
+            </View>
+            <View style={styles.comingSoonFeatureRow}>
+              <Ionicons name="checkmark-circle" size={14} color="#06B6D4" />
+              <Text style={styles.comingSoonFeatureText}>AI resume-to-job matching</Text>
+            </View>
+            <View style={styles.comingSoonFeatureRow}>
+              <Ionicons name="checkmark-circle" size={14} color="#06B6D4" />
+              <Text style={styles.comingSoonFeatureText}>Verified hiring manager contacts</Text>
+            </View>
+          </View>
+        </View>
+      )}
+
       {/* ── Add Company Modal ── */}
       <Modal
         visible={modalVisible}
@@ -941,6 +998,92 @@ export default function AIHubScreen() {
 // ─────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  // ── Coming Soon Overlay ──
+  comingSoonOverlay: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(10,15,36,0.82)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 999,
+    paddingHorizontal: 28,
+  },
+  comingSoonCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    padding: 28,
+    width: '100%',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.18,
+    shadowRadius: 40,
+    elevation: 16,
+  },
+  comingSoonBackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+    marginBottom: 18,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 10,
+  },
+  comingSoonBackText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  comingSoonIconWrap: {
+    width: 60,
+    height: 60,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  comingSoonBadge: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#06B6D4',
+    letterSpacing: 1.5,
+    marginBottom: 6,
+  },
+  comingSoonTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#0B1120',
+    letterSpacing: -0.5,
+    marginBottom: 10,
+  },
+  comingSoonDesc: {
+    fontSize: 13,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 19,
+    marginBottom: 18,
+  },
+  comingSoonDivider: {
+    height: 1,
+    backgroundColor: '#F1F5F9',
+    width: '100%',
+    marginBottom: 16,
+  },
+  comingSoonFeatureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    alignSelf: 'flex-start',
+    marginBottom: 8,
+  },
+  comingSoonFeatureText: {
+    fontSize: 13,
+    color: '#334155',
+    fontWeight: '500',
+  },
+
   // ── Root ──
   safeArea: {
     flex: 1,

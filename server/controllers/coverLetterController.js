@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
 const { generateCoverLetter: generateCoverLetterV2 } = require('../../ai-cover-letter-v2');
+const { researchEmployer } = require('../../ai-employer-researcher');
 const { notifyCoverLetterGenerated, notifyError } = require('./notificationsController');
 const jobService = require('../services/jobService');
 const { generateCoverLetterPDF: generateRichCoverLetterPDF } = require('./emailController');
@@ -308,6 +309,81 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
     await fs.writeFile(filePath, pdfBytes);
     
     return { filePath, fileName };
+}
+
+// Persist all employer research data into DB tables (fire-and-forget safe)
+async function saveEmployerResearch(data) {
+    if (!data || !data.website_url) return;
+    const url = data.website_url;
+    try {
+        // employer_profiles
+        await dbConfig.run(
+            `INSERT INTO employer_profiles (website_url, employer_name, founded_year, company_size, industry, mission, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT (website_url) DO UPDATE SET
+               employer_name = EXCLUDED.employer_name,
+               founded_year = EXCLUDED.founded_year,
+               company_size = EXCLUDED.company_size,
+               industry = EXCLUDED.industry,
+               mission = EXCLUDED.mission,
+               updated_at = CURRENT_TIMESTAMP`,
+            [url, data.employer_name || null, data.founded_year || null,
+             data.company_size || null, data.industry || null, data.mission || null]
+        );
+        // employer_brand_profiles
+        await dbConfig.run(
+            `INSERT INTO employer_brand_profiles (website_url, brand_color, font_name)
+             VALUES (?, ?, ?)
+             ON CONFLICT (website_url) DO UPDATE SET brand_color = EXCLUDED.brand_color, font_name = EXCLUDED.font_name`,
+            [url, data.brand_color || '#262633', data.font_name || 'Lato']
+        );
+        // employer_technologies — clear old rows then insert fresh
+        await dbConfig.run('DELETE FROM employer_technologies WHERE website_url = ?', [url]);
+        for (const t of (data.technologies || [])) {
+            if (t.name) await dbConfig.run(
+                'INSERT INTO employer_technologies (website_url, name, category) VALUES (?, ?, ?)',
+                [url, t.name, t.category || null]
+            );
+        }
+        // employer_clients
+        await dbConfig.run('DELETE FROM employer_clients WHERE website_url = ?', [url]);
+        for (const c of (data.clients || [])) {
+            if (c.client_name) await dbConfig.run(
+                'INSERT INTO employer_clients (website_url, client_name, industry, notes) VALUES (?, ?, ?, ?)',
+                [url, c.client_name, c.industry || null, c.notes || null]
+            );
+        }
+        // employer_recent_activity
+        await dbConfig.run('DELETE FROM employer_recent_activity WHERE website_url = ?', [url]);
+        for (const a of (data.recent_activity || [])) {
+            if (a.description) await dbConfig.run(
+                'INSERT INTO employer_recent_activity (website_url, activity_type, description) VALUES (?, ?, ?)',
+                [url, a.activity_type || null, a.description]
+            );
+        }
+        // employer_contacts
+        await dbConfig.run('DELETE FROM employer_contacts WHERE website_url = ?', [url]);
+        for (const k of (data.key_contacts || [])) {
+            if (k.name || k.role) await dbConfig.run(
+                'INSERT INTO employer_contacts (website_url, name, role, source) VALUES (?, ?, ?, ?)',
+                [url, k.name || null, k.role || null, k.source || null]
+            );
+        }
+        // employer_locations (from research addresses if available)
+        if ((data.locations || []).length > 0) {
+            await dbConfig.run('DELETE FROM employer_locations WHERE website_url = ?', [url]);
+            for (const loc of data.locations) {
+                if (loc.address) await dbConfig.run(
+                    'INSERT INTO employer_locations (website_url, address, is_headquarters) VALUES (?, ?, ?)',
+                    [url, loc.address, loc.is_headquarters || false]
+                );
+            }
+        }
+        console.log(`💾 [employer-research] Saved all data for ${url}`);
+    } catch (err) {
+        console.error(`[employer-research] ❌ DB save failed for ${url}:`, err.message);
+        console.error(err.stack);
+    }
 }
 
 // Helper function: Generate additional details (hiring manager, locations, subject)
@@ -696,6 +772,7 @@ const generateCoverLetterDetails = async (req, res) => {
  * The actual heavy generation work — used by both sync and async modes
  */
 async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position }) {
+    console.log(`🚀 [executeGenerationWork] ENTERED — userId=${userId}, websiteUrl=${websiteUrl}, position=${position}`);
     // Normalize URL
     const normalizedWebsiteUrl = websiteUrl && websiteUrl.match(/^https?:\/\//) ? websiteUrl : `https://${websiteUrl}`;
 
@@ -716,10 +793,42 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
         throw new Error('Resume not processed yet. Please wait a moment after uploading and try again.');
     }
 
-    console.log(`[coverLetterController] Calling AI v2 for user ${userId}, url=${normalizedWebsiteUrl}, position=${position}`);
+    console.log(`[coverLetterController] Starting generation for user ${userId}, url=${normalizedWebsiteUrl}, position=${position}`);
 
-    // Single AI call: deep-researches the employer and generates the full letter
-    const aiResult = await generateCoverLetterV2(resumeMetadata, normalizedWebsiteUrl, position);
+    // Check employer brand cache first
+    const cached = await dbConfig.get(
+        'SELECT brand_color, font_name FROM employer_brand_profiles WHERE website_url = ?',
+        [normalizedWebsiteUrl]
+    );
+
+    let brandColor, fontName, aiResult;
+
+    if (cached) {
+        // Cache hit — run cover letter generation alone at full speed
+        console.log(`🎨 [employer] Cache hit → color=${cached.brand_color}, font=${cached.font_name}`);
+        aiResult = await generateCoverLetterV2(resumeMetadata, normalizedWebsiteUrl, position);
+        brandColor = cached.brand_color;
+        fontName = cached.font_name;
+    } else {
+        // Cache miss — run cover letter generation + full employer research IN PARALLEL
+        console.log(`🔍 [employer] Cache miss — running cover letter + employer research in parallel`);
+        const [clResult, researchData] = await Promise.all([
+            generateCoverLetterV2(resumeMetadata, normalizedWebsiteUrl, position),
+            researchEmployer(normalizedWebsiteUrl),
+        ]);
+        aiResult = clResult;
+        brandColor = researchData?.brand_color || '#262633';
+        fontName   = researchData?.font_name   || 'Lato';
+        // Persist all employer research tables (non-blocking)
+        console.log(`🔬 [employer] researchData received:`, researchData ? `name=${researchData.employer_name}, color=${researchData.brand_color}, font=${researchData.font_name}` : 'NULL');
+        if (researchData) {
+            saveEmployerResearch(researchData).catch(err => {
+                console.error('[employer] saveEmployerResearch FAILED:', err.message, err.stack);
+            });
+        } else {
+            console.warn('[employer] researchData was null — skipping DB save');
+        }
+    }
 
     const companyName = aiResult.employer_name || normalizedWebsiteUrl;
     const hiringManager = aiResult.to || 'Hiring Manager';
@@ -775,6 +884,8 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
         subject,
         locations,
         coverLetterHtml,
+        brandColor,
+        fontName,
         metadata: {},
         creditsUsed: 1,
         creditsRemaining: creditCheck.remaining
@@ -802,20 +913,84 @@ const generateCoverLetterPdf = async (req, res) => {
     
     try {
         const userId = req.user.id;
-        const { coverLetterHtml, companyName, companyAddress } = req.body;
+        const { coverLetterHtml, companyName, companyAddress, websiteUrl } = req.body;
+        let { brandColor, fontName } = req.body;
 
         // Get user profile
         const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
-        
+
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
 
+        // If brand data not passed by client, look it up from employer_brand_profiles cache
+        if (!brandColor || !fontName) {
+            // Step 1: Try direct URL lookup
+            let lookupUrl = websiteUrl;
+            if (lookupUrl && !lookupUrl.startsWith('http')) lookupUrl = 'https://' + lookupUrl;
+            if (lookupUrl) {
+                const cached = await dbConfig.get(
+                    'SELECT brand_color, font_name FROM employer_brand_profiles WHERE website_url = ?',
+                    [lookupUrl]
+                );
+                if (cached) {
+                    brandColor = brandColor || cached.brand_color;
+                    fontName   = fontName   || cached.font_name;
+                    console.log(`🎨 [PDF DOWNLOAD] Brand from URL cache: color=${brandColor}, font=${fontName}`);
+                }
+            }
+
+            // Step 2: Look up stored_recipient_website from this user's cover letter rows, match by company name first word
+            if (!brandColor && companyName) {
+                const firstWord = companyName.split(/\s+/)[0];
+                const rclRow = await dbConfig.get(
+                    `SELECT stored_recipient_website FROM review_cover_letters
+                     WHERE user_id = ? AND stored_recipient_website IS NOT NULL AND stored_recipient_website <> ''
+                     AND company_name ILIKE ?
+                     LIMIT 1`,
+                    [userId, `%${firstWord}%`]
+                );
+                if (rclRow?.stored_recipient_website) {
+                    let rclUrl = rclRow.stored_recipient_website;
+                    if (!rclUrl.startsWith('http')) rclUrl = 'https://' + rclUrl;
+                    const cached = await dbConfig.get(
+                        'SELECT brand_color, font_name FROM employer_brand_profiles WHERE website_url = ?',
+                        [rclUrl]
+                    );
+                    if (cached) {
+                        brandColor = brandColor || cached.brand_color;
+                        fontName   = fontName   || cached.font_name;
+                        console.log(`🎨 [PDF DOWNLOAD] Brand from cover letter URL (${rclUrl}): color=${brandColor}, font=${fontName}`);
+                    }
+                }
+            }
+
+            // Step 3: Fuzzy match on employer_profiles.employer_name
+            if (!brandColor && companyName) {
+                const firstWord = companyName.split(/\s+/)[0];
+                const byName = await dbConfig.get(
+                    `SELECT ebp.brand_color, ebp.font_name
+                     FROM employer_brand_profiles ebp
+                     JOIN employer_profiles ep ON ep.website_url = ebp.website_url
+                     WHERE ep.employer_name ILIKE ?
+                     LIMIT 1`,
+                    [`%${firstWord}%`]
+                );
+                if (byName) {
+                    brandColor = brandColor || byName.brand_color;
+                    fontName   = fontName   || byName.font_name;
+                    console.log(`🎨 [PDF DOWNLOAD] Brand by name fuzzy match: color=${brandColor}, font=${fontName}`);
+                }
+            }
+
+            if (!brandColor) console.log(`🎨 [PDF DOWNLOAD] No brand found — using default dark grey`);
+        }
+
         // Use the EXACT same PDF generator as the email attachment flow
-        console.log('🖨️ [PDF DOWNLOAD] generateRichCoverLetterPDF type:', typeof generateRichCoverLetterPDF);
         console.log('🖨️ [PDF DOWNLOAD] companyName:', companyName, '| companyAddress:', companyAddress);
+        console.log('🖨️ [PDF DOWNLOAD] brandColor:', brandColor, '| fontName:', fontName);
         console.log('🖨️ [PDF DOWNLOAD] html length:', coverLetterHtml?.length, '| preview:', coverLetterHtml?.slice(0, 80));
-        const generateRichPDF = () => generateRichCoverLetterPDF(user, coverLetterHtml, companyName, companyAddress || '');
+        const generateRichPDF = () => generateRichCoverLetterPDF(user, coverLetterHtml, companyName, companyAddress || '', brandColor || null, fontName || null);
 
         if (useAsync) {
             const jobId = await jobService.createJob(userId, 'generate_pdf', {

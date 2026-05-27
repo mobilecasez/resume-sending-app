@@ -1367,7 +1367,7 @@ export default function HomeScreen({
   showReplyDetailsModal, setShowReplyDetailsModal,
   selectedReplyDetails, isAdmin,
   // handlers
-  handleReview, addRecipient, removeRecipient, updateRecipient,
+  handleReview, handleAutoStart, addRecipient, removeRecipient, updateRecipient,
   checkEmailReplies, loadNotifications, markNotificationAsRead,
   showAllReplies, handleLogout, isValidEmail, getTimeAgo, setScreen,
   renderCompleteProfileModal,
@@ -1613,29 +1613,36 @@ export default function HomeScreen({
             />
           ))}
 
-          {/* Generate & send all CTA */}
-          <TouchableOpacity
-            onPress={handlePendingReady}
-            disabled={!hasPendingReady}
-            activeOpacity={0.85}
-          >
-            <LinearGradient
-              colors={['#0F5132', '#14653A', '#0E3F26']}
-              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-              style={[styles.generateAllBtn, !hasPendingReady && { opacity: 0.5 }]}
+          {/* Auto-process card */}
+          <View style={styles.autoCard}>
+            <View style={styles.autoCardTop}>
+              <View style={styles.autoCardIconWrap}>
+                <Ionicons name="flash" size={15} color={T.emerald} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.autoCardTitle}>Generate & Send All</Text>
+                <Text style={styles.autoCardDesc}>AI writes, brands & sends all in one go — no manual steps</Text>
+              </View>
+              <View style={styles.autoCardCreditsBadge}>
+                <Text style={styles.autoCardCreditsText}>{recipients.filter(r => r.email && r.website).length} cr</Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              onPress={handleAutoStart}
+              disabled={!hasPendingReady}
+              activeOpacity={0.85}
+              style={[styles.autoCardBtn, !hasPendingReady && { opacity: 0.4 }]}
             >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Ionicons name="flash" size={14} color="#34D399" />
-                <Text style={styles.generateAllText}>Generate & send all pending</Text>
-                <View style={styles.creditsBadge}>
-                  <Text style={styles.creditsBadgeText}>{recipients.filter(r => r.email && r.website).length} credits</Text>
-                </View>
-              </View>
-              <View style={styles.generateAllArrow}>
-                <Ionicons name="arrow-forward" size={15} color="#fff" />
-              </View>
-            </LinearGradient>
-          </TouchableOpacity>
+              <LinearGradient
+                colors={[T.blue, T.purple]}
+                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                style={styles.autoCardBtnGrad}
+              >
+                <Ionicons name="flash-outline" size={13} color="#fff" />
+                <Text style={styles.autoCardBtnText}>Start Auto Process</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* ── RECENT APPLICATIONS ──────────────────────────── */}
@@ -1930,9 +1937,6 @@ export default function HomeScreen({
     </SafeAreaViewContext>
   );
 
-  function handlePendingReady() {
-    handleReview();
-  }
 }
 
 // ─── Utility computations ─────────────────────────────────────────────────────
@@ -2076,12 +2080,17 @@ const styles = StyleSheet.create({
   addPill: { borderRadius: 100, paddingHorizontal: 11, paddingLeft: 9, height: 32, flexDirection: 'row', alignItems: 'center', gap: 5, shadowColor: 'rgba(79,141,255,0.32)', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 1, shadowRadius: 14, elevation: 4 },
   addPillText: { fontSize: 11, fontWeight: '700', color: '#fff' },
 
-  // Generate all button
-  generateAllBtn: { borderRadius: 16, height: 52, paddingLeft: 16, paddingRight: 5, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 },
-  generateAllText: { fontSize: 13, fontWeight: '700', color: '#fff' },
-  creditsBadge: { backgroundColor: 'rgba(52,211,153,0.20)', borderRadius: 100, paddingHorizontal: 7, paddingVertical: 2 },
-  creditsBadgeText: { fontSize: 9.5, fontWeight: '700', color: '#34D399' },
-  generateAllArrow: { width: 42, height: 42, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.16)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.22)', alignItems: 'center', justifyContent: 'center' },
+  // Generate all card
+  autoCard: { marginTop: 6, backgroundColor: T.surface, borderRadius: 20, borderWidth: 1, borderColor: T.border, padding: 16 },
+  autoCardTop: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 14 },
+  autoCardIconWrap: { width: 34, height: 34, borderRadius: 10, backgroundColor: 'rgba(79,141,255,0.10)', borderWidth: 1, borderColor: 'rgba(79,141,255,0.20)', alignItems: 'center', justifyContent: 'center' },
+  autoCardTitle: { fontSize: 13, fontWeight: '700', color: T.ink },
+  autoCardDesc: { fontSize: 11, color: T.textMuted, marginTop: 2, lineHeight: 15 },
+  autoCardCreditsBadge: { backgroundColor: 'rgba(79,141,255,0.10)', borderRadius: 100, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: 'rgba(79,141,255,0.20)' },
+  autoCardCreditsText: { fontSize: 10, fontWeight: '700', color: T.blue },
+  autoCardBtn: { borderRadius: 12, overflow: 'hidden' },
+  autoCardBtnGrad: { height: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  autoCardBtnText: { fontSize: 13, fontWeight: '700', color: '#fff' },
 
   // Sync pill
   syncPill: { backgroundColor: T.emerald, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 4 },

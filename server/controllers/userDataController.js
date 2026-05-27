@@ -216,8 +216,8 @@ const saveReviewCoverLetters = async (req, res) => {
             try {
                 await dbConfig.run(
                     `INSERT INTO review_cover_letters
-                        (user_id, letter_key, company_name, recipient_email, cover_letter_html, subject, address, date, position, locations, generated, sent, sent_date, stored_recipient_email, stored_recipient_website, deleted_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                        (user_id, letter_key, company_name, recipient_email, cover_letter_html, subject, address, date, position, locations, generated, sent, sent_date, stored_recipient_email, stored_recipient_website, brand_color, font_name, deleted_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                      ON CONFLICT (user_id, letter_key) DO UPDATE SET
                         company_name = EXCLUDED.company_name,
                         recipient_email = EXCLUDED.recipient_email,
@@ -232,6 +232,8 @@ const saveReviewCoverLetters = async (req, res) => {
                         sent_date = EXCLUDED.sent_date,
                         stored_recipient_email = EXCLUDED.stored_recipient_email,
                         stored_recipient_website = EXCLUDED.stored_recipient_website,
+                        brand_color = EXCLUDED.brand_color,
+                        font_name = EXCLUDED.font_name,
                         deleted_at = NULL,
                         updated_at = CURRENT_TIMESTAMP`,
                     [
@@ -249,7 +251,9 @@ const saveReviewCoverLetters = async (req, res) => {
                         letter.sent ? 1 : 0,
                         letter.sentDate || null,
                         letter.storedRecipientEmail || '',
-                        letter.storedRecipientWebsite || ''
+                        letter.storedRecipientWebsite || '',
+                        letter.brandColor || null,
+                        letter.fontName || null
                     ]
                 );
                 inserted++;
@@ -278,7 +282,7 @@ const getReviewCoverLetters = async (req, res) => {
 
         // Get all cover letters for the user (excluding soft-deleted ones)
         const letters = await dbConfig.query(
-            'SELECT letter_key, company_name as "companyName", recipient_email as "recipientEmail", cover_letter_html as "coverLetterHtml", subject, address, date, position, locations, generated, sent, sent_date as "sentDate", stored_recipient_email as "storedRecipientEmail", stored_recipient_website as "storedRecipientWebsite" FROM review_cover_letters WHERE user_id = ? AND deleted_at IS NULL',
+            'SELECT letter_key, company_name as "companyName", recipient_email as "recipientEmail", cover_letter_html as "coverLetterHtml", subject, address, date, position, locations, generated, sent, sent_date as "sentDate", stored_recipient_email as "storedRecipientEmail", stored_recipient_website as "storedRecipientWebsite", brand_color as "brandColor", font_name as "fontName" FROM review_cover_letters WHERE user_id = ? AND deleted_at IS NULL',
             [userId]
         );
         
@@ -303,7 +307,9 @@ const getReviewCoverLetters = async (req, res) => {
                 sent: letter.sent === 1,
                 sentDate: letter.sentDate,
                 storedRecipientEmail: letter.storedRecipientEmail,
-                storedRecipientWebsite: letter.storedRecipientWebsite
+                storedRecipientWebsite: letter.storedRecipientWebsite,
+                brandColor: letter.brandColor || null,
+                fontName: letter.fontName || null
             };
         });
         

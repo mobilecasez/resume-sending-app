@@ -637,6 +637,101 @@ function decryptData(encryptedText) {
     return decrypted.toString();
 }
 
+// Darkens a brand hex to a target luminance (0–1).
+// Returns a very dark shade that still carries the hue.
+function sidebarColorFromBrand(hex, targetLum = 0.05) {
+    if (!hex || !/^#[0-9A-Fa-f]{6}$/.test(hex)) return '#1c1c2e';
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    const factor = Math.min(1, targetLum / Math.max(lum, 0.001));
+    const dr = Math.round(r * factor);
+    const dg = Math.round(g * factor);
+    const db = Math.round(b * factor);
+    return '#' + [dr, dg, db].map(v => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('');
+}
+
+// Darkens a hex color by `amount` (0–1 scale)
+function darkenHex(hex, amount) {
+    if (!hex || !/^#[0-9A-Fa-f]{6}$/.test(hex)) return hex || '#1a1a22';
+    const r = Math.round(parseInt(hex.slice(1, 3), 16) * (1 - amount));
+    const g = Math.round(parseInt(hex.slice(3, 5), 16) * (1 - amount));
+    const b = Math.round(parseInt(hex.slice(5, 7), 16) * (1 - amount));
+    return '#' + [r, g, b].map(v => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('');
+}
+
+// Resolves a font TTF path by name. Downloads from Google Fonts on first use and caches locally.
+// Falls back to Lato if download fails or font is not found.
+const https = require('https');
+const fontsDir = path.join(__dirname, '../../fonts');
+
+async function resolveFontPaths(fontName) {
+    const latoRegular = path.join(fontsDir, 'Lato-Regular.ttf');
+    const latoBold    = path.join(fontsDir, 'Lato-Bold.ttf');
+    const fallback = { regular: latoRegular, bold: latoBold, name: 'Lato', boldName: 'Lato-Bold' };
+
+    if (!fontName || fontName.toLowerCase() === 'lato') return fallback;
+
+    const safeName = fontName.replace(/[^a-zA-Z0-9]/g, '');
+    const regularCached = path.join(fontsDir, `${safeName}-Regular.ttf`);
+    const boldCached    = path.join(fontsDir, `${safeName}-Bold.ttf`);
+
+    // Return cached copy if already downloaded
+    if (fsSync.existsSync(regularCached)) {
+        const hasBold = fsSync.existsSync(boldCached);
+        return { regular: regularCached, bold: hasBold ? boldCached : regularCached, name: safeName, boldName: hasBold ? `${safeName}-Bold` : safeName };
+    }
+
+    try {
+        // Fetch font CSS from Google Fonts
+        const cssUrl = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(fontName)}:wght@400;700&display=swap`;
+        const css = await new Promise((resolve, reject) => {
+            const req = https.get(cssUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => resolve(data));
+            });
+            req.on('error', reject);
+            req.setTimeout(8000, () => { req.destroy(); reject(new Error('timeout')); });
+        });
+
+        // Extract TTF/WOFF2 URLs — prefer ttf, fall back to woff2
+        const urlMatches = [...css.matchAll(/src:\s*url\(([^)]+)\)\s*format\(['"]?(truetype|woff2)['"]?\)/g)];
+        const w400 = urlMatches.find(m => css.slice(0, m.index).includes('weight: 400') || !css.slice(0, m.index).includes('weight:'));
+        const w700 = urlMatches.find(m => css.slice(0, m.index).includes('weight: 700'));
+
+        async function downloadFont(url, dest) {
+            return new Promise((resolve, reject) => {
+                const file = fsSync.createWriteStream(dest);
+                https.get(url, res => {
+                    res.pipe(file);
+                    file.on('finish', () => { file.close(); resolve(); });
+                }).on('error', err => { fsSync.unlink(dest, () => {}); reject(err); });
+            });
+        }
+
+        if (w400) {
+            await downloadFont(w400[1], regularCached);
+            console.log(`🔤 [font] Downloaded ${fontName} Regular → ${regularCached}`);
+        } else {
+            return fallback;
+        }
+
+        if (w700) {
+            await downloadFont(w700[1], boldCached);
+            console.log(`🔤 [font] Downloaded ${fontName} Bold → ${boldCached}`);
+        }
+
+        const hasBold = fsSync.existsSync(boldCached);
+        return { regular: regularCached, bold: hasBold ? boldCached : regularCached, name: safeName, boldName: hasBold ? `${safeName}-Bold` : safeName };
+
+    } catch (err) {
+        console.warn(`🔤 [font] Could not download "${fontName}": ${err.message} — using Lato`);
+        return fallback;
+    }
+}
+
 // Helper functions from coverLetterController
 function formatCoverLetterWithHTML(coverLetterText, metadata) {
     let html = '';
@@ -655,7 +750,7 @@ function formatCoverLetterWithHTML(coverLetterText, metadata) {
     return html;
 }
 
-async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyName, companyAddress, photoPath, signaturePath) {
+async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyName, companyAddress, photoPath, signaturePath, brandColor = null, fontName = null) {
     console.log('\n');
     console.log('═══════════════════════════════════════════════════════');
     console.log('📄 createCoverLetterPDFFromHTML CALLED');
@@ -733,15 +828,149 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             const writeStream = fsSync.createWriteStream(filePath);
             doc.pipe(writeStream);
             
-            // Register fonts
-            const latoRegularPath = path.join(__dirname, '../../fonts', 'Lato-Regular.ttf');
-            const latoBoldPath = path.join(__dirname, '../../fonts', 'Lato-Bold.ttf');
-            
-            doc.registerFont('Lato', latoRegularPath);
-            doc.registerFont('Lato-Bold', latoBoldPath);
-            
-            // LEFT SIDEBAR (dark background) - full height
-            doc.rect(0, 0, sidebarWidth, pageHeight).fill('#262633');
+            // Register fonts — use brand font if available, fall back to Lato
+            const resolvedFont = await resolveFontPaths(fontName);
+            doc.registerFont(resolvedFont.name, resolvedFont.regular);
+            doc.registerFont(resolvedFont.boldName, resolvedFont.bold);
+            // Always register Lato as fallback alias too (used in some inline references)
+            if (resolvedFont.name !== 'Lato') {
+                doc.registerFont('Lato', path.join(fontsDir, 'Lato-Regular.ttf'));
+                doc.registerFont('Lato-Bold', path.join(fontsDir, 'Lato-Bold.ttf'));
+            } else {
+                doc.registerFont('Lato', resolvedFont.regular);
+                doc.registerFont('Lato-Bold', resolvedFont.bold);
+            }
+            // Convenience aliases so all downstream .font('Lato') calls use brand font
+            const F  = resolvedFont.name;      // regular
+            const FB = resolvedFont.boldName;  // bold
+            console.log(`🔤 [PDF] font: ${F} / ${FB}`);
+
+            // Sidebar colors: top = near-black with brand hue, bottom = dark brand shade
+            const sidebarColorBottom = sidebarColorFromBrand(brandColor, 0.06); // dark brand shade
+            const sidebarColorTop    = sidebarColorFromBrand(brandColor, 0.015); // near-black with hue
+            console.log(`🎨 [PDF] sidebar gradient: ${sidebarColorTop} → ${sidebarColorBottom} (brand: ${brandColor || 'none'})`);
+
+            // LEFT SIDEBAR — pronounced top-to-bottom gradient
+            const sidebarGrad = doc.linearGradient(0, 0, 0, pageHeight);
+            sidebarGrad.stop(0,   sidebarColorTop);
+            sidebarGrad.stop(0.5, sidebarColorFromBrand(brandColor, 0.035));
+            sidebarGrad.stop(1,   sidebarColorBottom);
+            doc.rect(0, 0, sidebarWidth, pageHeight).fill(sidebarGrad);
+
+            // — Decorative vector shapes — seeded random per company+user so every PDF is unique —
+            // Seed from company name + user name (deterministic but varies across PDFs)
+            const seedStr = (companyName || '') + (userData.fullName || '') + (brandColor || '');
+            let _seed = seedStr.split('').reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) | 0, 0x12345678);
+            function seededRand() {
+                _seed = (_seed ^ (_seed << 13)) | 0;
+                _seed = (_seed ^ (_seed >> 17)) | 0;
+                _seed = (_seed ^ (_seed << 5))  | 0;
+                return ((_seed >>> 0) / 0xFFFFFFFF);
+            }
+            // Convenience: random float in [min, max]
+            const sr = (min, max) => min + seededRand() * (max - min);
+            // Random int in [min, max]
+            const sri = (min, max) => Math.floor(sr(min, max + 1));
+
+            doc.save();
+
+            // Shape style pool — pick a style set so each PDF has a different visual language
+            const styleSet = sri(0, 4); // 0=hexagons, 1=circles, 2=triangles, 3=diamonds, 4=mixed
+
+            function drawHexR(cx, cy, size) {
+                const pts = Array.from({ length: 6 }, (_, i) => {
+                    const a = Math.PI / 180 * (60 * i - 30);
+                    return [cx + size * Math.cos(a), cy + size * Math.sin(a)];
+                });
+                doc.moveTo(pts[0][0], pts[0][1]);
+                pts.slice(1).forEach(p => doc.lineTo(p[0], p[1]));
+                doc.closePath();
+            }
+            function drawTriR(cx, cy, size, rot = 0) {
+                const pts = Array.from({ length: 3 }, (_, i) => {
+                    const a = Math.PI / 180 * (120 * i + rot);
+                    return [cx + size * Math.cos(a), cy + size * Math.sin(a)];
+                });
+                doc.moveTo(pts[0][0], pts[0][1]);
+                pts.slice(1).forEach(p => doc.lineTo(p[0], p[1]));
+                doc.closePath();
+            }
+            function drawDiamondR(cx, cy, w, h) {
+                doc.moveTo(cx, cy - h).lineTo(cx + w, cy).lineTo(cx, cy + h).lineTo(cx - w, cy).closePath();
+            }
+
+            // Large anchor shape in top-right corner (always present, style varies)
+            doc.opacity(0.06);
+            if (styleSet === 1) {
+                // Large circle arc
+                doc.circle(sidebarWidth, sr(30, 70), sr(70, 110)).stroke('#ffffff').lineWidth(sr(14, 22));
+            } else if (styleSet === 2) {
+                // Large triangle
+                drawTriR(sidebarWidth - 10, sr(20, 60), sr(65, 95), sr(0, 60));
+                doc.stroke('#ffffff').lineWidth(sr(12, 18));
+            } else if (styleSet === 3) {
+                // Large diamond
+                drawDiamondR(sidebarWidth - 20, sr(30, 70), sr(50, 75), sr(60, 90));
+                doc.stroke('#ffffff').lineWidth(sr(10, 16));
+            } else {
+                // Large hexagon (styles 0 and 4)
+                drawHexR(sidebarWidth - 10, sr(30, 70), sr(65, 95));
+                doc.stroke('#ffffff').lineWidth(sr(12, 18));
+            }
+
+            // Secondary anchor shape — lower portion
+            doc.opacity(0.05);
+            const lowerY = sr(pageHeight * 0.55, pageHeight * 0.70);
+            if (styleSet === 0 || styleSet === 4) {
+                doc.circle(sr(-10, 20), lowerY, sr(45, 70)).stroke('#ffffff').lineWidth(sr(10, 16));
+            } else if (styleSet === 1) {
+                drawHexR(sr(-10, 20), lowerY, sr(40, 60));
+                doc.stroke('#ffffff').lineWidth(sr(8, 14));
+            } else {
+                drawTriR(sr(0, 30), lowerY, sr(40, 60), sr(0, 90));
+                doc.stroke('#ffffff').lineWidth(sr(8, 14));
+            }
+
+            // 4–6 scattered small shapes
+            doc.opacity(0.065);
+            const numSmall = sri(4, 6);
+            const usedZones = []; // avoid overlapping photo area (top 150px)
+            for (let i = 0; i < numSmall; i++) {
+                let cx, cy;
+                let attempts = 0;
+                do {
+                    cx = sr(8, sidebarWidth - 8);
+                    cy = sr(pageHeight * 0.28, pageHeight * 0.92);
+                    attempts++;
+                } while (attempts < 8 && usedZones.some(([ux, uy]) => Math.abs(cx - ux) < 22 && Math.abs(cy - uy) < 22));
+                usedZones.push([cx, cy]);
+
+                const shapeKind = (styleSet === 4) ? sri(0, 2) : styleSet % 3;
+                const size = sr(7, 15);
+                if (shapeKind === 0) { drawHexR(cx, cy, size); doc.stroke('#ffffff').lineWidth(1.2); }
+                else if (shapeKind === 1) { doc.circle(cx, cy, size).stroke('#ffffff').lineWidth(1.2); }
+                else { drawTriR(cx, cy, size, sr(0, 120)); doc.stroke('#ffffff').lineWidth(1.2); }
+            }
+
+            // Dot cluster — random position and count
+            doc.opacity(0.08);
+            const dotBaseX = sr(10, sidebarWidth - 30);
+            const dotBaseY = sr(pageHeight * 0.30, pageHeight * 0.50);
+            const numDots = sri(4, 7);
+            for (let i = 0; i < numDots; i++) {
+                doc.circle(dotBaseX + sr(-18, 18), dotBaseY + sr(-18, 18), sr(1.5, 3)).fill('#ffffff');
+            }
+
+            // Accent lines — random angle/position (2–4 lines)
+            doc.opacity(0.06);
+            const numLines = sri(2, 4);
+            for (let i = 0; i < numLines; i++) {
+                const y1 = sr(pageHeight * 0.80, pageHeight * 0.98);
+                const x2 = sr(20, 80);
+                doc.moveTo(0, y1).lineTo(x2, pageHeight * sr(0.94, 1.02)).lineWidth(sr(0.8, 1.5)).stroke('#ffffff');
+            }
+
+            doc.restore();
             
             // Photo/Initials circle at top
             const photoX = sidebarWidth / 2;
@@ -762,78 +991,78 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
                     // Draw initials circle if photo fails
                     doc.circle(photoX, photoY, photoSize/2).stroke('#ffffff');
                     const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
-                    doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+                    doc.font(FB).fontSize(24).fillColor('#ffffff');
                     doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
                 }
             } else {
                 doc.circle(photoX, photoY, photoSize/2).lineWidth(2).stroke('#ffffff');
                 const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'RS';
-                doc.font('Lato-Bold').fontSize(24).fillColor('#ffffff');
+                doc.font(FB).fontSize(24).fillColor('#ffffff');
                 doc.text(initials, photoX - 20, photoY - 12, { width: 40, align: 'center' });
             }
-            
+
             let sidebarY = photoY + photoSize/2 + 40;
-            
+
             // TO section
-            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+            doc.font(FB).fontSize(11).fillColor('#ffffff');
             doc.text('TO', 20, sidebarY);
             sidebarY += 20;
-            
-            doc.font('Lato').fontSize(10).fillColor('#ffffff');
+
+            doc.font(F).fontSize(10).fillColor('#ffffff');
             doc.text('Hiring Manager,', 20, sidebarY);
             sidebarY += 16;
-            
+
             // Company name (bold)
-            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+            doc.font(FB).fontSize(11).fillColor('#ffffff');
             doc.text(companyName, 20, sidebarY, { width: sidebarWidth - 40 });
             sidebarY += doc.heightOfString(companyName, { width: sidebarWidth - 40 }) + 4;
-            
+
             // Company address
             if (companyAddress) {
-                doc.font('Lato').fontSize(10).fillColor('#ffffff');
+                doc.font(F).fontSize(10).fillColor('#ffffff');
                 doc.text(companyAddress, 20, sidebarY, { width: sidebarWidth - 40 });
                 sidebarY += doc.heightOfString(companyAddress, { width: sidebarWidth - 40 }) + 4;
             }
-            
+
             sidebarY += 10;
-            
+
             // Separator line
             doc.moveTo(20, sidebarY).lineTo(sidebarWidth - 20, sidebarY).lineWidth(0.5).stroke('#808080');
             sidebarY += 20;
-            
+
             // FROM section
-            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+            doc.font(FB).fontSize(11).fillColor('#ffffff');
             doc.text('FROM', 20, sidebarY);
             sidebarY += 20;
-            
-            doc.font('Lato').fontSize(10).fillColor('#ffffff');
+
+            doc.font(F).fontSize(10).fillColor('#ffffff');
             doc.text((userData.fullName || 'Applicant').toUpperCase(), 20, sidebarY, { width: sidebarWidth - 40 });
             sidebarY += 20;
-            
+
             sidebarY += 10;
-            
+
             // Separator line
             doc.moveTo(20, sidebarY).lineTo(sidebarWidth - 20, sidebarY).lineWidth(0.5).stroke('#808080');
             sidebarY += 20;
-            
+
             // DATE section
             const today = new Date();
-            const dateStr = today.toLocaleDateString('en-US', { 
-                month: 'short', 
-                day: '2-digit', 
-                year: 'numeric' 
+            const dateStr = today.toLocaleDateString('en-US', {
+                month: 'short',
+                day: '2-digit',
+                year: 'numeric'
             }).replace(',', '');
-            
-            doc.font('Lato-Bold').fontSize(11).fillColor('#ffffff');
+
+            doc.font(FB).fontSize(11).fillColor('#ffffff');
             doc.text('DATE', 20, sidebarY);
             sidebarY += 20;
-            
-            doc.font('Lato').fontSize(10).fillColor('#ffffff');
+
+            doc.font(F).fontSize(10).fillColor('#ffffff');
             doc.text(dateStr, 20, sidebarY);
-            
+
             // Contact info at bottom of sidebar (positioned relative to page height)
             const contactY = pageHeight - 80;
-            doc.font('Lato').fontSize(8).fillColor('#ffffff');
+            doc.font(F).fontSize(8).fillColor('#ffffff');
             if (userData.email) {
                 doc.text(userData.email, 20, contactY, { lineBreak: false });
             }
@@ -852,11 +1081,11 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             let contentY = 50;
             
             // Header with name
-            doc.font('Lato-Bold').fontSize(18).fillColor('#000000');
+            doc.font(FB).fontSize(18).fillColor('#000000');
             doc.text((userData.fullName || 'APPLICANT').toUpperCase(), contentX, contentY, { lineBreak: false });
-            
+
             // Contact details on right
-            doc.font('Lato').fontSize(9).fillColor('#4d4d4d');
+            doc.font(F).fontSize(9).fillColor('#4d4d4d');
             const rightX = pageWidth - 40;
             if (userData.city && userData.country) {
                 const locationText = `${userData.city}, ${userData.country}`;
@@ -872,7 +1101,7 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             contentY += 25;
             
             // Designation
-            doc.font('Lato').fontSize(11).fillColor('#666666');
+            doc.font(F).fontSize(11).fillColor('#666666');
             const designation = userData.designation || 'Applicant';
             doc.text(designation, contentX, contentY, { lineBreak: false });
             
@@ -884,13 +1113,13 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             contentY += 30;
             
             // "Cover Letter" heading
-            doc.font('Lato-Bold').fontSize(14).fillColor('#333333');
+            doc.font(FB).fontSize(14).fillColor('#333333');
             doc.text('Cover Letter', contentX, contentY, { lineBreak: false });
-            
+
             contentY += 30;
-            
+
             // Opening
-            doc.font('Lato').fontSize(10).fillColor('#000000');
+            doc.font(F).fontSize(10).fillColor('#000000');
             doc.text('Dear Hiring Manager,', contentX, contentY, { width: contentWidth });
             contentY += 25;
             
@@ -937,8 +1166,8 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
                 const maxX = contentX + contentWidth;
                 
                 for (const segment of segments) {
-                    const fontName = segment.bold ? 'Lato-Bold' : 'Lato';
-                    doc.font(fontName).fontSize(10).fillColor('#000000');
+                    const segFont = segment.bold ? FB : F;
+                    doc.font(segFont).fontSize(10).fillColor('#000000');
                     
                     // Split text into words
                     const words = segment.text.split(/(\s+)/);
@@ -976,7 +1205,7 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             
             // Closing
             contentY += 10;
-            doc.font('Lato').fontSize(10).fillColor('#000000');
+            doc.font(F).fontSize(10).fillColor('#000000');
             doc.text('Best regards,', contentX, contentY, { width: contentWidth });
             contentY += 30;
             
@@ -991,7 +1220,7 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             }
             
             // Name
-            doc.font('Lato-Bold').fontSize(10).fillColor('#000000');
+            doc.font(FB).fontSize(10).fillColor('#000000');
             doc.text((userData.fullName || 'APPLICANT').toUpperCase(), contentX, contentY);
             
             // Finalize PDF
@@ -1013,7 +1242,7 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
 }
 
 // TWO-COLUMN cover letter PDF generator (like Cover_Letter_Google_New.pdf from Dec 4)
-async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, companyAddress = '') {
+async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, companyAddress = '', brandColor = null, fontName = null) {
     console.log('\n📄 [COMMON] Generating PDF with:');
     console.log('  User:', user.email);
     console.log('  Company:', companyName);
@@ -1021,13 +1250,29 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
     console.log('  Content length:', coverLetterHtmlOrText?.length);
     console.log('  Content type:', coverLetterHtmlOrText?.includes('<') ? 'HTML' : 'TEXT');
     
+    // Fetch current designation from resume_metadata (job_titles[0])
+    let designation = null;
+    try {
+        const resumeMeta = await dbConfig.get(
+            'SELECT job_titles, current_role FROM resume_metadata WHERE user_id = ? AND parse_status = ? LIMIT 1',
+            [user.id, 'done']
+        );
+        if (resumeMeta?.job_titles) {
+            const titles = typeof resumeMeta.job_titles === 'string'
+                ? JSON.parse(resumeMeta.job_titles)
+                : resumeMeta.job_titles;
+            designation = Array.isArray(titles) && titles.length > 0 ? titles[0] : null;
+        }
+    } catch (e) { /* fallback gracefully */ }
+
     // Prepare user data
     const userData = {
         fullName: user.full_name,
         email: user.email,
         phoneNumber: user.phone_number,
         city: user.city,
-        country: user.country
+        country: user.country,
+        designation: designation
     };
 
     // Get photo and signature paths
@@ -1079,7 +1324,9 @@ async function generateCoverLetterPDF(user, coverLetterHtmlOrText, companyName, 
         companyName,
         companyAddress || '',
         photoPath,
-        signaturePath
+        signaturePath,
+        brandColor,
+        fontName
     );
 
     console.log(`✅ [COMMON] PDF generated: ${fileName} at ${filePath}\n`);
@@ -1413,7 +1660,7 @@ const sendApplications = async (req, res) => {
 // Send single application (from review page)
 const sendSingleApplication = async (req, res) => {
     const userId = req.user.id;
-    const { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress } = req.body;
+    const { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName } = req.body;
     const useAsync = process.env.USE_ASYNC_JOBS !== 'false';
 
     console.log(`\n=== SEND SINGLE APPLICATION DEBUG (${useAsync ? 'ASYNC' : 'SYNC'}) ===`);
@@ -1478,7 +1725,7 @@ const sendSingleApplication = async (req, res) => {
 
             // Fire and forget
             jobService.startJob(jobId).then(() => {
-                return executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress });
+                return executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName });
             })
                 .then(result => jobService.completeJob(jobId, result))
                 .catch(err => {
@@ -1487,7 +1734,7 @@ const sendSingleApplication = async (req, res) => {
                 });
         } else {
             // SYNC MODE: Original behavior
-            const result = await executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress });
+            const result = await executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName });
             res.json(result);
         }
 
@@ -1503,7 +1750,7 @@ const sendSingleApplication = async (req, res) => {
 /**
  * Execute the actual email send work — used by both sync and async modes
  */
-async function executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress }) {
+async function executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName }) {
     const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
 
     console.log('User found:', !!user);
@@ -1515,13 +1762,54 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
     console.log('ENV SMTP_PASS:', process.env.SMTP_PASS ? 'SET' : 'NOT SET');
     console.log('=====================================\n');
 
+    // Resolve brand from cache if not provided by client
+    if (!brandColor || !fontName) {
+        // Step 1: direct URL lookup
+        let lookupUrl = websiteUrl;
+        if (lookupUrl && !lookupUrl.startsWith('http')) lookupUrl = 'https://' + lookupUrl;
+        if (lookupUrl) {
+            const cached = await dbConfig.get('SELECT brand_color, font_name FROM employer_brand_profiles WHERE website_url = ?', [lookupUrl]);
+            if (cached) { brandColor = brandColor || cached.brand_color; fontName = fontName || cached.font_name; }
+        }
+        // Step 2: lookup via user's saved cover letter website
+        if (!brandColor && companyName) {
+            const firstWord = companyName.split(/\s+/)[0];
+            const rclRow = await dbConfig.get(
+                `SELECT stored_recipient_website FROM review_cover_letters
+                 WHERE user_id = ? AND stored_recipient_website IS NOT NULL AND stored_recipient_website <> ''
+                 AND company_name ILIKE ? LIMIT 1`,
+                [userId, `%${firstWord}%`]
+            );
+            if (rclRow?.stored_recipient_website) {
+                let u = rclRow.stored_recipient_website;
+                if (!u.startsWith('http')) u = 'https://' + u;
+                const cached = await dbConfig.get('SELECT brand_color, font_name FROM employer_brand_profiles WHERE website_url = ?', [u]);
+                if (cached) { brandColor = brandColor || cached.brand_color; fontName = fontName || cached.font_name; }
+            }
+        }
+        // Step 3: fuzzy name match
+        if (!brandColor && companyName) {
+            const firstWord = companyName.split(/\s+/)[0];
+            const byName = await dbConfig.get(
+                `SELECT ebp.brand_color, ebp.font_name FROM employer_brand_profiles ebp
+                 JOIN employer_profiles ep ON ep.website_url = ebp.website_url
+                 WHERE ep.employer_name ILIKE ? LIMIT 1`,
+                [`%${firstWord}%`]
+            );
+            if (byName) { brandColor = brandColor || byName.brand_color; fontName = fontName || byName.font_name; }
+        }
+        console.log(`🎨 [SEND] brand resolved: color=${brandColor || 'default'}, font=${fontName || 'default'}`);
+    }
+
     // Generate PDF
     console.log('📄 Generating PDF with address:', companyAddress || 'NO ADDRESS PROVIDED');
         const { filePath, fileName } = await generateCoverLetterPDF(
             user,
             coverLetterText,
             companyName,
-            companyAddress
+            companyAddress,
+            brandColor || null,
+            fontName || null
         );
         console.log('✅ PDF generated:', fileName);
 

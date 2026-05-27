@@ -2942,7 +2942,9 @@ function AppContent() {
         position: recipient.position,
         coverLetterText: coverLetter.coverLetterHtml,
         companyName: coverLetter.companyName,
-        companyAddress: coverLetter.address || ''
+        companyAddress: coverLetter.address || '',
+        brandColor: coverLetter.brandColor || null,
+        fontName: coverLetter.fontName || null
       };
       console.log('Request body companyAddress:', requestBody.companyAddress);
       console.log('Request body:', JSON.stringify(requestBody, null, 2));
@@ -3133,7 +3135,10 @@ function AppContent() {
         body: JSON.stringify({
           coverLetterHtml: coverLetter.coverLetterHtml,
           companyName: coverLetter.companyName,
-          companyAddress: coverLetter.address || ''
+          companyAddress: coverLetter.address || '',
+          websiteUrl: coverLetter.storedRecipientWebsite || null,
+          brandColor: coverLetter.brandColor || null,
+          fontName: coverLetter.fontName || null
         })
       });
 
@@ -5329,6 +5334,13 @@ function AppContent() {
         selectedReplyDetails={selectedReplyDetails}
         isAdmin={isAdmin}
         handleReview={handleReview}
+        handleAutoStart={() => {
+          if (validateAllRecipients()) {
+            setCurrentReviewTab(0);
+            setScreen('review');
+            setTimeout(() => generateAndSendAllApplications(), 600);
+          }
+        }}
         addRecipient={addRecipient}
         removeRecipient={removeRecipient}
         updateRecipient={updateRecipient}
