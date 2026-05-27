@@ -2,7 +2,7 @@
   "expo": {
     "name": "CVApplyr",
     "slug": "cvapplyr-mobile",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "cvapplyr",
@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.cvapplyr.mobile",
-      "buildNumber": "41",
+      "buildNumber": "42",
       "usesAppleSignIn": true,
       "infoPlist": {
         "CFBundleURLTypes": [
@@ -26,7 +26,7 @@
     },
     "android": {
       "package": "com.cvapplyr.mobile",
-      "versionCode": 8,
+      "versionCode": 9,
       "intentFilters": [
         {
           "action": "VIEW",
