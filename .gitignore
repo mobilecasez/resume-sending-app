@@ -60,3 +60,10 @@ security_verification_report.txt
 force-reencrypt-tokens.js
 verify_security_implementation.sql
 MobileApp/build-*.ipa
+Keys/*.apk
+Keys/*.aab
+Keys/*.ipa
+Keys/*.p12
+Keys/*.p8
+Keys/*.json
+MobileApp/build-*.ipa
