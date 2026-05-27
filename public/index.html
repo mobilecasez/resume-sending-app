@@ -389,11 +389,26 @@
           if (!el) return;
           new QRCode(el, {
             text: url,
-            width: 148, height: 148,
+            width: 200, height: 200,
             colorDark: color,
             colorLight: '#ffffff',
-            correctLevel: QRCode.CorrectLevel.H
+            correctLevel: QRCode.CorrectLevel.M
           });
+          // Ensure crisp rendering — no browser interpolation
+          setTimeout(function() {
+            var canvas = el.querySelector('canvas');
+            if (canvas) {
+              canvas.style.imageRendering = 'pixelated';
+              canvas.style.width  = '160px';
+              canvas.style.height = '160px';
+            }
+            var img = el.querySelector('img');
+            if (img) {
+              img.style.imageRendering = 'crisp-edges';
+              img.style.width  = '160px';
+              img.style.height = '160px';
+            }
+          }, 100);
         }
         makeQR('qr-ios',     IOS_URL,     '#0071E3');
         makeQR('qr-android', ANDROID_URL, '#01875F');

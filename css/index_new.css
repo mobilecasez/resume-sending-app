@@ -481,7 +481,7 @@ body { min-height: 100%; display: flex; flex-direction: column; }
   }
 
   /* ============ FEATURES ============ */
-  .features { padding: 100px 48px; position: relative; z-index: 1; }
+  .features { padding: 50px 48px 100px; position: relative; z-index: 1; }
   .feature-grid {
     max-width: 1200px;
     margin: 0 auto;
@@ -1120,7 +1120,7 @@ body { padding-top: 0 !important; }
 
 /* ─── DOWNLOAD / QR SECTION ─────────────────────────────────────────── */
 .download-section {
-  padding: 96px 24px;
+  padding: 48px 24px 96px;
   max-width: 900px;
   margin: 0 auto;
   text-align: center;
@@ -1198,13 +1198,19 @@ body { padding-top: 0 !important; }
 .qr-code-inner {
   background: #fff;
   border-radius: 12px;
-  padding: 10px;
+  padding: 12px;
   line-height: 0;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.12);
 }
 .qr-code-inner img,
 .qr-code-inner canvas {
   border-radius: 4px;
   display: block;
+  width: 160px !important;
+  height: 160px !important;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
 }
 
 .qr-scan-hint {
