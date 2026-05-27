@@ -8,12 +8,16 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView as SafeAreaViewContext } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const T = {
   bg:        '#E5EAF3',
+  bgSoft:    '#DCE2ED',
   surface:   '#FFFFFF',
   inputBg:   '#F1F4FA',
   ink:       '#0B0F22',
@@ -53,6 +57,20 @@ function weekDayLabel(offsetFromToday) {
   return d.toLocaleDateString('en-US', { weekday: 'short' }).slice(0, 1);
 }
 
+// ─── Module-level caches (persist while app is in memory) ────────────────────
+// Card state: recipientId → { genState, coverLetterText, dlState, sendState }
+const _cardStateCache = {};
+// Generated counts per day: 'YYYY-MM-DD' → count (survives HomeScreen remounts)
+const _generatedCountsCache = {};
+
+// ─── Generation stage labels ──────────────────────────────────────────────────
+function getStageLabel(progress) {
+  if (progress < 25) return 'Analyzing Resume…';
+  if (progress < 55) return 'Fetching company info…';
+  if (progress < 80) return 'Generating cover letter…';
+  return 'Writing final draft…';
+}
+
 // ─── PulsingDot ───────────────────────────────────────────────────────────────
 function PulsingDot({ color = T.blue, size = 7 }) {
   const anim = useRef(new Animated.Value(1)).current;
@@ -75,10 +93,25 @@ function PulsingDot({ color = T.blue, size = 7 }) {
 }
 
 // ─── ActivityChart ────────────────────────────────────────────────────────────
-function ActivityChart({ applicationHistory, generatedCounts = {} }) {
-  const [tooltip, setTooltip] = useState(null); // { index, sent, generated, label }
+function ActivityChart({ applicationHistory, chartTick = 0, usageData, tooltip, setTooltip }) {
 
   const days = useMemo(() => {
+    // Prefer usageData.dateWiseActivity — same source as the Usage & Credits screen
+    if (usageData?.dateWiseActivity?.length > 0) {
+      // Take the last 7 days from the server data
+      const slice = usageData.dateWiseActivity.slice(-7);
+      return slice.map((d, i) => {
+        const date = new Date(d.date);
+        const offsetFromToday = slice.length - 1 - i;
+        return {
+          label: weekDayLabel(offsetFromToday),
+          sent: d.sent || 0,
+          generated: d.generated || 0,
+          dateStr: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        };
+      });
+    }
+    // Fallback: derive from applicationHistory + in-session generated cache
     const arr = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date();
@@ -88,79 +121,76 @@ function ActivityChart({ applicationHistory, generatedCounts = {} }) {
         const s = a.sentDate ? new Date(a.sentDate).toLocaleDateString('en-CA') : null;
         return s === key;
       }).length;
-      // Generated = API-confirmed generations tracked in generatedCounts + historical sent
-      const generated = Math.max(sent, generatedCounts[key] || 0);
-      arr.push({ label: weekDayLabel(i), sent, generated, dateKey: key });
+      const generated = Math.max(sent, _generatedCountsCache[key] || 0);
+      const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      arr.push({ label: weekDayLabel(i), sent, generated, dateKey: key, dateStr });
     }
     return arr;
-  }, [applicationHistory, generatedCounts]);
+  }, [applicationHistory, chartTick, usageData]);
 
   const maxVal = Math.max(1, ...days.map(d => Math.max(d.sent, d.generated)));
-  const BAR_H = 76;
+  const BAR_H = 36;
 
   function handleBarPress(d, i) {
     if (tooltip && tooltip.index === i) { setTooltip(null); return; }
-    setTooltip({ index: i, sent: d.sent, generated: d.generated, label: d.label });
+    setTooltip({ index: i, sent: d.sent, generated: d.generated, dateStr: d.dateStr });
   }
 
   return (
-    <View>
-      <View style={chartStyles.row}>
-        {days.map((d, i) => (
-          <TouchableOpacity
-            key={i}
-            style={chartStyles.col}
-            activeOpacity={0.75}
-            onPress={() => handleBarPress(d, i)}
-          >
-            {/* Tooltip above bar */}
-            {tooltip?.index === i && (
-              <View style={chartStyles.tooltip}>
-                <Text style={chartStyles.tooltipTitle}>{d.label}</Text>
-                <View style={chartStyles.tooltipRow}>
-                  <View style={[chartStyles.tooltipDot, { backgroundColor: T.blue }]} />
-                  <Text style={chartStyles.tooltipText}>Generated: {d.generated}</Text>
-                </View>
-                <View style={chartStyles.tooltipRow}>
-                  <View style={[chartStyles.tooltipDot, { backgroundColor: T.teal }]} />
-                  <Text style={chartStyles.tooltipText}>Sent: {d.sent}</Text>
-                </View>
-                <View style={chartStyles.tooltipArrow} />
+    <View style={chartStyles.row}>
+      {days.map((d, i) => (
+        <TouchableOpacity
+          key={i}
+          style={chartStyles.col}
+          activeOpacity={0.75}
+          onPress={() => handleBarPress(d, i)}
+        >
+          {/* Tooltip above bar */}
+          {tooltip?.index === i && (
+            <View style={chartStyles.tooltip}>
+              <Text style={chartStyles.tooltipTitle}>{d.dateStr}</Text>
+              <View style={chartStyles.tooltipRow}>
+                <View style={[chartStyles.tooltipDot, { backgroundColor: T.blue }]} />
+                <Text style={chartStyles.tooltipText}>Generated: {d.generated}</Text>
               </View>
-            )}
-
-            <View style={[chartStyles.barWrap, { height: BAR_H }]}>
-              {/* Generated bar (blue/purple) */}
-              {d.generated > 0 ? (
-                <LinearGradient
-                  colors={[T.blue, T.purple]}
-                  style={[chartStyles.groupBar, { height: Math.max(4, (d.generated / maxVal) * BAR_H) }]}
-                  start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}
-                />
-              ) : (
-                <View style={[chartStyles.groupBar, chartStyles.emptyBar]} />
-              )}
-              {/* Sent bar (teal) */}
-              {d.sent > 0 ? (
-                <View style={[chartStyles.groupBar, chartStyles.sentBar, { height: Math.max(4, (d.sent / maxVal) * BAR_H) }]} />
-              ) : (
-                <View style={[chartStyles.groupBar, chartStyles.emptyBar]} />
-              )}
+              <View style={chartStyles.tooltipRow}>
+                <View style={[chartStyles.tooltipDot, { backgroundColor: T.teal }]} />
+                <Text style={chartStyles.tooltipText}>Sent: {d.sent}</Text>
+              </View>
+              <View style={chartStyles.tooltipArrow} />
             </View>
-            <Text style={[chartStyles.label, tooltip?.index === i && { color: T.blue, fontWeight: '700' }]}>{d.label}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+          )}
+
+          <View style={chartStyles.barWrap}>
+            {/* Generated bar (blue/purple gradient) */}
+            <LinearGradient
+              colors={d.generated > 0 ? [T.blue, T.purple] : [T.bgSoft, T.bgSoft]}
+              style={[chartStyles.groupBar, {
+                height: d.generated > 0 ? Math.max(4, (d.generated / maxVal) * BAR_H) : 4,
+                borderWidth: d.generated > 0 ? 0 : 1,
+                borderColor: T.border,
+              }]}
+              start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}
+            />
+            {/* Sent bar (teal) */}
+            <View style={[chartStyles.groupBar, {
+              height: d.sent > 0 ? Math.max(4, (d.sent / maxVal) * BAR_H) : 4,
+              backgroundColor: d.sent > 0 ? T.teal : T.bgSoft,
+              borderWidth: d.sent > 0 ? 0 : 1,
+              borderColor: T.border,
+            }]} />
+          </View>
+          <Text style={[chartStyles.label, tooltip?.index === i && { color: T.blue, fontWeight: '700' }]}>{d.label}</Text>
+        </TouchableOpacity>
+      ))}
     </View>
   );
 }
 const chartStyles = StyleSheet.create({
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
   col: { alignItems: 'center', flex: 1, position: 'relative' },
-  barWrap: { justifyContent: 'flex-end', flexDirection: 'row', alignItems: 'flex-end', gap: 2, width: '88%' },
-  groupBar: { flex: 1, borderRadius: 4 },
-  sentBar: { backgroundColor: T.teal },
-  emptyBar: { height: 4, borderRadius: 2, backgroundColor: T.border },
+  barWrap: { height: 36, flexDirection: 'row', alignItems: 'flex-end', gap: 3, justifyContent: 'center' },
+  groupBar: { width: 8, borderRadius: 3 },
   label: { marginTop: 6, fontSize: 11, color: T.textFaint, fontWeight: '600' },
   // Tooltip
   tooltip: {
@@ -194,7 +224,7 @@ const chartStyles = StyleSheet.create({
 // idle:    full blue→purple gradient + "Generate Cover Letter" + glass arrow pill
 // loading: #9FB9E8 base + animated fill left→right + shimmer + spinner + % on right
 // done:    stays fully filled, checkmark + "Generated ✓"
-function GenerateButton({ state, progress, progressAnim, onPress }) {
+function GenerateButton({ state, progress, progressAnim, onPress, stageLabel }) {
   const spinAnim = useRef(new Animated.Value(0)).current;
   const shimAnim = useRef(new Animated.Value(0)).current;
 
@@ -241,7 +271,7 @@ function GenerateButton({ state, progress, progressAnim, onPress }) {
         <View style={[genBtnStyles.idleContent, { justifyContent: 'space-between', paddingRight: 14, zIndex: 2 }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <Animated.View style={[genBtnStyles.spinner, { transform: [{ rotate: spin }] }]} />
-            <Text style={genBtnStyles.label}>Generating cover letter…</Text>
+            <Text style={genBtnStyles.label} numberOfLines={1}>{stageLabel || 'Generating cover letter…'}</Text>
           </View>
           <Text style={genBtnStyles.pct}>{Math.round(progress)}%</Text>
         </View>
@@ -324,6 +354,112 @@ function FillButton({ state, progress, progressAnim, onPress, label, labelLoadin
   );
 }
 
+// ─── DownloadButton — white outline, liquid fill on loading ──────────────────
+function DownloadButton({ state, progress, progressAnim, onPress }) {
+  const spinAnim = useRef(new Animated.Value(0)).current;
+  const shimAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (state === 'loading') {
+      Animated.loop(Animated.timing(spinAnim, { toValue: 1, duration: 800, useNativeDriver: true })).start();
+      Animated.loop(Animated.timing(shimAnim, { toValue: 1, duration: 2000, useNativeDriver: true })).start();
+    } else { spinAnim.stopAnimation(); shimAnim.stopAnimation(); }
+  }, [state]);
+  const spin = spinAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  const shimX = shimAnim.interpolate({ inputRange: [0, 1], outputRange: [-120, 300] });
+  const fillW = progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+  const isLoading = state === 'loading';
+  const isDone = state === 'done';
+  return (
+    <TouchableOpacity onPress={onPress} disabled={isLoading} activeOpacity={isLoading ? 1 : 0.82} style={genBtnStyles.dlWrap}>
+      {/* Base */}
+      {(isLoading || isDone) ? (
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#9FB9E8', borderRadius: 12 }]} />
+      ) : null}
+      {/* Fill */}
+      {(isLoading || isDone) && (
+        <Animated.View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: isDone ? '100%' : fillW, borderRadius: 12, overflow: 'hidden' }}>
+          <LinearGradient colors={[T.ink, '#2D3748']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+        </Animated.View>
+      )}
+      {/* Shimmer */}
+      {isLoading && (
+        <Animated.View style={{ position: 'absolute', top: 0, bottom: 0, width: 60, transform: [{ translateX: shimX }], zIndex: 1 }}>
+          <LinearGradient colors={['transparent', 'rgba(255,255,255,0.22)', 'transparent']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+        </Animated.View>
+      )}
+      <View style={[genBtnStyles.fillContent, { zIndex: 2 }]}>
+        {isLoading ? (
+          <Animated.View style={[genBtnStyles.spinner, { transform: [{ rotate: spin }] }]} />
+        ) : (
+          <Ionicons name={isDone ? 'checkmark-circle' : 'download-outline'} size={14} color={isDone || isLoading ? '#fff' : T.ink} />
+        )}
+        <Text style={[genBtnStyles.fillLabel, (!isDone && !isLoading) && { color: T.ink }]}>
+          {isDone ? 'Downloaded ✓' : isLoading ? 'Downloading…' : 'Download'}
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+// ─── SendButton — gradient with glass arrow pill, liquid fill on loading ──────
+function SendButton({ state, progress, progressAnim, onPress, fullWidth = false }) {
+  const spinAnim = useRef(new Animated.Value(0)).current;
+  const shimAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (state === 'loading') {
+      Animated.loop(Animated.timing(spinAnim, { toValue: 1, duration: 800, useNativeDriver: true })).start();
+      Animated.loop(Animated.timing(shimAnim, { toValue: 1, duration: 2200, useNativeDriver: true })).start();
+    } else { spinAnim.stopAnimation(); shimAnim.stopAnimation(); }
+  }, [state]);
+  const spin = spinAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  const shimX = shimAnim.interpolate({ inputRange: [0, 1], outputRange: [-160, 360] });
+  const fillW = progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+  const isLoading = state === 'loading';
+  const isDone = state === 'done';
+  if (isLoading) {
+    return (
+      <View style={[genBtnStyles.sendWrap, { backgroundColor: '#9FB9E8' }, fullWidth && { flex: undefined, width: '100%' }]}>
+        <Animated.View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: fillW, overflow: 'hidden' }}>
+          <LinearGradient colors={[T.blue, T.purple, '#5B4FE8']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+        </Animated.View>
+        <Animated.View style={{ position: 'absolute', top: 0, bottom: 0, width: 80, transform: [{ translateX: shimX }] }}>
+          <LinearGradient colors={['transparent', 'rgba(255,255,255,0.28)', 'transparent']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+        </Animated.View>
+        <View style={[genBtnStyles.idleContent, { justifyContent: 'space-between', paddingRight: 14, zIndex: 2 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Animated.View style={[genBtnStyles.spinner, { transform: [{ rotate: spin }] }]} />
+            <Text style={genBtnStyles.label}>Sending…</Text>
+          </View>
+          <Text style={genBtnStyles.pct}>{Math.round(progress)}%</Text>
+        </View>
+      </View>
+    );
+  }
+  if (isDone) {
+    return (
+      <View style={[genBtnStyles.sendWrap, { overflow: 'hidden' }, fullWidth && { flex: undefined, width: '100%' }]}>
+        <LinearGradient colors={[T.teal, T.emerald]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+        <View style={genBtnStyles.idleContent}>
+          <Ionicons name="checkmark-circle" size={13} color="#fff" />
+          <Text style={genBtnStyles.label}>Sent ✓</Text>
+        </View>
+      </View>
+    );
+  }
+  return (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={[genBtnStyles.sendWrap, fullWidth && { flex: undefined, width: '100%' }]}>
+      <LinearGradient colors={[T.blue, T.purple, '#5B4FE8']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={StyleSheet.absoluteFill} />
+      <View style={genBtnStyles.idleContent}>
+        <Ionicons name="send" size={13} color="#fff" />
+        <Text style={genBtnStyles.label}>Send Now</Text>
+      </View>
+      <View style={genBtnStyles.arrowPill}>
+        <Ionicons name="arrow-forward" size={13} color="#fff" />
+      </View>
+    </TouchableOpacity>
+  );
+}
+
 const genBtnStyles = StyleSheet.create({
   // GenerateButton
   wrap: {
@@ -349,7 +485,21 @@ const genBtnStyles = StyleSheet.create({
     borderWidth: 2, borderColor: 'rgba(255,255,255,0.35)',
     borderTopColor: '#fff',
   },
-  // FillButton (Download / Send)
+  // Download button (outline → fill on load)
+  dlWrap: {
+    flex: 1, height: 46, borderRadius: 12, overflow: 'hidden',
+    flexDirection: 'row', alignItems: 'center',
+    borderWidth: 1.5, borderColor: '#CBD5E1',
+    backgroundColor: '#fff',
+  },
+  // Send Now button (gradient → fill on load)
+  sendWrap: {
+    flex: 1.4, height: 46, borderRadius: 12, overflow: 'hidden',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingLeft: 14, paddingRight: 5,
+    shadowColor: 'rgba(79,141,255,0.34)', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 1, shadowRadius: 20, elevation: 6,
+  },
+  // FillButton (legacy, keep for backward compat)
   fillWrap: {
     height: 46, borderRadius: 12, overflow: 'hidden',
     flexDirection: 'row', alignItems: 'center',
@@ -368,21 +518,30 @@ function CompanyCard({
   user, API_BASE, handleReview,
   onGenerated,
 }) {
-  const [mode, setMode] = useState('edit'); // 'edit' | 'view'
-  const [genState, setGenState] = useState('idle'); // 'idle' | 'loading' | 'done'
-  const [genProgress, setGenProgress] = useState(0);
-  const genAnim = useRef(new Animated.Value(0)).current;
+  // ── Restore from module-level cache on mount ────────────────────────────────
+  const cached = _cardStateCache[recipient.id] || {};
+  const isReadyInit = !!(recipient.email && recipient.website);
+  const [mode, setMode] = useState(isReadyInit ? 'view' : 'edit'); // 'edit' | 'view'
+  const [genState, setGenState] = useState(cached.genState || 'idle');
+  const [genProgress, setGenProgress] = useState(cached.genState === 'done' ? 100 : 0);
+  const [genLabel, setGenLabel] = useState('Analyzing Resume…');
+  const genAnim = useRef(new Animated.Value(cached.genState === 'done' ? 1 : 0)).current;
 
-  const [dlState, setDlState] = useState('idle');
-  const [dlProgress, setDlProgress] = useState(0);
-  const dlAnim = useRef(new Animated.Value(0)).current;
+  const [dlState, setDlState] = useState(cached.dlState || 'idle');
+  const [dlProgress, setDlProgress] = useState(cached.dlState === 'done' ? 100 : 0);
+  const dlAnim = useRef(new Animated.Value(cached.dlState === 'done' ? 1 : 0)).current;
 
-  const [sendState, setSendState] = useState('idle');
-  const [sendProgress, setSendProgress] = useState(0);
-  const sendAnim = useRef(new Animated.Value(0)).current;
+  const [sendState, setSendState] = useState(cached.sendState || 'idle');
+  const [sendProgress, setSendProgress] = useState(cached.sendState === 'done' ? 100 : 0);
+  const sendAnim = useRef(new Animated.Value(cached.sendState === 'done' ? 1 : 0)).current;
 
-  const [coverLetterText, setCoverLetterText] = useState('');
+  const [coverLetterText, setCoverLetterText] = useState(cached.coverLetterText || '');
   const pollRef = useRef(null);
+
+  // Persist state changes to module-level cache
+  function saveCache(updates) {
+    _cardStateCache[recipient.id] = { ...(_cardStateCache[recipient.id] || {}), ...updates };
+  }
 
   const domain = domainFrom(recipient.website);
   const companyInitial = domain ? domain[0].toUpperCase()
@@ -394,6 +553,25 @@ function CompanyCard({
   useEffect(() => {
     if (isReady && mode === 'edit') setMode('view');
   }, [isReady]);
+
+  // Load cover letter from the same storage as the Review page on mount
+  useEffect(() => {
+    if (!recipient.email || !user?.email) return;
+    if (genState === 'done') return; // already restored from module cache
+    AsyncStorage.getItem(`reviewCoverLetters_${user.email}`).then(raw => {
+      if (!raw) return;
+      const all = JSON.parse(raw);
+      // Find the entry whose storedRecipientEmail matches this card's email
+      const entry = Object.values(all).find(e => e?.storedRecipientEmail === recipient.email);
+      if (entry?.coverLetterHtml) {
+        setCoverLetterText(entry.coverLetterHtml);
+        setGenState('done');
+        genAnim.setValue(1);
+        setGenProgress(100);
+        saveCache({ genState: 'done', coverLetterText: entry.coverLetterHtml, reviewEntry: entry });
+      }
+    }).catch(() => {});
+  }, [recipient.email, user?.email]);
 
   useEffect(() => {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
@@ -408,14 +586,83 @@ function CompanyCard({
     if (genState === 'loading') return;
     setGenState('loading');
     setGenProgress(0);
+    setGenLabel('Analyzing Resume…');
     genAnim.setValue(0);
 
+    // Smooth 1%-per-tick progress, slows at stage thresholds to wait for API
     let fake = 0;
-    pollRef.current = setInterval(() => {
-      fake = Math.min(fake + Math.random() * 6 + 2, 87);
-      setGenProgress(Math.round(fake));
-      animTo(genAnim, fake / 100);
-    }, 950);
+    let apiDone = false;
+    let apiProgress = 0;
+    const SOFT_CAP = 88; // won't pass this until API confirms completion
+
+    function tickProgress() {
+      if (apiDone) return;
+      // slow at each stage boundary
+      const cap = apiProgress > 0 ? Math.min(apiProgress, SOFT_CAP) : SOFT_CAP;
+      if (fake < cap) {
+        // speed: faster early, slower near cap
+        const step = fake < 50 ? 1.2 : fake < 75 ? 0.8 : 0.4;
+        fake = Math.min(fake + step, cap);
+      }
+      const pct = Math.round(fake);
+      setGenProgress(pct);
+      setGenLabel(getStageLabel(pct));
+      Animated.timing(genAnim, { toValue: fake / 100, duration: 120, useNativeDriver: false }).start();
+    }
+
+    if (pollRef.current) clearInterval(pollRef.current);
+    const tickTimer = setInterval(tickProgress, 120);
+
+    function finishGeneration(apiResult) {
+      clearInterval(tickTimer);
+      apiDone = true;
+      setGenProgress(100);
+      setGenLabel('Writing final draft…');
+      Animated.timing(genAnim, { toValue: 1, duration: 400, useNativeDriver: false }).start();
+      setTimeout(() => {
+        // Accept either a string (legacy) or result object
+        const cl = (typeof apiResult === 'string')
+          ? apiResult
+          : (apiResult?.coverLetterHtml || apiResult?.coverLetterText
+              || apiResult?.result?.coverLetterHtml || apiResult?.result?.coverLetterText || '');
+        setCoverLetterText(cl);
+        setGenState('done');
+        saveCache({ genState: 'done', coverLetterText: cl });
+        // Persist into the same storage the Review page uses
+        if (recipient.email && user?.email && cl) {
+          const storageKey = `reviewCoverLetters_${user.email}`;
+          AsyncStorage.getItem(storageKey).then(raw => {
+            const all = raw ? JSON.parse(raw) : {};
+            // Find existing entry index or create a new one keyed by email
+            const existingKey = Object.keys(all).find(k => all[k]?.storedRecipientEmail === recipient.email);
+            const key = existingKey != null ? existingKey : `home_${recipient.email}`;
+            all[key] = {
+              ...(all[existingKey] || {}),
+              coverLetterHtml: cl,
+              companyName: apiResult?.companyName || companyName,
+              address: apiResult?.address || '',
+              subject: apiResult?.subject || `Application for ${recipient.position || 'a position'} at ${companyName}`,
+              date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+              generated: true,
+              sent: false,
+              storedRecipientEmail: recipient.email,
+              storedRecipientWebsite: recipient.website,
+            };
+            return AsyncStorage.setItem(storageKey, JSON.stringify(all));
+          }).catch(() => {});
+        }
+        onGenerated && onGenerated();
+      }, 500);
+    }
+
+    function failGeneration(msg) {
+      clearInterval(tickTimer);
+      setGenState('idle');
+      setGenProgress(0);
+      genAnim.setValue(0);
+      saveCache({ genState: 'idle' });
+      if (msg) Alert.alert('Generation failed', msg);
+    }
 
     try {
       const token = user?.token;
@@ -427,44 +674,57 @@ function CompanyCard({
       const data = await res.json();
 
       if (res.status === 202 && data.jobId) {
-        clearInterval(pollRef.current);
         const jobId = data.jobId;
         const started = Date.now();
         pollRef.current = setInterval(async () => {
-          if (Date.now() - started > 150000) { clearInterval(pollRef.current); setGenState('idle'); return; }
+          if (Date.now() - started > 150000) { clearInterval(pollRef.current); failGeneration('Request timed out.'); return; }
           try {
             const sr = await fetch(`${API_BASE}/job-status/${jobId}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
             const sd = await sr.json();
             if (sd.status === 'completed') {
               clearInterval(pollRef.current);
-              setGenProgress(100); animTo(genAnim, 1);
-              setTimeout(() => {
-                setCoverLetterText(sd.result?.coverLetterText || sd.coverLetterText || '');
-                setGenState('done');
-                onGenerated && onGenerated();
-              }, 400);
+              finishGeneration(sd.result || sd);
             } else if (sd.progress) {
-              const p = Math.min(sd.progress, 95);
-              setGenProgress(p); animTo(genAnim, p / 100);
+              apiProgress = Math.min(sd.progress, 95);
             }
           } catch (_) {}
         }, 3000);
       } else if (res.ok) {
-        clearInterval(pollRef.current);
-        setGenProgress(100); animTo(genAnim, 1);
-        setTimeout(() => {
-          setCoverLetterText(data.coverLetterText || data.result?.coverLetterText || '');
-          setGenState('done');
-          onGenerated && onGenerated();
-        }, 400);
+        finishGeneration(data);
       } else {
-        clearInterval(pollRef.current); setGenState('idle');
-        Alert.alert('Generation failed', data.message || 'Please try again.');
+        failGeneration(data.message || 'Please try again.');
       }
     } catch (e) {
-      clearInterval(pollRef.current); setGenState('idle');
-      Alert.alert('Error', 'Could not generate cover letter. Check your connection.');
+      failGeneration('Could not generate cover letter. Check your connection.');
     }
+  }
+
+  // ── Simple job poller (mirrors App.js pollJobStatus) ─────────────────────
+  function pollJob(jobId, token, onDone, onFail) {
+    const started = Date.now();
+    const iv = setInterval(async () => {
+      if (Date.now() - started > 150000) { clearInterval(iv); onFail('Request timed out.'); return; }
+      try {
+        const sr = await fetch(`${API_BASE}/job-status/${jobId}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        const sd = await sr.json();
+        if (sd.status === 'completed') { clearInterval(iv); onDone(sd); }
+        else if (sd.status === 'failed') { clearInterval(iv); onFail(sd.error || 'Job failed'); }
+      } catch (_) {}
+    }, 3000);
+    return iv;
+  }
+
+  // Helper: read the stored review entry for this card's recipient email
+  async function getStoredEntry() {
+    if (!user?.email || !recipient.email) return null;
+    try {
+      const raw = await AsyncStorage.getItem(`reviewCoverLetters_${user.email}`);
+      if (!raw) return null;
+      const all = JSON.parse(raw);
+      return Object.values(all).find(e => e?.storedRecipientEmail === recipient.email) || null;
+    } catch { return null; }
   }
 
   // ── Download ──────────────────────────────────────────────────────────────
@@ -472,39 +732,62 @@ function CompanyCard({
     if (dlState === 'loading') return;
     setDlState('loading'); setDlProgress(0); dlAnim.setValue(0);
 
-    // Simulate progress while waiting
     let fake = 0;
-    const fakeTimer = setInterval(() => {
-      fake = Math.min(fake + 15, 80);
-      setDlProgress(fake); animTo(dlAnim, fake / 100);
-    }, 400);
+    const tickTimer = setInterval(() => {
+      if (fake < 80) { fake = Math.min(fake + 1.5, 80); setDlProgress(Math.round(fake)); animTo(dlAnim, fake / 100); }
+    }, 150);
+
+    async function finishDownload(data) {
+      clearInterval(tickTimer);
+      if (!data.downloadUrl) { setDlState('idle'); Alert.alert('Download failed', 'No download URL from server.'); return; }
+      try {
+        setDlProgress(88); animTo(dlAnim, 0.88);
+        const token = user?.token;
+        const cleanUrl = data.downloadUrl.replace(/^\/api/, '');
+        const fullUrl = `${API_BASE}${cleanUrl}`;
+        const fileName = `${companyName.replace(/[^a-zA-Z0-9]/g, '_')}_Cover_Letter.pdf`;
+        const fileUri = (cacheDirectory || '') + fileName;
+        const result = await downloadAsync(fullUrl, fileUri, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (result.status !== 200) throw new Error(`Download HTTP ${result.status}`);
+        setDlProgress(100); animTo(dlAnim, 1);
+        setTimeout(() => { setDlState('done'); saveCache({ dlState: 'done' }); }, 300);
+        if (await Sharing.isAvailableAsync()) { await Sharing.shareAsync(result.uri); }
+      } catch (e) {
+        setDlState('idle');
+        Alert.alert('Download failed', e.message || 'Could not save PDF.');
+      }
+    }
 
     try {
       const token = user?.token;
       const hdrs = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+      // Read address from the same Review-page storage for an accurate PDF
+      const entry = await getStoredEntry();
+      const html = entry?.coverLetterHtml || coverLetterText;
+      const addr = entry?.address || '';
+      const cName = entry?.companyName || companyName;
       const res = await fetch(`${API_BASE}/generate-cover-letter-pdf`, {
         method: 'POST', headers: hdrs,
-        body: JSON.stringify({ coverLetterHtml: coverLetterText, companyName, companyAddress: '' }),
+        body: JSON.stringify({ coverLetterHtml: html, companyName: cName, companyAddress: addr }),
       });
-      clearInterval(fakeTimer);
-      const data = await res.json();
-      const pdfUrl = data.pdfUrl || data.url;
-      if (pdfUrl) {
-        setDlProgress(90); animTo(dlAnim, 0.9);
-        const FileSystem = require('expo-file-system');
-        const Sharing = require('expo-sharing');
-        const dest = FileSystem.documentDirectory + `cover_letter_${companyName.replace(/\s+/g, '_')}.pdf`;
-        await FileSystem.downloadAsync(pdfUrl, dest);
-        setDlProgress(100); animTo(dlAnim, 1);
-        setTimeout(() => setDlState('done'), 300);
-        await Sharing.shareAsync(dest);
+
+      if (res.status === 202) {
+        const { jobId } = await res.json();
+        pollJob(jobId, token,
+          (sd) => finishDownload(sd.result || sd),
+          (msg) => { clearInterval(tickTimer); setDlState('idle'); Alert.alert('Download failed', msg); }
+        );
+      } else if (res.ok) {
+        finishDownload(await res.json());
       } else {
-        clearInterval(fakeTimer); setDlState('idle');
-        Alert.alert('Download failed', 'No PDF returned from server.');
+        clearInterval(tickTimer); setDlState('idle');
+        Alert.alert('Download failed', `Server error ${res.status}`);
       }
     } catch (e) {
-      clearInterval(fakeTimer); setDlState('idle');
-      Alert.alert('Download failed', 'Could not download PDF. Please try again.');
+      clearInterval(tickTimer); setDlState('idle');
+      Alert.alert('Download failed', 'Network error. Please try again.');
     }
   }
 
@@ -514,25 +797,55 @@ function CompanyCard({
     setSendState('loading'); setSendProgress(0); sendAnim.setValue(0);
 
     let fake = 0;
-    const fakeTimer = setInterval(() => {
-      fake = Math.min(fake + 12, 75);
-      setSendProgress(fake); animTo(sendAnim, fake / 100);
-    }, 350);
+    const tickTimer = setInterval(() => {
+      if (fake < 82) { fake = Math.min(fake + 1, 82); setSendProgress(Math.round(fake)); animTo(sendAnim, fake / 100); }
+    }, 180);
+
+    function onSendDone() {
+      clearInterval(tickTimer);
+      setSendProgress(100); animTo(sendAnim, 1);
+      setTimeout(() => { setSendState('done'); saveCache({ sendState: 'done' }); }, 300);
+      Alert.alert('Sent! 🎉', `Your application has been sent to ${companyName}.`);
+    }
+    function onSendFail(msg) {
+      clearInterval(tickTimer); setSendState('idle');
+      Alert.alert('Send failed', msg || 'Could not send. Please try again.');
+    }
 
     try {
       const token = user?.token;
       const hdrs = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
-      await fetch(`${API_BASE}/send-single-application`, {
+      // Read the full stored entry — same data Review page uses — so address + HTML are accurate
+      const entry = await getStoredEntry();
+      const html = entry?.coverLetterHtml || coverLetterText;
+      const addr = entry?.address || '';
+      const cName = entry?.companyName || companyName;
+      const res = await fetch(`${API_BASE}/send-single-application`, {
         method: 'POST', headers: hdrs,
-        body: JSON.stringify({ recipientEmail: recipient.email, websiteUrl: recipient.website, position: recipient.position || '', coverLetterText, companyName, companyAddress: '' }),
+        body: JSON.stringify({
+          recipientEmail: recipient.email,
+          websiteUrl: recipient.website,
+          position: recipient.position || '',
+          coverLetterText: html,
+          companyName: cName,
+          companyAddress: addr,
+        }),
       });
-      clearInterval(fakeTimer);
-      setSendProgress(100); animTo(sendAnim, 1);
-      setTimeout(() => setSendState('done'), 300);
-      Alert.alert('Sent! 🎉', `Application sent to ${companyName}`);
+
+      if (res.status === 202) {
+        const { jobId } = await res.json();
+        pollJob(jobId, token,
+          (sd) => { if (!sd || sd.success === false) onSendFail(sd?.error); else onSendDone(); },
+          (msg) => onSendFail(msg)
+        );
+      } else if (res.ok) {
+        onSendDone();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        onSendFail(err.message || err.error || `Server error ${res.status}`);
+      }
     } catch (e) {
-      clearInterval(fakeTimer); setSendState('idle');
-      Alert.alert('Send failed', 'Could not send application. Please try again.');
+      onSendFail('Network error. Please check your connection.');
     }
   }
 
@@ -579,7 +892,7 @@ function CompanyCard({
         <View>
           <View style={cardStyles.editHeader}>
             <View style={cardStyles.editAvatarPlaceholder}>
-              <Ionicons name="add" size={18} color={T.textFaint} />
+              <Ionicons name="add" size={18} color={T.blueDeep} />
             </View>
             <Text style={cardStyles.editTitle}>{isReady ? companyName : 'New company'}</Text>
             {/* Close (back to view) — only when already has data */}
@@ -646,17 +959,22 @@ function CompanyCard({
           </View>
           <View style={cardStyles.statusRow}>
             <Ionicons name="link-outline" size={10} color={T.textFaint} />
-            <Text style={cardStyles.websiteText}>{domain}</Text>
+            <Text style={cardStyles.websiteText} numberOfLines={1}>{domain}</Text>
             <View style={cardStyles.statusDot}>
               {genState === 'done' ? (
                 <>
-                  <Ionicons name="checkmark-circle" size={12} color={T.emerald} />
-                  <Text style={[cardStyles.statusText, { color: T.emerald }]}>Letter ready</Text>
+                  <PulsingDot color={T.emerald} size={5} />
+                  <Text style={[cardStyles.statusText, { color: T.emerald }]}>Ready to Send</Text>
+                </>
+              ) : genState === 'loading' ? (
+                <>
+                  <PulsingDot color={T.blue} size={5} />
+                  <Text style={[cardStyles.statusText, { color: T.blue }]}>Processing…</Text>
                 </>
               ) : (
                 <>
                   <PulsingDot color={T.blue} size={5} />
-                  <Text style={[cardStyles.statusText, { color: T.blue }]}>Ready to Generate</Text>
+                  <Text style={[cardStyles.statusText, { color: T.blue }]}>Ready to Process</Text>
                 </>
               )}
             </View>
@@ -666,7 +984,7 @@ function CompanyCard({
 
       {/* ── ACTION BUTTONS (view mode only) ── */}
       {mode === 'view' && (
-        <View style={{ marginTop: 2 }}>
+        <View style={{ marginTop: 10 }}>
           {/* Generate button — always visible, changes state in-place */}
           {genState !== 'done' && (
             <GenerateButton
@@ -674,50 +992,52 @@ function CompanyCard({
               progress={genProgress}
               progressAnim={genAnim}
               onPress={handleGenerate}
+              stageLabel={genLabel}
             />
           )}
 
           {genState === 'done' && (
-            <View style={{ gap: 8 }}>
-              {/* Edit → review screen */}
-              <TouchableOpacity
-                onPress={() => handleReview && handleReview()}
-                style={cardStyles.editLetterBtn}
-                activeOpacity={0.85}
-              >
-                <Ionicons name="create-outline" size={14} color={T.blue} />
-                <Text style={cardStyles.editLetterBtnText}>Edit Cover Letter</Text>
-                <Ionicons name="chevron-forward" size={13} color={T.blue} />
-              </TouchableOpacity>
-
+            <View style={{ gap: 8, marginTop: 2 }}>
+              {/* Row 1: Edit Cover Letter + Download side by side */}
               <View style={{ flexDirection: 'row', gap: 8 }}>
+                {/* Edit → review screen */}
+                <TouchableOpacity
+                  onPress={() => handleReview && handleReview(index)}
+                  activeOpacity={0.85}
+                  style={{ flex: 1, borderRadius: 12, overflow: 'hidden' }}
+                >
+                  <LinearGradient
+                    colors={['#06B6D4', '#0891B2']}
+                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                    style={cardStyles.editLetterBtn}
+                  >
+                    <View style={cardStyles.editLetterIconCircle}>
+                      <Ionicons name="create-outline" size={14} color="#0891B2" />
+                    </View>
+                    <Text style={cardStyles.editLetterBtnText}>Edit Letter</Text>
+                    <View style={cardStyles.editLetterArrow}>
+                      <Ionicons name="arrow-forward" size={13} color="#fff" />
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
+
                 {/* Download */}
-                <FillButton
+                <DownloadButton
                   state={dlState}
                   progress={dlProgress}
                   progressAnim={dlAnim}
                   onPress={handleDownload}
-                  label="Download"
-                  labelLoading="Downloading…"
-                  labelDone="Downloaded ✓"
-                  icon="download-outline"
-                  colors={[T.ink, '#2D3748']}
-                  style={{ flex: 1 }}
-                />
-                {/* Send Now */}
-                <FillButton
-                  state={sendState}
-                  progress={sendProgress}
-                  progressAnim={sendAnim}
-                  onPress={handleSend}
-                  label="Send Now"
-                  labelLoading="Sending…"
-                  labelDone="Sent ✓"
-                  icon="send"
-                  colors={[T.blue, T.purple, '#5B4FE8']}
-                  style={{ flex: 1.4 }}
                 />
               </View>
+
+              {/* Row 2: Send Now full width */}
+              <SendButton
+                state={sendState}
+                progress={sendProgress}
+                progressAnim={sendAnim}
+                onPress={handleSend}
+                fullWidth
+              />
             </View>
           )}
         </View>
@@ -728,18 +1048,19 @@ function CompanyCard({
 const cardStyles = StyleSheet.create({
   card: {
     backgroundColor: T.surface,
-    borderRadius: 16, borderWidth: 1, borderColor: T.border,
+    borderRadius: 22, borderWidth: 1, borderColor: T.border,
     padding: 18, marginBottom: 12, overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06, shadowRadius: 8, elevation: 2,
+    shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.08, shadowRadius: 32, elevation: 4,
   },
   topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   eyebrow: { fontSize: 10, fontWeight: '700', letterSpacing: 1.4, color: T.textFaint },
   creditStamp: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, paddingHorizontal: 7, paddingVertical: 2 },
   creditStampText: { fontSize: 8, fontWeight: '700', color: '#fff', letterSpacing: 0.4 },
   watermark: {
-    position: 'absolute', right: 14, top: 28,
-    fontSize: 72, fontWeight: '800', color: 'rgba(11,15,34,0.04)', lineHeight: 80,
+    position: 'absolute', right: -8, top: -22,
+    fontSize: 180, fontWeight: '800', color: T.ink, opacity: 0.035, lineHeight: 180,
+    letterSpacing: -8,
   },
   // View mode identity row
   identityRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
@@ -753,8 +1074,9 @@ const cardStyles = StyleSheet.create({
   // Edit mode
   editHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   editAvatarPlaceholder: {
-    width: 36, height: 36, borderRadius: 10,
-    borderWidth: 1.5, borderColor: T.border, borderStyle: 'dashed',
+    width: 38, height: 38, borderRadius: 12,
+    backgroundColor: 'rgba(79,141,255,0.10)',
+    borderWidth: 1.5, borderColor: 'rgba(79,141,255,0.42)', borderStyle: 'dashed',
     alignItems: 'center', justifyContent: 'center',
   },
   editTitle: { flex: 1, fontSize: 14, fontWeight: '600', color: T.textMuted },
@@ -772,22 +1094,32 @@ const cardStyles = StyleSheet.create({
   websiteText: { fontSize: 12, color: T.textFaint, flex: 1 },
   statusDot: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   statusText: { fontSize: 12, fontWeight: '600' },
-  // Edit letter button (after generation done)
+  // Edit letter button (after generation done) — cyan gradient like review page
   editLetterBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: T.blue + '10', borderRadius: 10,
-    borderWidth: 1, borderColor: T.blue + '25',
-    paddingVertical: 12, paddingHorizontal: 14,
+    flexDirection: 'row', alignItems: 'center',
+    height: 46, paddingLeft: 5, paddingRight: 5,
+    shadowColor: 'rgba(6,182,212,0.35)', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 1, shadowRadius: 16, elevation: 4,
   },
-  editLetterBtnText: { flex: 1, fontSize: 13, fontWeight: '600', color: T.blue },
+  editLetterIconCircle: {
+    width: 36, height: 36, borderRadius: 10,
+    backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center',
+    marginRight: 10, marginLeft: 0,
+  },
+  editLetterBtnText: { flex: 1, fontSize: 13, fontWeight: '700', color: '#fff', letterSpacing: -0.2 },
+  editLetterArrow: {
+    width: 36, height: 36, borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.20)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
+    alignItems: 'center', justifyContent: 'center',
+  },
 });
 
 // ─── AppCard ──────────────────────────────────────────────────────────────────
 const STATUS_CONFIG = {
-  replied:   { color: T.emerald,  label: 'REPLIED',   icon: 'checkmark-circle' },
-  pending:   { color: T.amber,    label: 'PENDING',   icon: 'time-outline' },
-  interview: { color: T.purple,   label: 'INTERVIEW', icon: 'briefcase-outline' },
-  noreply:   { color: T.textFaint,label: 'NO REPLY',  icon: 'mail-unread-outline' },
+  replied:   { color: T.emerald,  deepColor: '#0E9B6F', label: 'REPLIED',   icon: 'checkmark-circle' },
+  pending:   { color: T.amber,    deepColor: '#D97706', label: 'PENDING',   icon: 'time-outline' },
+  interview: { color: T.purple,   deepColor: '#5B4FE8', label: 'INTERVIEW', icon: 'briefcase-outline' },
+  noreply:   { color: T.textFaint,deepColor: T.textMuted, label: 'NO REPLY', icon: 'mail-unread-outline' },
 };
 
 function getAppStatus(app) {
@@ -798,7 +1130,8 @@ function getAppStatus(app) {
   return 'pending';
 }
 
-function AppCard({ app, index, onMarkReply, onShowReplies }) {
+function AppCard({ app, index, onMarkReply, onShowReplies, user }) {
+  const isMicrosoft = user?.provider === 'microsoft' || user?.oauth_provider === 'microsoft';
   const status = getAppStatus(app);
   const cfg = STATUS_CONFIG[status];
   const companyName = app.companyName || 'Company';
@@ -810,8 +1143,12 @@ function AppCard({ app, index, onMarkReply, onShowReplies }) {
 
   return (
     <View style={appStyles.card}>
-      {/* Accent strip */}
-      <View style={[appStyles.accentStrip, { backgroundColor: cfg.color }]} />
+      {/* Accent strip — gradient */}
+      <LinearGradient
+        colors={[cfg.color, cfg.deepColor || cfg.color]}
+        start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+        style={appStyles.accentStrip}
+      />
 
       {/* Watermark */}
       <Text style={appStyles.watermark}>{initial}</Text>
@@ -843,7 +1180,7 @@ function AppCard({ app, index, onMarkReply, onShowReplies }) {
       {/* Perforation */}
       <View style={appStyles.perforation} />
 
-      {/* Reply quote or action hint */}
+      {/* Reply quote (only shown when a real reply exists) */}
       {app.replyReceived && app.replySnippet ? (
         <TouchableOpacity onPress={() => onShowReplies(app.id, companyName)} activeOpacity={0.8}>
           <View style={appStyles.quoteBlock}>
@@ -859,10 +1196,6 @@ function AppCard({ app, index, onMarkReply, onShowReplies }) {
               )}
             </View>
           )}
-        </TouchableOpacity>
-      ) : !app.replyReceived ? (
-        <TouchableOpacity onPress={() => onMarkReply(app.id)} style={appStyles.actionHint}>
-          <Text style={appStyles.actionHintText}>Tap to mark as replied</Text>
         </TouchableOpacity>
       ) : null}
 
@@ -890,17 +1223,49 @@ function AppCard({ app, index, onMarkReply, onShowReplies }) {
 
       {/* Footer actions */}
       <View style={appStyles.footer}>
-        <TouchableOpacity onPress={() => onShowReplies(app.id, companyName)} style={appStyles.outlineBtn}>
-          <Text style={appStyles.outlineBtnText}>View thread</Text>
-        </TouchableOpacity>
-        {status === 'interview' ? (
-          <LinearGradient colors={[T.purple, T.purpleDeep]} style={appStyles.gradBtn} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
-            <Text style={appStyles.gradBtnText}>Prep for chat</Text>
-          </LinearGradient>
+        {isMicrosoft ? (
+          /* Microsoft: View Thread + Reply Now (or Prep for chat if interview) */
+          <>
+            <TouchableOpacity onPress={() => onShowReplies(app.id, companyName)} style={appStyles.outlineBtn}>
+              <Ionicons name="mail-open-outline" size={12} color={T.ink} />
+              <Text style={appStyles.outlineBtnText}>View thread</Text>
+            </TouchableOpacity>
+            {status === 'interview' ? (
+              <TouchableOpacity activeOpacity={0.85} style={{ flex: 1.2 }}>
+                <LinearGradient colors={[T.purple, T.purpleDeep]} style={appStyles.gradBtn} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
+                  <View style={appStyles.gradBtnInner}>
+                    <Ionicons name="sparkles" size={12} color="#fff" />
+                    <Text style={appStyles.gradBtnText}>Prep for chat</Text>
+                  </View>
+                  <View style={appStyles.gradArrow}>
+                    <Ionicons name="arrow-forward" size={12} color="#fff" />
+                  </View>
+                </LinearGradient>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity activeOpacity={0.85} style={{ flex: 1.2 }}>
+                <LinearGradient colors={[cfg.color, cfg.deepColor || cfg.color]} style={appStyles.gradBtn} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
+                  <View style={appStyles.gradBtnInner}>
+                    <Ionicons name="send" size={12} color="#fff" />
+                    <Text style={appStyles.gradBtnText}>Reply now</Text>
+                  </View>
+                  <View style={appStyles.gradArrow}>
+                    <Ionicons name="arrow-forward" size={12} color="#fff" />
+                  </View>
+                </LinearGradient>
+              </TouchableOpacity>
+            )}
+          </>
         ) : (
-          <LinearGradient colors={[T.blue, T.blueDeep]} style={appStyles.gradBtn} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
-            <Text style={appStyles.gradBtnText}>Reply now</Text>
-          </LinearGradient>
+          /* Google / other: full-width "Tap to mark as replied" */
+          <TouchableOpacity
+            onPress={() => onMarkReply(app.id)}
+            activeOpacity={0.85}
+            style={appStyles.markRepliedBtn}
+          >
+            <Ionicons name="checkmark-circle-outline" size={14} color={T.blue} />
+            <Text style={appStyles.markRepliedText}>Tap to mark as replied</Text>
+          </TouchableOpacity>
         )}
       </View>
     </View>
@@ -908,15 +1273,15 @@ function AppCard({ app, index, onMarkReply, onShowReplies }) {
 }
 const appStyles = StyleSheet.create({
   card: {
-    backgroundColor: T.surface, borderRadius: 16, borderWidth: 1, borderColor: T.border,
+    backgroundColor: T.surface, borderRadius: 20, borderWidth: 1, borderColor: T.border,
     marginBottom: 10, overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2,
-    paddingTop: 3,
+    shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.07, shadowRadius: 28, elevation: 3,
   },
-  accentStrip: { height: 3, borderTopLeftRadius: 16, borderTopRightRadius: 16 },
+  accentStrip: { height: 3 },
   watermark: {
-    position: 'absolute', right: 14, top: 30,
-    fontSize: 64, fontWeight: '800', color: 'rgba(11,15,34,0.04)',
+    position: 'absolute', right: -6, top: 4,
+    fontSize: 150, fontWeight: '800', color: T.ink, opacity: 0.035, lineHeight: 150,
+    letterSpacing: -8,
   },
   topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 14, paddingTop: 10, marginBottom: 8 },
   eyebrow: { fontSize: 10, fontWeight: '700', letterSpacing: 1.2, color: T.textFaint },
@@ -950,14 +1315,23 @@ const appStyles = StyleSheet.create({
   stepDotEmpty: { borderWidth: 1.5, borderColor: T.borderHi, backgroundColor: 'transparent' },
   stepLabel: { fontSize: 10, fontWeight: '600', color: T.textFaint },
   stepLine: { flex: 1, height: 1.5, backgroundColor: T.borderHi, marginBottom: 12 },
-  footer: { flexDirection: 'row', gap: 8, padding: 12, backgroundColor: T.surface },
+  footer: { flexDirection: 'row', gap: 6, padding: 8, backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border },
   outlineBtn: {
-    flex: 1, borderWidth: 1, borderColor: T.borderHi, borderRadius: 11,
-    paddingVertical: 13, alignItems: 'center',
+    flex: 1, borderWidth: 1, borderColor: T.borderHi, borderRadius: 10,
+    height: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5,
+    backgroundColor: T.surface,
   },
-  outlineBtnText: { fontSize: 14, fontWeight: '600', color: T.ink },
-  gradBtn: { flex: 1, borderRadius: 11, paddingVertical: 13, alignItems: 'center' },
-  gradBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+  outlineBtnText: { fontSize: 12, fontWeight: '700', color: T.ink },
+  gradBtn: { height: 36, borderRadius: 10, paddingLeft: 11, paddingRight: 3, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  gradBtnInner: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  gradBtnText: { fontSize: 12, fontWeight: '700', color: '#fff' },
+  gradArrow: { width: 28, height: 28, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.22)', alignItems: 'center', justifyContent: 'center' },
+  markRepliedBtn: {
+    flex: 1, height: 36, borderRadius: 10,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: T.blue + '12', borderWidth: 1, borderColor: T.blue + '30',
+  },
+  markRepliedText: { fontSize: 12, fontWeight: '700', color: T.blue },
 });
 
 // ─── StatChip ─────────────────────────────────────────────────────────────────
@@ -1000,6 +1374,7 @@ export default function HomeScreen({
   // API_BASE for inline reply confirm handler
   API_BASE, userRef,
   setApplicationHistory, setTotalReplied,
+  usageData,
 }) {
   const firstName = user?.fullName?.split(' ')[0] || user?.name?.split(' ')[0] || 'User';
   const isMicrosoft = user?.provider === 'microsoft' || user?.oauth_provider === 'microsoft';
@@ -1044,11 +1419,20 @@ export default function HomeScreen({
 
   const hasPendingReady = recipients.some(r => r.email && r.website);
 
-  // Track locally-generated cover letters (date → count) so chart updates in real-time
-  const [generatedCounts, setGeneratedCounts] = useState({});
+  // Chart tooltip state — lifted here so any tap on screen dismisses it
+  const [chartTooltip, setChartTooltip] = useState(null);
+
+  // Track locally-generated cover letters in module-level cache (survives navigation)
+  const [chartTick, setChartTick] = useState(0);
   function handleCardGenerated() {
     const key = new Date().toLocaleDateString('en-CA');
-    setGeneratedCounts(prev => ({ ...prev, [key]: (prev[key] || 0) + 1 }));
+    // Start from max(existing cached value, today's sent count) so we never go below sent
+    const todaySent = applicationHistory.filter(a =>
+      a.sentDate && new Date(a.sentDate).toLocaleDateString('en-CA') === key
+    ).length;
+    const prev = Math.max(_generatedCountsCache[key] || 0, todaySent);
+    _generatedCountsCache[key] = prev + 1;
+    setChartTick(t => t + 1);
   }
 
   function handleMarkReply(appId) {
@@ -1142,11 +1526,10 @@ export default function HomeScreen({
             <View style={styles.replyMiniCard}>
               <Text style={styles.replyMiniLabel}>REPLIES</Text>
               <Text style={styles.replyMiniValue}>{totalReplied}/{totalSent}</Text>
-              <Text style={styles.replyMiniRate}>{replyRate}%</Text>
             </View>
           </View>
 
-          {/* Top up button */}
+          {/* Top up button — below credits */}
           <TouchableOpacity style={styles.topUpPill} onPress={() => setScreen('usage')} activeOpacity={0.85}>
             <Ionicons name="flash" size={11} color={T.ink} />
             <Text style={styles.topUpText}>Top up</Text>
@@ -1165,7 +1548,7 @@ export default function HomeScreen({
             </View>
             <View style={styles.heroStatDivider} />
             <View style={styles.heroStat}>
-              <Text style={styles.heroStatLabel}>REPLY RATE</Text>
+              <Text style={styles.heroStatLabel}>REPLY%</Text>
               <Text style={[styles.heroStatValue, { color: T.teal }]}>{replyRate}%</Text>
             </View>
           </View>
@@ -1182,7 +1565,7 @@ export default function HomeScreen({
             </View>
             <TouchableOpacity onPress={() => setScreen('usage')}><Text style={styles.detailsLink}>Details →</Text></TouchableOpacity>
           </View>
-          <ActivityChart applicationHistory={applicationHistory} generatedCounts={generatedCounts} />
+          <ActivityChart applicationHistory={applicationHistory} chartTick={chartTick} usageData={usageData} tooltip={chartTooltip} setTooltip={setChartTooltip} />
           <View style={styles.chartLegend}>
             <View style={styles.legendItem}>
               <LinearGradient colors={[T.blue, T.purple]} style={styles.legendSwatch} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} />
@@ -1209,7 +1592,8 @@ export default function HomeScreen({
             </View>
             <TouchableOpacity onPress={addRecipient} activeOpacity={0.85}>
               <LinearGradient colors={[T.blue, T.purple]} style={styles.addPill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
-                <Text style={styles.addPillText}>+ Add new</Text>
+                <Ionicons name="add" size={12} color="#fff" />
+                <Text style={styles.addPillText}>Add new</Text>
               </LinearGradient>
             </TouchableOpacity>
           </View>
@@ -1240,9 +1624,15 @@ export default function HomeScreen({
               start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
               style={[styles.generateAllBtn, !hasPendingReady && { opacity: 0.5 }]}
             >
-              <Text style={styles.generateAllText}>Generate & send all pending</Text>
-              <View style={styles.creditsBadge}>
-                <Text style={styles.creditsBadgeText}>{recipients.filter(r => r.email && r.website).length} credits</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="flash" size={14} color="#34D399" />
+                <Text style={styles.generateAllText}>Generate & send all pending</Text>
+                <View style={styles.creditsBadge}>
+                  <Text style={styles.creditsBadgeText}>{recipients.filter(r => r.email && r.website).length} credits</Text>
+                </View>
+              </View>
+              <View style={styles.generateAllArrow}>
+                <Ionicons name="arrow-forward" size={15} color="#fff" />
               </View>
             </LinearGradient>
           </TouchableOpacity>
@@ -1295,6 +1685,7 @@ export default function HomeScreen({
                 index={i}
                 onMarkReply={handleMarkReply}
                 onShowReplies={showAllReplies}
+                user={user}
               />
             ))
           )}
@@ -1302,6 +1693,13 @@ export default function HomeScreen({
 
         <View style={{ height: 100 }} />
       </ScrollView>
+
+      {/* Dismiss chart tooltip when tapping anywhere outside the chart */}
+      {chartTooltip !== null && (
+        <TouchableWithoutFeedback onPress={() => setChartTooltip(null)}>
+          <View style={styles.tooltipDismissOverlay} />
+        </TouchableWithoutFeedback>
+      )}
 
       {/* ── FLOATING TAB BAR ─────────────────────────────── */}
       <View style={tabStyles.wrapper}>
@@ -1388,14 +1786,14 @@ export default function HomeScreen({
         <TouchableWithoutFeedback onPress={() => setShowNotifications(false)}>
           <View style={notifStyles.overlay}>
             <TouchableWithoutFeedback>
-              <SafeAreaViewContext style={notifStyles.wrapper}>
+              <View style={notifStyles.wrapper}>
                 <View style={notifStyles.sheet}>
                   <View style={notifStyles.handle} />
                   <View style={notifStyles.header}>
                     <Text style={notifStyles.title}>Notifications</Text>
                     {unreadCount > 0 && <View style={notifStyles.badge}><Text style={notifStyles.badgeText}>{unreadCount}</Text></View>}
                   </View>
-                  <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
+                  <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 340 }}>
                     {loadingNotifications ? (
                       <ActivityIndicator size="large" color={T.blue} style={{ marginTop: 40 }} />
                     ) : notifications.length === 0 ? (
@@ -1432,7 +1830,7 @@ export default function HomeScreen({
                     </TouchableOpacity>
                   )}
                 </View>
-              </SafeAreaViewContext>
+              </View>
             </TouchableWithoutFeedback>
           </View>
         </TouchableWithoutFeedback>
@@ -1555,6 +1953,7 @@ function interviewCount(history) {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: T.bg },
+  tooltipDismissOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 10 },
   scroll: { flex: 1 },
   scrollContent: { paddingBottom: 20 },
 
@@ -1566,7 +1965,7 @@ const styles = StyleSheet.create({
   },
   logoRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   logoImg: { width: 37, height: 37 },
-  wordmark: { fontSize: 18, letterSpacing: -0.3 },
+  wordmark: { fontSize: 23, letterSpacing: 0.5 },
   wordmarkCv: { fontWeight: '700', color: T.ink },
   wordmarkApplyr: { fontWeight: '700', color: T.blue },
   topBarActions: { flexDirection: 'row', gap: 8 },
@@ -1631,7 +2030,7 @@ const styles = StyleSheet.create({
     borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
     paddingHorizontal: 16, paddingVertical: 12,
     alignItems: 'center', justifyContent: 'center',
-    alignSelf: 'flex-start', marginTop: 4,
+    alignSelf: 'flex-start', marginTop: 18,
   },
   replyMiniLabel: { fontSize: 9, fontWeight: '700', letterSpacing: 1.4, color: 'rgba(255,255,255,0.5)', marginBottom: 5 },
   replyMiniValue: { fontSize: 22, fontWeight: '800', color: '#fff', lineHeight: 26 },
@@ -1640,14 +2039,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 5,
     backgroundColor: '#fff', borderRadius: 20,
     paddingHorizontal: 13, paddingVertical: 6,
-    alignSelf: 'flex-start', marginBottom: 16,
+    alignSelf: 'flex-start', marginBottom: 8,
   },
   topUpText: { fontSize: 12, fontWeight: '700', color: T.ink },
   heroStatStrip: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.10)',
-    borderRadius: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)',
-    paddingVertical: 12,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.22)',
+    paddingVertical: 12, marginTop: 9,
   },
   heroStat: { flex: 1, alignItems: 'center' },
   heroStatLabel: { fontSize: 9, fontWeight: '700', letterSpacing: 1, color: 'rgba(255,255,255,0.5)', marginBottom: 4 },
@@ -1668,20 +2067,21 @@ const styles = StyleSheet.create({
   detailsLink: { fontSize: 12, color: T.blue, fontWeight: '600' },
   chartLegend: { flexDirection: 'row', gap: 14, marginTop: 12 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  legendSwatch: { width: 22, height: 6, borderRadius: 3 },
+  legendSwatch: { width: 8, height: 8, borderRadius: 2 },
   legendText: { fontSize: 12, color: T.textMuted, fontWeight: '500' },
 
   // Count pill
   countPill: { backgroundColor: T.ink, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 3 },
   countPillText: { fontSize: 11, fontWeight: '700', color: '#fff' },
-  addPill: { borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8 },
-  addPillText: { fontSize: 13, fontWeight: '700', color: '#fff' },
+  addPill: { borderRadius: 100, paddingHorizontal: 11, paddingLeft: 9, height: 32, flexDirection: 'row', alignItems: 'center', gap: 5, shadowColor: 'rgba(79,141,255,0.32)', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 1, shadowRadius: 14, elevation: 4 },
+  addPillText: { fontSize: 11, fontWeight: '700', color: '#fff' },
 
   // Generate all button
-  generateAllBtn: { borderRadius: 14, paddingVertical: 17, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
-  generateAllText: { fontSize: 15, fontWeight: '700', color: '#fff' },
-  creditsBadge: { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 10, paddingHorizontal: 9, paddingVertical: 4 },
-  creditsBadgeText: { fontSize: 12, fontWeight: '700', color: '#fff' },
+  generateAllBtn: { borderRadius: 16, height: 52, paddingLeft: 16, paddingRight: 5, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 },
+  generateAllText: { fontSize: 13, fontWeight: '700', color: '#fff' },
+  creditsBadge: { backgroundColor: 'rgba(52,211,153,0.20)', borderRadius: 100, paddingHorizontal: 7, paddingVertical: 2 },
+  creditsBadgeText: { fontSize: 9.5, fontWeight: '700', color: '#34D399' },
+  generateAllArrow: { width: 42, height: 42, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.16)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.22)', alignItems: 'center', justifyContent: 'center' },
 
   // Sync pill
   syncPill: { backgroundColor: T.emerald, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 4 },
@@ -1717,8 +2117,13 @@ const menuStyles = StyleSheet.create({
 
 const notifStyles = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
-  wrapper: { backgroundColor: T.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '80%' },
-  sheet: { flex: 1, padding: 16 },
+  wrapper: {
+    backgroundColor: T.surface,
+    borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    maxHeight: '80%', minHeight: 200,
+    paddingBottom: 24,
+  },
+  sheet: { padding: 16, flexShrink: 1 },
   handle: { width: 36, height: 4, borderRadius: 2, backgroundColor: T.border, alignSelf: 'center', marginBottom: 12 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   title: { fontSize: 17, fontWeight: '700', color: T.ink },

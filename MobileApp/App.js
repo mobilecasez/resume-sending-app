@@ -26,6 +26,7 @@ import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import HomeScreen from './components/HomeScreen';
 import FloatingTabBar from './components/FloatingTabBar';
+import ReviewScreen from './components/ReviewScreen';
 
 // Apple IAP Product IDs - must match App Store Connect products
 const IAP_PRODUCT_IDS = [
@@ -1158,10 +1159,10 @@ function AppContent() {
     }
   };
 
-  const handleReview = () => {
+  const handleReview = (tabIndex = 0) => {
     if (validateAllRecipients()) {
       // Don't clear existing cover letters - preserve sent/generated status
-      setCurrentReviewTab(0);
+      setCurrentReviewTab(typeof tabIndex === 'number' ? tabIndex : 0);
       setScreen('review');
     }
   };
@@ -3934,9 +3935,9 @@ function AppContent() {
     }
   }, [screen, user]);
 
-  // Load usage data when screen changes to 'usage'
+  // Load usage data when screen changes to 'usage' or 'dashboard'
   useEffect(() => {
-    if (screen === 'usage' && user?.token) {
+    if ((screen === 'usage' || screen === 'dashboard') && user?.token) {
       const fetchUsageData = async () => {
         try {
           console.log('📱 [USAGE] Fetching usage data from:', `${API_BASE}/user/usage-stats`);
@@ -5344,6 +5345,7 @@ function AppContent() {
         userRef={userRef}
         setApplicationHistory={setApplicationHistory}
         setTotalReplied={setTotalReplied}
+        usageData={usageData}
       />
     );
   }
@@ -7234,9 +7236,61 @@ function AppContent() {
   });
   
     return (
+      <ReviewScreen
+        setScreen={setScreen}
+        user={user}
+        creditBalance={creditBalance}
+        unreadCount={unreadCount}
+        recipients={recipients}
+        currentReviewTab={currentReviewTab}
+        setCurrentReviewTab={setCurrentReviewTab}
+        reviewCoverLetters={reviewCoverLetters}
+        getRecipientFlipAnim={getRecipientFlipAnim}
+        handleRecipientFlip={handleRecipientFlip}
+        editingReviewIndex={editingReviewIndex}
+        toggleReviewEditMode={toggleReviewEditMode}
+        editedCoverLetterData={editedCoverLetterData}
+        setEditedCoverLetterData={setEditedCoverLetterData}
+        showAddressDropdown={showAddressDropdown}
+        setShowAddressDropdown={setShowAddressDropdown}
+        saveReviewEdits={saveReviewEdits}
+        generateCoverLetterForReview={generateCoverLetterForReview}
+        downloadCoverLetterPDFFromReview={downloadCoverLetterPDFFromReview}
+        sendApplicationFromReview={sendApplicationFromReview}
+        generateAllCoverLettersForReview={generateAllCoverLettersForReview}
+        sendAllApplicationsFromReview={sendAllApplicationsFromReview}
+        generateAndSendAllApplications={generateAndSendAllApplications}
+        reviewGeneratingIndex={reviewGeneratingIndex}
+        reviewLoading={reviewLoading}
+        reviewDownloading={reviewDownloading}
+        reviewGeneratingAll={reviewGeneratingAll}
+        reviewSendingAll={reviewSendingAll}
+        reviewGeneratingAndSendingAll={reviewGeneratingAndSendingAll}
+        isAnyLoadingActive={isAnyLoadingActive}
+        allApplicationsSent={allApplicationsSent}
+        progressiveLoadingMessage={progressiveLoadingMessage}
+        progressiveLoadingProgress={progressiveLoadingProgress}
+        progressAnimValue={progressAnimValue}
+        cancelOperation={cancelOperation}
+        showPaymentModal={showPaymentModal}
+        setShowPaymentModal={setShowPaymentModal}
+        paymentUrl={paymentUrl}
+        setPaymentUrl={setPaymentUrl}
+        showReviewDatePicker={showReviewDatePicker}
+        setShowReviewDatePicker={setShowReviewDatePicker}
+        selectedReviewDate={selectedReviewDate}
+        setSelectedReviewDate={setSelectedReviewDate}
+        selectedReviewDateRef={selectedReviewDateRef}
+        setShowNotifications={setShowNotifications}
+        showCoverLetterPreview={showCoverLetterPreview}
+        setShowCoverLetterPreview={setShowCoverLetterPreview}
+      />
+    );
+    // ---- OLD REVIEW SCREEN START (replaced by ReviewScreen component) ----
+    return (
       <SafeAreaViewContext style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
-        
+
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           {/* Header with Gradient Design */}
           <View style={styles.reviewHeaderCard}>
