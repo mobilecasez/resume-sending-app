@@ -624,6 +624,7 @@ function CompanyCard({
         const cl = (typeof apiResult === 'string')
           ? apiResult
           : (apiResult?.coverLetterHtml || apiResult?.coverLetterText
+              || apiResult?.data?.coverLetterHtml || apiResult?.data?.coverLetterText
               || apiResult?.result?.coverLetterHtml || apiResult?.result?.coverLetterText || '');
         setCoverLetterText(cl);
         setGenState('done');
@@ -639,9 +640,9 @@ function CompanyCard({
             all[key] = {
               ...(all[existingKey] || {}),
               coverLetterHtml: cl,
-              companyName: apiResult?.companyName || companyName,
-              address: apiResult?.address || '',
-              subject: apiResult?.subject || `Application for ${recipient.position || 'a position'} at ${companyName}`,
+              companyName: apiResult?.companyName || apiResult?.data?.companyName || companyName,
+              address: apiResult?.address || apiResult?.data?.address || '',
+              subject: apiResult?.subject || apiResult?.data?.subject || `Application for ${recipient.position || 'a position'} at ${companyName}`,
               date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
               generated: true,
               sent: false,
@@ -683,7 +684,7 @@ function CompanyCard({
             const sd = await sr.json();
             if (sd.status === 'completed') {
               clearInterval(pollRef.current);
-              finishGeneration(sd.result || sd);
+              finishGeneration(sd.data || sd.result || sd);
             } else if (sd.progress) {
               apiProgress = Math.min(sd.progress, 95);
             }
