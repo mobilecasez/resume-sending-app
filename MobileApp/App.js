@@ -5683,169 +5683,196 @@ function AppContent() {
       return true; // 'all'
     });
 
+    // Icon config for each notification type
+    const notifIconConfig = (type) => {
+      switch (type) {
+        case 'email':       return { name: 'mail-outline',          bg: '#DBEAFE', color: '#2563EB' };
+        case 'cover_letter':return { name: 'document-text-outline', bg: '#F3E8FF', color: '#7C3AED' };
+        case 'credits':     return { name: 'diamond-outline',       bg: '#FEF3C7', color: '#D97706' };
+        case 'profile':     return { name: 'person-outline',        bg: '#CCFBF1', color: '#0D9488' };
+        case 'reply':       return { name: 'chatbubble-outline',    bg: '#DCFCE7', color: '#16A34A' };
+        default:            return { name: 'notifications-outline', bg: '#E0E7FF', color: '#4F46E5' };
+      }
+    };
+
     return (
-      <SafeAreaViewContext style={styles.notificationsPageContainer}>
-        <StatusBar barStyle="light-content" backgroundColor="#667eea" translucent={false} />
-        
-        {/* Header with Gradient */}
-        <LinearGradient
-          colors={['#667eea', '#764ba2']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={styles.notificationsHeader}
-        >
-          <View style={styles.notificationsHeaderTop}>
-            <TouchableOpacity 
-              style={styles.notificationsBackButton}
+      <SafeAreaViewContext style={styles.notifPageContainer}>
+        <StatusBar barStyle="dark-content" backgroundColor="#E5EAF3" translucent={false} />
+
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.notifScrollContent}>
+
+          {/* ── TOP BAR ──────────────────────────────────────────────── */}
+          <View style={styles.notifTopBar}>
+            {/* Back pill */}
+            <TouchableOpacity
+              style={styles.notifBackPill}
               onPress={() => setScreen('dashboard')}
+              activeOpacity={0.8}
             >
-              <Text style={styles.notificationsBackIcon}>←</Text>
+              <Ionicons name="arrow-back" size={14} color="#0B0F22" />
+              <Text style={styles.notifBackPillText}>Back</Text>
             </TouchableOpacity>
-            <View style={styles.notificationsHeaderCenter}>
-              <Text style={styles.notificationsHeaderTitle}>Notifications</Text>
+
+            {/* Wordmark (centered absolutely) */}
+            <View style={styles.notifWordmark} pointerEvents="none">
+              <Image
+                source={require('./assets/images/logo_img.png')}
+                style={styles.notifWordmarkLogo}
+                resizeMode="contain"
+              />
+              <Text style={styles.notifWordmarkText}>
+                cv<Text style={styles.notifWordmarkBlue}>applyr</Text>
+              </Text>
+            </View>
+
+            {/* Mark all read pill (right side) */}
+            {unreadCount > 0 ? (
+              <TouchableOpacity
+                style={styles.notifMarkReadPill}
+                onPress={markAllNotificationsRead}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="checkmark-done-outline" size={14} color="#4F8DFF" />
+                <Text style={styles.notifMarkReadText}>All read</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={{ width: 80 }} />
+            )}
+          </View>
+
+          {/* ── HERO CARD ─────────────────────────────────────────────── */}
+          <View style={styles.notifHeroCard}>
+            <LinearGradient
+              colors={['#0B0F22', '#0F1635', '#0B0F22']}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+              style={StyleSheet.absoluteFillObject}
+            />
+            {/* Mesh blobs */}
+            <View style={[styles.notifMeshBlob, { top: -20, left: -30, backgroundColor: 'rgba(79,141,255,0.18)', width: 140, height: 140 }]} />
+            <View style={[styles.notifMeshBlob, { top: 10, right: -20, backgroundColor: 'rgba(124,107,255,0.14)', width: 110, height: 110 }]} />
+            <View style={[styles.notifMeshBlob, { bottom: -10, left: 60, backgroundColor: 'rgba(20,184,166,0.10)', width: 90, height: 90 }]} />
+
+            {/* Eyebrow row */}
+            <View style={styles.notifHeroEyeRow}>
+              <Text style={styles.notifHeroEyebrow}>ACTIVITY · INBOX</Text>
               {unreadCount > 0 && (
-                <View style={styles.notificationsHeaderBadge}>
-                  <Text style={styles.notificationsHeaderBadgeText}>{unreadCount}</Text>
+                <View style={styles.notifHeroCountChip}>
+                  <View style={styles.notifHeroCountDot} />
+                  <Text style={styles.notifHeroCountText}>{unreadCount} unread</Text>
                 </View>
               )}
             </View>
-            {unreadCount > 0 && (
-              <TouchableOpacity 
-                style={styles.notificationsMarkReadButton}
-                onPress={markAllNotificationsRead}
-              >
-                <Text style={styles.notificationsMarkReadText}>✓</Text>
-              </TouchableOpacity>
-            )}
-            {unreadCount === 0 && <View style={{ width: 44 }} />}
+
+            {/* Title */}
+            <Text style={styles.notifHeroTitle}>Stay in the loop.</Text>
+            <Text style={styles.notifHeroSub}>
+              Track replies, updates, and cover letter activity all in one place.
+            </Text>
+
+            {/* Stats strip */}
+            <View style={styles.notifStatsRow}>
+              <View style={styles.notifStatChip}>
+                <Text style={styles.notifStatNum}>{notifications.length}</Text>
+                <Text style={styles.notifStatLabel}>Total</Text>
+              </View>
+              <View style={styles.notifStatDivider} />
+              <View style={styles.notifStatChip}>
+                <Text style={styles.notifStatNum}>{unreadCount}</Text>
+                <Text style={styles.notifStatLabel}>Unread</Text>
+              </View>
+              <View style={styles.notifStatDivider} />
+              <View style={styles.notifStatChip}>
+                <Text style={styles.notifStatNum}>{notifications.length - unreadCount}</Text>
+                <Text style={styles.notifStatLabel}>Read</Text>
+              </View>
+            </View>
           </View>
-        </LinearGradient>
 
-        {/* Filter Tabs */}
-        <View style={styles.notificationsFilters}>
-          <TouchableOpacity
-            style={[
-              styles.notificationsFilterTab,
-              notificationFilter === 'all' && styles.notificationsFilterTabActive
-            ]}
-            onPress={() => setNotificationFilter('all')}
-          >
-            <Text style={[
-              styles.notificationsFilterText,
-              notificationFilter === 'all' && styles.notificationsFilterTextActive
-            ]}>
-              All ({notifications.length})
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[
-              styles.notificationsFilterTab,
-              notificationFilter === 'unread' && styles.notificationsFilterTabActive
-            ]}
-            onPress={() => setNotificationFilter('unread')}
-          >
-            <Text style={[
-              styles.notificationsFilterText,
-              notificationFilter === 'unread' && styles.notificationsFilterTextActive
-            ]}>
-              Unread ({unreadCount})
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[
-              styles.notificationsFilterTab,
-              notificationFilter === 'read' && styles.notificationsFilterTabActive
-            ]}
-            onPress={() => setNotificationFilter('read')}
-          >
-            <Text style={[
-              styles.notificationsFilterText,
-              notificationFilter === 'read' && styles.notificationsFilterTextActive
-            ]}>
-              Read ({notifications.length - unreadCount})
-            </Text>
-          </TouchableOpacity>
-        </View>
+          {/* ── FILTER CHIPS ─────────────────────────────────────────── */}
+          <View style={styles.notifFiltersRow}>
+            {[
+              { key: 'all',    label: 'All',    count: notifications.length },
+              { key: 'unread', label: 'Unread', count: unreadCount },
+              { key: 'read',   label: 'Read',   count: notifications.length - unreadCount },
+            ].map(f => (
+              <TouchableOpacity
+                key={f.key}
+                style={[styles.notifFilterChip, notificationFilter === f.key && styles.notifFilterChipActive]}
+                onPress={() => setNotificationFilter(f.key)}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.notifFilterChipText, notificationFilter === f.key && styles.notifFilterChipTextActive]}>
+                  {f.label}
+                </Text>
+                <View style={[styles.notifFilterBadge, notificationFilter === f.key && styles.notifFilterBadgeActive]}>
+                  <Text style={[styles.notifFilterBadgeText, notificationFilter === f.key && styles.notifFilterBadgeTextActive]}>
+                    {f.count}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
 
-        {/* Notifications List */}
-        <ScrollView 
-          style={styles.notificationsScrollView}
-          contentContainerStyle={styles.notificationsScrollContent}
-          showsVerticalScrollIndicator={false}
-        >
+          {/* ── LIST ─────────────────────────────────────────────────── */}
           {loadingNotifications ? (
-            <View style={styles.notificationsLoading}>
-              <ActivityIndicator size="large" color="#667eea" />
-              <Text style={styles.notificationsLoadingText}>Loading notifications...</Text>
+            <View style={styles.notifLoadingBox}>
+              <ActivityIndicator size="large" color="#4F8DFF" />
+              <Text style={styles.notifLoadingText}>Loading notifications…</Text>
             </View>
           ) : filteredNotifications.length === 0 ? (
-            <View style={styles.notificationsEmpty}>
-              <View style={styles.notificationsEmptyIconBox}>
-                <Text style={styles.notificationsEmptyIcon}>🔔</Text>
+            <View style={styles.notifEmptyBox}>
+              <View style={styles.notifEmptyIconRing}>
+                <Ionicons name="notifications-off-outline" size={36} color="#8896B0" />
               </View>
-              <Text style={styles.notificationsEmptyTitle}>
-                {notificationFilter === 'unread' ? 'No unread notifications' :
-                 notificationFilter === 'read' ? 'No read notifications' :
+              <Text style={styles.notifEmptyTitle}>
+                {notificationFilter === 'unread' ? 'All caught up' :
+                 notificationFilter === 'read'   ? 'Nothing read yet' :
                  'No notifications yet'}
               </Text>
-              <Text style={styles.notificationsEmptySubtitle}>
-                {notificationFilter === 'all' 
-                  ? "You'll be notified when something important happens"
-                  : 'Check back later for updates'}
+              <Text style={styles.notifEmptySub}>
+                {notificationFilter === 'all'
+                  ? "You'll be notified when replies arrive or something important happens."
+                  : 'Switch to a different filter to see more.'}
               </Text>
             </View>
           ) : (
-            <View style={styles.notificationsListContainer}>
-              {filteredNotifications.map((notif, index) => (
-                <TouchableOpacity
-                  key={notif.id || index}
-                  activeOpacity={0.7}
-                  onPress={() => {
-                    if (!notif.is_read) {
-                      markNotificationAsRead(notif.id);
-                    }
-                  }}
-                  style={[
-                    styles.notificationsPageItem,
-                    !notif.is_read && styles.notificationsPageItemUnread
-                  ]}
-                >
-                  <View style={[
-                    styles.notificationsPageIconBox,
-                    notif.type === 'email' && styles.notificationsIconTypeEmail,
-                    notif.type === 'cover_letter' && styles.notificationsIconTypeLetter,
-                    notif.type === 'credits' && styles.notificationsIconTypeCredits,
-                    notif.type === 'profile' && styles.notificationsIconTypeProfile,
-                  ]}>
-                    <Text style={styles.notificationsPageIcon}>
-                      {notif.type === 'email' ? '✉' : 
-                       notif.type === 'cover_letter' ? '📄' : 
-                       notif.type === 'credits' ? '◆' : 
-                       notif.type === 'profile' ? '👤' : '🔔'}
-                    </Text>
-                  </View>
-                  <View style={styles.notificationsPageContent}>
-                    <View style={styles.notificationsPageTopRow}>
-                      <Text style={styles.notificationsPageTitle} numberOfLines={2}>
-                        {notif.title}
-                      </Text>
-                      {!notif.is_read && (
-                        <View style={styles.notificationsPageUnreadBadge}>
-                          <View style={styles.notificationsPageUnreadDot} />
-                        </View>
-                      )}
+            <View style={styles.notifList}>
+              {filteredNotifications.map((notif, index) => {
+                const ic = notifIconConfig(notif.type);
+                return (
+                  <TouchableOpacity
+                    key={notif.id || index}
+                    activeOpacity={0.75}
+                    onPress={() => { if (!notif.is_read) markNotificationAsRead(notif.id); }}
+                    style={[styles.notifCard, !notif.is_read && styles.notifCardUnread]}
+                  >
+                    {/* Unread left accent bar */}
+                    {!notif.is_read && <View style={styles.notifCardAccent} />}
+
+                    {/* Icon */}
+                    <View style={[styles.notifCardIconBox, { backgroundColor: ic.bg }]}>
+                      <Ionicons name={ic.name} size={20} color={ic.color} />
                     </View>
-                    <Text style={styles.notificationsPageMessage}>
-                      {notif.message}
-                    </Text>
-                    <Text style={styles.notificationsPageTime}>
-                      {getTimeAgo(notif.created_at)}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              ))}
+
+                    {/* Content */}
+                    <View style={styles.notifCardBody}>
+                      <View style={styles.notifCardTopRow}>
+                        <Text style={styles.notifCardTitle} numberOfLines={2}>{notif.title}</Text>
+                        {!notif.is_read && <View style={styles.notifUnreadDot} />}
+                      </View>
+                      <Text style={styles.notifCardMessage} numberOfLines={3}>{notif.message}</Text>
+                      <View style={styles.notifCardFooter}>
+                        <Ionicons name="time-outline" size={11} color="#8896B0" />
+                        <Text style={styles.notifCardTime}>{getTimeAgo(notif.created_at)}</Text>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           )}
+
+          <View style={{ height: 32 }} />
         </ScrollView>
       </SafeAreaViewContext>
     );
@@ -14149,247 +14176,266 @@ const styles = StyleSheet.create({
   },
   
   // Notifications Page Styles
-  notificationsPageContainer: {
-    flex: 1,
-    backgroundColor: '#f8fafc',
-  },
-  notificationsHeader: {
-    paddingTop: 16,
-    paddingBottom: 20,
-    paddingHorizontal: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 8,
-  },
-  notificationsHeaderTop: {
+  // ── Notifications page (redesigned to match Home / Letters design language) ──
+  notifPageContainer:     { flex: 1, backgroundColor: '#E5EAF3' },
+  notifScrollContent:     { paddingBottom: 20 },
+
+  // Top bar — mirrors ReviewScreen topBar
+  notifTopBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-  },
-  notificationsBackButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  notificationsBackIcon: {
-    fontSize: 24,
-    color: '#ffffff',
-    fontWeight: '700',
-  },
-  notificationsHeaderCenter: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-  },
-  notificationsHeaderTitle: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#ffffff',
-    letterSpacing: 0.5,
-  },
-  notificationsHeaderBadge: {
-    backgroundColor: 'rgba(239, 68, 68, 0.9)',
-    borderRadius: 12,
-    minWidth: 24,
-    height: 24,
-    paddingHorizontal: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-  },
-  notificationsHeaderBadgeText: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  notificationsMarkReadButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  notificationsMarkReadText: {
-    fontSize: 20,
-    color: '#ffffff',
-    fontWeight: '700',
-  },
-  notificationsFilters: {
-    flexDirection: 'row',
-    backgroundColor: '#ffffff',
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
+    paddingTop: 8,
+    paddingBottom: 12,
   },
-  notificationsFilterTab: {
-    flex: 1,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: '#f8fafc',
+  notifBackPill: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 100,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderColor: 'rgba(11,15,34,0.10)',
+    shadowColor: '#0B0F22',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  notificationsFilterTabActive: {
-    backgroundColor: '#667eea',
-    borderColor: '#667eea',
+  notifBackPillText:      { fontSize: 13, fontWeight: '600', color: '#0B0F22' },
+  notifWordmark: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 6,
   },
-  notificationsFilterText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#64748b',
-    letterSpacing: 0.3,
+  notifWordmarkLogo:      { width: 22, height: 22 },
+  notifWordmarkText:      { fontSize: 21, fontWeight: '800', color: '#0B0F22', letterSpacing: 0.5 },
+  notifWordmarkBlue:      { color: '#4F8DFF' },
+  notifMarkReadPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 100,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderWidth: 1,
+    borderColor: 'rgba(79,141,255,0.25)',
+    shadowColor: '#0B0F22',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  notificationsFilterTextActive: {
-    color: '#ffffff',
-  },
-  notificationsScrollView: {
-    flex: 1,
-  },
-  notificationsScrollContent: {
+  notifMarkReadText:      { fontSize: 12, fontWeight: '700', color: '#4F8DFF' },
+
+  // Hero card — mirrors ReviewScreen heroCard
+  notifHeroCard: {
+    marginHorizontal: 16,
+    borderRadius: 24,
+    overflow: 'hidden',
+    paddingHorizontal: 20,
+    paddingTop: 20,
     paddingBottom: 20,
+    marginBottom: 14,
+    position: 'relative',
   },
-  notificationsLoading: {
+  notifMeshBlob: {
+    position: 'absolute',
+    borderRadius: 999,
+  },
+  notifHeroEyeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  notifHeroEyebrow: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.45)',
+    letterSpacing: 1.4,
+  },
+  notifHeroCountChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(239,68,68,0.20)',
+    borderRadius: 100,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.35)',
+  },
+  notifHeroCountDot:      { width: 6, height: 6, borderRadius: 3, backgroundColor: '#EF4444' },
+  notifHeroCountText:     { fontSize: 11, fontWeight: '700', color: '#FCA5A5' },
+  notifHeroTitle:         { fontSize: 26, fontWeight: '800', color: '#FFFFFF', letterSpacing: 0.2, marginBottom: 4 },
+  notifHeroSub:           { fontSize: 13, color: 'rgba(255,255,255,0.55)', lineHeight: 18, marginBottom: 18 },
+
+  // Stats strip inside hero
+  notifStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  notifStatChip:          { flex: 1, alignItems: 'center' },
+  notifStatNum:           { fontSize: 20, fontWeight: '800', color: '#FFFFFF', letterSpacing: 0.3 },
+  notifStatLabel:         { fontSize: 10, fontWeight: '600', color: 'rgba(255,255,255,0.45)', marginTop: 2, letterSpacing: 0.5 },
+  notifStatDivider:       { width: 1, height: 32, backgroundColor: 'rgba(255,255,255,0.12)' },
+
+  // Filter chips row
+  notifFiltersRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    gap: 8,
+    marginBottom: 14,
+  },
+  notifFilterChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(11,15,34,0.08)',
+    shadowColor: '#0B0F22',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  notifFilterChipActive: {
+    backgroundColor: '#0B0F22',
+    borderColor: '#0B0F22',
+  },
+  notifFilterChipText:        { fontSize: 12, fontWeight: '700', color: '#5B6B8A' },
+  notifFilterChipTextActive:  { color: '#FFFFFF' },
+  notifFilterBadge: {
+    backgroundColor: '#F1F4FA',
+    borderRadius: 20,
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notifFilterBadgeActive:     { backgroundColor: 'rgba(255,255,255,0.15)' },
+  notifFilterBadgeText:       { fontSize: 10, fontWeight: '800', color: '#5B6B8A' },
+  notifFilterBadgeTextActive: { color: '#FFFFFF' },
+
+  // Loading / Empty states
+  notifLoadingBox: {
     paddingVertical: 80,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 14,
   },
-  notificationsLoadingText: {
-    marginTop: 16,
-    fontSize: 15,
-    color: '#64748b',
-    fontWeight: '600',
-  },
-  notificationsEmpty: {
-    paddingVertical: 100,
+  notifLoadingText:       { fontSize: 14, fontWeight: '600', color: '#5B6B8A' },
+  notifEmptyBox: {
+    paddingVertical: 60,
     paddingHorizontal: 40,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  notificationsEmptyIconBox: {
+  notifEmptyIconRing: {
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: '#f1f5f9',
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 20,
-  },
-  notificationsEmptyIcon: {
-    fontSize: 40,
-    opacity: 0.4,
-  },
-  notificationsEmptyTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#1e293b',
-    marginBottom: 8,
-    letterSpacing: 0.3,
-  },
-  notificationsEmptySubtitle: {
-    fontSize: 14,
-    color: '#64748b',
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  notificationsListContainer: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    gap: 12,
-  },
-  notificationsPageItem: {
-    flexDirection: 'row',
-    backgroundColor: '#ffffff',
-    borderRadius: 18,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    marginBottom: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(11,15,34,0.08)',
+    shadowColor: '#0B0F22',
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+  notifEmptyTitle:        { fontSize: 18, fontWeight: '800', color: '#0B0F22', marginBottom: 8, letterSpacing: 0.2, textAlign: 'center' },
+  notifEmptySub:          { fontSize: 13, color: '#5B6B8A', textAlign: 'center', lineHeight: 19 },
+
+  // Notification cards
+  notifList: {
+    paddingHorizontal: 16,
+    gap: 10,
+  },
+  notifCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(11,15,34,0.06)',
+    shadowColor: '#0B0F22',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
     shadowRadius: 8,
     elevation: 2,
-    borderWidth: 1,
-    borderColor: '#f1f5f9',
+    overflow: 'hidden',
   },
-  notificationsPageItemUnread: {
-    backgroundColor: '#f0f9ff',
-    borderColor: '#bae6fd',
+  notifCardUnread: {
+    backgroundColor: '#F5F8FF',
+    borderColor: 'rgba(79,141,255,0.25)',
     borderWidth: 1.5,
   },
-  notificationsPageIconBox: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: '#e5e7eb',
+  notifCardAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 3,
+    backgroundColor: '#4F8DFF',
+    borderTopLeftRadius: 18,
+    borderBottomLeftRadius: 18,
+  },
+  notifCardIconBox: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 14,
+    marginRight: 12,
+    flexShrink: 0,
   },
-  notificationsIconTypeEmail: {
-    backgroundColor: '#dbeafe',
-  },
-  notificationsIconTypeLetter: {
-    backgroundColor: '#fce7f3',
-  },
-  notificationsIconTypeCredits: {
-    backgroundColor: '#fef3c7',
-  },
-  notificationsIconTypeProfile: {
-    backgroundColor: '#e0e7ff',
-  },
-  notificationsPageIcon: {
-    fontSize: 24,
-  },
-  notificationsPageContent: {
-    flex: 1,
-  },
-  notificationsPageTopRow: {
+  notifCardBody:          { flex: 1 },
+  notifCardTopRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    marginBottom: 6,
+    marginBottom: 4,
   },
-  notificationsPageTitle: {
+  notifCardTitle: {
     flex: 1,
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#1e293b',
-    marginRight: 8,
-    letterSpacing: 0.2,
-    lineHeight: 22,
-  },
-  notificationsPageUnreadBadge: {
-    marginLeft: 8,
-  },
-  notificationsPageUnreadDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#3b82f6',
-  },
-  notificationsPageMessage: {
     fontSize: 14,
-    color: '#64748b',
+    fontWeight: '800',
+    color: '#0B0F22',
     lineHeight: 20,
-    marginBottom: 8,
+    marginRight: 8,
+    letterSpacing: 0.1,
   },
-  notificationsPageTime: {
-    fontSize: 12,
-    color: '#94a3b8',
-    fontWeight: '600',
-    letterSpacing: 0.3,
-  },
+  notifUnreadDot:         { width: 8, height: 8, borderRadius: 4, backgroundColor: '#4F8DFF', marginTop: 5 },
+  notifCardMessage:       { fontSize: 13, color: '#5B6B8A', lineHeight: 18, marginBottom: 8 },
+  notifCardFooter:        { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  notifCardTime:          { fontSize: 11, fontWeight: '600', color: '#8896B0', letterSpacing: 0.3 },
   // Reply Details Modal Styles
   showReplyButton: {
     backgroundColor: '#3b82f6',
