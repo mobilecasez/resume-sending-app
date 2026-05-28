@@ -815,21 +815,21 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
             const minHeight = 600;
             const pageHeight = Math.max(minHeight, estimatedContentHeight);
             
+            // Resolve fonts BEFORE creating the PDFKit document so we can set the
+            // active font immediately — this prevents pdfkit from ever trying to load
+            // its built-in Helvetica AFM file (which fails when paths contain spaces).
+            const resolvedFont = await resolveFontPaths(fontName);
+
             // Create PDF with calculated size - autoFirstPage false to control page creation
             const doc = new PDFKit({
                 size: [pageWidth, pageHeight],
                 margins: { top: 0, bottom: 0, left: 0, right: 0 },
-                autoFirstPage: false
+                autoFirstPage: false,
+                // Supply explicit font so pdfkit never defaults to Helvetica
+                font: resolvedFont.regular,
             });
-            
-            // Add single page with exact size
-            doc.addPage({ size: [pageWidth, pageHeight], margins: { top: 0, bottom: 0, left: 0, right: 0 } });
-            
-            const writeStream = fsSync.createWriteStream(filePath);
-            doc.pipe(writeStream);
-            
-            // Register fonts — use brand font if available, fall back to Lato
-            const resolvedFont = await resolveFontPaths(fontName);
+
+            // Register named aliases right after doc creation, before addPage()
             doc.registerFont(resolvedFont.name, resolvedFont.regular);
             doc.registerFont(resolvedFont.boldName, resolvedFont.bold);
             // Always register Lato as fallback alias too (used in some inline references)
@@ -840,10 +840,19 @@ async function createCoverLetterPDFFromHTML(userData, coverLetterHtml, companyNa
                 doc.registerFont('Lato', resolvedFont.regular);
                 doc.registerFont('Lato-Bold', resolvedFont.bold);
             }
+            // Set current font now so the page inherits it (avoids Helvetica default)
+            doc.font(resolvedFont.name);
+
             // Convenience aliases so all downstream .font('Lato') calls use brand font
             const F  = resolvedFont.name;      // regular
             const FB = resolvedFont.boldName;  // bold
             console.log(`🔤 [PDF] font: ${F} / ${FB}`);
+
+            // Add single page with exact size
+            doc.addPage({ size: [pageWidth, pageHeight], margins: { top: 0, bottom: 0, left: 0, right: 0 } });
+
+            const writeStream = fsSync.createWriteStream(filePath);
+            doc.pipe(writeStream);
 
             // Sidebar colors: top = near-black with brand hue, bottom = dark brand shade
             const sidebarColorBottom = sidebarColorFromBrand(brandColor, 0.06); // dark brand shade

@@ -555,10 +555,7 @@ function CompanyCard({
   const companyName = domain || (recipient.email ? recipient.email.split('@')[1] ?? 'New Company' : 'New Company');
   const isReady = !!(recipient.email && recipient.website);
 
-  // Auto-transition to view when fields are filled
-  useEffect(() => {
-    if (isReady && mode === 'edit') setMode('view');
-  }, [isReady]);
+  // No auto-collapse — user taps the checkmark to save explicitly
 
   // Load cover letter from the same storage as the Review page on mount
   useEffect(() => {
@@ -841,12 +838,14 @@ function CompanyCard({
               <Ionicons name="add" size={18} color={T.blueDeep} />
             </View>
             <Text style={cardStyles.editTitle}>{isReady ? companyName : 'New company'}</Text>
-            {/* Confirm / collapse to view — checkmark when ready, nothing when empty */}
-            {isReady && (
-              <TouchableOpacity onPress={() => setMode('view')} style={cardStyles.confirmIconBtn}>
-                <Ionicons name="checkmark" size={15} color={T.emerald} />
-              </TouchableOpacity>
-            )}
+            {/* Confirm / collapse to view — always visible, green when ready */}
+            <TouchableOpacity
+              onPress={() => { if (isReady) setMode('view'); }}
+              style={[cardStyles.confirmIconBtn, !isReady && cardStyles.confirmIconBtnDisabled]}
+              activeOpacity={isReady ? 0.7 : 1}
+            >
+              <Ionicons name="checkmark" size={15} color={isReady ? T.emerald : T.textFaint} />
+            </TouchableOpacity>
             {canRemove && (
               <TouchableOpacity onPress={() => onRemove(recipient.id)} style={cardStyles.trashBtn}>
                 <Ionicons name="trash-outline" size={14} color={T.rose} />
@@ -1017,6 +1016,7 @@ const cardStyles = StyleSheet.create({
   editIconBtn: { width: 28, height: 28, borderRadius: 8, backgroundColor: T.blue + '12', alignItems: 'center', justifyContent: 'center' },
   closeIconBtn: { width: 28, height: 28, borderRadius: 8, backgroundColor: T.inputBg, alignItems: 'center', justifyContent: 'center' },
   confirmIconBtn: { width: 28, height: 28, borderRadius: 8, backgroundColor: T.emerald + '18', borderWidth: 1, borderColor: T.emerald + '40', alignItems: 'center', justifyContent: 'center' },
+  confirmIconBtnDisabled: { backgroundColor: T.textFaint + '12', borderColor: T.textFaint + '30' },
   trashBtn: { width: 28, height: 28, borderRadius: 8, backgroundColor: T.rose + '15', alignItems: 'center', justifyContent: 'center' },
   // Edit mode
   editHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
