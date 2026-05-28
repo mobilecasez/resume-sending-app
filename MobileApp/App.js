@@ -24,7 +24,7 @@ import { API_BASE, PRODUCTION_API_URL } from './config';
 import { router as expoRouter } from 'expo-router'; // AI Hub navigation
 import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import HomeScreen from './components/HomeScreen';
+import HomeScreen, { clearHomeScreenCache } from './components/HomeScreen';
 import FloatingTabBar from './components/FloatingTabBar';
 import ReviewScreen from './components/ReviewScreen';
 
@@ -4357,9 +4357,11 @@ function AppContent() {
       try {
         await AsyncStorage.removeItem(`appCounters_${user.email}`);
         await AsyncStorage.removeItem(`applicationHistory_${user.email}`);
-        await AsyncStorage.removeItem(`reviewCoverLetters_${user.email}`);
-        await AsyncStorage.removeItem(`recipients_${user.email}`);
-        console.log('🗑️ Cleared user cache on logout');
+        // Note: reviewCoverLetters and recipients are NOT wiped on logout —
+        // they are reloaded from the backend on next login. Wiping them causes
+        // the Home page cards to lose their "Generated ✓" state after sign-in.
+        clearHomeScreenCache();
+        console.log('🗑️ Cleared user counters/history cache on logout');
       } catch (error) {
         console.error('Failed to clear cache:', error);
       }
@@ -5358,6 +5360,7 @@ function AppContent() {
         setApplicationHistory={setApplicationHistory}
         setTotalReplied={setTotalReplied}
         usageData={usageData}
+        generateCoverLetterForReview={generateCoverLetterForReview}
       />
     );
   }

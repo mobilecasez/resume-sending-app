@@ -62,6 +62,11 @@ function weekDayLabel(offsetFromToday) {
 const _cardStateCache = {};
 // Generated counts per day: 'YYYY-MM-DD' → count (survives HomeScreen remounts)
 const _generatedCountsCache = {};
+// Call this on logout to prevent stale state leaking across user sessions
+export function clearHomeScreenCache() {
+  Object.keys(_cardStateCache).forEach(k => delete _cardStateCache[k]);
+  Object.keys(_generatedCountsCache).forEach(k => delete _generatedCountsCache[k]);
+}
 
 // ─── Generation stage labels ──────────────────────────────────────────────────
 function getStageLabel(progress) {
@@ -517,6 +522,7 @@ function CompanyCard({
   onRemove, onUpdate,
   user, API_BASE, handleReview,
   onGenerated,
+  generateCoverLetterForReview,
 }) {
   // ── Restore from module-level cache on mount ────────────────────────────────
   const cached = _cardStateCache[recipient.id] || {};
@@ -584,120 +590,59 @@ function CompanyCard({
   // ── Generate ──────────────────────────────────────────────────────────────
   async function handleGenerate() {
     if (genState === 'loading') return;
-    setGenState('loading');
-    setGenProgress(0);
-    setGenLabel('Analyzing Resume…');
-    genAnim.setValue(0);
 
-    // Smooth 1%-per-tick progress, slows at stage thresholds to wait for API
-    let fake = 0;
-    let apiDone = false;
-    let apiProgress = 0;
-    const SOFT_CAP = 88; // won't pass this until API confirms completion
-
-    function tickProgress() {
-      if (apiDone) return;
-      // slow at each stage boundary
-      const cap = apiProgress > 0 ? Math.min(apiProgress, SOFT_CAP) : SOFT_CAP;
-      if (fake < cap) {
-        // speed: faster early, slower near cap
-        const step = fake < 50 ? 1.2 : fake < 75 ? 0.8 : 0.4;
-        fake = Math.min(fake + step, cap);
-      }
-      const pct = Math.round(fake);
-      setGenProgress(pct);
-      setGenLabel(getStageLabel(pct));
-      Animated.timing(genAnim, { toValue: fake / 100, duration: 120, useNativeDriver: false }).start();
-    }
-
-    if (pollRef.current) clearInterval(pollRef.current);
-    const tickTimer = setInterval(tickProgress, 120);
-
-    function finishGeneration(apiResult) {
-      clearInterval(tickTimer);
-      apiDone = true;
-      setGenProgress(100);
-      setGenLabel('Writing final draft…');
-      Animated.timing(genAnim, { toValue: 1, duration: 400, useNativeDriver: false }).start();
-      setTimeout(() => {
-        // Accept either a string (legacy) or result object
-        const cl = (typeof apiResult === 'string')
-          ? apiResult
-          : (apiResult?.coverLetterHtml || apiResult?.coverLetterText
-              || apiResult?.data?.coverLetterHtml || apiResult?.data?.coverLetterText
-              || apiResult?.result?.coverLetterHtml || apiResult?.result?.coverLetterText || '');
-        setCoverLetterText(cl);
-        setGenState('done');
-        saveCache({ genState: 'done', coverLetterText: cl });
-        // Persist into the same storage the Review page uses
-        if (recipient.email && user?.email && cl) {
-          const storageKey = `reviewCoverLetters_${user.email}`;
-          AsyncStorage.getItem(storageKey).then(raw => {
-            const all = raw ? JSON.parse(raw) : {};
-            // Find existing entry index or create a new one keyed by email
-            const existingKey = Object.keys(all).find(k => all[k]?.storedRecipientEmail === recipient.email);
-            const key = existingKey != null ? existingKey : `home_${recipient.email}`;
-            all[key] = {
-              ...(all[existingKey] || {}),
-              coverLetterHtml: cl,
-              companyName: apiResult?.companyName || apiResult?.data?.companyName || companyName,
-              address: apiResult?.address || apiResult?.data?.address || '',
-              subject: apiResult?.subject || apiResult?.data?.subject || `Application for ${recipient.position || 'a position'} at ${companyName}`,
-              date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
-              generated: true,
-              sent: false,
-              storedRecipientEmail: recipient.email,
-              storedRecipientWebsite: recipient.website,
-            };
-            return AsyncStorage.setItem(storageKey, JSON.stringify(all));
-          }).catch(() => {});
-        }
-        onGenerated && onGenerated();
-      }, 500);
-    }
-
-    function failGeneration(msg) {
-      clearInterval(tickTimer);
-      setGenState('idle');
+    // Delegate entirely to App.js's generateCoverLetterForReview (same path as Letters page)
+    if (generateCoverLetterForReview) {
+      setGenState('loading');
       setGenProgress(0);
+      setGenLabel('Analyzing Resume…');
       genAnim.setValue(0);
-      saveCache({ genState: 'idle' });
-      if (msg) Alert.alert('Generation failed', msg);
-    }
 
-    try {
-      const token = user?.token;
-      const hdrs = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
-      const res = await fetch(`${API_BASE}/generate-cover-letter-details`, {
-        method: 'POST', headers: hdrs,
-        body: JSON.stringify({ recipientEmail: recipient.email, websiteUrl: recipient.website, position: recipient.position || '' }),
-      });
-      const data = await res.json();
+      // Fake progress ticker while App.js handles the actual API call
+      let fake = 0;
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(() => {
+        if (fake < 88) {
+          const step = fake < 50 ? 1.2 : fake < 75 ? 0.8 : 0.3;
+          fake = Math.min(fake + step, 88);
+          setGenProgress(Math.round(fake));
+          setGenLabel(getStageLabel(Math.round(fake)));
+          Animated.timing(genAnim, { toValue: fake / 100, duration: 120, useNativeDriver: false }).start();
+        }
+      }, 120);
 
-      if (res.status === 202 && data.jobId) {
-        const jobId = data.jobId;
-        const started = Date.now();
-        pollRef.current = setInterval(async () => {
-          if (Date.now() - started > 150000) { clearInterval(pollRef.current); failGeneration('Request timed out.'); return; }
-          try {
-            const sr = await fetch(`${API_BASE}/job-status/${jobId}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-            const sd = await sr.json();
-            if (sd.status === 'completed') {
-              clearInterval(pollRef.current);
-              finishGeneration(sd.data || sd.result || sd);
-            } else if (sd.progress) {
-              apiProgress = Math.min(sd.progress, 95);
-            }
-          } catch (_) {}
-        }, 3000);
-      } else if (res.ok) {
-        finishGeneration(data);
-      } else {
-        failGeneration(data.message || 'Please try again.');
+      try {
+        await generateCoverLetterForReview(index);
+        // Success — App.js stored results; now sync card state from AsyncStorage
+        clearInterval(pollRef.current);
+        setGenProgress(100);
+        Animated.timing(genAnim, { toValue: 1, duration: 400, useNativeDriver: false }).start();
+        // Read the cover letter that App.js saved so card shows it
+        const raw = await AsyncStorage.getItem(`reviewCoverLetters_${user?.email}`).catch(() => null);
+        if (raw) {
+          const all = JSON.parse(raw);
+          const entry = Object.values(all).find(e => e?.storedRecipientEmail === recipient.email);
+          if (entry?.coverLetterHtml) {
+            setCoverLetterText(entry.coverLetterHtml);
+            saveCache({ genState: 'done', coverLetterText: entry.coverLetterHtml });
+          }
+        }
+        setGenState('done');
+        saveCache({ genState: 'done' });
+        onGenerated && onGenerated();
+      } catch (e) {
+        clearInterval(pollRef.current);
+        setGenState('idle');
+        setGenProgress(0);
+        genAnim.setValue(0);
+        saveCache({ genState: 'idle' });
+        // Error alert is handled by App.js — don't double-alert
       }
-    } catch (e) {
-      failGeneration('Could not generate cover letter. Check your connection.');
+      return;
     }
+
+    // Fallback (no prop passed — should not happen in normal flow)
+    Alert.alert('Error', 'Generation handler not available. Please try from the Letters page.');
   }
 
   // ── Simple job poller (mirrors App.js pollJobStatus) ─────────────────────
@@ -777,7 +722,7 @@ function CompanyCard({
       if (res.status === 202) {
         const { jobId } = await res.json();
         pollJob(jobId, token,
-          (sd) => finishDownload(sd.result || sd),
+          (sd) => finishDownload(sd.data || sd.result || sd),
           (msg) => { clearInterval(tickTimer); setDlState('idle'); Alert.alert('Download failed', msg); }
         );
       } else if (res.ok) {
@@ -896,10 +841,10 @@ function CompanyCard({
               <Ionicons name="add" size={18} color={T.blueDeep} />
             </View>
             <Text style={cardStyles.editTitle}>{isReady ? companyName : 'New company'}</Text>
-            {/* Close (back to view) — only when already has data */}
+            {/* Confirm / collapse to view — checkmark when ready, nothing when empty */}
             {isReady && (
-              <TouchableOpacity onPress={() => setMode('view')} style={cardStyles.closeIconBtn}>
-                <Ionicons name="close" size={15} color={T.textMuted} />
+              <TouchableOpacity onPress={() => setMode('view')} style={cardStyles.confirmIconBtn}>
+                <Ionicons name="checkmark" size={15} color={T.emerald} />
               </TouchableOpacity>
             )}
             {canRemove && (
@@ -1071,6 +1016,7 @@ const cardStyles = StyleSheet.create({
   positionText: { fontSize: 11, color: T.textMuted, marginTop: 1 },
   editIconBtn: { width: 28, height: 28, borderRadius: 8, backgroundColor: T.blue + '12', alignItems: 'center', justifyContent: 'center' },
   closeIconBtn: { width: 28, height: 28, borderRadius: 8, backgroundColor: T.inputBg, alignItems: 'center', justifyContent: 'center' },
+  confirmIconBtn: { width: 28, height: 28, borderRadius: 8, backgroundColor: T.emerald + '18', borderWidth: 1, borderColor: T.emerald + '40', alignItems: 'center', justifyContent: 'center' },
   trashBtn: { width: 28, height: 28, borderRadius: 8, backgroundColor: T.rose + '15', alignItems: 'center', justifyContent: 'center' },
   // Edit mode
   editHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
@@ -1372,6 +1318,7 @@ export default function HomeScreen({
   checkEmailReplies, loadNotifications, markNotificationAsRead,
   showAllReplies, handleLogout, isValidEmail, getTimeAgo, setScreen,
   renderCompleteProfileModal,
+  generateCoverLetterForReview,
   // API_BASE for inline reply confirm handler
   API_BASE, userRef,
   setApplicationHistory, setTotalReplied,
@@ -1611,6 +1558,7 @@ export default function HomeScreen({
               API_BASE={API_BASE}
               handleReview={handleReview}
               onGenerated={handleCardGenerated}
+              generateCoverLetterForReview={generateCoverLetterForReview}
             />
           ))}
 
