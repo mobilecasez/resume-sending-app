@@ -2608,7 +2608,7 @@ function AppContent() {
     try {
       // Validate that all cover letters are generated
       const recipientsWithoutCoverLetters = recipients.filter((recipient, index) => {
-        const coverLetter = reviewCoverLetters[index];
+        const coverLetter = getCoverLetter(index);
         return recipient.email && recipient.website && !coverLetter;
       });
 
@@ -2636,7 +2636,7 @@ function AppContent() {
       // Build coverLetters map for the server
       const coverLettersPayload = {};
       recipients.forEach((r, i) => {
-        const cl = reviewCoverLetters[i];
+        const cl = getCoverLetter(i);
         if (cl) {
           coverLettersPayload[String(i)] = {
             coverLetterHtml: cl.coverLetterHtml,
@@ -2677,7 +2677,7 @@ function AppContent() {
               }));
               
               const recipient = recipients[index];
-              const coverLetter = reviewCoverLetters[index];
+              const coverLetter = getCoverLetter(index);
               const historyEntry = {
                 id: Date.now() + index,
                 companyName: coverLetter?.companyName || '',
@@ -2890,7 +2890,7 @@ function AppContent() {
 
   const sendApplicationFromReview = async (recipientIndex, silent = false, coverLetterOverride = null, retryCount = 0) => {
     const recipient = recipients[recipientIndex];
-    const coverLetter = coverLetterOverride || reviewCoverLetters[recipientIndex];
+    const coverLetter = coverLetterOverride || getCoverLetter(recipientIndex);
     
     console.log(`\n🔍 [SEND ${recipientIndex}] Starting send process...`);
     console.log(`   Recipient: ${recipient?.email}`);
@@ -3106,9 +3106,20 @@ function AppContent() {
     }
   };
 
+  // Look up cover letter by the recipient's email (stable) rather than array index.
+  // New recipients are prepended, which shifts existing indices and causes stale lookups.
+  const getCoverLetter = (index) => {
+    const recipient = recipients[index];
+    if (!recipient?.email) return reviewCoverLetters[index] || null;
+    const byEmail = Object.values(reviewCoverLetters).find(
+      e => e?.storedRecipientEmail === recipient.email
+    );
+    return byEmail !== undefined ? byEmail : (reviewCoverLetters[index] || null);
+  };
+
   const downloadCoverLetterPDFFromReview = async (recipientIndex) => {
-    const coverLetter = reviewCoverLetters[recipientIndex];
-    
+    const coverLetter = getCoverLetter(recipientIndex);
+
     if (!coverLetter) {
       Alert.alert('Error', 'Generate cover letter first');
       return;
@@ -7218,7 +7229,7 @@ function AppContent() {
       setEditedCoverLetterData({});
     } else {
       // Enter edit mode - store current values
-      const currentData = reviewCoverLetters[index] || {};
+      const currentData = getCoverLetter(index) || {};
       setEditingReviewIndex(index);
       setEditedCoverLetterData({
         hiringManager: currentData.hiringManager || '',
@@ -7262,7 +7273,7 @@ function AppContent() {
   
   // Check if all applications have been sent
   const allApplicationsSent = recipients.length > 0 && recipients.every((recipient, index) => {
-    const coverLetter = reviewCoverLetters[index];
+    const coverLetter = getCoverLetter(index);
     return coverLetter && coverLetter.sent;
   });
   
@@ -7532,7 +7543,7 @@ function AppContent() {
           </View>
 
           {/* Cover Letter Generation Section */}
-          {reviewCoverLetters[currentReviewTab] ? (
+          {getCoverLetter(currentReviewTab) ? (
             <View style={styles.reviewCoverLetterCard}>
               <LinearGradient
                 colors={['#f0f9ff', '#e0f2fe', '#dbeafe']}
@@ -7598,7 +7609,7 @@ function AppContent() {
                   {/* Address Dropdown */}
                   <View style={styles.editFieldSection}>
                     <Text style={styles.fieldDisplayLabel}>Address</Text>
-                    {reviewCoverLetters[currentReviewTab].locations && reviewCoverLetters[currentReviewTab].locations.length > 0 ? (
+                    {getCoverLetter(currentReviewTab).locations && getCoverLetter(currentReviewTab).locations.length > 0 ? (
                       <View>
                         <TouchableOpacity 
                           style={styles.dropdownButton}
@@ -7620,7 +7631,7 @@ function AppContent() {
                           >
                             <View style={styles.dropdownMenu}>
                               <ScrollView>
-                                {reviewCoverLetters[currentReviewTab].locations.map((location, idx) => (
+                                {getCoverLetter(currentReviewTab).locations.map((location, idx) => (
                                   <TouchableOpacity
                                     key={idx}
                                     style={styles.dropdownItem}
@@ -7711,7 +7722,7 @@ function AppContent() {
                     
                     {/* Quill.js Rich Text Editor - Full Width */}
                     <RichTextEditorWebView 
-                      initialHtml={reviewCoverLetters[currentReviewTab]?.coverLetterHtml || editedCoverLetterData.coverLetterHtml || ''}
+                      initialHtml={getCoverLetter(currentReviewTab)?.coverLetterHtml || editedCoverLetterData.coverLetterHtml || ''}
                       onContentChange={(html) => {
                         setEditedCoverLetterData({ 
                           ...editedCoverLetterData, 
@@ -7767,7 +7778,7 @@ function AppContent() {
                     <View style={styles.fieldDisplayRow}>
                       <View style={styles.fieldDisplay}>
                         <Text style={styles.fieldDisplayLabel}>Employer</Text>
-                        <Text style={styles.fieldDisplayValue}>{reviewCoverLetters[currentReviewTab].companyName}</Text>
+                        <Text style={styles.fieldDisplayValue}>{getCoverLetter(currentReviewTab).companyName}</Text>
                       </View>
                     </View>
 
@@ -7778,21 +7789,21 @@ function AppContent() {
                       </View>
                       <View style={styles.fieldDisplayHalf}>
                         <Text style={styles.fieldDisplayLabel}>Date</Text>
-                        <Text style={styles.fieldDisplayValue}>{reviewCoverLetters[currentReviewTab].date}</Text>
+                        <Text style={styles.fieldDisplayValue}>{getCoverLetter(currentReviewTab).date}</Text>
                       </View>
                     </View>
 
                     <View style={styles.fieldDisplayRow}>
                       <View style={styles.fieldDisplay}>
                         <Text style={styles.fieldDisplayLabel}>Address</Text>
-                        <Text style={styles.fieldDisplayValue}>{reviewCoverLetters[currentReviewTab].address}</Text>
+                        <Text style={styles.fieldDisplayValue}>{getCoverLetter(currentReviewTab).address}</Text>
                       </View>
                     </View>
 
                     <View style={styles.fieldDisplayRow}>
                       <View style={styles.fieldDisplay}>
                         <Text style={styles.fieldDisplayLabel}>Subject</Text>
-                        <Text style={styles.fieldDisplayValue}>{reviewCoverLetters[currentReviewTab].subject}</Text>
+                        <Text style={styles.fieldDisplayValue}>{getCoverLetter(currentReviewTab).subject}</Text>
                       </View>
                     </View>
 
@@ -7801,7 +7812,7 @@ function AppContent() {
                       <Text style={styles.coverLetterPreviewLabel}>Cover Letter Preview</Text>
                       <View style={{ height: 400 }}>
                         <HTMLContentViewer 
-                          htmlContent={reviewCoverLetters[currentReviewTab].coverLetterHtml || 'Cover letter content'}
+                          htmlContent={getCoverLetter(currentReviewTab).coverLetterHtml || 'Cover letter content'}
                         />
                       </View>
                     </View>
@@ -7882,10 +7893,10 @@ function AppContent() {
                           }
                           sendApplicationFromReview(currentReviewTab);
                         }}
-                        disabled={reviewLoading || reviewSendingAll || reviewGeneratingAndSendingAll || reviewCoverLetters[currentReviewTab].sent}
+                        disabled={reviewLoading || reviewSendingAll || reviewGeneratingAndSendingAll || getCoverLetter(currentReviewTab).sent}
                         activeOpacity={0.8}
                       >
-                        {!reviewCoverLetters[currentReviewTab].sent ? (
+                        {!getCoverLetter(currentReviewTab).sent ? (
                           <LinearGradient
                             colors={['#a78bfa', '#8b5cf6']}
                             start={{ x: 0, y: 0 }}
