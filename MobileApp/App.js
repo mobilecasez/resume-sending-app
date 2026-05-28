@@ -2443,11 +2443,13 @@ function exportSig(){
       console.log(`💾 [${requestId}] Storing in state with address: ${defaultAddress}...`);
       
       // Use functional setState to avoid race conditions when generating in parallel
+      // KEY: use recipient.email (stable) — never the array index which shifts when
+      // new recipients are prepended and would silently overwrite existing entries.
       let updatedCoverLetters = {};
       setReviewCoverLetters(prev => {
         updatedCoverLetters = {
           ...prev,
-          [recipientIndex]: {
+          [recipient.email]: {
             ...data,
             coverLetterHtml: data.coverLetterHtml,
             address: defaultAddress,
@@ -2647,7 +2649,7 @@ function exportSig(){
               
               setReviewCoverLetters(prev => ({
                 ...prev,
-                [index]: {
+                [recipient.email]: {
                   ...data,
                   coverLetterHtml: data.coverLetterHtml,
                   address: defaultAddress,
@@ -2783,10 +2785,14 @@ function exportSig(){
           for (const [indexStr, result] of Object.entries(batchResult.results)) {
             const index = parseInt(indexStr);
             if (result.sent) {
-              setReviewCoverLetters(prev => ({
-                ...prev,
-                [index]: { ...prev[index], sent: true, sentDate: new Date().toISOString() }
-              }));
+              const sentRecipient = recipients[index];
+              const emailKey = sentRecipient?.email;
+              if (emailKey) {
+                setReviewCoverLetters(prev => ({
+                  ...prev,
+                  [emailKey]: { ...prev[emailKey], sent: true, sentDate: new Date().toISOString() }
+                }));
+              }
               
               const recipient = recipients[index];
               const coverLetter = getCoverLetter(index);
@@ -2910,20 +2916,22 @@ function exportSig(){
                 }
               }
               
-              setReviewCoverLetters(prev => ({
-                ...prev,
-                [index]: {
-                  ...data,
-                  coverLetterHtml: data.coverLetterHtml,
-                  address: defaultAddress,
-                  date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
-                  generated: true,
-                  sent: result.sent || false,
-                  sentDate: result.sent ? new Date().toISOString() : null,
-                  storedRecipientEmail: recipient?.email,
-                  storedRecipientWebsite: recipient?.website
-                }
-              }));
+              if (recipient?.email) {
+                setReviewCoverLetters(prev => ({
+                  ...prev,
+                  [recipient.email]: {
+                    ...data,
+                    coverLetterHtml: data.coverLetterHtml,
+                    address: defaultAddress,
+                    date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+                    generated: true,
+                    sent: result.sent || false,
+                    sentDate: result.sent ? new Date().toISOString() : null,
+                    storedRecipientEmail: recipient?.email,
+                    storedRecipientWebsite: recipient?.website
+                  }
+                }));
+              }
               setTotalGenerated(prev => prev + 1);
             }
             
@@ -3147,14 +3155,17 @@ function exportSig(){
       } // end else (sync path)
 
       console.log(`✅ [SEND ${recipientIndex}] Updating state to mark as sent`);
-      setReviewCoverLetters(prev => ({
-        ...prev,
-        [recipientIndex]: {
-          ...prev[recipientIndex],
-          sent: true,
-          sentDate: new Date().toISOString()
-        }
-      }));
+      const sentEmail = recipient?.email;
+      if (sentEmail) {
+        setReviewCoverLetters(prev => ({
+          ...prev,
+          [sentEmail]: {
+            ...(prev[sentEmail] || prev[recipientIndex] || {}),
+            sent: true,
+            sentDate: new Date().toISOString()
+          }
+        }));
+      }
       
       // Add to application history
       const historyEntry = {
@@ -3218,15 +3229,19 @@ function exportSig(){
     }
   };
 
-  // Look up cover letter by the recipient's email (stable) rather than array index.
-  // New recipients are prepended, which shifts existing indices and causes stale lookups.
+  // Look up cover letter by the recipient's email (the stable key used for all writes).
+  // Also tries a linear scan as a fallback for any legacy entries that were written
+  // with a numeric key before this migration, so old data is never lost.
   const getCoverLetter = (index) => {
     const recipient = recipients[index];
-    if (!recipient?.email) return reviewCoverLetters[index] || null;
-    const byEmail = Object.values(reviewCoverLetters).find(
+    if (!recipient?.email) return null;
+    // Direct email-key lookup (fast path — all new writes use this key)
+    if (reviewCoverLetters[recipient.email]) return reviewCoverLetters[recipient.email];
+    // Legacy fallback: scan for storedRecipientEmail match (covers old numeric-keyed entries)
+    const legacy = Object.values(reviewCoverLetters).find(
       e => e?.storedRecipientEmail === recipient.email
     );
-    return byEmail !== undefined ? byEmail : (reviewCoverLetters[index] || null);
+    return legacy || null;
   };
 
   const downloadCoverLetterPDFFromReview = async (recipientIndex) => {
@@ -3658,13 +3673,31 @@ function exportSig(){
     }
   };
 
+  // Re-key any legacy entries that were stored under a numeric index so the entire
+  // state is always indexed by email after a load. This runs once per load and is
+  // idempotent — email-keyed entries pass through unchanged.
+  const rekeyByEmail = (raw) => {
+    const result = {};
+    for (const [k, v] of Object.entries(raw || {})) {
+      if (!v) continue;
+      const emailKey = v.storedRecipientEmail;
+      if (emailKey) {
+        // Always prefer the email key; drop the old numeric key
+        result[emailKey] = v;
+      } else {
+        result[k] = v; // keep as-is if no email available
+      }
+    }
+    return result;
+  };
+
   const loadReviewCoverLettersFromStorage = async () => {
     try {
       if (!user?.email) {
         console.log('⚠️ Cannot load review cover letters - no user email');
         return;
       }
-      
+
       // Try to load from backend API first (sync with web)
       try {
         const response = await fetch(`${API_BASE}/users/review-cover-letters`, {
@@ -3674,15 +3707,16 @@ function exportSig(){
             'Content-Type': 'application/json',
           }
         });
-        
+
         if (response.ok) {
           const data = await response.json();
           if (data.success && data.reviewCoverLetters) {
-            setReviewCoverLetters(data.reviewCoverLetters);
-            console.log('📖 Review cover letters loaded from backend database:', Object.keys(data.reviewCoverLetters).length, 'items');
-            
-            // Cache in AsyncStorage for offline access
-            await AsyncStorage.setItem(`reviewCoverLetters_${user.email}`, JSON.stringify(data.reviewCoverLetters));
+            const rekeyed = rekeyByEmail(data.reviewCoverLetters);
+            setReviewCoverLetters(rekeyed);
+            console.log('📖 Review cover letters loaded from backend:', Object.keys(rekeyed).length, 'items (keyed by email)');
+
+            // Cache re-keyed data in AsyncStorage for offline access
+            await AsyncStorage.setItem(`reviewCoverLetters_${user.email}`, JSON.stringify(rekeyed));
             return;
           }
         } else {
@@ -3691,15 +3725,15 @@ function exportSig(){
       } catch (apiError) {
         console.log('⚠️ Backend API error, trying AsyncStorage fallback:', apiError.message);
       }
-      
+
       // Fallback to AsyncStorage if backend is unavailable
       const stored = await AsyncStorage.getItem(`reviewCoverLetters_${user.email}`);
       console.log('🔍 Attempting to load review cover letters from AsyncStorage for:', user.email);
-      
+
       if (stored) {
-        const parsed = JSON.parse(stored);
-        setReviewCoverLetters(parsed);
-        console.log('📖 Review cover letters loaded from AsyncStorage (offline):', Object.keys(parsed).length, 'items');
+        const rekeyed = rekeyByEmail(JSON.parse(stored));
+        setReviewCoverLetters(rekeyed);
+        console.log('📖 Review cover letters loaded from AsyncStorage (offline):', Object.keys(rekeyed).length, 'items (keyed by email)');
       } else {
         console.log('ℹ️ No stored review cover letters found');
       }
@@ -7521,12 +7555,15 @@ function exportSig(){
   };
 
   const saveReviewEdits = (index) => {
+    const emailKey = recipients[index]?.email;
     // Update cover letter with edited data - use functional setState
     setReviewCoverLetters(prev => {
+      // Always key by email; fall back to index if email somehow not available
+      const key = emailKey || index;
       const updated = {
         ...prev,
-        [index]: {
-          ...prev[index],
+        [key]: {
+          ...(prev[key] || prev[index] || {}),
           ...editedCoverLetterData
         }
       };

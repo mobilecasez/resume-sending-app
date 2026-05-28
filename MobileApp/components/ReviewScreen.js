@@ -123,18 +123,16 @@ export default function ReviewScreen({
   showCoverLetterPreview, setShowCoverLetterPreview,
 }) {
   const activeRecipient = recipients[currentReviewTab] || {};
+  const activeEmail     = activeRecipient?.email;
 
-  // Look up cover letter by the recipient's email (stable identifier) rather than
-  // raw array index. New recipients are prepended to recipients[], which shifts all
-  // existing indices — using reviewCoverLetters[currentReviewTab] would return the
-  // wrong entry (or undefined) for any recipient that was added after older ones.
+  // Cover letters are keyed by recipient email (stable). We also do a legacy linear
+  // scan as a fallback so any old numeric-keyed entries are never lost.
   const activeCL = (() => {
-    const email = activeRecipient?.email;
-    if (!email) return reviewCoverLetters[currentReviewTab] || null;
-    const byEmail = Object.values(reviewCoverLetters).find(
-      e => e?.storedRecipientEmail === email
-    );
-    return byEmail !== undefined ? byEmail : (reviewCoverLetters[currentReviewTab] || null);
+    if (!activeEmail) return null;
+    if (reviewCoverLetters[activeEmail]) return reviewCoverLetters[activeEmail];
+    return Object.values(reviewCoverLetters).find(
+      e => e?.storedRecipientEmail === activeEmail
+    ) || null;
   })();
   const totalRecipients = recipients.length;
 

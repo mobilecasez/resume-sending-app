@@ -208,12 +208,22 @@ const saveReviewCoverLetters = async (req, res) => {
             return res.status(400).json({ error: 'Review cover letters must be an object' });
         }
 
-        // UPSERT each letter individually — never delete-all to avoid data loss on partial saves
+        // UPSERT each letter individually — never delete-all to avoid data loss on partial saves.
+        // letter_key is ALWAYS the recipient email (stable identifier). If the incoming key is
+        // numeric (legacy data), fall back to storedRecipientEmail so old rows are migrated safely.
         let inserted = 0;
         const entries = Object.entries(reviewCoverLetters);
-        
+
         for (const [key, letter] of entries) {
             try {
+                // Determine the canonical key: prefer storedRecipientEmail, then the object key
+                // (which should already be an email for all new writes), reject pure numeric keys.
+                const emailKey = letter.storedRecipientEmail || (isNaN(key) ? key : null);
+                if (!emailKey) {
+                    console.warn(`Skipping cover letter with numeric key ${key} and no storedRecipientEmail — cannot store safely`);
+                    continue;
+                }
+
                 await dbConfig.run(
                     `INSERT INTO review_cover_letters
                         (user_id, letter_key, company_name, recipient_email, cover_letter_html, subject, address, date, position, locations, generated, sent, sent_date, stored_recipient_email, stored_recipient_website, brand_color, font_name, deleted_at)
@@ -238,7 +248,7 @@ const saveReviewCoverLetters = async (req, res) => {
                         updated_at = CURRENT_TIMESTAMP`,
                     [
                         userId,
-                        key,
+                        emailKey,                          // ← always email, never a number
                         letter.companyName || '',
                         letter.recipientEmail || '',
                         letter.coverLetterHtml || '',
@@ -250,7 +260,7 @@ const saveReviewCoverLetters = async (req, res) => {
                         letter.generated ? 1 : 0,
                         letter.sent ? 1 : 0,
                         letter.sentDate || null,
-                        letter.storedRecipientEmail || '',
+                        emailKey,                          // storedRecipientEmail = same key
                         letter.storedRecipientWebsite || '',
                         letter.brandColor || null,
                         letter.fontName || null
@@ -291,10 +301,12 @@ const getReviewCoverLetters = async (req, res) => {
             console.log(`  Letter ${idx}: key=${letter.letter_key}, company=${letter.companyName}, hasHtml=${!!letter.coverLetterHtml}, htmlLength=${letter.coverLetterHtml?.length || 0}`);
         });
 
-        // Convert to object with letter_key as keys
+        // Convert to object keyed by storedRecipientEmail (canonical key).
+        // If storedRecipientEmail is missing we fall back to letter_key so nothing is lost.
         const reviewCoverLetters = {};
         (letters || []).forEach(letter => {
-            reviewCoverLetters[letter.letter_key] = {
+            const emailKey = letter.storedRecipientEmail || letter.letter_key;
+            reviewCoverLetters[emailKey] = {
                 companyName: letter.companyName,
                 recipientEmail: letter.recipientEmail,
                 coverLetterHtml: letter.coverLetterHtml,
