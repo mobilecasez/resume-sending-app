@@ -2463,7 +2463,20 @@ function exportSig(){
         return updatedCoverLetters;
       });
       console.log(`   State update callback triggered`);
-      
+
+      // Immediately persist to AsyncStorage so the data survives even if the
+      // backend save fails or the app is closed before the next load cycle.
+      try {
+        const cacheKey = `reviewCoverLetters_${user.email}`;
+        const existing = await AsyncStorage.getItem(cacheKey);
+        const existingData = existing ? JSON.parse(existing) : {};
+        const updatedCache = { ...existingData, [recipient.email]: updatedCoverLetters[recipient.email] };
+        await AsyncStorage.setItem(cacheKey, JSON.stringify(updatedCache));
+        console.log(`💾 AsyncStorage updated for ${recipient.email}`);
+      } catch (cacheErr) {
+        console.log('⚠️ AsyncStorage write failed (non-fatal):', cacheErr.message);
+      }
+
       // Save to backend database (sync with web) - wait a bit for state to settle
       setTimeout(() => {
         setReviewCoverLetters(current => {
@@ -2647,23 +2660,26 @@ function exportSig(){
                 }
               }
               
-              setReviewCoverLetters(prev => ({
-                ...prev,
-                [recipient.email]: {
-                  ...data,
-                  coverLetterHtml: data.coverLetterHtml,
-                  address: defaultAddress,
-                  date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
-                  generated: true,
-                  sent: false,
-                  storedRecipientEmail: recipient?.email,
-                  storedRecipientWebsite: recipient?.website
-                }
-              }));
+              const newEntry = {
+                ...data,
+                coverLetterHtml: data.coverLetterHtml,
+                address: defaultAddress,
+                date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+                generated: true,
+                sent: false,
+                storedRecipientEmail: recipient?.email,
+                storedRecipientWebsite: recipient?.website
+              };
+              setReviewCoverLetters(prev => ({ ...prev, [recipient.email]: newEntry }));
+              // Immediate AsyncStorage write so data survives even if backend save fails
+              AsyncStorage.getItem(`reviewCoverLetters_${user?.email}`).then(raw => {
+                const existing = raw ? JSON.parse(raw) : {};
+                return AsyncStorage.setItem(`reviewCoverLetters_${user?.email}`, JSON.stringify({ ...existing, [recipient.email]: newEntry }));
+              }).catch(() => {});
               setTotalGenerated(prev => prev + 1);
             }
           }
-          
+
           // Save to backend
           setTimeout(() => {
             setReviewCoverLetters(current => {
@@ -2917,20 +2933,22 @@ function exportSig(){
               }
               
               if (recipient?.email) {
-                setReviewCoverLetters(prev => ({
-                  ...prev,
-                  [recipient.email]: {
-                    ...data,
-                    coverLetterHtml: data.coverLetterHtml,
-                    address: defaultAddress,
-                    date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
-                    generated: true,
-                    sent: result.sent || false,
-                    sentDate: result.sent ? new Date().toISOString() : null,
-                    storedRecipientEmail: recipient?.email,
-                    storedRecipientWebsite: recipient?.website
-                  }
-                }));
+                const gsEntry = {
+                  ...data,
+                  coverLetterHtml: data.coverLetterHtml,
+                  address: defaultAddress,
+                  date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+                  generated: true,
+                  sent: result.sent || false,
+                  sentDate: result.sent ? new Date().toISOString() : null,
+                  storedRecipientEmail: recipient?.email,
+                  storedRecipientWebsite: recipient?.website
+                };
+                setReviewCoverLetters(prev => ({ ...prev, [recipient.email]: gsEntry }));
+                AsyncStorage.getItem(`reviewCoverLetters_${user?.email}`).then(raw => {
+                  const existing = raw ? JSON.parse(raw) : {};
+                  return AsyncStorage.setItem(`reviewCoverLetters_${user?.email}`, JSON.stringify({ ...existing, [recipient.email]: gsEntry }));
+                }).catch(() => {});
               }
               setTotalGenerated(prev => prev + 1);
             }
@@ -3698,7 +3716,18 @@ function exportSig(){
         return;
       }
 
-      // Try to load from backend API first (sync with web)
+      // Always read local AsyncStorage first so we never lose locally-generated
+      // entries that the backend doesn't know about yet.
+      let localData = {};
+      try {
+        const stored = await AsyncStorage.getItem(`reviewCoverLetters_${user.email}`);
+        if (stored) localData = rekeyByEmail(JSON.parse(stored));
+      } catch (_) {}
+
+      // Try to fetch from backend and MERGE with local data.
+      // Backend entries win on key conflict (they are the source of truth for
+      // persisted data), but local-only entries are always preserved so nothing
+      // generated offline can be silently dropped.
       try {
         const response = await fetch(`${API_BASE}/users/review-cover-letters`, {
           method: 'GET',
@@ -3711,29 +3740,36 @@ function exportSig(){
         if (response.ok) {
           const data = await response.json();
           if (data.success && data.reviewCoverLetters) {
-            const rekeyed = rekeyByEmail(data.reviewCoverLetters);
-            setReviewCoverLetters(rekeyed);
-            console.log('📖 Review cover letters loaded from backend:', Object.keys(rekeyed).length, 'items (keyed by email)');
+            const backendData = rekeyByEmail(data.reviewCoverLetters);
+            // Merge: local-only entries first, then backend entries override conflicts
+            const merged = { ...localData, ...backendData };
+            setReviewCoverLetters(merged);
+            console.log('📖 Cover letters merged — local:', Object.keys(localData).length,
+              '+ backend:', Object.keys(backendData).length,
+              '= merged:', Object.keys(merged).length);
 
-            // Cache re-keyed data in AsyncStorage for offline access
-            await AsyncStorage.setItem(`reviewCoverLetters_${user.email}`, JSON.stringify(rekeyed));
+            // Persist the merged result so local-only entries survive future loads
+            await AsyncStorage.setItem(`reviewCoverLetters_${user.email}`, JSON.stringify(merged));
+
+            // If there are local-only entries the backend doesn't have, push them up now
+            const localOnlyKeys = Object.keys(localData).filter(k => !backendData[k]);
+            if (localOnlyKeys.length > 0) {
+              console.log('📤 Pushing', localOnlyKeys.length, 'local-only cover letters to backend...');
+              saveReviewCoverLettersToBackend(merged);
+            }
             return;
           }
         } else {
-          console.log('⚠️ Backend returned error for cover letters, trying AsyncStorage fallback');
+          console.log('⚠️ Backend returned error for cover letters, using local cache');
         }
       } catch (apiError) {
-        console.log('⚠️ Backend API error, trying AsyncStorage fallback:', apiError.message);
+        console.log('⚠️ Backend API error, using local cache:', apiError.message);
       }
 
-      // Fallback to AsyncStorage if backend is unavailable
-      const stored = await AsyncStorage.getItem(`reviewCoverLetters_${user.email}`);
-      console.log('🔍 Attempting to load review cover letters from AsyncStorage for:', user.email);
-
-      if (stored) {
-        const rekeyed = rekeyByEmail(JSON.parse(stored));
-        setReviewCoverLetters(rekeyed);
-        console.log('📖 Review cover letters loaded from AsyncStorage (offline):', Object.keys(rekeyed).length, 'items (keyed by email)');
+      // Backend unreachable — use local data as-is
+      if (Object.keys(localData).length > 0) {
+        setReviewCoverLetters(localData);
+        console.log('📖 Cover letters loaded from local cache (offline):', Object.keys(localData).length, 'items');
       } else {
         console.log('ℹ️ No stored review cover letters found');
       }
