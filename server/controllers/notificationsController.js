@@ -47,22 +47,28 @@ const getUserNotifications = async (req, res) => {
         params.push(parseInt(limit), parseInt(offset));
         
         const notifications = await dbConfig.query(query, params);
-        
+
         console.log(`📊 Found ${notifications.length} notifications`);
-        
-        // Get unread count
-        const unreadCount = await dbConfig.get(
-            'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0',
-            [userId]
-        );
-        
-        console.log(`🔔 Unread count: ${unreadCount?.count || 0}`);
-        
+
+        // Get unread count and total count (for accurate stats regardless of loaded batch size)
+        const [unreadCount, totalCount] = await Promise.all([
+            dbConfig.get('SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0', [userId]),
+            dbConfig.get('SELECT COUNT(*) as count FROM notifications WHERE user_id = ?', [userId]),
+        ]);
+
+        const totalUnread = parseInt(unreadCount?.count || 0);
+        const totalAll    = parseInt(totalCount?.count  || 0);
+
+        console.log(`🔔 Unread: ${totalUnread} / Total: ${totalAll}`);
+
         res.json({
             success: true,
             notifications,
-            unreadCount: parseInt(unreadCount?.count || 0),
-            total: notifications.length
+            unreadCount:  totalUnread,
+            totalCount:   totalAll,
+            readCount:    totalAll - totalUnread,
+            hasMore:      parseInt(offset) + notifications.length < totalAll,
+            total: notifications.length   // kept for backwards compat
         });
     } catch (error) {
         console.error('❌ Error fetching notifications:', error);

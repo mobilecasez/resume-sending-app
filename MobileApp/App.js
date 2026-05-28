@@ -1046,6 +1046,12 @@ function AppContent() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [notificationsTotalCount, setNotificationsTotalCount] = useState(0);
+  const [notificationsReadCount, setNotificationsReadCount] = useState(0);
+  const [notificationsHasMore, setNotificationsHasMore] = useState(false);
+  const [notificationsLoadingMore, setNotificationsLoadingMore] = useState(false);
+  const notificationsPageRef = useRef(0); // current loaded offset (in items)
+  const NOTIF_PAGE_SIZE = 50;
   const [loadingNotifications, setLoadingNotifications] = useState(false);
   const [notificationFilter, setNotificationFilter] = useState('all'); // all, unread, read
   const lastNotificationUpdateRef = useRef(null); // Track when notifications were last modified locally
@@ -3337,42 +3343,73 @@ function AppContent() {
   // Load all notifications for notifications page  
   const loadAllNotifications = async (force = false) => {
     if (!user?.token) return;
-    
+
     // Don't fetch if we just updated locally (within last 5 seconds) unless forced
     const now = Date.now();
     const timeSinceLastUpdate = lastNotificationUpdateRef.current ? now - lastNotificationUpdateRef.current : Infinity;
-    
+
     if (!force && timeSinceLastUpdate < 5000) {
       console.log('⏭️  Skipping fetch (all) - notifications were just updated locally', timeSinceLastUpdate, 'ms ago');
-      console.log('💡 Using local state to preserve recent mark-as-read updates');
       return;
     }
-    
-    console.log('📥 Loading ALL notifications... Force:', force, 'Time since last update:', timeSinceLastUpdate);
+
+    console.log('📥 Loading notifications page 1...');
     setLoadingNotifications(true);
+    notificationsPageRef.current = 0;
     try {
-      const response = await fetch(`${API_BASE}/notifications`, {
+      const response = await fetch(`${API_BASE}/notifications?limit=${NOTIF_PAGE_SIZE}&offset=0`, {
         method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${user.token}`,
-          'Content-Type': 'application/json',
-        }
+        headers: { 'Authorization': `Bearer ${user.token}`, 'Content-Type': 'application/json' }
       });
 
       if (response.ok) {
         const data = await response.json();
-        console.log('✅ All notifications loaded:', data.notifications?.length || 0, 'unread:', data.unreadCount);
+        console.log('✅ Notifications loaded:', data.notifications?.length || 0, '/ total:', data.totalCount, '/ unread:', data.unreadCount);
         if (data.success) {
           setNotifications(data.notifications || []);
           setUnreadCount(data.unreadCount || 0);
+          setNotificationsTotalCount(data.totalCount || 0);
+          setNotificationsReadCount(data.readCount || 0);
+          setNotificationsHasMore(data.hasMore || false);
+          notificationsPageRef.current = (data.notifications || []).length;
         }
       } else {
-        console.log('❌ Failed to load all notifications:', response.status);
+        console.log('❌ Failed to load notifications:', response.status);
       }
     } catch (err) {
-      console.log('Error loading all notifications:', err.message);
+      console.log('Error loading notifications:', err.message);
     } finally {
       setLoadingNotifications(false);
+    }
+  };
+
+  // Load the next page of notifications and append to existing list
+  const loadMoreNotifications = async () => {
+    if (!user?.token || notificationsLoadingMore || !notificationsHasMore) return;
+    const offset = notificationsPageRef.current;
+    console.log('📥 Loading more notifications, offset:', offset);
+    setNotificationsLoadingMore(true);
+    try {
+      const response = await fetch(`${API_BASE}/notifications?limit=${NOTIF_PAGE_SIZE}&offset=${offset}`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${user.token}`, 'Content-Type': 'application/json' }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          setNotifications(prev => [...prev, ...(data.notifications || [])]);
+          setUnreadCount(data.unreadCount || 0);
+          setNotificationsTotalCount(data.totalCount || 0);
+          setNotificationsReadCount(data.readCount || 0);
+          setNotificationsHasMore(data.hasMore || false);
+          notificationsPageRef.current = offset + (data.notifications || []).length;
+          console.log('✅ More notifications appended. New offset:', notificationsPageRef.current, '/ hasMore:', data.hasMore);
+        }
+      }
+    } catch (err) {
+      console.log('Error loading more notifications:', err.message);
+    } finally {
+      setNotificationsLoadingMore(false);
     }
   };
 
@@ -4002,9 +4039,10 @@ function AppContent() {
   // Load all notifications when opening notifications screen
   useEffect(() => {
     if (screen === 'notifications' && user?.token) {
-      console.log('🔔 Navigated to notifications screen - checking if fetch needed...');
-      // Don't force fetch - let the smart fetching mechanism decide based on timestamp
-      // This prevents overwriting recently marked-as-read notifications
+      console.log('🔔 Navigated to notifications screen - resetting pagination and loading...');
+      // Reset pagination state so we always start from page 1 when re-entering
+      notificationsPageRef.current = 0;
+      setNotificationsHasMore(false);
       loadAllNotifications(); // Will skip if recently updated (within 5 seconds)
     }
   }, [screen, user?.token]);
@@ -5676,9 +5714,13 @@ function AppContent() {
 
   // NOTIFICATIONS SCREEN
   if (screen === 'notifications') {
-    // Compute counts from the actual loaded notifications array so the numbers
-    // are always consistent with each other (unreadCount from server can be a
-    // different total that doesn't match the loaded batch).
+    // Use server-provided totals for stats so they reflect the full dataset,
+    // not just the loaded batch. Fall back to local counts if server totals
+    // aren't available yet (e.g. first render before load completes).
+    const displayTotal  = notificationsTotalCount  || notifications.length;
+    const displayUnread = unreadCount;
+    const displayRead   = notificationsReadCount   || Math.max(0, displayTotal - displayUnread);
+    // Local counts used only for filter chip badges (reflect what's actually visible)
     const localUnreadCount = notifications.filter(n => !n.is_read).length;
     const localReadCount   = notifications.filter(n =>  n.is_read).length;
     const localTotalCount  = notifications.length;
@@ -5779,17 +5821,17 @@ function AppContent() {
             {/* Stats strip */}
             <View style={styles.notifStatsRow}>
               <View style={styles.notifStatChip}>
-                <Text style={styles.notifStatNum}>{localTotalCount}</Text>
+                <Text style={styles.notifStatNum}>{displayTotal}</Text>
                 <Text style={styles.notifStatLabel}>Total</Text>
               </View>
               <View style={styles.notifStatDivider} />
               <View style={styles.notifStatChip}>
-                <Text style={styles.notifStatNum}>{localUnreadCount}</Text>
+                <Text style={styles.notifStatNum}>{displayUnread}</Text>
                 <Text style={styles.notifStatLabel}>Unread</Text>
               </View>
               <View style={styles.notifStatDivider} />
               <View style={styles.notifStatChip}>
-                <Text style={styles.notifStatNum}>{localReadCount}</Text>
+                <Text style={styles.notifStatNum}>{displayRead}</Text>
                 <Text style={styles.notifStatLabel}>Read</Text>
               </View>
             </View>
@@ -5876,6 +5918,29 @@ function AppContent() {
                   </TouchableOpacity>
                 );
               })}
+            </View>
+          )}
+
+          {/* ── LOAD MORE ─────────────────────────────────────────────── */}
+          {notificationsHasMore && !loadingNotifications && (
+            <View style={styles.notifLoadMoreWrapper}>
+              {notificationsLoadingMore ? (
+                <View style={styles.notifLoadMoreSpinner}>
+                  <ActivityIndicator size="small" color="#4F8DFF" />
+                  <Text style={styles.notifLoadMoreSpinnerText}>Loading more…</Text>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={styles.notifLoadMoreBtn}
+                  onPress={loadMoreNotifications}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="chevron-down-circle-outline" size={18} color="#4F8DFF" />
+                  <Text style={styles.notifLoadMoreText}>
+                    Load more  ·  {displayTotal - localTotalCount} remaining
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
 
@@ -14443,6 +14508,45 @@ const styles = StyleSheet.create({
   notifCardMessage:       { fontSize: 13, color: '#5B6B8A', lineHeight: 18, marginBottom: 8 },
   notifCardFooter:        { flexDirection: 'row', alignItems: 'center', gap: 4 },
   notifCardTime:          { fontSize: 11, fontWeight: '600', color: '#8896B0', letterSpacing: 0.3 },
+
+  // Load more
+  notifLoadMoreWrapper: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  notifLoadMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingVertical: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(79,141,255,0.25)',
+    shadowColor: '#0B0F22',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
+  },
+  notifLoadMoreText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#4F8DFF',
+  },
+  notifLoadMoreSpinner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+  },
+  notifLoadMoreSpinnerText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#5B6B8A',
+  },
   // Reply Details Modal Styles
   showReplyButton: {
     backgroundColor: '#3b82f6',
