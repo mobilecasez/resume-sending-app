@@ -5676,6 +5676,13 @@ function AppContent() {
 
   // NOTIFICATIONS SCREEN
   if (screen === 'notifications') {
+    // Compute counts from the actual loaded notifications array so the numbers
+    // are always consistent with each other (unreadCount from server can be a
+    // different total that doesn't match the loaded batch).
+    const localUnreadCount = notifications.filter(n => !n.is_read).length;
+    const localReadCount   = notifications.filter(n =>  n.is_read).length;
+    const localTotalCount  = notifications.length;
+
     // Filter notifications based on selected filter
     const filteredNotifications = notifications.filter(notif => {
       if (notificationFilter === 'unread') return !notif.is_read;
@@ -5726,7 +5733,7 @@ function AppContent() {
             </View>
 
             {/* Mark all read pill (right side) */}
-            {unreadCount > 0 ? (
+            {localUnreadCount > 0 ? (
               <TouchableOpacity
                 style={styles.notifMarkReadPill}
                 onPress={markAllNotificationsRead}
@@ -5755,10 +5762,10 @@ function AppContent() {
             {/* Eyebrow row */}
             <View style={styles.notifHeroEyeRow}>
               <Text style={styles.notifHeroEyebrow}>ACTIVITY · INBOX</Text>
-              {unreadCount > 0 && (
+              {localUnreadCount > 0 && (
                 <View style={styles.notifHeroCountChip}>
                   <View style={styles.notifHeroCountDot} />
-                  <Text style={styles.notifHeroCountText}>{unreadCount} unread</Text>
+                  <Text style={styles.notifHeroCountText}>{localUnreadCount} unread</Text>
                 </View>
               )}
             </View>
@@ -5772,17 +5779,17 @@ function AppContent() {
             {/* Stats strip */}
             <View style={styles.notifStatsRow}>
               <View style={styles.notifStatChip}>
-                <Text style={styles.notifStatNum}>{notifications.length}</Text>
+                <Text style={styles.notifStatNum}>{localTotalCount}</Text>
                 <Text style={styles.notifStatLabel}>Total</Text>
               </View>
               <View style={styles.notifStatDivider} />
               <View style={styles.notifStatChip}>
-                <Text style={styles.notifStatNum}>{unreadCount}</Text>
+                <Text style={styles.notifStatNum}>{localUnreadCount}</Text>
                 <Text style={styles.notifStatLabel}>Unread</Text>
               </View>
               <View style={styles.notifStatDivider} />
               <View style={styles.notifStatChip}>
-                <Text style={styles.notifStatNum}>{notifications.length - unreadCount}</Text>
+                <Text style={styles.notifStatNum}>{localReadCount}</Text>
                 <Text style={styles.notifStatLabel}>Read</Text>
               </View>
             </View>
@@ -5791,9 +5798,9 @@ function AppContent() {
           {/* ── FILTER CHIPS ─────────────────────────────────────────── */}
           <View style={styles.notifFiltersRow}>
             {[
-              { key: 'all',    label: 'All',    count: notifications.length },
-              { key: 'unread', label: 'Unread', count: unreadCount },
-              { key: 'read',   label: 'Read',   count: notifications.length - unreadCount },
+              { key: 'all',    label: 'All',    count: localTotalCount },
+              { key: 'unread', label: 'Unread', count: localUnreadCount },
+              { key: 'read',   label: 'Read',   count: localReadCount },
             ].map(f => (
               <TouchableOpacity
                 key={f.key}
