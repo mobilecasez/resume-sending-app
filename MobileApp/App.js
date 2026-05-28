@@ -4004,31 +4004,47 @@ function AppContent() {
   useEffect(() => {
     // Only check when first entering review screen, not on every state change
     const currentCheckKey = `${screen}_${recipients.map(r => `${r.email}_${r.website}`).join('|')}`;
-    
+
     if (screen === 'review' && user?.token && recipients.length > 0 && lastReviewCheckRef.current !== currentCheckKey) {
       lastReviewCheckRef.current = currentCheckKey;
       console.log('🔄 Review screen opened, checking if recipient data changed...');
-      
-      // Check if any recipient data has changed compared to saved cover letters
+
+      // Check if any recipient data has changed compared to saved cover letters.
+      // IMPORTANT: match by storedRecipientEmail (stable), NOT by array index.
+      // Recipients are prepended when added, so their array indices shift — using
+      // index-based lookup causes false "data changed" alerts whenever a new company
+      // is inserted at the front of the list.
       let needsRegeneration = false;
-      
+
+      // Build a lookup: email → cover letter entry (from all stored entries)
+      const coverLetterByEmail = {};
+      Object.values(reviewCoverLetters).forEach(entry => {
+        if (entry?.storedRecipientEmail) {
+          coverLetterByEmail[entry.storedRecipientEmail] = entry;
+        }
+      });
+
       recipients.forEach((recipient, index) => {
-        const savedCoverLetter = reviewCoverLetters[index];
-        
-        // Only check if we have stored recipient data to compare against
-        if (savedCoverLetter && savedCoverLetter.storedRecipientEmail && savedCoverLetter.storedRecipientWebsite) {
-          const emailChanged = savedCoverLetter.storedRecipientEmail !== recipient.email;
-          const websiteChanged = savedCoverLetter.storedRecipientWebsite !== recipient.website;
-          
-          if (emailChanged || websiteChanged) {
-            console.log(`🔄 Recipient ${index} data changed - needs regeneration`);
+        if (!recipient.email || !recipient.website) return; // skip incomplete entries
+
+        // Find the cover letter that was generated FOR this specific email
+        const savedCoverLetter = coverLetterByEmail[recipient.email];
+
+        // Only check if we have a stored entry with website data for this email
+        if (savedCoverLetter && savedCoverLetter.storedRecipientWebsite) {
+          // Normalize both URLs before comparing (handle https:// prefix differences)
+          const normalize = (url) => (url || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+          const websiteChanged = normalize(savedCoverLetter.storedRecipientWebsite) !== normalize(recipient.website);
+
+          if (websiteChanged) {
+            console.log(`🔄 Recipient ${index} website changed - needs regeneration`);
             console.log(`  Old: ${savedCoverLetter.storedRecipientEmail} / ${savedCoverLetter.storedRecipientWebsite}`);
             console.log(`  New: ${recipient.email} / ${recipient.website}`);
             needsRegeneration = true;
           }
         }
       });
-      
+
       if (needsRegeneration) {
         console.log('🔄 Recipient data changed - auto-regenerating all cover letters...');
         Alert.alert(
