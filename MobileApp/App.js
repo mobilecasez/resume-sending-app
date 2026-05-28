@@ -14,7 +14,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView as SafeAreaViewContext, SafeAreaProvider } from 'react-native-safe-area-context';
 import { File as ExpoFile, Paths } from 'expo-file-system';
-import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
+import { downloadAsync, cacheDirectory, writeAsStringAsync, EncodingType } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
 import * as AppleAuthentication from 'expo-apple-authentication';
@@ -522,6 +522,8 @@ function AppContent() {
     createdAt: new Date(),
   });
   const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [showSignatureGenerator, setShowSignatureGenerator] = useState(false);
+  const [signatureGenerating, setSignatureGenerating] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [tempDobDate, setTempDobDate] = useState(new Date());
   const tempDobDateRef = useRef(new Date());
@@ -1713,6 +1715,110 @@ function AppContent() {
     } catch (error) {
       Alert.alert('Error', `Failed to upload signature: ${error.message}`);
       console.log('Error:', error);
+    }
+  };
+
+  // ── Signature Generator ──────────────────────────────────────────────────────
+  // Builds the WebView HTML that lets the user pick a cursive style and export PNG
+  const buildSignatureGeneratorHTML = (name) => {
+    const safeName = name.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const jsonName = JSON.stringify(name);
+    return `<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<link href="https://fonts.googleapis.com/css2?family=Great+Vibes&family=Dancing+Script:wght@700&family=Pacifico&family=Satisfy&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+  body{background:#E5EAF3;font-family:-apple-system,sans-serif;padding:16px;min-height:100vh;}
+  h3{font-size:11px;font-weight:700;color:#8896B0;letter-spacing:1.2px;text-align:center;margin-bottom:14px;text-transform:uppercase;}
+  .styles{display:flex;flex-direction:column;gap:10px;}
+  .opt{background:#fff;border:2px solid rgba(11,15,34,0.08);border-radius:16px;padding:14px 20px;cursor:pointer;display:flex;align-items:center;justify-content:center;min-height:72px;transition:border-color .15s,background .15s;}
+  .opt.sel{border-color:#4F8DFF;background:#F0F7FF;}
+  .sig{color:#0B0F22;line-height:1.1;display:block;text-align:center;}
+  .s0{font-family:'Great Vibes',cursive;font-size:46px;}
+  .s1{font-family:'Dancing Script',cursive;font-size:40px;font-weight:700;}
+  .s2{font-family:'Satisfy',cursive;font-size:38px;}
+  .s3{font-family:'Pacifico',cursive;font-size:34px;}
+  .note{font-size:11px;color:#8896B0;text-align:center;margin-top:6px;}
+  .btn{display:flex;align-items:center;justify-content:center;gap:8px;background:linear-gradient(135deg,#4F8DFF,#7C6BFF);color:#fff;border:none;border-radius:14px;padding:15px;font-size:15px;font-weight:700;cursor:pointer;width:100%;margin-top:16px;letter-spacing:0.3px;}
+  .btn:active{opacity:0.85;}
+  .spinner{display:none;text-align:center;padding:12px;color:#5B6B8A;font-size:13px;}
+  canvas{display:none;}
+</style>
+</head>
+<body>
+<h3>Choose your signature style</h3>
+<div class="styles">
+  <div class="opt sel" id="o0" onclick="pick(0)"><span class="sig s0">${safeName}</span></div>
+  <div class="opt"     id="o1" onclick="pick(1)"><span class="sig s1">${safeName}</span></div>
+  <div class="opt"     id="o2" onclick="pick(2)"><span class="sig s2">${safeName}</span></div>
+  <div class="opt"     id="o3" onclick="pick(3)"><span class="sig s3">${safeName}</span></div>
+</div>
+<p class="note">Tap a style, then hit Use This Signature</p>
+<canvas id="c"></canvas>
+<button class="btn" onclick="exportSig()">✓ &nbsp;Use This Signature</button>
+<div class="spinner" id="sp">Generating…</div>
+
+<script>
+var sel=0;
+var fonts=['Great Vibes','Dancing Script','Satisfy','Pacifico'];
+var sizes=[92,80,76,68];
+var weights=['normal','bold','normal','normal'];
+
+function pick(i){
+  for(var j=0;j<4;j++) document.getElementById('o'+j).className='opt'+(j===i?' sel':'');
+  sel=i;
+}
+
+function exportSig(){
+  document.getElementById('sp').style.display='block';
+  document.fonts.ready.then(function(){
+    var name=${jsonName};
+    var f=fonts[sel], sz=sizes[sel], w=weights[sel];
+    var cvs=document.getElementById('c');
+    var ctx=cvs.getContext('2d');
+    var scale=2; // retina
+    ctx.font=w+' '+sz+'px "'+f+'"';
+    var tw=ctx.measureText(name).width;
+    var pw=Math.ceil(tw+80), ph=Math.ceil(sz*1.6+20);
+    cvs.width=pw*scale; cvs.height=ph*scale;
+    ctx.scale(scale,scale);
+    ctx.clearRect(0,0,pw,ph);
+    ctx.font=w+' '+sz+'px "'+f+'"';
+    ctx.fillStyle='#0B0F22';
+    ctx.textBaseline='middle';
+    ctx.fillText(name,40,ph/2);
+    var dataURL=cvs.toDataURL('image/png');
+    document.getElementById('sp').style.display='none';
+    window.ReactNativeWebView.postMessage(JSON.stringify({type:'sig',data:dataURL}));
+  });
+}
+</script>
+</body>
+</html>`;
+  };
+
+  // Called when the WebView posts back the base64 PNG of the chosen signature
+  const handleSignatureWebViewMessage = async (event) => {
+    try {
+      const msg = JSON.parse(event.nativeEvent.data);
+      if (msg.type !== 'sig' || !msg.data) return;
+
+      setSignatureGenerating(true);
+      setShowSignatureGenerator(false);
+
+      // Strip the data: URL prefix and write to a temp file
+      const base64 = msg.data.replace(/^data:image\/png;base64,/, '');
+      const tempPath = `${cacheDirectory}generated_sig_${Date.now()}.png`;
+      await writeAsStringAsync(tempPath, base64, { encoding: EncodingType.Base64 });
+
+      // Reuse the existing uploadSignature flow
+      await uploadSignature({ uri: tempPath, type: 'image/png', name: 'signature.png' });
+    } catch (err) {
+      Alert.alert('Error', 'Could not generate signature: ' + err.message);
+    } finally {
+      setSignatureGenerating(false);
     }
   };
 
@@ -6392,28 +6498,99 @@ function AppContent() {
           {/* Signature Upload */}
           <View style={styles.profileDetailCard}>
             <Text style={styles.cardTitleProfile}>✍️ Signature</Text>
-            <TouchableOpacity 
-              style={[
-                styles.uploadZone,
-                isEditingProfile && styles.uploadZoneActive
-              ]}
+
+            {/* Preview zone — always shown */}
+            <TouchableOpacity
+              style={[styles.uploadZone, isEditingProfile && styles.uploadZoneActive]}
               onPress={pickSignature}
               disabled={!isEditingProfile}
               activeOpacity={isEditingProfile ? 0.7 : 1}
             >
               {profileData?.signature ? (
-                <Image 
-                  source={{ uri: profileData.signature }}
-                  style={styles.uploadPreview}
-                />
+                <Image source={{ uri: profileData.signature }} style={styles.uploadPreview} resizeMode="contain" />
               ) : (
                 <View style={styles.uploadPlaceholder}>
                   <Text style={styles.uploadIcon}>✍️</Text>
-                  <Text style={styles.uploadText}>{isEditingProfile ? 'Tap to upload signature' : 'No signature uploaded'}</Text>
+                  <Text style={styles.uploadText}>
+                    {isEditingProfile ? 'Tap to upload an image' : 'No signature uploaded'}
+                  </Text>
                 </View>
               )}
             </TouchableOpacity>
+
+            {/* Generate Signature button — only in edit mode */}
+            {isEditingProfile && (
+              <TouchableOpacity
+                style={styles.generateSigBtn}
+                onPress={() => {
+                  const name = profileData?.fullName?.trim() || user?.fullName?.trim();
+                  if (!name) {
+                    Alert.alert('Name required', 'Please fill in your full name in the profile before generating a signature.');
+                    return;
+                  }
+                  setShowSignatureGenerator(true);
+                }}
+                activeOpacity={0.8}
+                disabled={signatureGenerating}
+              >
+                {signatureGenerating ? (
+                  <ActivityIndicator size="small" color="#7C6BFF" />
+                ) : (
+                  <Ionicons name="sparkles-outline" size={15} color="#7C6BFF" />
+                )}
+                <Text style={styles.generateSigBtnText}>
+                  {signatureGenerating ? 'Generating…' : 'Generate Signature from Name'}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
+
+          {/* Signature Generator Modal */}
+          <Modal
+            visible={showSignatureGenerator}
+            animationType="slide"
+            transparent
+            onRequestClose={() => setShowSignatureGenerator(false)}
+          >
+            <View style={styles.sigGenOverlay}>
+              <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setShowSignatureGenerator(false)} />
+              <View style={styles.sigGenSheet}>
+                {/* Handle */}
+                <View style={styles.sigGenHandle} />
+
+                {/* Header */}
+                <View style={styles.sigGenHeader}>
+                  <View>
+                    <Text style={styles.sigGenTitle}>Generate Signature</Text>
+                    <Text style={styles.sigGenSub}>
+                      {profileData?.fullName || user?.fullName || ''}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.sigGenCloseBtn}
+                    onPress={() => setShowSignatureGenerator(false)}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="close" size={18} color="#0B0F22" />
+                  </TouchableOpacity>
+                </View>
+
+                {/* WebView — renders font picker + canvas export */}
+                <View style={styles.sigGenWebViewWrap}>
+                  <WebView
+                    source={{ html: buildSignatureGeneratorHTML(profileData?.fullName || user?.fullName || '') }}
+                    style={styles.sigGenWebView}
+                    onMessage={handleSignatureWebViewMessage}
+                    javaScriptEnabled
+                    domStorageEnabled
+                    scrollEnabled
+                    showsVerticalScrollIndicator={false}
+                    originWhitelist={['*']}
+                  />
+                </View>
+              </View>
+            </View>
+          </Modal>
 
           {/* Save Changes Button */}
           {isEditingProfile && (
@@ -11309,6 +11486,89 @@ const styles = StyleSheet.create({
     color: '#0d9488',
     marginTop: 4,
   },
+
+  // ── Generate Signature button ────────────────────────────────────────────
+  generateSigBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    marginTop: 10,
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: '#F3EEFF',
+    borderWidth: 1,
+    borderColor: 'rgba(124,107,255,0.25)',
+  },
+  generateSigBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#7C6BFF',
+    letterSpacing: 0.2,
+  },
+
+  // ── Signature Generator Modal ────────────────────────────────────────────
+  sigGenOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(11,15,34,0.55)',
+    justifyContent: 'flex-end',
+  },
+  sigGenSheet: {
+    backgroundColor: '#E5EAF3',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    overflow: 'hidden',
+    maxHeight: '90%',
+  },
+  sigGenHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(11,15,34,0.15)',
+    alignSelf: 'center',
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  sigGenHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(11,15,34,0.07)',
+  },
+  sigGenTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0B0F22',
+    letterSpacing: 0.2,
+  },
+  sigGenSub: {
+    fontSize: 12,
+    color: '#5B6B8A',
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  sigGenCloseBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(11,15,34,0.08)',
+  },
+  sigGenWebViewWrap: {
+    height: 520,
+  },
+  sigGenWebView: {
+    flex: 1,
+    backgroundColor: '#E5EAF3',
+  },
+
   statsGrid: {
     flexDirection: 'row',
     justifyContent: 'space-around',
