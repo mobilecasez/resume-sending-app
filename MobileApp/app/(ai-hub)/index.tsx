@@ -9,6 +9,7 @@ import React, {
 import {
   View,
   Text,
+  Image,
   ScrollView,
   TouchableOpacity,
   Modal,
@@ -19,6 +20,7 @@ import {
   ActivityIndicator,
   Linking,
   Platform,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -29,6 +31,27 @@ import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem 
 import { API_BASE } from '../../config';
 import axios from 'axios';
 import { LoadingTips } from './LoadingTips';
+
+const { width: SCREEN_W } = Dimensions.get('window');
+
+// ─── Design tokens (matching HomeScreen) ─────────────────────────────────────
+const T = {
+  bg:        '#E5EAF3',
+  bgSoft:    '#DCE2ED',
+  surface:   '#FFFFFF',
+  ink:       '#0B0F22',
+  textMuted: '#5B6B8A',
+  textFaint: '#8896B0',
+  border:    'rgba(11,15,34,0.06)',
+  borderHi:  'rgba(11,15,34,0.10)',
+  blue:      '#4F8DFF',
+  blueDeep:  '#2563EB',
+  purple:    '#7C6BFF',
+  teal:      '#14B8A6',
+  emerald:   '#10B981',
+  rose:      '#EF4444',
+  navBg:     '#0A0F24',
+};
 
 // ─────────────────────────────────────────────────────────────────
 // MOCK DATA
@@ -51,7 +74,7 @@ const MOCK_EMPLOYERS: Employer[] = [
         salary: '$200K–$260K',
         jobType: 'Full-time',
         urgent: false,
-        skills: ['SwiftUI', 'Combine', 'Core Data', 'UIKit'],
+        skills: ['SwiftUI', 'Combine', 'Core Data', 'UIKit'], responsibilities: ['Build iOS features with SwiftUI', 'Maintain Core Data persistence layer', 'Collaborate with design team', 'Review pull requests'],
         contacts: [
           {
             id: 'apple-c1',
@@ -79,7 +102,7 @@ const MOCK_EMPLOYERS: Employer[] = [
         salary: '$250K–$320K',
         jobType: 'Full-time',
         urgent: true,
-        skills: ['PyTorch', 'Core ML', 'Python', 'NLP', 'LLMs'],
+        skills: ['PyTorch', 'Core ML', 'Python', 'NLP', 'LLMs'], responsibilities: ['Train and fine-tune ML models', 'Deploy models to production', 'Collaborate with product teams', 'Monitor model performance'],
         contacts: [
           {
             id: 'apple-c3',
@@ -110,6 +133,7 @@ const MOCK_EMPLOYERS: Employer[] = [
         jobType: 'Full-time',
         urgent: false,
         skills: ['React', 'TypeScript', 'Node.js', 'GraphQL'],
+        responsibilities: ['Build developer tools and APIs', 'Improve CI/CD pipelines', 'Write technical documentation', 'Lead platform architecture decisions'],
         contacts: [
           {
             id: 'stripe-c1',
@@ -166,123 +190,6 @@ const PILL_COLORS = {
 const COLOR_CYCLE: Array<'cyan' | 'violet' | 'emerald'> = ['cyan', 'violet', 'emerald'];
 
 // ─────────────────────────────────────────────────────────────────
-// WISHLIST BAR
-// ─────────────────────────────────────────────────────────────────
-
-type WishlistBarProps = {
-  pills: WishlistPill[];
-  onRemove: (id: string) => void;
-  onAddPress: () => void;
-  sources: number;
-  matches: number;
-};
-
-const WishlistBar: React.FC<WishlistBarProps> = ({
-  pills,
-  onRemove,
-  onAddPress,
-  sources,
-  matches,
-}) => {
-  const router = useRouter();
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1.4,
-          duration: 700,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1.0,
-          duration: 700,
-          useNativeDriver: true,
-        }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [pulseAnim]);
-
-  return (
-    <View style={styles.wishlistBar}>
-      <View style={styles.topHeader}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={24} color="#FFF" />
-        </TouchableOpacity>
-        <Text style={styles.wishlistLabel}>JOBS DASHBOARD</Text>
-      </View>
-
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.pillsRow}
-      >
-        {pills.map((pill) => {
-          const c = PILL_COLORS[pill.colorVariant];
-          return (
-            <View
-              key={pill.id}
-              style={[styles.pill, { backgroundColor: c.bg, borderColor: c.border }]}
-            >
-              <Text style={[styles.pillText, { color: c.text }]}>{pill.label}</Text>
-              <TouchableOpacity
-                onPress={() => onRemove(pill.id)}
-                style={styles.pillRemoveBtn}
-                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-              >
-                <Ionicons name="close" size={11} color={c.text} />
-              </TouchableOpacity>
-            </View>
-          );
-        })}
-
-        <TouchableOpacity onPress={onAddPress} style={styles.addPillTrigger}>
-          <Ionicons name="add-outline" size={14} color="#67E8F9" />
-          <Text style={styles.addPillText}>Add company or URL...</Text>
-        </TouchableOpacity>
-      </ScrollView>
-
-      {pills.length > 0 && (
-        <View style={styles.aiStatusRow}>
-          <Animated.View
-            style={[styles.pulseDot, { transform: [{ scale: pulseAnim }] }]}
-          />
-          <Text style={styles.aiStatusText}>
-            {`AI is analyzing your wishlist · ${sources} sources · ${matches} matches`}
-          </Text>
-        </View>
-      )}
-    </View>
-  );
-};
-
-// ─────────────────────────────────────────────────────────────────
-// STATS STRIP
-// ─────────────────────────────────────────────────────────────────
-
-type StatsStripProps = { matches: number; contacts: number; verifiedPct: number };
-
-const StatsStrip: React.FC<StatsStripProps> = ({ matches, contacts, verifiedPct }) => (
-  <View style={styles.statsStrip}>
-    <View style={styles.statCard}>
-      <Text style={[styles.statValue, { color: '#22D3EE' }]}>{matches}</Text>
-      <Text style={styles.statLabel}>MATCHES</Text>
-    </View>
-    <View style={styles.statCard}>
-      <Text style={[styles.statValue, { color: '#A78BFA' }]}>{contacts}</Text>
-      <Text style={styles.statLabel}>CONTACTS</Text>
-    </View>
-    <View style={styles.statCard}>
-      <Text style={[styles.statValue, { color: '#34D399' }]}>{verifiedPct}%</Text>
-      <Text style={styles.statLabel}>VERIFIED %</Text>
-    </View>
-  </View>
-);
-
-// ─────────────────────────────────────────────────────────────────
 // CONTACT ROW
 // ─────────────────────────────────────────────────────────────────
 
@@ -294,11 +201,22 @@ const ContactRow: React.FC<{ contact: Contact }> = ({ contact }) => {
     .slice(0, 2)
     .toUpperCase();
 
+  const openLinkedIn = () => {
+    if (contact.linkedin) {
+      const url = contact.linkedin.startsWith('http') ? contact.linkedin : `https://${contact.linkedin}`;
+      Linking.openURL(url).catch(() => {});
+    }
+  };
+
   return (
     <View style={styles.contactRow}>
-      <LinearGradient colors={contact.avatarColor} style={styles.avatar}>
-        <Text style={styles.avatarInitials}>{initials}</Text>
-      </LinearGradient>
+      {contact.imageUrl ? (
+        <Image source={{ uri: contact.imageUrl }} style={styles.avatar} />
+      ) : (
+        <LinearGradient colors={contact.avatarColor} style={styles.avatar}>
+          <Text style={styles.avatarInitials}>{initials}</Text>
+        </LinearGradient>
+      )}
 
       <View style={styles.contactMid}>
         <Text style={styles.contactName}>{contact.name}</Text>
@@ -314,122 +232,162 @@ const ContactRow: React.FC<{ contact: Contact }> = ({ contact }) => {
             {contact.email}
           </Text>
         )}
-        {contact.verified && (
-          <LinearGradient
-            colors={['#10B981', '#059669']}
-            style={styles.verifiedBadge}
-          >
-            <Ionicons name="checkmark" size={9} color="white" />
-          </LinearGradient>
-        )}
+        <View style={styles.contactBadgesRow}>
+          {contact.verified && (
+            <LinearGradient
+              colors={['#10B981', '#059669']}
+              style={styles.verifiedBadge}
+            >
+              <Ionicons name="checkmark" size={9} color="white" />
+            </LinearGradient>
+          )}
+          {!!contact.linkedin && (
+            <TouchableOpacity onPress={openLinkedIn} style={styles.linkedinBtn}>
+              <Ionicons name="logo-linkedin" size={14} color="#0A66C2" />
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
     </View>
   );
 };
 
 // ─────────────────────────────────────────────────────────────────
-// JOB CARD
+// JOB CARD (redesigned)
 // ─────────────────────────────────────────────────────────────────
 
 type JobCardProps = {
   job: Job;
+  employer: Employer;
   onApply: () => void;
   onAddContact: () => void;
   onVisitJob?: () => void;
 };
 
-const JobCard: React.FC<JobCardProps> = ({ job, onApply, onAddContact, onVisitJob }) => (
+const JobCard: React.FC<JobCardProps> = ({ job, employer, onApply, onAddContact, onVisitJob }) => (
   <View style={styles.card}>
-    {/* ── Card Body ── */}
-    <View style={styles.cardBody}>
-      <View style={styles.jobTitleRow}>
-        <Text style={[styles.jobTitle, { flex: 1 }]}>{job.title}</Text>
-        {job.matchScore != null && (
-          <View style={[
-            styles.matchScoreBadge,
-            { backgroundColor: job.matchScore > 0 ? (job.matchScore >= 70 ? 'rgba(16,185,129,0.12)' : job.matchScore >= 40 ? 'rgba(251,146,60,0.12)' : 'rgba(148,163,184,0.12)') : '#F1F5F9' }
-          ]}>
-            {job.matchScore > 0 ? (
-              <Text style={[
-                styles.matchScoreText,
-                { color: job.matchScore >= 70 ? '#059669' : job.matchScore >= 40 ? '#EA580C' : '#64748B' }
-              ]}>{job.matchScore}% match</Text>
-            ) : (
-              <Text style={[styles.matchScoreText, { color: '#94A3B8' }]}>Evaluating...</Text>
-            )}
-          </View>
-        )}
+    {/* ── Card Header: company logo + title + match ── */}
+    <View style={styles.cardHeader}>
+      <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.cardLogo}>
+        <Text style={styles.cardLogoText}>{employer.logoInitial}</Text>
+      </LinearGradient>
+      <View style={styles.cardHeaderMid}>
+        <Text style={styles.cardCompanyLabel}>{employer.name}</Text>
+        <Text style={styles.jobTitle} numberOfLines={2}>{job.title}</Text>
       </View>
-
-      <View style={styles.badgesRow}>
-        <View style={[styles.badge, styles.badgeLocation]}>
-          <Ionicons name="location-outline" size={11} color="#1D4ED8" />
-          <Text style={[styles.badgeText, { color: '#1D4ED8' }]}>{job.location}</Text>
+      {job.matchScore != null && job.matchScore > 0 && (
+        <View style={[
+          styles.matchBadge,
+          { backgroundColor: job.matchScore >= 70 ? 'rgba(16,185,129,0.12)' : job.matchScore >= 40 ? 'rgba(251,146,60,0.12)' : 'rgba(148,163,184,0.12)' }
+        ]}>
+          <Text style={[
+            styles.matchBadgeText,
+            { color: job.matchScore >= 70 ? '#059669' : job.matchScore >= 40 ? '#EA580C' : '#64748B' }
+          ]}>{job.matchScore}%</Text>
+          <Text style={[styles.matchBadgeLabel, { color: job.matchScore >= 70 ? '#059669' : job.matchScore >= 40 ? '#EA580C' : '#64748B' }]}>match</Text>
         </View>
-
-        <View style={[styles.badge, styles.badgeExperience]}>
-          <Ionicons name="time-outline" size={11} color="#B45309" />
-          <Text style={[styles.badgeText, { color: '#B45309' }]}>{job.experience}</Text>
+      )}
+      {job.urgent && (
+        <View style={styles.urgentBadge}>
+          <Ionicons name="flash" size={11} color="#EF4444" />
+          <Text style={styles.urgentText}>Urgent</Text>
         </View>
-
-        <View style={[styles.badge, styles.badgeSalary]}>
-          <Ionicons name="cash-outline" size={11} color="#047857" />
-          <Text style={[styles.badgeText, { color: '#047857' }]}>{job.salary}</Text>
-        </View>
-
-        <View style={[styles.badge, styles.badgeJobType]}>
-          <Ionicons name="briefcase-outline" size={11} color="#6D28D9" />
-          <Text style={[styles.badgeText, { color: '#6D28D9' }]}>{job.jobType}</Text>
-        </View>
-
-        {job.urgent && (
-          <View style={[styles.badge, styles.badgeUrgent]}>
-            <Ionicons name="flash-outline" size={11} color="#BE123C" />
-            <Text style={[styles.badgeText, { color: '#BE123C' }]}>Urgent</Text>
-          </View>
-        )}
-      </View>
-
-      <Text style={styles.skillsText}>Skills: {job.skills.join(', ')}</Text>
+      )}
     </View>
 
-    {/* ── Contacts Zone ── */}
-    <View style={styles.contactsZone}>
-      <View style={styles.contactsInner}>
-        <Text style={styles.contactsLabel}>HIRING CONTACTS</Text>
-        {(job.contacts || []).length > 0 ? (
-          (job.contacts || []).map((contact) => (
-            <ContactRow key={contact.id} contact={contact} />
-          ))
-        ) : (
-          <Text style={styles.noContactsText}>No contact details found for this listing</Text>
-        )}
+    {/* ── Meta chips ── */}
+    <View style={styles.metaRow}>
+      <View style={styles.metaChip}>
+        <Ionicons name="location-outline" size={11} color={T.blue} />
+        <Text style={styles.metaChipText}>{job.location}</Text>
       </View>
+      {job.experience ? (
+        <View style={styles.metaChip}>
+          <Ionicons name="time-outline" size={11} color="#A78BFA" />
+          <Text style={styles.metaChipText}>{job.experience}</Text>
+        </View>
+      ) : null}
+      {job.salary && job.salary !== 'Not listed' ? (
+        <View style={styles.metaChip}>
+          <Ionicons name="cash-outline" size={11} color="#34D399" />
+          <Text style={styles.metaChipText}>{job.salary}</Text>
+        </View>
+      ) : null}
+      {job.jobType ? (
+        <View style={styles.metaChip}>
+          <Ionicons name="briefcase-outline" size={11} color="#FB923C" />
+          <Text style={styles.metaChipText}>{job.jobType}</Text>
+        </View>
+      ) : null}
+    </View>
+
+    {/* ── Skills ── */}
+    {(job.skills || []).length > 0 && (
+      <View style={styles.skillsBlock}>
+        <View style={styles.skillsChipsRow}>
+          {(job.skills || []).slice(0, 5).map((skill, i) => (
+            <View key={i} style={styles.skillChip}>
+              <Text style={styles.skillChipText}>{skill}</Text>
+            </View>
+          ))}
+          {(job.skills || []).length > 5 && (
+            <View style={styles.skillChipMore}>
+              <Text style={styles.skillChipMoreText}>+{job.skills.length - 5}</Text>
+            </View>
+          )}
+        </View>
+      </View>
+    )}
+
+    {/* ── Responsibilities preview ── */}
+    {(job.responsibilities || []).length > 0 && (
+      <View style={styles.respPreview}>
+        {(job.responsibilities || []).slice(0, 2).map((r, i) => (
+          <View key={i} style={styles.respRow}>
+            <View style={styles.respDotCircle} />
+            <Text style={styles.respText}>{r}</Text>
+          </View>
+        ))}
+      </View>
+    )}
+
+    {/* ── Divider ── */}
+    <View style={styles.cardDivider} />
+
+    {/* ── Contacts ── */}
+    <View style={styles.contactsZone}>
+      <Text style={styles.contactsLabel}>HIRING CONTACTS</Text>
+      {(job.contacts || []).length > 0 ? (
+        (job.contacts || []).map((contact) => (
+          <ContactRow key={contact.id} contact={contact} />
+        ))
+      ) : (
+        <Text style={styles.noContactsText}>No contacts found for this listing</Text>
+      )}
     </View>
 
     {/* ── Card Footer ── */}
     <View style={styles.cardFooter}>
-      <View style={styles.cardFooterLeft}>
-        <TouchableOpacity onPress={onAddContact} style={styles.addContactBtn}>
-          <Ionicons name="add-outline" size={13} color="#64748B" />
-          <Text style={styles.addContactBtnText}>Add Contact</Text>
-        </TouchableOpacity>
-        {!!job.applyUrl && (
-          <TouchableOpacity onPress={onVisitJob} style={styles.visitJobBtn}>
-            <Ionicons name="open-outline" size={13} color="#3B82F6" />
-            <Text style={styles.visitJobBtnText}>Visit Job</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+      <TouchableOpacity onPress={onAddContact} style={styles.addContactBtn}>
+        <Ionicons name="person-add-outline" size={13} color={T.textMuted} />
+        <Text style={styles.addContactBtnText}>Add Contact</Text>
+      </TouchableOpacity>
 
-      <TouchableOpacity onPress={onApply} style={styles.applyBtnWrapper}>
+      {!!job.applyUrl && (
+        <TouchableOpacity onPress={onVisitJob} style={styles.visitJobBtn}>
+          <Ionicons name="open-outline" size={13} color={T.blue} />
+          <Text style={styles.visitJobBtnText}>View Job</Text>
+        </TouchableOpacity>
+      )}
+
+      <TouchableOpacity onPress={onApply} activeOpacity={0.85} style={styles.applyBtnOuter}>
         <LinearGradient
-          colors={['#06B6D4', '#3B82F6']}
+          colors={[T.blue, T.blueDeep]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 0 }}
           style={styles.applyBtn}
         >
-          <Ionicons name="checkmark-done-outline" size={13} color="white" />
+          <Ionicons name="send-outline" size={13} color="white" />
           <Text style={styles.applyBtnText}>Apply Now</Text>
         </LinearGradient>
       </TouchableOpacity>
@@ -438,76 +396,72 @@ const JobCard: React.FC<JobCardProps> = ({ job, onApply, onAddContact, onVisitJo
 );
 
 // ─────────────────────────────────────────────────────────────────
-// EMPLOYER SECTION
+// COMPANY TAB BAR
 // ─────────────────────────────────────────────────────────────────
 
-type EmployerSectionProps = {
-  employer: Employer;
-  isProcessing: boolean;
-  onApply: (employer: Employer, job: Job) => void;
-  onAddContact: (jobId: string) => void;
+type CompanyTabBarProps = {
+  employers: Employer[];
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
 };
 
-const EmployerSection: React.FC<EmployerSectionProps> = ({
-  employer,
-  isProcessing,
-  onApply,
-  onAddContact,
-}) => {
-  const isActive = employer.status === 'active';
-  const jobsCount = (employer.jobs || []).length;
-  
+const CompanyTabBar: React.FC<CompanyTabBarProps> = ({ employers, selectedId, onSelect }) => {
+  if (employers.length === 0) return null;
   return (
-    <View style={styles.employerSection}>
-      <View style={styles.employerHeader}>
-        <LinearGradient colors={employer.logoColor || ['#555555', '#1C1C1E']} style={styles.employerLogo}>
-          <Text style={styles.employerLogoInitial}>{employer.logoInitial}</Text>
-        </LinearGradient>
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={styles.companyTabScroll}
+      contentContainerStyle={styles.companyTabContent}
+    >
+      {/* "All" tab */}
+      <TouchableOpacity
+        onPress={() => onSelect(null)}
+        style={[styles.companyTab, selectedId === null && styles.companyTabActive]}
+        activeOpacity={0.75}
+      >
+        {selectedId === null ? (
+          <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.companyTabGradient}>
+            <Text style={styles.companyTabLabelActive}>All</Text>
+          </LinearGradient>
+        ) : (
+          <Text style={styles.companyTabLabel}>All</Text>
+        )}
+      </TouchableOpacity>
 
-        <View style={styles.employerInfo}>
-          <Text style={styles.employerName}>{employer.name}</Text>
-          <Text style={styles.employerSubInfo}>{employer.subInfo}</Text>
-        </View>
-
-        <View
-          style={[
-            styles.matchBadge,
-            isActive ? styles.matchBadgeActive : styles.matchBadgeWatching,
-          ]}
-        >
-          <Text
-            style={[
-              styles.matchBadgeText,
-              isActive ? styles.matchBadgeTextActive : styles.matchBadgeTextWatching,
-            ]}
+      {employers.map((emp) => {
+        const isSelected = selectedId === emp.id;
+        return (
+          <TouchableOpacity
+            key={emp.id}
+            onPress={() => onSelect(emp.id)}
+            style={[styles.companyTab, isSelected && styles.companyTabActive]}
+            activeOpacity={0.75}
           >
-            {jobsCount} match{jobsCount !== 1 ? 'es' : ''}
-          </Text>
-        </View>
-      </View>
-
-      {(employer.jobs || []).map((job) => (
-        <JobCard
-          key={job.id}
-          job={job}
-          onApply={() => onApply(employer, job)}
-          onAddContact={() => onAddContact(job.id)}
-          onVisitJob={job.applyUrl ? () => Linking.openURL(job.applyUrl!) : undefined}
-        />
-      ))}
-
-      {isProcessing && (
-        <View style={styles.loadingMoreRow}>
-          <ActivityIndicator size="small" color="#06B6D4" />
-          <Text style={styles.loadingMoreText}>Finding more positions...</Text>
-        </View>
-      )}
-    </View>
+            {isSelected ? (
+              <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.companyTabGradient}>
+                <LinearGradient colors={emp.logoColor || ['#555', '#222']} style={styles.companyTabAvatarSmall}>
+                  <Text style={styles.companyTabAvatarText}>{emp.logoInitial}</Text>
+                </LinearGradient>
+                <Text style={styles.companyTabLabelActive} numberOfLines={1}>{emp.name}</Text>
+              </LinearGradient>
+            ) : (
+              <>
+                <LinearGradient colors={emp.logoColor || ['#555', '#222']} style={styles.companyTabAvatarSmall}>
+                  <Text style={styles.companyTabAvatarText}>{emp.logoInitial}</Text>
+                </LinearGradient>
+                <Text style={styles.companyTabLabel} numberOfLines={1}>{emp.name.split(' ')[0]}</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
   );
 };
 
 // ─────────────────────────────────────────────────────────────────
-// INDETERMINATE PROGRESS BAR — smooth shuttle animation, no flicker
+// INDETERMINATE PROGRESS BAR
 // ─────────────────────────────────────────────────────────────────
 
 function IndeterminateBar() {
@@ -555,10 +509,10 @@ function IndeterminateBar() {
 
 const indeterminateStyles = StyleSheet.create({
   track: {
-    height: 6,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 3,
-    marginBottom: 12,
+    height: 4,
+    backgroundColor: T.border,
+    borderRadius: 2,
+    marginTop: 10,
     overflow: 'hidden',
   },
   fill: {
@@ -566,8 +520,129 @@ const indeterminateStyles = StyleSheet.create({
     left: 0,
     width: '50%',
     height: '100%',
-    backgroundColor: '#06B6D4',
-    borderRadius: 3,
+    backgroundColor: T.blue,
+    borderRadius: 2,
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────
+// BOTTOM TAB BAR (local — handles expo-router nav from ai-hub)
+// ─────────────────────────────────────────────────────────────────
+
+function JobHubTabBar({ onAddPress }: { onAddPress: () => void }) {
+  const router = useRouter();
+
+  const TABS = [
+    { key: 'home',    label: 'Home',    icon: 'home-outline',          iconActive: 'home' },
+    { key: 'jobs',    label: 'Jobs',    icon: 'briefcase-outline',     iconActive: 'briefcase' },
+    { key: 'letters', label: 'Letters', icon: 'document-text-outline', iconActive: 'document-text' },
+    { key: 'me',      label: 'Me',      icon: 'person-outline',        iconActive: 'person' },
+  ];
+
+  function handlePress(key: string) {
+    if (key === 'jobs') return; // already here
+    if (key === 'home' || key === 'letters' || key === 'me') {
+      router.back();
+    }
+  }
+
+  return (
+    <View style={tabBarStyles.wrapper}>
+      <View style={tabBarStyles.bar}>
+        {TABS.map((tab) => {
+          const isActive = tab.key === 'jobs';
+          if (isActive) {
+            return (
+              <LinearGradient
+                key={tab.key}
+                colors={[T.blue, T.blueDeep]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={tabBarStyles.activeTab}
+              >
+                <TouchableOpacity
+                  style={tabBarStyles.activeTabInner}
+                  onPress={() => handlePress(tab.key)}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name={tab.iconActive as any} size={16} color="#fff" />
+                  <Text style={tabBarStyles.activeLabel}>{tab.label}</Text>
+                </TouchableOpacity>
+              </LinearGradient>
+            );
+          }
+          return (
+            <TouchableOpacity
+              key={tab.key}
+              style={tabBarStyles.tab}
+              onPress={() => handlePress(tab.key)}
+              activeOpacity={0.7}
+            >
+              <Ionicons name={tab.icon as any} size={20} color={T.textFaint} />
+              <Text style={tabBarStyles.tabLabel}>{tab.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+const tabBarStyles = StyleSheet.create({
+  wrapper: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 20,
+    paddingBottom: 28,
+    paddingTop: 8,
+    backgroundColor: 'transparent',
+  },
+  bar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: T.surface,
+    borderRadius: 28,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    gap: 4,
+    shadowColor: T.ink,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.14,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  activeTab: {
+    flex: 1,
+    borderRadius: 22,
+  },
+  activeTabInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  activeLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: -0.2,
+  },
+  tab: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    paddingVertical: 6,
+  },
+  tabLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: T.textFaint,
+    letterSpacing: -0.1,
   },
 });
 
@@ -579,15 +654,29 @@ export default function AIHubScreen() {
   const router = useRouter();
   const [pills, setPills] = useState<WishlistPill[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
-  const [inputValue, setInputValue] = useState('');
+  const [inputValue, setInputValue] = useState('https://');
   const [employers, setEmployers] = useState<Employer[]>([]);
   const [loadingCompanies, setLoadingCompanies] = useState<string[]>([]);
   const [processingEmployerIds, setProcessingEmployerIds] = useState<Set<string>>(new Set());
   const [stats, setStats] = useState({ sources: 0, matches: 0, contacts: 0, verifiedPct: 0 });
   const [initialLoading, setInitialLoading] = useState(true);
+  const [selectedEmployerId, setSelectedEmployerId] = useState<string | null>(null);
 
   // Feature flag — controls "coming soon" overlay
   const [featureFlag, setFeatureFlag] = useState<{ status: string; title: string | null; message: string | null } | null>(null);
+
+  // Pulse animation for AI active dot
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1.5, duration: 700, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1.0, duration: 700, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulseAnim]);
 
   // Recalculate stats whenever employers list changes
   useEffect(() => {
@@ -597,7 +686,6 @@ export default function AIHubScreen() {
       newMatches += (emp.jobs || []).length;
       newContacts += (emp.jobs || []).reduce((sum, j) => sum + (j.contacts || []).length, 0);
     });
-    // Hardcode verifiedPct to something static like 94 for now, since it was static before
     setStats({ sources: employers.length, matches: newMatches, contacts: newContacts, verifiedPct: 94 });
   }, [employers]);
 
@@ -605,15 +693,14 @@ export default function AIHubScreen() {
   useEffect(() => {
     axios.get(`${API_BASE}/feature-flags/jobs_dashboard`)
       .then(({ data }) => setFeatureFlag(data))
-      .catch(() => setFeatureFlag({ status: 'active', title: null, message: null })); // fail open
+      .catch(() => setFeatureFlag({ status: 'active', title: null, message: null }));
   }, []);
 
   useEffect(() => {
     async function loadDashboard() {
       try {
         const dashboard = await fetchDashboard();
-        
-        // Ensure initialLoading is false immediately if the array is empty or undefined
+
         if (!dashboard || dashboard.length === 0) {
            setEmployers([]);
            setPills([]);
@@ -625,7 +712,7 @@ export default function AIHubScreen() {
         const loadedPills: WishlistPill[] = [];
         const loadedStats = { sources: dashboard.length, matches: 0, contacts: 0 };
         const currentlyProcessing = new Set<string>();
-        
+
         dashboard.forEach((entry, i) => {
           const emp = entry.employer;
           loadedEmployers.push(emp);
@@ -637,13 +724,13 @@ export default function AIHubScreen() {
           });
           loadedStats.matches += (emp.jobs || []).length;
           loadedStats.contacts += (emp.jobs || []).reduce((sum, j) => sum + (j.contacts || []).length, 0);
-          
+
           if (entry.status === 'processing' || entry.status === 'pending') {
             currentlyProcessing.add(emp.id);
             resumePolling(entry.jobId, emp.name);
           }
         });
-        
+
         setEmployers(loadedEmployers);
         setPills(loadedPills);
         setProcessingEmployerIds(currentlyProcessing);
@@ -691,15 +778,7 @@ export default function AIHubScreen() {
           return [finalEmployer, ...prev];
         });
       })
-      .catch((err) => {
-        setProcessingEmployerIds((prev) => {
-          // If we fail, try to figure out which employer ID it was to clear it.
-          // Since we might only have the name, we just clear everything for simplicity if it fails.
-          // Or we can just find it by name.
-          const next = new Set(prev);
-          // Just let it be, or show error
-          return next;
-        });
+      .catch(() => {
         Alert.alert('Error', `Failed to resume tracking jobs for ${companyName}`);
       });
   };
@@ -708,20 +787,24 @@ export default function AIHubScreen() {
     setPills((prev) => {
       const pill = prev.find((p) => p.id === id);
       if (pill?.employerId) {
-        // Also remove from backend
         const targetEmployer = employers.find((e) => e.id === pill.employerId);
         if (targetEmployer?.jobId) {
           removeDashboardItem(targetEmployer.jobId).catch(console.error);
         }
         setEmployers((emp) => emp.filter((e) => e.id !== pill.employerId));
+        if (selectedEmployerId === pill.employerId) setSelectedEmployerId(null);
       }
       return prev.filter((p) => p.id !== id);
     });
-  }, [employers]);
+  }, [employers, selectedEmployerId]);
 
   const handleAddPill = useCallback(() => {
-    const trimmed = inputValue.trim();
-    if (!trimmed) return;
+    let trimmed = inputValue.trim();
+    if (!trimmed || trimmed === 'https://' || trimmed === 'http://') return;
+
+    if (!/^https?:\/\//i.test(trimmed) && /\./.test(trimmed)) {
+      trimmed = `https://${trimmed}`;
+    }
 
     const pillId = `pill-${Date.now()}`;
 
@@ -773,7 +856,18 @@ export default function AIHubScreen() {
         );
       })
       .catch((err) => {
-        Alert.alert('Could not fetch jobs', `No results found for "${trimmed}". Try a full URL like https://careers.company.com`);
+        const isPortal = err?.response?.data?.error === 'job_portal' || err?.isPortal;
+        if (isPortal) {
+          const portal = err?.response?.data?.portal || trimmed;
+          Alert.alert(
+            '🚫 Job Portal Detected',
+            `"${portal}" is a job listing portal, not a company.\n\nCVApplyr works exclusively on employer career pages — we go directly to the source to find jobs and hiring contacts.\n\nPlease enter a specific company name or their career page URL.\n\nExample: "https://careers.google.com"`,
+            [{ text: 'Got it', style: 'default' }]
+          );
+        } else {
+          Alert.alert('Could not fetch jobs', `No results found for "${trimmed}". Try a full URL like https://careers.company.com`);
+        }
+        setPills((prev) => prev.filter((p) => p.id !== pillId));
       })
       .finally(() => {
         setLoadingCompanies((prev) => prev.filter((c) => c !== trimmed));
@@ -782,18 +876,18 @@ export default function AIHubScreen() {
 
   const handleApply = useCallback(
     (employer: Employer, job: Job) => {
-      router.push({ 
-        pathname: '/(ai-hub)/job-detail', 
-        params: { 
-          jobStr: JSON.stringify(job), 
+      router.push({
+        pathname: '/(ai-hub)/job-detail',
+        params: {
+          jobStr: JSON.stringify(job),
           employerStr: JSON.stringify({
             id: employer.id,
             name: employer.name,
             subInfo: employer.subInfo,
             logoColor: employer.logoColor,
             logoInitial: employer.logoInitial
-          }) 
-        } 
+          })
+        }
       });
     },
     [router]
@@ -806,6 +900,13 @@ export default function AIHubScreen() {
     [router]
   );
 
+  // Filter employers for selected tab
+  const visibleEmployers = selectedEmployerId
+    ? employers.filter((e) => e.id === selectedEmployerId)
+    : employers;
+
+  const openModal = () => { setInputValue('https://'); setModalVisible(true); };
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <ScrollView
@@ -814,76 +915,198 @@ export default function AIHubScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* ── Dark navy header section ── */}
-        <WishlistBar
-          pills={pills}
-          onRemove={handleRemovePill}
-          onAddPress={() => setModalVisible(true)}
-          sources={pills.length}
-          matches={stats.matches}
-        />
+        {/* ─── Dark navy hero header ─── */}
+        <LinearGradient
+          colors={['#0A0F24', '#111827']}
+          style={styles.hero}
+        >
+          {/* Top row: title + add button */}
+          <View style={styles.heroTopRow}>
+            <View>
+              <Text style={styles.heroEyebrow}>AI-POWERED</Text>
+              <Text style={styles.heroTitle}>Job Hub</Text>
+            </View>
+            <TouchableOpacity onPress={openModal} style={styles.heroAddBtn} activeOpacity={0.85}>
+              <LinearGradient
+                colors={[T.blue, T.blueDeep]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.heroAddBtnGradient}
+              >
+                <Ionicons name="add" size={18} color="#fff" />
+                <Text style={styles.heroAddBtnText}>Add Company</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
 
-        <StatsStrip matches={stats.matches} contacts={stats.contacts} verifiedPct={stats.verifiedPct} />
+          {/* AI status row */}
+          {employers.length > 0 && (
+            <View style={styles.aiStatusRow}>
+              <Animated.View style={[styles.pulseDot, { transform: [{ scale: pulseAnim }] }]} />
+              <Text style={styles.aiStatusText}>
+                AI active · {stats.sources} {stats.sources === 1 ? 'company' : 'companies'} · {stats.matches} {stats.matches === 1 ? 'match' : 'matches'} · {stats.contacts} contacts
+              </Text>
+            </View>
+          )}
 
-        {/* ── Light feed section ── */}
-        <View style={styles.feedSection}>
-          <Text style={styles.feedLabel}>JOB MATCHES</Text>
+          {/* Stats row */}
+          {employers.length > 0 && (
+            <View style={styles.statsRow}>
+              <View style={styles.statChip}>
+                <Text style={[styles.statValue, { color: '#22D3EE' }]}>{stats.matches}</Text>
+                <Text style={styles.statLabel}>Matches</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statChip}>
+                <Text style={[styles.statValue, { color: '#A78BFA' }]}>{stats.contacts}</Text>
+                <Text style={styles.statLabel}>Contacts</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statChip}>
+                <Text style={[styles.statValue, { color: '#34D399' }]}>{stats.verifiedPct}%</Text>
+                <Text style={styles.statLabel}>Verified</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statChip}>
+                <Text style={[styles.statValue, { color: '#FB923C' }]}>{stats.sources}</Text>
+                <Text style={styles.statLabel}>Companies</Text>
+              </View>
+            </View>
+          )}
 
+          {/* Tracked company pills (with remove) */}
+          {pills.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.pillsRow}
+            >
+              {pills.map((pill) => {
+                const c = PILL_COLORS[pill.colorVariant];
+                return (
+                  <View key={pill.id} style={[styles.pill, { backgroundColor: c.bg, borderColor: c.border }]}>
+                    <Text style={[styles.pillText, { color: c.text }]} numberOfLines={1}>{pill.label}</Text>
+                    <TouchableOpacity
+                      onPress={() => handleRemovePill(pill.id)}
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                    >
+                      <Ionicons name="close-circle" size={13} color={c.text} />
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+              <TouchableOpacity onPress={openModal} style={styles.addPillTrigger}>
+                <Ionicons name="add-outline" size={13} color="rgba(255,255,255,0.4)" />
+                <Text style={styles.addPillText}>Add...</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          )}
+        </LinearGradient>
+
+        {/* ─── Light content panel ─── */}
+        <View style={styles.panel}>
+
+          {/* Company tab switcher */}
+          <CompanyTabBar
+            employers={employers}
+            selectedId={selectedEmployerId}
+            onSelect={setSelectedEmployerId}
+          />
+
+          {/* ─── Content ─── */}
           {initialLoading ? (
-            <View style={styles.emptyStateContainer}>
-              <ActivityIndicator size="large" color="#06B6D4" />
+            <View style={styles.emptyState}>
+              <ActivityIndicator size="large" color={T.blue} />
               <Text style={styles.emptyStateTitle}>Loading your dashboard...</Text>
             </View>
           ) : employers.length === 0 && loadingCompanies.length === 0 ? (
-            <View style={styles.emptyStateContainer}>
-              <View style={styles.emptyStateIconCircle}>
-                <Ionicons name="briefcase-outline" size={48} color="#94A3B8" />
-              </View>
+            <View style={styles.emptyState}>
+              <LinearGradient colors={[T.blue, T.blueDeep]} style={styles.emptyStateIcon}>
+                <Ionicons name="briefcase-outline" size={32} color="#fff" />
+              </LinearGradient>
               <Text style={styles.emptyStateTitle}>No jobs tracked yet</Text>
-              <Text style={styles.emptyStateSubtitle}>
-                Add a company career page URL or company name above to let AI automatically extract jobs and hiring contacts that match your profile.
+              <Text style={styles.emptyStateSub}>
+                Add a company career page URL or company name to let AI automatically find matching jobs and hiring contacts.
               </Text>
-              <TouchableOpacity onPress={() => setModalVisible(true)} style={styles.emptyStateButton}>
+              <TouchableOpacity onPress={openModal} activeOpacity={0.85} style={styles.emptyStateBtnOuter}>
                 <LinearGradient
-                  colors={['#06B6D4', '#3B82F6']}
+                  colors={[T.blue, T.blueDeep]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
-                  style={styles.emptyStateButtonGradient}
+                  style={styles.emptyStateBtn}
                 >
                   <Ionicons name="add" size={18} color="white" />
-                  <Text style={styles.emptyStateButtonText}>Add target company</Text>
+                  <Text style={styles.emptyStateBtnText}>Add target company</Text>
                 </LinearGradient>
               </TouchableOpacity>
             </View>
           ) : (
             <>
+              {/* Loading cards */}
               {loadingCompanies.map((company) => (
-                <View key={company} style={styles.modernLoaderCard}>
+                <View key={company} style={styles.loaderCard}>
                   <View style={styles.loaderHeader}>
-                    <View style={styles.loaderIconWrapper}>
-                      <ActivityIndicator size="small" color="#FFF" />
-                    </View>
+                    <LinearGradient colors={[T.blue, T.purple]} style={styles.loaderIcon}>
+                      <ActivityIndicator size="small" color="#fff" />
+                    </LinearGradient>
                     <View style={styles.loaderTexts}>
-                      <Text style={styles.loaderTitle}>Analyzing {company}...</Text>
+                      <Text style={styles.loaderTitle}>Analyzing {company}</Text>
                       <Text style={styles.loaderSub}>AI is scraping and matching jobs</Text>
                     </View>
                   </View>
                   <IndeterminateBar />
-                  <Text style={styles.loaderFootnote}>This can take a minute. You can safely leave this app, we will notify you when it's done.</Text>
+                  <Text style={styles.loaderFootnote}>
+                    This can take a minute. You can leave the app — we'll notify you when done.
+                  </Text>
                 </View>
               ))}
 
-              {/* Interesting AI Tips / Suggestions - Shown separately at the top if something is loading */}
               {loadingCompanies.length > 0 && <LoadingTips />}
 
-              {employers.map((employer) => (
-                <EmployerSection
-                  key={employer.id}
-                  employer={employer}
-                  isProcessing={processingEmployerIds.has(employer.id)}
-                  onApply={handleApply}
-                  onAddContact={handleAddContact}
-                />
+              {/* Employer sections */}
+              {visibleEmployers.map((employer) => (
+                <View key={employer.id} style={styles.employerSection}>
+                  {/* Employer header card */}
+                  <View style={styles.employerHeaderCard}>
+                    <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.employerLogo}>
+                      <Text style={styles.employerLogoText}>{employer.logoInitial}</Text>
+                    </LinearGradient>
+                    <View style={styles.employerInfo}>
+                      <Text style={styles.employerName}>{employer.name}</Text>
+                      <Text style={styles.employerSub}>{employer.subInfo}</Text>
+                    </View>
+                    <View style={[
+                      styles.jobCountBadge,
+                      employer.status === 'active' ? styles.jobCountBadgeActive : styles.jobCountBadgeWatching
+                    ]}>
+                      <Text style={[
+                        styles.jobCountText,
+                        employer.status === 'active' ? styles.jobCountTextActive : styles.jobCountTextWatching
+                      ]}>
+                        {(employer.jobs || []).length} {(employer.jobs || []).length === 1 ? 'job' : 'jobs'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Job cards */}
+                  {(employer.jobs || []).map((job) => (
+                    <JobCard
+                      key={job.id}
+                      job={job}
+                      employer={employer}
+                      onApply={() => handleApply(employer, job)}
+                      onAddContact={() => handleAddContact(job.id)}
+                      onVisitJob={job.applyUrl ? () => Linking.openURL(job.applyUrl!) : undefined}
+                    />
+                  ))}
+
+                  {processingEmployerIds.has(employer.id) && (
+                    <View style={styles.processingRow}>
+                      <ActivityIndicator size="small" color={T.blue} />
+                      <Text style={styles.processingText}>Finding more positions...</Text>
+                    </View>
+                  )}
+                </View>
               ))}
             </>
           )}
@@ -894,19 +1117,17 @@ export default function AIHubScreen() {
       {featureFlag?.status === 'under_construction' && (
         <View style={styles.comingSoonOverlay}>
           <View style={styles.comingSoonCard}>
-            {/* Back button */}
             <TouchableOpacity
               style={styles.comingSoonBackBtn}
               onPress={() => router.back()}
               activeOpacity={0.75}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Ionicons name="arrow-back" size={18} color="#64748B" />
+              <Ionicons name="arrow-back" size={18} color={T.textMuted} />
               <Text style={styles.comingSoonBackText}>Go Back</Text>
             </TouchableOpacity>
-
             <LinearGradient
-              colors={['#06B6D4', '#3B82F6']}
+              colors={[T.blue, T.blueDeep]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={styles.comingSoonIconWrap}
@@ -919,18 +1140,12 @@ export default function AIHubScreen() {
               {featureFlag.message || "We're building something powerful — AI will automatically research companies, match jobs to your resume, and surface verified hiring contacts."}
             </Text>
             <View style={styles.comingSoonDivider} />
-            <View style={styles.comingSoonFeatureRow}>
-              <Ionicons name="checkmark-circle" size={14} color="#06B6D4" />
-              <Text style={styles.comingSoonFeatureText}>Auto job discovery from company pages</Text>
-            </View>
-            <View style={styles.comingSoonFeatureRow}>
-              <Ionicons name="checkmark-circle" size={14} color="#06B6D4" />
-              <Text style={styles.comingSoonFeatureText}>AI resume-to-job matching</Text>
-            </View>
-            <View style={styles.comingSoonFeatureRow}>
-              <Ionicons name="checkmark-circle" size={14} color="#06B6D4" />
-              <Text style={styles.comingSoonFeatureText}>Verified hiring manager contacts</Text>
-            </View>
+            {['Auto job discovery from company pages', 'AI resume-to-job matching', 'Verified hiring manager contacts'].map((f, i) => (
+              <View key={i} style={styles.featureRow}>
+                <Ionicons name="checkmark-circle" size={14} color={T.blue} />
+                <Text style={styles.featureText}>{f}</Text>
+              </View>
+            ))}
           </View>
         </View>
       )}
@@ -940,55 +1155,58 @@ export default function AIHubScreen() {
         visible={modalVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => setModalVisible(false)}
+        onRequestClose={() => { setInputValue('https://'); setModalVisible(false); }}
       >
         <TouchableOpacity
           style={styles.modalOverlay}
           activeOpacity={1}
-          onPress={() => setModalVisible(false)}
+          onPress={() => { setInputValue('https://'); setModalVisible(false); }}
         >
-          <View
-            style={styles.modalBox}
-            onStartShouldSetResponder={() => true}
-          >
-            <Text style={styles.modalTitle}>Add Target Company</Text>
-
+          <View style={styles.modalBox} onStartShouldSetResponder={() => true}>
+            <View style={styles.modalHeader}>
+              <LinearGradient colors={[T.blue, T.blueDeep]} style={styles.modalIconWrap}>
+                <Ionicons name="business-outline" size={20} color="#fff" />
+              </LinearGradient>
+              <Text style={styles.modalTitle}>Add Target Company</Text>
+            </View>
+            <Text style={styles.modalHint}>Enter a company name or career page URL</Text>
             <TextInput
               style={styles.modalInput}
-              placeholder="Company name or career page URL..."
-              placeholderTextColor="#94A3B8"
+              placeholder="e.g. https://careers.google.com"
+              placeholderTextColor={T.textFaint}
               value={inputValue}
               onChangeText={setInputValue}
               autoFocus
               returnKeyType="done"
               onSubmitEditing={handleAddPill}
+              autoCapitalize="none"
+              autoCorrect={false}
             />
-
             <View style={styles.modalButtons}>
               <TouchableOpacity
-                onPress={() => {
-                  setInputValue('');
-                  setModalVisible(false);
-                }}
+                onPress={() => { setInputValue('https://'); setModalVisible(false); }}
                 style={styles.modalCancelBtn}
               >
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
-
-              <TouchableOpacity onPress={handleAddPill} style={styles.modalAddBtnOuter}>
+              <TouchableOpacity onPress={handleAddPill} style={styles.modalAddBtnOuter} activeOpacity={0.85}>
                 <LinearGradient
-                  colors={['#06B6D4', '#3B82F6']}
+                  colors={[T.blue, T.blueDeep]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
                   style={styles.modalAddBtn}
                 >
-                  <Text style={styles.modalAddBtnText}>Add</Text>
+                  <Text style={styles.modalAddBtnText}>Search Jobs</Text>
+                  <Ionicons name="arrow-forward" size={15} color="#fff" />
                 </LinearGradient>
               </TouchableOpacity>
             </View>
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* ── Floating Tab Bar ── */}
+      <JobHubTabBar onAddPress={openModal} />
     </SafeAreaView>
   );
 }
@@ -998,6 +1216,789 @@ export default function AIHubScreen() {
 // ─────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: T.navBg,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    paddingBottom: 100,
+  },
+
+  // ── Hero header ──
+  hero: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 22,
+  },
+  heroTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  heroEyebrow: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.35)',
+    letterSpacing: 1.5,
+    marginBottom: 3,
+  },
+  heroTitle: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: -0.8,
+  },
+  heroAddBtn: {
+    borderRadius: 22,
+    overflow: 'hidden',
+  },
+  heroAddBtnGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 22,
+  },
+  heroAddBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: -0.2,
+  },
+  aiStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 16,
+  },
+  pulseDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#22D3EE',
+  },
+  aiStatusText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.4)',
+    fontStyle: 'italic',
+  },
+  statsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.09)',
+    borderRadius: 20,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    marginBottom: 14,
+    justifyContent: 'space-between',
+  },
+  statChip: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  statValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  statLabel: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.35)',
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  statDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  pillsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 30,
+    borderWidth: 1,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    gap: 5,
+    maxWidth: 160,
+  },
+  pillText: {
+    fontSize: 12,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  addPillTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 30,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: 'rgba(255,255,255,0.2)',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    gap: 4,
+  },
+  addPillText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.3)',
+  },
+
+  // ── Light panel ──
+  panel: {
+    flex: 1,
+    backgroundColor: T.bg,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingTop: 8,
+    paddingHorizontal: 16,
+    minHeight: 400,
+  },
+
+  // ── Company tab bar ──
+  companyTabScroll: {
+    marginBottom: 16,
+  },
+  companyTabContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+  },
+  companyTab: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 22,
+    backgroundColor: T.surface,
+    borderWidth: 1,
+    borderColor: T.border,
+    overflow: 'hidden',
+    shadowColor: T.ink,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  companyTabActive: {
+    borderColor: 'transparent',
+  },
+  companyTabGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  companyTabAvatarSmall: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  companyTabAvatarText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#fff',
+  },
+  companyTabLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: T.textMuted,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  companyTabLabelActive: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
+  },
+
+  // ── Empty state ──
+  emptyState: {
+    alignItems: 'center',
+    paddingTop: 60,
+    paddingHorizontal: 24,
+    paddingBottom: 40,
+  },
+  emptyStateIcon: {
+    width: 72,
+    height: 72,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 18,
+  },
+  emptyStateTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: T.ink,
+    letterSpacing: -0.4,
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  emptyStateSub: {
+    fontSize: 13,
+    color: T.textMuted,
+    lineHeight: 20,
+    textAlign: 'center',
+    marginBottom: 28,
+  },
+  emptyStateBtnOuter: {
+    borderRadius: 22,
+    overflow: 'hidden',
+  },
+  emptyStateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    paddingHorizontal: 28,
+  },
+  emptyStateBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
+  },
+
+  // ── Loader card ──
+  loaderCard: {
+    backgroundColor: T.surface,
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 14,
+    shadowColor: T.ink,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.07,
+    shadowRadius: 16,
+    elevation: 4,
+  },
+  loaderHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  loaderIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loaderTexts: {
+    flex: 1,
+  },
+  loaderTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: T.ink,
+    letterSpacing: -0.3,
+  },
+  loaderSub: {
+    fontSize: 12,
+    color: T.textMuted,
+    marginTop: 2,
+  },
+  loaderFootnote: {
+    fontSize: 11,
+    color: T.textFaint,
+    marginTop: 10,
+    lineHeight: 16,
+  },
+
+  // ── Employer section ──
+  employerSection: {
+    marginBottom: 28,
+  },
+  employerHeaderCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: T.surface,
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 12,
+    shadowColor: T.ink,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+  employerLogo: {
+    width: 44,
+    height: 44,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  employerLogoText: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#fff',
+  },
+  employerInfo: {
+    flex: 1,
+  },
+  employerName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: T.ink,
+    letterSpacing: -0.3,
+  },
+  employerSub: {
+    fontSize: 11,
+    color: T.textFaint,
+    marginTop: 2,
+  },
+  jobCountBadge: {
+    borderRadius: 20,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+  },
+  jobCountBadgeActive: { backgroundColor: '#DCFCE7' },
+  jobCountBadgeWatching: { backgroundColor: 'rgba(79,141,255,0.12)' },
+  jobCountText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  jobCountTextActive: { color: '#15803D' },
+  jobCountTextWatching: { color: T.blue },
+  processingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 4,
+    paddingVertical: 8,
+  },
+  processingText: {
+    fontSize: 12,
+    color: T.textMuted,
+    fontStyle: 'italic',
+  },
+
+  // ── Job Card ──
+  card: {
+    backgroundColor: T.surface,
+    borderRadius: 22,
+    marginBottom: 14,
+    shadowColor: T.ink,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.08,
+    shadowRadius: 20,
+    elevation: 6,
+    overflow: 'hidden',
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    padding: 16,
+    paddingBottom: 12,
+    gap: 12,
+  },
+  cardLogo: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  cardLogoText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#fff',
+  },
+  cardHeaderMid: {
+    flex: 1,
+  },
+  cardCompanyLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: T.textFaint,
+    letterSpacing: 0.5,
+    marginBottom: 3,
+    textTransform: 'uppercase',
+  },
+  jobTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: T.ink,
+    letterSpacing: -0.3,
+    lineHeight: 20,
+  },
+  matchBadge: {
+    alignItems: 'center',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    flexShrink: 0,
+  },
+  matchBadgeText: {
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 16,
+  },
+  matchBadgeLabel: {
+    fontSize: 9,
+    fontWeight: '600',
+    lineHeight: 12,
+  },
+  urgentBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(239,68,68,0.1)',
+    borderRadius: 10,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    flexShrink: 0,
+  },
+  urgentText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#EF4444',
+  },
+
+  // Meta chips
+  metaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  metaChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: T.bg,
+    borderWidth: 1,
+    borderColor: T.border,
+    borderRadius: 20,
+    paddingVertical: 4,
+    paddingHorizontal: 9,
+  },
+  metaChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: T.textMuted,
+  },
+
+  // Skills
+  skillsBlock: {
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  skillsChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  skillChip: {
+    backgroundColor: 'rgba(79,141,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(79,141,255,0.18)',
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  skillChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: T.blue,
+  },
+  skillChipMore: {
+    backgroundColor: T.bgSoft,
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  skillChipMoreText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: T.textMuted,
+  },
+
+  // Responsibilities
+  respPreview: {
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    gap: 5,
+  },
+  respRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  respDotCircle: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: T.blue,
+    marginTop: 6,
+    flexShrink: 0,
+  },
+  respText: {
+    fontSize: 12,
+    color: T.textMuted,
+    lineHeight: 18,
+    flex: 1,
+  },
+
+  // Divider
+  cardDivider: {
+    height: 1,
+    backgroundColor: T.border,
+    marginHorizontal: 16,
+  },
+
+  // Contacts zone
+  contactsZone: {
+    padding: 16,
+    paddingBottom: 12,
+  },
+  contactsLabel: {
+    fontSize: 10,
+    color: T.textFaint,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    marginBottom: 10,
+  },
+  contactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 8,
+  },
+  avatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarInitials: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: 'white',
+  },
+  contactMid: {
+    flex: 1,
+  },
+  contactName: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: T.ink,
+  },
+  contactRole: {
+    fontSize: 11,
+    color: T.textFaint,
+    marginTop: 1,
+  },
+  contactPhone: {
+    fontSize: 11,
+    color: T.textMuted,
+    marginTop: 1,
+  },
+  noContactsText: {
+    fontSize: 12,
+    color: T.textFaint,
+    fontStyle: 'italic',
+  },
+  contactRight: {
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  contactEmail: {
+    fontSize: 10,
+    color: T.blue,
+    maxWidth: 130,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+  },
+  contactBadgesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  verifiedBadge: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  linkedinBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 4,
+    backgroundColor: 'rgba(10,102,194,0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  // Card footer
+  cardFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    gap: 8,
+  },
+  addContactBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: T.bg,
+    borderWidth: 1,
+    borderColor: T.borderHi,
+    borderRadius: 20,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+  },
+  addContactBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: T.textMuted,
+  },
+  visitJobBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(79,141,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(79,141,255,0.2)',
+    borderRadius: 20,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+  },
+  visitJobBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: T.blue,
+  },
+  applyBtnOuter: {
+    flex: 1,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  applyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    paddingHorizontal: 16,
+  },
+  applyBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: -0.2,
+  },
+
+  // ── Modal ──
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(11,15,34,0.65)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  modalBox: {
+    backgroundColor: T.surface,
+    borderRadius: 28,
+    padding: 24,
+    width: '100%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 20 },
+    shadowOpacity: 0.2,
+    shadowRadius: 40,
+    elevation: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 6,
+  },
+  modalIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: T.ink,
+    letterSpacing: -0.4,
+  },
+  modalHint: {
+    fontSize: 13,
+    color: T.textMuted,
+    marginBottom: 16,
+    marginLeft: 52,
+  },
+  modalInput: {
+    backgroundColor: T.bg,
+    borderWidth: 1,
+    borderColor: T.borderHi,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    fontSize: 14,
+    color: T.ink,
+    marginBottom: 20,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    backgroundColor: T.bg,
+    borderRadius: 14,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  modalCancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: T.textMuted,
+  },
+  modalAddBtnOuter: {
+    flex: 2,
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  modalAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 13,
+    paddingHorizontal: 20,
+  },
+  modalAddBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
+  },
+
   // ── Coming Soon Overlay ──
   comingSoonOverlay: {
     position: 'absolute',
@@ -1009,7 +2010,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 28,
   },
   comingSoonCard: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: T.surface,
     borderRadius: 28,
     padding: 28,
     width: '100%',
@@ -1028,13 +2029,13 @@ const styles = StyleSheet.create({
     marginBottom: 18,
     paddingVertical: 6,
     paddingHorizontal: 10,
-    backgroundColor: '#F1F5F9',
+    backgroundColor: T.bg,
     borderRadius: 10,
   },
   comingSoonBackText: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#64748B',
+    color: T.textMuted,
   },
   comingSoonIconWrap: {
     width: 60,
@@ -1047,658 +2048,40 @@ const styles = StyleSheet.create({
   comingSoonBadge: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#06B6D4',
+    color: T.blue,
     letterSpacing: 1.5,
     marginBottom: 6,
   },
   comingSoonTitle: {
     fontSize: 22,
     fontWeight: '800',
-    color: '#0B1120',
+    color: T.ink,
     letterSpacing: -0.5,
     marginBottom: 10,
   },
   comingSoonDesc: {
     fontSize: 13,
-    color: '#64748B',
+    color: T.textMuted,
     textAlign: 'center',
     lineHeight: 19,
     marginBottom: 18,
   },
   comingSoonDivider: {
     height: 1,
-    backgroundColor: '#F1F5F9',
+    backgroundColor: T.border,
     width: '100%',
     marginBottom: 16,
   },
-  comingSoonFeatureRow: {
+  featureRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     alignSelf: 'flex-start',
     marginBottom: 8,
   },
-  comingSoonFeatureText: {
+  featureText: {
     fontSize: 13,
     color: '#334155',
     fontWeight: '500',
   },
-
-  // ── Root ──
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#0A0F24',
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-  },
-
-  // ── Wishlist Bar ──
-  wishlistBar: {
-    paddingHorizontal: 20,
-    paddingTop: 18,
-    paddingBottom: 16,
-  },
-  topHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 20,
-    marginTop: 10,
-  },
-  backButton: {
-    marginRight: 12,
-    marginLeft: -8,
-    padding: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  wishlistLabel: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#FFF',
-    letterSpacing: 0.5,
-    marginBottom: 10,
-  },
-  pillsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingRight: 4,
-  },
-  pill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 30,
-    borderWidth: 1,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    gap: 6,
-  },
-  pillText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  pillRemoveBtn: {
-    padding: 1,
-  },
-  addPillTrigger: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 30,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: 'rgba(6,182,212,0.45)',
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    gap: 4,
-  },
-  addPillText: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.4)',
-  },
-  aiStatusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 12,
-    gap: 8,
-  },
-  pulseDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#06B6D4',
-  },
-  aiStatusText: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.45)',
-    fontStyle: 'italic',
-  },
-
-  // ── Stats Strip ──
-  statsStrip: {
-    flexDirection: 'row',
-    paddingHorizontal: 20,
-    paddingBottom: 26,
-    gap: 12,
-  },
-  statCard: {
-    flex: 1,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.09)',
-    borderRadius: 16,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  statValue: {
-    fontSize: 24,
-    fontWeight: '700',
-  },
-  statLabel: {
-    fontSize: 10,
-    color: 'rgba(255,255,255,0.35)',
-    fontWeight: '600',
-    letterSpacing: 0.8,
-    marginTop: 3,
-  },
-
-  // ── Feed Section ──
-  feedSection: {
-    flex: 1, // Let it expand to fill the bottom of the screen
-    backgroundColor: '#F0F4FA',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    paddingTop: 22,
-    paddingHorizontal: 16,
-    paddingBottom: 80,
-  },
-  feedLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#94A3B8',
-    letterSpacing: 1.4,
-    marginBottom: 16,
-    marginLeft: 4,
-  },
-
-  // ── Employer Section ──
-  employerSection: {
-    marginBottom: 24,
-  },
-  employerHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 10,
-    paddingHorizontal: 4,
-  },
-  employerLogo: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10,
-  },
-  employerLogoInitial: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: 'white',
-  },
-  employerInfo: {
-    flex: 1,
-  },
-  employerName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  employerSubInfo: {
-    fontSize: 11,
-    color: '#94A3B8',
-    marginTop: 1,
-  },
-  matchBadge: {
-    borderRadius: 20,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-  },
-  matchBadgeActive: { backgroundColor: '#DCFCE7' },
-  matchBadgeWatching: { backgroundColor: '#EDE9FE' },
-  matchBadgeText: {
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  matchBadgeTextActive: { color: '#15803D' },
-  matchBadgeTextWatching: { color: '#6D28D9' },
-
-  // ── Job Card ──
-  card: {
-    backgroundColor: 'white',
-    borderRadius: 24,
-    marginBottom: 14,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.10,
-    shadowRadius: 32,
-    elevation: 8,
-    overflow: 'hidden',
-  },
-  cardBody: {
-    padding: 18,
-  },
-  jobTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginBottom: 10,
-    gap: 8,
-  },
-  jobTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#0F172A',
-    letterSpacing: -0.4,
-  },
-  matchScoreBadge: {
-    borderRadius: 20,
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    alignSelf: 'flex-start',
-    marginTop: 2,
-  },
-  matchScoreText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  badgesRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginBottom: 10,
-  },
-  badge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 20,
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    gap: 4,
-  },
-  badgeLocation: { backgroundColor: '#EFF6FF' },
-  badgeExperience: { backgroundColor: '#FFFBEB' },
-  badgeSalary: { backgroundColor: '#ECFDF5' },
-  badgeJobType: { backgroundColor: '#F5F3FF' },
-  badgeUrgent: { backgroundColor: '#FFF1F2' },
-  badgeText: {
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  skillsText: {
-    fontSize: 12,
-    color: '#94A3B8',
-    fontStyle: 'italic',
-  },
-
-  // ── Contacts Zone ──
-  contactsZone: {
-    backgroundColor: '#F8FAFC',
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-  },
-  contactsInner: {
-    padding: 14,
-    paddingHorizontal: 18,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-  },
-  contactsLabel: {
-    fontSize: 10,
-    color: '#CBD5E1',
-    fontWeight: '600',
-    letterSpacing: 1.2,
-    marginBottom: 10,
-  },
-  contactRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  avatar: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarInitials: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: 'white',
-  },
-  contactMid: {
-    flex: 1,
-  },
-  contactName: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#334155',
-  },
-  contactRole: {
-    fontSize: 10,
-    color: '#94A3B8',
-  },
-  contactPhone: {
-    fontSize: 10,
-    color: '#64748B',
-    marginTop: 1,
-  },
-  noContactsText: {
-    fontSize: 11,
-    color: '#CBD5E1',
-    fontStyle: 'italic',
-    marginTop: 2,
-  },
-  contactRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  contactEmail: {
-    fontSize: 10,
-    color: '#3B82F6',
-    maxWidth: 120,
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-  },
-  verifiedBadge: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  // ── Card Footer ──
-  cardFooter: {
-    backgroundColor: '#F8FAFC',
-    borderTopWidth: 1,
-    borderTopColor: '#EEF2F8',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 18,
-  },
-  cardFooterLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  visitJobBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    borderRadius: 20,
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    gap: 4,
-  },
-  visitJobBtnText: {
-    fontSize: 12,
-    color: '#3B82F6',
-    fontWeight: '600',
-  },
-  addContactBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'white',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 20,
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    gap: 4,
-  },
-  addContactBtnText: {
-    fontSize: 12,
-    color: '#64748B',
-  },
-  applyBtnWrapper: {
-    borderRadius: 20,
-    shadowColor: '#06B6D4',
-    shadowOpacity: 0.4,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
-  },
-  applyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 20,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    gap: 6,
-  },
-  applyBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: 'white',
-  },
-
-  // ── Loading More (inside employer section) ──
-  loadingMoreRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'white',
-    borderRadius: 16,
-    marginBottom: 14,
-    padding: 16,
-    gap: 10,
-    borderWidth: 1,
-    borderColor: '#E0F2FE',
-    shadowColor: '#06B6D4',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  loadingMoreText: {
-    fontSize: 13,
-    color: '#0EA5E9',
-    fontStyle: 'italic',
-    flex: 1,
-  },
-
-  // ── Loading Card ──
-  loadingCard: {
-    backgroundColor: 'white',
-    borderRadius: 16,
-    marginBottom: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 18,
-    gap: 12,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 16,
-    elevation: 4,
-  },
-  loadingCardText: {
-    fontSize: 13,
-    color: '#64748B',
-    fontStyle: 'italic',
-    flex: 1,
-  },
-
-  // ── Modal ──
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  modalBox: {
-    backgroundColor: 'white',
-    borderRadius: 20,
-    padding: 24,
-    width: '100%',
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#0F172A',
-    marginBottom: 16,
-  },
-  modalInput: {
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 12,
-    paddingVertical: 13,
-    paddingHorizontal: 14,
-    fontSize: 14,
-    color: '#0F172A',
-    marginBottom: 16,
-  },
-  modalButtons: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    gap: 12,
-  },
-  modalCancelBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-  },
-  modalCancelText: {
-    fontSize: 14,
-    color: '#64748B',
-  },
-  modalAddBtnOuter: {
-    borderRadius: 20,
-    overflow: 'hidden',
-  },
-  modalAddBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 24,
-  },
-  modalAddBtnText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: 'white',
-  },
-  emptyStateContainer: {
-    padding: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 40,
-    backgroundColor: 'white',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderStyle: 'dashed',
-  },
-  emptyStateIconCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#F1F5F9',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
-  },
-  emptyStateTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#1E293B',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  emptyStateSubtitle: {
-    fontSize: 15,
-    color: '#64748B',
-    textAlign: 'center',
-    marginBottom: 24,
-    lineHeight: 22,
-  },
-  emptyStateButton: {
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
-  emptyStateButtonGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    gap: 8,
-  },
-  emptyStateButtonText: {
-    color: 'white',
-    fontWeight: '600',
-    fontSize: 15,
-  },
-  modernLoaderCard: {
-    backgroundColor: 'white',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  loaderHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  loaderIconWrapper: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: '#06B6D4',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 16,
-  },
-  loaderTexts: {
-    flex: 1,
-  },
-  loaderTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#0F172A',
-    marginBottom: 4,
-  },
-  loaderSub: {
-    fontSize: 13,
-    color: '#64748B',
-  },
-  loaderProgressBg: {
-    height: 6,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 3,
-    marginBottom: 12,
-    overflow: 'hidden',
-  },
-  loaderProgressFill: {
-    height: '100%',
-    backgroundColor: '#06B6D4',
-    borderRadius: 3,
-  },
-  loaderFootnote: {
-    fontSize: 12,
-    color: '#94A3B8',
-    fontStyle: 'italic',
-  }
 });
