@@ -194,26 +194,96 @@ const ContactRow: React.FC<{ contact: Contact }> = ({ contact }) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
+// COMPANY CARD
+// ─────────────────────────────────────────────────────────────────
+
+type CompanyCardProps = { employer: Employer };
+
+const CompanyCard: React.FC<CompanyCardProps> = ({ employer }) => {
+  const jobCount   = (employer.jobs || []).length;
+  const contactCount = (employer.jobs || []).reduce((s, j) => s + (j.contacts || []).length, 0);
+  const isActive   = employer.status === 'active';
+
+  // Parse location + industry from subInfo (e.g. "San Francisco, CA · Fintech")
+  const parts = (employer.subInfo || '').split('·');
+  const location = parts[0]?.trim() || '';
+  const industry = parts[1]?.trim() || '';
+
+  return (
+    <View style={styles.companyCard}>
+      <LinearGradient
+        colors={['#0B0F22', '#111B38']}
+        start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      {/* Subtle blob behind logo */}
+      <View style={[styles.companyCardBlob, { backgroundColor: `${employer.logoColor?.[0] || '#4F8DFF'}30` }]} />
+
+      <View style={styles.companyCardInner}>
+        {/* Logo + info */}
+        <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.companyCardLogo}>
+          <Text style={styles.companyCardLogoText}>{employer.logoInitial}</Text>
+        </LinearGradient>
+
+        <View style={styles.companyCardInfo}>
+          <Text style={styles.companyCardName}>{employer.name}</Text>
+          {!!location && (
+            <View style={styles.companyCardLocRow}>
+              <Ionicons name="location-outline" size={11} color="rgba(255,255,255,0.45)" />
+              <Text style={styles.companyCardLoc}>{location}</Text>
+              {!!industry && <Text style={styles.companyCardIndustry}>· {industry}</Text>}
+            </View>
+          )}
+          <View style={styles.companyCardStatusRow}>
+            <View style={[styles.companyCardStatus, isActive ? styles.companyCardStatusActive : styles.companyCardStatusWatching]}>
+              <View style={[styles.companyCardStatusDot, { backgroundColor: isActive ? '#34D399' : '#FB923C' }]} />
+              <Text style={[styles.companyCardStatusText, { color: isActive ? '#34D399' : '#FB923C' }]}>
+                {isActive ? 'Active' : 'Watching'}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Stats */}
+        <View style={styles.companyCardStats}>
+          <View style={styles.companyCardStat}>
+            <Text style={styles.companyCardStatValue}>{jobCount}</Text>
+            <Text style={styles.companyCardStatLabel}>{jobCount === 1 ? 'Job' : 'Jobs'}</Text>
+          </View>
+          <View style={styles.companyCardStatDivider} />
+          <View style={styles.companyCardStat}>
+            <Text style={styles.companyCardStatValue}>{contactCount}</Text>
+            <Text style={styles.companyCardStatLabel}>Contacts</Text>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────
 // JOB CARD
 // ─────────────────────────────────────────────────────────────────
 
 type JobCardProps = {
   job: Job;
-  employer: Employer;
   onApply: () => void;
   onAddContact: () => void;
   onVisitJob?: () => void;
 };
 
-const JobCard: React.FC<JobCardProps> = ({ job, employer, onApply, onAddContact, onVisitJob }) => (
+function JobCard({ job, onApply, onAddContact, onVisitJob }: JobCardProps) {
+  const [skillsExpanded, setSkillsExpanded] = useState(false);
+  const SKILLS_PREVIEW = 5;
+  const allSkills = job.skills || [];
+  const visibleSkills = skillsExpanded ? allSkills : allSkills.slice(0, SKILLS_PREVIEW);
+  const hiddenCount = allSkills.length - SKILLS_PREVIEW;
+
+  return (
   <View style={styles.card}>
-    {/* ── Header: company logo + title + badges ── */}
+    {/* ── Header: title + badges ── */}
     <View style={styles.cardHeader}>
-      <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.cardLogo}>
-        <Text style={styles.cardLogoText}>{employer.logoInitial}</Text>
-      </LinearGradient>
       <View style={styles.cardHeaderMid}>
-        <Text style={styles.cardCompanyLabel}>{employer.name}</Text>
         <Text style={styles.jobTitle} numberOfLines={2}>{job.title}</Text>
       </View>
       <View style={styles.cardBadgesCol}>
@@ -264,19 +334,25 @@ const JobCard: React.FC<JobCardProps> = ({ job, employer, onApply, onAddContact,
     </View>
 
     {/* ── Skills ── */}
-    {(job.skills || []).length > 0 && (
+    {allSkills.length > 0 && (
       <View style={styles.cardSection}>
         <Text style={styles.cardSectionLabel}>SKILLS</Text>
         <View style={styles.skillsChipsRow}>
-          {(job.skills || []).slice(0, 6).map((skill, i) => (
+          {visibleSkills.map((skill, i) => (
             <View key={i} style={styles.skillChip}>
               <Text style={styles.skillChipText}>{skill}</Text>
             </View>
           ))}
-          {(job.skills || []).length > 6 && (
-            <View style={styles.skillChipMore}>
-              <Text style={styles.skillChipMoreText}>+{job.skills.length - 6}</Text>
-            </View>
+          {!skillsExpanded && hiddenCount > 0 && (
+            <TouchableOpacity onPress={() => setSkillsExpanded(true)} style={styles.skillChipMore} activeOpacity={0.75}>
+              <Text style={styles.skillChipMoreText}>+{hiddenCount} more</Text>
+            </TouchableOpacity>
+          )}
+          {skillsExpanded && allSkills.length > SKILLS_PREVIEW && (
+            <TouchableOpacity onPress={() => setSkillsExpanded(false)} style={styles.skillChipCollapse} activeOpacity={0.75}>
+              <Ionicons name="chevron-up" size={11} color={T.textMuted} />
+              <Text style={styles.skillChipCollapseText}>Less</Text>
+            </TouchableOpacity>
           )}
         </View>
       </View>
@@ -332,7 +408,8 @@ const JobCard: React.FC<JobCardProps> = ({ job, employer, onApply, onAddContact,
       </TouchableOpacity>
     </View>
   </View>
-);
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────
 // INDETERMINATE PROGRESS BAR
@@ -785,33 +862,13 @@ export default function AIHubScreen() {
               {/* Employer sections */}
               {visibleEmployers.map((employer) => (
                 <View key={employer.id} style={styles.employerSection}>
-                  {/* Section label (simple, not a heavy card) */}
-                  <View style={styles.employerLabel}>
-                    <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.employerLabelLogo}>
-                      <Text style={styles.employerLabelLogoText}>{employer.logoInitial}</Text>
-                    </LinearGradient>
-                    <View style={styles.employerLabelInfo}>
-                      <Text style={styles.employerLabelName}>{employer.name}</Text>
-                      <Text style={styles.employerLabelSub}>{employer.subInfo}</Text>
-                    </View>
-                    <View style={[
-                      styles.jobCountPill,
-                      employer.status === 'active' ? styles.jobCountPillActive : styles.jobCountPillWatching,
-                    ]}>
-                      <Text style={[
-                        styles.jobCountPillText,
-                        employer.status === 'active' ? styles.jobCountPillTextActive : styles.jobCountPillTextWatching,
-                      ]}>
-                        {(employer.jobs || []).length} {(employer.jobs || []).length === 1 ? 'job' : 'jobs'}
-                      </Text>
-                    </View>
-                  </View>
+                  {/* Company card */}
+                  <CompanyCard employer={employer} />
 
                   {(employer.jobs || []).map((job) => (
                     <JobCard
                       key={job.id}
                       job={job}
-                      employer={employer}
                       onApply={() => handleApply(employer, job)}
                       onAddContact={() => handleAddContact(job.id)}
                       onVisitJob={job.applyUrl ? () => Linking.openURL(job.applyUrl!) : undefined}
@@ -1145,35 +1202,85 @@ const styles = StyleSheet.create({
   loaderSub:    { fontSize: 12, color: T.textMuted, marginTop: 2 },
   loaderNote:   { fontSize: 11, color: T.textFaint, marginTop: 10, lineHeight: 16 },
 
-  // ── Employer section label ──
-  employerSection: { marginBottom: 24 },
-  employerLabel: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 4,
-    paddingVertical: 8,
-    marginBottom: 8,
-    gap: 10,
-  },
-  employerLabelLogo: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  employerLabelLogoText: { fontSize: 17, fontWeight: '800', color: '#fff' },
-  employerLabelInfo: { flex: 1 },
-  employerLabelName: { fontSize: 15, fontWeight: '700', color: T.ink, letterSpacing: -0.3 },
-  employerLabelSub:  { fontSize: 11, color: T.textFaint, marginTop: 1 },
-  jobCountPill: { borderRadius: 20, paddingVertical: 4, paddingHorizontal: 10 },
-  jobCountPillActive: { backgroundColor: '#DCFCE7' },
-  jobCountPillWatching: { backgroundColor: 'rgba(79,141,255,0.12)' },
-  jobCountPillText: { fontSize: 11, fontWeight: '700' },
-  jobCountPillTextActive: { color: '#15803D' },
-  jobCountPillTextWatching: { color: T.blue },
+  // ── Employer section ──
+  employerSection: { marginBottom: 28 },
   processingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4, paddingVertical: 8 },
   processingText: { fontSize: 12, color: T.textMuted, fontStyle: 'italic' },
+
+  // ── Company card ──
+  companyCard: {
+    borderRadius: 22,
+    marginBottom: 12,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.22,
+    shadowRadius: 20,
+    elevation: 8,
+  },
+  companyCardBlob: {
+    position: 'absolute',
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    top: -30,
+    left: -20,
+    zIndex: 0,
+  },
+  companyCardInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 18,
+    gap: 14,
+    zIndex: 1,
+  },
+  companyCardLogo: {
+    width: 54,
+    height: 54,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  companyCardLogoText: { fontSize: 22, fontWeight: '800', color: '#fff' },
+  companyCardInfo: { flex: 1 },
+  companyCardName: { fontSize: 17, fontWeight: '800', color: '#fff', letterSpacing: -0.5, marginBottom: 4 },
+  companyCardLocRow: { flexDirection: 'row', alignItems: 'center', gap: 3, marginBottom: 6 },
+  companyCardLoc:    { fontSize: 12, color: 'rgba(255,255,255,0.55)', fontWeight: '500' },
+  companyCardIndustry: { fontSize: 12, color: 'rgba(255,255,255,0.35)' },
+  companyCardStatusRow: { flexDirection: 'row' },
+  companyCardStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: 20,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+  },
+  companyCardStatusActive:   { backgroundColor: 'rgba(52,211,153,0.15)', borderWidth: 1, borderColor: 'rgba(52,211,153,0.3)' },
+  companyCardStatusWatching: { backgroundColor: 'rgba(251,146,60,0.15)',  borderWidth: 1, borderColor: 'rgba(251,146,60,0.3)' },
+  companyCardStatusDot: { width: 5, height: 5, borderRadius: 2.5 },
+  companyCardStatusText: { fontSize: 11, fontWeight: '700' },
+  companyCardStats: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    gap: 2,
+    flexDirection: 'row',
+  },
+  companyCardStat: { alignItems: 'center', paddingHorizontal: 8 },
+  companyCardStatValue: { fontSize: 18, fontWeight: '800', color: '#fff', letterSpacing: -0.5 },
+  companyCardStatLabel: { fontSize: 9, color: 'rgba(255,255,255,0.4)', fontWeight: '600', marginTop: 1, letterSpacing: 0.3 },
+  companyCardStatDivider: { width: 1, height: 24, backgroundColor: 'rgba(255,255,255,0.1)' },
 
   // ── Job card ──
   card: {
@@ -1190,28 +1297,12 @@ const styles = StyleSheet.create({
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    padding: 16,
-    paddingBottom: 12,
-    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 10,
+    gap: 10,
   },
-  cardLogo: {
-    width: 44,
-    height: 44,
-    borderRadius: 13,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  cardLogoText: { fontSize: 18, fontWeight: '800', color: '#fff' },
   cardHeaderMid: { flex: 1 },
-  cardCompanyLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: T.textFaint,
-    letterSpacing: 0.5,
-    marginBottom: 3,
-    textTransform: 'uppercase',
-  },
   jobTitle: {
     fontSize: 15,
     fontWeight: '700',
@@ -1284,8 +1375,25 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   skillChipText: { fontSize: 11, fontWeight: '600', color: T.blue },
-  skillChipMore: { backgroundColor: T.bgSoft, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
-  skillChipMoreText: { fontSize: 11, fontWeight: '600', color: T.textMuted },
+  skillChipMore: {
+    backgroundColor: 'rgba(79,141,255,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(79,141,255,0.25)',
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  skillChipMoreText: { fontSize: 11, fontWeight: '700', color: T.blue },
+  skillChipCollapse: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: T.bgSoft,
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  skillChipCollapseText: { fontSize: 11, fontWeight: '600', color: T.textMuted },
 
   // Responsibilities
   respRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 5 },
