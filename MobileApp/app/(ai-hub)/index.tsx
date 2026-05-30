@@ -197,43 +197,40 @@ const ContactRow: React.FC<{ contact: Contact }> = ({ contact }) => {
 // COMPANY CARD
 // ─────────────────────────────────────────────────────────────────
 
-type CompanyCardProps = { employer: Employer };
+type CompanyCardProps = {
+  employer: Employer;
+  selected: boolean;
+  onPress: () => void;
+};
 
-const CompanyCard: React.FC<CompanyCardProps> = ({ employer }) => {
-  const jobCount   = (employer.jobs || []).length;
+const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, onPress }) => {
+  const jobCount     = (employer.jobs || []).length;
   const contactCount = (employer.jobs || []).reduce((s, j) => s + (j.contacts || []).length, 0);
-  const isActive   = employer.status === 'active';
-
-  // Parse location + industry from subInfo (e.g. "San Francisco, CA · Fintech")
-  const parts = (employer.subInfo || '').split('·');
-  const location = parts[0]?.trim() || '';
-  const industry = parts[1]?.trim() || '';
+  const isActive     = employer.status === 'active';
 
   return (
-    <View style={styles.companyCard}>
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.88}
+      style={[styles.companyCard, selected && styles.companyCardSelected]}
+    >
       <LinearGradient
         colors={['#0B0F22', '#111B38']}
         start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
         style={StyleSheet.absoluteFillObject}
       />
-      {/* Subtle blob behind logo */}
+      {/* Blob */}
       <View style={[styles.companyCardBlob, { backgroundColor: `${employer.logoColor?.[0] || '#4F8DFF'}30` }]} />
 
       <View style={styles.companyCardInner}>
-        {/* Logo + info */}
+        {/* Logo */}
         <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.companyCardLogo}>
           <Text style={styles.companyCardLogoText}>{employer.logoInitial}</Text>
         </LinearGradient>
 
+        {/* Name + status */}
         <View style={styles.companyCardInfo}>
-          <Text style={styles.companyCardName}>{employer.name}</Text>
-          {!!location && (
-            <View style={styles.companyCardLocRow}>
-              <Ionicons name="location-outline" size={11} color="rgba(255,255,255,0.45)" />
-              <Text style={styles.companyCardLoc}>{location}</Text>
-              {!!industry && <Text style={styles.companyCardIndustry}>· {industry}</Text>}
-            </View>
-          )}
+          <Text style={styles.companyCardName} numberOfLines={1}>{employer.name}</Text>
           <View style={styles.companyCardStatusRow}>
             <View style={[styles.companyCardStatus, isActive ? styles.companyCardStatusActive : styles.companyCardStatusWatching]}>
               <View style={[styles.companyCardStatusDot, { backgroundColor: isActive ? '#34D399' : '#FB923C' }]} />
@@ -257,7 +254,7 @@ const CompanyCard: React.FC<CompanyCardProps> = ({ employer }) => {
           </View>
         </View>
       </View>
-    </View>
+    </TouchableOpacity>
   );
 };
 
@@ -859,12 +856,28 @@ export default function AIHubScreen() {
               ))}
               {loadingCompanies.length > 0 && <LoadingTips />}
 
-              {/* Employer sections */}
+              {/* ── Horizontal company card strip ── */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.companyStrip}
+                style={styles.companyStripScroll}
+              >
+                {employers.map((employer) => (
+                  <CompanyCard
+                    key={employer.id}
+                    employer={employer}
+                    selected={selectedEmployerId === employer.id}
+                    onPress={() => setSelectedEmployerId(
+                      selectedEmployerId === employer.id ? null : employer.id
+                    )}
+                  />
+                ))}
+              </ScrollView>
+
+              {/* ── Job cards for selected / all companies ── */}
               {visibleEmployers.map((employer) => (
                 <View key={employer.id} style={styles.employerSection}>
-                  {/* Company card */}
-                  <CompanyCard employer={employer} />
-
                   {(employer.jobs || []).map((job) => (
                     <JobCard
                       key={job.id}
@@ -874,7 +887,6 @@ export default function AIHubScreen() {
                       onVisitJob={job.applyUrl ? () => Linking.openURL(job.applyUrl!) : undefined}
                     />
                   ))}
-
                   {processingEmployerIds.has(employer.id) && (
                     <View style={styles.processingRow}>
                       <ActivityIndicator size="small" color={T.blue} />
@@ -1207,16 +1219,32 @@ const styles = StyleSheet.create({
   processingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4, paddingVertical: 8 },
   processingText: { fontSize: 12, color: T.textMuted, fontStyle: 'italic' },
 
+  // ── Company strip (horizontal scroll) ──
+  companyStripScroll: { marginBottom: 16 },
+  companyStrip: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 2,
+  },
+
   // ── Company card ──
   companyCard: {
+    width: SCREEN_W * 0.72,
     borderRadius: 22,
-    marginBottom: 12,
     overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.22,
     shadowRadius: 20,
     elevation: 8,
+  },
+  companyCardSelected: {
+    shadowOpacity: 0.38,
+    shadowRadius: 28,
+    elevation: 14,
+    borderWidth: 2,
+    borderColor: T.blue,
   },
   companyCardBlob: {
     position: 'absolute',
@@ -1249,10 +1277,7 @@ const styles = StyleSheet.create({
   },
   companyCardLogoText: { fontSize: 22, fontWeight: '800', color: '#fff' },
   companyCardInfo: { flex: 1 },
-  companyCardName: { fontSize: 17, fontWeight: '800', color: '#fff', letterSpacing: -0.5, marginBottom: 4 },
-  companyCardLocRow: { flexDirection: 'row', alignItems: 'center', gap: 3, marginBottom: 6 },
-  companyCardLoc:    { fontSize: 12, color: 'rgba(255,255,255,0.55)', fontWeight: '500' },
-  companyCardIndustry: { fontSize: 12, color: 'rgba(255,255,255,0.35)' },
+  companyCardName: { fontSize: 16, fontWeight: '800', color: '#fff', letterSpacing: -0.5, marginBottom: 6 },
   companyCardStatusRow: { flexDirection: 'row' },
   companyCardStatus: {
     flexDirection: 'row',
@@ -1274,7 +1299,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 10,
     paddingHorizontal: 14,
-    gap: 2,
     flexDirection: 'row',
   },
   companyCardStat: { alignItems: 'center', paddingHorizontal: 8 },
