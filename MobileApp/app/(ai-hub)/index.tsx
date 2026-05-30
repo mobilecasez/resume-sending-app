@@ -34,23 +34,25 @@ import { LoadingTips } from './LoadingTips';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
-// ─── Design tokens (matching HomeScreen) ─────────────────────────────────────
+// ─── Design tokens (identical to ReviewScreen / HomeScreen) ──────────────────
 const T = {
-  bg:        '#E5EAF3',
-  bgSoft:    '#DCE2ED',
-  surface:   '#FFFFFF',
-  ink:       '#0B0F22',
-  textMuted: '#5B6B8A',
-  textFaint: '#8896B0',
-  border:    'rgba(11,15,34,0.06)',
-  borderHi:  'rgba(11,15,34,0.10)',
-  blue:      '#4F8DFF',
-  blueDeep:  '#2563EB',
-  purple:    '#7C6BFF',
-  teal:      '#14B8A6',
-  emerald:   '#10B981',
-  rose:      '#EF4444',
-  navBg:     '#0A0F24',
+  bg:         '#E5EAF3',
+  bgSoft:     '#DCE2ED',
+  surface:    '#FFFFFF',
+  inputBg:    '#F1F4FA',
+  ink:        '#0B0F22',
+  inkSoft:    '#1A2046',
+  textMuted:  '#5B6B8A',
+  textFaint:  '#8896B0',
+  border:     'rgba(11,15,34,0.06)',
+  borderHi:   'rgba(11,15,34,0.10)',
+  blue:       '#4F8DFF',
+  blueDeep:   '#2563EB',
+  purple:     '#7C6BFF',
+  teal:       '#14B8A6',
+  emerald:    '#10B981',
+  amber:      '#F59E0B',
+  rose:       '#EF4444',
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -74,24 +76,11 @@ const MOCK_EMPLOYERS: Employer[] = [
         salary: '$200K–$260K',
         jobType: 'Full-time',
         urgent: false,
-        skills: ['SwiftUI', 'Combine', 'Core Data', 'UIKit'], responsibilities: ['Build iOS features with SwiftUI', 'Maintain Core Data persistence layer', 'Collaborate with design team', 'Review pull requests'],
+        skills: ['SwiftUI', 'Combine', 'Core Data', 'UIKit'],
+        responsibilities: ['Build iOS features with SwiftUI', 'Maintain Core Data persistence layer', 'Collaborate with design team', 'Review pull requests'],
         contacts: [
-          {
-            id: 'apple-c1',
-            name: 'Sarah Chen',
-            role: 'Engineering Manager',
-            email: 's.chen@apple.com',
-            verified: true,
-            avatarColor: ['#06B6D4', '#3B82F6'],
-          },
-          {
-            id: 'apple-c2',
-            name: 'James Park',
-            role: 'Senior Recruiter',
-            email: 'j.park@apple.com',
-            verified: true,
-            avatarColor: ['#8B5CF6', '#6D28D9'],
-          },
+          { id: 'apple-c1', name: 'Sarah Chen', role: 'Engineering Manager', email: 's.chen@apple.com', verified: true, avatarColor: ['#06B6D4', '#3B82F6'] },
+          { id: 'apple-c2', name: 'James Park', role: 'Senior Recruiter', email: 'j.park@apple.com', verified: true, avatarColor: ['#8B5CF6', '#6D28D9'] },
         ],
       },
       {
@@ -102,16 +91,10 @@ const MOCK_EMPLOYERS: Employer[] = [
         salary: '$250K–$320K',
         jobType: 'Full-time',
         urgent: true,
-        skills: ['PyTorch', 'Core ML', 'Python', 'NLP', 'LLMs'], responsibilities: ['Train and fine-tune ML models', 'Deploy models to production', 'Collaborate with product teams', 'Monitor model performance'],
+        skills: ['PyTorch', 'Core ML', 'Python', 'NLP', 'LLMs'],
+        responsibilities: ['Train and fine-tune ML models', 'Deploy models to production', 'Collaborate with product teams', 'Monitor model performance'],
         contacts: [
-          {
-            id: 'apple-c3',
-            name: 'Priya Nair',
-            role: 'ML Team Lead',
-            email: 'p.nair@apple.com',
-            verified: true,
-            avatarColor: ['#10B981', '#059669'],
-          },
+          { id: 'apple-c3', name: 'Priya Nair', role: 'ML Team Lead', email: 'p.nair@apple.com', verified: true, avatarColor: ['#10B981', '#059669'] },
         ],
       },
     ],
@@ -135,59 +118,21 @@ const MOCK_EMPLOYERS: Employer[] = [
         skills: ['React', 'TypeScript', 'Node.js', 'GraphQL'],
         responsibilities: ['Build developer tools and APIs', 'Improve CI/CD pipelines', 'Write technical documentation', 'Lead platform architecture decisions'],
         contacts: [
-          {
-            id: 'stripe-c1',
-            name: 'Alex Rivera',
-            role: 'Engineering Manager',
-            email: 'a.rivera@stripe.com',
-            verified: true,
-            avatarColor: ['#635BFF', '#4338CA'],
-          },
-          {
-            id: 'stripe-c2',
-            name: 'Mia Thompson',
-            role: 'Technical Recruiter',
-            email: 'm.thompson@stripe.com',
-            verified: false,
-            avatarColor: ['#F59E0B', '#D97706'],
-          },
+          { id: 'stripe-c1', name: 'Alex Rivera', role: 'Engineering Manager', email: 'a.rivera@stripe.com', verified: true, avatarColor: ['#635BFF', '#4338CA'] },
+          { id: 'stripe-c2', name: 'Mia Thompson', role: 'Technical Recruiter', email: 'm.thompson@stripe.com', verified: false, avatarColor: ['#F59E0B', '#D97706'] },
         ],
       },
     ],
   },
 ];
 
-const INITIAL_PILLS: WishlistPill[] = [
-  { id: '1', label: 'Apple Inc.', colorVariant: 'cyan', employerId: 'apple' },
-  { id: '2', label: 'Stripe', colorVariant: 'violet', employerId: 'stripe' },
-  { id: '3', label: 'careers.openai.com', colorVariant: 'emerald' },
-];
-
-const INITIAL_STATS = { matches: 12, contacts: 7, verifiedPct: 94 };
-
-// ─────────────────────────────────────────────────────────────────
-// PILL COLOR MAP
-// ─────────────────────────────────────────────────────────────────
+const COLOR_CYCLE: Array<'cyan' | 'violet' | 'emerald'> = ['cyan', 'violet', 'emerald'];
 
 const PILL_COLORS = {
-  cyan: {
-    bg: 'rgba(6,182,212,0.15)',
-    border: 'rgba(6,182,212,0.28)',
-    text: '#67E8F9',
-  },
-  violet: {
-    bg: 'rgba(139,92,246,0.15)',
-    border: 'rgba(139,92,246,0.28)',
-    text: '#C4B5FD',
-  },
-  emerald: {
-    bg: 'rgba(16,185,129,0.15)',
-    border: 'rgba(16,185,129,0.28)',
-    text: '#6EE7B7',
-  },
+  cyan:    { bg: 'rgba(6,182,212,0.15)',   border: 'rgba(6,182,212,0.28)',   text: '#67E8F9' },
+  violet:  { bg: 'rgba(139,92,246,0.15)',  border: 'rgba(139,92,246,0.28)',  text: '#C4B5FD' },
+  emerald: { bg: 'rgba(16,185,129,0.15)',  border: 'rgba(16,185,129,0.28)',  text: '#6EE7B7' },
 } as const;
-
-const COLOR_CYCLE: Array<'cyan' | 'violet' | 'emerald'> = ['cyan', 'violet', 'emerald'];
 
 // ─────────────────────────────────────────────────────────────────
 // CONTACT ROW
@@ -210,6 +155,7 @@ const ContactRow: React.FC<{ contact: Contact }> = ({ contact }) => {
 
   return (
     <View style={styles.contactRow}>
+      {/* Avatar — photo if available, else gradient initials */}
       {contact.imageUrl ? (
         <Image source={{ uri: contact.imageUrl }} style={styles.avatar} />
       ) : (
@@ -218,32 +164,27 @@ const ContactRow: React.FC<{ contact: Contact }> = ({ contact }) => {
         </LinearGradient>
       )}
 
+      {/* Name + role */}
       <View style={styles.contactMid}>
         <Text style={styles.contactName}>{contact.name}</Text>
         <Text style={styles.contactRole}>{contact.role}</Text>
-        {!!contact.phone && (
-          <Text style={styles.contactPhone}>{contact.phone}</Text>
-        )}
+        {!!contact.phone && <Text style={styles.contactPhone}>{contact.phone}</Text>}
       </View>
 
+      {/* Email + badges */}
       <View style={styles.contactRight}>
         {!!contact.email && (
-          <Text style={styles.contactEmail} numberOfLines={1}>
-            {contact.email}
-          </Text>
+          <Text style={styles.contactEmail} numberOfLines={1}>{contact.email}</Text>
         )}
         <View style={styles.contactBadgesRow}>
           {contact.verified && (
-            <LinearGradient
-              colors={['#10B981', '#059669']}
-              style={styles.verifiedBadge}
-            >
-              <Ionicons name="checkmark" size={9} color="white" />
+            <LinearGradient colors={[T.emerald, '#059669']} style={styles.verifiedBadge}>
+              <Ionicons name="checkmark" size={10} color="white" />
             </LinearGradient>
           )}
           {!!contact.linkedin && (
-            <TouchableOpacity onPress={openLinkedIn} style={styles.linkedinBtn}>
-              <Ionicons name="logo-linkedin" size={14} color="#0A66C2" />
+            <TouchableOpacity onPress={openLinkedIn} style={styles.linkedinBtn} activeOpacity={0.7}>
+              <Ionicons name="logo-linkedin" size={18} color="#0A66C2" />
             </TouchableOpacity>
           )}
         </View>
@@ -253,7 +194,7 @@ const ContactRow: React.FC<{ contact: Contact }> = ({ contact }) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// JOB CARD (redesigned)
+// JOB CARD
 // ─────────────────────────────────────────────────────────────────
 
 type JobCardProps = {
@@ -266,7 +207,7 @@ type JobCardProps = {
 
 const JobCard: React.FC<JobCardProps> = ({ job, employer, onApply, onAddContact, onVisitJob }) => (
   <View style={styles.card}>
-    {/* ── Card Header: company logo + title + match ── */}
+    {/* ── Header: company logo + title + badges ── */}
     <View style={styles.cardHeader}>
       <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.cardLogo}>
         <Text style={styles.cardLogoText}>{employer.logoInitial}</Text>
@@ -275,88 +216,88 @@ const JobCard: React.FC<JobCardProps> = ({ job, employer, onApply, onAddContact,
         <Text style={styles.cardCompanyLabel}>{employer.name}</Text>
         <Text style={styles.jobTitle} numberOfLines={2}>{job.title}</Text>
       </View>
-      {job.matchScore != null && job.matchScore > 0 && (
-        <View style={[
-          styles.matchBadge,
-          { backgroundColor: job.matchScore >= 70 ? 'rgba(16,185,129,0.12)' : job.matchScore >= 40 ? 'rgba(251,146,60,0.12)' : 'rgba(148,163,184,0.12)' }
-        ]}>
-          <Text style={[
-            styles.matchBadgeText,
-            { color: job.matchScore >= 70 ? '#059669' : job.matchScore >= 40 ? '#EA580C' : '#64748B' }
-          ]}>{job.matchScore}%</Text>
-          <Text style={[styles.matchBadgeLabel, { color: job.matchScore >= 70 ? '#059669' : job.matchScore >= 40 ? '#EA580C' : '#64748B' }]}>match</Text>
-        </View>
-      )}
-      {job.urgent && (
-        <View style={styles.urgentBadge}>
-          <Ionicons name="flash" size={11} color="#EF4444" />
-          <Text style={styles.urgentText}>Urgent</Text>
-        </View>
-      )}
+      <View style={styles.cardBadgesCol}>
+        {job.urgent && (
+          <View style={styles.urgentBadge}>
+            <Ionicons name="flash" size={10} color="#EF4444" />
+            <Text style={styles.urgentText}>Urgent</Text>
+          </View>
+        )}
+        {job.matchScore != null && job.matchScore > 0 && (
+          <View style={[
+            styles.matchBadge,
+            { backgroundColor: job.matchScore >= 70 ? 'rgba(16,185,129,0.12)' : job.matchScore >= 40 ? 'rgba(251,146,60,0.12)' : 'rgba(148,163,184,0.12)' }
+          ]}>
+            <Text style={[
+              styles.matchBadgeText,
+              { color: job.matchScore >= 70 ? '#059669' : job.matchScore >= 40 ? '#EA580C' : '#64748B' }
+            ]}>{job.matchScore}% match</Text>
+          </View>
+        )}
+      </View>
     </View>
 
     {/* ── Meta chips ── */}
     <View style={styles.metaRow}>
       <View style={styles.metaChip}>
-        <Ionicons name="location-outline" size={11} color={T.blue} />
+        <Ionicons name="location-outline" size={12} color={T.blue} />
         <Text style={styles.metaChipText}>{job.location}</Text>
       </View>
-      {job.experience ? (
+      {!!job.experience && (
         <View style={styles.metaChip}>
-          <Ionicons name="time-outline" size={11} color="#A78BFA" />
+          <Ionicons name="time-outline" size={12} color="#A78BFA" />
           <Text style={styles.metaChipText}>{job.experience}</Text>
         </View>
-      ) : null}
-      {job.salary && job.salary !== 'Not listed' ? (
+      )}
+      {!!job.salary && job.salary !== 'Not listed' && (
         <View style={styles.metaChip}>
-          <Ionicons name="cash-outline" size={11} color="#34D399" />
+          <Ionicons name="cash-outline" size={12} color="#34D399" />
           <Text style={styles.metaChipText}>{job.salary}</Text>
         </View>
-      ) : null}
-      {job.jobType ? (
+      )}
+      {!!job.jobType && (
         <View style={styles.metaChip}>
-          <Ionicons name="briefcase-outline" size={11} color="#FB923C" />
+          <Ionicons name="briefcase-outline" size={12} color="#FB923C" />
           <Text style={styles.metaChipText}>{job.jobType}</Text>
         </View>
-      ) : null}
+      )}
     </View>
 
     {/* ── Skills ── */}
     {(job.skills || []).length > 0 && (
-      <View style={styles.skillsBlock}>
+      <View style={styles.cardSection}>
+        <Text style={styles.cardSectionLabel}>SKILLS</Text>
         <View style={styles.skillsChipsRow}>
-          {(job.skills || []).slice(0, 5).map((skill, i) => (
+          {(job.skills || []).slice(0, 6).map((skill, i) => (
             <View key={i} style={styles.skillChip}>
               <Text style={styles.skillChipText}>{skill}</Text>
             </View>
           ))}
-          {(job.skills || []).length > 5 && (
+          {(job.skills || []).length > 6 && (
             <View style={styles.skillChipMore}>
-              <Text style={styles.skillChipMoreText}>+{job.skills.length - 5}</Text>
+              <Text style={styles.skillChipMoreText}>+{job.skills.length - 6}</Text>
             </View>
           )}
         </View>
       </View>
     )}
 
-    {/* ── Responsibilities preview ── */}
+    {/* ── Responsibilities ── */}
     {(job.responsibilities || []).length > 0 && (
-      <View style={styles.respPreview}>
-        {(job.responsibilities || []).slice(0, 2).map((r, i) => (
+      <View style={styles.cardSection}>
+        <Text style={styles.cardSectionLabel}>RESPONSIBILITIES</Text>
+        {(job.responsibilities || []).slice(0, 3).map((r, i) => (
           <View key={i} style={styles.respRow}>
-            <View style={styles.respDotCircle} />
+            <View style={styles.respDot} />
             <Text style={styles.respText}>{r}</Text>
           </View>
         ))}
       </View>
     )}
 
-    {/* ── Divider ── */}
-    <View style={styles.cardDivider} />
-
     {/* ── Contacts ── */}
-    <View style={styles.contactsZone}>
-      <Text style={styles.contactsLabel}>HIRING CONTACTS</Text>
+    <View style={styles.cardSectionContacts}>
+      <Text style={styles.cardSectionLabel}>HIRING CONTACTS</Text>
       {(job.contacts || []).length > 0 ? (
         (job.contacts || []).map((contact) => (
           <ContactRow key={contact.id} contact={contact} />
@@ -366,20 +307,18 @@ const JobCard: React.FC<JobCardProps> = ({ job, employer, onApply, onAddContact,
       )}
     </View>
 
-    {/* ── Card Footer ── */}
+    {/* ── Footer ── */}
     <View style={styles.cardFooter}>
       <TouchableOpacity onPress={onAddContact} style={styles.addContactBtn}>
         <Ionicons name="person-add-outline" size={13} color={T.textMuted} />
         <Text style={styles.addContactBtnText}>Add Contact</Text>
       </TouchableOpacity>
-
       {!!job.applyUrl && (
         <TouchableOpacity onPress={onVisitJob} style={styles.visitJobBtn}>
           <Ionicons name="open-outline" size={13} color={T.blue} />
           <Text style={styles.visitJobBtnText}>View Job</Text>
         </TouchableOpacity>
       )}
-
       <TouchableOpacity onPress={onApply} activeOpacity={0.85} style={styles.applyBtnOuter}>
         <LinearGradient
           colors={[T.blue, T.blueDeep]}
@@ -396,190 +335,70 @@ const JobCard: React.FC<JobCardProps> = ({ job, employer, onApply, onAddContact,
 );
 
 // ─────────────────────────────────────────────────────────────────
-// COMPANY TAB BAR
-// ─────────────────────────────────────────────────────────────────
-
-type CompanyTabBarProps = {
-  employers: Employer[];
-  selectedId: string | null;
-  onSelect: (id: string | null) => void;
-};
-
-const CompanyTabBar: React.FC<CompanyTabBarProps> = ({ employers, selectedId, onSelect }) => {
-  if (employers.length === 0) return null;
-  return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      style={styles.companyTabScroll}
-      contentContainerStyle={styles.companyTabContent}
-    >
-      {/* "All" tab */}
-      <TouchableOpacity
-        onPress={() => onSelect(null)}
-        style={[styles.companyTab, selectedId === null && styles.companyTabActive]}
-        activeOpacity={0.75}
-      >
-        {selectedId === null ? (
-          <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.companyTabGradient}>
-            <Text style={styles.companyTabLabelActive}>All</Text>
-          </LinearGradient>
-        ) : (
-          <Text style={styles.companyTabLabel}>All</Text>
-        )}
-      </TouchableOpacity>
-
-      {employers.map((emp) => {
-        const isSelected = selectedId === emp.id;
-        return (
-          <TouchableOpacity
-            key={emp.id}
-            onPress={() => onSelect(emp.id)}
-            style={[styles.companyTab, isSelected && styles.companyTabActive]}
-            activeOpacity={0.75}
-          >
-            {isSelected ? (
-              <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.companyTabGradient}>
-                <LinearGradient colors={emp.logoColor || ['#555', '#222']} style={styles.companyTabAvatarSmall}>
-                  <Text style={styles.companyTabAvatarText}>{emp.logoInitial}</Text>
-                </LinearGradient>
-                <Text style={styles.companyTabLabelActive} numberOfLines={1}>{emp.name}</Text>
-              </LinearGradient>
-            ) : (
-              <>
-                <LinearGradient colors={emp.logoColor || ['#555', '#222']} style={styles.companyTabAvatarSmall}>
-                  <Text style={styles.companyTabAvatarText}>{emp.logoInitial}</Text>
-                </LinearGradient>
-                <Text style={styles.companyTabLabel} numberOfLines={1}>{emp.name.split(' ')[0]}</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        );
-      })}
-    </ScrollView>
-  );
-};
-
-// ─────────────────────────────────────────────────────────────────
 // INDETERMINATE PROGRESS BAR
 // ─────────────────────────────────────────────────────────────────
 
 function IndeterminateBar() {
   const translateX = useRef(new Animated.Value(-1)).current;
-
   useEffect(() => {
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(translateX, {
-          toValue: 1,
-          duration: 1400,
-          useNativeDriver: true,
-        }),
-        Animated.timing(translateX, {
-          toValue: -1,
-          duration: 1400,
-          useNativeDriver: true,
-        }),
+        Animated.timing(translateX, { toValue: 1, duration: 1400, useNativeDriver: true }),
+        Animated.timing(translateX, { toValue: -1, duration: 1400, useNativeDriver: true }),
       ])
     );
     loop.start();
     return () => loop.stop();
   }, [translateX]);
-
   return (
-    <View style={indeterminateStyles.track}>
-      <Animated.View
-        style={[
-          indeterminateStyles.fill,
-          {
-            transform: [
-              {
-                translateX: translateX.interpolate({
-                  inputRange: [-1, 1],
-                  outputRange: ['-100%' as unknown as number, '100%' as unknown as number],
-                }),
-              },
-            ],
-          },
-        ]}
-      />
+    <View style={barStyles.track}>
+      <Animated.View style={[barStyles.fill, {
+        transform: [{
+          translateX: translateX.interpolate({
+            inputRange: [-1, 1],
+            outputRange: ['-100%' as unknown as number, '100%' as unknown as number],
+          }),
+        }],
+      }]} />
     </View>
   );
 }
-
-const indeterminateStyles = StyleSheet.create({
-  track: {
-    height: 4,
-    backgroundColor: T.border,
-    borderRadius: 2,
-    marginTop: 10,
-    overflow: 'hidden',
-  },
-  fill: {
-    position: 'absolute',
-    left: 0,
-    width: '50%',
-    height: '100%',
-    backgroundColor: T.blue,
-    borderRadius: 2,
-  },
+const barStyles = StyleSheet.create({
+  track: { height: 4, backgroundColor: T.border, borderRadius: 2, marginTop: 10, overflow: 'hidden' },
+  fill:  { position: 'absolute', left: 0, width: '50%', height: '100%', backgroundColor: T.blue, borderRadius: 2 },
 });
 
 // ─────────────────────────────────────────────────────────────────
-// BOTTOM TAB BAR (local — handles expo-router nav from ai-hub)
+// BOTTOM TAB BAR (Letters-screen style)
 // ─────────────────────────────────────────────────────────────────
 
-function JobHubTabBar({ onAddPress }: { onAddPress: () => void }) {
+function JobHubTabBar() {
   const router = useRouter();
-
   const TABS = [
     { key: 'home',    label: 'Home',    icon: 'home-outline',          iconActive: 'home' },
     { key: 'jobs',    label: 'Jobs',    icon: 'briefcase-outline',     iconActive: 'briefcase' },
     { key: 'letters', label: 'Letters', icon: 'document-text-outline', iconActive: 'document-text' },
     { key: 'me',      label: 'Me',      icon: 'person-outline',        iconActive: 'person' },
   ];
-
-  function handlePress(key: string) {
-    if (key === 'jobs') return; // already here
-    if (key === 'home' || key === 'letters' || key === 'me') {
-      router.back();
-    }
-  }
-
   return (
-    <View style={tabBarStyles.wrapper}>
-      <View style={tabBarStyles.bar}>
+    <View style={tabStyles.wrapper}>
+      <View style={tabStyles.bar}>
         {TABS.map((tab) => {
           const isActive = tab.key === 'jobs';
           if (isActive) {
             return (
-              <LinearGradient
-                key={tab.key}
-                colors={[T.blue, T.blueDeep]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={tabBarStyles.activeTab}
-              >
-                <TouchableOpacity
-                  style={tabBarStyles.activeTabInner}
-                  onPress={() => handlePress(tab.key)}
-                  activeOpacity={0.85}
-                >
+              <LinearGradient key={tab.key} colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={tabStyles.activeTab}>
+                <TouchableOpacity style={tabStyles.activeTabInner} activeOpacity={0.85}>
                   <Ionicons name={tab.iconActive as any} size={16} color="#fff" />
-                  <Text style={tabBarStyles.activeLabel}>{tab.label}</Text>
+                  <Text style={tabStyles.activeLabel}>{tab.label}</Text>
                 </TouchableOpacity>
               </LinearGradient>
             );
           }
           return (
-            <TouchableOpacity
-              key={tab.key}
-              style={tabBarStyles.tab}
-              onPress={() => handlePress(tab.key)}
-              activeOpacity={0.7}
-            >
+            <TouchableOpacity key={tab.key} style={tabStyles.tab} onPress={() => router.back()} activeOpacity={0.7}>
               <Ionicons name={tab.icon as any} size={20} color={T.textFaint} />
-              <Text style={tabBarStyles.tabLabel}>{tab.label}</Text>
+              <Text style={tabStyles.tabLabel}>{tab.label}</Text>
             </TouchableOpacity>
           );
         })}
@@ -587,63 +406,14 @@ function JobHubTabBar({ onAddPress }: { onAddPress: () => void }) {
     </View>
   );
 }
-
-const tabBarStyles = StyleSheet.create({
-  wrapper: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    paddingHorizontal: 20,
-    paddingBottom: 28,
-    paddingTop: 8,
-    backgroundColor: 'transparent',
-  },
-  bar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: T.surface,
-    borderRadius: 28,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    gap: 4,
-    shadowColor: T.ink,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.14,
-    shadowRadius: 24,
-    elevation: 12,
-  },
-  activeTab: {
-    flex: 1,
-    borderRadius: 22,
-  },
-  activeTabInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-  },
-  activeLabel: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#fff',
-    letterSpacing: -0.2,
-  },
-  tab: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 3,
-    paddingVertical: 6,
-  },
-  tabLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: T.textFaint,
-    letterSpacing: -0.1,
-  },
+const tabStyles = StyleSheet.create({
+  wrapper:      { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 20, paddingBottom: 28, paddingTop: 8, backgroundColor: 'transparent' },
+  bar:          { flexDirection: 'row', alignItems: 'center', backgroundColor: T.surface, borderRadius: 28, paddingVertical: 8, paddingHorizontal: 8, gap: 4, shadowColor: T.ink, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.14, shadowRadius: 24, elevation: 12 },
+  activeTab:    { flex: 1, borderRadius: 22 },
+  activeTabInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, paddingHorizontal: 12 },
+  activeLabel:  { fontSize: 13, fontWeight: '700', color: '#fff', letterSpacing: -0.2 },
+  tab:          { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 3, paddingVertical: 6 },
+  tabLabel:     { fontSize: 10, fontWeight: '600', color: T.textFaint, letterSpacing: -0.1 },
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -661,35 +431,29 @@ export default function AIHubScreen() {
   const [stats, setStats] = useState({ sources: 0, matches: 0, contacts: 0, verifiedPct: 0 });
   const [initialLoading, setInitialLoading] = useState(true);
   const [selectedEmployerId, setSelectedEmployerId] = useState<string | null>(null);
-
-  // Feature flag — controls "coming soon" overlay
   const [featureFlag, setFeatureFlag] = useState<{ status: string; title: string | null; message: string | null } | null>(null);
 
-  // Pulse animation for AI active dot
   const pulseAnim = useRef(new Animated.Value(1)).current;
   useEffect(() => {
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.5, duration: 700, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1.0, duration: 700, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1.6, duration: 750, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1.0, duration: 750, useNativeDriver: true }),
       ])
     );
     loop.start();
     return () => loop.stop();
   }, [pulseAnim]);
 
-  // Recalculate stats whenever employers list changes
   useEffect(() => {
-    let newMatches = 0;
-    let newContacts = 0;
+    let m = 0, c = 0;
     employers.forEach(emp => {
-      newMatches += (emp.jobs || []).length;
-      newContacts += (emp.jobs || []).reduce((sum, j) => sum + (j.contacts || []).length, 0);
+      m += (emp.jobs || []).length;
+      c += (emp.jobs || []).reduce((s, j) => s + (j.contacts || []).length, 0);
     });
-    setStats({ sources: employers.length, matches: newMatches, contacts: newContacts, verifiedPct: 94 });
+    setStats({ sources: employers.length, matches: m, contacts: c, verifiedPct: 94 });
   }, [employers]);
 
-  // Fetch feature flag for this page
   useEffect(() => {
     axios.get(`${API_BASE}/feature-flags/jobs_dashboard`)
       .then(({ data }) => setFeatureFlag(data))
@@ -700,37 +464,21 @@ export default function AIHubScreen() {
     async function loadDashboard() {
       try {
         const dashboard = await fetchDashboard();
-
         if (!dashboard || dashboard.length === 0) {
-           setEmployers([]);
-           setPills([]);
-           setInitialLoading(false);
-           return;
+          setEmployers([]); setPills([]); setInitialLoading(false); return;
         }
-
         const loadedEmployers: Employer[] = [];
         const loadedPills: WishlistPill[] = [];
-        const loadedStats = { sources: dashboard.length, matches: 0, contacts: 0 };
         const currentlyProcessing = new Set<string>();
-
         dashboard.forEach((entry, i) => {
           const emp = entry.employer;
           loadedEmployers.push(emp);
-          loadedPills.push({
-            id: `pill-${emp.id}`,
-            label: emp.name,
-            colorVariant: COLOR_CYCLE[i % 3],
-            employerId: emp.id
-          });
-          loadedStats.matches += (emp.jobs || []).length;
-          loadedStats.contacts += (emp.jobs || []).reduce((sum, j) => sum + (j.contacts || []).length, 0);
-
+          loadedPills.push({ id: `pill-${emp.id}`, label: emp.name, colorVariant: COLOR_CYCLE[i % 3], employerId: emp.id });
           if (entry.status === 'processing' || entry.status === 'pending') {
             currentlyProcessing.add(emp.id);
             resumePolling(entry.jobId, emp.name);
           }
         });
-
         setEmployers(loadedEmployers);
         setPills(loadedPills);
         setProcessingEmployerIds(currentlyProcessing);
@@ -744,53 +492,31 @@ export default function AIHubScreen() {
   }, []);
 
   const resumePolling = (jobId: string, companyName: string) => {
-    let firstPartialReceived = false;
-
     const onPartialUpdate = (partialEmployer: Employer) => {
-      if (!firstPartialReceived) {
-        firstPartialReceived = true;
-      }
       setEmployers((prev) => {
         const idx = prev.findIndex((e) => e.id === partialEmployer.id);
-        if (idx >= 0) {
-          const arr = [...prev];
-          arr[idx] = partialEmployer;
-          return arr;
-        }
+        if (idx >= 0) { const arr = [...prev]; arr[idx] = partialEmployer; return arr; }
         return [partialEmployer, ...prev];
       });
     };
-
     resumeJobPolling(jobId, onPartialUpdate)
       .then((finalEmployer) => {
-        setProcessingEmployerIds((prev) => {
-          const next = new Set(prev);
-          next.delete(finalEmployer.id);
-          return next;
-        });
+        setProcessingEmployerIds((prev) => { const n = new Set(prev); n.delete(finalEmployer.id); return n; });
         setEmployers((prev) => {
           const idx = prev.findIndex((e) => e.id === finalEmployer.id);
-          if (idx >= 0) {
-            const arr = [...prev];
-            arr[idx] = finalEmployer;
-            return arr;
-          }
+          if (idx >= 0) { const arr = [...prev]; arr[idx] = finalEmployer; return arr; }
           return [finalEmployer, ...prev];
         });
       })
-      .catch(() => {
-        Alert.alert('Error', `Failed to resume tracking jobs for ${companyName}`);
-      });
+      .catch(() => Alert.alert('Error', `Failed to resume tracking jobs for ${companyName}`));
   };
 
   const handleRemovePill = useCallback((id: string) => {
     setPills((prev) => {
       const pill = prev.find((p) => p.id === id);
       if (pill?.employerId) {
-        const targetEmployer = employers.find((e) => e.id === pill.employerId);
-        if (targetEmployer?.jobId) {
-          removeDashboardItem(targetEmployer.jobId).catch(console.error);
-        }
+        const target = employers.find((e) => e.id === pill.employerId);
+        if (target?.jobId) removeDashboardItem(target.jobId).catch(console.error);
         setEmployers((emp) => emp.filter((e) => e.id !== pill.employerId));
         if (selectedEmployerId === pill.employerId) setSelectedEmployerId(null);
       }
@@ -801,111 +527,64 @@ export default function AIHubScreen() {
   const handleAddPill = useCallback(() => {
     let trimmed = inputValue.trim();
     if (!trimmed || trimmed === 'https://' || trimmed === 'http://') return;
-
-    if (!/^https?:\/\//i.test(trimmed) && /\./.test(trimmed)) {
-      trimmed = `https://${trimmed}`;
-    }
-
+    if (!/^https?:\/\//i.test(trimmed) && /\./.test(trimmed)) trimmed = `https://${trimmed}`;
     const pillId = `pill-${Date.now()}`;
-
-    setPills((prev) => {
-      const nextVariant = COLOR_CYCLE[prev.length % 3];
-      return [...prev, { id: pillId, label: trimmed, colorVariant: nextVariant }];
-    });
+    setPills((prev) => [...prev, { id: pillId, label: trimmed, colorVariant: COLOR_CYCLE[prev.length % 3] }]);
     setLoadingCompanies((prev) => [...prev, trimmed]);
     setInputValue('');
     setModalVisible(false);
-
-    let firstPartialReceived = false;
-
+    let firstPartial = false;
     const onPartialUpdate = (partialEmployer: Employer) => {
-      if (!firstPartialReceived) {
-        firstPartialReceived = true;
+      if (!firstPartial) {
+        firstPartial = true;
         setLoadingCompanies((prev) => prev.filter((c) => c !== trimmed));
         setProcessingEmployerIds((prev) => new Set([...prev, partialEmployer.id]));
-        setPills((prev) =>
-          prev.map((p) => (p.id === pillId ? { ...p, employerId: partialEmployer.id } : p))
-        );
+        setPills((prev) => prev.map((p) => p.id === pillId ? { ...p, employerId: partialEmployer.id } : p));
       }
       setEmployers((prev) => {
         const idx = prev.findIndex((e) => e.id === partialEmployer.id);
-        if (idx >= 0) {
-          const arr = [...prev];
-          arr[idx] = partialEmployer;
-          return arr;
-        }
+        if (idx >= 0) { const arr = [...prev]; arr[idx] = partialEmployer; return arr; }
         return [partialEmployer, ...prev];
       });
     };
-
     fetchJobMatches(trimmed, onPartialUpdate)
       .then((employer) => {
-        setProcessingEmployerIds((prev) => {
-          const next = new Set(prev);
-          next.delete(employer.id);
-          return next;
-        });
+        setProcessingEmployerIds((prev) => { const n = new Set(prev); n.delete(employer.id); return n; });
         setEmployers((prev) => {
           const idx = prev.findIndex((e) => e.id === employer.id);
-          return idx >= 0
-            ? prev.map((e, i) => (i === idx ? employer : e))
-            : [...prev, employer];
+          return idx >= 0 ? prev.map((e, i) => i === idx ? employer : e) : [...prev, employer];
         });
-        setPills((prev) =>
-          prev.map((p) => (p.id === pillId ? { ...p, employerId: employer.id } : p))
-        );
+        setPills((prev) => prev.map((p) => p.id === pillId ? { ...p, employerId: employer.id } : p));
       })
       .catch((err) => {
         const isPortal = err?.response?.data?.error === 'job_portal' || err?.isPortal;
         if (isPortal) {
           const portal = err?.response?.data?.portal || trimmed;
-          Alert.alert(
-            '🚫 Job Portal Detected',
-            `"${portal}" is a job listing portal, not a company.\n\nCVApplyr works exclusively on employer career pages — we go directly to the source to find jobs and hiring contacts.\n\nPlease enter a specific company name or their career page URL.\n\nExample: "https://careers.google.com"`,
-            [{ text: 'Got it', style: 'default' }]
-          );
+          Alert.alert('🚫 Job Portal Detected', `"${portal}" is a job listing portal, not a company.\n\nCVApplyr works exclusively on employer career pages. Please enter a specific company name or their career page URL.\n\nExample: "https://careers.google.com"`, [{ text: 'Got it' }]);
         } else {
           Alert.alert('Could not fetch jobs', `No results found for "${trimmed}". Try a full URL like https://careers.company.com`);
         }
         setPills((prev) => prev.filter((p) => p.id !== pillId));
       })
-      .finally(() => {
-        setLoadingCompanies((prev) => prev.filter((c) => c !== trimmed));
-      });
+      .finally(() => setLoadingCompanies((prev) => prev.filter((c) => c !== trimmed)));
   }, [inputValue]);
 
-  const handleApply = useCallback(
-    (employer: Employer, job: Job) => {
-      router.push({
-        pathname: '/(ai-hub)/job-detail',
-        params: {
-          jobStr: JSON.stringify(job),
-          employerStr: JSON.stringify({
-            id: employer.id,
-            name: employer.name,
-            subInfo: employer.subInfo,
-            logoColor: employer.logoColor,
-            logoInitial: employer.logoInitial
-          })
-        }
-      });
-    },
-    [router]
-  );
+  const handleApply = useCallback((employer: Employer, job: Job) => {
+    router.push({
+      pathname: '/(ai-hub)/job-detail',
+      params: {
+        jobStr: JSON.stringify(job),
+        employerStr: JSON.stringify({ id: employer.id, name: employer.name, subInfo: employer.subInfo, logoColor: employer.logoColor, logoInitial: employer.logoInitial }),
+      },
+    });
+  }, [router]);
 
-  const handleAddContact = useCallback(
-    (jobId: string) => {
-      router.push({ pathname: '/(ai-hub)/add-contact', params: { jobId } });
-    },
-    [router]
-  );
-
-  // Filter employers for selected tab
-  const visibleEmployers = selectedEmployerId
-    ? employers.filter((e) => e.id === selectedEmployerId)
-    : employers;
+  const handleAddContact = useCallback((jobId: string) => {
+    router.push({ pathname: '/(ai-hub)/add-contact', params: { jobId } });
+  }, [router]);
 
   const openModal = () => { setInputValue('https://'); setModalVisible(true); };
+  const visibleEmployers = selectedEmployerId ? employers.filter((e) => e.id === selectedEmployerId) : employers;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -915,105 +594,153 @@ export default function AIHubScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* ─── Dark navy hero header ─── */}
-        <LinearGradient
-          colors={['#0A0F24', '#111827']}
-          style={styles.hero}
-        >
-          {/* Top row: title + add button */}
-          <View style={styles.heroTopRow}>
-            <View>
-              <Text style={styles.heroEyebrow}>AI-POWERED</Text>
-              <Text style={styles.heroTitle}>Job Hub</Text>
-            </View>
-            <TouchableOpacity onPress={openModal} style={styles.heroAddBtn} activeOpacity={0.85}>
-              <LinearGradient
-                colors={[T.blue, T.blueDeep]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.heroAddBtnGradient}
-              >
-                <Ionicons name="add" size={18} color="#fff" />
-                <Text style={styles.heroAddBtnText}>Add Company</Text>
-              </LinearGradient>
-            </TouchableOpacity>
+
+        {/* ══ TOP BAR (Letters-style: back pill · logo · add btn) ══════════════ */}
+        <View style={styles.topBar}>
+          <TouchableOpacity style={styles.backPill} onPress={() => router.back()} activeOpacity={0.8}>
+            <Ionicons name="arrow-back" size={14} color={T.ink} />
+            <Text style={styles.backPillText}>Back</Text>
+          </TouchableOpacity>
+
+          <View style={styles.wordmark}>
+            <Image
+              source={require('../../assets/images/logo_img.png')}
+              style={styles.wordmarkLogo}
+              resizeMode="contain"
+            />
+            <Text style={styles.wordmarkText}>
+              cv<Text style={styles.wordmarkBlue}>applyr</Text>
+            </Text>
           </View>
 
-          {/* AI status row */}
-          {employers.length > 0 && (
-            <View style={styles.aiStatusRow}>
-              <Animated.View style={[styles.pulseDot, { transform: [{ scale: pulseAnim }] }]} />
-              <Text style={styles.aiStatusText}>
-                AI active · {stats.sources} {stats.sources === 1 ? 'company' : 'companies'} · {stats.matches} {stats.matches === 1 ? 'match' : 'matches'} · {stats.contacts} contacts
-              </Text>
-            </View>
-          )}
+          <TouchableOpacity style={styles.addBtn} onPress={openModal} activeOpacity={0.8}>
+            <Ionicons name="add" size={18} color={T.ink} />
+          </TouchableOpacity>
+        </View>
 
-          {/* Stats row */}
+        {/* ══ HERO CARD (Letters-style dark gradient) ══════════════════════════ */}
+        <View style={styles.heroCard}>
+          <LinearGradient
+            colors={['#0B0F22', '#0F1635', '#0B0F22']}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFillObject}
+          />
+          {/* Mesh blobs */}
+          <View style={[styles.blob, { top: -24, left: -30, backgroundColor: 'rgba(79,141,255,0.18)', width: 150, height: 150 }]} />
+          <View style={[styles.blob, { top: 16, right: -20, backgroundColor: 'rgba(124,107,255,0.14)', width: 120, height: 120 }]} />
+          <View style={[styles.blob, { bottom: -16, left: 80, backgroundColor: 'rgba(20,184,166,0.10)', width: 100, height: 100 }]} />
+
+          {/* Eyebrow + AI dot */}
+          <View style={styles.heroEyeRow}>
+            <Text style={styles.heroEyebrow}>AI-POWERED JOB SEARCH</Text>
+            {employers.length > 0 && (
+              <View style={styles.aiPill}>
+                <Animated.View style={[styles.pulseDot, { transform: [{ scale: pulseAnim }] }]} />
+                <Text style={styles.aiPillText}>Live</Text>
+              </View>
+            )}
+          </View>
+
+          {/* Title */}
+          <Text style={styles.heroTitle}>Job Hub</Text>
+          <Text style={styles.heroSub}>
+            {employers.length > 0
+              ? `Tracking ${stats.sources} ${stats.sources === 1 ? 'company' : 'companies'} · ${stats.matches} job ${stats.matches === 1 ? 'match' : 'matches'} · ${stats.contacts} contacts found`
+              : 'Add a company to start AI-powered job matching'}
+          </Text>
+
+          {/* Stats row — only when data exists */}
           {employers.length > 0 && (
             <View style={styles.statsRow}>
-              <View style={styles.statChip}>
-                <Text style={[styles.statValue, { color: '#22D3EE' }]}>{stats.matches}</Text>
-                <Text style={styles.statLabel}>Matches</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statChip}>
-                <Text style={[styles.statValue, { color: '#A78BFA' }]}>{stats.contacts}</Text>
-                <Text style={styles.statLabel}>Contacts</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statChip}>
-                <Text style={[styles.statValue, { color: '#34D399' }]}>{stats.verifiedPct}%</Text>
-                <Text style={styles.statLabel}>Verified</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statChip}>
-                <Text style={[styles.statValue, { color: '#FB923C' }]}>{stats.sources}</Text>
-                <Text style={styles.statLabel}>Companies</Text>
-              </View>
+              {[
+                { value: stats.matches,  label: 'Matches',   color: '#22D3EE' },
+                { value: stats.contacts, label: 'Contacts',  color: '#A78BFA' },
+                { value: `${stats.verifiedPct}%`, label: 'Verified',  color: '#34D399' },
+                { value: stats.sources,  label: 'Companies', color: '#FB923C' },
+              ].map((s, i, arr) => (
+                <React.Fragment key={s.label}>
+                  <View style={styles.statItem}>
+                    <Text style={[styles.statValue, { color: s.color }]}>{s.value}</Text>
+                    <Text style={styles.statLabel}>{s.label}</Text>
+                  </View>
+                  {i < arr.length - 1 && <View style={styles.statDivider} />}
+                </React.Fragment>
+              ))}
             </View>
           )}
 
-          {/* Tracked company pills (with remove) */}
-          {pills.length > 0 && (
+          {/* Company tab switcher (inside hero, like step indicators in Letters) */}
+          {employers.length > 0 && (
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.pillsRow}
+              style={styles.tabScroll}
+              contentContainerStyle={styles.tabScrollContent}
             >
-              {pills.map((pill) => {
-                const c = PILL_COLORS[pill.colorVariant];
+              {/* "All" tab */}
+              <TouchableOpacity
+                onPress={() => setSelectedEmployerId(null)}
+                style={[styles.compTab, selectedEmployerId === null && styles.compTabActive]}
+                activeOpacity={0.75}
+              >
+                {selectedEmployerId === null ? (
+                  <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.compTabGrad}>
+                    <Text style={styles.compTabLabelActive}>All companies</Text>
+                  </LinearGradient>
+                ) : (
+                  <Text style={styles.compTabLabel}>All</Text>
+                )}
+              </TouchableOpacity>
+
+              {employers.map((emp) => {
+                const isSelected = selectedEmployerId === emp.id;
+                const jobCount = (emp.jobs || []).length;
                 return (
-                  <View key={pill.id} style={[styles.pill, { backgroundColor: c.bg, borderColor: c.border }]}>
-                    <Text style={[styles.pillText, { color: c.text }]} numberOfLines={1}>{pill.label}</Text>
-                    <TouchableOpacity
-                      onPress={() => handleRemovePill(pill.id)}
-                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                    >
-                      <Ionicons name="close-circle" size={13} color={c.text} />
-                    </TouchableOpacity>
-                  </View>
+                  <TouchableOpacity
+                    key={emp.id}
+                    onPress={() => setSelectedEmployerId(emp.id)}
+                    style={[styles.compTab, isSelected && styles.compTabActive]}
+                    activeOpacity={0.75}
+                  >
+                    {isSelected ? (
+                      <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.compTabGrad}>
+                        <LinearGradient colors={emp.logoColor || ['#555', '#222']} style={styles.compTabAvatar}>
+                          <Text style={styles.compTabAvatarText}>{emp.logoInitial}</Text>
+                        </LinearGradient>
+                        <Text style={styles.compTabLabelActive} numberOfLines={1}>{emp.name.split(' ')[0]}</Text>
+                        <View style={styles.compTabCount}>
+                          <Text style={styles.compTabCountText}>{jobCount}</Text>
+                        </View>
+                      </LinearGradient>
+                    ) : (
+                      <View style={styles.compTabInner}>
+                        <LinearGradient colors={emp.logoColor || ['#555', '#222']} style={styles.compTabAvatar}>
+                          <Text style={styles.compTabAvatarText}>{emp.logoInitial}</Text>
+                        </LinearGradient>
+                        <Text style={styles.compTabLabel} numberOfLines={1}>{emp.name.split(' ')[0]}</Text>
+                        {jobCount > 0 && (
+                          <View style={styles.compTabCountMuted}>
+                            <Text style={styles.compTabCountMutedText}>{jobCount}</Text>
+                          </View>
+                        )}
+                      </View>
+                    )}
+                  </TouchableOpacity>
                 );
               })}
-              <TouchableOpacity onPress={openModal} style={styles.addPillTrigger}>
-                <Ionicons name="add-outline" size={13} color="rgba(255,255,255,0.4)" />
-                <Text style={styles.addPillText}>Add...</Text>
+
+              {/* Add company shortcut */}
+              <TouchableOpacity onPress={openModal} style={styles.compTabAdd} activeOpacity={0.75}>
+                <Ionicons name="add-circle-outline" size={14} color="rgba(255,255,255,0.45)" />
+                <Text style={styles.compTabAddText}>Add</Text>
               </TouchableOpacity>
             </ScrollView>
           )}
-        </LinearGradient>
+        </View>
 
-        {/* ─── Light content panel ─── */}
-        <View style={styles.panel}>
+        {/* ══ BODY (light bg) ══════════════════════════════════════════════════ */}
+        <View style={styles.body}>
 
-          {/* Company tab switcher */}
-          <CompanyTabBar
-            employers={employers}
-            selectedId={selectedEmployerId}
-            onSelect={setSelectedEmployerId}
-          />
-
-          {/* ─── Content ─── */}
           {initialLoading ? (
             <View style={styles.emptyState}>
               <ActivityIndicator size="large" color={T.blue} />
@@ -1021,22 +748,17 @@ export default function AIHubScreen() {
             </View>
           ) : employers.length === 0 && loadingCompanies.length === 0 ? (
             <View style={styles.emptyState}>
-              <LinearGradient colors={[T.blue, T.blueDeep]} style={styles.emptyStateIcon}>
+              <LinearGradient colors={[T.blue, T.blueDeep]} style={styles.emptyIcon}>
                 <Ionicons name="briefcase-outline" size={32} color="#fff" />
               </LinearGradient>
               <Text style={styles.emptyStateTitle}>No jobs tracked yet</Text>
               <Text style={styles.emptyStateSub}>
                 Add a company career page URL or company name to let AI automatically find matching jobs and hiring contacts.
               </Text>
-              <TouchableOpacity onPress={openModal} activeOpacity={0.85} style={styles.emptyStateBtnOuter}>
-                <LinearGradient
-                  colors={[T.blue, T.blueDeep]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.emptyStateBtn}
-                >
+              <TouchableOpacity onPress={openModal} activeOpacity={0.85} style={styles.emptyBtnOuter}>
+                <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.emptyBtn}>
                   <Ionicons name="add" size={18} color="white" />
-                  <Text style={styles.emptyStateBtnText}>Add target company</Text>
+                  <Text style={styles.emptyBtnText}>Add target company</Text>
                 </LinearGradient>
               </TouchableOpacity>
             </View>
@@ -1055,40 +777,36 @@ export default function AIHubScreen() {
                     </View>
                   </View>
                   <IndeterminateBar />
-                  <Text style={styles.loaderFootnote}>
-                    This can take a minute. You can leave the app — we'll notify you when done.
-                  </Text>
+                  <Text style={styles.loaderNote}>This can take a minute. You can leave the app — we'll notify you when done.</Text>
                 </View>
               ))}
-
               {loadingCompanies.length > 0 && <LoadingTips />}
 
               {/* Employer sections */}
               {visibleEmployers.map((employer) => (
                 <View key={employer.id} style={styles.employerSection}>
-                  {/* Employer header card */}
-                  <View style={styles.employerHeaderCard}>
-                    <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.employerLogo}>
-                      <Text style={styles.employerLogoText}>{employer.logoInitial}</Text>
+                  {/* Section label (simple, not a heavy card) */}
+                  <View style={styles.employerLabel}>
+                    <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.employerLabelLogo}>
+                      <Text style={styles.employerLabelLogoText}>{employer.logoInitial}</Text>
                     </LinearGradient>
-                    <View style={styles.employerInfo}>
-                      <Text style={styles.employerName}>{employer.name}</Text>
-                      <Text style={styles.employerSub}>{employer.subInfo}</Text>
+                    <View style={styles.employerLabelInfo}>
+                      <Text style={styles.employerLabelName}>{employer.name}</Text>
+                      <Text style={styles.employerLabelSub}>{employer.subInfo}</Text>
                     </View>
                     <View style={[
-                      styles.jobCountBadge,
-                      employer.status === 'active' ? styles.jobCountBadgeActive : styles.jobCountBadgeWatching
+                      styles.jobCountPill,
+                      employer.status === 'active' ? styles.jobCountPillActive : styles.jobCountPillWatching,
                     ]}>
                       <Text style={[
-                        styles.jobCountText,
-                        employer.status === 'active' ? styles.jobCountTextActive : styles.jobCountTextWatching
+                        styles.jobCountPillText,
+                        employer.status === 'active' ? styles.jobCountPillTextActive : styles.jobCountPillTextWatching,
                       ]}>
                         {(employer.jobs || []).length} {(employer.jobs || []).length === 1 ? 'job' : 'jobs'}
                       </Text>
                     </View>
                   </View>
 
-                  {/* Job cards */}
                   {(employer.jobs || []).map((job) => (
                     <JobCard
                       key={job.id}
@@ -1113,25 +831,15 @@ export default function AIHubScreen() {
         </View>
       </ScrollView>
 
-      {/* ── Coming Soon Overlay (DB-controlled) ── */}
+      {/* ── Coming Soon Overlay ── */}
       {featureFlag?.status === 'under_construction' && (
         <View style={styles.comingSoonOverlay}>
           <View style={styles.comingSoonCard}>
-            <TouchableOpacity
-              style={styles.comingSoonBackBtn}
-              onPress={() => router.back()}
-              activeOpacity={0.75}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
+            <TouchableOpacity style={styles.comingSoonBack} onPress={() => router.back()} activeOpacity={0.75}>
               <Ionicons name="arrow-back" size={18} color={T.textMuted} />
               <Text style={styles.comingSoonBackText}>Go Back</Text>
             </TouchableOpacity>
-            <LinearGradient
-              colors={[T.blue, T.blueDeep]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.comingSoonIconWrap}
-            >
+            <LinearGradient colors={[T.blue, T.blueDeep]} style={styles.comingSoonIcon}>
               <Ionicons name="rocket-outline" size={28} color="#fff" />
             </LinearGradient>
             <Text style={styles.comingSoonBadge}>COMING SOON</Text>
@@ -1151,25 +859,18 @@ export default function AIHubScreen() {
       )}
 
       {/* ── Add Company Modal ── */}
-      <Modal
-        visible={modalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => { setInputValue('https://'); setModalVisible(false); }}
-      >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => { setInputValue('https://'); setModalVisible(false); }}
-        >
+      <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => { setInputValue('https://'); setModalVisible(false); }}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => { setInputValue('https://'); setModalVisible(false); }}>
           <View style={styles.modalBox} onStartShouldSetResponder={() => true}>
             <View style={styles.modalHeader}>
               <LinearGradient colors={[T.blue, T.blueDeep]} style={styles.modalIconWrap}>
                 <Ionicons name="business-outline" size={20} color="#fff" />
               </LinearGradient>
-              <Text style={styles.modalTitle}>Add Target Company</Text>
+              <View>
+                <Text style={styles.modalTitle}>Add Target Company</Text>
+                <Text style={styles.modalHint}>Enter a company name or career page URL</Text>
+              </View>
             </View>
-            <Text style={styles.modalHint}>Enter a company name or career page URL</Text>
             <TextInput
               style={styles.modalInput}
               placeholder="e.g. https://careers.google.com"
@@ -1183,20 +884,12 @@ export default function AIHubScreen() {
               autoCorrect={false}
             />
             <View style={styles.modalButtons}>
-              <TouchableOpacity
-                onPress={() => { setInputValue('https://'); setModalVisible(false); }}
-                style={styles.modalCancelBtn}
-              >
+              <TouchableOpacity onPress={() => { setInputValue('https://'); setModalVisible(false); }} style={styles.modalCancelBtn}>
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={handleAddPill} style={styles.modalAddBtnOuter} activeOpacity={0.85}>
-                <LinearGradient
-                  colors={[T.blue, T.blueDeep]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.modalAddBtn}
-                >
-                  <Text style={styles.modalAddBtnText}>Search Jobs</Text>
+              <TouchableOpacity onPress={handleAddPill} style={styles.modalConfirmOuter} activeOpacity={0.85}>
+                <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.modalConfirmBtn}>
+                  <Text style={styles.modalConfirmText}>Search Jobs</Text>
                   <Ionicons name="arrow-forward" size={15} color="#fff" />
                 </LinearGradient>
               </TouchableOpacity>
@@ -1206,7 +899,7 @@ export default function AIHubScreen() {
       </Modal>
 
       {/* ── Floating Tab Bar ── */}
-      <JobHubTabBar onAddPress={openModal} />
+      <JobHubTabBar />
     </SafeAreaView>
   );
 }
@@ -1216,263 +909,222 @@ export default function AIHubScreen() {
 // ─────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: T.navBg,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: 100,
-  },
+  safeArea:     { flex: 1, backgroundColor: T.bg },
+  scrollView:   { flex: 1 },
+  scrollContent:{ flexGrow: 1, paddingBottom: 100 },
 
-  // ── Hero header ──
-  hero: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 22,
-  },
-  heroTopRow: {
+  // ── Top bar (Letters-style) ──
+  topBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: T.bg,
+  },
+  backPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: T.surface,
+    borderRadius: 20,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    shadowColor: T.ink,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.07,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  backPillText: { fontSize: 13, fontWeight: '600', color: T.ink },
+  wordmark: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  wordmarkLogo: { width: 22, height: 22 },
+  wordmarkText: { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
+  wordmarkBlue: { color: T.blue },
+  addBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: T.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: T.ink,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.07,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+
+  // ── Hero card (Letters-style dark gradient with blobs) ──
+  heroCard: {
+    marginHorizontal: 12,
+    borderRadius: 28,
+    overflow: 'hidden',
+    padding: 22,
+    paddingBottom: 0,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 24,
+    elevation: 10,
+  },
+  blob: {
+    position: 'absolute',
+    borderRadius: 999,
+    zIndex: 0,
+  },
+  heroEyeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    zIndex: 1,
   },
   heroEyebrow: {
     fontSize: 10,
     fontWeight: '700',
-    color: 'rgba(255,255,255,0.35)',
+    color: 'rgba(255,255,255,0.4)',
     letterSpacing: 1.5,
-    marginBottom: 3,
   },
-  heroTitle: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: '#fff',
-    letterSpacing: -0.8,
-  },
-  heroAddBtn: {
-    borderRadius: 22,
-    overflow: 'hidden',
-  },
-  heroAddBtnGradient: {
+  aiPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 22,
-  },
-  heroAddBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#fff',
-    letterSpacing: -0.2,
-  },
-  aiStatusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 16,
+    gap: 5,
+    backgroundColor: 'rgba(34,211,238,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(34,211,238,0.25)',
+    borderRadius: 20,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
   },
   pulseDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     backgroundColor: '#22D3EE',
   },
-  aiStatusText: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.4)',
-    fontStyle: 'italic',
+  aiPillText: { fontSize: 11, fontWeight: '700', color: '#22D3EE' },
+  heroTitle: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: -1,
+    marginBottom: 6,
+    zIndex: 1,
   },
+  heroSub: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.5)',
+    lineHeight: 18,
+    marginBottom: 18,
+    zIndex: 1,
+  },
+
+  // Stats row inside hero
   statsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.06)',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.09)',
-    borderRadius: 20,
+    borderColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 18,
     paddingVertical: 14,
-    paddingHorizontal: 20,
-    marginBottom: 14,
-    justifyContent: 'space-between',
+    paddingHorizontal: 10,
+    marginBottom: 18,
+    zIndex: 1,
   },
-  statChip: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  statValue: {
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-  },
-  statLabel: {
-    fontSize: 10,
-    color: 'rgba(255,255,255,0.35)',
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  statDivider: {
-    width: 1,
-    height: 28,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-  },
-  pillsRow: {
+  statItem:   { flex: 1, alignItems: 'center' },
+  statValue:  { fontSize: 18, fontWeight: '800', letterSpacing: -0.5 },
+  statLabel:  { fontSize: 10, color: 'rgba(255,255,255,0.35)', fontWeight: '600', marginTop: 2 },
+  statDivider:{ width: 1, height: 26, backgroundColor: 'rgba(255,255,255,0.08)' },
+
+  // Company tabs inside hero (like step strip in Letters)
+  tabScroll:  { zIndex: 1, marginBottom: 0 },
+  tabScrollContent: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    paddingVertical: 14,
+    paddingHorizontal: 2,
   },
-  pill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 30,
-    borderWidth: 1,
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    gap: 5,
-    maxWidth: 160,
-  },
-  pillText: {
-    fontSize: 12,
-    fontWeight: '600',
-    flexShrink: 1,
-  },
-  addPillTrigger: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 30,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: 'rgba(255,255,255,0.2)',
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    gap: 4,
-  },
-  addPillText: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.3)',
-  },
-
-  // ── Light panel ──
-  panel: {
-    flex: 1,
-    backgroundColor: T.bg,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    paddingTop: 8,
-    paddingHorizontal: 16,
-    minHeight: 400,
-  },
-
-  // ── Company tab bar ──
-  companyTabScroll: {
-    marginBottom: 16,
-  },
-  companyTabContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-  },
-  companyTab: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  compTab: {
     borderRadius: 22,
-    backgroundColor: T.surface,
+    backgroundColor: 'rgba(255,255,255,0.09)',
     borderWidth: 1,
-    borderColor: T.border,
+    borderColor: 'rgba(255,255,255,0.12)',
     overflow: 'hidden',
-    shadowColor: T.ink,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
   },
-  companyTabActive: {
-    borderColor: 'transparent',
-  },
-  companyTabGradient: {
+  compTabActive: { borderColor: 'transparent' },
+  compTabGrad: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     paddingVertical: 8,
     paddingHorizontal: 14,
   },
-  companyTabAvatarSmall: {
+  compTabInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  compTabAvatar: {
     width: 20,
     height: 20,
     borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  companyTabAvatarText: {
-    fontSize: 9,
-    fontWeight: '800',
-    color: '#fff',
+  compTabAvatarText: { fontSize: 9, fontWeight: '800', color: '#fff' },
+  compTabLabel: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.55)' },
+  compTabLabelActive: { fontSize: 13, fontWeight: '700', color: '#fff' },
+  compTabCount: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
   },
-  companyTabLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: T.textMuted,
+  compTabCountText: { fontSize: 10, fontWeight: '700', color: '#fff' },
+  compTabCountMuted: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  compTabCountMutedText: { fontSize: 10, fontWeight: '600', color: 'rgba(255,255,255,0.5)' },
+  compTabAdd: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     paddingVertical: 8,
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: 'rgba(255,255,255,0.2)',
   },
-  companyTabLabelActive: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#fff',
+  compTabAddText: { fontSize: 12, color: 'rgba(255,255,255,0.4)', fontWeight: '600' },
+
+  // ── Body (light bg) ──
+  body: {
+    flex: 1,
+    paddingHorizontal: 12,
   },
 
   // ── Empty state ──
-  emptyState: {
-    alignItems: 'center',
-    paddingTop: 60,
-    paddingHorizontal: 24,
-    paddingBottom: 40,
-  },
-  emptyStateIcon: {
-    width: 72,
-    height: 72,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 18,
-  },
-  emptyStateTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: T.ink,
-    letterSpacing: -0.4,
-    marginBottom: 10,
-    textAlign: 'center',
-  },
-  emptyStateSub: {
-    fontSize: 13,
-    color: T.textMuted,
-    lineHeight: 20,
-    textAlign: 'center',
-    marginBottom: 28,
-  },
-  emptyStateBtnOuter: {
-    borderRadius: 22,
-    overflow: 'hidden',
-  },
-  emptyStateBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    paddingHorizontal: 28,
-  },
-  emptyStateBtnText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#fff',
-  },
+  emptyState: { alignItems: 'center', paddingTop: 60, paddingHorizontal: 24, paddingBottom: 40 },
+  emptyIcon:  { width: 72, height: 72, borderRadius: 22, alignItems: 'center', justifyContent: 'center', marginBottom: 18 },
+  emptyStateTitle: { fontSize: 18, fontWeight: '800', color: T.ink, letterSpacing: -0.4, marginBottom: 10, textAlign: 'center' },
+  emptyStateSub: { fontSize: 13, color: T.textMuted, lineHeight: 20, textAlign: 'center', marginBottom: 28 },
+  emptyBtnOuter: { borderRadius: 22, overflow: 'hidden' },
+  emptyBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 14, paddingHorizontal: 28 },
+  emptyBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
 
   // ── Loader card ──
   loaderCard: {
@@ -1486,110 +1138,44 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     elevation: 4,
   },
-  loaderHeader: {
+  loaderHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  loaderIcon:   { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  loaderTexts:  { flex: 1 },
+  loaderTitle:  { fontSize: 14, fontWeight: '700', color: T.ink, letterSpacing: -0.3 },
+  loaderSub:    { fontSize: 12, color: T.textMuted, marginTop: 2 },
+  loaderNote:   { fontSize: 11, color: T.textFaint, marginTop: 10, lineHeight: 16 },
+
+  // ── Employer section label ──
+  employerSection: { marginBottom: 24 },
+  employerLabel: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    paddingHorizontal: 4,
+    paddingVertical: 8,
+    marginBottom: 8,
+    gap: 10,
   },
-  loaderIcon: {
+  employerLabelLogo: {
     width: 40,
     height: 40,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  loaderTexts: {
-    flex: 1,
-  },
-  loaderTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: T.ink,
-    letterSpacing: -0.3,
-  },
-  loaderSub: {
-    fontSize: 12,
-    color: T.textMuted,
-    marginTop: 2,
-  },
-  loaderFootnote: {
-    fontSize: 11,
-    color: T.textFaint,
-    marginTop: 10,
-    lineHeight: 16,
-  },
+  employerLabelLogoText: { fontSize: 17, fontWeight: '800', color: '#fff' },
+  employerLabelInfo: { flex: 1 },
+  employerLabelName: { fontSize: 15, fontWeight: '700', color: T.ink, letterSpacing: -0.3 },
+  employerLabelSub:  { fontSize: 11, color: T.textFaint, marginTop: 1 },
+  jobCountPill: { borderRadius: 20, paddingVertical: 4, paddingHorizontal: 10 },
+  jobCountPillActive: { backgroundColor: '#DCFCE7' },
+  jobCountPillWatching: { backgroundColor: 'rgba(79,141,255,0.12)' },
+  jobCountPillText: { fontSize: 11, fontWeight: '700' },
+  jobCountPillTextActive: { color: '#15803D' },
+  jobCountPillTextWatching: { color: T.blue },
+  processingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4, paddingVertical: 8 },
+  processingText: { fontSize: 12, color: T.textMuted, fontStyle: 'italic' },
 
-  // ── Employer section ──
-  employerSection: {
-    marginBottom: 28,
-  },
-  employerHeaderCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: T.surface,
-    borderRadius: 18,
-    padding: 14,
-    marginBottom: 12,
-    shadowColor: T.ink,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 12,
-    elevation: 3,
-  },
-  employerLogo: {
-    width: 44,
-    height: 44,
-    borderRadius: 13,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  employerLogoText: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#fff',
-  },
-  employerInfo: {
-    flex: 1,
-  },
-  employerName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: T.ink,
-    letterSpacing: -0.3,
-  },
-  employerSub: {
-    fontSize: 11,
-    color: T.textFaint,
-    marginTop: 2,
-  },
-  jobCountBadge: {
-    borderRadius: 20,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-  },
-  jobCountBadgeActive: { backgroundColor: '#DCFCE7' },
-  jobCountBadgeWatching: { backgroundColor: 'rgba(79,141,255,0.12)' },
-  jobCountText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  jobCountTextActive: { color: '#15803D' },
-  jobCountTextWatching: { color: T.blue },
-  processingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 4,
-    paddingVertical: 8,
-  },
-  processingText: {
-    fontSize: 12,
-    color: T.textMuted,
-    fontStyle: 'italic',
-  },
-
-  // ── Job Card ──
+  // ── Job card ──
   card: {
     backgroundColor: T.surface,
     borderRadius: 22,
@@ -1609,21 +1195,15 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   cardLogo: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: 44,
+    height: 44,
+    borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
   },
-  cardLogoText: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#fff',
-  },
-  cardHeaderMid: {
-    flex: 1,
-  },
+  cardLogoText: { fontSize: 18, fontWeight: '800', color: '#fff' },
+  cardHeaderMid: { flex: 1 },
   cardCompanyLabel: {
     fontSize: 10,
     fontWeight: '700',
@@ -1639,22 +1219,10 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
     lineHeight: 20,
   },
-  matchBadge: {
-    alignItems: 'center',
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
+  cardBadgesCol: {
+    alignItems: 'flex-end',
+    gap: 4,
     flexShrink: 0,
-  },
-  matchBadgeText: {
-    fontSize: 13,
-    fontWeight: '800',
-    lineHeight: 16,
-  },
-  matchBadgeLabel: {
-    fontSize: 9,
-    fontWeight: '600',
-    lineHeight: 12,
   },
   urgentBadge: {
     flexDirection: 'row',
@@ -1662,189 +1230,111 @@ const styles = StyleSheet.create({
     gap: 3,
     backgroundColor: 'rgba(239,68,68,0.1)',
     borderRadius: 10,
-    paddingVertical: 5,
+    paddingVertical: 4,
     paddingHorizontal: 8,
-    flexShrink: 0,
   },
-  urgentText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#EF4444',
-  },
+  urgentText: { fontSize: 10, fontWeight: '700', color: '#EF4444' },
+  matchBadge: { borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4 },
+  matchBadgeText: { fontSize: 11, fontWeight: '700' },
 
   // Meta chips
-  metaRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-  },
+  metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingHorizontal: 16, paddingBottom: 12 },
   metaChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
     backgroundColor: T.bg,
     borderWidth: 1,
-    borderColor: T.border,
+    borderColor: T.borderHi,
     borderRadius: 20,
     paddingVertical: 4,
     paddingHorizontal: 9,
   },
-  metaChipText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: T.textMuted,
+  metaChipText: { fontSize: 11, fontWeight: '600', color: T.textMuted },
+
+  // Card sections (Skills / Responsibilities / Contacts)
+  cardSection: {
+    paddingHorizontal: 16,
+    paddingBottom: 14,
+  },
+  cardSectionContacts: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 12,
+    borderTopWidth: 1,
+    borderTopColor: T.border,
+    marginTop: 4,
+  },
+  cardSectionLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: T.textFaint,
+    letterSpacing: 1.2,
+    marginBottom: 8,
   },
 
-  // Skills
-  skillsBlock: {
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-  },
-  skillsChipsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
+  // Skills chips
+  skillsChipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   skillChip: {
     backgroundColor: 'rgba(79,141,255,0.08)',
     borderWidth: 1,
-    borderColor: 'rgba(79,141,255,0.18)',
+    borderColor: 'rgba(79,141,255,0.2)',
     borderRadius: 20,
     paddingHorizontal: 10,
-    paddingVertical: 3,
+    paddingVertical: 4,
   },
-  skillChipText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: T.blue,
-  },
-  skillChipMore: {
-    backgroundColor: T.bgSoft,
-    borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-  },
-  skillChipMoreText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: T.textMuted,
-  },
+  skillChipText: { fontSize: 11, fontWeight: '600', color: T.blue },
+  skillChipMore: { backgroundColor: T.bgSoft, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
+  skillChipMoreText: { fontSize: 11, fontWeight: '600', color: T.textMuted },
 
   // Responsibilities
-  respPreview: {
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    gap: 5,
-  },
-  respRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-  },
-  respDotCircle: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: T.blue,
-    marginTop: 6,
-    flexShrink: 0,
-  },
-  respText: {
-    fontSize: 12,
-    color: T.textMuted,
-    lineHeight: 18,
-    flex: 1,
-  },
+  respRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 5 },
+  respDot:  { width: 5, height: 5, borderRadius: 2.5, backgroundColor: T.blue, marginTop: 6, flexShrink: 0 },
+  respText: { fontSize: 12, color: T.textMuted, lineHeight: 18, flex: 1 },
 
-  // Divider
-  cardDivider: {
-    height: 1,
-    backgroundColor: T.border,
-    marginHorizontal: 16,
-  },
-
-  // Contacts zone
-  contactsZone: {
-    padding: 16,
-    paddingBottom: 12,
-  },
-  contactsLabel: {
-    fontSize: 10,
-    color: T.textFaint,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    marginBottom: 10,
-  },
+  // Contact row
   contactRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    marginBottom: 8,
+    marginBottom: 10,
   },
   avatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
+    flexShrink: 0,
   },
-  avatarInitials: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: 'white',
-  },
-  contactMid: {
-    flex: 1,
-  },
-  contactName: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: T.ink,
-  },
-  contactRole: {
-    fontSize: 11,
-    color: T.textFaint,
-    marginTop: 1,
-  },
-  contactPhone: {
-    fontSize: 11,
-    color: T.textMuted,
-    marginTop: 1,
-  },
-  noContactsText: {
-    fontSize: 12,
-    color: T.textFaint,
-    fontStyle: 'italic',
-  },
-  contactRight: {
-    alignItems: 'flex-end',
-    gap: 4,
-  },
+  avatarInitials: { fontSize: 14, fontWeight: '700', color: 'white' },
+  contactMid: { flex: 1 },
+  contactName: { fontSize: 13, fontWeight: '700', color: T.ink },
+  contactRole: { fontSize: 11, color: T.textFaint, marginTop: 1 },
+  contactPhone: { fontSize: 11, color: T.textMuted, marginTop: 1 },
+  noContactsText: { fontSize: 12, color: T.textFaint, fontStyle: 'italic' },
+  contactRight: { alignItems: 'flex-end', gap: 5 },
   contactEmail: {
     fontSize: 10,
     color: T.blue,
     maxWidth: 130,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
   },
-  contactBadgesRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
+  contactBadgesRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   verifiedBadge: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
     justifyContent: 'center',
     alignItems: 'center',
   },
   linkedinBtn: {
-    width: 22,
-    height: 22,
-    borderRadius: 4,
+    width: 30,
+    height: 30,
+    borderRadius: 8,
     backgroundColor: 'rgba(10,102,194,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(10,102,194,0.2)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1855,7 +1345,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingBottom: 16,
+    paddingTop: 4,
     gap: 8,
+    borderTopWidth: 1,
+    borderTopColor: T.border,
   },
   addContactBtn: {
     flexDirection: 'row',
@@ -1868,11 +1361,7 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     paddingHorizontal: 12,
   },
-  addContactBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: T.textMuted,
-  },
+  addContactBtnText: { fontSize: 12, fontWeight: '600', color: T.textMuted },
   visitJobBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1884,30 +1373,16 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     paddingHorizontal: 12,
   },
-  visitJobBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: T.blue,
-  },
-  applyBtnOuter: {
-    flex: 1,
-    borderRadius: 20,
-    overflow: 'hidden',
-  },
+  visitJobBtnText: { fontSize: 12, fontWeight: '600', color: T.blue },
+  applyBtnOuter: { flex: 1, borderRadius: 20, overflow: 'hidden' },
   applyBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
     paddingVertical: 9,
-    paddingHorizontal: 16,
   },
-  applyBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#fff',
-    letterSpacing: -0.2,
-  },
+  applyBtnText: { fontSize: 13, fontWeight: '700', color: '#fff', letterSpacing: -0.2 },
 
   // ── Modal ──
   modalOverlay: {
@@ -1928,31 +1403,10 @@ const styles = StyleSheet.create({
     shadowRadius: 40,
     elevation: 20,
   },
-  modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 6,
-  },
-  modalIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: T.ink,
-    letterSpacing: -0.4,
-  },
-  modalHint: {
-    fontSize: 13,
-    color: T.textMuted,
-    marginBottom: 16,
-    marginLeft: 52,
-  },
+  modalHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
+  modalIconWrap: { width: 42, height: 42, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  modalTitle: { fontSize: 17, fontWeight: '800', color: T.ink, letterSpacing: -0.4 },
+  modalHint: { fontSize: 12, color: T.textMuted, marginTop: 2 },
   modalInput: {
     backgroundColor: T.bg,
     borderWidth: 1,
@@ -1962,126 +1416,38 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     fontSize: 14,
     color: T.ink,
-    marginBottom: 20,
+    marginBottom: 16,
   },
-  modalButtons: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  modalCancelBtn: {
-    flex: 1,
-    backgroundColor: T.bg,
-    borderRadius: 14,
-    paddingVertical: 13,
-    alignItems: 'center',
-  },
-  modalCancelText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: T.textMuted,
-  },
-  modalAddBtnOuter: {
-    flex: 2,
-    borderRadius: 14,
-    overflow: 'hidden',
-  },
-  modalAddBtn: {
+  modalButtons: { flexDirection: 'row', gap: 10 },
+  modalCancelBtn: { flex: 1, backgroundColor: T.bg, borderRadius: 14, paddingVertical: 13, alignItems: 'center' },
+  modalCancelText: { fontSize: 14, fontWeight: '600', color: T.textMuted },
+  modalConfirmOuter: { flex: 2, borderRadius: 14, overflow: 'hidden' },
+  modalConfirmBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
     paddingVertical: 13,
-    paddingHorizontal: 20,
   },
-  modalAddBtnText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#fff',
-  },
+  modalConfirmText: { fontSize: 14, fontWeight: '700', color: '#fff' },
 
   // ── Coming Soon Overlay ──
   comingSoonOverlay: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: 'rgba(10,15,36,0.82)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 999,
-    paddingHorizontal: 28,
+    alignItems: 'center', justifyContent: 'center', zIndex: 999, paddingHorizontal: 28,
   },
   comingSoonCard: {
-    backgroundColor: T.surface,
-    borderRadius: 28,
-    padding: 28,
-    width: '100%',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.18,
-    shadowRadius: 40,
-    elevation: 16,
+    backgroundColor: T.surface, borderRadius: 28, padding: 28, width: '100%', alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 16 }, shadowOpacity: 0.18, shadowRadius: 40, elevation: 16,
   },
-  comingSoonBackBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 4,
-    marginBottom: 18,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    backgroundColor: T.bg,
-    borderRadius: 10,
-  },
-  comingSoonBackText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: T.textMuted,
-  },
-  comingSoonIconWrap: {
-    width: 60,
-    height: 60,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 14,
-  },
-  comingSoonBadge: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: T.blue,
-    letterSpacing: 1.5,
-    marginBottom: 6,
-  },
-  comingSoonTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: T.ink,
-    letterSpacing: -0.5,
-    marginBottom: 10,
-  },
-  comingSoonDesc: {
-    fontSize: 13,
-    color: T.textMuted,
-    textAlign: 'center',
-    lineHeight: 19,
-    marginBottom: 18,
-  },
-  comingSoonDivider: {
-    height: 1,
-    backgroundColor: T.border,
-    width: '100%',
-    marginBottom: 16,
-  },
-  featureRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    alignSelf: 'flex-start',
-    marginBottom: 8,
-  },
-  featureText: {
-    fontSize: 13,
-    color: '#334155',
-    fontWeight: '500',
-  },
+  comingSoonBack: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 4, marginBottom: 18, paddingVertical: 6, paddingHorizontal: 10, backgroundColor: T.bg, borderRadius: 10 },
+  comingSoonBackText: { fontSize: 13, fontWeight: '600', color: T.textMuted },
+  comingSoonIcon: { width: 60, height: 60, borderRadius: 18, alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
+  comingSoonBadge: { fontSize: 10, fontWeight: '800', color: T.blue, letterSpacing: 1.5, marginBottom: 6 },
+  comingSoonTitle: { fontSize: 22, fontWeight: '800', color: T.ink, letterSpacing: -0.5, marginBottom: 10 },
+  comingSoonDesc: { fontSize: 13, color: T.textMuted, textAlign: 'center', lineHeight: 19, marginBottom: 18 },
+  comingSoonDivider: { height: 1, backgroundColor: T.border, width: '100%', marginBottom: 16 },
+  featureRow: { flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-start', marginBottom: 8 },
+  featureText: { fontSize: 13, color: '#334155', fontWeight: '500' },
 });
