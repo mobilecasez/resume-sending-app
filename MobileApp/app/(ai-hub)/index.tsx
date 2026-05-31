@@ -206,59 +206,37 @@ type CompanyCardProps = {
 const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, onPress }) => {
   const jobCount     = (employer.jobs || []).length;
   const contactCount = (employer.jobs || []).reduce((s, j) => s + (j.contacts || []).length, 0);
-  const urgentCount  = (employer.jobs || []).filter(j => j.urgent).length;
-  const accentColor  = employer.logoColor?.[0] || '#4F8DFF';
 
   return (
-    <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={0.88}
-      style={[styles.companyCard, selected && styles.companyCardSelected]}
-    >
-      <LinearGradient
-        colors={['#0C1128', '#13193E']}
-        start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFillObject}
-      />
-      {/* Accent blob behind logo */}
-      <View style={[styles.companyCardBlob, { backgroundColor: `${accentColor}25` }]} />
-
-      {/* ── Top row: logo + name ── */}
-      <View style={styles.ccTop}>
+    <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={[styles.ccWrap, selected && styles.ccWrapSelected]}>
+      {selected && (
+        <LinearGradient
+          colors={[T.blue, T.purple]}
+          start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+          style={styles.ccSelectedRing}
+        />
+      )}
+      <View style={styles.ccInner}>
+        {/* Logo */}
         <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.ccLogo}>
           <Text style={styles.ccLogoText}>{employer.logoInitial}</Text>
         </LinearGradient>
-        <View style={styles.ccNameWrap}>
-          <Text style={styles.ccName}>{employer.name}</Text>
-          {urgentCount > 0 && (
-            <View style={styles.ccUrgentPill}>
-              <Ionicons name="flash" size={9} color="#F87171" />
-              <Text style={styles.ccUrgentText}>{urgentCount} urgent</Text>
-            </View>
-          )}
+        {/* Name */}
+        <Text style={styles.ccName} numberOfLines={2}>{employer.name}</Text>
+        {/* Stats */}
+        <View style={styles.ccRow}>
+          <Ionicons name="briefcase-outline" size={11} color="#22D3EE" />
+          <Text style={[styles.ccStat, { color: '#22D3EE' }]}>{jobCount}</Text>
+          <View style={styles.ccDot} />
+          <Ionicons name="people-outline" size={11} color="#A78BFA" />
+          <Text style={[styles.ccStat, { color: '#A78BFA' }]}>{contactCount}</Text>
         </View>
-        {/* Selected checkmark */}
+        {/* Selected tick */}
         {selected && (
-          <View style={styles.ccCheck}>
-            <Ionicons name="checkmark-circle" size={20} color={T.blue} />
+          <View style={styles.ccTick}>
+            <Ionicons name="checkmark" size={11} color="#fff" />
           </View>
         )}
-      </View>
-
-      {/* ── Divider ── */}
-      <View style={styles.ccDivider} />
-
-      {/* ── Stats row ── */}
-      <View style={styles.ccStats}>
-        <View style={styles.ccStat}>
-          <Text style={[styles.ccStatValue, { color: '#22D3EE' }]}>{jobCount}</Text>
-          <Text style={styles.ccStatLabel}>{jobCount === 1 ? 'Job Match' : 'Job Matches'}</Text>
-        </View>
-        <View style={styles.ccStatSep} />
-        <View style={styles.ccStat}>
-          <Text style={[styles.ccStatValue, { color: '#A78BFA' }]}>{contactCount}</Text>
-          <Text style={styles.ccStatLabel}>{contactCount === 1 ? 'Contact' : 'Contacts'}</Text>
-        </View>
       </View>
     </TouchableOpacity>
   );
@@ -1234,92 +1212,69 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
 
-  // ── Company card ──
-  companyCard: {
-    width: SCREEN_W * 0.62,          // narrower = more card visible = easier to swipe
-    borderRadius: 22,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.22,
+  // ── Company bookmark cards ──
+  ccWrap: {
+    width: 130,
+    borderRadius: 20,
+    backgroundColor: T.surface,
+    shadowColor: T.ink,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.09,
+    shadowRadius: 14,
+    elevation: 5,
+    padding: 2,                 // padding creates space for the gradient ring
+  },
+  ccWrapSelected: {
+    shadowOpacity: 0.18,
     shadowRadius: 20,
-    elevation: 8,
+    elevation: 10,
   },
-  companyCardSelected: {
-    shadowOpacity: 0.40,
-    shadowRadius: 28,
-    elevation: 14,
-    borderWidth: 2,
-    borderColor: T.blue,
+  ccSelectedRing: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 20,
   },
-  companyCardBlob: {
-    position: 'absolute',
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-    top: -28,
-    left: -16,
-  },
-  // ── Inner layout (vertical) ──
-  ccTop: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    padding: 16,
-    paddingBottom: 14,
-    gap: 12,
+  ccInner: {
+    backgroundColor: '#0D1230',
+    borderRadius: 18,
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    gap: 8,
   },
   ccLogo: {
-    width: 46,
-    height: 46,
-    borderRadius: 14,
+    width: 48,
+    height: 48,
+    borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
-    flexShrink: 0,
   },
-  ccLogoText: { fontSize: 20, fontWeight: '800', color: '#fff' },
-  ccNameWrap: { flex: 1, paddingTop: 2 },
+  ccLogoText: { fontSize: 21, fontWeight: '800', color: '#fff' },
   ccName: {
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 13,
+    fontWeight: '700',
     color: '#fff',
-    letterSpacing: -0.4,
-    lineHeight: 20,
-    marginBottom: 5,
+    letterSpacing: -0.3,
+    textAlign: 'center',
+    lineHeight: 18,
   },
-  ccUrgentPill: {
+  ccRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(248,113,113,0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(248,113,113,0.3)',
-    borderRadius: 20,
-    paddingVertical: 2,
-    paddingHorizontal: 7,
+    gap: 4,
   },
-  ccUrgentText: { fontSize: 10, fontWeight: '700', color: '#F87171' },
-  ccCheck: { marginTop: 2 },
-  ccDivider: {
-    height: 1,
-    backgroundColor: 'rgba(255,255,255,0.07)',
-    marginHorizontal: 16,
+  ccStat: { fontSize: 12, fontWeight: '700' },
+  ccDot: { width: 3, height: 3, borderRadius: 1.5, backgroundColor: 'rgba(255,255,255,0.25)', marginHorizontal: 2 },
+  ccTick: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: T.blue,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  ccStats: {
-    flexDirection: 'row',
-    padding: 14,
-    paddingTop: 12,
-  },
-  ccStat: { flex: 1, alignItems: 'center' },
-  ccStatValue: { fontSize: 22, fontWeight: '800', letterSpacing: -0.5 },
-  ccStatLabel: {
-    fontSize: 10,
-    color: 'rgba(255,255,255,0.38)',
-    fontWeight: '600',
-    marginTop: 2,
-    letterSpacing: 0.2,
-  },
-  ccStatSep: { width: 1, alignSelf: 'stretch', backgroundColor: 'rgba(255,255,255,0.08)', marginVertical: 4 },
 
   // ── Job card ──
   card: {
