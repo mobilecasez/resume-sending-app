@@ -217,6 +217,10 @@ const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, onPress }
         />
       )}
       <View style={styles.ccInner}>
+        {/* Watermark — first 4 chars of company name */}
+        <Text style={styles.ccWatermark} numberOfLines={1}>
+          {employer.name.replace(/\s+/g, '').slice(0, 4).toUpperCase()}
+        </Text>
         {/* Logo */}
         <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.ccLogo}>
           <Text style={styles.ccLogoText}>{employer.logoInitial}</Text>
@@ -1106,6 +1110,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     alignItems: 'center',
     gap: 8,
+    overflow: 'hidden',
+  },
+  ccWatermark: {
+    position: 'absolute',
+    bottom: -8,
+    right: -4,
+    fontSize: 52,
+    fontWeight: '900',
+    color: 'rgba(255,255,255,0.045)',
+    letterSpacing: -2,
   },
   ccLogo: {
     width: 48,
