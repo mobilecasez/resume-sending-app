@@ -494,6 +494,14 @@ async function runPostgresMigrations(db) {
             );
         `);
 
+        // Migration 004: IP tracking columns (fixes login crash on production)
+        await db.query(`
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS registration_ip TEXT DEFAULT NULL;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_ip    TEXT DEFAULT NULL;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at     TIMESTAMP DEFAULT NULL;
+            CREATE INDEX IF NOT EXISTS idx_users_registration_ip ON users(registration_ip);
+        `);
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);
