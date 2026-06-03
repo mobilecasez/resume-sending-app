@@ -173,11 +173,23 @@ OUTPUT FORMAT — return ONLY this JSON object, with absolutely nothing before o
 /**
  * Build the filled-in prompt text by substituting placeholders.
  */
-function buildPrompt(userMetadata, targetPosition, employerUrlOrText) {
-    return SYSTEM_PROMPT
+function buildPrompt(userMetadata, targetPosition, employerUrlOrText, responsibilities = null) {
+    let prompt = SYSTEM_PROMPT
         .replace('{user_metadata}', JSON.stringify(userMetadata, null, 2))
         .replace('{target_position}', targetPosition)
         .replace('{employer_url_or_scraped_text}', employerUrlOrText);
+
+    // Inject responsibilities as extra context when provided (Job Hub flow only).
+    // This is additive — the prompt works identically without it.
+    if (responsibilities && responsibilities.length > 0) {
+        const list = Array.isArray(responsibilities)
+            ? responsibilities.map((r, i) => `${i + 1}. ${r}`).join('\n')
+            : responsibilities;
+        const block = `\n\n---\n\nJOB RESPONSIBILITIES (use these to make the letter highly specific to this role):\n${list}\n\nUse these responsibilities to:\n- Reference 2–3 of them explicitly in Paragraph 2 (Skills & Domain Match) — show how the user's background directly covers each one\n- Use them in Paragraph 3 (Value Proposition) to demonstrate the user can hit the ground running on these specific tasks\n- Do NOT copy the responsibility text verbatim — paraphrase and connect it to the user's actual experience\n\n---`;
+        prompt += block;
+    }
+
+    return prompt;
 }
 
 /**
@@ -376,7 +388,7 @@ function extractJsonFields(raw) {
  * @param {string} targetPosition  - Job position title
  * @returns {Promise<{to, employer_name, position, addresses, subject, cover_letter}>}
  */
-async function generateCoverLetter(userMetadata, employerUrl, targetPosition) {
+async function generateCoverLetter(userMetadata, employerUrl, targetPosition, responsibilities = null) {
     if (!userMetadata || typeof userMetadata !== 'object') {
         throw new Error('userMetadata must be a non-null object');
     }
@@ -393,7 +405,7 @@ async function generateCoverLetter(userMetadata, employerUrl, targetPosition) {
 
     // Pass the URL directly — Gemini will research the employer itself
     // via Google Search grounding. No manual scraping required.
-    const prompt = buildPrompt(userMetadata, targetPosition, normalizedUrl);
+    const prompt = buildPrompt(userMetadata, targetPosition, normalizedUrl, responsibilities);
 
     console.log(`[ai-cover-letter-v2] Calling Gemini to research ${normalizedUrl} and generate cover letter...`);
     const result = await callGemini(prompt);

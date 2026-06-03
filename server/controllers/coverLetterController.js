@@ -694,7 +694,7 @@ const generateCoverLetterDetails = async (req, res) => {
     
     try {
         const userId = req.user.id;
-        const { recipientEmail, websiteUrl, position } = req.body;
+        const { recipientEmail, websiteUrl, position, responsibilities } = req.body;
 
         console.log(`\n📨 [${requestId}] Generate Cover Letter Details Request (${useAsync ? 'ASYNC' : 'SYNC'})`);
         console.log(`   User: ${userId}, Position: ${position}`);
@@ -738,7 +738,7 @@ const generateCoverLetterDetails = async (req, res) => {
         if (useAsync) {
             // ASYNC MODE: Create job and return immediately
             const jobId = await jobService.createJob(userId, 'generate_cover_letter', {
-                recipientEmail, websiteUrl, position
+                recipientEmail, websiteUrl, position, responsibilities
             });
             console.log(`🚀 [${requestId}] Async job created: ${jobId}`);
 
@@ -746,14 +746,14 @@ const generateCoverLetterDetails = async (req, res) => {
             res.status(202).json({ jobId, status: 'pending' });
 
             // Fire and forget — process in background
-            processGenerationJob(jobId, userId, { recipientEmail, websiteUrl, position }).catch(err => {
+            processGenerationJob(jobId, userId, { recipientEmail, websiteUrl, position, responsibilities }).catch(err => {
                 console.error(`❌ [${requestId}] Async job ${jobId} failed:`, err.message);
                 jobService.failJob(jobId, err.message).catch(console.error);
             });
 
         } else {
             // SYNC MODE: Original behavior — hold connection until done
-            const result = await executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position });
+            const result = await executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position, responsibilities });
 
             const duration = Date.now() - startTime;
             console.log(`✅ [${requestId}] Response sent in ${duration}ms`);
@@ -771,8 +771,8 @@ const generateCoverLetterDetails = async (req, res) => {
 /**
  * The actual heavy generation work — used by both sync and async modes
  */
-async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position }) {
-    console.log(`🚀 [executeGenerationWork] ENTERED — userId=${userId}, websiteUrl=${websiteUrl}, position=${position}`);
+async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl, position, responsibilities = null }) {
+    console.log(`🚀 [executeGenerationWork] ENTERED — userId=${userId}, websiteUrl=${websiteUrl}, position=${position}, hasResponsibilities=${!!(responsibilities && responsibilities.length)}`);
     // Normalize URL
     const normalizedWebsiteUrl = websiteUrl && websiteUrl.match(/^https?:\/\//) ? websiteUrl : `https://${websiteUrl}`;
 
@@ -806,14 +806,14 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
     if (cached) {
         // Cache hit — run cover letter generation alone at full speed
         console.log(`🎨 [employer] Cache hit → color=${cached.brand_color}, font=${cached.font_name}`);
-        aiResult = await generateCoverLetterV2(resumeMetadata, normalizedWebsiteUrl, position);
+        aiResult = await generateCoverLetterV2(resumeMetadata, normalizedWebsiteUrl, position, responsibilities);
         brandColor = cached.brand_color;
         fontName = cached.font_name;
     } else {
         // Cache miss — run cover letter generation + full employer research IN PARALLEL
         console.log(`🔍 [employer] Cache miss — running cover letter + employer research in parallel`);
         const [clResult, researchData] = await Promise.all([
-            generateCoverLetterV2(resumeMetadata, normalizedWebsiteUrl, position),
+            generateCoverLetterV2(resumeMetadata, normalizedWebsiteUrl, position, responsibilities),
             researchEmployer(normalizedWebsiteUrl),
         ]);
         aiResult = clResult;
