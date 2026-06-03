@@ -494,12 +494,33 @@ async function runPostgresMigrations(db) {
             );
         `);
 
-        // Migration 004: IP tracking columns (fixes login crash on production)
+        // Migration 004: IP tracking columns
         await db.query(`
             ALTER TABLE users ADD COLUMN IF NOT EXISTS registration_ip TEXT DEFAULT NULL;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_ip    TEXT DEFAULT NULL;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at     TIMESTAMP DEFAULT NULL;
             CREATE INDEX IF NOT EXISTS idx_users_registration_ip ON users(registration_ip);
+        `);
+
+        // Migration 005: Microsoft OAuth columns on users
+        await db.query(`
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_access_token  TEXT DEFAULT NULL;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_refresh_token TEXT DEFAULT NULL;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_id            TEXT DEFAULT NULL;
+        `);
+
+        // Migration 006: Soft-delete columns on users
+        await db.query(`
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at  TIMESTAMP DEFAULT NULL;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_by  INTEGER   DEFAULT NULL;
+        `);
+
+        // Migration 007: brand_color, font_name, deleted_at on review_cover_letters
+        // These columns are written on every cover letter save — missing them crashes login flow
+        await db.query(`
+            ALTER TABLE review_cover_letters ADD COLUMN IF NOT EXISTS brand_color TEXT    DEFAULT NULL;
+            ALTER TABLE review_cover_letters ADD COLUMN IF NOT EXISTS font_name   TEXT    DEFAULT NULL;
+            ALTER TABLE review_cover_letters ADD COLUMN IF NOT EXISTS deleted_at  TIMESTAMP DEFAULT NULL;
         `);
 
         console.log('✅ PostgreSQL migrations completed successfully');
