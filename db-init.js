@@ -494,34 +494,50 @@ async function runPostgresMigrations(db) {
             );
         `);
 
-        // Migration 004: IP tracking columns
-        await db.query(`
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS registration_ip TEXT DEFAULT NULL;
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_ip    TEXT DEFAULT NULL;
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at     TIMESTAMP DEFAULT NULL;
-            CREATE INDEX IF NOT EXISTS idx_users_registration_ip ON users(registration_ip);
-        `);
+        // Each ALTER TABLE is a separate await — pg only reliably runs one statement per query() call
+        const col = async (sql) => { try { await db.query(sql); } catch(e) { if (!e.message.includes('already exists')) console.warn('migration:', e.message); } };
 
-        // Migration 005: Microsoft OAuth columns on users
-        await db.query(`
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_access_token  TEXT DEFAULT NULL;
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_refresh_token TEXT DEFAULT NULL;
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_id            TEXT DEFAULT NULL;
-        `);
+        // users — IP tracking
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS registration_ip TEXT DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_ip TEXT DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP DEFAULT NULL`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_users_registration_ip ON users(registration_ip)`);
+        console.log('✅ Migration 004: IP tracking columns done');
 
-        // Migration 006: Soft-delete columns on users
-        await db.query(`
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at  TIMESTAMP DEFAULT NULL;
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_by  INTEGER   DEFAULT NULL;
-        `);
+        // users — Google OAuth token metadata
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS used_pkce BOOLEAN DEFAULT FALSE`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_token_issued_at TIMESTAMP DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_token_expires_at TIMESTAMP DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS total_replied INTEGER DEFAULT 0`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS country TEXT DEFAULT NULL`);
+        console.log('✅ Migration 004b: Google token metadata columns done');
 
-        // Migration 007: brand_color, font_name, deleted_at on review_cover_letters
-        // These columns are written on every cover letter save — missing them crashes login flow
-        await db.query(`
-            ALTER TABLE review_cover_letters ADD COLUMN IF NOT EXISTS brand_color TEXT    DEFAULT NULL;
-            ALTER TABLE review_cover_letters ADD COLUMN IF NOT EXISTS font_name   TEXT    DEFAULT NULL;
-            ALTER TABLE review_cover_letters ADD COLUMN IF NOT EXISTS deleted_at  TIMESTAMP DEFAULT NULL;
-        `);
+        // users — Microsoft OAuth
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_access_token TEXT DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_refresh_token TEXT DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_id TEXT DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_token_issued_at TIMESTAMP DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_token_expires_at TIMESTAMP DEFAULT NULL`);
+        console.log('✅ Migration 005: Microsoft OAuth columns done');
+
+        // users — Apple OAuth
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_user_id TEXT DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_identity_token TEXT DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_token_issued_at TIMESTAMP DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_token_expires_at TIMESTAMP DEFAULT NULL`);
+        console.log('✅ Migration 005b: Apple OAuth columns done');
+
+        // users — soft-delete
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP DEFAULT NULL`);
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_by INTEGER DEFAULT NULL`);
+        console.log('✅ Migration 006: Soft-delete columns done');
+
+        // review_cover_letters — branding + soft-delete
+        await col(`ALTER TABLE review_cover_letters ADD COLUMN IF NOT EXISTS brand_color TEXT DEFAULT NULL`);
+        await col(`ALTER TABLE review_cover_letters ADD COLUMN IF NOT EXISTS font_name TEXT DEFAULT NULL`);
+        await col(`ALTER TABLE review_cover_letters ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP DEFAULT NULL`);
+        console.log('✅ Migration 007: review_cover_letters branding columns done');
 
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
