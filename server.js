@@ -57,6 +57,7 @@ const notificationsRoutes = require('./server/routes/notificationsRoutes');
 const usageRoutes = require('./server/routes/usageRoutes');
 const jobRoutes = require('./server/routes/jobRoutes');
 const aiHubRoutes = require('./server/routes/aiHub');
+const resumeBuilderRoutes = require('./server/routes/resumeBuilder');
 const featureFlagsRoutes = require('./server/routes/featureFlagsRoutes');
 
 // Import authentication middleware
@@ -3361,7 +3362,7 @@ app.get('/api/download-cover-letter/:filename', authenticateToken, async (req, r
     try {
         const filename = req.params.filename;
         const filePath = path.join(__dirname, 'temp', filename);
-        
+
         // Check if file exists
         try {
             await fs.access(filePath);
@@ -3372,6 +3373,21 @@ app.get('/api/download-cover-letter/:filename', authenticateToken, async (req, r
         res.download(filePath, filename);
     } catch (error) {
         console.error('Download error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Resume PDF download
+app.get('/api/download-resume/:filename', authenticateToken, async (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const filePath = path.join(__dirname, 'temp', filename);
+        try { await fs.access(filePath); } catch {
+            return res.status(404).json({ error: 'Resume PDF not found or expired.' });
+        }
+        res.download(filePath, filename);
+    } catch (error) {
+        console.error('Resume download error:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -3551,53 +3567,76 @@ app.delete('/api/account/delete', authenticateToken, sensitiveLimiter, async (re
             console.log(`🔒 [ACCOUNT DELETE] Cleared Apple credentials for user ${userId}`);
         }
 
-        // Delete user data in correct order (foreign key constraints)
-        await dbConfig.run('DELETE FROM notifications WHERE user_id = ?', [userId]);
-        console.log(`🗑️ [ACCOUNT DELETE] Deleted notifications for user ${userId}`);
+        const now = new Date().toISOString();
 
-        await dbConfig.run('DELETE FROM application_history WHERE user_id = ?', [userId]);
-        console.log(`🗑️ [ACCOUNT DELETE] Deleted applications for user ${userId}`);
+        // Soft-delete associated data (keep rows, just mark deleted)
+        await dbConfig.run(
+            'UPDATE notifications SET deleted_at = ?, deleted_by = ? WHERE user_id = ? AND deleted_at IS NULL',
+            [now, userId, userId]
+        );
+        console.log(`🗑️ [ACCOUNT DELETE] Soft-deleted notifications for user ${userId}`);
 
-        await dbConfig.run('DELETE FROM payment_orders WHERE user_id = ?', [userId]);
-        console.log(`🗑️ [ACCOUNT DELETE] Deleted payments for user ${userId}`);
+        await dbConfig.run(
+            'UPDATE application_history SET deleted_at = ?, deleted_by = ? WHERE user_id = ? AND deleted_at IS NULL',
+            [now, userId, userId]
+        );
+        console.log(`🗑️ [ACCOUNT DELETE] Soft-deleted applications for user ${userId}`);
 
-        await dbConfig.run('DELETE FROM review_cover_letters WHERE user_id = ?', [userId]);
-        console.log(`🗑️ [ACCOUNT DELETE] Deleted cover letters for user ${userId}`);
+        await dbConfig.run(
+            'UPDATE payment_orders SET deleted_at = ?, deleted_by = ? WHERE user_id = ? AND deleted_at IS NULL',
+            [now, userId, userId]
+        );
+        console.log(`🗑️ [ACCOUNT DELETE] Soft-deleted payments for user ${userId}`);
 
-        // Delete security audit logs for user (GDPR compliance)
-        await dbConfig.run('DELETE FROM security_audit_log WHERE user_id = ?', [userId]);
-        console.log(`🗑️ [ACCOUNT DELETE] Deleted security audit logs for user ${userId}`);
+        await dbConfig.run(
+            'UPDATE review_cover_letters SET deleted_at = ?, deleted_by = ? WHERE user_id = ? AND deleted_at IS NULL',
+            [now, userId, userId]
+        );
+        console.log(`🗑️ [ACCOUNT DELETE] Soft-deleted cover letters for user ${userId}`);
 
-        // Delete user files from disk
+        // Delete user files from disk (actual file cleanup is fine — content can't be recovered anyway)
         const userUploadPath = path.join(__dirname, 'uploads', `user_${userId}`);
         try {
             await fs.rm(userUploadPath, { recursive: true, force: true });
             console.log(`🗑️ [ACCOUNT DELETE] Deleted user files at ${userUploadPath}`);
         } catch (err) {
             console.error('Error deleting user files:', err);
-            // Continue with deletion even if file deletion fails
         }
 
-        // Log account deletion event before deleting user
+        // Log account deletion event
         await logSecurityEvent('account', 'ACCOUNT_DELETED', userId, true, {
             email: user.email,
-            oauth_revoked: revokeResults
+            oauth_revoked: revokeResults,
+            soft_delete: true
         });
 
-        // Finally, delete the user account
-        await dbConfig.run('DELETE FROM users WHERE id = ?', [userId]);
-        console.log(`🗑️ [ACCOUNT DELETE] Deleted user account ${userId} (${user.email})`);
+        // Soft-delete the user record — preserve email/ip so re-registration can be detected
+        // Clear sensitive OAuth tokens but keep the row
+        await dbConfig.run(
+            `UPDATE users SET
+                deleted_at = ?,
+                deleted_by = ?,
+                password = NULL,
+                google_access_token = NULL,
+                google_refresh_token = NULL,
+                microsoft_access_token = NULL,
+                microsoft_refresh_token = NULL,
+                apple_user_id = NULL
+            WHERE id = ?`,
+            [now, userId, userId]
+        );
+        console.log(`🗑️ [ACCOUNT DELETE] Soft-deleted user account ${userId} (${user.email})`);
 
         // Clear auth cookie if it exists
         res.clearCookie('authToken');
 
-        res.json({ 
-            success: true, 
-            message: 'Your account and all associated data have been permanently deleted.',
+        res.json({
+            success: true,
+            message: 'Your account has been successfully deleted.',
             oauth_revocation: revokeResults
         });
 
-        console.log(`✅ [ACCOUNT DELETE] Successfully deleted user ${userId} (${user.email})`);
+        console.log(`✅ [ACCOUNT DELETE] Successfully soft-deleted user ${userId} (${user.email})`);
 
     } catch (error) {
         console.error('❌ [ACCOUNT DELETE] Error:', error);
@@ -3771,6 +3810,7 @@ app.use('/api', emailRoutes);
 app.use('/api', notificationsRoutes);
 app.use('/api', jobRoutes);
 app.use('/api/ai-hub', aiHubRoutes);
+app.use('/api/resume-builder', resumeBuilderRoutes);
 app.use('/api', featureFlagsRoutes);
 const batchRoutes = require('./server/routes/batchRoutes');
 app.use('/api', batchRoutes);

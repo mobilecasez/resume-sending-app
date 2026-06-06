@@ -40,7 +40,7 @@ router.post('/google', authController.googleAuth);
 // Microsoft OAuth Routes
 router.get('/microsoft', passport.authenticate('microsoft', {
     scope: ['user.read', 'mail.send', 'offline_access'],
-    prompt: 'consent'
+    prompt: 'select_account'
 }));
 
 router.get('/microsoft/callback', 

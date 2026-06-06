@@ -239,6 +239,8 @@ export default function JobDetailScreen() {
   const [companyNameCL,    setCompanyNameCL]    = useState('');
   const [websiteUrlCL,     setWebsiteUrlCL]     = useState('');
   const [companyAddressCL, setCompanyAddressCL] = useState('');
+  type CLLocation = { address: string; city: string; country: string; isHeadquarters: boolean };
+  const [companyLocations, setCompanyLocations] = useState<CLLocation[]>([]);
 
   // Download states
   const [dlState,    setDlState]    = useState<'idle'|'loading'|'done'>('idle');
@@ -297,6 +299,10 @@ export default function JobDetailScreen() {
       setCompanyNameCL(record.company_name || '');
       setWebsiteUrlCL(record.website_url || '');
       setCompanyAddressCL(record.company_address || '');
+      try {
+        const locs = record.company_locations ? JSON.parse(record.company_locations) : [];
+        if (Array.isArray(locs)) setCompanyLocations(locs);
+      } catch {};
       setClState('done');
       clAnim.setValue(1);
       if (record.status === 'downloaded') {
@@ -331,29 +337,42 @@ export default function JobDetailScreen() {
       const domain = (employer as any).domain || employer.name;
       const websiteUrl = domain.startsWith('http') ? domain : `https://${domain}`;
       const responsibilities = ((job as any).responsibilities as string[] | undefined) || [];
-      const jobId = await startJobCoverLetter(websiteUrl, job.title, responsibilities.length > 0 ? responsibilities : undefined);
+      const jobId = await startJobCoverLetter(
+        websiteUrl,
+        job.title,
+        responsibilities.length > 0 ? responsibilities : undefined,
+        job.location || undefined,
+      );
       const result = await pollJobCoverLetter(jobId, () => {
         if (fake < 75) { fake = Math.min(fake + 3, 75); setClProgress(Math.round(fake)); animTo(clAnim, fake / 100); }
       });
 
       clearInterval(tick); clearInterval(stageTick);
       setClProgress(100); animTo(clAnim, 1);
-      const html     = result.coverLetterHtml || '';
-      const cName    = result.companyName || employer.name;
-      const webUrl   = domain.startsWith('http') ? domain : `https://${domain}`;
-      // Extract address from locations (same logic as ReviewScreen/HomeScreen)
-      const locs = (result as any).locations as Array<{ address: string; city: string; country: string; isHeadquarters: boolean }> | undefined;
-      const hq   = locs?.find(l => l.isHeadquarters) || locs?.[0];
-      const addr = hq
-        ? [hq.address, hq.city, hq.country].filter(Boolean).join(', ')
-        : '';
+      const html   = result.coverLetterHtml || '';
+      const cName  = result.companyName || employer.name;
+      const webUrl = domain.startsWith('http') ? domain : `https://${domain}`;
+
+      // Full locations array from generation result
+      const locs: CLLocation[] = ((result as any).locations as CLLocation[] | undefined) || [];
+
+      // Pick best address: prefer the office that matches the job's location,
+      // fall back to HQ, then first location.
+      const jobLocLower = (job.location || '').toLowerCase();
+      const bestLoc = locs.find(l => {
+        const loc = `${l.address} ${l.city} ${l.country}`.toLowerCase();
+        return jobLocLower && (loc.includes(jobLocLower) || jobLocLower.split(/[,\s]+/).some(w => w.length > 2 && loc.includes(w)));
+      }) || locs.find(l => l.isHeadquarters) || locs[0];
+      const addr = bestLoc ? [bestLoc.address, bestLoc.city, bestLoc.country].filter(Boolean).join(', ') : '';
+
       setCoverLetterHtml(html);
       setCompanyNameCL(cName);
       setWebsiteUrlCL(webUrl);
       setCompanyAddressCL(addr);
+      setCompanyLocations(locs);
       setTimeout(() => setClState('done'), 300);
-      // Persist to DB (non-blocking)
-      saveJobCoverLetter(job.id, { coverLetterHtml: html, companyName: cName, websiteUrl: webUrl, position: job.title, companyAddress: addr });
+      // Persist to DB (non-blocking) — store locations as JSON for dropdown restore on reload
+      saveJobCoverLetter(job.id, { coverLetterHtml: html, companyName: cName, websiteUrl: webUrl, position: job.title, companyAddress: addr, companyLocations: locs });
     } catch (e: any) {
       clearInterval(tick); clearInterval(stageTick);
       setClState('idle');
@@ -576,22 +595,33 @@ export default function JobDetailScreen() {
   const handleEdit = async () => {
     if (!coverLetterHtml) return;
     try {
-      // Bridge to HomeScreen: add a new recipient with this job's details pre-filled
-      // and store the cover letter in AsyncStorage in the exact format HomeScreen reads
       const websiteUrl = websiteUrlCL || ((employer as any).domain
         ? `https://${(employer as any).domain}`
         : '');
+      // Store the CL payload — HomeScreen's 800ms poll picks this up
+      // Use the first verified contact's email, else first contact's email, else blank
+      const contacts = (job.contacts || []) as Array<{ email: string; verified: boolean }>;
+      const recipientEmail = contacts.find(c => c.verified)?.email
+        || contacts[0]?.email
+        || '';
+
       await AsyncStorage.setItem('aiHub_add_recipient_with_cl', JSON.stringify({
         website: websiteUrl,
         position: job.title,
         coverLetterHtml,
         companyName: companyNameCL || employer.name,
+        companyAddress: companyAddressCL || '',
+        companyLocations: companyLocations.length > 0 ? companyLocations : [],
+        recipientEmail,
       }));
-      // Tell App.js to switch to the HomeScreen/Letters tab
+      // Step 1: mark relay flag so (ai-hub)/index pops itself on focus
       await AsyncStorage.setItem('aiHub_navigate_home', 'true');
-      // Switch the bottom tab to Home so the user lands on the Letters page
-      router.replace('/(tabs)');
-    } catch {}
+      // Step 2: go back to (ai-hub)/index (which will call router.back() again)
+      // App.js polls for aiHub_add_recipient_with_cl and navigates to Letters page
+      router.back();
+    } catch (e) {
+      console.warn('[handleEdit] failed:', e);
+    }
   };
 
   return (

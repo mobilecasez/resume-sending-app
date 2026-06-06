@@ -156,10 +156,13 @@ async function upsertSkill(skillName) {
     return result[0].id;
 }
 
-async function upsertJob(employerId, locationId, title, jobUrl, experience, salary, jobType, urgent) {
+async function upsertJob(employerId, locationId, title, jobUrl, experience, salary, jobType, urgent, responsibilities = []) {
+    const respJson = Array.isArray(responsibilities) && responsibilities.length > 0
+        ? JSON.stringify(responsibilities)
+        : null;
     const result = await dbConfig.query(
-        `INSERT INTO jobs (employer_id, location_id, title, job_url, experience, salary, job_type, urgent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO jobs (employer_id, location_id, title, job_url, experience, salary, job_type, urgent, responsibilities)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (job_url) DO UPDATE SET
             title = EXCLUDED.title,
             location_id = EXCLUDED.location_id,
@@ -167,10 +170,11 @@ async function upsertJob(employerId, locationId, title, jobUrl, experience, sala
             salary = EXCLUDED.salary,
             job_type = EXCLUDED.job_type,
             urgent = EXCLUDED.urgent,
+            responsibilities = EXCLUDED.responsibilities,
             is_active = TRUE,
             updated_at = CURRENT_TIMESTAMP
          RETURNING id`,
-        [employerId, locationId, title, jobUrl, experience, salary, jobType, urgent]
+        [employerId, locationId, title, jobUrl, experience, salary, jobType, urgent, respJson]
     );
     return result[0].id;
 }
@@ -184,12 +188,37 @@ async function linkJobSkill(jobId, skillId) {
     );
 }
 
-async function addJobContact(jobId, name, role, email, phone, avatarUrl) {
-    await dbConfig.query(
-        `INSERT INTO job_contacts (job_id, name, role, email, phone, avatar_url)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [jobId, name, role, email, phone, avatarUrl]
-    );
+async function addJobContact(jobId, name, role, email, phone, avatarUrl, linkedinUrl = null, imageUrl = null) {
+    // If contact has an email, upsert on (job_id, email) to prevent duplicates
+    if (email) {
+        await dbConfig.query(
+            `INSERT INTO job_contacts (job_id, name, role, email, phone, avatar_url, linkedin_url, image_url)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (job_id, email) DO UPDATE SET
+                name = EXCLUDED.name,
+                role = EXCLUDED.role,
+                phone = COALESCE(EXCLUDED.phone, job_contacts.phone),
+                linkedin_url = COALESCE(EXCLUDED.linkedin_url, job_contacts.linkedin_url),
+                image_url = COALESCE(EXCLUDED.image_url, job_contacts.image_url),
+                updated_at = CURRENT_TIMESTAMP`,
+            [jobId, name, role, email, phone, avatarUrl, linkedinUrl, imageUrl]
+        ).catch(async () => {
+            // Fallback if unique constraint doesn't exist yet — plain insert
+            await dbConfig.query(
+                `INSERT INTO job_contacts (job_id, name, role, email, phone, avatar_url, linkedin_url, image_url)
+                 SELECT $1,$2,$3,$4,$5,$6,$7,$8 WHERE NOT EXISTS (
+                   SELECT 1 FROM job_contacts WHERE job_id=$1 AND lower(email)=lower($4)
+                 )`,
+                [jobId, name, role, email, phone, avatarUrl, linkedinUrl, imageUrl]
+            );
+        });
+    } else {
+        await dbConfig.query(
+            `INSERT INTO job_contacts (job_id, name, role, email, phone, avatar_url, linkedin_url, image_url)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [jobId, name, role, email, phone, avatarUrl, linkedinUrl, imageUrl]
+        );
+    }
 }
 
 async function trackUserEmployer(userId, employerId) {
@@ -221,89 +250,254 @@ async function saveUserJobMatch(userId, jobId, matchScore) {
     );
 }
 
-// Fetches the fully constructed dashboard for a user using the normalized tables
+const AVATAR_COLORS_DB = [
+    ['#06B6D4', '#3B82F6'],
+    ['#8B5CF6', '#6D28D9'],
+    ['#10B981', '#059669'],
+    ['#F59E0B', '#D97706'],
+    ['#EF4444', '#DC2626'],
+];
+
+/**
+ * Fetches the fully constructed dashboard for a user.
+ * - For in-progress jobs: returns partial data from async_jobs.result
+ * - For completed jobs: loads from normalized tables (jobs, skills, contacts)
+ */
 async function getUserDashboard(userId) {
-    // 1. Get tracked employers
+    // 1. Get tracked employers with async job status
     const trackedEmployers = await dbConfig.query(
-        `SELECT e.*, ute.status as tracking_status
+        `SELECT e.*, ute.status as tracking_status, ute.async_job_id,
+                aj.status as job_status, aj.progress as job_progress, aj.result as job_result
          FROM user_tracked_employers ute
          JOIN employers e ON ute.employer_id = e.id
+         LEFT JOIN async_jobs aj ON ute.async_job_id = aj.id
          WHERE ute.user_id = $1 AND ute.status = 'watching'
          ORDER BY ute.updated_at DESC`,
         [userId]
     );
-    
+
     const dashboard = [];
-    
+
     for (const emp of trackedEmployers) {
-        // 2. Get jobs for this employer that match the user
-        const jobsRows = await dbConfig.query(
-            `SELECT j.*, ujm.match_score, l.raw_text as location_text
-             FROM jobs j
-             JOIN user_job_matches ujm ON j.id = ujm.job_id
-             LEFT JOIN locations l ON j.location_id = l.id
-             WHERE j.employer_id = $1 AND ujm.user_id = $2 AND j.is_active = TRUE
-             ORDER BY ujm.match_score DESC`,
-            [emp.id, userId]
-        );
-        
-        const jobs = [];
-        for (const jRow of jobsRows) {
-            // Get skills
-            const skillsRows = await dbConfig.query(
-                `SELECT s.name FROM skills s
-                 JOIN job_skills js ON s.id = js.skill_id
-                 WHERE js.job_id = $1`,
-                [jRow.id]
+        const isProcessing = ['pending', 'processing'].includes(emp.job_status);
+        const logoColor = (() => {
+            try {
+                const v = emp.logo_color;
+                if (Array.isArray(v)) return v;
+                if (typeof v === 'string') return JSON.parse(v);
+                return ['#555555', '#1C1C1E'];
+            } catch { return ['#555555', '#1C1C1E']; }
+        })();
+
+        let jobs = [];
+
+        if (isProcessing && emp.job_result) {
+            // Use the partial result streamed so far
+            try {
+                const partial = typeof emp.job_result === 'string' ? JSON.parse(emp.job_result) : emp.job_result;
+                jobs = partial?.jobs || [];
+            } catch {}
+        } else {
+            // Load from normalized tables
+            const jobsRows = await dbConfig.query(
+                `SELECT j.*, ujm.match_score, l.raw_text as location_text
+                 FROM jobs j
+                 JOIN user_job_matches ujm ON j.id = ujm.job_id
+                 LEFT JOIN locations l ON j.location_id = l.id
+                 WHERE j.employer_id = $1 AND ujm.user_id = $2 AND j.is_active = TRUE
+                 ORDER BY ujm.match_score DESC, j.created_at DESC`,
+                [emp.id, userId]
             );
-            
-            // Get contacts
-            const contactsRows = await dbConfig.query(
-                `SELECT * FROM job_contacts WHERE job_id = $1`,
-                [jRow.id]
-            );
-            
-            jobs.push({
-                id: jRow.id,
-                title: jRow.title,
-                location: jRow.location_text || 'Remote',
-                experience: jRow.experience || 'Not specified',
-                salary: jRow.salary,
-                jobType: jRow.job_type,
-                urgent: jRow.urgent,
-                matchScore: jRow.match_score,
-                applyUrl: jRow.job_url,
-                skills: skillsRows.map(s => s.name),
-                contacts: contactsRows.map((c, ci) => ({
-                    id: c.id,
-                    name: c.name,
-                    role: c.role,
-                    email: c.email,
-                    phone: c.phone,
-                    avatarUrl: c.avatar_url,
-                    verified: false,
-                    avatarColor: ['#06B6D4', '#3B82F6'] // Fallback color
-                }))
-            });
-        }
-        
-        dashboard.push({
-            jobId: null, // No longer an async_job ID, but kept for UI compatibility if needed
-            status: 'completed',
-            progress: 100,
-            employer: {
-                id: emp.id,
-                name: emp.name,
-                subInfo: emp.sub_info,
-                logoColor: typeof emp.logo_color === 'string' ? JSON.parse(emp.logo_color) : emp.logo_color,
-                logoInitial: emp.logo_initial,
-                status: emp.tracking_status,
-                jobs: jobs
+
+            for (const jRow of jobsRows) {
+                const skillsRows = await dbConfig.query(
+                    `SELECT s.name FROM skills s
+                     JOIN job_skills js ON s.id = js.skill_id
+                     WHERE js.job_id = $1`,
+                    [jRow.id]
+                );
+
+                const contactsRows = await dbConfig.query(
+                    `SELECT * FROM job_contacts WHERE job_id = $1`,
+                    [jRow.id]
+                );
+
+                const responsibilities = (() => {
+                    try {
+                        if (!jRow.responsibilities) return [];
+                        return typeof jRow.responsibilities === 'string'
+                            ? JSON.parse(jRow.responsibilities)
+                            : jRow.responsibilities;
+                    } catch { return []; }
+                })();
+
+                jobs.push({
+                    id: String(jRow.id),
+                    title: jRow.title,
+                    location: jRow.location_text || 'Not specified',
+                    experience: jRow.experience || 'Not specified',
+                    salary: jRow.salary || 'Not listed',
+                    jobType: jRow.job_type || 'Full-time',
+                    urgent: !!jRow.urgent,
+                    matchScore: jRow.match_score || 0,
+                    applyUrl: jRow.job_url,
+                    skills: skillsRows.map(s => s.name),
+                    responsibilities,
+                    contacts: contactsRows.map((c, ci) => ({
+                        id: String(c.id),
+                        name: c.name,
+                        role: c.role || 'Recruiter',
+                        email: c.email || '',
+                        phone: c.phone || null,
+                        linkedin: c.linkedin_url || null,
+                        imageUrl: c.image_url || null,
+                        verified: false,
+                        avatarColor: AVATAR_COLORS_DB[ci % AVATAR_COLORS_DB.length],
+                    })),
+                });
             }
+        }
+
+        dashboard.push({
+            jobId: emp.async_job_id || null,
+            status: emp.job_status || 'completed',
+            progress: emp.job_progress || 100,
+            employer: {
+                id: String(emp.id),
+                jobId: emp.async_job_id || null,
+                name: emp.name,
+                subInfo: emp.sub_info || '',
+                logoColor,
+                logoInitial: (emp.name[0] || '?').toUpperCase(),
+                status: jobs.length > 0 ? 'active' : 'watching',
+                jobs,
+            },
+            updatedAt: emp.updated_at,
         });
     }
-    
+
     return dashboard;
+}
+
+/**
+ * Opt-5 caching: returns a fully-built employer object from the DB if the employer
+ * was scraped within `maxAgeHours` by ANY user.  Returns null on cache miss.
+ *
+ * @param {string} domain        Normalised employer domain
+ * @param {string} userId        Current user (for user_job_matches)
+ * @param {number} maxAgeHours   Cache TTL in hours (default 24)
+ */
+async function getRecentEmployerData(domain, maxAgeHours = 24) {
+    // Is there a freshly-scraped employer for this domain?
+    const employer = await dbConfig.get(
+        `SELECT * FROM employers
+         WHERE domain = $1
+           AND last_scraped_at > NOW() - ($2 || ' hours')::INTERVAL`,
+        [domain, String(maxAgeHours)]
+    );
+    if (!employer) return null;
+
+    // Does it have active jobs?
+    const jobCount = await dbConfig.get(
+        `SELECT COUNT(*) AS count FROM jobs WHERE employer_id = $1 AND is_active = TRUE`,
+        [employer.id]
+    );
+    if (!jobCount || parseInt(jobCount.count) < 1) return null;
+
+    return employer;
+}
+
+/**
+ * Builds the full employer object from DB for a cache-hit user.
+ * Ensures user_job_matches rows exist, then reads jobs with skills + contacts.
+ */
+async function buildCachedEmployerObject(employer, userId, asyncJobId) {
+    // Ensure every active job for this employer has a user_job_match row
+    await dbConfig.run(
+        `INSERT INTO user_job_matches (user_id, job_id, match_score)
+         SELECT $1, j.id, 0
+         FROM jobs j
+         WHERE j.employer_id = $2 AND j.is_active = TRUE
+         ON CONFLICT (user_id, job_id) DO NOTHING`,
+        [userId, employer.id]
+    );
+
+    const jobsRows = await dbConfig.query(
+        `SELECT j.*, ujm.match_score, l.raw_text AS location_text
+         FROM jobs j
+         JOIN user_job_matches ujm ON j.id = ujm.job_id
+         LEFT JOIN locations l ON j.location_id = l.id
+         WHERE j.employer_id = $1 AND ujm.user_id = $2 AND j.is_active = TRUE
+         ORDER BY j.created_at DESC`,
+        [employer.id, userId]
+    );
+
+    const logoColor = (() => {
+        try {
+            const v = employer.logo_color;
+            if (Array.isArray(v)) return v;
+            return typeof v === 'string' ? JSON.parse(v) : ['#555', '#1C1C1E'];
+        } catch { return ['#555', '#1C1C1E']; }
+    })();
+
+    const AVATAR_COLORS_LOCAL = [
+        ['#06B6D4','#3B82F6'], ['#8B5CF6','#6D28D9'], ['#10B981','#059669'],
+        ['#F59E0B','#D97706'], ['#EF4444','#DC2626'],
+    ];
+
+    const jobs = [];
+    for (const jRow of jobsRows) {
+        const skillsRows   = await dbConfig.query(
+            `SELECT s.name FROM skills s JOIN job_skills js ON s.id = js.skill_id WHERE js.job_id = $1`,
+            [jRow.id]
+        );
+        const contactsRows = await dbConfig.query(
+            `SELECT * FROM job_contacts WHERE job_id = $1`, [jRow.id]
+        );
+        const responsibilities = (() => {
+            try {
+                if (!jRow.responsibilities) return [];
+                return typeof jRow.responsibilities === 'string'
+                    ? JSON.parse(jRow.responsibilities)
+                    : jRow.responsibilities;
+            } catch { return []; }
+        })();
+        jobs.push({
+            id: String(jRow.id),
+            title: jRow.title,
+            location: jRow.location_text || 'Not specified',
+            experience: jRow.experience || 'Not specified',
+            salary: jRow.salary || 'Not listed',
+            jobType: jRow.job_type || 'Full-time',
+            urgent: !!jRow.urgent,
+            matchScore: jRow.match_score || 0,
+            applyUrl: jRow.job_url,
+            skills: skillsRows.map(s => s.name),
+            responsibilities,
+            contacts: contactsRows.map((c, ci) => ({
+                id: String(c.id),
+                name: c.name,
+                role: c.role || 'Recruiter',
+                email: c.email || '',
+                phone: c.phone || null,
+                linkedin: c.linkedin_url || null,
+                imageUrl: c.image_url || null,
+                verified: false,
+                avatarColor: AVATAR_COLORS_LOCAL[ci % AVATAR_COLORS_LOCAL.length],
+            })),
+        });
+    }
+
+    return {
+        id: String(employer.id),
+        jobId: asyncJobId,
+        name: employer.name,
+        subInfo: employer.sub_info || '',
+        logoColor,
+        logoInitial: (employer.name[0] || '?').toUpperCase(),
+        status: 'active',
+        jobs,
+    };
 }
 
 async function archiveUserEmployer(userId, employerId) {
@@ -334,5 +528,7 @@ module.exports = {
     linkUserSkill,
     saveUserJobMatch,
     getUserDashboard,
-    archiveUserEmployer
+    archiveUserEmployer,
+    getRecentEmployerData,
+    buildCachedEmployerObject
 };

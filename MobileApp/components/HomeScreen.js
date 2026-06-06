@@ -1,8 +1,9 @@
-import React, { useRef, useEffect, useState, useMemo } from 'react';
+import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
+import ReplyComposeModal from './ReplyComposeModal';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView,
   Animated, Modal, ActivityIndicator, SafeAreaView, StatusBar, Alert,
-  TouchableWithoutFeedback, Image, Dimensions,
+  TouchableWithoutFeedback, Image, Dimensions, Linking, Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -557,15 +558,18 @@ function CompanyCard({
 
   // No auto-collapse — user taps the checkmark to save explicitly
 
-  // Load cover letter from the same storage as the Review page on mount
+  // Load cover letter from the same storage as the Review page on mount.
+  // Matches by email first, then falls back to recipientId (Job Hub bridge) or website.
   useEffect(() => {
-    if (!recipient.email || !user?.email) return;
+    if (!user?.email) return;
     if (genState === 'done') return; // already restored from module cache
     AsyncStorage.getItem(`reviewCoverLetters_${user.email}`).then(raw => {
       if (!raw) return;
       const all = JSON.parse(raw);
-      // Find the entry whose storedRecipientEmail matches this card's email
-      const entry = Object.values(all).find(e => e?.storedRecipientEmail === recipient.email);
+      const entry =
+        (recipient.email && Object.values(all).find(e => e?.storedRecipientEmail === recipient.email)) ||
+        Object.values(all).find(e => e?.recipientId === recipient.id) ||
+        (recipient.website && Object.values(all).find(e => e?.storedRecipientWebsite === recipient.website));
       if (entry?.coverLetterHtml) {
         setCoverLetterText(entry.coverLetterHtml);
         setGenState('done');
@@ -574,7 +578,7 @@ function CompanyCard({
         saveCache({ genState: 'done', coverLetterText: entry.coverLetterHtml, reviewEntry: entry });
       }
     }).catch(() => {});
-  }, [recipient.email, user?.email]);
+  }, [recipient.id, recipient.email, recipient.website, user?.email]);
 
   useEffect(() => {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
@@ -618,7 +622,10 @@ function CompanyCard({
         const raw = await AsyncStorage.getItem(`reviewCoverLetters_${user?.email}`).catch(() => null);
         if (raw) {
           const all = JSON.parse(raw);
-          const entry = Object.values(all).find(e => e?.storedRecipientEmail === recipient.email);
+          const entry =
+            (recipient.email && Object.values(all).find(e => e?.storedRecipientEmail === recipient.email)) ||
+            Object.values(all).find(e => e?.recipientId === recipient.id) ||
+            (recipient.website && Object.values(all).find(e => e?.storedRecipientWebsite === recipient.website));
           if (entry?.coverLetterHtml) {
             setCoverLetterText(entry.coverLetterHtml);
             saveCache({ genState: 'done', coverLetterText: entry.coverLetterHtml });
@@ -659,14 +666,19 @@ function CompanyCard({
     return iv;
   }
 
-  // Helper: read the stored review entry for this card's recipient email
+  // Helper: read the stored review entry for this card — matches by email, recipientId, or website
   async function getStoredEntry() {
-    if (!user?.email || !recipient.email) return null;
+    if (!user?.email) return null;
     try {
       const raw = await AsyncStorage.getItem(`reviewCoverLetters_${user.email}`);
       if (!raw) return null;
       const all = JSON.parse(raw);
-      return Object.values(all).find(e => e?.storedRecipientEmail === recipient.email) || null;
+      return (
+        (recipient.email && Object.values(all).find(e => e?.storedRecipientEmail === recipient.email)) ||
+        Object.values(all).find(e => e?.recipientId === recipient.id) ||
+        (recipient.website && Object.values(all).find(e => e?.storedRecipientWebsite === recipient.website)) ||
+        null
+      );
     } catch { return null; }
   }
 
@@ -1077,7 +1089,7 @@ function getAppStatus(app) {
   return 'pending';
 }
 
-function AppCard({ app, index, onMarkReply, onShowReplies, user }) {
+function AppCard({ app, index, onMarkReply, onShowReplies, onReplyNow, user }) {
   const isMicrosoft = user?.provider === 'microsoft' || user?.oauth_provider === 'microsoft';
   const status = getAppStatus(app);
   const cfg = STATUS_CONFIG[status];
@@ -1190,7 +1202,7 @@ function AppCard({ app, index, onMarkReply, onShowReplies, user }) {
                 </LinearGradient>
               </TouchableOpacity>
             ) : (
-              <TouchableOpacity activeOpacity={0.85} style={{ flex: 1.2 }}>
+              <TouchableOpacity activeOpacity={0.85} style={{ flex: 1.2 }} onPress={() => onReplyNow(app)}>
                 <LinearGradient colors={[cfg.color, cfg.deepColor || cfg.color]} style={appStyles.gradBtn} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
                   <View style={appStyles.gradBtnInner}>
                     <Ionicons name="send" size={12} color="#fff" />
@@ -1327,6 +1339,44 @@ export default function HomeScreen({
   const firstName = user?.fullName?.split(' ')[0] || user?.name?.split(' ')[0] || 'User';
   const isMicrosoft = user?.provider === 'microsoft' || user?.oauth_provider === 'microsoft';
 
+  // Ref for scrolling to the companies section
+  const mainScrollRef = useRef(null);
+  const companiesSectionRef = useRef(null);
+
+  // AI Hub bridge — poll every 800 ms while mounted.
+  // HomeScreen never unmounts (App.js keeps it alive), so a mount-only useEffect
+  // fires once at startup and misses later navigations back from the Job Hub tab.
+  useEffect(() => {
+    let handling = false;
+    const interval = setInterval(async () => {
+      if (handling) return;
+      try {
+        // Bridge 1: plain "scroll to companies" trigger
+        const flag = await AsyncStorage.getItem('aiHub_trigger_add_recipient');
+        if (flag === 'true') {
+          handling = true;
+          await AsyncStorage.removeItem('aiHub_trigger_add_recipient');
+          setTimeout(() => {
+            companiesSectionRef.current?.measureLayout(
+              mainScrollRef.current,
+              (_x, y) => mainScrollRef.current?.scrollTo({ y, animated: true }),
+              () => mainScrollRef.current?.scrollToEnd({ animated: true }),
+            );
+            handling = false;
+          }, 300);
+          return; // don't fall through
+        }
+
+        // Bridge 2 (aiHub_add_recipient_with_cl) is now handled entirely by
+        // App.js's polling (AppContent useEffect) which has direct access to
+        // setRecipients, setScreen, and userRef. HomeScreen no longer needs this.
+      } catch {
+        handling = false;
+      }
+    }, 800);
+    return () => clearInterval(interval);
+  }, []);
+
   // Derived stats
   const replyRate = totalSent > 0 ? Math.round((totalReplied / totalSent) * 100) : 0;
   const replyLabel = totalSent > 0 ? `${totalReplied}/${totalSent} ${replyRate}%` : '0/0 —';
@@ -1369,6 +1419,8 @@ export default function HomeScreen({
 
   // Chart tooltip state — lifted here so any tap on screen dismisses it
   const [chartTooltip, setChartTooltip] = useState(null);
+  const [replyModalVisible, setReplyModalVisible] = useState(false);
+  const [replyModalApp, setReplyModalApp]         = useState(null);
 
   // Track locally-generated cover letters in module-level cache (survives navigation)
   const [chartTick, setChartTick] = useState(0);
@@ -1391,11 +1443,111 @@ export default function HomeScreen({
     setShowReplyDatePicker(true);
   }
 
+  function handleReplyNow(app) {
+    setReplyModalApp(app);
+    setReplyModalVisible(true);
+  }
+
+  async function _unused_handleReplyNow_deeplink(app) {
+    const toEmail = app.recipientEmail || '';
+    const fromEmail = user?.email || '';
+    const isMicrosoft = user?.provider === 'microsoft' || user?.oauth_provider === 'microsoft';
+    const isGoogle = user?.provider === 'google' || user?.oauth_provider === 'google';
+
+    // Determine subject — use the reply's subject if available (already "Re: ..."), else build one
+    const rawSubject = app.replySubject
+      ? (app.replySubject.startsWith('Re:') ? app.replySubject : `Re: ${app.replySubject}`)
+      : `Re: Application for ${app.position || 'the position'} at ${app.companyName || 'your company'}`;
+
+    // Fetch the full reply thread to build the quoted body chain
+    let quotedChain = '';
+    try {
+      const res = await fetch(`${API_BASE}/users/application-history/${app.id}/replies`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      if (res.ok) {
+        const result = await res.json();
+        if (result.success && result.replies?.length > 0) {
+          // Build quoted chain oldest→newest so the thread reads naturally
+          const sorted = [...result.replies].reverse();
+          quotedChain = sorted.map(r => {
+            const dateStr = r.replyDate ? new Date(r.replyDate).toLocaleString() : '';
+            return `\n\n--- On ${dateStr}, ${r.replyFromEmail || toEmail} wrote ---\n${r.replySnippet || ''}`;
+          }).join('\n');
+        }
+      }
+    } catch (_) { /* non-fatal — open compose without chain */ }
+
+    const body = `\n\n${quotedChain}`;
+
+    const subjectEncoded = encodeURIComponent(rawSubject);
+    const bodyEncoded = encodeURIComponent(body);
+    const toEncoded = encodeURIComponent(toEmail);
+    const fromEncoded = encodeURIComponent(fromEmail);
+
+    // Deep link URLs
+    // Outlook: ms-outlook://compose (iOS + Android)
+    const outlookLink = `ms-outlook://compose?to=${toEncoded}&subject=${subjectEncoded}&body=${bodyEncoded}`;
+    // Gmail iOS deep link
+    const gmailLinkiOS = `googlegmail://co?to=${toEncoded}&subject=${subjectEncoded}&body=${bodyEncoded}`;
+    // Gmail Android intent
+    const gmailLinkAndroid = `intent://co?to=${toEncoded}&subject=${subjectEncoded}&body=${bodyEncoded}#Intent;scheme=googlegmail;package=com.google.android.gm;end`;
+    const gmailLink = Platform.OS === 'android' ? gmailLinkAndroid : gmailLinkiOS;
+    const mailtoLink  = `mailto:${toEncoded}?subject=${subjectEncoded}&body=${bodyEncoded}`;
+
+    try {
+      if (isMicrosoft) {
+        // Priority: Outlook → Gmail → Apple Mail (mailto)
+        if (await Linking.canOpenURL(outlookLink)) {
+          return await Linking.openURL(outlookLink);
+        }
+        if (await Linking.canOpenURL(gmailLink)) {
+          return await Linking.openURL(gmailLink);
+        }
+        return await Linking.openURL(mailtoLink);
+      } else if (isGoogle) {
+        // Priority: Gmail → Outlook → Apple Mail (mailto)
+        if (await Linking.canOpenURL(gmailLink)) {
+          return await Linking.openURL(gmailLink);
+        }
+        if (await Linking.canOpenURL(outlookLink)) {
+          return await Linking.openURL(outlookLink);
+        }
+        return await Linking.openURL(mailtoLink);
+      } else {
+        // Apple / other — Apple Mail first, then Outlook, then Gmail
+        const canOutlook = await Linking.canOpenURL(outlookLink);
+        const canGmail   = await Linking.canOpenURL(gmailLink);
+        try {
+          return await Linking.openURL(mailtoLink);
+        } catch (_) {
+          if (canOutlook) return await Linking.openURL(outlookLink);
+          if (canGmail)   return await Linking.openURL(gmailLink);
+        }
+      }
+    } catch (err) {
+      Alert.alert(
+        'Reply to Employer',
+        `Could not open email app automatically.\n\nPlease email:\n${toEmail}\n\nSubject: ${rawSubject}`,
+        [{ text: 'OK' }]
+      );
+    }
+  }
+
   return (
     <SafeAreaViewContext style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor={T.bg} translucent={false} />
 
       {renderCompleteProfileModal && renderCompleteProfileModal()}
+
+      <ReplyComposeModal
+        visible={replyModalVisible}
+        onClose={() => setReplyModalVisible(false)}
+        app={replyModalApp}
+        user={user}
+        API_BASE={API_BASE}
+        onReplySent={() => setReplyModalVisible(false)}
+      />
 
       {/* ── TOP BAR ──────────────────────────────────────────── */}
       <View style={styles.topBar}>
@@ -1438,6 +1590,7 @@ export default function HomeScreen({
       </View>
 
       <ScrollView
+        ref={mainScrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -1527,7 +1680,7 @@ export default function HomeScreen({
         </View>
 
         {/* ── COMPANIES ────────────────────────────────────── */}
-        <View style={styles.section}>
+        <View ref={companiesSectionRef} style={styles.section}>
           <View style={styles.sectionHeader}>
             <View style={{ flex: 1 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -1641,6 +1794,7 @@ export default function HomeScreen({
                 index={i}
                 onMarkReply={handleMarkReply}
                 onShowReplies={showAllReplies}
+                onReplyNow={handleReplyNow}
                 user={user}
               />
             ))
@@ -1713,6 +1867,7 @@ export default function HomeScreen({
             {[
               { icon: 'settings-outline',   title: 'Account Settings',   sub: 'View your profile',          onPress: () => { setShowSettings(false); setScreen('profile'); } },
               { icon: 'briefcase-outline',   title: 'Jobs Dashboard',     sub: 'AI-powered job search hub',  onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(ai-hub)'); } },
+              { icon: 'document-text-outline', title: 'Resume Builder',   sub: 'Build your AI-powered resume', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(resume-builder)'); } },
             ].concat(isAdmin ? [{ icon: 'star-outline', title: 'Admin Panel', sub: 'Manage credit packages', onPress: () => { setShowSettings(false); setScreen('admin'); } }] : []).concat([
               null,
               { icon: 'document-text-outline', title: 'Terms & Conditions', sub: 'View terms of service',   onPress: () => { setShowSettings(false); setScreen('terms'); } },

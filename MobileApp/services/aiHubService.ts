@@ -347,12 +347,14 @@ export type JobCLRecord = {
   website_url: string;
   position: string;
   company_address: string;
+  company_locations: string; // JSON array of {address,city,country,isHeadquarters}
   status: 'generated' | 'downloaded' | 'applied';
   updated_at: string;
 };
 
 export async function saveJobCoverLetter(jobId: string, data: {
-  coverLetterHtml: string; companyName: string; websiteUrl: string; position: string; companyAddress?: string;
+  coverLetterHtml: string; companyName: string; websiteUrl: string; position: string;
+  companyAddress?: string; companyLocations?: Array<{ address: string; city: string; country: string; isHeadquarters: boolean }>;
 }): Promise<void> {
   try {
     const headers = await getAuthHeader();
@@ -390,11 +392,13 @@ export async function loadJobStatuses(employerId: string): Promise<Record<string
 export async function startJobCoverLetter(
   websiteUrl: string,
   position: string,
-  responsibilities?: string[]
+  responsibilities?: string[],
+  jobLocation?: string
 ): Promise<string> {
   const headers = await getAuthHeader();
   const body: Record<string, any> = { websiteUrl, position, recipientEmail: '' };
   if (responsibilities && responsibilities.length > 0) body.responsibilities = responsibilities;
+  if (jobLocation && jobLocation.trim()) body.jobLocation = jobLocation.trim();
   const response = await axios.post(
     `${API_BASE_URL}/generate-cover-letter-details`,
     body,

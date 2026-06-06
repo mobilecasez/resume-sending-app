@@ -11,7 +11,8 @@
     "dev": "node server.js",
     "generate": "node create-cover-letter.js",
     "apply": "node apply.js",
-    "test": "node index.js"
+    "test": "node index.js",
+    "postinstall": "npx playwright install chromium || true"
   },
   "keywords": [
     "pdf",
@@ -56,6 +57,7 @@
     "pdf2json": "^4.0.0",
     "pdfkit": "^0.17.2",
     "pg": "^8.17.2",
+    "playwright": "^1.60.0",
     "razorpay": "^2.9.6",
     "sharp": "^0.34.5",
     "validator": "^13.15.35",

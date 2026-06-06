@@ -2714,11 +2714,95 @@ const checkEmailReplies = async (req, res) => {
     }
 };
 
+// Send a reply email from inside the app (no attachments — plain reply)
+const sendReply = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { applicationId, to, subject, body } = req.body;
+
+        if (!to || !subject || !body) {
+            return res.status(400).json({ error: 'to, subject, and body are required' });
+        }
+
+        // Load full user (need OAuth tokens)
+        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        const provider = user.oauth_provider || user.provider;
+
+        if (provider === 'microsoft') {
+            // Send via Microsoft Graph API
+            const accessToken = await getValidMicrosoftAccessToken(user);
+            if (!accessToken) throw new Error('No valid Microsoft access token');
+
+            const message = {
+                message: {
+                    subject,
+                    body: { contentType: 'HTML', content: textToHtml(body) },
+                    toRecipients: [{ emailAddress: { address: to } }]
+                },
+                saveToSentItems: true
+            };
+
+            const response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(message)
+            });
+
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.error?.message || `Microsoft Graph error ${response.status}`);
+            }
+
+        } else if (provider === 'google') {
+            // Send via Gmail API
+            const oauth2Client = await createOAuth2Client(user);
+            const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+            const nl = '\r\n';
+            const rawMessage = [
+                `To: ${to}`,
+                `From: ${user.email}`,
+                `Subject: ${subject}`,
+                'MIME-Version: 1.0',
+                'Content-Type: text/html; charset="UTF-8"',
+                '',
+                textToHtml(body)
+            ].join(nl);
+
+            const encoded = Buffer.from(rawMessage).toString('base64')
+                .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+            await gmail.users.messages.send({
+                userId: 'me',
+                requestBody: { raw: encoded }
+            });
+
+        } else {
+            return res.status(400).json({ error: 'Reply sending requires a Microsoft or Google connected account' });
+        }
+
+        // Log notification
+        await notifyEmailSent(userId, to, to, req.body.companyName || to, subject);
+
+        res.json({ success: true, message: 'Reply sent successfully' });
+
+    } catch (error) {
+        console.error('❌ sendReply error:', error);
+        res.status(500).json({ error: error.message || 'Failed to send reply' });
+    }
+};
+
 module.exports = {
     sendApplications,
     sendSingleApplication,
     checkEmailReplies,
     executeSendWork,
     createCoverLetterPDFFromHTML,
-    generateCoverLetterPDF
+    generateCoverLetterPDF,
+    sendReply
 };

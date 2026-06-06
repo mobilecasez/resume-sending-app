@@ -83,64 +83,91 @@ const register = async (req, res) => {
             return res.status(400).json({ error: 'Password must contain both letters and numbers' });
         }
 
-        // Check if user already exists
+        // Capture registration IP
+        const registrationIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip || req.connection?.remoteAddress || null;
+
+        // Check if user already exists (active or soft-deleted)
         const existingUser = await dbConfig.get('SELECT * FROM users WHERE email = ?', [sanitizedEmail]);
-        
-        if (existingUser) {
+
+        if (existingUser && !existingUser.deleted_at) {
             return res.status(400).json({ error: 'Email already registered' });
         }
+
+        // Was this email previously deleted? — don't give free credits again
+        const wasPreviouslyDeleted = !!(existingUser?.deleted_at);
 
         // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        // Insert user with sanitized data
-        const result = await dbConfig.run(
-            'INSERT INTO users (full_name, email, password) VALUES (?, ?, ?)',
-            [trimmedName, sanitizedEmail, hashedPassword]
-        );
+        let userId;
+        if (wasPreviouslyDeleted) {
+            // Reactivate the soft-deleted account with a fresh password
+            await dbConfig.run(
+                `UPDATE users SET
+                    full_name = ?, password = ?, deleted_at = NULL, deleted_by = NULL,
+                    registration_ip = COALESCE(registration_ip, ?), last_login_ip = ?
+                WHERE id = ?`,
+                [trimmedName, hashedPassword, registrationIp, registrationIp, existingUser.id]
+            );
+            userId = existingUser.id;
+            console.log(`♻️ [REGISTER] Reactivated soft-deleted account for ${sanitizedEmail} (id: ${userId})`);
+        } else {
+            // Brand new user
+            const result = await dbConfig.run(
+                'INSERT INTO users (full_name, email, password, registration_ip, last_login_ip) VALUES (?, ?, ?, ?, ?)',
+                [trimmedName, sanitizedEmail, hashedPassword, registrationIp, registrationIp]
+            );
+            userId = result.lastID || result.id;
+        }
 
-        const userId = result.lastID || result.id;
-        
-        // Give 2 free credits to new user
-        try {
-            await dbConfig.run(
-                'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
-                [userId, 2, 2]
-            );
-            
-            // Log the credit transaction
-            await dbConfig.run(
-                `INSERT INTO credit_transactions 
-                (user_id, transaction_type, credits_change, balance_after, description) 
-                VALUES (?, ?, ?, ?, ?)`,
-                [userId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
-            );
-        } catch (creditErr) {
-            console.error('Failed to add welcome credits:', creditErr);
+        // Give 2 free credits ONLY to first-time registrations
+        let freeCredits = 0;
+        if (!wasPreviouslyDeleted) {
+            try {
+                await dbConfig.run(
+                    'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
+                    [userId, 2, 2]
+                );
+                await dbConfig.run(
+                    `INSERT INTO credit_transactions
+                    (user_id, transaction_type, credits_change, balance_after, description)
+                    VALUES (?, ?, ?, ?, ?)`,
+                    [userId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                );
+                freeCredits = 2;
+            } catch (creditErr) {
+                console.error('Failed to add welcome credits:', creditErr);
+            }
+        } else {
+            console.log(`⚠️ [REGISTER] Skipping free credits for previously-deleted account ${sanitizedEmail}`);
         }
 
         // Log user registration
         await logSecurityEvent(userId, 'USER_REGISTERED', 'auth', {
-            method: 'email_password'
+            method: 'email_password',
+            reactivated: wasPreviouslyDeleted,
+            free_credits_given: freeCredits
         }, req);
-        
+
         // Generate JWT token for auto-login after registration
         const token = jwt.sign(
-            { id: userId, email: email },
+            { id: userId, email: sanitizedEmail },
             JWT_SECRET,
             { expiresIn: '24h' }
         );
 
-        res.json({ 
-            success: true, 
-            message: 'User created successfully! You received 2 free credits.',
+        res.json({
+            success: true,
+            message: freeCredits > 0
+                ? 'User created successfully! You received 2 free credits.'
+                : 'Account reactivated successfully.',
             token,
             user: {
                 id: userId,
-                fullName: fullName,
-                email: email
+                fullName: trimmedName,
+                email: sanitizedEmail
             },
-            freeCredits: 2
+            freeCredits
         });
     } catch (error) {
         console.error('Registration error:', error);
@@ -458,57 +485,87 @@ const googleAuth = async (req, res) => {
         const issuedAt = new Date();
         const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000); // 1 hour from now
         
+        // Capture login IP
+        const loginIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip || req.connection?.remoteAddress || null;
+
         // Find or create user in database
         try {
             let user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [googleUser.email]);
 
-            if (!user) {
-                // Create new user from Google data (with ENCRYPTED OAuth tokens)
+            if (!user || user.deleted_at) {
+                // New user OR reactivating a soft-deleted account
+                const wasPreviouslyDeleted = !!(user?.deleted_at);
                 const hashedPassword = await bcrypt.hash('google-oauth-' + googleUser.id, 10);
-                const usedPkce = !!codeVerifier; // true if PKCE (mobile), false if standard OAuth (web)
-                const result = await dbConfig.run(
-                    `INSERT INTO users (
-                        email, full_name, password, oauth_provider, 
-                        google_access_token, google_refresh_token, used_pkce,
-                        google_token_issued_at, google_token_expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-                    [
-                        googleUser.email, googleUser.name, hashedPassword, 'google', 
-                        encryptOAuthToken(finalAccessToken), 
-                        encryptOAuthToken(finalRefreshToken), 
-                        usedPkce,
-                        issuedAt.toISOString(),
-                        expiresAt.toISOString()
-                    ]
-                );
+                const usedPkce = !!codeVerifier;
 
-                const newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
-                
-                // Give 2 free credits to new user
-                try {
+                let newUserId;
+                if (wasPreviouslyDeleted) {
+                    // Reactivate: restore the row and update OAuth tokens
                     await dbConfig.run(
-                        'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
-                        [newUserId, 2, 2]
+                        `UPDATE users SET
+                            full_name = ?, password = ?, oauth_provider = 'google',
+                            google_access_token = ?, google_refresh_token = ?, used_pkce = ?,
+                            google_token_issued_at = ?, google_token_expires_at = ?,
+                            deleted_at = NULL, deleted_by = NULL, last_login_ip = ?
+                        WHERE id = ?`,
+                        [
+                            googleUser.name, hashedPassword,
+                            encryptOAuthToken(finalAccessToken), encryptOAuthToken(finalRefreshToken), usedPkce,
+                            issuedAt.toISOString(), expiresAt.toISOString(),
+                            loginIp, user.id
+                        ]
                     );
-                    
-                    await dbConfig.run(
-                        `INSERT INTO credit_transactions 
-                        (user_id, transaction_type, credits_change, balance_after, description) 
-                        VALUES (?, ?, ?, ?, ?)`,
-                        [newUserId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                    newUserId = user.id;
+                    console.log(`♻️ [GOOGLE AUTH] Reactivated soft-deleted account for ${googleUser.email}`);
+                } else {
+                    const result = await dbConfig.run(
+                        `INSERT INTO users (
+                            email, full_name, password, oauth_provider,
+                            google_access_token, google_refresh_token, used_pkce,
+                            google_token_issued_at, google_token_expires_at,
+                            registration_ip, last_login_ip
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                        [
+                            googleUser.email, googleUser.name, hashedPassword, 'google',
+                            encryptOAuthToken(finalAccessToken),
+                            encryptOAuthToken(finalRefreshToken),
+                            usedPkce,
+                            issuedAt.toISOString(),
+                            expiresAt.toISOString(),
+                            loginIp, loginIp
+                        ]
                     );
-                } catch (creditErr) {
-                    console.error('Failed to add welcome credits:', creditErr);
+                    newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
                 }
 
-                // Log new user registration via OAuth
+                // Give 2 free credits ONLY to first-time registrations
+                if (!wasPreviouslyDeleted) {
+                    try {
+                        await dbConfig.run(
+                            'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
+                            [newUserId, 2, 2]
+                        );
+                        await dbConfig.run(
+                            `INSERT INTO credit_transactions
+                            (user_id, transaction_type, credits_change, balance_after, description)
+                            VALUES (?, ?, ?, ?, ?)`,
+                            [newUserId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                        );
+                    } catch (creditErr) {
+                        console.error('Failed to add welcome credits:', creditErr);
+                    }
+                } else {
+                    console.log(`⚠️ [GOOGLE AUTH] Skipping free credits for previously-deleted account ${googleUser.email}`);
+                }
+
+                // Log registration
                 await logSecurityEvent(newUserId, 'USER_REGISTERED', 'oauth', {
                     provider: 'google',
                     flow: 'mobile_api',
-                    used_pkce: usedPkce
+                    used_pkce: usedPkce,
+                    reactivated: wasPreviouslyDeleted
                 }, req);
-                
-                // Log OAuth token grant
+
                 await logSecurityEvent(newUserId, 'OAUTH_TOKEN_GRANTED', 'oauth', {
                     provider: 'google',
                     flow: 'mobile_api',
@@ -531,7 +588,7 @@ const googleAuth = async (req, res) => {
                         fullName: googleUser.name,
                         email: googleUser.email,
                         oauth_provider: 'google',
-                        provider: 'google' // alias for mobile app
+                        provider: 'google'
                     }
                 });
             } else {
@@ -540,40 +597,44 @@ const googleAuth = async (req, res) => {
                 // Only update refresh_token if we received a new one (first-time consent or re-auth)
                 if (finalRefreshToken) {
                     await dbConfig.run(
-                        `UPDATE users SET 
-                            oauth_provider = ?, 
-                            google_access_token = ?, 
-                            google_refresh_token = ?, 
+                        `UPDATE users SET
+                            oauth_provider = ?,
+                            google_access_token = ?,
+                            google_refresh_token = ?,
                             used_pkce = ?,
                             google_token_issued_at = ?,
-                            google_token_expires_at = ?
+                            google_token_expires_at = ?,
+                            last_login_ip = ?
                         WHERE id = ?`,
                         [
-                            'google', 
-                            encryptOAuthToken(finalAccessToken), 
-                            encryptOAuthToken(finalRefreshToken), 
+                            'google',
+                            encryptOAuthToken(finalAccessToken),
+                            encryptOAuthToken(finalRefreshToken),
                             usedPkce,
                             issuedAt.toISOString(),
                             expiresAt.toISOString(),
+                            loginIp,
                             user.id
                         ]
                     );
                 } else {
                     // Just update access token (refresh token persists)
                     await dbConfig.run(
-                        `UPDATE users SET 
-                            oauth_provider = ?, 
-                            google_access_token = ?, 
+                        `UPDATE users SET
+                            oauth_provider = ?,
+                            google_access_token = ?,
                             used_pkce = ?,
                             google_token_issued_at = ?,
-                            google_token_expires_at = ?
+                            google_token_expires_at = ?,
+                            last_login_ip = ?
                         WHERE id = ?`,
                         [
-                            'google', 
-                            encryptOAuthToken(finalAccessToken), 
+                            'google',
+                            encryptOAuthToken(finalAccessToken),
                             usedPkce,
                             issuedAt.toISOString(),
                             expiresAt.toISOString(),
+                            loginIp,
                             user.id
                         ]
                     );
@@ -729,41 +790,89 @@ const microsoftAuth = async (req, res) => {
         const issuedAt = new Date();
         const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000); // 1 hour from now
 
-        // Check if user exists in database
-        const user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [microsoftUser.mail || microsoftUser.userPrincipalName]);
+        // Capture login IP
+        const msLoginIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip || req.connection?.remoteAddress || null;
+        const msEmail = microsoftUser.mail || microsoftUser.userPrincipalName;
 
-        if (!user) {
-            // Create new user (with ENCRYPTED Microsoft OAuth token)
-            console.log('Creating new user from Microsoft OAuth...');
+        // Check if user exists (including soft-deleted)
+        const user = await dbConfig.get('SELECT * FROM users WHERE email = ?', [msEmail]);
+        const wasPreviouslyDeleted = !!(user?.deleted_at);
 
-            const hashedPassword = await bcrypt.hash('microsoft-oauth-' + microsoftUser.id, 10);
-            const result = await dbConfig.run(
-                `INSERT INTO users (
-                    email, full_name, password, oauth_provider, 
-                    microsoft_access_token, microsoft_refresh_token,
-                    microsoft_token_issued_at, microsoft_token_expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-                [
-                    microsoftUser.mail || microsoftUser.userPrincipalName, 
-                    microsoftUser.displayName, 
-                    hashedPassword, 
-                    'microsoft', 
-                    encryptOAuthToken(finalAccessToken),
-                    finalRefreshToken ? encryptOAuthToken(finalRefreshToken) : null,
-                    issuedAt.toISOString(),
-                    expiresAt.toISOString()
-                ]
+        if (!user || wasPreviouslyDeleted) {
+            // Create new user OR reactivate soft-deleted account
+            console.log(wasPreviouslyDeleted
+                ? `♻️ Reactivating soft-deleted Microsoft account for ${msEmail}`
+                : `Creating new user from Microsoft OAuth...`
             );
 
-            const newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
+            const hashedPassword = await bcrypt.hash('microsoft-oauth-' + microsoftUser.id, 10);
+            let newUserId;
 
-            // Log new user registration via OAuth
+            if (wasPreviouslyDeleted) {
+                await dbConfig.run(
+                    `UPDATE users SET
+                        full_name = ?, password = ?, oauth_provider = 'microsoft',
+                        microsoft_access_token = ?, microsoft_refresh_token = ?,
+                        microsoft_token_issued_at = ?, microsoft_token_expires_at = ?,
+                        deleted_at = NULL, deleted_by = NULL, last_login_ip = ?
+                    WHERE id = ?`,
+                    [
+                        microsoftUser.displayName, hashedPassword,
+                        encryptOAuthToken(finalAccessToken),
+                        finalRefreshToken ? encryptOAuthToken(finalRefreshToken) : null,
+                        issuedAt.toISOString(), expiresAt.toISOString(),
+                        msLoginIp, user.id
+                    ]
+                );
+                newUserId = user.id;
+            } else {
+                const result = await dbConfig.run(
+                    `INSERT INTO users (
+                        email, full_name, password, oauth_provider,
+                        microsoft_access_token, microsoft_refresh_token,
+                        microsoft_token_issued_at, microsoft_token_expires_at,
+                        registration_ip, last_login_ip
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                    [
+                        msEmail, microsoftUser.displayName, hashedPassword, 'microsoft',
+                        encryptOAuthToken(finalAccessToken),
+                        finalRefreshToken ? encryptOAuthToken(finalRefreshToken) : null,
+                        issuedAt.toISOString(), expiresAt.toISOString(),
+                        msLoginIp, msLoginIp
+                    ]
+                );
+                newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
+            }
+
+            // Give 2 free credits ONLY to first-time registrations
+            if (!wasPreviouslyDeleted) {
+                try {
+                    await dbConfig.run(
+                        'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
+                        [newUserId, 2, 2]
+                    );
+                    await dbConfig.run(
+                        `INSERT INTO credit_transactions
+                        (user_id, transaction_type, credits_change, balance_after, description)
+                        VALUES (?, ?, ?, ?, ?)`,
+                        [newUserId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                    );
+                    console.log(`🎁 Gave 2 free welcome credits to new Microsoft user ${msEmail}`);
+                } catch (creditErr) {
+                    console.error('Failed to add welcome credits:', creditErr);
+                }
+            } else {
+                console.log(`⚠️ Skipping free credits for previously-deleted Microsoft account ${msEmail}`);
+            }
+
+            // Log registration
             await logSecurityEvent(newUserId, 'USER_REGISTERED', 'oauth', {
                 provider: 'microsoft',
-                flow: 'mobile_api'
+                flow: 'mobile_api',
+                reactivated: wasPreviouslyDeleted,
+                free_credits_given: wasPreviouslyDeleted ? 0 : 2
             }, req);
-            
-            // Log OAuth token grant
+
             await logSecurityEvent(newUserId, 'OAUTH_TOKEN_GRANTED', 'oauth', {
                 provider: 'microsoft',
                 flow: 'mobile_api',
@@ -772,7 +881,7 @@ const microsoftAuth = async (req, res) => {
 
             // Generate JWT
             const token = jwt.sign(
-                { id: newUserId, email: microsoftUser.mail || microsoftUser.userPrincipalName },
+                { id: newUserId, email: msEmail },
                 JWT_SECRET,
                 { expiresIn: '24h' }
             );
@@ -783,9 +892,9 @@ const microsoftAuth = async (req, res) => {
                 user: {
                     id: newUserId,
                     fullName: microsoftUser.displayName,
-                    email: microsoftUser.mail || microsoftUser.userPrincipalName,
+                    email: msEmail,
                     oauth_provider: 'microsoft',
-                    provider: 'microsoft' // alias for mobile app
+                    provider: 'microsoft'
                 }
             });
         } else {
@@ -794,20 +903,22 @@ const microsoftAuth = async (req, res) => {
                 'oauth_provider = ?',
                 'microsoft_access_token = ?',
                 'microsoft_token_issued_at = ?',
-                'microsoft_token_expires_at = ?'
+                'microsoft_token_expires_at = ?',
+                'last_login_ip = ?'
             ];
             const updateParams = [
                 'microsoft',
                 encryptOAuthToken(finalAccessToken),
                 issuedAt.toISOString(),
-                expiresAt.toISOString()
+                expiresAt.toISOString(),
+                msLoginIp
             ];
-            
+
             if (finalRefreshToken) {
                 updateFields.push('microsoft_refresh_token = ?');
                 updateParams.push(encryptOAuthToken(finalRefreshToken));
             }
-            
+
             updateParams.push(user.id);
             await dbConfig.run(
                 `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`,
@@ -972,24 +1083,51 @@ const appleAuth = async (req, res) => {
         const issuedAt = new Date();
         const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000);
 
-        if (!user) {
-            // Create new user — but handle case where email already exists (link accounts)
+        // Capture login IP
+        const appleLoginIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip || req.connection?.remoteAddress || null;
+
+        // Check soft-deleted state before branching
+        const wasPreviouslyDeletedApple = !!(user?.deleted_at);
+
+        if (!user || wasPreviouslyDeletedApple) {
+            // Create new user OR reactivate soft-deleted account
             let newUserId;
             try {
                 const hashedPassword = await bcrypt.hash('apple-oauth-' + decoded.sub, 10);
-                const result = await dbConfig.run(
-                    `INSERT INTO users (
-                        email, full_name, password, oauth_provider,
-                        apple_user_id, apple_identity_token,
-                        apple_token_issued_at, apple_token_expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-                    [
-                        email, displayName, hashedPassword, 'apple',
-                        decoded.sub, encryptOAuthToken(identityToken),
-                        issuedAt.toISOString(), expiresAt.toISOString()
-                    ]
-                );
-                newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
+                if (wasPreviouslyDeletedApple) {
+                    // Reactivate
+                    await dbConfig.run(
+                        `UPDATE users SET
+                            full_name = ?, password = ?, oauth_provider = 'apple',
+                            apple_user_id = ?, apple_identity_token = ?,
+                            apple_token_issued_at = ?, apple_token_expires_at = ?,
+                            deleted_at = NULL, deleted_by = NULL, last_login_ip = ?
+                        WHERE id = ?`,
+                        [
+                            displayName, hashedPassword, decoded.sub, encryptOAuthToken(identityToken),
+                            issuedAt.toISOString(), expiresAt.toISOString(),
+                            appleLoginIp, user.id
+                        ]
+                    );
+                    newUserId = user.id;
+                    console.log(`♻️ [APPLE AUTH] Reactivated soft-deleted account for ${email}`);
+                } else {
+                    const result = await dbConfig.run(
+                        `INSERT INTO users (
+                            email, full_name, password, oauth_provider,
+                            apple_user_id, apple_identity_token,
+                            apple_token_issued_at, apple_token_expires_at,
+                            registration_ip, last_login_ip
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                        [
+                            email, displayName, hashedPassword, 'apple',
+                            decoded.sub, encryptOAuthToken(identityToken),
+                            issuedAt.toISOString(), expiresAt.toISOString(),
+                            appleLoginIp, appleLoginIp
+                        ]
+                    );
+                    newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
+                }
             } catch (insertErr) {
                 // Duplicate email — link Apple to existing account instead
                 if (insertErr.code === '23505' || (insertErr.message && insertErr.message.includes('duplicate key'))) {
@@ -1005,28 +1143,33 @@ const appleAuth = async (req, res) => {
                 }
             }
 
-            // If we successfully created a new user (no duplicate)
+            // If we successfully created/reactivated a user (no duplicate)
             if (newUserId && !user) {
 
-            // Give 2 free credits to new user
-            try {
-                await dbConfig.run(
-                    'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
-                    [newUserId, 2, 2]
-                );
-                await dbConfig.run(
-                    `INSERT INTO credit_transactions 
-                    (user_id, transaction_type, credits_change, balance_after, description) 
-                    VALUES (?, ?, ?, ?, ?)`,
-                    [newUserId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
-                );
-            } catch (creditErr) {
-                console.error('Failed to add welcome credits:', creditErr);
+            // Give 2 free credits ONLY to first-time registrations
+            if (!wasPreviouslyDeletedApple) {
+                try {
+                    await dbConfig.run(
+                        'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
+                        [newUserId, 2, 2]
+                    );
+                    await dbConfig.run(
+                        `INSERT INTO credit_transactions
+                        (user_id, transaction_type, credits_change, balance_after, description)
+                        VALUES (?, ?, ?, ?, ?)`,
+                        [newUserId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                    );
+                } catch (creditErr) {
+                    console.error('Failed to add welcome credits:', creditErr);
+                }
+            } else {
+                console.log(`⚠️ [APPLE AUTH] Skipping free credits for previously-deleted account ${email}`);
             }
 
             await logSecurityEvent(newUserId, 'USER_REGISTERED', 'oauth', {
                 provider: 'apple',
-                flow: 'mobile_native'
+                flow: 'mobile_native',
+                reactivated: wasPreviouslyDeletedApple
             }, req);
 
             await logSecurityEvent(newUserId, 'OAUTH_TOKEN_GRANTED', 'oauth', {
@@ -1233,34 +1376,58 @@ const appleWebCallback = async (req, res) => {
         const issuedAt = new Date();
         const expiresAt = new Date(issuedAt.getTime() + 3600 * 1000);
 
+        const webLoginIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip || req.connection?.remoteAddress || null;
+        const wasPreviouslyDeletedWeb = !!(existingUser?.deleted_at);
+
         let userId, userEmail, userName;
 
-        if (!existingUser) {
-            // Create new user
+        if (!existingUser || wasPreviouslyDeletedWeb) {
+            // Create new user OR reactivate soft-deleted account
             const hashedPassword = await bcrypt.hash('apple-oauth-' + decoded.sub, 10);
-            const result = await dbConfig.run(
-                `INSERT INTO users (
-                    email, full_name, password, oauth_provider,
-                    apple_user_id, apple_identity_token,
-                    apple_token_issued_at, apple_token_expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-                [email, displayName, hashedPassword, 'apple',
-                 decoded.sub, encryptOAuthToken(id_token),
-                 issuedAt.toISOString(), expiresAt.toISOString()]
-            );
-            userId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
+            if (wasPreviouslyDeletedWeb) {
+                await dbConfig.run(
+                    `UPDATE users SET
+                        full_name = ?, password = ?, oauth_provider = 'apple',
+                        apple_user_id = ?, apple_identity_token = ?,
+                        apple_token_issued_at = ?, apple_token_expires_at = ?,
+                        deleted_at = NULL, deleted_by = NULL, last_login_ip = ?
+                    WHERE id = ?`,
+                    [displayName, hashedPassword, decoded.sub, encryptOAuthToken(id_token),
+                     issuedAt.toISOString(), expiresAt.toISOString(), webLoginIp, existingUser.id]
+                );
+                userId = existingUser.id;
+                console.log(`♻️ [APPLE WEB] Reactivated soft-deleted account for ${email}`);
+            } else {
+                const result = await dbConfig.run(
+                    `INSERT INTO users (
+                        email, full_name, password, oauth_provider,
+                        apple_user_id, apple_identity_token,
+                        apple_token_issued_at, apple_token_expires_at,
+                        registration_ip, last_login_ip
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                    [email, displayName, hashedPassword, 'apple',
+                     decoded.sub, encryptOAuthToken(id_token),
+                     issuedAt.toISOString(), expiresAt.toISOString(),
+                     webLoginIp, webLoginIp]
+                );
+                userId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
+            }
             userEmail = email;
             userName = displayName;
 
-            // Give 2 free credits
-            try {
-                await dbConfig.run('INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)', [userId, 2, 2]);
-                await dbConfig.run(
-                    `INSERT INTO credit_transactions (user_id, transaction_type, credits_change, balance_after, description) VALUES (?, ?, ?, ?, ?)`,
-                    [userId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
-                );
-            } catch (creditErr) {
-                console.error('Failed to add welcome credits:', creditErr);
+            // Give 2 free credits ONLY to first-time registrations
+            if (!wasPreviouslyDeletedWeb) {
+                try {
+                    await dbConfig.run('INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)', [userId, 2, 2]);
+                    await dbConfig.run(
+                        `INSERT INTO credit_transactions (user_id, transaction_type, credits_change, balance_after, description) VALUES (?, ?, ?, ?, ?)`,
+                        [userId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                    );
+                } catch (creditErr) {
+                    console.error('Failed to add welcome credits:', creditErr);
+                }
+            } else {
+                console.log(`⚠️ [APPLE WEB] Skipping free credits for previously-deleted account ${email}`);
             }
         } else {
             // Update existing user's Apple tokens

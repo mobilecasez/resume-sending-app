@@ -9,7 +9,8 @@ export type Contact = {
   role: string;
   email: string;
   phone?: string | null;
-  avatarUrl?: string | null;
+  linkedin?: string | null;    // LinkedIn profile URL e.g. "https://linkedin.com/in/..."
+  imageUrl?: string | null;    // Profile photo URL (from page HTML)
   verified: boolean;
   avatarColor: [string, string]; // gradient tuple for LinearGradient [from, to]
 };
@@ -26,6 +27,7 @@ export type Job = {
   jobType: string;
   urgent: boolean;
   skills: string[];
+  responsibilities: string[];
   contacts: Contact[];
   matchScore?: number;   // 0–100, AI-computed resume match
   applyUrl?: string | null;

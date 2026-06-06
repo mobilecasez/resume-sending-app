@@ -22,6 +22,7 @@ export default function RootLayout() {
     >
       <Stack.Screen name="index" options={{ animation: 'none' }} />
       <Stack.Screen name="(ai-hub)" options={{ headerShown: false }} />
+      <Stack.Screen name="(resume-builder)" options={{ headerShown: false }} />
     </Stack>
   );
 }

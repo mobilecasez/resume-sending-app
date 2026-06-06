@@ -66,6 +66,7 @@ async function generatePKCE() {
 }
 
 const { width, height} = Dimensions.get('window');
+const AUTH_SERVER_URL = __DEV__ ? API_BASE.replace(/\/api$/, '') : PRODUCTION_API_URL;
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -81,6 +82,30 @@ let fetchProducts = async () => [];
 let requestPurchase = async () => null;
 let finishTransaction = async () => {};
 let purchaseUpdatedListener = () => createNoopSubscription();
+
+// Load native payment modules in real builds (dev build / TestFlight / App Store / Play Store)
+// These modules are NOT available in Expo Go — guard with try/catch so the app doesn't crash
+if (!isExpoGo) {
+  try {
+    const iap = require('react-native-iap');
+    initConnection       = iap.initConnection;
+    fetchProducts        = iap.getProducts;
+    requestPurchase      = iap.requestPurchase;
+    finishTransaction    = iap.finishTransaction;
+    purchaseUpdatedListener = iap.purchaseUpdatedListener;
+    nativeIapAvailable   = true;
+    console.log('✅ react-native-iap loaded');
+  } catch (e) {
+    console.warn('⚠️ react-native-iap not available:', e.message);
+  }
+
+  try {
+    RazorpayCheckout = require('react-native-razorpay').default;
+    console.log('✅ react-native-razorpay loaded');
+  } catch (e) {
+    console.warn('⚠️ react-native-razorpay not available:', e.message);
+  }
+}
 
 const normalizeHTML = (html) => {
   if (!html) return '';
@@ -294,6 +319,35 @@ const HTMLContentViewer = ({ htmlContent, style }) => {
   );
 };
 
+/**
+ * Safe JSON parser for fetch responses.
+ * If the server returns HTML (error page, 502, etc.) instead of JSON,
+ * this returns a structured error object instead of throwing a parse error.
+ */
+async function safeResponseJson(response) {
+  const text = await response.text();
+  if (!text || text.trim() === '') {
+    return { error: `Server returned empty response (HTTP ${response.status})` };
+  }
+  const firstChar = text.trim()[0];
+  if (firstChar === '<') {
+    // HTML page — server error, gateway timeout, 502, etc.
+    const statusHint = response.status >= 500
+      ? `Server error (${response.status}). Please try again in a moment.`
+      : response.status === 404
+      ? `API endpoint not found (${response.status}).`
+      : `Unexpected response from server (${response.status}).`;
+    console.warn('[safeResponseJson] Server returned HTML instead of JSON:', text.substring(0, 200));
+    return { error: statusHint };
+  }
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    console.warn('[safeResponseJson] JSON parse failed:', e.message, '| Body:', text.substring(0, 200));
+    return { error: `Invalid response from server. Please try again.` };
+  }
+}
+
 function AppContent() {
   const [showSplash, setShowSplash] = useState(true);
   const [screen, setScreen] = useState('login');
@@ -397,7 +451,8 @@ function AppContent() {
         });
         
         if (response.ok) {
-          const profileData = await response.json();
+          const profileData = await safeResponseJson(response);
+          if (profileData.error) throw new Error(profileData.error);
           // Merge server profile data with saved session (server data is more up-to-date)
           const restoredUser = {
             ...savedUser,
@@ -435,7 +490,88 @@ function AppContent() {
     });
     return () => subscription?.remove();
   }, []);
-  
+
+  // AI Hub bridge — "Edit Cover Letter" from job-detail page.
+  // Fires in AppContent after expo-router stack is dismissed.
+  // Fixes: (1) no HomeScreen flash, (2) CL loads on card, (3) no duplicate cards.
+  useEffect(() => {
+    let handling = false;
+    const iv = setInterval(async () => {
+      if (handling) return;
+      try {
+        const raw = await AsyncStorage.getItem('aiHub_add_recipient_with_cl');
+        if (!raw) return;
+        handling = true;
+        await AsyncStorage.removeItem('aiHub_add_recipient_with_cl');
+        // NOTE: do NOT remove aiHub_navigate_home here — the (ai-hub)/index relay
+        // useFocusEffect must consume it to call router.back() and dismiss expo-router.
+        // If we remove it here first, the relay finds nothing and the stack stays open.
+
+        const { website, position, coverLetterHtml, companyName, companyAddress, companyLocations, recipientEmail } = JSON.parse(raw);
+        const websiteClean   = (website || '').trim();
+        const positionClean  = (position || '').trim();
+        const contactEmail   = (recipientEmail || '').trim();
+
+        // Stable slug for duplicate detection (same job = same slug = no duplicate cards)
+        const slug = (websiteClean + '_' + positionClean)
+          .toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 40);
+        // Use real hiring contact email if available, otherwise a stable placeholder
+        const cardEmail = contactEmail || `aiHub_${slug}@jobs.cvapplyr.app`;
+
+        // Subject — same formula as emailController: "Application for {position} - {fullName}"
+        const fullName = userRef?.current?.fullName || userRef?.current?.full_name || '';
+        const subject  = `Application for ${positionClean}${fullName ? ` - ${fullName}` : ''}`;
+
+        // Build the cover letter entry — keyed by cardEmail so ReviewScreen finds it via getCoverLetter
+        const clEntry = {
+          coverLetterHtml: coverLetterHtml || '',
+          companyName: companyName || '',
+          address: companyAddress || '',          // ReviewScreen reads activeCL.address
+          subject,                                // ReviewScreen reads activeCL.subject
+          locations: Array.isArray(companyLocations) && companyLocations.length > 0
+            ? companyLocations
+            : undefined,                          // ReviewScreen uses this for address dropdown
+          generated: true,
+          sent: false,
+          storedRecipientEmail: cardEmail,
+          storedRecipientWebsite: websiteClean,
+          date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+        };
+
+        // Deduplicate: if a card with same website+position already exists, update it in place.
+        let tabIndex = 0;
+        setRecipients(prev => {
+          const existingIdx = prev.findIndex(
+            r => r.website === websiteClean && r.position === positionClean
+          );
+          if (existingIdx >= 0) {
+            tabIndex = existingIdx;
+            return prev.map((r, i) =>
+              i === existingIdx ? { ...r, email: cardEmail } : r
+            );
+          }
+          tabIndex = 0;
+          const newId = Math.max(...prev.map(r => r.id), -1) + 1;
+          return [
+            { id: newId, email: cardEmail, website: websiteClean, position: positionClean, error: '' },
+            ...prev,
+          ];
+        });
+
+        // Batch all setters — React 18 merges into one render → no HomeScreen flash
+        setReviewCoverLetters(prev => ({ ...prev, [cardEmail]: clEntry }));
+        setCurrentReviewTab(tabIndex);
+        setScreen('review');
+
+      } catch (e) {
+        console.warn('[aiHub bridge] error:', e);
+      } finally {
+        handling = false;
+      }
+    }, 400);
+    return () => clearInterval(iv);
+  }, []);
+
   const [recipients, setRecipients] = useState([
     { id: 0, email: '', website: '', position: '', error: '' }
   ]);
@@ -1168,11 +1304,12 @@ function AppContent() {
   };
 
   const handleReview = (tabIndex = 0) => {
-    if (validateAllRecipients()) {
-      // Don't clear existing cover letters - preserve sent/generated status
-      setCurrentReviewTab(typeof tabIndex === 'number' ? tabIndex : 0);
-      setScreen('review');
-    }
+    // Navigate to Letters page without hard validation —
+    // cards with missing fields will show inline errors there.
+    // (validateAllRecipients was blocking navigation when any card was incomplete,
+    //  e.g. a card added from the Job Hub bridge with only website+position.)
+    setCurrentReviewTab(typeof tabIndex === 'number' ? tabIndex : 0);
+    setScreen('review');
   };
 
   // Restore purchases handler (Apple IAP)
@@ -3252,14 +3389,20 @@ function exportSig(){
   // with a numeric key before this migration, so old data is never lost.
   const getCoverLetter = (index) => {
     const recipient = recipients[index];
-    if (!recipient?.email) return null;
-    // Direct email-key lookup (fast path — all new writes use this key)
-    if (reviewCoverLetters[recipient.email]) return reviewCoverLetters[recipient.email];
-    // Legacy fallback: scan for storedRecipientEmail match (covers old numeric-keyed entries)
-    const legacy = Object.values(reviewCoverLetters).find(
-      e => e?.storedRecipientEmail === recipient.email
-    );
-    return legacy || null;
+    if (!recipient) return null;
+    // 1. Direct email-key lookup (fast path)
+    if (recipient.email && reviewCoverLetters[recipient.email]) return reviewCoverLetters[recipient.email];
+    // 2. Legacy storedRecipientEmail scan
+    if (recipient.email) {
+      const legacy = Object.values(reviewCoverLetters).find(e => e?.storedRecipientEmail === recipient.email);
+      if (legacy) return legacy;
+    }
+    // 3. Job Hub placeholder: match by storedRecipientWebsite when email is empty/placeholder
+    if (recipient.website) {
+      const byWebsite = Object.values(reviewCoverLetters).find(e => e?.storedRecipientWebsite === recipient.website);
+      if (byWebsite) return byWebsite;
+    }
+    return null;
   };
 
   const downloadCoverLetterPDFFromReview = async (recipientIndex) => {
@@ -3667,9 +3810,17 @@ function exportSig(){
       }
 
       const dataToSave = lettersToSave || reviewCoverLetters;
-      
+
       console.log('💾 Saving review cover letters to backend:', Object.keys(dataToSave).length, 'items');
-      
+
+      // ✅ ALWAYS persist to AsyncStorage first — local data is guaranteed regardless of network
+      try {
+        await AsyncStorage.setItem(`reviewCoverLetters_${user.email}`, JSON.stringify(dataToSave));
+        console.log('✅ Review cover letters saved to AsyncStorage');
+      } catch (storageErr) {
+        console.error('⚠️ AsyncStorage write failed:', storageErr.message);
+      }
+
       const response = await fetch(`${API_BASE}/users/review-cover-letters`, {
         method: 'POST',
         headers: {
@@ -3678,11 +3829,9 @@ function exportSig(){
         },
         body: JSON.stringify({ reviewCoverLetters: dataToSave })
       });
-      
+
       if (response.ok) {
         console.log('✅ Review cover letters saved to backend database');
-        // Also save to AsyncStorage for offline access
-        await AsyncStorage.setItem(`reviewCoverLetters_${user.email}`, JSON.stringify(dataToSave));
       } else {
         console.error('❌ Failed to save cover letters to backend:', response.status);
       }
@@ -4648,10 +4797,10 @@ function exportSig(){
       });
 
       console.log('Backend Response Status:', response.status);
-      const data = await response.json();
+      const data = await safeResponseJson(response);
       console.log('Backend Response Data:', data);
 
-      if (!response.ok) {
+      if (!response.ok || data.error) {
         throw new Error(data.error || 'Google login failed');
       }
 
@@ -4665,7 +4814,7 @@ function exportSig(){
     } catch (err) {
       console.log('Google Login Error:', err.message);
       setError(err.message || 'Google login failed');
-      Alert.alert('Error', err.message || 'Google login failed');
+      Alert.alert('Login Failed', err.message || 'Google login failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -4688,10 +4837,10 @@ function exportSig(){
       });
 
       console.log('Backend Response Status:', response.status);
-      const data = await response.json();
+      const data = await safeResponseJson(response);
       console.log('Backend Response Data:', data);
 
-      if (!response.ok) {
+      if (!response.ok || data.error) {
         throw new Error(data.error || 'Microsoft login failed');
       }
 
@@ -4722,7 +4871,7 @@ function exportSig(){
     try {
       setLoading(true);
       console.log('Android: Opening Google OAuth via Passport server flow...');
-      const authUrl = `${PRODUCTION_API_URL}/auth/google/mobile`;
+      const authUrl = `${AUTH_SERVER_URL}/auth/google/mobile`;
       console.log('Android: Auth URL:', authUrl);
       const result = await WebBrowser.openAuthSessionAsync(authUrl, 'cvapplyr://');
       console.log('Android: Auth result type:', result.type);
@@ -4850,9 +4999,9 @@ function exportSig(){
               platform: Platform.OS,
             }),
           });
-          const data = await response.json();
+          const data = await safeResponseJson(response);
           setLoading(false);
-          if (response.ok) {
+          if (response.ok && !data.error) {
             setUser(prev => ({ ...prev, oauth_provider: 'google', needsEmailConnect: false }));
             Alert.alert('Connected!', data.message || 'Google account linked. Emails will be sent from your Gmail.');
           } else {
@@ -4881,6 +5030,7 @@ function exportSig(){
         `&redirect_uri=${encodeURIComponent(redirectUri)}` +
         `&scope=${encodeURIComponent('user.read Mail.Read Mail.Send offline_access')}` +
         `&response_mode=query` +
+        `&prompt=select_account` +
         `&code_challenge=${pkce.challenge}` +
         `&code_challenge_method=S256`;
 
@@ -5039,11 +5189,11 @@ function exportSig(){
         }),
       });
 
-      const data = await response.json();
+      const data = await safeResponseJson(response);
       console.log('Apple backend response status:', response.status);
       console.log('Apple backend response:', JSON.stringify(data));
 
-      if (!response.ok) {
+      if (!response.ok || data.error) {
         throw new Error(data.details || data.error || 'Apple login failed');
       }
 
@@ -5098,7 +5248,7 @@ function exportSig(){
         // Server initiates OAuth, handles callback, redirects to auth-success.html
         // auth-success.html detects mobile and redirects to cvapplyr://oauth-success?token=...&user=...
         console.log('Android: Opening Microsoft OAuth via Passport server flow...');
-        const authUrl = `${PRODUCTION_API_URL}/auth/microsoft`;
+        const authUrl = `${AUTH_SERVER_URL}/auth/microsoft`;
         const result = await WebBrowser.openAuthSessionAsync(authUrl, 'cvapplyr://');
         console.log('Android: Microsoft auth result type:', result.type);
         if (result.type === 'success' && result.url) {
@@ -5131,6 +5281,7 @@ function exportSig(){
           `&redirect_uri=${encodeURIComponent(redirectUri)}` +
           `&scope=${encodeURIComponent('user.read Mail.Read Mail.Send offline_access')}` +
           `&response_mode=query` +
+          `&prompt=select_account` +
           `&code_challenge=${pkce.challenge}` +
           `&code_challenge_method=S256`;
         
@@ -5611,8 +5762,8 @@ function exportSig(){
     return (
       <SafeAreaViewContext style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
-        
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+
+        <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: 120 }]} showsVerticalScrollIndicator={false}>
           {/* Header with Back Button */}
           <View style={styles.usageHeader}>
             <TouchableOpacity 

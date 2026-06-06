@@ -10,9 +10,14 @@ pkill -9 expo 2>/dev/null
 pkill -f "expo start" 2>/dev/null
 sleep 3
 
-# Detect local IP automatically
+# Detect local IP — pick the IP that can actually reach the internet
+# (en0 = WiFi on Mac, which is what the phone uses on the same network)
 echo "🔍 Detecting local IP address..."
-LOCAL_IP=$(ifconfig | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | head -n 1)
+LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null)
+# Fallback: first non-loopback IP
+if [ -z "$LOCAL_IP" ]; then
+  LOCAL_IP=$(ifconfig | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | head -n 1)
+fi
 
 if [ -z "$LOCAL_IP" ]; then
     echo "❌ Could not detect local IP address"
@@ -22,21 +27,10 @@ fi
 echo "✅ Detected IP: $LOCAL_IP"
 echo ""
 
-# Update config file with detected IP
-echo "📝 Updating MobileApp config..."
+# Update only the LOCAL_API_URL line in config.js (preserves production URL and apiFetch)
+echo "📝 Updating MobileApp config with local IP..."
 CONFIG_FILE="MobileApp/config.js"
-cat > "$CONFIG_FILE" << EOF
-// Auto-generated config - DO NOT EDIT MANUALLY
-// This file is updated automatically by start-all.sh
-
-const LOCAL_API_URL = 'http://${LOCAL_IP}:3000/api';
-const PRODUCTION_API_URL = 'https://your-production-domain.com/api';
-
-const API_BASE = __DEV__ ? LOCAL_API_URL : PRODUCTION_API_URL;
-
-export default { API_BASE_URL: API_BASE };
-export { API_BASE, LOCAL_API_URL, PRODUCTION_API_URL };
-EOF
+sed -i '' "s|const LOCAL_API_URL = '.*';|const LOCAL_API_URL = 'http://${LOCAL_IP}:3000/api';|" "$CONFIG_FILE"
 
 echo "✅ Config updated with IP: $LOCAL_IP"
 echo ""
@@ -64,7 +58,7 @@ echo ""
 # Start Expo with the same IP
 echo "🚀 Starting Expo on $LOCAL_IP:8081..."
 cd MobileApp
-npx expo start --clear --host tunnel &
+npx expo start --clear --host lan &
 EXPO_PID=$!
 echo "✅ Expo started (PID: $EXPO_PID)"
 echo ""

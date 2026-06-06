@@ -12,4 +12,7 @@ router.post('/send-single-application', authenticateToken, emailController.sendS
 // Check for email replies
 router.post('/check-replies', authenticateToken, emailController.checkEmailReplies);
 
+// Send a reply from inside the app (no attachments)
+router.post('/send-reply', authenticateToken, emailController.sendReply);
+
 module.exports = router;

@@ -6,6 +6,7 @@ import React, {
   useRef,
   useEffect,
 } from 'react';
+import { useFocusEffect } from 'expo-router';
 import {
   View,
   Text,
@@ -21,15 +22,18 @@ import {
   Linking,
   Platform,
   Dimensions,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type { Contact, Job, Employer, WishlistPill } from '../../types/aiHub';
-import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem } from '../../services/aiHubService';
+import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses } from '../../services/aiHubService';
+import type { Recruiter } from '../../services/aiHubService';
 import { API_BASE } from '../../config';
 import axios from 'axios';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LoadingTips } from './LoadingTips';
 
 const { width: SCREEN_W } = Dimensions.get('window');
@@ -201,9 +205,10 @@ type CompanyCardProps = {
   employer: Employer;
   selected: boolean;
   onPress: () => void;
+  onRemove: () => void;
 };
 
-const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, onPress }) => {
+const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, onPress, onRemove }) => {
   const jobCount     = (employer.jobs || []).length;
   const contactCount = (employer.jobs || []).reduce((s, j) => s + (j.contacts || []).length, 0);
 
@@ -217,16 +222,25 @@ const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, onPress }
         />
       )}
       <View style={styles.ccInner}>
-        {/* Watermark — first 4 chars of company name */}
+        {/* Watermark */}
         <Text style={styles.ccWatermark} numberOfLines={1}>
           {employer.name.replace(/\s+/g, '').slice(0, 4).toUpperCase()}
         </Text>
+        {/* Delete button */}
+        <TouchableOpacity
+          style={styles.ccDeleteBtn}
+          onPress={(e) => { e.stopPropagation?.(); onRemove(); }}
+          activeOpacity={0.7}
+          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+        >
+          <Ionicons name="close" size={12} color="rgba(255,255,255,0.7)" />
+        </TouchableOpacity>
         {/* Logo */}
         <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.ccLogo}>
           <Text style={styles.ccLogoText}>{employer.logoInitial}</Text>
         </LinearGradient>
         {/* Name */}
-        <Text style={styles.ccName} numberOfLines={2}>{employer.name}</Text>
+        <Text style={styles.ccName} numberOfLines={2} ellipsizeMode="tail">{employer.name}</Text>
         {/* Stats */}
         <View style={styles.ccRow}>
           <Ionicons name="briefcase-outline" size={11} color="#22D3EE" />
@@ -252,20 +266,35 @@ const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, onPress }
 
 type JobCardProps = {
   job: Job;
+  employerName?: string;
+  clStatus?: string | null;
   onApply: () => void;
   onAddContact: () => void;
   onVisitJob?: () => void;
 };
 
-function JobCard({ job, onApply, onAddContact, onVisitJob }: JobCardProps) {
+function JobCard({ job, employerName, clStatus, onApply, onAddContact, onVisitJob }: JobCardProps) {
   const [skillsExpanded, setSkillsExpanded] = useState(false);
   const SKILLS_PREVIEW = 5;
   const allSkills = job.skills || [];
   const visibleSkills = skillsExpanded ? allSkills : allSkills.slice(0, SKILLS_PREVIEW);
   const hiddenCount = allSkills.length - SKILLS_PREVIEW;
 
+  const watermark = (employerName || '').toUpperCase();
+
+  const cardBg =
+    clStatus === 'applied' || clStatus === 'downloaded'
+      ? '#F0FDF4'   // very light green — application sent / PDF downloaded
+      : clStatus === 'generated'
+      ? '#FEFCE8'   // very light yellow — cover letter ready
+      : '#FFFFFF';  // default white
+
   return (
-  <View style={styles.card}>
+  <View style={[styles.card, { backgroundColor: cardBg }]}>
+    {/* ── Employer watermark ── */}
+    {!!watermark && (
+      <Text style={styles.cardWatermark} numberOfLines={1} ellipsizeMode="clip">{watermark}</Text>
+    )}
     {/* ── Header: title + badges ── */}
     <View style={styles.cardHeader}>
       <View style={styles.cardHeaderMid}>
@@ -289,6 +318,18 @@ function JobCard({ job, onApply, onAddContact, onVisitJob }: JobCardProps) {
             ]}>{job.matchScore}% match</Text>
           </View>
         )}
+        {/* CL / Applied status dots */}
+        {clStatus === 'applied' ? (
+          <View style={styles.statusBadge}>
+            <Ionicons name="checkmark-circle" size={10} color="#10B981" />
+            <Text style={[styles.statusBadgeText, { color: '#10B981' }]}>Applied</Text>
+          </View>
+        ) : clStatus === 'downloaded' || clStatus === 'generated' ? (
+          <View style={styles.statusBadge}>
+            <Ionicons name="document-text" size={10} color="#4F8DFF" />
+            <Text style={[styles.statusBadgeText, { color: '#4F8DFF' }]}>CL Ready</Text>
+          </View>
+        ) : null}
       </View>
     </View>
 
@@ -479,6 +520,320 @@ const tabStyles = StyleSheet.create({
 });
 
 // ─────────────────────────────────────────────────────────────────
+// IN-FLIGHT SEARCH PERSISTENCE (survives tab switches)
+// ─────────────────────────────────────────────────────────────────
+
+const INFLIGHT_KEY = 'aiHub_inflight_searches';
+
+type InflightEntry = { jobId: string; companyName: string; pillId: string };
+
+async function saveInflightSearch(entry: InflightEntry) {
+  try {
+    const raw = await AsyncStorage.getItem(INFLIGHT_KEY);
+    const existing: InflightEntry[] = raw ? JSON.parse(raw) : [];
+    const updated = [...existing.filter((e) => e.jobId !== entry.jobId), entry];
+    await AsyncStorage.setItem(INFLIGHT_KEY, JSON.stringify(updated));
+  } catch {}
+}
+
+async function removeInflightSearch(jobId: string) {
+  try {
+    const raw = await AsyncStorage.getItem(INFLIGHT_KEY);
+    const existing: InflightEntry[] = raw ? JSON.parse(raw) : [];
+    await AsyncStorage.setItem(INFLIGHT_KEY, JSON.stringify(existing.filter((e) => e.jobId !== jobId)));
+  } catch {}
+}
+
+async function getInflightSearches(): Promise<InflightEntry[]> {
+  try {
+    const raw = await AsyncStorage.getItem(INFLIGHT_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// RECRUITER CARD
+// Shown above job cards when ALL jobs for an employer have 0 contacts.
+// ─────────────────────────────────────────────────────────────────
+
+type RecruiterCardProps = {
+  employer: Employer;
+  creditBalance: number | null;
+};
+
+function RecruiterCard({ employer, creditBalance }: RecruiterCardProps) {
+  const [recruiters, setRecruiters] = useState<Recruiter[]>([]);
+  const [step1Loading, setStep1Loading] = useState(false);
+  const [step2Loading, setStep2Loading] = useState(false);
+  const [step1Done, setStep1Done] = useState(false);
+  const [step2Done, setStep2Done] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Load existing recruiters on mount
+  useEffect(() => {
+    getRecruiters(employer.id).then(rows => {
+      if (rows.length > 0) {
+        setRecruiters(rows);
+        setStep1Done(true);
+        if (rows.some(r => r.email)) setStep2Done(true);
+      }
+    });
+  }, [employer.id]);
+
+  const handleFindRecruiters = async () => {
+    if (creditBalance !== null && creditBalance < 1) {
+      Alert.alert('Insufficient Credits', 'You need at least 1 credit to find recruiters.');
+      return;
+    }
+    setStep1Loading(true);
+    setError(null);
+    try {
+      const result = await findRecruiters(employer.id);
+      setRecruiters(result.recruiters);
+      setStep1Done(true);
+    } catch (e: any) {
+      const msg = e?.response?.data?.error ?? e?.message ?? 'Failed to find recruiters';
+      setError(msg);
+    } finally {
+      setStep1Loading(false);
+    }
+  };
+
+  const handleFindEmails = async () => {
+    if (creditBalance !== null && creditBalance < 1) {
+      Alert.alert('Insufficient Credits', 'You need at least 1 credit to find emails.');
+      return;
+    }
+    setStep2Loading(true);
+    setError(null);
+    try {
+      const result = await findRecruiterEmails(employer.id);
+      setRecruiters(result.results);
+      setStep2Done(true);
+    } catch (e: any) {
+      const msg = e?.response?.data?.error ?? e?.message ?? 'Failed to find emails';
+      setError(msg);
+    } finally {
+      setStep2Loading(false);
+    }
+  };
+
+  return (
+    <View style={rcStyles.card}>
+      {/* Header */}
+      <View style={rcStyles.header}>
+        <View style={rcStyles.headerIcon}>
+          <Ionicons name="people-outline" size={16} color={T.blue} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={rcStyles.title}>Recruiters & HR</Text>
+          <Text style={rcStyles.subtitle}>{employer.name}</Text>
+        </View>
+      </View>
+
+      {error && (
+        <Text style={rcStyles.errorText}>{error}</Text>
+      )}
+
+      {step1Done && recruiters.length === 0 && (
+        <View style={rcStyles.noResultsBox}>
+          <Ionicons name="search-outline" size={18} color="#94A3B8" />
+          <Text style={rcStyles.noResultsText}>
+            No LinkedIn recruiters found for this company.{'\n'}
+            This can happen for smaller companies with low LinkedIn presence.
+          </Text>
+        </View>
+      )}
+
+      {/* Recruiter list */}
+      {recruiters.length > 0 && (
+        <View style={rcStyles.recruiterList}>
+          {recruiters.map((r, i) => (
+            <View key={r.id ?? i} style={rcStyles.recruiterRow}>
+              <LinearGradient
+                colors={['#6366F1', '#8B5CF6']}
+                style={rcStyles.avatar}
+              >
+                <Text style={rcStyles.avatarText}>{(r.name[0] || '?').toUpperCase()}</Text>
+              </LinearGradient>
+              <View style={{ flex: 1 }}>
+                <View style={rcStyles.nameRow}>
+                  <Text style={rcStyles.recruiterName}>{r.name}</Text>
+                  {r.email_verified && (
+                    <View style={rcStyles.verifiedBadge}>
+                      <Ionicons name="checkmark-circle" size={11} color="#10B981" />
+                      <Text style={rcStyles.verifiedText}>verified</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={rcStyles.recruiterRole}>{r.role ?? 'Recruiter'}</Text>
+                {r.email ? (
+                  <Text style={rcStyles.recruiterEmail}>{r.email}</Text>
+                ) : r.linkedin_url ? (
+                  <View style={rcStyles.linkedinRow}>
+                    <TouchableOpacity
+                      style={rcStyles.linkedinOpenBtn}
+                      onPress={() => {
+                        let url = r.linkedin_url!.trim();
+                        if (!url.startsWith('http')) url = 'https://' + url;
+                        url = url.replace('://linkedin.com', '://www.linkedin.com');
+                        Linking.openURL(url).catch(() =>
+                          Alert.alert('Error', 'Could not open LinkedIn profile.')
+                        );
+                      }}
+                    >
+                      <Ionicons name="logo-linkedin" size={11} color="#3B82F6" />
+                      <Text style={rcStyles.linkedinLink}>View on LinkedIn</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={rcStyles.copyBtn}
+                      onPress={() => {
+                        const { Clipboard } = require('react-native');
+                        Clipboard.setString(r.linkedin_url!);
+                        Alert.alert('Copied', 'LinkedIn URL copied to clipboard.');
+                      }}
+                    >
+                      <Ionicons name="copy-outline" size={11} color="#64748B" />
+                      <Text style={rcStyles.copyText}>Copy</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* Step 1 button */}
+      {!step1Done ? (
+        <TouchableOpacity
+          style={rcStyles.btn}
+          activeOpacity={0.8}
+          onPress={handleFindRecruiters}
+          disabled={step1Loading}
+        >
+          {step1Loading ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <>
+              <Ionicons name="logo-linkedin" size={15} color="#fff" />
+              <Text style={rcStyles.btnText}>Find Recruiters on LinkedIn</Text>
+              <View style={rcStyles.creditPill}>
+                <Ionicons name="flash" size={10} color="#F59E0B" />
+                <Text style={rcStyles.creditPillText}>1</Text>
+              </View>
+            </>
+          )}
+        </TouchableOpacity>
+      ) : (
+        <View style={rcStyles.doneRow}>
+          <Ionicons name="checkmark-circle" size={16} color="#10B981" />
+          <Text style={rcStyles.doneText}>Recruiters found</Text>
+          <TouchableOpacity onPress={handleFindRecruiters} disabled={step1Loading} style={rcStyles.rerunBtn}>
+            {step1Loading
+              ? <ActivityIndicator size="small" color={T.blue} />
+              : <Text style={rcStyles.rerunText}>Refresh</Text>
+            }
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Step 2 button — shown after Step 1, disabled with Coming Soon */}
+      {step1Done && !step2Done && (
+        <View style={[rcStyles.btn, rcStyles.btnDisabled]}>
+          <Ionicons name="mail-outline" size={15} color="#94A3B8" />
+          <Text style={rcStyles.btnDisabledText}>Find Work Emails</Text>
+          <View style={rcStyles.comingSoonPill}>
+            <Text style={rcStyles.comingSoonText}>Coming Soon</Text>
+          </View>
+        </View>
+      )}
+
+      {step2Done && (
+        <View style={rcStyles.doneRow}>
+          <Ionicons name="checkmark-circle" size={16} color="#10B981" />
+          <Text style={rcStyles.doneText}>Emails verified</Text>
+          <TouchableOpacity onPress={handleFindEmails} disabled={step2Loading} style={rcStyles.rerunBtn}>
+            {step2Loading
+              ? <ActivityIndicator size="small" color={T.blue} />
+              : <Text style={rcStyles.rerunText}>Refresh</Text>
+            }
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const rcStyles = StyleSheet.create({
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 14,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: '#EFF6FF',
+  },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
+  headerIcon: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: 'rgba(6,182,212,0.1)', alignItems: 'center', justifyContent: 'center',
+  },
+  title: { fontSize: 14, fontWeight: '800', color: '#0F172A', letterSpacing: -0.2 },
+  subtitle: { fontSize: 12, color: '#64748B', marginTop: 1 },
+  recruiterList: { gap: 12, marginBottom: 14 },
+  recruiterRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  avatar: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  avatarText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  recruiterName: { fontSize: 13, fontWeight: '700', color: '#0F172A' },
+  recruiterRole: { fontSize: 11, color: '#64748B', marginTop: 1 },
+  recruiterEmail: { fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', color: '#06B6D4', marginTop: 3 },
+  linkedinRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
+  linkedinOpenBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(59,130,246,0.08)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  linkedinLink: { fontSize: 11, color: '#3B82F6', fontWeight: '600' },
+  copyBtn: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: '#F1F5F9', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  copyText: { fontSize: 11, color: '#64748B', fontWeight: '600' },
+  verifiedBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(16,185,129,0.1)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8 },
+  verifiedText: { fontSize: 10, color: '#10B981', fontWeight: '600' },
+  btn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, borderRadius: 12, paddingVertical: 12,
+    backgroundColor: T.blue, marginTop: 4,
+  },
+  btnText: { fontSize: 13, fontWeight: '700', color: '#fff' },
+  btnSecondary: {
+    backgroundColor: 'rgba(6,182,212,0.08)',
+    borderWidth: 1, borderColor: 'rgba(6,182,212,0.25)', marginTop: 8,
+  },
+  btnSecondaryText: { fontSize: 13, fontWeight: '700', color: T.blue },
+  creditPill: { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: 'rgba(245,158,11,0.15)', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 8 },
+  creditPillText: { fontSize: 11, fontWeight: '700', color: '#F59E0B' },
+  doneRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 },
+  doneText: { fontSize: 12, fontWeight: '600', color: '#10B981', flex: 1 },
+  rerunBtn: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, backgroundColor: 'rgba(6,182,212,0.08)' },
+  rerunText: { fontSize: 11, fontWeight: '600', color: T.blue },
+  errorText: { fontSize: 12, color: '#EF4444', marginBottom: 8, lineHeight: 18 },
+  noResultsBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: '#F8FAFC', borderRadius: 12, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: '#E2E8F0' },
+  noResultsText: { fontSize: 12, color: '#64748B', lineHeight: 18, flex: 1 },
+  btnDisabled: {
+    backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0',
+    marginTop: 8, opacity: 0.7,
+  },
+  btnDisabledText: { fontSize: 13, fontWeight: '700', color: '#94A3B8', flex: 1 },
+  comingSoonPill: {
+    backgroundColor: '#F1F5F9', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8,
+    borderWidth: 1, borderColor: '#E2E8F0',
+  },
+  comingSoonText: { fontSize: 10, fontWeight: '700', color: '#94A3B8', letterSpacing: 0.3 },
+});
+
+// ─────────────────────────────────────────────────────────────────
 // MAIN SCREEN
 // ─────────────────────────────────────────────────────────────────
 
@@ -488,12 +843,48 @@ export default function AIHubScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [inputValue, setInputValue] = useState('https://');
   const [employers, setEmployers] = useState<Employer[]>([]);
+  // Keep ref in sync so useFocusEffect can access latest employers without a stale closure
+  useEffect(() => { employersRef.current = employers; }, [employers]);
   const [loadingCompanies, setLoadingCompanies] = useState<string[]>([]);
   const [processingEmployerIds, setProcessingEmployerIds] = useState<Set<string>>(new Set());
   const [stats, setStats] = useState({ sources: 0, matches: 0, contacts: 0, verifiedPct: 0 });
   const [initialLoading, setInitialLoading] = useState(true);
   const [selectedEmployerId, setSelectedEmployerId] = useState<string | null>(null);
   const [featureFlag, setFeatureFlag] = useState<{ status: string; title: string | null; message: string | null } | null>(null);
+  const [creditBalance, setCreditBalance] = useState<number | null>(null);
+  const [creditLoading, setCreditLoading] = useState(false);
+  // jobId → status ('generated' | 'downloaded' | 'applied')
+  const [jobStatuses, setJobStatuses] = useState<Record<string, string>>({});
+
+  // Relay: if job-detail set aiHub_navigate_home, pop this screen too → reveals App.js HomeScreen
+  useFocusEffect(
+    useCallback(() => {
+      AsyncStorage.getItem('aiHub_navigate_home').then(flag => {
+        if (flag === 'true') {
+          AsyncStorage.removeItem('aiHub_navigate_home');
+          router.back(); // pops (ai-hub) off the root Stack → App.js HomeScreen visible
+        }
+      }).catch(() => {});
+    }, [router])
+  );
+
+  // Reload statuses whenever this screen comes into focus (e.g. returning from job-detail)
+  const employersRef = useRef<Employer[]>([]);
+  useFocusEffect(
+    useCallback(() => {
+      const current = employersRef.current;
+      if (current.length === 0) return;
+      const load = async () => {
+        const allStatuses: Record<string, string> = {};
+        await Promise.all(current.map(async (emp) => {
+          const s = await loadJobStatuses(emp.id);
+          Object.assign(allStatuses, s);
+        }));
+        setJobStatuses(allStatuses);
+      };
+      load();
+    }, [])
+  );
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   useEffect(() => {
@@ -532,7 +923,9 @@ export default function AIHubScreen() {
         const loadedEmployers: Employer[] = [];
         const loadedPills: WishlistPill[] = [];
         const currentlyProcessing = new Set<string>();
-        dashboard.forEach((entry, i) => {
+        // Reverse so latest-added employer is first
+        const sorted = [...dashboard].reverse();
+        sorted.forEach((entry, i) => {
           const emp = entry.employer;
           loadedEmployers.push(emp);
           loadedPills.push({ id: `pill-${emp.id}`, label: emp.name, colorVariant: COLOR_CYCLE[i % 3], employerId: emp.id });
@@ -544,6 +937,61 @@ export default function AIHubScreen() {
         setEmployers(loadedEmployers);
         setPills(loadedPills);
         setProcessingEmployerIds(currentlyProcessing);
+        // Auto-select the most recently added employer
+        if (loadedEmployers.length > 0) {
+          setSelectedEmployerId(loadedEmployers[0].id);
+        }
+        // Load cover letter / apply statuses for all employers
+        const allStatuses: Record<string, string> = {};
+        await Promise.all(loadedEmployers.map(async (emp) => {
+          const s = await loadJobStatuses(emp.id);
+          Object.assign(allStatuses, s);
+        }));
+        setJobStatuses(allStatuses);
+
+        // Reconnect any in-flight searches that the DB doesn't know about yet
+        // (employer record not created until Phase 1 completes — can take 30-60s)
+        const inflight = await getInflightSearches();
+        const dashboardJobIds = new Set(sorted.map((e) => e.jobId));
+        for (const entry of inflight) {
+          if (dashboardJobIds.has(entry.jobId)) continue; // already tracked in DB
+          // Reattach loading state and resume polling
+          setLoadingCompanies((prev) => prev.includes(entry.companyName) ? prev : [...prev, entry.companyName]);
+          // Restore the pill for this in-flight search
+          setPills((prev) => prev.find((p) => p.id === entry.pillId) ? prev : [
+            ...prev,
+            { id: entry.pillId, label: entry.companyName, colorVariant: COLOR_CYCLE[prev.length % 3] },
+          ]);
+          let firstPartial = false;
+          const onPartialUpdate = (partialEmployer: Employer) => {
+            if (!firstPartial) {
+              firstPartial = true;
+              setLoadingCompanies((prev) => prev.filter((c) => c !== entry.companyName));
+              setProcessingEmployerIds((prev) => new Set([...prev, partialEmployer.id]));
+              setPills((prev) => prev.map((p) => p.id === entry.pillId ? { ...p, employerId: partialEmployer.id } : p));
+            }
+            setEmployers((prev) => {
+              const idx = prev.findIndex((e) => e.id === partialEmployer.id);
+              if (idx >= 0) { const arr = [...prev]; arr[idx] = partialEmployer; return arr; }
+              return [partialEmployer, ...prev];
+            });
+          };
+          resumeJobPolling(entry.jobId, onPartialUpdate)
+            .then((employer) => {
+              setProcessingEmployerIds((prev) => { const n = new Set(prev); n.delete(employer.id); return n; });
+              setEmployers((prev) => {
+                const idx = prev.findIndex((e) => e.id === employer.id);
+                return idx >= 0 ? prev.map((e, i) => i === idx ? employer : e) : [employer, ...prev];
+              });
+              setPills((prev) => prev.map((p) => p.id === entry.pillId ? { ...p, employerId: employer.id } : p));
+              setSelectedEmployerId(employer.id);
+              removeInflightSearch(entry.jobId);
+            })
+            .catch(() => {
+              setLoadingCompanies((prev) => prev.filter((c) => c !== entry.companyName));
+              removeInflightSearch(entry.jobId);
+            });
+        }
       } catch (e) {
         console.error('Failed to load dashboard', e);
       } finally {
@@ -590,6 +1038,17 @@ export default function AIHubScreen() {
     let trimmed = inputValue.trim();
     if (!trimmed || trimmed === 'https://' || trimmed === 'http://') return;
     if (!/^https?:\/\//i.test(trimmed) && /\./.test(trimmed)) trimmed = `https://${trimmed}`;
+
+    const SEARCH_COST = 3;
+    if (creditBalance !== null && creditBalance < SEARCH_COST) {
+      Alert.alert(
+        'Not Enough Credits',
+        `This search costs ${SEARCH_COST} credits. You only have ${creditBalance} credit${creditBalance === 1 ? '' : 's'} remaining.\n\nPurchase more credits to continue.`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     const pillId = `pill-${Date.now()}`;
     setPills((prev) => [...prev, { id: pillId, label: trimmed, colorVariant: COLOR_CYCLE[prev.length % 3] }]);
     setLoadingCompanies((prev) => [...prev, trimmed]);
@@ -609,14 +1068,31 @@ export default function AIHubScreen() {
         return [partialEmployer, ...prev];
       });
     };
-    fetchJobMatches(trimmed, onPartialUpdate)
+    const onJobIdKnown = (jobId: string) => {
+      saveInflightSearch({ jobId, companyName: trimmed, pillId });
+    };
+
+    fetchJobMatches(trimmed, onPartialUpdate, onJobIdKnown)
       .then((employer) => {
         setProcessingEmployerIds((prev) => { const n = new Set(prev); n.delete(employer.id); return n; });
         setEmployers((prev) => {
           const idx = prev.findIndex((e) => e.id === employer.id);
-          return idx >= 0 ? prev.map((e, i) => i === idx ? employer : e) : [...prev, employer];
+          // Keep newest at front; if already in list update in place, else prepend
+          return idx >= 0 ? prev.map((e, i) => i === idx ? employer : e) : [employer, ...prev];
         });
         setPills((prev) => prev.map((p) => p.id === pillId ? { ...p, employerId: employer.id } : p));
+        // Auto-select the newly added employer
+        setSelectedEmployerId(employer.id);
+        // Clean up persisted in-flight entry
+        // (jobId stored via closure from onJobIdKnown)
+        getInflightSearches().then((entries) => {
+          const entry = entries.find((e) => e.pillId === pillId);
+          if (entry) removeInflightSearch(entry.jobId);
+        });
+        // Deduct 3 credits after successful search
+        deductSearchCredits(3)
+          .then((newBalance) => setCreditBalance(newBalance))
+          .catch(() => {}); // silent — don't interrupt UI on deduction failure
       })
       .catch((err) => {
         const isPortal = err?.response?.data?.error === 'job_portal' || err?.isPortal;
@@ -627,6 +1103,10 @@ export default function AIHubScreen() {
           Alert.alert('Could not fetch jobs', `No results found for "${trimmed}". Try a full URL like https://careers.company.com`);
         }
         setPills((prev) => prev.filter((p) => p.id !== pillId));
+        getInflightSearches().then((entries) => {
+          const entry = entries.find((e) => e.pillId === pillId);
+          if (entry) removeInflightSearch(entry.jobId);
+        });
       })
       .finally(() => setLoadingCompanies((prev) => prev.filter((c) => c !== trimmed)));
   }, [inputValue]);
@@ -645,7 +1125,15 @@ export default function AIHubScreen() {
     router.push({ pathname: '/(ai-hub)/add-contact', params: { jobId } });
   }, [router]);
 
-  const openModal = () => { setInputValue('https://'); setModalVisible(true); };
+  const openModal = () => {
+    setInputValue('https://');
+    setModalVisible(true);
+    setCreditBalance(null);
+    setCreditLoading(true);
+    fetchCreditBalance()
+      .then((bal) => setCreditBalance(bal))
+      .finally(() => setCreditLoading(false));
+  };
   const visibleEmployers = selectedEmployerId ? employers.filter((e) => e.id === selectedEmployerId) : employers;
 
   return (
@@ -657,14 +1145,15 @@ export default function AIHubScreen() {
         keyboardShouldPersistTaps="handled"
       >
 
-        {/* ══ TOP BAR (Letters-style: back pill · logo · add btn) ══════════════ */}
+        {/* ══ TOP BAR ══════════════════════════════════════════════════════════ */}
         <View style={styles.topBar}>
           <TouchableOpacity style={styles.backPill} onPress={() => router.back()} activeOpacity={0.8}>
             <Ionicons name="arrow-back" size={14} color={T.ink} />
             <Text style={styles.backPillText}>Back</Text>
           </TouchableOpacity>
 
-          <View style={styles.wordmark}>
+          {/* Absolutely centred wordmark — unaffected by side button sizes */}
+          <View style={styles.wordmark} pointerEvents="none">
             <Image
               source={require('../../assets/images/logo_img.png')}
               style={styles.wordmarkLogo}
@@ -760,21 +1249,45 @@ export default function AIHubScreen() {
           ) : (
             <>
               {/* Loading cards */}
-              {loadingCompanies.map((company) => (
-                <View key={company} style={styles.loaderCard}>
-                  <View style={styles.loaderHeader}>
-                    <LinearGradient colors={[T.blue, T.purple]} style={styles.loaderIcon}>
-                      <ActivityIndicator size="small" color="#fff" />
-                    </LinearGradient>
-                    <View style={styles.loaderTexts}>
-                      <Text style={styles.loaderTitle}>Analyzing {company}</Text>
-                      <Text style={styles.loaderSub}>AI is scraping and matching jobs</Text>
+              {loadingCompanies.map((company) => {
+                // Show a clean display name: extract hostname from URL or use as-is
+                let displayName = company;
+                try {
+                  if (company.startsWith('http')) {
+                    displayName = new URL(company).hostname.replace(/^www\./, '');
+                  }
+                } catch {}
+
+                return (
+                  <View key={company} style={styles.loaderCard}>
+                    <View style={styles.loaderHeader}>
+                      <LinearGradient colors={[T.blue, T.purple]} style={styles.loaderIcon}>
+                        <ActivityIndicator size="small" color="#fff" />
+                      </LinearGradient>
+                      <View style={styles.loaderTexts}>
+                        <Text style={styles.loaderTitle} numberOfLines={1}>Analyzing {displayName}</Text>
+                        <Text style={styles.loaderSub}>AI is scraping and matching jobs</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.loaderDeleteBtn}
+                        activeOpacity={0.7}
+                        onPress={() => {
+                          setLoadingCompanies((prev) => prev.filter((c) => c !== company));
+                          setPills((prev) => prev.filter((p) => p.label !== company));
+                          getInflightSearches().then((entries) => {
+                            const entry = entries.find((e) => e.companyName === company);
+                            if (entry) removeInflightSearch(entry.jobId);
+                          });
+                        }}
+                      >
+                        <Ionicons name="close" size={16} color={T.textMuted} />
+                      </TouchableOpacity>
                     </View>
+                    <IndeterminateBar />
+                    <Text style={styles.loaderNote}>This can take a minute. You can leave the app — we'll notify you when done.</Text>
                   </View>
-                  <IndeterminateBar />
-                  <Text style={styles.loaderNote}>This can take a minute. You can leave the app — we'll notify you when done.</Text>
-                </View>
-              ))}
+                );
+              })}
               {loadingCompanies.length > 0 && <LoadingTips />}
 
               {/* ── Horizontal company card strip ── */}
@@ -792,30 +1305,74 @@ export default function AIHubScreen() {
                     onPress={() => setSelectedEmployerId(
                       selectedEmployerId === employer.id ? null : employer.id
                     )}
+                    onRemove={() => {
+                      const pill = pills.find((p) => p.employerId === employer.id);
+                      if (pill) handleRemovePill(pill.id);
+                      else {
+                        setEmployers((prev) => prev.filter((e) => e.id !== employer.id));
+                        if (selectedEmployerId === employer.id) setSelectedEmployerId(null);
+                      }
+                    }}
                   />
                 ))}
               </ScrollView>
 
               {/* ── Job cards for selected / all companies ── */}
-              {visibleEmployers.map((employer) => (
+              {visibleEmployers.map((employer) => {
+                const jobs = employer.jobs || [];
+                const isProcessing = processingEmployerIds.has(employer.id);
+                // No jobs and not processing — show a helpful empty-state card
+                if (jobs.length === 0 && !isProcessing) {
+                  return (
+                  <View key={employer.id} style={styles.noJobsCard}>
+                    <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.noJobsLogo}>
+                      <Text style={styles.noJobsLogoText}>{employer.logoInitial}</Text>
+                    </LinearGradient>
+                    <Text style={styles.noJobsTitle}>No openings found on {employer.name}'s portal</Text>
+                    <Text style={styles.noJobsBody}>
+                      This company may not be actively posting jobs on their career page right now — their listings may be behind a login wall our AI can't access.
+                      {'\n\n'}
+                      You can still apply proactively. Search for this role on any major job platform to find the right contact, then add the recruiter's details on your{' '}
+                      <Text style={styles.noJobsHighlight}>CVApplyr dashboard</Text>{' '}and send a personalised application.
+                    </Text>
+
+                    <TouchableOpacity
+                      style={styles.noJobsAddBtn}
+                      activeOpacity={0.8}
+                      onPress={async () => {
+                        await AsyncStorage.setItem('aiHub_trigger_add_recipient', 'true');
+                        router.back();
+                      }}
+                    >
+                      <Ionicons name="person-add-outline" size={14} color={T.blue} />
+                      <Text style={styles.noJobsAddBtnText}>Add a Recruiter Contact</Text>
+                    </TouchableOpacity>
+                  </View>
+                  );
+                }
+                return (
                 <View key={employer.id} style={styles.employerSection}>
-                  {(employer.jobs || []).map((job) => (
+                  {/* RecruiterCard hidden until port 25 SMTP is unblocked on Oracle VM */}
+                  {jobs.map((job) => (
                     <JobCard
                       key={job.id}
                       job={job}
+                      employerName={employer.name}
+                      clStatus={jobStatuses[job.id] ?? null}
                       onApply={() => handleApply(employer, job)}
                       onAddContact={() => handleAddContact(job.id)}
                       onVisitJob={job.applyUrl ? () => Linking.openURL(job.applyUrl!) : undefined}
                     />
                   ))}
-                  {processingEmployerIds.has(employer.id) && (
+                  {isProcessing && (
                     <View style={styles.processingRow}>
                       <ActivityIndicator size="small" color={T.blue} />
                       <Text style={styles.processingText}>Finding more positions...</Text>
                     </View>
                   )}
                 </View>
-              ))}
+                );
+              })}
             </>
           )}
         </View>
@@ -850,6 +1407,10 @@ export default function AIHubScreen() {
 
       {/* ── Add Company Modal ── */}
       <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => { setInputValue('https://'); setModalVisible(false); }}>
+        <KeyboardAvoidingView
+          style={styles.modalKAV}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => { setInputValue('https://'); setModalVisible(false); }}>
           <View style={styles.modalBox} onStartShouldSetResponder={() => true}>
             <View style={styles.modalHeader}>
@@ -873,12 +1434,44 @@ export default function AIHubScreen() {
               autoCapitalize="none"
               autoCorrect={false}
             />
+            {/* Credit cost note */}
+            <View style={styles.modalCreditRow}>
+              <Ionicons name="flash-outline" size={13} color="#F59E0B" />
+              <Text style={styles.modalCreditText}>
+                This search costs <Text style={styles.modalCreditBold}>3 Credits</Text>
+              </Text>
+              <View style={styles.modalCreditSpacer} />
+              {creditLoading ? (
+                <ActivityIndicator size="small" color={T.textFaint} />
+              ) : creditBalance !== null ? (
+                <View style={[styles.modalBalancePill, creditBalance < 3 && styles.modalBalancePillLow]}>
+                  <Ionicons name="wallet-outline" size={11} color={creditBalance < 3 ? '#EF4444' : T.textMuted} />
+                  <Text style={[styles.modalBalanceText, creditBalance < 3 && styles.modalBalanceTextLow]}>
+                    {creditBalance} left
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+            {creditBalance !== null && creditBalance < 3 && (
+              <Text style={styles.modalInsufficientText}>
+                You need at least 3 credits to search. Purchase more credits to continue.
+              </Text>
+            )}
             <View style={styles.modalButtons}>
               <TouchableOpacity onPress={() => { setInputValue('https://'); setModalVisible(false); }} style={styles.modalCancelBtn}>
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={handleAddPill} style={styles.modalConfirmOuter} activeOpacity={0.85}>
-                <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.modalConfirmBtn}>
+              <TouchableOpacity
+                onPress={handleAddPill}
+                style={[styles.modalConfirmOuter, creditBalance !== null && creditBalance < 3 && styles.modalConfirmOuterDisabled]}
+                activeOpacity={creditBalance !== null && creditBalance < 3 ? 1 : 0.85}
+                disabled={creditBalance !== null && creditBalance < 3}
+              >
+                <LinearGradient
+                  colors={creditBalance !== null && creditBalance < 3 ? ['#94A3B8', '#94A3B8'] : [T.blue, T.blueDeep]}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                  style={styles.modalConfirmBtn}
+                >
                   <Text style={styles.modalConfirmText}>Search Jobs</Text>
                   <Ionicons name="arrow-forward" size={15} color="#fff" />
                 </LinearGradient>
@@ -886,6 +1479,7 @@ export default function AIHubScreen() {
             </View>
           </View>
         </TouchableOpacity>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ── Floating Tab Bar ── */}
@@ -903,7 +1497,7 @@ const styles = StyleSheet.create({
   scrollView:   { flex: 1 },
   scrollContent:{ flexGrow: 1, paddingBottom: 100 },
 
-  // ── Top bar (Letters-style) ──
+  // ── Top bar ──
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -925,12 +1519,19 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.07,
     shadowRadius: 8,
     elevation: 3,
+    zIndex: 1,
   },
   backPillText: { fontSize: 13, fontWeight: '600', color: T.ink },
+  // Absolutely centred so it's always in the middle regardless of side button widths
   wordmark: {
-    flexDirection: 'row',
+    position: 'absolute',
+    left: 0,
+    right: 0,
     alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
     gap: 6,
+    zIndex: 0,
   },
   wordmarkLogo: { width: 22, height: 22 },
   wordmarkText: { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
@@ -1067,6 +1668,18 @@ const styles = StyleSheet.create({
   loaderTitle:  { fontSize: 14, fontWeight: '700', color: T.ink, letterSpacing: -0.3 },
   loaderSub:    { fontSize: 12, color: T.textMuted, marginTop: 2 },
   loaderNote:   { fontSize: 11, color: T.textFaint, marginTop: 10, lineHeight: 16 },
+  loaderDeleteBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: T.bg,
+    borderWidth: 1,
+    borderColor: T.borderHi,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 6,
+    flexShrink: 0,
+  },
 
   // ── Employer section ──
   employerSection: { marginBottom: 28 },
@@ -1077,6 +1690,7 @@ const styles = StyleSheet.create({
   companyStripScroll: { marginBottom: 16 },
   companyStrip: {
     flexDirection: 'row',
+    alignItems: 'flex-start',
     gap: 12,
     paddingVertical: 6,
     paddingHorizontal: 2,
@@ -1085,6 +1699,7 @@ const styles = StyleSheet.create({
   // ── Company bookmark cards ──
   ccWrap: {
     width: 130,
+    alignSelf: 'flex-start',    // prevents stretching to fill scroll container height
     borderRadius: 20,
     backgroundColor: T.surface,
     shadowColor: T.ink,
@@ -1136,6 +1751,7 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
     textAlign: 'center',
     lineHeight: 18,
+    maxHeight: 36,       // exactly 2 lines — hard cap
   },
   ccRow: {
     flexDirection: 'row',
@@ -1155,6 +1771,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  ccDeleteBtn: {
+    position: 'absolute',
+    top: 7,
+    left: 7,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+  },
 
   // ── Job card ──
   card: {
@@ -1167,6 +1797,17 @@ const styles = StyleSheet.create({
     shadowRadius: 20,
     elevation: 6,
     overflow: 'hidden',
+  },
+  cardWatermark: {
+    position: 'absolute',
+    top: '50%',
+    left: '30%',
+    right: -40,
+    fontSize: 88,
+    fontWeight: '900',
+    color: 'rgba(11,15,34,0.04)',
+    letterSpacing: -3,
+    zIndex: 0,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -1200,6 +1841,8 @@ const styles = StyleSheet.create({
   },
   urgentText: { fontSize: 10, fontWeight: '700', color: '#EF4444' },
   matchBadge: { borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4 },
+  statusBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3, backgroundColor: 'rgba(79,141,255,0.08)' },
+  statusBadgeText: { fontSize: 9, fontWeight: '700', letterSpacing: 0.2 },
   matchBadgeText: { fontSize: 11, fontWeight: '700' },
 
   // Meta chips
@@ -1366,13 +2009,75 @@ const styles = StyleSheet.create({
   },
   applyBtnText: { fontSize: 13, fontWeight: '700', color: '#fff', letterSpacing: -0.2 },
 
+  // ── No-jobs empty state card ──
+  noJobsCard: {
+    backgroundColor: T.surface,
+    borderRadius: 22,
+    marginBottom: 14,
+    padding: 22,
+    alignItems: 'center',
+    shadowColor: T.ink,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.07,
+    shadowRadius: 16,
+    elevation: 4,
+  },
+  noJobsLogo: {
+    width: 52,
+    height: 52,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  noJobsLogoText: { fontSize: 22, fontWeight: '800', color: '#fff' },
+  noJobsTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: T.ink,
+    textAlign: 'center',
+    letterSpacing: -0.3,
+    marginBottom: 10,
+    lineHeight: 21,
+  },
+  noJobsBody: {
+    fontSize: 13,
+    color: T.textMuted,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 18,
+  },
+  noJobsHighlight: {
+    color: T.blue,
+    fontWeight: '700',
+  },
+  noJobsAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(79,141,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(79,141,255,0.22)',
+    borderRadius: 14,
+    paddingVertical: 11,
+    paddingHorizontal: 18,
+  },
+  noJobsAddBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: T.blue,
+  },
   // ── Modal ──
+  modalKAV: {
+    flex: 1,
+  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(11,15,34,0.65)',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-end',
     paddingHorizontal: 24,
+    paddingBottom: 32,
   },
   modalBox: {
     backgroundColor: T.surface,
@@ -1412,6 +2117,43 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
   },
   modalConfirmText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+  modalConfirmOuterDisabled: { opacity: 0.75 },
+
+  // Credit cost row inside modal
+  modalCreditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(245,158,11,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.2)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 8,
+  },
+  modalCreditText: { fontSize: 12, color: T.textMuted, fontWeight: '500' },
+  modalCreditBold: { fontWeight: '700', color: T.ink },
+  modalCreditSpacer: { flex: 1 },
+  modalBalancePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: T.bg,
+    borderRadius: 20,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  modalBalancePillLow: { backgroundColor: 'rgba(239,68,68,0.08)' },
+  modalBalanceText: { fontSize: 11, fontWeight: '700', color: T.textMuted },
+  modalBalanceTextLow: { color: '#EF4444' },
+  modalInsufficientText: {
+    fontSize: 11,
+    color: '#EF4444',
+    marginBottom: 10,
+    paddingHorizontal: 2,
+    lineHeight: 16,
+  },
 
   // ── Coming Soon Overlay ──
   comingSoonOverlay: {
