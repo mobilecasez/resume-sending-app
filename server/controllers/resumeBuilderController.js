@@ -7,9 +7,10 @@ const cheerio      = require('cheerio');
 const path         = require('path');
 const fs           = require('fs').promises;
 const { renderPdf, renderPreviews } = require('../utils/resumeRenderer');
-const { TEMPLATE_IDS }              = require('../utils/resumeTemplates');
+const { TEMPLATE_IDS, templatesForRegion } = require('../utils/resumeTemplates');
 
-const RESUME_CREDIT_COST = 2; // credits charged per generation / regeneration
+const RESUME_CREDIT_COST   = 2; // credits charged per AI generation / regeneration
+const DOWNLOAD_CREDIT_COST = 2; // credits charged per resume PDF download
 
 // ── Shared credit helpers (mirrors coverLetterController) ───────────────────
 async function checkUserCredits(userId, creditsRequired) {
@@ -231,7 +232,10 @@ PART 2 — CANDIDATE'S ROLE: The candidate's title/role in the project, then 2-3
     "phone": "",
     "location": "",
     "linkedin_url": "",
-    "portfolio_url": ""
+    "portfolio_url": "",
+    "title": "Professional title/headline, e.g. Senior Software Engineer — infer from experience if not stated",
+    "nationality": "ONLY if explicitly mentioned (needed for some European CV formats), else empty string",
+    "date_of_birth": "ONLY if explicitly mentioned, else empty string"
   },
   "summary": "3-4 sentence implied-first-person paragraph followed by exactly 3 metric-driven bullets using bullet prefix and newline separator",
   "experience": [
@@ -266,8 +270,19 @@ PART 2 — CANDIDATE'S ROLE: The candidate's title/role in the project, then 2-3
   "skills": {
     "technical": [],
     "soft": []
-  }
-}`;
+  },
+  "certifications": [
+    { "name": "Certification name, e.g. PMP / AWS Solutions Architect", "issuer": "Issuing body, e.g. PMI / Amazon", "year": "Year if mentioned, else empty" }
+  ],
+  "languages": [
+    { "name": "e.g. English", "level": "e.g. Native / Fluent / C2 / B2 — use CEFR if known" }
+  ],
+  "achievements": ["Award, recognition, hackathon win, or standout accomplishment — ONLY if mentioned, never fabricate"]
+}
+
+=== CERTIFICATIONS, LANGUAGES & ACHIEVEMENTS ===
+- Extract any certifications, spoken languages (with proficiency), and awards/achievements mentioned in the text.
+- These power country-specific resume formats (e.g. European CVs need languages). If none are mentioned, return an empty array [] — NEVER invent them.`;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -382,16 +397,30 @@ async function resolvePhotoPath(userId) {
     return null;
 }
 
-// Read a resolved photo file into a compact, EXIF-corrected square JPEG data URI
-// (or null) for embedding in the resume templates. Resizing keeps PDFs small and
-// renders fast; .rotate() fixes phone photos that would otherwise appear sideways.
-async function loadPhotoDataUri(photoPath) {
+// Read a resolved photo file into a compact, EXIF-corrected JPEG data URI (or null).
+// Profile photos are often CIRCULAR PNGs (transparent corners) — converting those to
+// JPEG would turn the corners BLACK, so we always flatten transparency to white.
+//   shape 'circle' (default): full square, cover-cropped → circular avatars (the
+//                             template clips it to a circle, so corners never show).
+//   shape 'rect':             for rectangular photo boxes (German/Europass CVs). If the
+//                             source is circular, crop the inscribed square (fully
+//                             opaque) so the rectangle shows a clean headshot, no edges.
+async function loadPhotoDataUri(photoPath, shape = 'circle') {
     if (!photoPath) return null;
     try {
         const sharp = require('sharp');
-        const out = await sharp(photoPath)
-            .rotate()                                                   // honour EXIF orientation
-            .resize(400, 400, { fit: 'cover', position: 'attention' })  // square crop toward the face
+        const meta  = await sharp(photoPath).metadata();
+        let pipe    = sharp(photoPath).rotate(); // honour EXIF orientation
+        if (shape === 'rect' && meta.hasAlpha && meta.width && meta.height) {
+            const D    = Math.min(meta.width, meta.height);
+            const side = Math.round(D / Math.SQRT2);               // largest square inside the circle
+            const left = Math.max(0, Math.round((meta.width  - side) / 2));
+            const top  = Math.max(0, Math.round((meta.height - side) / 2));
+            pipe = pipe.extract({ left, top, width: side, height: side });
+        }
+        const out = await pipe
+            .flatten({ background: '#ffffff' })                        // transparent → white (never black)
+            .resize(400, 400, { fit: 'cover', position: 'attention' }) // square crop toward the face
             .jpeg({ quality: 86 })
             .toBuffer();
         return `data:image/jpeg;base64,${out.toString('base64')}`;
@@ -418,6 +447,12 @@ async function generatePDF(req, res) {
             return res.status(404).json({ error: 'No resume found. Please generate your resume first.' });
         }
 
+        // Each download costs credits (previews are free).
+        const creditCheck = await checkUserCredits(userId, DOWNLOAD_CREDIT_COST);
+        if (!creditCheck.hasCredits) {
+            return res.status(402).json({ error: creditCheck.message, creditsRequired: DOWNLOAD_CREDIT_COST, creditsRemaining: creditCheck.remaining });
+        }
+
         // Profile photo path
         let photoPath = null;
         try {
@@ -436,13 +471,17 @@ async function generatePDF(req, res) {
         // (Falls back to the PDFKit layout below if Playwright/chromium is unavailable.)
         try {
             const tplId = TEMPLATE_IDS.includes(template) ? template : TEMPLATE_IDS[0];
-            const pdfBuffer = await renderPdf(tplId, resume, { photo: await loadPhotoDataUri(photoPath), mode });
+            const needsRect = tplId === 'germany' || tplId === 'europass';
+            const photo = await loadPhotoDataUri(photoPath);
+            const photoRect = needsRect ? await loadPhotoDataUri(photoPath, 'rect') : null;
+            const pdfBuffer = await renderPdf(tplId, resume, { photo, photoRect, mode });
             const tSafe = strip(pi.full_name || 'Resume').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_');
             const tFile = `${tSafe}_Resume_${Date.now()}.pdf`;
             const tDir  = path.join(__dirname, '../../temp');
             await fs.mkdir(tDir, { recursive: true });
             await fs.writeFile(path.join(tDir, tFile), pdfBuffer);
-            return res.json({ success: true, downloadUrl: `/api/download-resume/${encodeURIComponent(tFile)}`, template: tplId });
+            try { await deductCredits(userId, DOWNLOAD_CREDIT_COST, 'resume_download', { template: tplId, mode: mode || 'onepage' }); } catch (e) { console.warn('[resumeBuilder] credit deduction failed:', e.message); }
+            return res.json({ success: true, downloadUrl: `/api/download-resume/${encodeURIComponent(tFile)}`, template: tplId, creditsRemaining: Math.max(0, creditCheck.remaining - DOWNLOAD_CREDIT_COST) });
         } catch (tplErr) {
             console.warn('[resumeBuilder] template render failed, falling back to PDFKit:', tplErr.message);
         }
@@ -773,26 +812,31 @@ async function generatePDF(req, res) {
             doc.end();
         });
 
-        return res.json({ success: true, downloadUrl: `/api/download-resume/${encodeURIComponent(fileName)}` });
+        try { await deductCredits(userId, DOWNLOAD_CREDIT_COST, 'resume_download', { template: 'pdfkit_fallback' }); } catch (e) { console.warn('[resumeBuilder] credit deduction failed:', e.message); }
+        return res.json({ success: true, downloadUrl: `/api/download-resume/${encodeURIComponent(fileName)}`, creditsRemaining: Math.max(0, creditCheck.remaining - DOWNLOAD_CREDIT_COST) });
     } catch (e) {
         console.error('[resumeBuilder] generatePDF error:', e.message);
         return res.status(500).json({ error: 'Failed to generate PDF. Please try again.' });
     }
 }
 
-// POST /api/resume-builder/preview-templates — renders the saved resume in all 3
-// designs and returns base64 JPEG previews so the user can pick one before download.
+// POST /api/resume-builder/preview-templates — renders the saved resume in the
+// templates recommended for a region (free) so the user can pick before download.
 async function previewTemplates(req, res) {
     const userId = req.user.id;
+    const { region } = req.body || {};
     try {
         await ensureResumeTable();
         const row = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = $1', [userId]);
         if (!row || !row.resume_data) {
             return res.status(404).json({ error: 'No resume found. Please generate your resume first.' });
         }
-        const photo = await loadPhotoDataUri(await resolvePhotoPath(userId));
-        const previews = await renderPreviews(row.resume_data, { photo });
-        return res.json({ success: true, previews });
+        const tpls  = templatesForRegion(region);                 // template objects for this region
+        const ppath = await resolvePhotoPath(userId);
+        const photo = await loadPhotoDataUri(ppath);
+        const photoRect = await loadPhotoDataUri(ppath, 'rect');   // clean rectangular crop for German/Europass
+        const previews = await renderPreviews(row.resume_data, { photo, photoRect }, tpls);
+        return res.json({ success: true, region: region || 'generic', previews });
     } catch (e) {
         console.error('[resumeBuilder] previewTemplates error:', e.message);
         return res.status(500).json({ error: 'Failed to render design previews. Please try again.' });

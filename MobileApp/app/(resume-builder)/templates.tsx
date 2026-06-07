@@ -19,15 +19,27 @@ const T = {
   bg: '#E5EAF3', bgSoft: '#F0F4FA', surface: '#FFFFFF',
   navy: '#0B1120', ink: '#0B0F22', inkSoft: '#1A2046',
   muted: '#5A6480', faint: '#8A93B2', border: 'rgba(11,15,34,0.07)',
-  blue: '#4F8DFF', blueDeep: '#2563EB', cyan: '#06B6D4',
+  blue: '#4F8DFF', blueDeep: '#2563EB', cyan: '#06B6D4', gold: '#F5A623',
 };
 
-type Preview = { id: string; name: string; accent: string; image: string; width: number; height: number };
+type Preview = { id: string; name: string; accent: string; ats?: number | null; image: string; width: number; height: number };
 type Mode = 'onepage' | 'a4';
 
+// Region ids MUST match server REGIONS (resumeTemplates.js).
+const REGIONS = [
+  { id: 'generic', label: 'Generic',        flag: '🌐' },
+  { id: 'us_ca',   label: 'USA / Canada',   flag: '🇺🇸' },
+  { id: 'uk_au',   label: 'UK / Australia', flag: '🇬🇧' },
+  { id: 'india',   label: 'India',          flag: '🇮🇳' },
+  { id: 'dach',    label: 'Germany / DACH', flag: '🇩🇪' },
+  { id: 'eu',      label: 'Europe / EU',    flag: '🇪🇺' },
+  { id: 'sg',      label: 'Singapore',      flag: '🇸🇬' },
+];
+
+const DOWNLOAD_CREDITS = 2;
 const WIN = Dimensions.get('window').width;
-const SIDE_PAD = 12;                 // small gutter so the resume fills the width
-const CARD_W = WIN - SIDE_PAD * 2;   // preview card width
+const SIDE_PAD = 12;
+const CARD_W = WIN - SIDE_PAD * 2;
 
 async function getToken() {
   const raw = await SecureStore.getItemAsync('userSession');
@@ -37,6 +49,7 @@ async function getToken() {
 export default function ResumeTemplates() {
   const router = useRouter();
   const scrollRef = useRef<ScrollView>(null);
+  const [region, setRegion]     = useState('generic');
   const [previews, setPreviews] = useState<Preview[]>([]);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState<string | null>(null);
@@ -45,27 +58,37 @@ export default function ResumeTemplates() {
   const [pagerH, setPagerH]     = useState(0);
   const [downloading, setDownloading] = useState(false);
 
-  async function loadPreviews() {
+  async function loadPreviews(regionId: string) {
     setLoading(true);
     setError(null);
+    setActive(0);
     try {
       const token = await getToken();
       if (!token) throw new Error('Not logged in');
       const res = await fetch(`${API_BASE}/resume-builder/preview-templates`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ region: regionId }),
       });
       const json = await res.json();
       if (!res.ok || !json.previews?.length) throw new Error(json.error || 'Could not build previews');
       setPreviews(json.previews);
+      scrollRef.current?.scrollTo({ x: 0, animated: false });
     } catch (e: any) {
+      setPreviews([]);
       setError(e.message || 'Something went wrong. Please try again.');
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => { loadPreviews(); }, []);
+  useEffect(() => { loadPreviews('generic'); }, []);
+
+  function pickRegion(id: string) {
+    if (id === region || loading) return;
+    setRegion(id);
+    loadPreviews(id);
+  }
 
   function onScrollEnd(e: NativeSyntheticEvent<NativeScrollEvent>) {
     const idx = Math.round(e.nativeEvent.contentOffset.x / WIN);
@@ -85,16 +108,18 @@ export default function ResumeTemplates() {
       if (!token) throw new Error('Not logged in');
       const selected = previews[active];
 
-      // 1. Ask server to render the chosen design + page format to PDF
       const res = await fetch(`${API_BASE}/resume-builder/generate-pdf`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ template: selected.id, mode }),
       });
       const json = await res.json();
+      if (res.status === 402) {
+        Alert.alert('Not enough credits', json.error || `You need ${DOWNLOAD_CREDITS} credits to download a resume. Please top up.`);
+        return;
+      }
       if (!res.ok || !json.downloadUrl) throw new Error(json.error || 'Failed to generate PDF');
 
-      // 2. Download to cache (server filename carries the user's name)
       const cleanPath = json.downloadUrl.replace(/^\/api/, '');
       const fullUrl   = `${API_BASE}${cleanPath}`;
       const fileName  = decodeURIComponent(json.downloadUrl.split('/').pop() || 'Resume.pdf');
@@ -102,7 +127,6 @@ export default function ResumeTemplates() {
       const dl = await downloadAsync(fullUrl, fileUri, { headers: { Authorization: `Bearer ${token}` } });
       if (dl.status !== 200) throw new Error('Download failed');
 
-      // 3. Share / save
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(dl.uri, { mimeType: 'application/pdf', dialogTitle: 'Save or share your resume' });
       } else {
@@ -125,28 +149,44 @@ export default function ResumeTemplates() {
           <Ionicons name="arrow-back" size={14} color={T.ink} />
           <Text style={s.backPillText}>Back</Text>
         </TouchableOpacity>
-        <Text style={s.topTitle}>Choose a Design</Text>
+        <Text style={s.topTitle}>Choose a Format</Text>
         <View style={{ width: 64 }} />
+      </View>
+
+      {/* Region selector */}
+      <View>
+        <Text style={s.regionHint}>Target country / region</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.regionRow}>
+          {REGIONS.map((r) => {
+            const on = r.id === region;
+            return (
+              <TouchableOpacity key={r.id} onPress={() => pickRegion(r.id)} activeOpacity={0.85} style={[s.regionChip, on && s.regionChipOn]}>
+                <Text style={s.regionFlag}>{r.flag}</Text>
+                <Text style={[s.regionLabel, on && s.regionLabelOn]}>{r.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
       </View>
 
       {loading ? (
         <View style={s.center}>
           <ActivityIndicator size="large" color={T.blue} />
-          <Text style={s.loadingText}>Designing your resume in 3 styles…</Text>
-          <Text style={s.loadingSub}>This takes a few seconds</Text>
+          <Text style={s.loadingText}>Generating your previews…</Text>
+          <Text style={s.loadingSub}>Rendering each format — a few seconds</Text>
         </View>
       ) : error ? (
         <View style={s.center}>
           <Ionicons name="alert-circle-outline" size={46} color={T.faint} />
           <Text style={s.errTitle}>{error}</Text>
-          <TouchableOpacity onPress={loadPreviews} style={s.retryBtn} activeOpacity={0.85}>
+          <TouchableOpacity onPress={() => loadPreviews(region)} style={s.retryBtn} activeOpacity={0.85}>
             <Ionicons name="refresh-outline" size={15} color="#fff" />
             <Text style={s.retryText}>Try Again</Text>
           </TouchableOpacity>
         </View>
       ) : (
         <>
-          <Text style={s.lead}>Swipe to change design · scroll & pinch to zoom</Text>
+          <Text style={s.lead}>Swipe to compare · scroll &amp; pinch to zoom · preview is free</Text>
 
           <View style={s.pagerWrap} onLayout={(e) => setPagerH(e.nativeEvent.layout.height)}>
             {pagerH > 0 && (
@@ -164,7 +204,6 @@ export default function ResumeTemplates() {
                     <View key={p.id} style={[s.page, { height: pagerH }]}>
                       <View style={[s.cardShadow, { height: pagerH - 14, shadowColor: p.accent }]}>
                         <View style={s.cardClip}>
-                          {/* Vertical scroll for the full resume + pinch-to-zoom (iOS) */}
                           <ScrollView
                             style={s.zoomScroll}
                             contentContainerStyle={s.zoomContent}
@@ -192,16 +231,19 @@ export default function ResumeTemplates() {
             )}
           </View>
 
-          {/* Dots + design name */}
+          {/* Dots + template name + ATS score */}
           <View style={s.indicator}>
-            <View style={s.dots}>
-              {previews.map((p, i) => (
-                <TouchableOpacity key={p.id} onPress={() => goTo(i)} hitSlop={8}>
-                  <View style={[s.dot, i === active && { width: 22, backgroundColor: selected?.accent || T.blue }]} />
-                </TouchableOpacity>
-              ))}
-            </View>
-            <Text style={s.designName}>Resume Designs</Text>
+            {previews.length > 1 && (
+              <View style={s.dots}>
+                {previews.map((p, i) => (
+                  <TouchableOpacity key={p.id} onPress={() => goTo(i)} hitSlop={8}>
+                    <View style={[s.dot, i === active && { width: 22, backgroundColor: selected?.accent || T.blue }]} />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+            <Text style={s.designName}>{selected?.name || 'Resume'}</Text>
+            {!!selected?.ats && <AtsStars n={selected.ats} />}
           </View>
         </>
       )}
@@ -209,7 +251,6 @@ export default function ResumeTemplates() {
       {/* Sticky footer: page format + download */}
       {!loading && !error && (
         <View style={s.footer}>
-          {/* One Page / A4 segmented control */}
           <View style={s.segWrap}>
             <SegBtn icon="document-outline"  label="One Page" active={mode === 'onepage'} onPress={() => setMode('onepage')} />
             <SegBtn icon="documents-outline" label="A4 Pages" active={mode === 'a4'}      onPress={() => setMode('a4')} />
@@ -223,18 +264,31 @@ export default function ResumeTemplates() {
                 <>
                   <Ionicons name="download-outline" size={17} color="#fff" />
                   <Text style={s.dlText}>Download Resume</Text>
+                  <View style={s.credBadge}>
+                    <Ionicons name="diamond" size={9} color="#fff" />
+                    <Text style={s.credBadgeText}>{DOWNLOAD_CREDITS}</Text>
+                  </View>
                 </>
               )}
             </LinearGradient>
           </TouchableOpacity>
           <Text style={s.footerNote}>
-            {mode === 'onepage'
-              ? 'One continuous page — nothing is split'
-              : 'Standard A4 — splits into multiple pages if long'}
+            {`${DOWNLOAD_CREDITS} credits per download · ${mode === 'onepage' ? 'one continuous page' : 'A4, splits into pages'}`}
           </Text>
         </View>
       )}
     </SafeAreaView>
+  );
+}
+
+function AtsStars({ n }: { n: number }) {
+  return (
+    <View style={s.atsRow}>
+      <Text style={s.atsLabel}>ATS</Text>
+      {[1, 2, 3, 4, 5].map((i) => (
+        <Ionicons key={i} name={i <= n ? 'star' : 'star-outline'} size={12} color={T.gold} />
+      ))}
+    </View>
   );
 }
 
@@ -254,6 +308,14 @@ const s = StyleSheet.create({
   backPillText: { fontSize: 13, fontWeight: '600', color: T.ink },
   topTitle:     { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
 
+  regionHint:   { fontSize: 11, fontWeight: '700', color: T.faint, letterSpacing: 0.6, textTransform: 'uppercase', paddingHorizontal: 16, marginTop: 2, marginBottom: 6 },
+  regionRow:    { paddingHorizontal: 12, gap: 8, paddingBottom: 4 },
+  regionChip:   { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 8, paddingHorizontal: 13, borderWidth: 1, borderColor: T.border },
+  regionChipOn: { backgroundColor: T.navy, borderColor: T.navy },
+  regionFlag:   { fontSize: 14 },
+  regionLabel:  { fontSize: 13, fontWeight: '700', color: T.inkSoft },
+  regionLabelOn:{ color: '#fff' },
+
   center:       { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, paddingHorizontal: 32 },
   loadingText:  { fontSize: 15, fontWeight: '700', color: T.ink, marginTop: 6, textAlign: 'center' },
   loadingSub:   { fontSize: 12, color: T.faint },
@@ -261,7 +323,7 @@ const s = StyleSheet.create({
   retryBtn:     { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: T.blueDeep, borderRadius: 14, paddingHorizontal: 20, paddingVertical: 11, marginTop: 8 },
   retryText:    { color: '#fff', fontWeight: '700', fontSize: 14 },
 
-  lead:         { fontSize: 12.5, color: T.muted, textAlign: 'center', marginBottom: 8, marginTop: 2 },
+  lead:         { fontSize: 11.5, color: T.muted, textAlign: 'center', marginBottom: 6, marginTop: 6 },
   pagerWrap:    { flex: 1 },
   page:         { width: WIN, alignItems: 'center', justifyContent: 'center' },
   cardShadow:   { width: CARD_W, borderRadius: 16, backgroundColor: '#fff', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.2, shadowRadius: 18, elevation: 8 },
@@ -269,10 +331,12 @@ const s = StyleSheet.create({
   zoomScroll:   { flex: 1 },
   zoomContent:  { alignItems: 'center' },
 
-  indicator:    { alignItems: 'center', gap: 8, paddingTop: 12 },
+  indicator:    { alignItems: 'center', gap: 6, paddingTop: 10 },
   dots:         { flexDirection: 'row', alignItems: 'center', gap: 7 },
   dot:          { width: 8, height: 8, borderRadius: 4, backgroundColor: 'rgba(11,15,34,0.18)' },
   designName:   { fontSize: 15, fontWeight: '800', color: T.ink, letterSpacing: -0.2 },
+  atsRow:       { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  atsLabel:     { fontSize: 10, fontWeight: '800', color: T.faint, letterSpacing: 1, marginRight: 4 },
 
   footer:       { backgroundColor: T.surface, borderTopWidth: 1, borderTopColor: T.border, paddingHorizontal: 16, paddingTop: 12, paddingBottom: Platform.select({ ios: 28, default: 16 }), gap: 10, shadowColor: T.ink, shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 12 },
   segWrap:      { flexDirection: 'row', backgroundColor: T.bgSoft, borderRadius: 12, padding: 4, gap: 4 },
@@ -281,7 +345,9 @@ const s = StyleSheet.create({
   segTxt:       { fontSize: 13, fontWeight: '700', color: T.muted },
   segTxtActive: { color: '#fff' },
   dlOuter:      { borderRadius: 16, overflow: 'hidden' },
-  dlBtn:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, height: 52, borderRadius: 16 },
+  dlBtn:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, height: 52, borderRadius: 16 },
   dlText:       { fontSize: 15, fontWeight: '800', color: '#fff' },
+  credBadge:    { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3 },
+  credBadgeText:{ fontSize: 11, fontWeight: '800', color: '#fff' },
   footerNote:   { fontSize: 11, color: T.faint, textAlign: 'center' },
 });

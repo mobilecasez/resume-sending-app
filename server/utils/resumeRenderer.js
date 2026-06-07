@@ -119,11 +119,11 @@ async function renderPdf(templateId, resumeData, opts = {}) {
 // ── All templates → preview images (base64 JPEG data URIs) ────────────────────
 // One-page render; a full-page screenshot captures the CSS sidebar band. Returns
 // { id, name, accent, image, width, height } so the app can size to the real aspect.
-async function renderPreviews(resumeData, opts = {}) {
+async function renderPreviews(resumeData, opts = {}, templates = TEMPLATES) {
   const browser = await launchBrowser();
   try {
     const results = [];
-    for (const tpl of TEMPLATES) {
+    for (const tpl of templates) {
       const html = renderResumeHtml(tpl.id, resumeData, { ...opts, mode: 'onepage' });
       const page = await preparePage(browser, html);
       const h = await sheetHeight(page);
@@ -138,6 +138,7 @@ async function renderPreviews(resumeData, opts = {}) {
         id: tpl.id,
         name: tpl.name,
         accent: tpl.accent,
+        ats: tpl.ats || null,
         image: `data:image/jpeg;base64,${shot.toString('base64')}`,
         width: A4_W,
         height: h,

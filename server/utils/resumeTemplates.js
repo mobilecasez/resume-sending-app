@@ -577,18 +577,384 @@ function minimal(d, opts = {}) {
 </body></html>`;
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// COUNTRY-FORMAT TEMPLATES
+// Single-column / header layouts (ATS-safe, no full-height sidebars → no multi-page
+// compositing needed). They reuse the Poppins+Lato design language and the shared
+// section helpers below, which emit standard class names each template styles.
+// ══════════════════════════════════════════════════════════════════════════════
+
+function certParts(c) {
+  if (c && typeof c === 'object') return { name: raw(c.name || c.title || ''), sub: [raw(c.issuer || c.authority || ''), raw(c.year || c.date || '')].filter(Boolean).join(' · ') };
+  return { name: raw(c), sub: '' };
+}
+function langParts(l) {
+  if (l && typeof l === 'object') return { name: raw(l.name || l.language || ''), level: raw(l.level || l.proficiency || '') };
+  return { name: raw(l), level: '' };
+}
+// CEFR / common level → fill fraction for Europass bars.
+function levelPct(level) {
+  const m = { a1: 18, a2: 33, b1: 50, b2: 66, c1: 83, c2: 100, native: 100, fluent: 92, professional: 75, intermediate: 55, basic: 30 };
+  const k = String(level || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return m[k] || (/(nativ|mother)/.test(k) ? 100 : /(fluen|profic)/.test(k) ? 92 : 60);
+}
+
+function summaryHtml(d, paraCls = 'summary', bulletCls = 'sum-bullets') {
+  const { paras, bullets } = splitSummary(d.summary);
+  return `${paras.map(p => `<p class="${paraCls}">${fmt(p)}</p>`).join('')}` +
+    `${bullets.length ? `<ul class="${bulletCls}">${bullets.map(b => `<li>${fmt(b)}</li>`).join('')}</ul>` : ''}`;
+}
+function expHtml(exp) {
+  return exp.map(e => {
+    const co = [raw(e.company), raw(e.location)].filter(Boolean).join(', ');
+    const lis = nonEmpty(e.highlights).map(h => `<li>${fmt(h)}</li>`).join('');
+    return `<div class="exp"><div class="exp-top"><span class="exp-role">${plain(e.role)}</span><span class="exp-date">${plain(dateRange(e.start_date, e.end_date))}</span></div>${co ? `<div class="exp-co">${plain(co)}</div>` : ''}${lis ? `<ul>${lis}</ul>` : ''}</div>`;
+  }).join('');
+}
+function eduHtml(edu) {
+  return edu.map(e => {
+    const deg = [raw(e.degree), raw(e.field_of_study)].filter(Boolean).join(', ');
+    const sub = [raw(e.institution), raw(e.grade) ? `Grade: ${raw(e.grade)}` : ''].filter(Boolean).join(' · ');
+    return `<div class="edu"><div class="exp-top"><span class="exp-role">${plain(deg || e.degree)}</span><span class="exp-date">${plain(e.end_date)}</span></div>${sub ? `<div class="exp-co">${plain(sub)}</div>` : ''}</div>`;
+  }).join('');
+}
+function projHtml(proj) {
+  return proj.map(p => {
+    const lis = nonEmpty(p.role_highlights).map(h => `<li>${fmt(h)}</li>`).join('');
+    const link = raw(p.link) ? `<div class="proj-link">${plain(prettyUrl(p.link))}</div>` : '';
+    return `<div class="proj"><div class="exp-top"><span class="exp-role">${plain(p.title)}${raw(p.type) ? ` — ${plain(p.type)}` : ''}</span>${raw(p.role) ? `<span class="exp-date">${plain(p.role)}</span>` : ''}</div>${raw(p.about || p.description) ? `<div class="proj-about">${fmt(p.about || p.description)}</div>` : ''}${lis ? `<ul>${lis}</ul>` : ''}${link}</div>`;
+  }).join('');
+}
+function certsHtml(certs) {
+  return `<ul class="certs">${certs.map(c => { const { name, sub } = certParts(c); return name ? `<li><span class="cert-name">${plain(name)}</span>${sub ? ` <span class="cert-sub">— ${plain(sub)}</span>` : ''}</li>` : ''; }).join('')}</ul>`;
+}
+const sec = (title, inner) => inner && inner.trim() ? `<section class="sec"><h2 class="sec-h">${esc(title)}</h2>${inner}</section>` : '';
+const chipsHtml = (arr) => `<div class="chips">${arr.map(s => `<span class="chip">${plain(s)}</span>`).join('')}</div>`;
+
+// Shared <head> + base reset for the country templates.
+function countryHead(title, css) {
+  return `<!DOCTYPE html><html lang="en"><head>${fontsHead(title)}<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#fff;font-family:'Lato',-apple-system,'Segoe UI',Roboto,Arial,sans-serif}
+  body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .sheet{width:210mm;min-height:297mm;background:#fff}
+  .exp,.edu,.proj,.cert,.sec-h{break-inside:avoid}
+  .sec-h{break-after:avoid}
+  ul{list-style:none}
+${css}
+</style></head>`;
+}
+
+// ── Common data unpack for country builders ───────────────────────────────────
+function unpack(d) {
+  const pi = d.personal_info || {};
+  return {
+    pi,
+    exp:  nonEmpty(d.experience),
+    edu:  nonEmpty(d.education),
+    proj: nonEmpty(d.projects),
+    tech: nonEmpty(d.skills && d.skills.technical),
+    soft: nonEmpty(d.skills && d.skills.soft),
+    certs: nonEmpty(d.certifications),
+    langs: nonEmpty(d.languages),
+    ach:  nonEmpty(d.achievements),
+    role: plain((d.experience && d.experience[0] && d.experience[0].role) || pi.title || 'Professional'),
+    name: raw(pi.full_name || 'Your Name'),
+  };
+}
+function contactInline(pi, sep = '  •  ') {
+  return [raw(pi.email), raw(pi.phone), raw(pi.location), prettyUrl(pi.linkedin_url), prettyUrl(pi.portfolio_url)]
+    .filter(Boolean).map(esc).join(sep);
+}
+
+// ── TEMPLATE · ATS MODERN (US/CA/UK/AU) ───────────────────────────────────────
+function atsModern(d, opts = {}) {
+  const { pi, exp, edu, proj, tech, soft, certs, ach, role, name } = unpack(d);
+  const skills = [...tech, ...soft];
+  const css = `
+  .sheet{padding:18mm 16mm;color:#1f2937;font-size:11pt;line-height:1.45}
+  .name{font-family:'Poppins',sans-serif;font-weight:700;font-size:23pt;letter-spacing:.5px;color:#111827;text-transform:uppercase}
+  .title{font-size:11pt;color:#374151;margin-top:3px;letter-spacing:.5px}
+  .contact{font-size:9.5pt;color:#374151;margin-top:7px}
+  .sec{margin-top:15px}
+  .sec-h{font-family:'Poppins',sans-serif;font-weight:700;font-size:11pt;text-transform:uppercase;letter-spacing:1px;color:#111827;border-bottom:1.5px solid #111827;padding-bottom:3px;margin-bottom:8px}
+  .summary{font-size:10.5pt;line-height:1.5;color:#1f2937;margin-bottom:6px}
+  .sum-bullets li,.exp ul li,.proj ul li{position:relative;padding-left:15px;font-size:10.5pt;line-height:1.45;margin-bottom:3px;color:#1f2937}
+  .sum-bullets li::before,.exp ul li::before,.proj ul li::before{content:"";position:absolute;left:3px;top:7px;width:4px;height:4px;background:#374151;border-radius:50%}
+  .skills-grid{font-size:10.5pt;line-height:1.7;color:#1f2937}
+  .exp,.edu,.proj{margin-bottom:11px}
+  .exp-top{display:flex;justify-content:space-between;gap:12px}
+  .exp-role{font-weight:700;font-size:11pt;color:#111827}
+  .exp-date{font-size:9.5pt;color:#4b5563;white-space:nowrap}
+  .exp-co{font-size:10pt;color:#374151;font-style:italic;margin:1px 0 4px}
+  .certs li{font-size:10.5pt;margin-bottom:3px}
+  .cert-sub{color:#4b5563}
+  ${pageRule(opts.mode)}`;
+  return `${countryHead('Resume — ATS Modern', css)}<body><div class="sheet">
+    <div class="name">${esc(name)}</div>
+    <div class="title">${role}</div>
+    ${contactInline(pi) ? `<div class="contact">${contactInline(pi)}</div>` : ''}
+    ${sec('Professional Summary', summaryHtml(d))}
+    ${skills.length ? sec('Core Skills', `<div class="skills-grid">${skills.map(esc => plain(esc)).join(' • ')}</div>`) : ''}
+    ${exp.length ? sec('Professional Experience', expHtml(exp)) : ''}
+    ${ach.length ? sec('Achievements', `<ul class="sum-bullets">${ach.map(a => `<li>${fmt(a)}</li>`).join('')}</ul>`) : ''}
+    ${certs.length ? sec('Certifications', certsHtml(certs)) : ''}
+    ${proj.length ? sec('Projects', projHtml(proj)) : ''}
+    ${edu.length ? sec('Education', eduHtml(edu)) : ''}
+  </div></body></html>`;
+}
+
+// ── TEMPLATE · EXECUTIVE PROFESSIONAL (US/UK/AU/SG) ───────────────────────────
+function execPro(d, opts = {}) {
+  const { pi, exp, edu, certs, ach, soft, role, name } = unpack(d);
+  const css = `
+  .sheet{padding:20mm 18mm;color:#27313f;font-size:11pt;line-height:1.5}
+  .head{text-align:center;border-bottom:2px solid #c9a96a;padding-bottom:14px;margin-bottom:6px}
+  .name{font-family:'Poppins',sans-serif;font-weight:600;font-size:27pt;letter-spacing:3px;color:#1e293b;text-transform:uppercase}
+  .title{font-size:11pt;letter-spacing:3px;text-transform:uppercase;color:#7c6a45;margin-top:7px}
+  .contact{font-size:9.5pt;color:#5b6473;margin-top:9px}
+  .sec{margin-top:18px}
+  .sec-h{font-family:'Poppins',sans-serif;font-weight:600;font-size:12.5pt;letter-spacing:1.5px;text-transform:uppercase;color:#1e293b;margin-bottom:9px}
+  .summary{font-size:11pt;line-height:1.6;color:#3c4654;text-align:justify}
+  .sum-bullets li,.exp ul li{position:relative;padding-left:18px;font-size:10.5pt;line-height:1.5;margin-bottom:4px;color:#3c4654}
+  .sum-bullets li::before,.exp ul li::before{content:"";position:absolute;left:2px;top:7px;width:6px;height:2px;background:#c9a96a}
+  .exp,.edu{margin-bottom:13px}
+  .exp-top{display:flex;justify-content:space-between;gap:12px}
+  .exp-role{font-family:'Poppins',sans-serif;font-weight:600;font-size:11.5pt;color:#1e293b}
+  .exp-date{font-size:9.5pt;font-weight:700;color:#7c6a45;white-space:nowrap}
+  .exp-co{font-size:10pt;color:#5b6473;font-style:italic;margin:1px 0 5px}
+  .certs li{font-size:10.5pt;margin-bottom:3px}.cert-sub{color:#5b6473}
+  ${pageRule(opts.mode)}`;
+  return `${countryHead('Resume — Executive Professional', css)}<body><div class="sheet">
+    <div class="head"><div class="name">${esc(name)}</div><div class="title">${role}</div>${contactInline(pi) ? `<div class="contact">${contactInline(pi)}</div>` : ''}</div>
+    ${sec('Executive Summary', summaryHtml(d))}
+    ${soft.length ? sec('Leadership Highlights', `<ul class="sum-bullets">${soft.map(s => `<li>${plain(s)}</li>`).join('')}</ul>`) : ''}
+    ${exp.length ? sec('Professional Experience', expHtml(exp)) : ''}
+    ${ach.length ? sec('Strategic Achievements', `<ul class="sum-bullets">${ach.map(a => `<li>${fmt(a)}</li>`).join('')}</ul>`) : ''}
+    ${certs.length ? sec('Certifications', certsHtml(certs)) : ''}
+    ${edu.length ? sec('Education', eduHtml(edu)) : ''}
+  </div></body></html>`;
+}
+
+// ── TEMPLATE · INDIA PROFESSIONAL (IN/BD/NP/LK) ───────────────────────────────
+function indiaPro(d, opts = {}) {
+  const { pi, exp, edu, proj, tech, certs, ach, role, name } = unpack(d);
+  const css = `
+  .sheet{padding:16mm 15mm;color:#1f2a37;font-size:10.5pt;line-height:1.45}
+  .head{border-left:5px solid #0e7490;padding-left:14px;margin-bottom:4px}
+  .name{font-family:'Poppins',sans-serif;font-weight:700;font-size:22pt;color:#0f172a}
+  .title{font-size:10.5pt;color:#0e7490;font-weight:700;letter-spacing:.5px;margin-top:2px}
+  .contact{font-size:9.5pt;color:#475569;margin-top:6px}
+  .sec{margin-top:14px}
+  .sec-h{font-family:'Poppins',sans-serif;font-weight:600;font-size:11pt;text-transform:uppercase;letter-spacing:1px;color:#0e7490;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+  .sec-h::after{content:"";flex:1;height:1px;background:#e2e8f0}
+  .summary{font-size:10.5pt;line-height:1.5;color:#334155;margin-bottom:5px}
+  .sum-bullets li,.exp ul li,.proj ul li{position:relative;padding-left:15px;font-size:10pt;line-height:1.45;margin-bottom:3px;color:#334155}
+  .sum-bullets li::before,.exp ul li::before,.proj ul li::before{content:"";position:absolute;left:2px;top:6px;width:6px;height:6px;background:#0e7490;border-radius:2px;transform:rotate(45deg)}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-size:9.5pt;background:#ecfeff;border:1px solid #a5f3fc;color:#0e7490;padding:3px 10px;border-radius:6px;font-weight:700}
+  .exp,.edu,.proj{margin-bottom:10px}
+  .exp-top{display:flex;justify-content:space-between;gap:12px}
+  .exp-role{font-weight:700;font-size:10.5pt;color:#0f172a}
+  .exp-date{font-size:9pt;color:#0e7490;font-weight:700;white-space:nowrap}
+  .exp-co{font-size:9.5pt;color:#64748b;font-style:italic;margin:1px 0 4px}
+  .proj-about{font-size:9.5pt;color:#475569;line-height:1.4;margin:2px 0 3px}
+  .proj-link{font-size:9pt;color:#0e7490}
+  .certs li{font-size:10pt;margin-bottom:3px}.cert-sub{color:#64748b}
+  ${pageRule(opts.mode)}`;
+  return `${countryHead('Resume — India Professional', css)}<body><div class="sheet">
+    <div class="head"><div class="name">${esc(name)}</div><div class="title">${role}</div>${contactInline(pi) ? `<div class="contact">${contactInline(pi)}</div>` : ''}</div>
+    ${sec('Summary', summaryHtml(d))}
+    ${tech.length ? sec('Technical Skills', chipsHtml(tech)) : ''}
+    ${exp.length ? sec('Professional Experience', expHtml(exp)) : ''}
+    ${proj.length ? sec('Projects', projHtml(proj)) : ''}
+    ${certs.length ? sec('Certifications', certsHtml(certs)) : ''}
+    ${edu.length ? sec('Education', eduHtml(edu)) : ''}
+    ${ach.length ? sec('Achievements', `<ul class="sum-bullets">${ach.map(a => `<li>${fmt(a)}</li>`).join('')}</ul>`) : ''}
+  </div></body></html>`;
+}
+
+// ── TEMPLATE · GERMANY PROFESSIONAL (DE/AT/CH) ────────────────────────────────
+function germanyPro(d, opts = {}) {
+  const { pi, exp, edu, tech, langs, certs, role, name } = unpack(d);
+  const details = [
+    raw(pi.location) && ['City', plain(pi.location)],
+    raw(pi.nationality) && ['Nationality', plain(pi.nationality)],
+    raw(pi.date_of_birth || pi.dob) && ['Date of Birth', plain(pi.date_of_birth || pi.dob)],
+    raw(pi.email) && ['Email', plain(pi.email)],
+    raw(pi.phone) && ['Phone', plain(pi.phone)],
+  ].filter(Boolean);
+  const photoSrc = opts.photoRect || opts.photo;
+  const photo = photoSrc ? `<img src="${esc(photoSrc)}" alt="">` : `<div class="ph">PHOTO</div>`;
+  const css = `
+  .sheet{padding:16mm 16mm;color:#1f2937;font-size:10.5pt;line-height:1.45}
+  .head{display:flex;gap:18px;align-items:flex-start;border-bottom:1px solid #cbd5e1;padding-bottom:14px;margin-bottom:6px}
+  .photo{width:32mm;height:40mm;flex:0 0 32mm;border:1px solid #94a3b8;overflow:hidden;background:#f1f5f9;display:flex;align-items:center;justify-content:center}
+  .photo img{width:100%;height:100%;object-fit:cover}
+  .ph{font-size:9pt;color:#94a3b8;letter-spacing:1px}
+  .head-r{flex:1}
+  .name{font-family:'Poppins',sans-serif;font-weight:600;font-size:21pt;color:#0f172a}
+  .title{font-size:10.5pt;color:#475569;margin:2px 0 9px}
+  .pd{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:9.5pt}
+  .pd dt{color:#64748b;font-weight:700}.pd dd{color:#1f2937}
+  .sec{margin-top:13px}
+  .sec-h{font-family:'Poppins',sans-serif;font-weight:600;font-size:11pt;text-transform:uppercase;letter-spacing:.8px;color:#334155;border-bottom:1px solid #e2e8f0;padding-bottom:3px;margin-bottom:8px}
+  .summary{font-size:10pt;line-height:1.5;color:#374151;text-align:justify}
+  .exp ul li{position:relative;padding-left:14px;font-size:9.5pt;line-height:1.45;margin-bottom:3px;color:#374151}
+  .exp ul li::before{content:"";position:absolute;left:2px;top:6px;width:4px;height:4px;background:#64748b;border-radius:50%}
+  .exp,.edu{margin-bottom:10px}
+  .exp-top{display:flex;justify-content:space-between;gap:12px}
+  .exp-role{font-weight:700;font-size:10.5pt;color:#0f172a}
+  .exp-date{font-size:9pt;color:#475569;white-space:nowrap}
+  .exp-co{font-size:9.5pt;color:#64748b;font-style:italic;margin:1px 0 4px}
+  .langs{display:grid;grid-template-columns:1fr 1fr;gap:4px 18px;font-size:9.5pt}
+  .langs .l{display:flex;justify-content:space-between}.langs .lv{color:#64748b}
+  .skills-grid{font-size:9.5pt;line-height:1.6}
+  .certs li{font-size:9.5pt;margin-bottom:3px}.cert-sub{color:#64748b}
+  .sign{margin-top:22px;display:flex;justify-content:space-between;font-size:9.5pt;color:#475569}
+  .sign .line{border-top:1px solid #94a3b8;width:55mm;text-align:center;padding-top:4px}
+  ${pageRule(opts.mode)}`;
+  const langsInner = langs.length ? `<div class="langs">${langs.map(l => { const { name, level } = langParts(l); return `<div class="l"><span>${plain(name)}</span><span class="lv">${plain(level)}</span></div>`; }).join('')}</div>` : '';
+  return `${countryHead('Lebenslauf — Germany Professional', css)}<body><div class="sheet">
+    <div class="head">
+      <div class="photo">${photo}</div>
+      <div class="head-r"><div class="name">${esc(name)}</div><div class="title">${role}</div>
+        <dl class="pd">${details.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl>
+      </div>
+    </div>
+    ${sec('Professional Profile', summaryHtml(d))}
+    ${exp.length ? sec('Work Experience', expHtml(exp)) : ''}
+    ${edu.length ? sec('Education', eduHtml(edu)) : ''}
+    ${langsInner ? sec('Languages', langsInner) : ''}
+    ${tech.length ? sec('Technical Skills', `<div class="skills-grid">${tech.map(s => plain(s)).join(' · ')}</div>`) : ''}
+    ${certs.length ? sec('Certificates', certsHtml(certs)) : ''}
+    <div class="sign"><div class="line">${plain(pi.location) || 'City'}, ${new Date().toLocaleDateString('en-GB')}</div><div class="line">${esc(name)}</div></div>
+  </div></body></html>`;
+}
+
+// ── TEMPLATE · EUROPASS PREMIUM (EU) ──────────────────────────────────────────
+function europass(d, opts = {}) {
+  const { pi, exp, edu, tech, langs, certs, role, name } = unpack(d);
+  const photoSrc = opts.photoRect || opts.photo;
+  const photo = photoSrc ? `<img src="${esc(photoSrc)}" alt="">` : `<div class="ph">PHOTO</div>`;
+  const css = `
+  .sheet{padding:0;color:#1f2937;font-size:10.5pt;line-height:1.45}
+  .eu-head{background:#2557a7;color:#fff;padding:16mm 15mm 12mm;display:flex;gap:18px;align-items:center}
+  .photo{width:28mm;height:34mm;flex:0 0 28mm;border:2px solid rgba(255,255,255,.6);overflow:hidden;background:rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center}
+  .photo img{width:100%;height:100%;object-fit:cover}.ph{font-size:8.5pt;color:#dbe6f5}
+  .name{font-family:'Poppins',sans-serif;font-weight:600;font-size:22pt}
+  .title{font-size:10.5pt;color:#dbe6f5;margin:2px 0 8px;letter-spacing:.5px}
+  .eu-contact{font-size:9pt;color:#eaf1fb}
+  .body{padding:12mm 15mm}
+  .sec{margin-top:14px}
+  .sec-h{font-family:'Poppins',sans-serif;font-weight:600;font-size:10.5pt;text-transform:uppercase;letter-spacing:1px;color:#2557a7;border-bottom:2px solid #2557a7;padding-bottom:3px;margin-bottom:8px}
+  .summary{font-size:10pt;line-height:1.5;color:#374151;text-align:justify}
+  .exp ul li{position:relative;padding-left:14px;font-size:9.5pt;line-height:1.45;margin-bottom:3px;color:#374151}
+  .exp ul li::before{content:"";position:absolute;left:2px;top:6px;width:4px;height:4px;background:#2557a7;border-radius:50%}
+  .exp,.edu{margin-bottom:10px}
+  .exp-top{display:flex;justify-content:space-between;gap:12px}
+  .exp-role{font-weight:700;font-size:10.5pt;color:#0f172a}.exp-date{font-size:9pt;color:#2557a7;font-weight:700;white-space:nowrap}
+  .exp-co{font-size:9.5pt;color:#64748b;font-style:italic;margin:1px 0 4px}
+  .lang{margin-bottom:7px}.lang .lt{display:flex;justify-content:space-between;font-size:9.5pt;margin-bottom:2px}.lang .lv{color:#64748b}
+  .lang .track{height:5px;background:#e2e8f0;border-radius:5px;overflow:hidden}.lang .fill{height:100%;background:#2557a7;border-radius:5px}
+  .skills-grid{font-size:9.5pt;line-height:1.6}
+  .certs li{font-size:9.5pt;margin-bottom:3px}.cert-sub{color:#64748b}
+  ${pageRule(opts.mode)}`;
+  const langInner = langs.length ? langs.map(l => { const { name, level } = langParts(l); const w = levelPct(level); return `<div class="lang"><div class="lt"><span>${plain(name)}</span><span class="lv">${plain(level)}</span></div><div class="track"><div class="fill" style="width:${w}%"></div></div></div>`; }).join('') : '';
+  return `${countryHead('Europass — CV', css)}<body><div class="sheet">
+    <div class="eu-head"><div class="photo">${photo}</div><div><div class="name">${esc(name)}</div><div class="title">${role}</div>${contactInline(pi, '  ·  ') ? `<div class="eu-contact">${contactInline(pi, '  ·  ')}</div>` : ''}</div></div>
+    <div class="body">
+      ${sec('Profile', summaryHtml(d))}
+      ${langInner ? sec('Languages', langInner) : ''}
+      ${tech.length ? sec('Digital Skills', `<div class="skills-grid">${tech.map(s => plain(s)).join(' · ')}</div>`) : ''}
+      ${exp.length ? sec('Work Experience', expHtml(exp)) : ''}
+      ${edu.length ? sec('Education & Training', eduHtml(edu)) : ''}
+      ${certs.length ? sec('Certificates', certsHtml(certs)) : ''}
+    </div>
+  </div></body></html>`;
+}
+
+// ── TEMPLATE · STARTUP MODERN (US/CA/UK/SG, remote) ───────────────────────────
+function startupModern(d, opts = {}) {
+  const { pi, exp, edu, proj, tech, role, name } = unpack(d);
+  const { paras, bullets } = splitSummary(d.summary);
+  const links = [
+    raw(pi.portfolio_url) && `<span class="lk">↗ ${plain(prettyUrl(pi.portfolio_url))}</span>`,
+    raw(pi.linkedin_url) && `<span class="lk">in ${plain(prettyUrl(pi.linkedin_url))}</span>`,
+    raw(pi.email) && `<span class="lk">✉ ${plain(pi.email)}</span>`,
+    raw(pi.phone) && `<span class="lk">☏ ${plain(pi.phone)}</span>`,
+  ].filter(Boolean).join('');
+  const css = `
+  .sheet{padding:18mm 16mm;color:#1e1e2e;font-size:10.5pt;line-height:1.5}
+  .hero .name{font-family:'Poppins',sans-serif;font-weight:700;font-size:28pt;letter-spacing:-.5px;color:#16161d}
+  .hero .title{font-size:11pt;color:#5b5bd6;font-weight:600;margin-top:2px}
+  .links{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .lk{font-size:9pt;color:#44445a;background:#f4f4fb;border:1px solid #e5e5f3;border-radius:7px;padding:4px 9px}
+  .sec{margin-top:16px}
+  .sec-h{font-family:'Poppins',sans-serif;font-weight:600;font-size:10pt;text-transform:uppercase;letter-spacing:1.5px;color:#8888a0;margin-bottom:9px}
+  .summary{font-size:11pt;line-height:1.6;color:#33334a}
+  .impact{display:flex;flex-wrap:wrap;gap:10px}
+  .impact .card{flex:1;min-width:30%;background:#f7f7fd;border:1px solid #ececf6;border-radius:10px;padding:11px 13px;font-size:9.7pt;line-height:1.4;color:#33334a}
+  .impact .card b{color:#5b5bd6}
+  .exp ul li,.proj ul li{position:relative;padding-left:16px;font-size:10pt;line-height:1.5;margin-bottom:3px;color:#33334a}
+  .exp ul li::before,.proj ul li::before{content:"";position:absolute;left:3px;top:8px;width:5px;height:5px;background:#5b5bd6;border-radius:50%}
+  .exp,.edu,.proj{margin-bottom:12px}
+  .exp-top{display:flex;justify-content:space-between;gap:12px}
+  .exp-role{font-family:'Poppins',sans-serif;font-weight:600;font-size:11pt;color:#16161d}
+  .exp-date{font-size:9pt;color:#8888a0;white-space:nowrap}
+  .exp-co{font-size:9.7pt;color:#5b5bd6;margin:1px 0 4px}
+  .proj-about{font-size:9.7pt;color:#44445a;margin:2px 0 3px}.proj-link{font-size:9pt;color:#5b5bd6}
+  .chips{display:flex;flex-wrap:wrap;gap:7px}.chip{font-size:9.5pt;background:#f4f4fb;border:1px solid #e5e5f3;color:#44445a;border-radius:7px;padding:4px 10px;font-weight:600}
+  ${pageRule(opts.mode)}`;
+  const impact = bullets.length ? `<div class="impact">${bullets.map(b => `<div class="card">${fmt(b)}</div>`).join('')}</div>` : '';
+  const about = paras.length ? `<p class="summary">${fmt(paras.join(' '))}</p>` : '';
+  return `${countryHead('Resume — Startup Modern', css)}<body><div class="sheet">
+    <div class="hero"><div class="name">${esc(name)}</div><div class="title">${role}</div>${links ? `<div class="links">${links}</div>` : ''}</div>
+    ${about ? sec('About', about) : ''}
+    ${impact ? sec('Impact', impact) : ''}
+    ${exp.length ? sec('Experience', expHtml(exp)) : ''}
+    ${proj.length ? sec('Projects', projHtml(proj)) : ''}
+    ${tech.length ? sec('Skills', chipsHtml(tech)) : ''}
+    ${edu.length ? sec('Education', eduHtml(edu)) : ''}
+  </div></body></html>`;
+}
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 const TEMPLATES = [
-  { id: 'azure',     name: 'Azure Sidebar',  accent: '#0a7aa6', build: azure },
-  { id: 'executive', name: 'Executive Dark', accent: '#e0a64b', build: executive },
-  { id: 'minimal',   name: 'Modern Minimal', accent: '#0e9f8e', build: minimal },
+  // Generic visual styles (region: any)
+  { id: 'azure',     name: 'Azure Sidebar',          accent: '#0a7aa6', region: 'generic', build: azure },
+  { id: 'executive', name: 'Executive Dark',         accent: '#e0a64b', region: 'generic', build: executive },
+  { id: 'minimal',   name: 'Modern Minimal',         accent: '#0e9f8e', region: 'generic', build: minimal },
+  // Country / region formats
+  { id: 'ats',       name: 'ATS Modern',             accent: '#1f2937', ats: 5, build: atsModern },
+  { id: 'exec_pro',  name: 'Executive Professional', accent: '#7c6a45', ats: 5, build: execPro },
+  { id: 'india',     name: 'India Professional',     accent: '#0e7490', ats: 4, build: indiaPro },
+  { id: 'germany',   name: 'Germany Professional',   accent: '#334155', ats: 4, photo: true, build: germanyPro },
+  { id: 'europass',  name: 'Europass Premium',       accent: '#2557a7', ats: 4, photo: true, build: europass },
+  { id: 'startup',   name: 'Startup Modern',         accent: '#5b5bd6', ats: 4, build: startupModern },
 ];
 
 const TEMPLATE_IDS = TEMPLATES.map(t => t.id);
+
+// Region → recommended templates (the user's selection logic). 90% of job seekers.
+const REGIONS = [
+  { id: 'generic', label: 'Generic',        sub: 'Any country',          templates: ['azure', 'executive', 'minimal'] },
+  { id: 'us_ca',   label: 'USA / Canada',   sub: 'United States · Canada', templates: ['ats', 'exec_pro', 'startup'] },
+  { id: 'uk_au',   label: 'UK / Australia', sub: 'United Kingdom · Australia', templates: ['ats', 'exec_pro'] },
+  { id: 'india',   label: 'India / South Asia', sub: 'India · Bangladesh · Nepal · Sri Lanka', templates: ['india'] },
+  { id: 'dach',    label: 'Germany / DACH', sub: 'Germany · Austria · Switzerland', templates: ['germany'] },
+  { id: 'eu',      label: 'Europe / EU',    sub: 'France · Spain · Italy · EU', templates: ['europass'] },
+  { id: 'sg',      label: 'Singapore',      sub: 'Singapore · APAC hubs', templates: ['exec_pro', 'startup'] },
+];
+
+function templatesForRegion(regionId) {
+  const r = REGIONS.find(x => x.id === regionId);
+  return (r ? r.templates : REGIONS[0].templates).map(id => TEMPLATES.find(t => t.id === id)).filter(Boolean);
+}
 
 function renderResumeHtml(templateId, resumeData, opts = {}) {
   const tpl = TEMPLATES.find(t => t.id === templateId) || TEMPLATES[0];
   return tpl.build(resumeData || {}, opts);
 }
 
-module.exports = { TEMPLATES, TEMPLATE_IDS, renderResumeHtml };
+module.exports = { TEMPLATES, TEMPLATE_IDS, REGIONS, templatesForRegion, renderResumeHtml };
