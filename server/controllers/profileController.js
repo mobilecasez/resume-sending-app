@@ -30,6 +30,7 @@ const getProfile = async (req, res) => {
             phone: user.phoneNumber,
             address: user.address,
             dateOfBirth: formattedDOB,
+            gender: user.gender || '',
             profileImage: user.photoPath ? `${baseUrl}/${user.photoPath}` : null,
             resume: user.resumePath ? `${baseUrl}/${user.resumePath}` : null,
             signature: user.signaturePath ? `${baseUrl}/${user.signaturePath}` : null,
