@@ -1187,7 +1187,7 @@ async function fetchJobDetailsBatch(jobBatch, careersUrl, candidateProfile, list
 
 // ─── Build the Employer object for streaming to the frontend ─────────────────
 
-function buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, jobs) {
+function buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, jobs, domain) {
     const name = listingData.company_name || 'Unknown Company';
     return {
         id: employerDbId,
@@ -1197,11 +1197,12 @@ function buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, j
         logoColor,
         logoInitial: (name[0] || '?').toUpperCase(),
         status: 'active',
+        domain: domain || null,   // full registrable domain WITH TLD (e.g. vertigis.com) for the company card
         jobs,
     };
 }
 
-function buildJobFromRaw(raw, index, employerDbId, careersUrl) {
+function buildJobFromRaw(raw, index, employerDbId, careersUrl, dbJobId = null) {
     const contacts = (Array.isArray(raw.contacts) ? raw.contacts : [])
         .filter(c => c && c.name)
         .map((c, ci) => ({
@@ -1218,7 +1219,8 @@ function buildJobFromRaw(raw, index, employerDbId, careersUrl) {
 
     const applyUrl = raw.job_url && raw.job_url.startsWith('http') ? raw.job_url : careersUrl;
     return {
-        id: `${employerDbId}-job-${index + 1}`,
+        // Use the REAL DB job id so contacts/cover-letter persist & reload (matches the cached path).
+        id: dbJobId != null ? String(dbJobId) : `${employerDbId}-job-${index + 1}`,
         title: raw.title || 'Open Position',
         location: raw.location || 'Location TBD',
         experience: raw.experience || 'Not specified',
@@ -1404,7 +1406,7 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         );
 
         // Emit initial partial update so the UI shows the employer card immediately
-        const initialEmployer = buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, []);
+        const initialEmployer = buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, [], domain);
         await jobService.updateJobPartialResult(asyncJobId, initialEmployer);
 
         // ── Extract common HR/careers emails from the page ────────────────────
@@ -1492,6 +1494,7 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                 for (let j = 0; j < batch.length; j++) {
                     const raw = (detailedJobs && detailedJobs[j]) ? detailedJobs[j] : {};
                     const original = batch[j];
+                    let dbJobId = null;   // hoisted: the job card must carry the REAL DB id (job.id) so contacts/CL persist & reload
 
                     // Fallback to Phase 1 title/url if Gemini missed it
                     if (!raw.title)   raw.title   = original.title;
@@ -1500,7 +1503,7 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                     try {
                         const locationId = await jobService.upsertLocation(raw.location || 'Not specified');
                         const responsibilities = Array.isArray(raw.responsibilities) ? raw.responsibilities : [];
-                        const dbJobId = await jobService.upsertJob(
+                        dbJobId = await jobService.upsertJob(
                             employerDbId, locationId,
                             raw.title || 'Open Position',
                             original.job_url,
@@ -1566,18 +1569,18 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                         console.error(`[aiHub] DB save error for job "${raw.title}":`, e.message);
                     }
 
-                    streamedJobs.push(buildJobFromRaw(raw, streamedJobs.length, employerDbId, careersUrl));
+                    streamedJobs.push(buildJobFromRaw(raw, streamedJobs.length, employerDbId, careersUrl, dbJobId));
                 }
 
                 // Emit partial update after each batch so the UI shows new cards progressively
-                const partialEmployer = buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, [...streamedJobs]);
+                const partialEmployer = buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, [...streamedJobs], domain);
                 await jobService.updateJobPartialResult(asyncJobId, partialEmployer);
                 console.log(`[aiHub] Streamed ${streamedJobs.length} jobs so far`);
             }
         }
 
         // Mark the job complete
-        const finalEmployer = buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, streamedJobs);
+        const finalEmployer = buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, streamedJobs, domain);
         await jobService.completeJob(asyncJobId, finalEmployer);
         console.log(`[aiHub] Completed "${name}": ${streamedJobs.length} jobs saved`);
 
@@ -1866,6 +1869,8 @@ async function addContactToJob(req, res) {
         const { jobId } = req.params;
         const { name, role, email } = req.body;
         if (!name || !role || !email) return res.status(400).json({ error: 'name, role, and email are required' });
+        // Persist to job_contacts so it survives navigation / reload (upsert on job_id+email).
+        await jobService.addJobContact(jobId, name, role, email, null, null, null, null);
         const contact = {
             id: `contact-${Date.now()}`,
             name, role, email,
@@ -1874,7 +1879,31 @@ async function addContactToJob(req, res) {
         };
         return res.status(201).json(contact);
     } catch (error) {
+        console.error('[aiHub] addContactToJob error:', error.message);
         return res.status(500).json({ error: 'Failed to add contact' });
+    }
+}
+
+// GET /jobs/:jobId/contacts — reload persisted contacts (so a newly-added one shows on return).
+async function getJobContacts(req, res) {
+    try {
+        const { jobId } = req.params;
+        const rows = await dbConfig.query('SELECT * FROM job_contacts WHERE job_id = $1 ORDER BY id', [jobId]);
+        const contacts = (rows || []).map((c, ci) => ({
+            id: String(c.id),
+            name: c.name,
+            role: c.role || 'Recruiter',
+            email: c.email || '',
+            phone: c.phone || null,
+            linkedin: c.linkedin_url || null,
+            imageUrl: c.image_url || null,
+            verified: false,
+            avatarColor: AVATAR_COLORS[ci % AVATAR_COLORS.length],
+        }));
+        return res.json({ contacts });
+    } catch (error) {
+        console.error('[aiHub] getJobContacts error:', error.message);
+        return res.status(500).json({ error: 'Failed to load contacts', contacts: [] });
     }
 }
 
@@ -2111,7 +2140,7 @@ async function getRecruiters(req, res) {
     const { employerId } = req.params;
     try {
         await ensureRecruiterTables();
-        const recruiters = await dbConfig.all(
+        const recruiters = await dbConfig.query(
             `SELECT * FROM employer_recruiters WHERE employer_id = $1 AND user_id = $2 ORDER BY created_at ASC`,
             [employerId, userId]
         );
@@ -2140,7 +2169,7 @@ async function findRecruiterEmails(req, res) {
         );
         if (!employer) return res.status(404).json({ error: 'Employer not found' });
 
-        const recruiters = await dbConfig.all(
+        const recruiters = await dbConfig.query(
             `SELECT * FROM employer_recruiters WHERE employer_id = $1 AND user_id = $2`,
             [employerId, userId]
         );
@@ -2234,7 +2263,7 @@ async function findRecruiterEmails(req, res) {
                 );
 
                 // Propagate to all jobs of this employer that have 0 contacts
-                const jobsWithNoContacts = await dbConfig.all(
+                const jobsWithNoContacts = await dbConfig.query(
                     `SELECT j.id FROM jobs j
                      LEFT JOIN job_contacts jc ON jc.job_id = j.id
                      WHERE j.employer_id = $1 AND j.is_active = TRUE
@@ -2300,7 +2329,7 @@ async function generateJobCoverLetter(req, res) {
         const employer = await dbConfig.get(`SELECT * FROM employers WHERE id = $1`, [job.employer_id]);
 
         // Load skills + responsibilities
-        const skills = await dbConfig.all(
+        const skills = await dbConfig.query(
             `SELECT s.name FROM skills s JOIN job_skills js ON js.skill_id = s.id WHERE js.job_id = $1`,
             [jobId]
         );
@@ -2526,6 +2555,160 @@ Rules:
     }
 }
 
+// ─── In-app Apply: AI auto-fill ───────────────────────────────────────────────
+
+// POST /ai-hub/autofill-map — given the form's fields, return a value for each from the
+// candidate's profile (and classify file inputs as resume vs cover letter). AI-driven.
+async function autofillMap(req, res) {
+    try {
+        const userId = req.user.id;
+        const { fields, coverLetterHtml, jobTitle, companyName } = req.body || {};
+        if (!Array.isArray(fields) || fields.length === 0) {
+            return res.status(400).json({ error: 'No form fields provided' });
+        }
+
+        const user = await dbConfig.get(
+            'SELECT full_name, email, phone_number, city, country, address, date_of_birth, nationality, gender FROM users WHERE id = ?',
+            [userId]
+        ).catch(() => null);
+        let meta = null;
+        try { meta = await dbConfig.get("SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = 'done' ORDER BY id DESC LIMIT 1", [userId]); } catch {}
+        let builder = null;
+        try { const r = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = ?', [userId]); builder = r && r.resume_data; if (typeof builder === 'string') builder = JSON.parse(builder); } catch {}
+
+        // Strip noisy/internal columns from resume_metadata
+        if (meta) { delete meta.id; delete meta.user_id; delete meta.parse_status; delete meta.created_at; delete meta.updated_at; }
+
+        const profile = { ...(user || {}), resume_metadata: meta || undefined, builder_resume: builder || undefined };
+        const clText = String(coverLetterHtml || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+
+        const prompt = `You are auto-filling a job application form for a candidate. Map each form field to the best value from the candidate's profile. Return ONLY JSON.
+
+CANDIDATE PROFILE (JSON — the source of truth; never invent anything not present here):
+${JSON.stringify(profile)}
+
+COVER LETTER (plain text):
+"""${clText.slice(0, 3500)}"""
+
+JOB: ${jobTitle || ''} at ${companyName || ''}
+
+FORM FIELDS (JSON array; each has key,tag,type,name,placeholder,label,required,options). Map EVERY field you confidently can:
+${JSON.stringify(fields.slice(0, 150))}
+
+Return ONLY this JSON object:
+{
+  "values": { "<field key>": "<value to enter>" },
+  "resumeFileKeys": ["<key of any file input that wants a RESUME/CV>"],
+  "coverLetterFileKeys": ["<key of any file input that wants a COVER LETTER>"]
+}
+
+RULES:
+- Use ONLY real values from the profile for personal facts. NEVER invent names, emails, phones, dates, or employers.
+- For a "select" or "radio" field, the value MUST be EXACTLY one of its provided options (e.g. "Yes"/"No", or an exact option label).
+- For long-answer / "why this company" / motivation / cover-letter TEXT fields, use the cover letter text (trim to ~1200 chars).
+- For date fields use the format the placeholder suggests, else YYYY-MM-DD.
+- ANSWER benign application questions with a sensible value even without explicit profile data:
+    • "How did you hear about / learn of this role / us?" → "Company website"
+    • "A cover letter is required — have you included one?" / "Will you attach a resume?" → "Yes"
+    • "Are you willing to work on-site / relocate / commute to <the job location>?" → "Yes"
+    • Pronouns / gender questions → ONLY if the profile includes an explicit "gender" value. Map it to an option that is LITERALLY present in the field: gender "male" → a He/Him or Male option; "female" → a She/Her or Female option; "prefer not to say" → a "Prefer not to say" / neutral / decline option. If the profile has NO gender value, OMIT the field entirely (leave it blank for the user). NEVER infer gender or pronouns from the candidate's name or anything else.
+- DO NOT answer — leave BLANK (omit) — any question that needs the candidate's own judgement or legal/personal attestation:
+    • work authorization / right to work / visa / sponsorship / immigration status
+    • salary / compensation / notice period / availability date
+    • demographic & diversity — race, ethnicity, disability, veteran status, age (and gender/pronouns UNLESS the profile has an explicit "gender" value, handled by the rule above)
+    • criminal history, references, or anything requiring a signature/consent
+- For file inputs (type "file"): classify by label — resume/CV → resumeFileKeys, cover letter → coverLetterFileKeys. If generic ("Upload"/"Attachment"), put it in resumeFileKeys.
+- OMIT any other field you cannot confidently fill. Do not guess personal facts.`;
+
+        // Clean-JSON output + a generous token cap so large forms don't truncate mid-object.
+        let parsed = null;
+        try {
+            const model = geminiModel(false);
+            const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('AI_TIMEOUT')), 60000));
+            const result = await Promise.race([
+                model.generateContent({
+                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                    generationConfig: { responseMimeType: 'application/json', temperature: 0.2, maxOutputTokens: 8192 },
+                }),
+                timeout,
+            ]);
+            parsed = parseJsonObject(result.response.text() || '');
+        } catch (aiErr) {
+            // Graceful: let the user fill manually instead of a hard error.
+            console.warn('[aiHub] autofillMap AI failed:', aiErr.message);
+            return res.json({ success: true, values: {}, resumeFileKeys: [], coverLetterFileKeys: [], warning: 'ai_unavailable' });
+        }
+        return res.json({
+            success: true,
+            values: parsed && parsed.values && typeof parsed.values === 'object' ? parsed.values : {},
+            resumeFileKeys: parsed && Array.isArray(parsed.resumeFileKeys) ? parsed.resumeFileKeys : [],
+            coverLetterFileKeys: parsed && Array.isArray(parsed.coverLetterFileKeys) ? parsed.coverLetterFileKeys : [],
+        });
+    } catch (error) {
+        console.error('[aiHub] autofillMap error:', error.message);
+        return res.status(500).json({ error: 'Auto-fill mapping failed', details: error.message });
+    }
+}
+
+// POST /ai-hub/autofill-files — resume + cover-letter PDFs as base64, for in-page upload.
+async function autofillFiles(req, res) {
+    try {
+        const userId = req.user.id;
+        const { coverLetterHtml, companyName, companyAddress, resumeRegion, clRegion, which } = req.body || {};
+        const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        const path = require('path');
+        const fs = require('fs').promises;
+        const out = { success: true };
+
+        const safe = (s) => String(s || 'CVApplyr').replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
+
+        // Resume: ALWAYS prefer the Builder one-pager PDF for the chosen region, so the file that
+        // gets attached is exactly what the Preview shows. Fall back to the uploaded resume only
+        // when the user has no Builder resume at all.
+        if (which !== 'cover') {
+        try {
+            const rb = require('./resumeBuilderController');
+            const r = await rb.buildResumePdfForRegion(userId, resumeRegion || 'generic', 'onepage');
+            if (r && r.filePath) {
+                const buf = await fs.readFile(r.filePath);
+                out.resume = { base64: buf.toString('base64'), name: r.fileName || `${safe(user && user.full_name)}_Resume.pdf`, mime: 'application/pdf' };
+            }
+        } catch (e) { console.warn('[autofillFiles] builder resume render failed:', e.message); }
+        if (!out.resume && user && user.resume_path) {
+            try {
+                const p = path.join(__dirname, '../../', user.resume_path);
+                const buf = await fs.readFile(p);
+                const ext = (path.extname(user.resume_path) || '.pdf').toLowerCase();
+                const mime = ext === '.pdf' ? 'application/pdf' : ext === '.doc' ? 'application/msword' : ext === '.docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'application/octet-stream';
+                out.resume = { base64: buf.toString('base64'), name: `${safe(user.full_name)}_Resume${ext}`, mime };
+            } catch (e) { console.warn('[autofillFiles] uploaded resume read failed:', e.message); }
+        }
+        } // end which !== 'cover'
+
+        // Cover letter: render to a one-page PDF — region template if a region is chosen, else generic.
+        if (which !== 'resume' && coverLetterHtml && String(coverLetterHtml).trim()) {
+            try {
+                if (clRegion && clRegion !== 'generic') {
+                    const clc = require('./coverLetterController');
+                    // Pass companyAddress so the attached letter's recipient block matches the preview exactly.
+                    const r = await clc.buildCoverLetterPdfForRegion(userId, { region: clRegion, coverLetterHtml, companyName: companyName || '', companyAddress: companyAddress || '', mode: 'onepage' });
+                    if (r && r.filePath) { const buf = await fs.readFile(r.filePath); out.coverLetter = { base64: buf.toString('base64'), name: `${safe(user && user.full_name)}_Cover_Letter.pdf`, mime: 'application/pdf' }; }
+                }
+                if (!out.coverLetter) {
+                    const { generateCoverLetterPDF } = require('./emailController');
+                    const r = await generateCoverLetterPDF(user, coverLetterHtml, companyName || '', companyAddress || '');
+                    if (r && r.filePath) { const buf = await fs.readFile(r.filePath); out.coverLetter = { base64: buf.toString('base64'), name: `${safe(user && user.full_name)}_Cover_Letter.pdf`, mime: 'application/pdf' }; }
+                }
+            } catch (e) { console.warn('[autofillFiles] cover letter render failed:', e.message); }
+        }
+
+        return res.json(out);
+    } catch (error) {
+        console.error('[aiHub] autofillFiles error:', error.message);
+        return res.status(500).json({ error: 'Auto-fill files failed' });
+    }
+}
+
 module.exports = {
     analyzeWishlist,
     getJobMatches,
@@ -2534,6 +2717,9 @@ module.exports = {
     removeDashboardItem,
     verifyEmail,
     addContactToJob,
+    getJobContacts,
+    autofillMap,
+    autofillFiles,
     getCreditBalance,
     deductCredits,
     findRecruiters,

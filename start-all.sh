@@ -38,6 +38,7 @@ echo ""
 # Start backend server
 echo "🚀 Starting backend server on $LOCAL_IP:3000..."
 cd "$(dirname "$0")"
+export LOCAL_IP="$LOCAL_IP"
 node server.js > /tmp/backend.log 2>&1 &
 BACKEND_PID=$!
 echo "✅ Backend started (PID: $BACKEND_PID)"

@@ -27,6 +27,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import HomeScreen, { clearHomeScreenCache } from './components/HomeScreen';
 import FloatingTabBar from './components/FloatingTabBar';
 import ReviewScreen from './components/ReviewScreen';
+import { regionFromCountry } from './regionUtils';
 
 // Apple IAP Product IDs - must match App Store Connect products
 const IAP_PRODUCT_IDS = [
@@ -511,18 +512,26 @@ function AppContent() {
         const websiteClean   = (website || '').trim();
         const positionClean  = (position || '').trim();
         const contactEmail   = (recipientEmail || '').trim();
+        const companyClean   = (companyName || '').trim();
 
-        // Stable slug for duplicate detection (same job = same slug = no duplicate cards)
-        const slug = (websiteClean + '_' + positionClean)
-          .toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 40);
-        // Use real hiring contact email if available, otherwise a stable placeholder
-        const cardEmail = contactEmail || `aiHub_${slug}@jobs.cvapplyr.app`;
+        // UNIQUE per-card link key. NOT the email (it may be the shared user placeholder) and
+        // NOT just the website (it can be empty). companyName disambiguates different employers
+        // even when the website didn't resolve — so vertigis and icmag never collide.
+        const companyKey = (companyClean || websiteClean || 'company').toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 30);
+        const clKey = contactEmail || `${companyKey}_${positionClean.toLowerCase().replace(/[^a-z0-9]/g, '')}`.substring(0, 48);
+
+        // When no real hiring email was found, default the recipient to the USER'S OWN email
+        // (an obvious, editable placeholder — never a fabricated address). We warn them to update
+        // it before sending. The recipient↔cover-letter link is the unique clKey, never the email.
+        const userEmail = (userRef?.current?.email || '').trim();
+        const usedUserEmailFallback = !contactEmail && !!userEmail;
+        const recipientEmailFinal = contactEmail || userEmail; // '' only if the user truly has no email
 
         // Subject — same formula as emailController: "Application for {position} - {fullName}"
         const fullName = userRef?.current?.fullName || userRef?.current?.full_name || '';
         const subject  = `Application for ${positionClean}${fullName ? ` - ${fullName}` : ''}`;
 
-        // Build the cover letter entry — keyed by cardEmail so ReviewScreen finds it via getCoverLetter
+        // Build the cover letter entry — keyed by the unique clKey (also stored on the recipient).
         const clEntry = {
           coverLetterHtml: coverLetterHtml || '',
           companyName: companyName || '',
@@ -533,35 +542,45 @@ function AppContent() {
             : undefined,                          // ReviewScreen uses this for address dropdown
           generated: true,
           sent: false,
-          storedRecipientEmail: cardEmail,
+          storedRecipientEmail: clKey,
           storedRecipientWebsite: websiteClean,
+          storedRecipientPosition: positionClean,
+          storedRecipientClKey: clKey,            // authoritative unique link to the recipient
           date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
         };
 
-        // Deduplicate: if a card with same website+position already exists, update it in place.
+        // Deduplicate by the unique clKey (same job re-applied = same clKey = update in place).
         let tabIndex = 0;
         setRecipients(prev => {
           const existingIdx = prev.findIndex(
-            r => r.website === websiteClean && r.position === positionClean
+            r => r.clKey ? r.clKey === clKey : (r.website === websiteClean && r.position === positionClean)
           );
           if (existingIdx >= 0) {
             tabIndex = existingIdx;
             return prev.map((r, i) =>
-              i === existingIdx ? { ...r, email: cardEmail } : r
+              i === existingIdx ? { ...r, email: recipientEmailFinal, clKey } : r
             );
           }
           tabIndex = 0;
           const newId = Math.max(...prev.map(r => r.id), -1) + 1;
           return [
-            { id: newId, email: cardEmail, website: websiteClean, position: positionClean, error: '' },
+            { id: newId, email: recipientEmailFinal, website: websiteClean, position: positionClean, clKey, error: '' },
             ...prev,
           ];
         });
 
         // Batch all setters — React 18 merges into one render → no HomeScreen flash
-        setReviewCoverLetters(prev => ({ ...prev, [cardEmail]: clEntry }));
+        setReviewCoverLetters(prev => ({ ...prev, [clKey]: clEntry }));
         setCurrentReviewTab(tabIndex);
         setScreen('review');
+
+        // Tell the user we used their own email as a placeholder for the hiring manager.
+        if (usedUserEmailFallback) {
+          setTimeout(() => Alert.alert(
+            'Add the hiring email',
+            'We couldn\'t find a hiring manager email for this job, so we\'ve filled in your own email as a placeholder. Please update it with the real recipient before sending.'
+          ), 400);
+        }
 
       } catch (e) {
         console.warn('[aiHub bridge] error:', e);
@@ -652,6 +671,7 @@ function AppContent() {
     phone: '',
     address: '',
     dateOfBirth: '',
+    gender: '',
     profileImage: null,
     resume: null,
     signature: null,
@@ -1566,6 +1586,7 @@ function AppContent() {
             phone: data.phone || '',
             address: data.address || '',
             dateOfBirth: data.dateOfBirth || '',
+            gender: data.gender || '',
             profileImage: data.profileImage || user?.profileImage || null,
             resume: data.resume || null,
             signature: data.signature || null,
@@ -1598,6 +1619,7 @@ function AppContent() {
           phone: profileData.phone,
           address: profileData.address,
           dateOfBirth: profileData.dateOfBirth,
+          gender: profileData.gender,
         })
       });
 
@@ -2909,7 +2931,11 @@ function exportSig(){
             coverLetterHtml: cl.coverLetterHtml,
             companyName: cl.companyName,
             address: cl.address || '',
-            companyAddress: cl.address || ''
+            companyAddress: cl.address || '',
+            // Pass the explicit saved region (or null); the server auto-detects from the
+            // employer address when null, so it uses the same address it builds for sending.
+            coverLetterRegion: cl.coverLetterRegion || null,
+            resumeRegion:      cl.resumeRegion      || null
           };
         }
       });
@@ -3211,6 +3237,10 @@ function exportSig(){
       console.log('API endpoint:', `${API_BASE}/send-single-application`);
       console.log('User token present:', !!user.token);
       
+      // Region selection (points 3,4): use the saved choice, else auto-detect from employer country.
+      const clRegion  = coverLetter.coverLetterRegion || regionFromCountry(coverLetter.address || '');
+      const resRegion = coverLetter.resumeRegion      || regionFromCountry(coverLetter.address || '');
+
       const requestBody = {
         recipientEmail: recipient.email,
         websiteUrl: recipient.website,
@@ -3219,7 +3249,9 @@ function exportSig(){
         companyName: coverLetter.companyName,
         companyAddress: coverLetter.address || '',
         brandColor: coverLetter.brandColor || null,
-        fontName: coverLetter.fontName || null
+        fontName: coverLetter.fontName || null,
+        coverLetterRegion: clRegion,
+        resumeRegion: resRegion
       };
       console.log('Request body companyAddress:', requestBody.companyAddress);
       console.log('Request body:', JSON.stringify(requestBody, null, 2));
@@ -3390,17 +3422,29 @@ function exportSig(){
   const getCoverLetter = (index) => {
     const recipient = recipients[index];
     if (!recipient) return null;
-    // 1. Direct email-key lookup (fast path)
+    // 0. AUTHORITATIVE: the unique clKey link (AI-Hub cards). Never ambiguous across companies,
+    //    even when the email is the shared user placeholder or the website is empty.
+    if (recipient.clKey) {
+      if (reviewCoverLetters[recipient.clKey]) return reviewCoverLetters[recipient.clKey];
+      const byKey = Object.values(reviewCoverLetters).find(e => e?.storedRecipientClKey === recipient.clKey);
+      if (byKey) return byKey;
+    }
+    // 1. Direct email-key lookup (normal recipients have unique real emails)
     if (recipient.email && reviewCoverLetters[recipient.email]) return reviewCoverLetters[recipient.email];
     // 2. Legacy storedRecipientEmail scan
     if (recipient.email) {
       const legacy = Object.values(reviewCoverLetters).find(e => e?.storedRecipientEmail === recipient.email);
       if (legacy) return legacy;
     }
-    // 3. Job Hub placeholder: match by storedRecipientWebsite when email is empty/placeholder
+    // 3. Legacy website fallback (old cards saved before clKey existed)
     if (recipient.website) {
-      const byWebsite = Object.values(reviewCoverLetters).find(e => e?.storedRecipientWebsite === recipient.website);
-      if (byWebsite) return byWebsite;
+      const sameSite = Object.values(reviewCoverLetters).filter(e => e?.storedRecipientWebsite === recipient.website);
+      if (sameSite.length === 1) return sameSite[0];
+      if (sameSite.length > 1) {
+        const byPos = sameSite.find(e => e?.storedRecipientPosition === recipient.position);
+        if (byPos) return byPos;
+        return sameSite[0];
+      }
     }
     return null;
   };
@@ -3412,6 +3456,19 @@ function exportSig(){
       Alert.alert('Error', 'Generate cover letter first');
       return;
     }
+
+    // Open the country-format cover-letter picker (preview free, download = 2 credits).
+    try {
+      await AsyncStorage.setItem('coverLetterPickerContext', JSON.stringify({
+        coverLetterHtml: coverLetter.coverLetterHtml,
+        companyName: coverLetter.companyName,
+        companyAddress: coverLetter.address || '',
+      }));
+      expoRouter.push('/(cover-letter)/templates');
+    } catch (e) {
+      Alert.alert('Error', 'Could not open download options.');
+    }
+    return;
 
     try {
       isCancelledRef.current = false;
@@ -3540,6 +3597,7 @@ function exportSig(){
           email: r.email,
           website: r.website,
           position: r.position || '',
+          ...(r.clKey ? { clKey: r.clKey } : {}),   // preserve the AI-Hub unique link across reloads
           error: ''
         }));
         setRecipients(loadedRecipients);
@@ -4779,8 +4837,7 @@ function exportSig(){
       console.log('Google Auth Response - Code length:', code?.length || 0);
       console.log('Google Auth Response - Verifier length:', codeVerifier?.length || 0);
       console.log('Google Auth Response - Redirect URI:', redirectUri);
-      // Android always uses production API (local server unreachable from device/emulator)
-      const apiUrl = useProduction ? PRODUCTION_API_URL : API_BASE;
+      const apiUrl = __DEV__ ? API_BASE : PRODUCTION_API_URL;
       console.log('API Base:', apiUrl);
       
       // Send authorization code and PKCE verifier to backend for token exchange
@@ -4825,8 +4882,7 @@ function exportSig(){
     setError('');
     try {
       console.log('Microsoft Auth Response - Code length:', code?.length || 0);
-      // Android always uses production API (local server unreachable from device/emulator)
-      const apiUrl = Platform.OS === 'android' ? PRODUCTION_API_URL : API_BASE;
+      const apiUrl = __DEV__ ? API_BASE : PRODUCTION_API_URL;
       console.log('API Base:', apiUrl);
       
       // Send authorization code + PKCE verifier to backend for token exchange
@@ -6634,6 +6690,34 @@ function exportSig(){
                     </Text>
                   </TouchableOpacity>
                 </View>
+                <View style={styles.editFormGroup}>
+                  <Text style={styles.formLabel}>Gender</Text>
+                  <Text style={{ fontSize: 12, color: '#6B7280', marginTop: -2, marginBottom: 8 }}>
+                    Optional. Used only — with your consent — to auto-fill pronoun/gender questions on job applications.
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    {['Male', 'Female', 'Prefer Not to Say'].map((opt) => {
+                      const sel = profileData?.gender === opt;
+                      return (
+                        <TouchableOpacity
+                          key={opt}
+                          activeOpacity={0.8}
+                          onPress={() => setProfileData({ ...profileData, gender: sel ? '' : opt })}
+                          style={{
+                            flex: 1, paddingVertical: 11, paddingHorizontal: 4, borderRadius: 10,
+                            borderWidth: 1.5, alignItems: 'center', justifyContent: 'center',
+                            borderColor: sel ? '#1e40af' : '#E5E7EB',
+                            backgroundColor: sel ? '#EFF2FF' : '#FFFFFF',
+                          }}
+                        >
+                          <Text style={{ fontSize: 12.5, fontWeight: sel ? '700' : '500', color: sel ? '#1e40af' : '#374151', textAlign: 'center' }}>
+                            {opt}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
               </>
             ) : (
               <>
@@ -6676,6 +6760,16 @@ function exportSig(){
                 >
                   <Text style={styles.detailLabel}>Date of Birth</Text>
                   <Text style={styles.detailValue}>{profileData?.dateOfBirth || 'Not provided'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.detailRow}
+                  onLongPress={() => {
+                    Clipboard.setStringAsync(profileData?.gender || '');
+                    Alert.alert('Copied', 'Gender copied to clipboard');
+                  }}
+                >
+                  <Text style={styles.detailLabel}>Gender</Text>
+                  <Text style={styles.detailValue}>{profileData?.gender || 'Not provided'}</Text>
                 </TouchableOpacity>
                 <View style={styles.detailRow}>
                   <Text style={styles.detailLabel}>Account Type</Text>
@@ -7727,16 +7821,21 @@ function exportSig(){
     } else {
       // Enter edit mode - store current values
       const currentData = getCoverLetter(index) || {};
+      const addrForRegion = currentData.address || (currentData.locations?.find(loc => loc.isHeadquarters)?.address || currentData.locations?.[0]?.address || '');
+      // Auto-select region from the employer country (points 1,2); keep any saved override.
+      const autoRegion = regionFromCountry(addrForRegion);
       setEditingReviewIndex(index);
       setEditedCoverLetterData({
         hiringManager: currentData.hiringManager || '',
         companyName: currentData.companyName || '',
         email: recipients[index]?.email || '',
-        address: currentData.address || (currentData.locations?.find(loc => loc.isHeadquarters)?.address || currentData.locations?.[0]?.address || ''),
+        address: addrForRegion,
         date: currentData.date || new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
         position: recipients[index]?.position || '',
         subject: currentData.subject || '',
-        coverLetterText: currentData.coverLetterText || ''
+        coverLetterText: currentData.coverLetterText || '',
+        coverLetterRegion: currentData.coverLetterRegion || autoRegion,
+        resumeRegion: currentData.resumeRegion || autoRegion
       });
     }
   };

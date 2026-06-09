@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import {
   View,
   Text,
+  Image,
   TextInput,
   TouchableOpacity,
   StyleSheet,
@@ -17,6 +18,20 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { addContactToJob } from '../../services/aiHubService';
+
+// ─── Theme (matches job-detail.tsx / index.tsx) ───────────────────
+const T = {
+  bg:        '#E5EAF3',
+  surface:   '#FFFFFF',
+  inputBg:   '#F1F4FA',
+  ink:       '#0B0F22',
+  inkSoft:   '#1A2046',
+  textMuted: '#5A6480',
+  textFaint: '#8A93B2',
+  border:    'rgba(11,15,34,0.08)',
+  blue:      '#4F8DFF',
+  blueDeep:  '#2563EB',
+};
 
 export default function AddContactScreen() {
   const router = useRouter();
@@ -63,7 +78,20 @@ export default function AddContactScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      {/* Top bar — matches the rest of the AI Hub */}
+      <View style={styles.topBar}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backPill} activeOpacity={0.8}>
+          <Ionicons name="arrow-back" size={14} color={T.ink} />
+          <Text style={styles.backPillText}>Back</Text>
+        </TouchableOpacity>
+        <View style={styles.wordmark} pointerEvents="none">
+          <Image source={require('../../assets/images/logo_img.png')} style={styles.wordmarkLogo} resizeMode="contain" />
+          <Text style={styles.wordmarkText}>cv<Text style={styles.wordmarkBlue}>applyr</Text></Text>
+        </View>
+        <View style={{ width: 70 }} />
+      </View>
+
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -76,36 +104,29 @@ export default function AddContactScreen() {
           {/* Header card */}
           <View style={styles.headerCard}>
             <LinearGradient
-              colors={['#06B6D4', '#3B82F6']}
+              colors={[T.blue, T.blueDeep]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={styles.headerIcon}
             >
-              <Ionicons name="person-add-outline" size={22} color="white" />
+              <Ionicons name="person-add" size={22} color="white" />
             </LinearGradient>
             <Text style={styles.headerTitle}>Add Hiring Contact</Text>
             <Text style={styles.headerSubtitle}>
-              Add a contact manually. The AI will attempt to verify their email
-              in the background.
+              Add a contact manually. It's saved to this job so you can email them directly.
             </Text>
           </View>
 
           {/* Form */}
           <View style={styles.form}>
-            {/* Full Name */}
             <View style={styles.fieldGroup}>
               <Text style={styles.fieldLabel}>FULL NAME</Text>
               <View style={styles.inputWrapper}>
-                <Ionicons
-                  name="person-outline"
-                  size={16}
-                  color="#94A3B8"
-                  style={styles.inputIcon}
-                />
+                <Ionicons name="person-outline" size={16} color={T.blue} style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
                   placeholder="e.g. Sarah Chen"
-                  placeholderTextColor="#CBD5E1"
+                  placeholderTextColor={T.textFaint}
                   value={fullName}
                   onChangeText={setFullName}
                   returnKeyType="next"
@@ -115,20 +136,14 @@ export default function AddContactScreen() {
               </View>
             </View>
 
-            {/* Job Title / Role */}
             <View style={styles.fieldGroup}>
               <Text style={styles.fieldLabel}>JOB TITLE / ROLE</Text>
               <View style={styles.inputWrapper}>
-                <Ionicons
-                  name="briefcase-outline"
-                  size={16}
-                  color="#94A3B8"
-                  style={styles.inputIcon}
-                />
+                <Ionicons name="briefcase-outline" size={16} color={T.blue} style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
                   placeholder="e.g. Engineering Manager"
-                  placeholderTextColor="#CBD5E1"
+                  placeholderTextColor={T.textFaint}
                   value={jobTitle}
                   onChangeText={setJobTitle}
                   returnKeyType="next"
@@ -138,20 +153,14 @@ export default function AddContactScreen() {
               </View>
             </View>
 
-            {/* Email Address */}
-            <View style={styles.fieldGroup}>
+            <View style={[styles.fieldGroup, { marginBottom: 0 }]}>
               <Text style={styles.fieldLabel}>EMAIL ADDRESS</Text>
               <View style={styles.inputWrapper}>
-                <Ionicons
-                  name="mail-outline"
-                  size={16}
-                  color="#94A3B8"
-                  style={styles.inputIcon}
-                />
+                <Ionicons name="mail-outline" size={16} color={T.blue} style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
                   placeholder="e.g. s.chen@company.com"
-                  placeholderTextColor="#CBD5E1"
+                  placeholderTextColor={T.textFaint}
                   value={email}
                   onChangeText={setEmail}
                   returnKeyType="done"
@@ -161,14 +170,6 @@ export default function AddContactScreen() {
                   onSubmitEditing={handleSave}
                 />
               </View>
-            </View>
-
-            {/* Verification note */}
-            <View style={styles.verifyNote}>
-              <Ionicons name="shield-checkmark-outline" size={14} color="#06B6D4" />
-              <Text style={styles.verifyNoteText}>
-                Email will be queued for AI verification after saving.
-              </Text>
             </View>
           </View>
 
@@ -180,7 +181,7 @@ export default function AddContactScreen() {
             activeOpacity={0.85}
           >
             <LinearGradient
-              colors={saving ? ['#94A3B8', '#94A3B8'] : ['#06B6D4', '#3B82F6']}
+              colors={saving ? ['#9FB0CF', '#9FB0CF'] : [T.blue, T.blueDeep]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
               style={styles.saveBtn}
@@ -190,9 +191,7 @@ export default function AddContactScreen() {
                 size={18}
                 color="white"
               />
-              <Text style={styles.saveBtnText}>
-                {saving ? 'Saving…' : 'Save Contact'}
-              </Text>
+              <Text style={styles.saveBtnText}>{saving ? 'Saving…' : 'Save Contact'}</Text>
             </LinearGradient>
           </TouchableOpacity>
         </ScrollView>
@@ -202,128 +201,58 @@ export default function AddContactScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#F0F4FA',
+  safeArea: { flex: 1, backgroundColor: T.bg },
+  flex: { flex: 1 },
+
+  // ── Top bar ──
+  topBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingVertical: 10, backgroundColor: T.bg,
   },
-  flex: {
-    flex: 1,
+  backPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: T.surface, borderRadius: 20, paddingVertical: 7, paddingHorizontal: 12,
+    shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3, zIndex: 1,
   },
-  scrollContent: {
-    padding: 20,
-    paddingBottom: 40,
+  backPillText: { fontSize: 13, fontWeight: '600', color: T.ink },
+  wordmark: {
+    position: 'absolute', left: 0, right: 0,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, zIndex: 0,
   },
+  wordmarkLogo: { width: 22, height: 22 },
+  wordmarkText: { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
+  wordmarkBlue: { color: T.blue },
+
+  scrollContent: { padding: 16, paddingBottom: 40, gap: 14 },
 
   // ── Header card ──
   headerCard: {
-    backgroundColor: 'white',
-    borderRadius: 20,
-    padding: 20,
-    alignItems: 'center',
-    marginBottom: 20,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 16,
-    elevation: 4,
+    backgroundColor: T.surface, borderRadius: 24, padding: 22, alignItems: 'center',
+    shadowColor: T.ink, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 16, elevation: 4,
   },
-  headerIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#0F172A',
-    marginBottom: 6,
-  },
-  headerSubtitle: {
-    fontSize: 13,
-    color: '#64748B',
-    textAlign: 'center',
-    lineHeight: 19,
-  },
+  headerIcon: { width: 52, height: 52, borderRadius: 16, justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
+  headerTitle: { fontSize: 19, fontWeight: '800', color: T.ink, letterSpacing: -0.3, marginBottom: 6 },
+  headerSubtitle: { fontSize: 13, color: T.textMuted, textAlign: 'center', lineHeight: 19 },
 
   // ── Form ──
   form: {
-    backgroundColor: 'white',
-    borderRadius: 20,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 16,
-    elevation: 4,
+    backgroundColor: T.surface, borderRadius: 22, padding: 18,
+    shadowColor: T.ink, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.07, shadowRadius: 16, elevation: 4,
   },
-  fieldGroup: {
-    marginBottom: 18,
-  },
-  fieldLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#94A3B8',
-    letterSpacing: 1.2,
-    marginBottom: 8,
-  },
+  fieldGroup: { marginBottom: 16 },
+  fieldLabel: { fontSize: 10, fontWeight: '800', color: T.textFaint, letterSpacing: 1.2, marginBottom: 8 },
   inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 12,
-    backgroundColor: '#F8FAFC',
+    flexDirection: 'row', alignItems: 'center',
+    borderWidth: 1, borderColor: T.border, borderRadius: 12, backgroundColor: T.inputBg,
   },
-  inputIcon: {
-    paddingLeft: 14,
-  },
-  input: {
-    flex: 1,
-    paddingVertical: 13,
-    paddingHorizontal: 10,
-    fontSize: 14,
-    color: '#0F172A',
-  },
-  verifyNote: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(6,182,212,0.06)',
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    marginTop: 4,
-  },
-  verifyNoteText: {
-    fontSize: 12,
-    color: '#0891B2',
-    flex: 1,
-  },
+  inputIcon: { paddingLeft: 14 },
+  input: { flex: 1, paddingVertical: 13, paddingHorizontal: 10, fontSize: 14, color: T.ink, fontWeight: '500' },
 
   // ── Save button ──
   saveBtnOuter: {
     borderRadius: 16,
-    shadowColor: '#06B6D4',
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+    shadowColor: T.blue, shadowOpacity: 0.3, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 6,
   },
-  saveBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 16,
-    paddingVertical: 16,
-    gap: 8,
-  },
-  saveBtnText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: 'white',
-  },
+  saveBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 16, paddingVertical: 16, gap: 8 },
+  saveBtnText: { fontSize: 16, fontWeight: '700', color: 'white' },
 });

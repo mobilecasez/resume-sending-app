@@ -5,6 +5,7 @@ const jobService = require('../services/jobService');
 const dbConfig = require('../../db-config');
 const { executeGenerationWork } = require('../controllers/coverLetterController');
 const { executeSendWork } = require('../controllers/emailController');
+const { regionFromCountry } = require('../utils/regionFromCountry');
 
 /**
  * POST /api/batch-process
@@ -197,14 +198,21 @@ async function processBatchJob(jobId, userId, user, validRecipients, mode, cover
                     }
                 }
 
-                console.log(`[Batch ${jobId}] Sending for recipient ${idx}: ${recipient.email} (address: ${companyAddress})`);
+                // Region: honour the per-recipient choice from the client ('send' mode),
+                // else auto-detect from the employer address (covers 'generate-and-send').
+                const coverLetterRegion = cl.coverLetterRegion || regionFromCountry(companyAddress);
+                const resumeRegion      = cl.resumeRegion      || regionFromCountry(companyAddress);
+
+                console.log(`[Batch ${jobId}] Sending for recipient ${idx}: ${recipient.email} (address: ${companyAddress}, region: ${coverLetterRegion})`);
                 const sendResult = await executeSendWork(userId, {
                     recipientEmail: recipient.email,
                     websiteUrl: recipient.website,
                     position: recipient.position || '',
                     coverLetterText: cl.coverLetterHtml,
                     companyName: cl.companyName || '',
-                    companyAddress: companyAddress
+                    companyAddress: companyAddress,
+                    coverLetterRegion,
+                    resumeRegion
                 });
 
                 results[idx] = {

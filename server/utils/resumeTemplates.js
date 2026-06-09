@@ -122,8 +122,12 @@ function pageRule(mode) {
   // is painted on the root element, which Chromium propagates to the full page
   // canvas — so it already bleeds past these margins to the page edges.
   // min-height:0 stops a short resume from spilling onto a near-empty 2nd page.
+  // @page :first{margin-top:0} removes the breathing-room margin from the TOP of the
+  // FIRST page only — content/header starts flush at the top. Pages 2+ keep the 14mm
+  // top margin and every page keeps the 14mm bottom margin, so content is never cut at
+  // a page break. Margins apply to CONTENT only; the sidebar band fills the full page.
   return mode === 'a4'
-    ? '@page{size:A4;margin:14mm 0}\n  .sheet{min-height:0}'
+    ? '@page{size:A4;margin:14mm 0}@page :first{margin-top:0}\n  .sheet{min-height:0}'
     : '@page{margin:0}';
 }
 

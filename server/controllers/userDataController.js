@@ -2,6 +2,11 @@ const dbConfig = require('../../db-config');
 const auditUtils = require('../utils/auditUtils');
 
 // Save recipients for a user
+// Ensure the cl_key column exists (carries the AI-Hub unique recipient↔cover-letter link).
+async function ensureRecipientsSchema() {
+    try { await dbConfig.run('ALTER TABLE recipients ADD COLUMN IF NOT EXISTS cl_key TEXT'); } catch (e) { /* older engines / already exists */ }
+}
+
 const saveRecipients = async (req, res) => {
     try {
         const userId = req.user.id;
@@ -11,8 +16,10 @@ const saveRecipients = async (req, res) => {
             return res.status(400).json({ error: 'Recipients must be an array' });
         }
 
-        // Filter valid recipients first
-        const validRecipients = recipients.filter(r => r.email && r.website);
+        await ensureRecipientsSchema();
+
+        // Keep any card with an email OR a website OR an AI-Hub clKey (don't drop no-website job cards)
+        const validRecipients = recipients.filter(r => r.email || r.website || r.clKey);
         
         // Don't delete existing data if no valid recipients to replace with
         if (validRecipients.length === 0) {
@@ -36,8 +43,8 @@ const saveRecipients = async (req, res) => {
         for (const recipient of validRecipients) {
             try {
                 await dbConfig.run(
-                    'INSERT INTO recipients (user_id, email, website, position) VALUES (?, ?, ?, ?)',
-                    [userId, recipient.email, recipient.website, recipient.position || '']
+                    'INSERT INTO recipients (user_id, email, website, position, cl_key) VALUES (?, ?, ?, ?, ?)',
+                    [userId, recipient.email || '', recipient.website || '', recipient.position || '', recipient.clKey || null]
                 );
                 insertedCount++;
             } catch (err) {
@@ -65,16 +72,25 @@ const getRecipients = async (req, res) => {
     try {
         const userId = req.user.id;
 
-        // Get all recipients for the user
-        const recipients = await dbConfig.query(
-            'SELECT id, email, website, position FROM recipients WHERE user_id = ? ORDER BY created_at ASC',
+        await ensureRecipientsSchema();
+
+        // Get all recipients for the user (cl_key carries the AI-Hub unique link)
+        const rows = await dbConfig.query(
+            'SELECT id, email, website, position, cl_key FROM recipients WHERE user_id = ? ORDER BY created_at ASC',
             [userId]
         );
+        const recipients = (rows || []).map(r => ({
+            id: r.id,
+            email: r.email,
+            website: r.website,
+            position: r.position,
+            ...(r.cl_key ? { clKey: r.cl_key } : {}),
+        }));
 
         res.json({
             success: true,
-            recipients: recipients || [],
-            count: (recipients || []).length
+            recipients,
+            count: recipients.length
         });
     } catch (error) {
         console.error('Get recipients error:', error);

@@ -104,12 +104,16 @@ async function callGemini(prompt) {
 }
 
 // ── Build the structured Gemini prompt ───────────────────────────────────────
-function buildParsePrompt(name, email, phone, location, rawText, scrapedProjects) {
+function buildParsePrompt(name, email, phone, location, rawText, scrapedProjects, uploadedResumeContext = '') {
     const projectContext = scrapedProjects.length
         ? scrapedProjects.map(p =>
             `URL: ${p.url}\nTitle: ${p.title}\nDescription: ${p.description}`
           ).join('\n\n')
         : 'None found.';
+
+    const uploadedBlock = uploadedResumeContext
+        ? `\n=== EXISTING UPLOADED RESUME (already on file — MERGE this with the career text above. Capture every job, project, skill, certification and education from BOTH sources; never drop anything, never invent anything) ===\n${uploadedResumeContext}\n`
+        : '';
 
     return `You are an expert executive resume writer AND veteran corporate recruiter. Your task is to parse the candidate information below and return a single, clean JSON object — NO markdown, NO code fences, NO conversational text, ONLY the raw JSON.
 
@@ -121,7 +125,7 @@ Location:  ${location}
 
 === RAW CAREER TEXT (the candidate's own words) ===
 ${rawText}
-
+${uploadedBlock}
 === SCRAPED PROJECT PAGES (enrichment context) ===
 ${projectContext}
 
@@ -292,7 +296,7 @@ PART 2 — CANDIDATE'S ROLE: The candidate's title/role in the project, then 2-3
 // POST /api/resume-builder/generate-ai
 async function generateAI(req, res) {
     const userId = req.user.id;
-    const { name, email, phone, location, rawText } = req.body;
+    const { name, email, phone, location, rawText, includeUploadedResume } = req.body;
 
     if (!rawText || rawText.trim().length < 20) {
         return res.status(400).json({ error: 'Please provide more detail about your experience.' });
@@ -311,7 +315,22 @@ async function generateAI(req, res) {
             ? await Promise.all(urls.map(scrapePage))
             : [];
 
-        const prompt    = buildParsePrompt(name || '', email || '', phone || '', location || '', rawText, scrapedProjects);
+        // Point 5: optionally fold in the user's already-parsed uploaded resume.
+        let uploadedResumeContext = '';
+        if (includeUploadedResume) {
+            try {
+                const meta = await dbConfig.get('SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = ?', [userId, 'done']);
+                if (meta) {
+                    const { id, user_id, parse_status, created_at, updated_at, ...rest } = meta;
+                    uploadedResumeContext = JSON.stringify(rest, null, 2);
+                    console.log(`[resumeBuilder] including uploaded resume content for user ${userId}`);
+                } else {
+                    console.log(`[resumeBuilder] includeUploadedResume set but no parsed resume found for user ${userId}`);
+                }
+            } catch (e) { console.warn('[resumeBuilder] uploaded resume merge failed:', e.message); }
+        }
+
+        const prompt    = buildParsePrompt(name || '', email || '', phone || '', location || '', rawText, scrapedProjects, uploadedResumeContext);
         const raw       = await callGemini(prompt);
         const cleaned   = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
         const resumeData = JSON.parse(cleaned);
@@ -843,4 +862,33 @@ async function previewTemplates(req, res) {
     }
 }
 
-module.exports = { generateAI, saveResume, getResume, generatePDF, previewTemplates };
+// Reusable: build a REGION-formatted resume PDF from the user's Resume-Builder resume.
+// Returns { filePath, fileName } or null when no builder resume exists (caller then
+// falls back to the uploaded profile resume). Used by the email-send flow (point 4).
+async function buildResumePdfForRegion(userId, region, mode) {
+    await ensureResumeTable();
+    const row = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = $1', [userId]);
+    if (!row || !row.resume_data) return null; // no builder resume → caller uses uploaded PDF
+
+    const resume = row.resume_data;
+    const tpls = templatesForRegion(region);
+    const tplId = (tpls && tpls[0] && tpls[0].id) || TEMPLATE_IDS[0];
+    const needsRect = tplId === 'germany' || tplId === 'europass';
+
+    const ppath = await resolvePhotoPath(userId);
+    const photo = await loadPhotoDataUri(ppath);
+    const photoRect = needsRect ? await loadPhotoDataUri(ppath, 'rect') : null;
+    const pdfBuffer = await renderPdf(tplId, resume, { photo, photoRect, mode: mode || 'a4' });
+
+    const pi = resume.personal_info || {};
+    const strip = (t) => (t || '').replace(/\*\*(.+?)\*\*/g, '$1').trim();
+    const tSafe = strip(pi.full_name || 'Resume').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_');
+    const fileName = `${tSafe}_Resume_${Date.now()}.pdf`;
+    const tDir = path.join(__dirname, '../../temp');
+    await fs.mkdir(tDir, { recursive: true });
+    const filePath = path.join(tDir, fileName);
+    await fs.writeFile(filePath, pdfBuffer);
+    return { filePath, fileName, template: tplId };
+}
+
+module.exports = { generateAI, saveResume, getResume, generatePDF, previewTemplates, buildResumePdfForRegion };

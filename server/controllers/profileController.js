@@ -7,7 +7,7 @@ const getProfile = async (req, res) => {
     const userId = req.user.id;
     
     try {
-        const user = await dbConfig.get('SELECT full_name as "fullName", email, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath", phone_number as "phoneNumber", address, date_of_birth as "dateOfBirth", created_at as "createdAt", oauth_provider as "oauthProvider" FROM users WHERE id = ?', [userId]);
+        const user = await dbConfig.get('SELECT full_name as "fullName", email, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath", phone_number as "phoneNumber", address, date_of_birth as "dateOfBirth", gender, created_at as "createdAt", oauth_provider as "oauthProvider" FROM users WHERE id = ?', [userId]);
         
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
@@ -126,7 +126,7 @@ const uploadSignature = async (req, res) => {
 const updateProfile = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { fullName, phone, address, dateOfBirth, email } = req.body;
+        const { fullName, phone, address, dateOfBirth, email, gender } = req.body;
 
         const updates = [];
         const params = [];
@@ -169,6 +169,16 @@ const updateProfile = async (req, res) => {
             updates.push('date_of_birth = ?');
             params.push(dateOnly);
         }
+        if (gender !== undefined) {
+            // Used (with the user's consent) to auto-fill pronoun/gender questions on job forms.
+            // Only three allowed values; '' clears it. Anything else is rejected.
+            const allowed = ['Male', 'Female', 'Prefer Not to Say', ''];
+            if (!allowed.includes(gender)) {
+                return res.status(400).json({ error: 'Invalid gender value' });
+            }
+            updates.push('gender = ?');
+            params.push(gender === '' ? null : gender);
+        }
 
         if (updates.length === 0) {
             return res.status(400).json({ error: 'No fields to update' });
@@ -186,6 +196,7 @@ const updateProfile = async (req, res) => {
             if (phone) fieldsUpdated.push('Phone');
             if (address) fieldsUpdated.push('Address');
             if (dateOfBirth) fieldsUpdated.push('Date of Birth');
+            if (gender !== undefined) fieldsUpdated.push('Gender');
             await notifyProfileUpdated(userId, fieldsUpdated);
         } catch (notifError) {
             console.error('Failed to create notification:', notifError);

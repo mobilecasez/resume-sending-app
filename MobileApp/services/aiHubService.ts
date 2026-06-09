@@ -203,6 +203,23 @@ export async function addContactToJob(
 }
 
 /**
+ * Fetches the persisted contacts for a job (used to refresh after adding one).
+ * Returns [] on any error so the caller can keep showing the snapshot.
+ */
+export async function getJobContacts(jobId: string): Promise<Contact[]> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(
+      `${API_BASE_URL}/ai-hub/jobs/${jobId}/contacts`,
+      { headers }
+    );
+    return (data?.contacts ?? data ?? []) as Contact[];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Fetches the user's tracked employers / search history.
  */
 export async function fetchDashboard(): Promise<{
@@ -315,12 +332,14 @@ export async function findRecruiters(
   employerId: string
 ): Promise<{ recruiters: Recruiter[]; creditsUsed: number }> {
   const headers = await getAuthHeader();
-  const response = await axios.post(
+  // Runs as a background job (up to ~60s of Gemini search) — survives the app being minimized.
+  const { data } = await axios.post(
     `${API_BASE_URL}/ai-hub/employers/${employerId}/find-recruiters`,
-    {},
-    { headers, timeout: 60000 }
+    { __async: true },
+    { headers, timeout: 30000 }
   );
-  return response.data;
+  if (!data?.jobId) return data;   // sync fallback
+  return pollUntilDone(data.jobId, headers as Record<string, string>);
 }
 
 /**
@@ -330,12 +349,14 @@ export async function findRecruiterEmails(
   employerId: string
 ): Promise<{ results: Recruiter[]; creditsUsed: number }> {
   const headers = await getAuthHeader();
-  const response = await axios.post(
+  // Background job (up to ~120s of SMTP verification) — survives the app being minimized.
+  const { data } = await axios.post(
     `${API_BASE_URL}/ai-hub/employers/${employerId}/find-emails`,
-    {},
-    { headers, timeout: 120000 }
+    { __async: true },
+    { headers, timeout: 30000 }
   );
-  return response.data;
+  if (!data?.jobId) return data;   // sync fallback
+  return pollUntilDone(data.jobId, headers as Record<string, string>);
 }
 
 // ── Job Cover Letter Persistence ─────────────────────────────────────────────
@@ -354,7 +375,7 @@ export type JobCLRecord = {
 
 export async function saveJobCoverLetter(jobId: string, data: {
   coverLetterHtml: string; companyName: string; websiteUrl: string; position: string;
-  companyAddress?: string; companyLocations?: Array<{ address: string; city: string; country: string; isHeadquarters: boolean }>;
+  companyAddress?: string; companyLocations?: Array<{ address: string; city: string; country: string; isHeadquarters: boolean; matchesJobLocation?: boolean }>;
 }): Promise<void> {
   try {
     const headers = await getAuthHeader();
@@ -416,7 +437,7 @@ export async function startJobCoverLetter(
 export async function pollJobCoverLetter(
   jobId: string,
   onProgress?: () => void
-): Promise<{ coverLetterHtml: string; companyName: string; subject: string; locations?: Array<{ address: string; city: string; country: string; isHeadquarters: boolean }> }> {
+): Promise<{ coverLetterHtml: string; companyName: string; subject: string; locations?: Array<{ address: string; city: string; country: string; isHeadquarters: boolean; matchesJobLocation?: boolean }> }> {
   // Sync mode shortcut
   if (jobId.startsWith('__sync__')) {
     return JSON.parse(jobId.slice(8));

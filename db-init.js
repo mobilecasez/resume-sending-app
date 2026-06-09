@@ -257,10 +257,18 @@ async function runPostgresMigrations(db) {
                     RAISE NOTICE 'Added google_token_issued_at column to users table';
                 END IF;
                 
-                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                               WHERE table_name='users' AND column_name='microsoft_token_issued_at') THEN
                     ALTER TABLE users ADD COLUMN microsoft_token_issued_at TIMESTAMP DEFAULT NULL;
                     RAISE NOTICE 'Added microsoft_token_issued_at column to users table';
+                END IF;
+
+                -- Optional self-declared gender ('Male' | 'Female' | 'Prefer Not to Say').
+                -- Used WITH the user's consent to auto-fill pronoun/gender questions on job forms.
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                              WHERE table_name='users' AND column_name='gender') THEN
+                    ALTER TABLE users ADD COLUMN gender TEXT DEFAULT NULL;
+                    RAISE NOTICE 'Added gender column to users table';
                 END IF;
             END $$;
         `);

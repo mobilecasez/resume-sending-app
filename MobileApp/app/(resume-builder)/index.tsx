@@ -102,6 +102,9 @@ export default function ResumeBuilderIndex() {
   const [rawText,     setRawText]     = useState('');
   const [pickerOpen,  setPickerOpen]  = useState(false);
   const [pickerSearch, setPickerSearch] = useState('');
+  // Point 5: optionally fold the uploaded profile resume into the AI generation.
+  const [hasUploadedResume,      setHasUploadedResume]      = useState(false);
+  const [includeUploadedResume,  setIncludeUploadedResume]  = useState(false);
 
   // Runs every time screen gains focus
   useFocusEffect(useCallback(() => {
@@ -148,6 +151,9 @@ export default function ResumeBuilderIndex() {
           if (pRes.ok) profile = await pRes.json();
         }
       } catch {}
+
+      // Point 5: show the "include uploaded resume" option only when one exists on file.
+      setHasUploadedResume(!!profile.resume);
 
       // Helper: pick saved value first, then profile, then keep current state
       const pick = (saved: string, profileVal: string) => saved || profileVal || '';
@@ -253,7 +259,7 @@ export default function ResumeBuilderIndex() {
       const res = await fetch(`${API_BASE}/resume-builder/generate-ai`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ name, email, phone: fullPhone, location, rawText }),
+        body: JSON.stringify({ name, email, phone: fullPhone, location, rawText, includeUploadedResume: hasUploadedResume && includeUploadedResume }),
         signal: controller.signal,
       });
       clearTimeout(clientTimeout);
@@ -538,6 +544,21 @@ export default function ResumeBuilderIndex() {
             </View>
           </View>
 
+          {/* Point 5: merge uploaded profile resume (only shown when one exists) */}
+          {hasUploadedResume && (
+            <TouchableOpacity style={s.checkCard} activeOpacity={0.85} onPress={() => setIncludeUploadedResume(v => !v)}>
+              <Ionicons
+                name={includeUploadedResume ? 'checkbox' : 'square-outline'}
+                size={22}
+                color={includeUploadedResume ? T.blue : T.faint}
+              />
+              <View style={s.checkTextWrap}>
+                <Text style={s.checkLabel}>Include my uploaded resume</Text>
+                <Text style={s.checkSub}>Merge the resume from your Profile with the story above, so the AI uses both.</Text>
+              </View>
+            </TouchableOpacity>
+          )}
+
           {/* Generate button */}
           <TouchableOpacity onPress={handleAIGenerate} activeOpacity={0.88} style={s.generateOuter}>
             <LinearGradient colors={[T.cyan, T.blue]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.generateBtn}>
@@ -633,6 +654,10 @@ const s = StyleSheet.create({
   storyInput: { fontSize: 13, color: T.ink, lineHeight: 20, minHeight: 180, backgroundColor: T.bg, borderRadius: 14, padding: 12, borderWidth: 1, borderColor: T.border },
   storyHintRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 8 },
   storyHintSmall: { fontSize: 11, color: T.cyan, fontWeight: '600' },
+  checkCard:    { backgroundColor: T.surface, borderRadius: 16, padding: 14, flexDirection: 'row', alignItems: 'center', gap: 12, shadowColor: T.ink, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.06, shadowRadius: 10, elevation: 2 },
+  checkTextWrap:{ flex: 1, gap: 2 },
+  checkLabel:   { fontSize: 14, fontWeight: '700', color: T.ink },
+  checkSub:     { fontSize: 12, color: T.muted, lineHeight: 16 },
   generateOuter:   { borderRadius: 16, overflow: 'hidden', marginTop: 4 },
   generateBtn:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, height: 54, borderRadius: 16 },
   generateText:    { fontSize: 16, fontWeight: '800', color: '#fff' },

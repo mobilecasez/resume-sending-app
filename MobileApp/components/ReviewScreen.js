@@ -9,6 +9,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView as SafeAreaViewContext, useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { API_BASE } from '../config';
+import { regionFromCountry, REGION_OPTIONS, RESUME_REGION_OPTIONS, regionLabel } from '../regionUtils';
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
 const T = {
@@ -125,9 +127,15 @@ export default function ReviewScreen({
   const activeRecipient = recipients[currentReviewTab] || {};
   const activeEmail     = activeRecipient?.email;
 
-  // Cover letters are keyed by recipient email (stable). We also do a legacy linear
-  // scan as a fallback so any old numeric-keyed entries are never lost.
+  // Resolve the active tab's cover letter. AI-Hub cards carry a UNIQUE clKey — use it first so
+  // a shared placeholder email (or empty website) can never show another company's letter.
+  // Normal recipients fall back to their unique email key + a legacy scan.
   const activeCL = (() => {
+    if (activeRecipient?.clKey) {
+      if (reviewCoverLetters[activeRecipient.clKey]) return reviewCoverLetters[activeRecipient.clKey];
+      const byKey = Object.values(reviewCoverLetters).find(e => e?.storedRecipientClKey === activeRecipient.clKey);
+      if (byKey) return byKey;
+    }
     if (!activeEmail) return null;
     if (reviewCoverLetters[activeEmail]) return reviewCoverLetters[activeEmail];
     return Object.values(reviewCoverLetters).find(
@@ -143,6 +151,31 @@ export default function ReviewScreen({
   }
   const wc = wordCount(activeCL?.coverLetterHtml);
   const readMin = Math.max(1, Math.ceil(wc / 200));
+
+  // ── Region pickers (points 1,2,4) ───────────────────────────────────────────
+  const [clRegionOpen, setClRegionOpen] = useState(false);
+  const [resumeRegionOpen, setResumeRegionOpen] = useState(false);
+  const [hasBuilderResume, setHasBuilderResume] = useState(false);
+
+  // Detect whether a Resume-Builder resume exists → only then is the resume-region picker useful.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!user?.token) return;
+        const res = await fetch(`${API_BASE}/resume-builder`, { headers: { Authorization: `Bearer ${user.token}` } });
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled) setHasBuilderResume(!!(json?.resumeData?.personal_info));
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [user?.token]);
+
+  // Current region values: in-edit choice → saved override → auto-detect from employer address.
+  const editAddr   = editedCoverLetterData.address || activeCL?.address || '';
+  const clRegionVal  = editedCoverLetterData.coverLetterRegion || activeCL?.coverLetterRegion || regionFromCountry(editAddr);
+  const resRegionVal = editedCoverLetterData.resumeRegion      || activeCL?.resumeRegion      || regionFromCountry(editAddr);
 
   return (
     <SafeAreaViewContext style={rStyles.container}>
@@ -446,6 +479,76 @@ export default function ReviewScreen({
                     </TouchableOpacity>
                   </Modal>
 
+                  {/* Cover Letter Region (points 1,2) */}
+                  <View style={rStyles.editFieldWrap}>
+                    <Text style={rStyles.editLabel}>Cover Letter Region</Text>
+                    <TouchableOpacity style={rStyles.dropdownBtn} onPress={() => setClRegionOpen(true)} activeOpacity={0.8}>
+                      <Text style={rStyles.dropdownBtnText} numberOfLines={1}>{regionLabel(clRegionVal)}</Text>
+                      <Ionicons name="chevron-down" size={14} color={T.textFaint} />
+                    </TouchableOpacity>
+                    <Text style={rStyles.regionHint}>Auto-selected from the employer's country. Generic = your original letter.</Text>
+                  </View>
+                  <Modal visible={clRegionOpen} transparent animationType="fade">
+                    <TouchableOpacity style={rStyles.dropdownOverlay} onPress={() => setClRegionOpen(false)} activeOpacity={1}>
+                      <View style={rStyles.dropdownMenu}>
+                        <ScrollView>
+                          {REGION_OPTIONS.map(opt => (
+                            <TouchableOpacity
+                              key={opt.id}
+                              style={rStyles.dropdownItem}
+                              onPress={() => { setEditedCoverLetterData({ ...editedCoverLetterData, coverLetterRegion: opt.id }); setClRegionOpen(false); }}
+                            >
+                              <View style={rStyles.regionItemRow}>
+                                <View style={{ flex: 1 }}>
+                                  <Text style={rStyles.dropdownItemText}>{opt.label}</Text>
+                                  <Text style={rStyles.regionItemSub}>{opt.sub}</Text>
+                                </View>
+                                {opt.id === clRegionVal && <Ionicons name="checkmark" size={16} color={T.blue} />}
+                              </View>
+                            </TouchableOpacity>
+                          ))}
+                        </ScrollView>
+                      </View>
+                    </TouchableOpacity>
+                  </Modal>
+
+                  {/* Resume Region (point 4) — only when a Builder resume exists */}
+                  {hasBuilderResume && (
+                    <>
+                      <View style={rStyles.editFieldWrap}>
+                        <Text style={rStyles.editLabel}>Resume Style (Region)</Text>
+                        <TouchableOpacity style={rStyles.dropdownBtn} onPress={() => setResumeRegionOpen(true)} activeOpacity={0.8}>
+                          <Text style={rStyles.dropdownBtnText} numberOfLines={1}>{regionLabel(resRegionVal)}</Text>
+                          <Ionicons name="chevron-down" size={14} color={T.textFaint} />
+                        </TouchableOpacity>
+                        <Text style={rStyles.regionHint}>Your Resume-Builder resume, styled for this region.</Text>
+                      </View>
+                      <Modal visible={resumeRegionOpen} transparent animationType="fade">
+                        <TouchableOpacity style={rStyles.dropdownOverlay} onPress={() => setResumeRegionOpen(false)} activeOpacity={1}>
+                          <View style={rStyles.dropdownMenu}>
+                            <ScrollView>
+                              {RESUME_REGION_OPTIONS.map(opt => (
+                                <TouchableOpacity
+                                  key={opt.id}
+                                  style={rStyles.dropdownItem}
+                                  onPress={() => { setEditedCoverLetterData({ ...editedCoverLetterData, resumeRegion: opt.id }); setResumeRegionOpen(false); }}
+                                >
+                                  <View style={rStyles.regionItemRow}>
+                                    <View style={{ flex: 1 }}>
+                                      <Text style={rStyles.dropdownItemText}>{opt.label}</Text>
+                                      <Text style={rStyles.regionItemSub}>{opt.sub}</Text>
+                                    </View>
+                                    {opt.id === resRegionVal && <Ionicons name="checkmark" size={16} color={T.blue} />}
+                                  </View>
+                                </TouchableOpacity>
+                              ))}
+                            </ScrollView>
+                          </View>
+                        </TouchableOpacity>
+                      </Modal>
+                    </>
+                  )}
+
                   {/* Date */}
                   <View style={rStyles.editFieldWrap}>
                     <Text style={rStyles.editLabel}>Date</Text>
@@ -521,6 +624,14 @@ export default function ReviewScreen({
                   <FieldTile label="Address" value={activeCL.address} icon="location-outline" full />
                   <FieldTile label="Email" value={activeRecipient.email} icon="mail-outline" full mono />
                   <FieldTile label="Subject" value={activeCL.subject} icon="text-outline" full />
+                  {hasBuilderResume ? (
+                    <>
+                      <FieldTile label="Letter Style" value={regionLabel(clRegionVal)} icon="globe-outline" half />
+                      <FieldTile label="Resume Style" value={regionLabel(resRegionVal)} icon="document-text-outline" half />
+                    </>
+                  ) : (
+                    <FieldTile label="Letter Style" value={regionLabel(clRegionVal)} icon="globe-outline" full />
+                  )}
                 </View>
               )}
             </View>
@@ -1243,6 +1354,9 @@ const rStyles = StyleSheet.create({
   dropdownMenu:   { backgroundColor: T.surface, borderRadius: 16, overflow: 'hidden', maxHeight: 280 },
   dropdownItem:   { padding: 14, borderBottomWidth: 1, borderBottomColor: T.border },
   dropdownItemText: { fontSize: 13, color: T.ink },
+  regionItemRow:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  regionItemSub:  { fontSize: 11, color: T.textMuted, marginTop: 2 },
+  regionHint:     { fontSize: 10.5, color: T.textFaint, marginTop: 5, lineHeight: 14 },
   editActions:    { flexDirection: 'row', gap: 10, marginTop: 4 },
   editSaveBtn:    { flex: 1, borderRadius: 12, overflow: 'hidden' },
   editBtnGrad:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, height: 44 },

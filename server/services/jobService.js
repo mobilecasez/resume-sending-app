@@ -84,16 +84,26 @@ async function cleanupOldJobs() {
 }
 
 /**
- * Re-queue stuck processing jobs on server restart (older than 5 minutes)
+ * Fail stuck jobs on server restart (older than 5 minutes).
+ *
+ * Jobs are processed inline (fire-and-forget) inside the request that created them —
+ * there is NO background worker that re-runs them. So if the process died mid-job, the
+ * row is left 'processing' (or 'pending', if it died before startJob) and would never
+ * progress. We mark such rows 'failed' so the mobile client STOPS polling and can
+ * re-issue the request, instead of polling a ghost job forever.
  */
 async function requeueStuckJobs() {
     const stuck = await dbConfig.query(
-        `UPDATE async_jobs SET status = 'pending', progress = 0, updated_at = CURRENT_TIMESTAMP
-         WHERE status = 'processing' AND updated_at < NOW() - INTERVAL '5 minutes'
-         RETURNING id, type`
+        `UPDATE async_jobs
+            SET status = 'failed',
+                error = 'Interrupted by a server restart — please try again.',
+                updated_at = CURRENT_TIMESTAMP
+          WHERE status IN ('processing', 'pending')
+            AND updated_at < NOW() - INTERVAL '5 minutes'
+        RETURNING id, type`
     );
     if (stuck.length > 0) {
-        console.log(`🔄 Re-queued ${stuck.length} stuck jobs:`, stuck.map(j => j.id));
+        console.log(`⚠️  Failed ${stuck.length} interrupted jobs:`, stuck.map(j => j.id));
     }
     return stuck;
 }
@@ -496,6 +506,7 @@ async function buildCachedEmployerObject(employer, userId, asyncJobId) {
         logoColor,
         logoInitial: (employer.name[0] || '?').toUpperCase(),
         status: 'active',
+        domain: employer.domain || null,   // cache path: carry the full domain (TLD) too
         jobs,
     };
 }

@@ -44,6 +44,7 @@ export type Employer = {
   logoColor: [string, string]; // gradient tuple for LinearGradient [from, to]
   logoInitial: string;
   status: 'active' | 'watching';
+  domain?: string; // full registrable domain WITH TLD (e.g. vertigis.com) — for the company-card website
   jobs: Job[];
 };
 

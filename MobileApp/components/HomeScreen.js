@@ -407,6 +407,34 @@ function DownloadButton({ state, progress, progressAnim, onPress }) {
   );
 }
 
+// ─── DownloadIconBtn — compact icon-only Download (keeps progress fill) ───────
+function DownloadIconBtn({ state, progressAnim, onPress }) {
+  const spinAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (state === 'loading') Animated.loop(Animated.timing(spinAnim, { toValue: 1, duration: 800, useNativeDriver: true })).start();
+    else spinAnim.stopAnimation();
+  }, [state]);
+  const spin = spinAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  const fillW = progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+  const isLoading = state === 'loading';
+  const isDone = state === 'done';
+  return (
+    <TouchableOpacity
+      onPress={onPress} disabled={isLoading} activeOpacity={isLoading ? 1 : 0.82}
+      style={[genBtnStyles.iconBtn, isDone && { borderColor: 'rgba(16,185,129,0.45)', backgroundColor: 'rgba(16,185,129,0.10)' }]}
+    >
+      {isLoading && <View style={[StyleSheet.absoluteFill, { backgroundColor: '#9FB9E8' }]} />}
+      {isLoading && <Animated.View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: fillW, backgroundColor: T.ink }} />}
+      {isLoading
+        ? <Animated.View style={[genBtnStyles.spinner, { transform: [{ rotate: spin }] }]} />
+        : isDone
+          ? <Ionicons name="checkmark-circle" size={22} color={T.emerald} />
+          : <Ionicons name="document-text-outline" size={18} color={T.ink} />
+      }
+    </TouchableOpacity>
+  );
+}
+
 // ─── SendButton — gradient with glass arrow pill, liquid fill on loading ──────
 function SendButton({ state, progress, progressAnim, onPress, fullWidth = false }) {
   const spinAnim = useRef(new Animated.Value(0)).current;
@@ -498,6 +526,12 @@ const genBtnStyles = StyleSheet.create({
     borderWidth: 1.5, borderColor: '#CBD5E1',
     backgroundColor: '#fff',
   },
+  // Compact icon-only action button (Download / Edit)
+  iconBtn: {
+    width: 46, height: 46, borderRadius: 12, overflow: 'hidden',
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1.5, borderColor: '#CBD5E1', backgroundColor: '#fff',
+  },
   // Send Now button (gradient → fill on load)
   sendWrap: {
     flex: 1.4, height: 46, borderRadius: 12, overflow: 'hidden',
@@ -569,6 +603,7 @@ function CompanyCard({
       const entry =
         (recipient.email && Object.values(all).find(e => e?.storedRecipientEmail === recipient.email)) ||
         Object.values(all).find(e => e?.recipientId === recipient.id) ||
+        (recipient.clKey && all[recipient.clKey]) ||
         (recipient.website && Object.values(all).find(e => e?.storedRecipientWebsite === recipient.website));
       if (entry?.coverLetterHtml) {
         setCoverLetterText(entry.coverLetterHtml);
@@ -625,6 +660,7 @@ function CompanyCard({
           const entry =
             (recipient.email && Object.values(all).find(e => e?.storedRecipientEmail === recipient.email)) ||
             Object.values(all).find(e => e?.recipientId === recipient.id) ||
+            (recipient.clKey && all[recipient.clKey]) ||
             (recipient.website && Object.values(all).find(e => e?.storedRecipientWebsite === recipient.website));
           if (entry?.coverLetterHtml) {
             setCoverLetterText(entry.coverLetterHtml);
@@ -676,73 +712,27 @@ function CompanyCard({
       return (
         (recipient.email && Object.values(all).find(e => e?.storedRecipientEmail === recipient.email)) ||
         Object.values(all).find(e => e?.recipientId === recipient.id) ||
+        (recipient.clKey && all[recipient.clKey]) ||
         (recipient.website && Object.values(all).find(e => e?.storedRecipientWebsite === recipient.website)) ||
         null
       );
     } catch { return null; }
   }
 
-  // ── Download ──────────────────────────────────────────────────────────────
+  // ── Download → open the country-format picker (preview free, download = credits)
   async function handleDownload() {
     if (dlState === 'loading') return;
-    setDlState('loading'); setDlProgress(0); dlAnim.setValue(0);
-
-    let fake = 0;
-    const tickTimer = setInterval(() => {
-      if (fake < 80) { fake = Math.min(fake + 1.5, 80); setDlProgress(Math.round(fake)); animTo(dlAnim, fake / 100); }
-    }, 150);
-
-    async function finishDownload(data) {
-      clearInterval(tickTimer);
-      if (!data.downloadUrl) { setDlState('idle'); Alert.alert('Download failed', 'No download URL from server.'); return; }
-      try {
-        setDlProgress(88); animTo(dlAnim, 0.88);
-        const token = user?.token;
-        const cleanUrl = data.downloadUrl.replace(/^\/api/, '');
-        const fullUrl = `${API_BASE}${cleanUrl}`;
-        const fileName = `${companyName.replace(/[^a-zA-Z0-9]/g, '_')}_Cover_Letter.pdf`;
-        const fileUri = (cacheDirectory || '') + fileName;
-        const result = await downloadAsync(fullUrl, fileUri, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        if (result.status !== 200) throw new Error(`Download HTTP ${result.status}`);
-        setDlProgress(100); animTo(dlAnim, 1);
-        setTimeout(() => { setDlState('done'); saveCache({ dlState: 'done' }); }, 300);
-        if (await Sharing.isAvailableAsync()) { await Sharing.shareAsync(result.uri); }
-      } catch (e) {
-        setDlState('idle');
-        Alert.alert('Download failed', e.message || 'Could not save PDF.');
-      }
-    }
-
     try {
-      const token = user?.token;
-      const hdrs = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
-      // Read address from the same Review-page storage for an accurate PDF
+      // Read the letter + address from the same Review-page storage.
       const entry = await getStoredEntry();
-      const html = entry?.coverLetterHtml || coverLetterText;
-      const addr = entry?.address || '';
+      const html  = entry?.coverLetterHtml || coverLetterText;
+      const addr  = entry?.address || '';
       const cName = entry?.companyName || companyName;
-      const res = await fetch(`${API_BASE}/generate-cover-letter-pdf`, {
-        method: 'POST', headers: hdrs,
-        body: JSON.stringify({ coverLetterHtml: html, companyName: cName, companyAddress: addr }),
-      });
-
-      if (res.status === 202) {
-        const { jobId } = await res.json();
-        pollJob(jobId, token,
-          (sd) => finishDownload(sd.data || sd.result || sd),
-          (msg) => { clearInterval(tickTimer); setDlState('idle'); Alert.alert('Download failed', msg); }
-        );
-      } else if (res.ok) {
-        finishDownload(await res.json());
-      } else {
-        clearInterval(tickTimer); setDlState('idle');
-        Alert.alert('Download failed', `Server error ${res.status}`);
-      }
+      if (!html) { Alert.alert('No cover letter', 'Generate a cover letter first.'); return; }
+      await AsyncStorage.setItem('coverLetterPickerContext', JSON.stringify({ coverLetterHtml: html, companyName: cName, companyAddress: addr }));
+      require('expo-router').router?.push?.('/(cover-letter)/templates');
     } catch (e) {
-      clearInterval(tickTimer); setDlState('idle');
-      Alert.alert('Download failed', 'Network error. Please try again.');
+      Alert.alert('Error', 'Could not open download options.');
     }
   }
 
@@ -942,8 +932,12 @@ function CompanyCard({
       {/* ── ACTION BUTTONS (view mode only) ── */}
       {mode === 'view' && (
         <View style={{ marginTop: 10 }}>
-          {/* Generate button — always visible, changes state in-place */}
-          {genState !== 'done' && (
+          {/* Explainer — same guidance as the Apply-job page */}
+          <Text style={cardStyles.clExplainer}>
+            Generate a cover letter tailored to this role — then preview &amp; edit it, download the PDF, or send your application, all from here.
+          </Text>
+
+          {genState !== 'done' ? (
             <GenerateButton
               state={genState}
               progress={genProgress}
@@ -951,49 +945,26 @@ function CompanyCard({
               onPress={handleGenerate}
               stageLabel={genLabel}
             />
-          )}
-
-          {genState === 'done' && (
-            <View style={{ gap: 8, marginTop: 2 }}>
-              {/* Row 1: Edit Cover Letter + Download side by side */}
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                {/* Edit → review screen */}
-                <TouchableOpacity
-                  onPress={() => handleReview && handleReview(index)}
-                  activeOpacity={0.85}
-                  style={{ flex: 1, borderRadius: 12, overflow: 'hidden' }}
-                >
-                  <LinearGradient
-                    colors={['#06B6D4', '#0891B2']}
-                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                    style={cardStyles.editLetterBtn}
-                  >
-                    <View style={cardStyles.editLetterIconCircle}>
-                      <Ionicons name="create-outline" size={14} color="#0891B2" />
-                    </View>
-                    <Text style={cardStyles.editLetterBtnText}>Edit Letter</Text>
-                    <View style={cardStyles.editLetterArrow}>
-                      <Ionicons name="arrow-forward" size={13} color="#fff" />
-                    </View>
-                  </LinearGradient>
-                </TouchableOpacity>
-
-                {/* Download */}
-                <DownloadButton
-                  state={dlState}
-                  progress={dlProgress}
-                  progressAnim={dlAnim}
-                  onPress={handleDownload}
-                />
-              </View>
-
-              {/* Row 2: Send Now full width */}
+          ) : (
+            // All three on one line: Send Now (big) + Edit (icon) + Download PDF (icon)
+            <View style={cardStyles.clActionRow}>
               <SendButton
                 state={sendState}
                 progress={sendProgress}
                 progressAnim={sendAnim}
                 onPress={handleSend}
-                fullWidth
+              />
+              <TouchableOpacity
+                onPress={() => handleReview && handleReview(index)}
+                activeOpacity={0.85}
+                style={cardStyles.iconActionCyan}
+              >
+                <Ionicons name="create-outline" size={18} color="#0891B2" />
+              </TouchableOpacity>
+              <DownloadIconBtn
+                state={dlState}
+                progressAnim={dlAnim}
+                onPress={handleDownload}
               />
             </View>
           )}
@@ -1054,6 +1025,13 @@ const cardStyles = StyleSheet.create({
   statusDot: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   statusText: { fontSize: 12, fontWeight: '600' },
   // Edit letter button (after generation done) — cyan gradient like review page
+  // Cover-letter explainer + one-line action row (Send big, Edit/PDF small)
+  clExplainer: { fontSize: 11.5, color: T.textMuted, lineHeight: 16, marginBottom: 10 },
+  clActionRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  iconActionCyan: {
+    width: 46, height: 46, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(6,182,212,0.10)', borderWidth: 1.5, borderColor: 'rgba(6,182,212,0.40)',
+  },
   editLetterBtn: {
     flexDirection: 'row', alignItems: 'center',
     height: 46, paddingLeft: 5, paddingRight: 5,

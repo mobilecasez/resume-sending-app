@@ -482,7 +482,7 @@ async function getPaymentHistory(req, res, dbConfig) {
     const userId = req.user.id;
 
     try {
-        const payments = await dbConfig.all(`
+        const payments = await dbConfig.query(`
             SELECT 
                 po.order_id,
                 po.payment_id,

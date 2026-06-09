@@ -1116,7 +1116,7 @@ export default function AIHubScreen() {
       pathname: '/(ai-hub)/job-detail',
       params: {
         jobStr: JSON.stringify(job),
-        employerStr: JSON.stringify({ id: employer.id, name: employer.name, subInfo: employer.subInfo, logoColor: employer.logoColor, logoInitial: employer.logoInitial }),
+        employerStr: JSON.stringify({ id: employer.id, name: employer.name, subInfo: employer.subInfo, logoColor: employer.logoColor, logoInitial: employer.logoInitial, domain: (employer as any).domain }),
       },
     });
   }, [router]);

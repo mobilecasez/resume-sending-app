@@ -1669,7 +1669,7 @@ const sendApplications = async (req, res) => {
 // Send single application (from review page)
 const sendSingleApplication = async (req, res) => {
     const userId = req.user.id;
-    const { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName } = req.body;
+    const { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName, coverLetterRegion, resumeRegion, includeResume = true, includeCoverLetter = true } = req.body;
     const useAsync = process.env.USE_ASYNC_JOBS !== 'false';
 
     console.log(`\n=== SEND SINGLE APPLICATION DEBUG (${useAsync ? 'ASYNC' : 'SYNC'}) ===`);
@@ -1712,11 +1712,12 @@ const sendSingleApplication = async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
         
-        if (!user.resume_path || user.resume_path.trim() === '') {
+        // Only require an uploaded resume when the resume is actually being attached.
+        if (includeResume !== false && (!user.resume_path || user.resume_path.trim() === '')) {
             await notifyError(userId, 'Resume Required',
                 'Please upload your resume before sending applications. Go to Profile (top right) to upload your resume.',
                 'upload_resume');
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'Resume required',
                 message: 'Please upload your resume before sending applications.',
                 action: 'upload_resume'
@@ -1726,7 +1727,7 @@ const sendSingleApplication = async (req, res) => {
         if (useAsync) {
             // ASYNC MODE: Create job and return immediately
             const jobId = await jobService.createJob(userId, 'send_application', {
-                recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress
+                recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, coverLetterRegion, resumeRegion, includeResume, includeCoverLetter
             });
             console.log(`🚀 Async send job created: ${jobId}`);
 
@@ -1734,7 +1735,7 @@ const sendSingleApplication = async (req, res) => {
 
             // Fire and forget
             jobService.startJob(jobId).then(() => {
-                return executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName });
+                return executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName, coverLetterRegion, resumeRegion, includeResume, includeCoverLetter });
             })
                 .then(result => jobService.completeJob(jobId, result))
                 .catch(err => {
@@ -1743,7 +1744,7 @@ const sendSingleApplication = async (req, res) => {
                 });
         } else {
             // SYNC MODE: Original behavior
-            const result = await executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName });
+            const result = await executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName, coverLetterRegion, resumeRegion, includeResume, includeCoverLetter });
             res.json(result);
         }
 
@@ -1759,7 +1760,7 @@ const sendSingleApplication = async (req, res) => {
 /**
  * Execute the actual email send work — used by both sync and async modes
  */
-async function executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName }) {
+async function executeSendWork(userId, { recipientEmail, websiteUrl, position, coverLetterText, companyName, companyAddress, brandColor, fontName, coverLetterRegion, resumeRegion, includeResume = true, includeCoverLetter = true }) {
     const user = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
 
     console.log('User found:', !!user);
@@ -1810,20 +1811,54 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
         console.log(`🎨 [SEND] brand resolved: color=${brandColor || 'default'}, font=${fontName || 'default'}`);
     }
 
-    // Generate PDF
-    console.log('📄 Generating PDF with address:', companyAddress || 'NO ADDRESS PROVIDED');
-        const { filePath, fileName } = await generateCoverLetterPDF(
-            user,
-            coverLetterText,
-            companyName,
-            companyAddress,
-            brandColor || null,
-            fontName || null
-        );
-        console.log('✅ PDF generated:', fileName);
+    // ── Cover letter PDF: region-aware (point 3). Generic = the exact original branded letter. ──
+    console.log('📄 Generating cover-letter PDF with address:', companyAddress || 'NO ADDRESS PROVIDED', '| region:', coverLetterRegion || 'generic');
+        let filePath, fileName;
+        const clRegion = coverLetterRegion || 'generic';
+        if (clRegion === 'generic') {
+            const r = await generateCoverLetterPDF(user, coverLetterText, companyName, companyAddress, brandColor || null, fontName || null);
+            filePath = r.filePath; fileName = r.fileName;
+        } else {
+            try {
+                const r = await require('./coverLetterController').buildCoverLetterPdfForRegion(userId, {
+                    region: clRegion, coverLetterHtml: coverLetterText, companyName, companyAddress,
+                    brandColor: brandColor || null, websiteUrl, mode: 'onepage' // emails always go out as a single page
+                });
+                filePath = r.filePath; fileName = r.fileName;
+            } catch (e) {
+                console.warn('⚠️ Region cover-letter render failed, falling back to original letter:', e.message);
+                const r = await generateCoverLetterPDF(user, coverLetterText, companyName, companyAddress, brandColor || null, fontName || null);
+                filePath = r.filePath; fileName = r.fileName;
+            }
+        }
+        console.log('✅ Cover-letter PDF generated:', fileName);
 
-        const resumePath = path.join(__dirname, '../../', user.resume_path);
+        // ── Resume attachment: region-formatted Builder resume if available, else uploaded profile PDF (point 4). ──
+        // Null-safe: a user who removed the resume attachment may not have an uploaded resume_path.
+        let resumePath = user.resume_path ? path.join(__dirname, '../../', user.resume_path) : null;
+        try {
+            const rr = await require('./resumeBuilderController').buildResumePdfForRegion(userId, resumeRegion || 'generic', 'onepage'); // emails always go out as a single page
+            if (rr && rr.filePath) {
+                resumePath = rr.filePath;
+                console.log('✅ Region resume PDF generated:', rr.fileName, '| region:', resumeRegion || 'generic');
+            } else {
+                console.log('ℹ️ No Builder resume found — attaching uploaded profile resume.');
+            }
+        } catch (e) {
+            console.warn('⚠️ Region resume render failed, using uploaded resume:', e.message);
+        }
+
         const coverLetterPdfBuffer = await fs.readFile(filePath);
+
+        // Which attachments to actually include (the AI-Hub mail flow lets the user remove either).
+        // Defaults to BOTH, so every existing caller is unchanged.
+        const incCL  = includeCoverLetter !== false;
+        const incRes = includeResume !== false;
+        // Path-based attachment list (used by the SMTP transports).
+        const pathAttachments = [
+            ...(incCL  ? [{ filename: `${sanitizeName(user.full_name)}_Cover_Letter.pdf`, path: filePath }]   : []),
+            ...(incRes ? [{ filename: `${sanitizeName(user.full_name)}_Resume.pdf`,       path: resumePath }] : []),
+        ];
 
         // Generate email body and subject
         const emailBody = await generateEmailBody(position, companyName, user.full_name);
@@ -1839,8 +1874,8 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
                     recipientEmail,
                     subject,
                     emailBody,
-                    resumePath,
-                    coverLetterPdfBuffer
+                    incRes ? resumePath : null,
+                    incCL ? coverLetterPdfBuffer : null
                 );
 
                 console.log(`✅ Application sent via Microsoft to ${recipientEmail}`);
@@ -1900,8 +1935,8 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
                     recipientEmail,
                     subject,
                     emailBody,
-                    resumePath,
-                    coverLetterPdfBuffer
+                    incRes ? resumePath : null,
+                    incCL ? coverLetterPdfBuffer : null
                 );
 
                 console.log(`✅ Application sent via Gmail to ${recipientEmail}`);
@@ -1979,16 +2014,7 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
                     },
                     html: textToHtml(emailBody),
                     text: emailBody,
-                    attachments: [
-                        {
-                            filename: `${sanitizeName(user.full_name)}_Cover_Letter.pdf`,
-                            path: filePath
-                        },
-                        {
-                            filename: `${sanitizeName(user.full_name)}_Resume.pdf`,
-                            path: resumePath
-                        }
-                    ]
+                    attachments: pathAttachments
                 };
 
                 await sendEmailWithTimeout(transporter, mailOptions);
@@ -2019,8 +2045,8 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
                 // Clean up
                 await fs.unlink(filePath);
 
-                return { 
-                    success: true, 
+                return {
+                    success: true,
                     message: 'Application sent successfully via SMTP',
                     method: 'smtp'
                 };
@@ -2058,16 +2084,7 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
                     },
                     html: textToHtml(emailBody),
                     text: emailBody,
-                    attachments: [
-                        {
-                            filename: `${sanitizeName(user.full_name)}_Cover_Letter.pdf`,
-                            path: filePath
-                        },
-                        {
-                            filename: `${sanitizeName(user.full_name)}_Resume.pdf`,
-                            path: resumePath
-                        }
-                    ]
+                    attachments: pathAttachments
                 };
 
                 await sendEmailWithTimeout(transporter, mailOptions);
@@ -2118,10 +2135,10 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
             try {
                 console.log('📧 Sending via ZeptoMail API...');
                 
-                // Read files and convert to base64
-                const coverLetterBuffer = await fs.readFile(filePath);
-                const resumeBuffer = await fs.readFile(resumePath);
-                
+                // Read files and convert to base64 (only the attachments the user kept)
+                const coverLetterBuffer = incCL  ? await fs.readFile(filePath)   : null;
+                const resumeBuffer      = incRes ? await fs.readFile(resumePath) : null;
+
                 const fileName = `CoverLetter_${companyName.replace(/[^a-zA-Z0-9]/g, '_')}_${position.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
                 
                 // Use plus addressing for Reply-To tracking
@@ -2140,16 +2157,8 @@ async function executeSendWork(userId, { recipientEmail, websiteUrl, position, c
                     textBody: emailBody,
                     htmlBody: textToHtml(emailBody),
                     attachments: [
-                        {
-                            filename: `${sanitizeName(user.full_name)}_Cover_Letter.pdf`,
-                            content: coverLetterBuffer.toString('base64'),
-                            contentType: 'application/pdf'
-                        },
-                        {
-                            filename: `${sanitizeName(user.full_name)}_Resume.pdf`,
-                            content: resumeBuffer.toString('base64'),
-                            contentType: 'application/pdf'
-                        }
+                        ...(incCL  ? [{ filename: `${sanitizeName(user.full_name)}_Cover_Letter.pdf`, content: coverLetterBuffer.toString('base64'), contentType: 'application/pdf' }] : []),
+                        ...(incRes ? [{ filename: `${sanitizeName(user.full_name)}_Resume.pdf`,       content: resumeBuffer.toString('base64'),      contentType: 'application/pdf' }] : []),
                     ]
                 });
 

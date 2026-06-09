@@ -171,6 +171,25 @@ OUTPUT FORMAT — return ONLY this JSON object, with absolutely nothing before o
 }`;
 
 /**
+ * UNIVERSAL writing-style guidance. We intentionally produce ONE letter that
+ * suits hiring norms across every region (US/CA, UK/AU, EU, DACH, India, SG,
+ * global) — the region picker only changes the visual PDF formatting, not the
+ * text. Static block, no AI cost, no per-country branching.
+ */
+function universalWritingRules() {
+    return `\n\n---\n\nUNIVERSAL WRITING STYLE — this single letter must read well in EVERY region (US, Canada, UK, Australia, EU, Germany/DACH, India, Singapore, and global). Write ONE region-neutral letter that any of these markets would accept:
+- 300–450 words, comfortably one page.
+- Professional and confident but never boastful or hype-y; achievement-oriented, leading with concrete, measurable results.
+- Open with a strong fit statement (why this candidate is right for THIS role).
+- Include genuine company analysis — show why THIS company specifically (their product, mission, market, or recent work) — using only facts you can verify.
+- Connect the candidate's most relevant skills, projects and clients to the role's needs.
+- Keep **bold** keywords exactly as per the bold rules above.
+- Internationally safe: NEVER include age, date of birth, marital status, religion, nationality, gender, a photo, family details or salary figures.
+- Plain, globally-understood professional English. No region-specific slang, no American-style over-selling, no excessive formality.
+- NEVER invent experience, employers, projects, certifications, achievements, references or salary figures.\n\n---`;
+}
+
+/**
  * Build the filled-in prompt text by substituting placeholders.
  */
 function buildPrompt(userMetadata, targetPosition, employerUrlOrText, responsibilities = null, jobLocation = null) {
@@ -183,8 +202,16 @@ function buildPrompt(userMetadata, targetPosition, employerUrlOrText, responsibi
     // This is additive — the prompt works identically without it.
     // Inject job location when provided — keeps prompt identical when omitted.
     if (jobLocation && jobLocation.trim()) {
-        const block = `\n\n---\n\nJOB LOCATION: ${jobLocation.trim()}\n\nThis role is based in **${jobLocation.trim()}**. Use this to:\n- Address the specific office location in the cover letter (use the matching address for that city/country, NOT the HQ if different)\n- In Paragraph 4 (closing), mention relocation or on-site commitment for **${jobLocation.trim()}** if it differs from the user's current location\n- Bold the job location city/country as per the bold rules\n\n---`;
+        const block = `\n\n---\n\nJOB LOCATION: ${jobLocation.trim()}\n\nThis role is based in **${jobLocation.trim()}**. Use this to:\n- Address the specific office location in the cover letter (use the matching address for that city/country, NOT the HQ if different)\n- CRITICAL: Search the company's Contact/Locations page for the office in **${jobLocation.trim()}**. In the "addresses" output array, put THAT office's full address FIRST. Only fall back to the HQ address if no office exists in that city/country.\n- In Paragraph 4 (closing), mention relocation or on-site commitment for **${jobLocation.trim()}** if it differs from the user's current location\n- Bold the job location city/country as per the bold rules\n\n---`;
         prompt += block;
+    }
+
+    // One region-neutral letter that fits every market (no per-country branching).
+    prompt += universalWritingRules();
+
+    // Point 6: if a Resume-Builder resume was merged in, tell the model to use it for richer detail.
+    if (userMetadata && userMetadata.builder_resume) {
+        prompt += `\n\n---\n\nADDITIONAL DETAILED RESUME: the 'builder_resume' object in the metadata is the candidate's full structured resume (summary, experience, projects, skills, achievements). Prefer it for specific, accurate detail — real project names, metrics and employers — to make the letter more concrete. Never invent anything that is not present in the metadata.\n\n---`;
     }
 
     if (responsibilities && responsibilities.length > 0) {

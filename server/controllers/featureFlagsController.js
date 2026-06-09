@@ -86,7 +86,7 @@ async function upsertFlag(req, res) {
 async function listFlags(req, res) {
     try {
         await ensureTable();
-        const rows = await dbConfig.all('SELECT * FROM feature_flags ORDER BY page_key');
+        const rows = await dbConfig.query('SELECT * FROM feature_flags ORDER BY page_key');
         res.json(rows);
     } catch (err) {
         console.error('[feature-flags] listFlags error:', err);

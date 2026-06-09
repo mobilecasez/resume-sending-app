@@ -322,15 +322,22 @@ const googleMobileCallback = (req, res) => {
     // Just query params so the Linking listener can catch it directly
     const IS_PROD = process.env.NODE_ENV === 'production';
     // Derive the Expo dev IP from the request's Referer/Origin or fall back to env/default
-    let devIp = '192.168.1.10';
+    let devIp = process.env.LOCAL_IP || '127.0.0.1';
     if (!IS_PROD) {
-        // Try to detect from the incoming request (the Custom Tab sends Referer)
-        const referer = req.headers.referer || req.headers.origin || '';
-        const ipMatch = referer.match(/\/\/([\d.]+):/);
-        if (ipMatch) {
-            devIp = ipMatch[1];
-        } else if (process.env.LOCAL_IP) {
-            devIp = process.env.LOCAL_IP;
+        const hostHeader = req.headers['x-forwarded-host'] || req.headers.host;
+        if (hostHeader) {
+            const hostMatch = hostHeader.match(/^([^:]+)/);
+            if (hostMatch && hostMatch[1] !== 'localhost' && hostMatch[1] !== '127.0.0.1') {
+                devIp = hostMatch[1];
+            }
+        }
+
+        if (devIp === '127.0.0.1') {
+            const referer = req.headers.referer || req.headers.origin || '';
+            const ipMatch = referer.match(/\/\/([\d.]+):/);
+            if (ipMatch) {
+                devIp = ipMatch[1];
+            }
         }
     }
     const deepLink = IS_PROD

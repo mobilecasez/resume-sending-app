@@ -3,6 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
+const { asJob } = require('../middleware/asyncJob');   // opt-in minimize-resilient job wrapper
 const {
     analyzeWishlist,
     getJobMatches,
@@ -11,6 +12,9 @@ const {
     removeDashboardItem,
     verifyEmail,
     addContactToJob,
+    getJobContacts,
+    autofillMap,
+    autofillFiles,
     getCreditBalance,
     deductCredits,
     findRecruiters,
@@ -31,16 +35,19 @@ router.get('/jobs', authenticateToken, getJobMatches);
 router.get('/job-status/:jobId', authenticateToken, getJobStatus);
 router.post('/verify-email', authenticateToken, verifyEmail);
 router.post('/jobs/:jobId/contacts', authenticateToken, addContactToJob);
+router.get('/jobs/:jobId/contacts', authenticateToken, getJobContacts);
+router.post('/autofill-map', authenticateToken, asJob('autofill_map')(autofillMap));
+router.post('/autofill-files', authenticateToken, asJob('autofill_files')(autofillFiles));
 router.get('/credits', authenticateToken, getCreditBalance);
 router.post('/deduct-credits', authenticateToken, deductCredits);
 
 // ── Recruiter finder ──────────────────────────────────────────────────────────
 router.get('/employers/:employerId/recruiters', authenticateToken, getRecruiters);
-router.post('/employers/:employerId/find-recruiters', authenticateToken, findRecruiters);
-router.post('/employers/:employerId/find-emails', authenticateToken, findRecruiterEmails);
+router.post('/employers/:employerId/find-recruiters', authenticateToken, asJob('find_recruiters')(findRecruiters));
+router.post('/employers/:employerId/find-emails', authenticateToken, asJob('find_emails')(findRecruiterEmails));
 
 // ── Email body generator ──────────────────────────────────────────────────────
-router.post('/generate-email-body', authenticateToken, generateEmailBodyHandler);
+router.post('/generate-email-body', authenticateToken, asJob('email_body')(generateEmailBodyHandler));
 
 // ── Cover letter for job ──────────────────────────────────────────────────────
 router.post('/jobs/:jobId/generate-cover-letter',       authenticateToken, generateJobCoverLetter);

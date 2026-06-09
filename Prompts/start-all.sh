@@ -12,7 +12,10 @@ sleep 3
 
 # Detect local IP automatically
 echo "🔍 Detecting local IP address..."
-LOCAL_IP=$(ifconfig | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | head -n 1)
+LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null)
+if [ -z "$LOCAL_IP" ]; then
+  LOCAL_IP=$(ifconfig | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | head -n 1)
+fi
 
 if [ -z "$LOCAL_IP" ]; then
     echo "❌ Could not detect local IP address"
@@ -48,9 +51,10 @@ echo ""
 # Start backend server
 echo "🚀 Starting backend server on $LOCAL_IP:3000..."
 cd "$PROJECT_ROOT"
+export LOCAL_IP="$LOCAL_IP"
 echo "📋 Backend logs will appear below:"
 echo "========================================="
-node server.js 2>&1 &
+LOCAL_IP="$LOCAL_IP" node server.js 2>&1 &
 BACKEND_PID=$!
 echo ""
 echo "✅ Backend started (PID: $BACKEND_PID)"

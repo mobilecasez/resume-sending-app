@@ -7,6 +7,10 @@ const { researchEmployer } = require('../../ai-employer-researcher');
 const { notifyCoverLetterGenerated, notifyError } = require('./notificationsController');
 const jobService = require('../services/jobService');
 const { generateCoverLetterPDF: generateRichCoverLetterPDF } = require('./emailController');
+const clTemplates = require('../utils/coverLetterTemplates');
+const clRenderer  = require('../utils/coverLetterRenderer');
+
+const CL_DOWNLOAD_CREDIT_COST = 2; // credits per country-template cover-letter download
 
 // Helper function: Check user credits
 async function checkUserCredits(userId, creditsRequired = 1) {
@@ -596,6 +600,9 @@ const generateCoverLetters = async (req, res) => {
                 });
             }
 
+            // Point 6: add Builder-resume context (if present) for richer letters.
+            resumeMetadata = await mergeBuilderResume(userId, resumeMetadata);
+
             for (const recipient of recipients) {
                 try {
                     console.log(`\n📤 Processing: ${recipient.email}`);
@@ -793,6 +800,9 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
         throw new Error('Resume not processed yet. Please wait a moment after uploading and try again.');
     }
 
+    // Point 6: add Builder-resume context (if present) for richer letters.
+    resumeMetadata = await mergeBuilderResume(userId, resumeMetadata);
+
     console.log(`[coverLetterController] Starting generation for user ${userId}, url=${normalizedWebsiteUrl}, position=${position}`);
 
     // Check employer brand cache first
@@ -845,7 +855,35 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
         locations.push({ address: 'Address not available', city: '', country: '', isHeadquarters: true });
     }
 
-    // Format markdown cover letter body as HTML
+    // Job-aware selection: a cover letter generated FOR A JOB must use that job's office,
+    // not the HQ. If jobLocation was provided, surface the matching office first (flagged
+    // matchesJobLocation); if none of the scraped addresses match, synthesize an entry from
+    // the job location so it is always present AND first. The mobile picker defaults to it.
+    if (jobLocation && jobLocation.trim()) {
+        const jl = jobLocation.toLowerCase().trim();
+        const tokens = jl.split(/[,\s]+/).map(t => t.trim()).filter(t => t.length >= 3);
+        const matchIdx = locations.findIndex(l => {
+            const hay = `${l.address} ${l.city} ${l.country}`.toLowerCase();
+            return (jl.length >= 4 && hay.includes(jl)) || tokens.some(t => hay.includes(t));
+        });
+        if (matchIdx >= 0) {
+            const [match] = locations.splice(matchIdx, 1);
+            match.matchesJobLocation = true;
+            locations.unshift(match);
+        } else {
+            const parts = jobLocation.split(',').map(s => s.trim()).filter(Boolean);
+            locations.unshift({
+                address: jobLocation.trim(),
+                city: parts[0] || '',
+                country: parts[parts.length - 1] || '',
+                isHeadquarters: false,
+                matchesJobLocation: true,
+            });
+        }
+    }
+
+    // Format markdown cover letter body as HTML. This single region-neutral
+    // letter is used for every region — the picker only changes PDF formatting.
     const coverLetterHtml = formatCoverLetterWithHTML(aiResult.cover_letter || '', {});
 
     // DEDUCT CREDIT
@@ -1022,9 +1060,184 @@ const generateCoverLetterPdf = async (req, res) => {
     }
 };
 
+// ══════════════════════════════════════════════════════════════════════════════
+// COUNTRY-FORMAT COVER LETTER TEMPLATES (preview + credited download)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Sender block from the user record (+ a title from their saved resume if present).
+async function buildCLSender(userId) {
+    let u = {};
+    try { u = await dbConfig.get('SELECT full_name, email, phone_number, city, country FROM users WHERE id = ?', [userId]) || {}; } catch {}
+    let title = '';
+    try {
+        const r = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = ?', [userId]);
+        const rd = r && r.resume_data;
+        title = (rd && ((rd.personal_info && rd.personal_info.title) || (rd.experience && rd.experience[0] && rd.experience[0].role))) || '';
+    } catch {}
+    const location = u.city && u.country ? `${u.city}, ${u.country}` : (u.city || u.country || '');
+    return { name: u.full_name || '', email: u.email || '', phone: u.phone_number || '', location, title };
+}
+
+// Profile photo → compact JPEG data URI (flatten transparency to white).
+async function loadCLPhotoDataUri(userId) {
+    try {
+        const u = await dbConfig.get('SELECT photo_path FROM users WHERE id = ?', [userId]);
+        if (!u || !u.photo_path) return null;
+        const p = path.join(__dirname, '../../', u.photo_path);
+        await fs.access(p);
+        const sharp = require('sharp');
+        const out = await sharp(p).rotate().flatten({ background: '#ffffff' }).resize(300, 300, { fit: 'cover', position: 'attention' }).jpeg({ quality: 84 }).toBuffer();
+        return `data:image/jpeg;base64,${out.toString('base64')}`;
+    } catch { return null; }
+}
+
+// Look up the employer's brand colour for the Generic/branded letter.
+async function lookupBrandColor(companyName, websiteUrl) {
+    try {
+        let url = websiteUrl;
+        if (url && !url.startsWith('http')) url = 'https://' + url;
+        if (url) {
+            const c = await dbConfig.get('SELECT brand_color FROM employer_brand_profiles WHERE website_url = ?', [url]);
+            if (c && c.brand_color) return c.brand_color;
+        }
+        if (companyName) {
+            const fw = companyName.split(/\s+/)[0];
+            const byName = await dbConfig.get(
+                `SELECT ebp.brand_color FROM employer_brand_profiles ebp
+                 JOIN employer_profiles ep ON ep.website_url = ebp.website_url
+                 WHERE ep.employer_name ILIKE ? LIMIT 1`, [`%${fw}%`]);
+            if (byName && byName.brand_color) return byName.brand_color;
+        }
+    } catch {}
+    return null;
+}
+
+// POST /api/cover-letter/preview-templates  — free previews; FORMATTING ONLY (no AI).
+// All regions render the same content in their visual template; Generic = branded original.
+async function previewCoverLetterTemplates(req, res) {
+    const userId = req.user.id;
+    const { region, coverLetterHtml, companyName, companyAddress, brandColor, websiteUrl } = req.body || {};
+    try {
+        if (!coverLetterHtml || !String(coverLetterHtml).trim()) {
+            return res.status(400).json({ error: 'No cover letter content to preview. Generate a cover letter first.' });
+        }
+        const rgn = region || 'generic';
+        const sender = await buildCLSender(userId);
+
+        // The Generic/branded letter needs the photo + brand colour; other templates are plain.
+        let renderOpts = {};
+        if (rgn === 'generic') {
+            renderOpts = { photo: await loadCLPhotoDataUri(userId), brandColor: brandColor || await lookupBrandColor(companyName, websiteUrl) };
+        }
+
+        const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml };
+        const tpls = clTemplates.templatesForRegion(rgn);
+        const previews = await clRenderer.renderPreviews(data, renderOpts, tpls);
+        return res.json({ success: true, region: rgn, previews });
+    } catch (e) {
+        console.error('[coverLetter] previewCoverLetterTemplates error:', e.message);
+        return res.status(500).json({ error: 'Failed to render cover-letter previews. Please try again.' });
+    }
+}
+
+// POST /api/cover-letter/generate-template-pdf  — PDF only (no rewriting), charge credits.
+// Generic = the byte-exact original letter (original PDFKit generator); others = HTML templates.
+async function generateCoverLetterTemplatePdf(req, res) {
+    const userId = req.user.id;
+    const { template, mode, coverLetterHtml, companyName, companyAddress, brandColor, websiteUrl } = req.body || {};
+    try {
+        if (!coverLetterHtml || !String(coverLetterHtml).trim()) {
+            return res.status(400).json({ error: 'No cover letter content. Generate a cover letter first.' });
+        }
+        const credit = await checkUserCredits(userId, CL_DOWNLOAD_CREDIT_COST);
+        if (!credit.hasCredits) {
+            return res.status(402).json({ error: credit.message, creditsRequired: CL_DOWNLOAD_CREDIT_COST, creditsRemaining: credit.remaining });
+        }
+        const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
+        const tplMeta = clTemplates.TEMPLATES.find(t => t.id === tplId);
+
+        let fileName;
+        if (tplMeta && tplMeta.generic) {
+            // Exact original branded letter — produced by the original PDFKit generator.
+            const user  = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+            const brand = brandColor || await lookupBrandColor(companyName, websiteUrl);
+            const result = await generateRichCoverLetterPDF(user, coverLetterHtml, companyName || '', companyAddress || '', brand, null);
+            fileName = result.fileName;
+        } else {
+            const sender = await buildCLSender(userId);
+            const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml };
+            const pdf = await clRenderer.renderPdf(tplId, data, { mode });
+            const safeCo = (companyName || 'Company').replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
+            fileName = `Cover_Letter_${safeCo}_${Date.now()}.pdf`;
+            const tempDir = path.join(__dirname, '../../temp');
+            await fs.mkdir(tempDir, { recursive: true });
+            await fs.writeFile(path.join(tempDir, fileName), pdf);
+        }
+
+        try { await deductCredits(userId, CL_DOWNLOAD_CREDIT_COST, 'cover_letter_download', { template: tplId, mode: mode || 'onepage' }); }
+        catch (e) { console.warn('[coverLetter] credit deduction failed:', e.message); }
+
+        return res.json({ success: true, downloadUrl: `/api/download-cover-letter/${encodeURIComponent(fileName)}`, template: tplId, creditsRemaining: Math.max(0, credit.remaining - CL_DOWNLOAD_CREDIT_COST) });
+    } catch (e) {
+        console.error('[coverLetter] generateCoverLetterTemplatePdf error:', e.message);
+        return res.status(500).json({ error: 'Failed to generate cover letter PDF. Please try again.' });
+    }
+}
+
+// Point 6: enrich the cover-letter context with the user's Resume-Builder resume (if any),
+// so letters have richer, more specific detail than the uploaded resume alone. Additive —
+// returns the same metadata object untouched when no builder resume exists.
+async function mergeBuilderResume(userId, resumeMetadata) {
+    try {
+        const row = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = ?', [userId]);
+        if (row && row.resume_data) {
+            const rd = typeof row.resume_data === 'string' ? JSON.parse(row.resume_data) : row.resume_data;
+            if (rd && typeof rd === 'object') {
+                console.log(`[coverLetter] enriching context with Builder resume for user ${userId}`);
+                return { ...resumeMetadata, builder_resume: rd };
+            }
+        }
+    } catch (e) {
+        console.warn('[coverLetter] mergeBuilderResume failed:', e.message);
+    }
+    return resumeMetadata;
+}
+
+// Reusable: build a cover-letter PDF for a given REGION and return { filePath, fileName }.
+// Used by the email-send flow (point 3). Generic → the exact original branded letter;
+// any other region → the recommended visual template for that region. No credits here.
+async function buildCoverLetterPdfForRegion(userId, { region, coverLetterHtml, companyName, companyAddress, brandColor, websiteUrl, mode } = {}) {
+    const rgn = region || 'generic';
+    const tpls = clTemplates.templatesForRegion(rgn);
+    const tplId = (tpls && tpls[0] && tpls[0].id) || clTemplates.TEMPLATE_IDS[0];
+    const tplMeta = clTemplates.TEMPLATES.find(t => t.id === tplId);
+    const tempDir = path.join(__dirname, '../../temp');
+    await fs.mkdir(tempDir, { recursive: true });
+
+    if (tplMeta && tplMeta.generic) {
+        // Exact original branded letter (original PDFKit generator) — byte-for-byte the old file.
+        const user  = await dbConfig.get('SELECT * FROM users WHERE id = ?', [userId]);
+        const brand = brandColor || await lookupBrandColor(companyName, websiteUrl);
+        const result = await generateRichCoverLetterPDF(user, coverLetterHtml, companyName || '', companyAddress || '', brand, null);
+        return { filePath: result.filePath, fileName: result.fileName, template: tplId, generic: true };
+    }
+
+    const sender = await buildCLSender(userId);
+    const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml };
+    const pdf = await clRenderer.renderPdf(tplId, data, { mode: mode || 'a4' });
+    const safeCo = (companyName || 'Company').replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
+    const fileName = `Cover_Letter_${safeCo}_${Date.now()}.pdf`;
+    const filePath = path.join(tempDir, fileName);
+    await fs.writeFile(filePath, pdf);
+    return { filePath, fileName, template: tplId, generic: false };
+}
+
 module.exports = {
     generateCoverLetters,
     generateCoverLetterDetails,
     generateCoverLetterPdf,
-    executeGenerationWork
+    executeGenerationWork,
+    previewCoverLetterTemplates,
+    generateCoverLetterTemplatePdf,
+    buildCoverLetterPdfForRegion
 };
