@@ -61,57 +61,101 @@
     .jh-hint { font-size: 12px; color: var(--cva-muted); margin: 10px 0 0; line-height: 16px; }
     .jh-add-row .cva-btn-primary { flex: 0 0 auto; min-width: 150px; }
 
-    /* Employer card */
-    .jh-emp-head { display: flex; align-items: center; gap: 12px; }
-    .jh-logo {
-      width: 52px; height: 52px; border-radius: 14px; flex: none;
-      display: flex; align-items: center; justify-content: center;
-      color: #fff; font-size: 22px; font-weight: 800;
-      box-shadow: 0 8px 18px rgba(11,15,34,0.18);
+    /* Company strip — horizontal scroll, matching mobile */
+    .jh-strip-wrap {
+      overflow-x: auto; margin-bottom: 16px;
+      padding-bottom: 6px;
+      /* hide scrollbar on webkit but keep scrollable */
+      scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.15) transparent;
     }
-    .jh-emp-info { flex: 1 1 auto; min-width: 0; }
-    .jh-emp-name { font-size: 17px; font-weight: 800; color: var(--cva-ink); letter-spacing: -0.3px; }
-    .jh-emp-sub  { font-size: 12px; color: var(--cva-muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .jh-emp-counts { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-    .jh-count-pill {
-      display: inline-flex; align-items: center; gap: 5px;
-      background: var(--cva-bg); border: 1px solid var(--cva-border-hi);
-      border-radius: 999px; padding: 4px 10px; font-size: 11.5px; font-weight: 700; color: var(--cva-ink-soft);
+    .jh-strip-wrap::-webkit-scrollbar { height: 4px; }
+    .jh-strip-wrap::-webkit-scrollbar-track { background: transparent; }
+    .jh-strip-wrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 2px; }
+    .jh-strip {
+      display: flex; flex-direction: row; gap: 12px;
+      padding: 6px 2px; width: max-content;
     }
-    .jh-status-pill {
-      display: inline-flex; align-items: center; gap: 5px;
-      border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 800;
-      text-transform: capitalize;
-      background: rgba(16,185,129,0.12); color: #059669; border: 1px solid rgba(16,185,129,0.25);
-    }
-    .jh-status-pill.pending { background: rgba(245,158,11,0.12); color: #B45309; border-color: rgba(245,158,11,0.25); }
-    .jh-status-pill.failed  { background: rgba(239,68,68,0.12);  color: #B91C1C; border-color: rgba(239,68,68,0.25); }
-    .jh-remove {
-      width: 36px; height: 36px; flex: none; border-radius: 10px;
-      border: 1.5px solid #E5E7EB; background: #fff; color: var(--cva-muted);
-      cursor: pointer; display: flex; align-items: center; justify-content: center;
-      font-size: 20px; line-height: 1;
-    }
-    .jh-remove:hover { border-color: rgba(239,68,68,0.5); color: var(--cva-rose); background: rgba(239,68,68,0.06); }
 
-    /* Company list (compact, selectable) */
-    .jh-co-list { display: flex; flex-direction: column; gap: 10px; }
-    .jh-co {
-      background: #fff; border-radius: 14px;
-      border: 1.5px solid var(--cva-border-hi);
-      padding: 13px 14px;
-      display: flex; align-items: center; gap: 12px;
-      cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s;
+    /* Company card (dark navy, 130px wide — mirrors mobile CompanyCard) */
+    .jh-cc {
+      width: 130px; flex-shrink: 0;
+      border-radius: 20px;
+      background: #fff;
+      box-shadow: 0 4px 14px rgba(11,15,34,0.10);
+      padding: 2px;          /* space for gradient ring */
+      cursor: pointer;
+      position: relative;
+      transition: box-shadow 0.15s;
     }
-    .jh-co.selected {
-      border-color: var(--cva-blue);
-      box-shadow: 0 0 0 3px rgba(79,141,255,0.13);
+    .jh-cc:hover { box-shadow: 0 6px 18px rgba(11,15,34,0.15); }
+    .jh-cc.selected { box-shadow: 0 8px 22px rgba(11,15,34,0.20); }
+    /* Gradient ring — hidden by default, shown when selected */
+    .jh-cc-ring {
+      display: none; position: absolute; inset: 0;
+      border-radius: 20px;
+      background: linear-gradient(135deg, #4F8DFF 0%, #7C6BFF 100%);
+      pointer-events: none;
     }
-    .jh-co:hover:not(.selected) { border-color: #B0C4FF; }
-    .jh-co-body { flex: 1 1 auto; min-width: 0; }
-    .jh-co-name { font-size: 15px; font-weight: 800; color: var(--cva-ink); letter-spacing: -0.2px; }
-    .jh-co-sub  { font-size: 11.5px; color: var(--cva-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .jh-co-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+    .jh-cc.selected .jh-cc-ring { display: block; }
+    /* Dark navy inner */
+    .jh-cc-inner {
+      background: #0D1230; border-radius: 18px;
+      padding: 16px 14px;
+      display: flex; flex-direction: column; align-items: center;
+      gap: 8px; overflow: hidden; position: relative;
+    }
+    /* Big faint watermark letter */
+    .jh-cc-wm {
+      position: absolute; bottom: -8px; right: -4px;
+      font-size: 52px; font-weight: 900;
+      color: rgba(255,255,255,0.045);
+      letter-spacing: -2px; pointer-events: none; line-height: 1;
+      user-select: none;
+    }
+    /* × delete button — top left */
+    .jh-cc-del {
+      position: absolute; top: 7px; left: 7px;
+      width: 20px; height: 20px; border-radius: 10px;
+      background: rgba(255,255,255,0.12);
+      border: 1px solid rgba(255,255,255,0.20);
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; z-index: 10;
+      font-size: 12px; color: rgba(255,255,255,0.7); line-height: 1;
+      transition: background 0.12s;
+    }
+    .jh-cc-del:hover { background: rgba(239,68,68,0.35); color: #fff; }
+    /* Checkmark tick — top right, only when selected */
+    .jh-cc-tick {
+      display: none; position: absolute; top: 8px; right: 8px;
+      width: 18px; height: 18px; border-radius: 9px;
+      background: #4F8DFF;
+      align-items: center; justify-content: center;
+      font-size: 11px; color: #fff; text-align: center; line-height: 18px;
+    }
+    .jh-cc.selected .jh-cc-tick { display: flex; }
+    /* Logo gradient square */
+    .jh-cc-logo {
+      width: 48px; height: 48px; border-radius: 15px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 21px; font-weight: 800; color: #fff;
+    }
+    /* Company name */
+    .jh-cc-name {
+      font-size: 13px; font-weight: 700; color: #fff; letter-spacing: -0.3px;
+      text-align: center; line-height: 18px;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden; max-height: 36px; width: 100%;
+    }
+    /* Stats row */
+    .jh-cc-stats {
+      display: flex; flex-direction: row; align-items: center; gap: 4px;
+    }
+    .jh-cc-stat { font-size: 12px; font-weight: 700; }
+    .jh-cc-dot {
+      width: 3px; height: 3px; border-radius: 1.5px;
+      background: rgba(255,255,255,0.25); margin: 0 2px; flex-shrink: 0;
+    }
+    .jh-cc-icon { font-size: 13px; vertical-align: middle; }
 
     /* Jobs panel */
     .jh-jobs-panel {
@@ -340,29 +384,29 @@
         const emp = it.employer;
         const jobs = jobCount(emp);
         const contacts = contactCount(emp);
-        const status = (it.status || (emp && emp.status) || 'tracked');
-        let statusClass = '';
-        const st = String(status).toLowerCase();
-        if (st.indexOf('pend') >= 0 || st.indexOf('progress') >= 0 || st.indexOf('search') >= 0) statusClass = 'pending';
-        if (st.indexOf('fail') >= 0 || st.indexOf('error') >= 0) statusClass = 'failed';
-
+        const name = (emp && emp.name) || 'Company';
+        const wm = name.replace(/\s+/g, '').slice(0, 4).toUpperCase();
         const isSelected = String(it.jobId) === String(selectedJobId);
 
         return '' +
-          '<div class="jh-co' + (isSelected ? ' selected' : '') + '" data-jobid="' + esc(it.jobId) + '">' +
-            '<div class="jh-logo" style="background:' + gradient(emp && emp.logoColor) + ';width:44px;height:44px;flex:none;border-radius:12px;font-size:18px;">' +
-              esc(initialOf(emp)) +
-            '</div>' +
-            '<div class="jh-co-body">' +
-              '<div class="jh-co-name">' + esc((emp && emp.name) || 'Company') + '</div>' +
-              (emp && emp.subInfo ? '<div class="jh-co-sub">' + esc(emp.subInfo) + '</div>' : '') +
-              '<div class="jh-co-pills">' +
-                '<span class="jh-status-pill ' + statusClass + '">' + esc(status) + '</span>' +
-                '<span class="jh-count-pill"><span class="material-icons" style="font-size:12px;">work</span>' + jobs + ' job' + (jobs === 1 ? '' : 's') + '</span>' +
-                '<span class="jh-count-pill"><span class="material-icons" style="font-size:12px;">group</span>' + contacts + ' contact' + (contacts === 1 ? '' : 's') + '</span>' +
+          '<div class="jh-cc' + (isSelected ? ' selected' : '') + '" data-jobid="' + esc(it.jobId) + '">' +
+            '<div class="jh-cc-ring"></div>' +
+            '<div class="jh-cc-inner">' +
+              '<span class="jh-cc-wm">' + esc(wm) + '</span>' +
+              '<button class="jh-cc-del" type="button" title="Remove" data-jobid="' + esc(it.jobId) + '">&times;</button>' +
+              '<div class="jh-cc-tick">✓</div>' +
+              '<div class="jh-cc-logo" style="background:' + gradient(emp && emp.logoColor) + ';">' +
+                esc(initialOf(emp)) +
+              '</div>' +
+              '<div class="jh-cc-name">' + esc(name) + '</div>' +
+              '<div class="jh-cc-stats">' +
+                '<span class="material-icons jh-cc-icon" style="color:#22D3EE;font-size:13px;">work</span>' +
+                '<span class="jh-cc-stat" style="color:#22D3EE;">' + jobs + '</span>' +
+                '<span class="jh-cc-dot"></span>' +
+                '<span class="material-icons jh-cc-icon" style="color:#A78BFA;font-size:13px;">group</span>' +
+                '<span class="jh-cc-stat" style="color:#A78BFA;">' + contacts + '</span>' +
               '</div>' +
             '</div>' +
-            '<button class="jh-remove" type="button" title="Remove" data-jobid="' + esc(it.jobId) + '" style="margin-left:4px;">&times;</button>' +
           '</div>';
       }
 
@@ -394,8 +438,7 @@
       function closeJobsPanel() {
         selectedJobId = null;
         document.getElementById('jobsPanel').style.display = 'none';
-        // deselect all company cards
-        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-co.selected'), function (el) {
+        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-cc.selected'), function (el) {
           el.classList.remove('selected');
         });
       }
@@ -406,8 +449,7 @@
           return;
         }
         selectedJobId = jobId;
-        // update selected highlight without full re-render
-        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-co'), function (el) {
+        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-cc'), function (el) {
           el.classList.toggle('selected', el.getAttribute('data-jobid') === String(jobId));
         });
         const it = items.find(function (x) { return String(x.jobId) === String(jobId); });
@@ -425,22 +467,30 @@
           document.getElementById('jobsPanel').style.display = 'none';
           return;
         }
-        dashEl.innerHTML = '<div class="jh-co-list">' + items.map(companyCardHTML).join('') + '</div>';
+        dashEl.innerHTML =
+          '<div class="jh-strip-wrap">' +
+            '<div class="jh-strip">' +
+              items.map(companyCardHTML).join('') +
+            '</div>' +
+          '</div>';
         wireDashboardEvents();
       }
 
       function wireDashboardEvents() {
-        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-remove'), function (btn) {
+        // Remove buttons (inside each dark card)
+        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-cc-del'), function (btn) {
           btn.addEventListener('click', function (e) {
             e.stopPropagation();
             removeCompany(btn.getAttribute('data-jobid'));
           });
         });
-        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-co'), function (card) {
+        // Card click → select / deselect
+        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-cc'), function (card) {
           card.addEventListener('click', function () {
             selectCompany(card.getAttribute('data-jobid'));
           });
         });
+        // Jobs panel close button
         const closeBtn = document.getElementById('jobsPanelClose');
         if (closeBtn) closeBtn.onclick = closeJobsPanel;
       }
