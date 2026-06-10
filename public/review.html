@@ -1436,13 +1436,21 @@
                         
                         Object.keys(data.reviewCoverLetters).forEach((key) => {
                             const letter = data.reviewCoverLetters[key];
-                            const index = parseInt(key);
-                            console.log(`📝 Processing key: "${key}", index: ${index}, has coverLetterHtml: ${!!letter.coverLetterHtml}, recipientsLength: ${recipients.length}`);
-                            
+                            // Saved letters are keyed by recipient EMAIL (server + mobile both use email keys).
+                            // Map each saved letter to its recipient by email; fall back to a legacy numeric index.
+                            const emailOf = (v) => (v ? String(v).trim().toLowerCase() : '');
+                            let index = recipients.findIndex(r =>
+                                (letter.storedRecipientEmail && emailOf(r.email) === emailOf(letter.storedRecipientEmail)) ||
+                                (letter.recipientEmail && emailOf(r.email) === emailOf(letter.recipientEmail)) ||
+                                (emailOf(r.email) === emailOf(key))
+                            );
+                            if (index < 0 && /^\d+$/.test(String(key))) index = parseInt(key, 10); // legacy numeric-key rows
+                            console.log(`📝 Saved letter key "${key}" → recipient index ${index}, has coverLetterHtml: ${!!letter.coverLetterHtml}, recipientsLength: ${recipients.length}`);
+
                             // Check if coverLetterHtml exists and is not empty
                             const hasValidHtml = letter.coverLetterHtml && letter.coverLetterHtml.trim().length > 0;
-                            
-                            if (index < recipients.length && hasValidHtml) {
+
+                            if (index >= 0 && index < recipients.length && hasValidHtml) {
                                 const currentRecipient = recipients[index];
                                 
                                 // Only check for changes if we have stored recipient data to compare
