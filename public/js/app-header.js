@@ -30,13 +30,13 @@
         
         let authLinksDesktop = '';
         let authLinksMobile = '';
-        let appNavLinks = '';   // primary app links in the centre menu (logged-in only)
+        let appNavLinks = '';   // items inside the Apps dropdown (logged-in only)
 
         if (token && userData.email) {
             appNavLinks = `
-                <a href="/dashboard" class="nav-app-link">Letters</a>
-                <a href="/job-hub" class="nav-app-link">AI Job Hub</a>
-                <a href="/resume-builder" class="nav-app-link">Resume Builder</a>
+                <a href="/dashboard" class="hdr-apps-item"><span>📝</span> Letters</a>
+                <a href="/job-hub" class="hdr-apps-item"><span>🧭</span> AI Job Hub</a>
+                <a href="/resume-builder" class="hdr-apps-item"><span>📄</span> Resume Builder</a>
             `;
             const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2) : 'U';
             
@@ -86,6 +86,16 @@
                         <div class="hdr-notif-footer">
                             <a href="/notifications" class="hdr-notif-all">View All Notifications</a>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Apps menu (Letters / AI Job Hub / Resume Builder) -->
+                <div style="position:relative;">
+                    <button class="hdr-icon-btn" id="appsBtn" title="Menu" onclick="window.appHeader.toggleApps(event)">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h6v6H4V5zM14 5h6v6h-6V5zM4 15h6v6H4v-6zM14 15h6v6h-6v-6z"/></svg>
+                    </button>
+                    <div class="hdr-apps-dropdown" id="appsDropdown">
+                        ${appNavLinks}
                     </div>
                 </div>
 
@@ -155,8 +165,20 @@
     border-radius: 8px; transition: all 0.2s; text-decoration: none;
 }
 .nav-links a:hover { color: #ECEFF7; background: rgba(255,255,255,0.05); text-decoration: none; }
-.nav-links a.nav-app-link { color: #ECEFF7; font-weight: 600; }
-.nav-links a.nav-app-link:hover { background: rgba(79,141,255,0.16); color: #fff; }
+
+/* Apps dropdown (Letters / AI Job Hub / Resume Builder) */
+.hdr-apps-dropdown {
+    position: absolute; top: calc(100% + 10px); right: 0; min-width: 210px;
+    background: #1E2747; border: 1px solid rgba(255,255,255,0.15); border-radius: 14px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5); display: none; z-index: 1001; overflow: hidden; padding: 6px;
+}
+.hdr-apps-dropdown.show { display: block; }
+.hdr-apps-item {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px;
+    color: #ECEFF7; font-size: 14px; font-weight: 600; text-decoration: none; white-space: nowrap;
+}
+.hdr-apps-item span { font-size: 16px; line-height: 1; }
+.hdr-apps-item:hover { background: rgba(79,141,255,0.16); color: #fff; text-decoration: none; }
 
 .nav-cta { display: flex; gap: 10px; align-items: center; }
 
@@ -290,13 +312,11 @@
                         <span class="brand-text"><span class="cv">CV</span><span class="applyr">Applyr</span></span>
                     </a>
                     <div class="nav-links">
-                        ${appNavLinks || `
                         <a href="/index.html">Home</a>
                         <a href="/index.html#why">Why CVApplyr</a>
                         <a href="/index.html#features">Features</a>
                         <a href="/index.html#pricing">Pricing</a>
                         <a href="/index.html#contact">Contact</a>
-                        `}
                     </div>
                     <div class="nav-cta">
                         ${authLinksDesktop}
@@ -359,12 +379,23 @@
             if (e) e.stopPropagation();
             const dropdown = document.getElementById('notificationDropdown');
             if (dropdown) dropdown.classList.toggle('show');
-            
+
             // Close when clicking outside
             document.addEventListener('click', function closeNotif(e) {
                 if (!e.target.closest('#notificationDropdown') && !e.target.closest('#notificationBtn')) {
                     dropdown.classList.remove('show');
                     document.removeEventListener('click', closeNotif);
+                }
+            });
+        },
+        toggleApps: function(e) {
+            if (e) e.stopPropagation();
+            const dropdown = document.getElementById('appsDropdown');
+            if (dropdown) dropdown.classList.toggle('show');
+            document.addEventListener('click', function closeApps(e) {
+                if (!e.target.closest('#appsDropdown') && !e.target.closest('#appsBtn')) {
+                    dropdown.classList.remove('show');
+                    document.removeEventListener('click', closeApps);
                 }
             });
         },

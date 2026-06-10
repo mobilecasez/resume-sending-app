@@ -50,6 +50,13 @@
       border-radius: 9px; padding: 5px 11px; font-size: 12px; font-weight: 700; cursor: pointer;
     }
     .rb-mini-btn.rb-danger { border-color: rgba(239,68,68,.4); color: var(--cva-rose); }
+    .rb-addsections { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 8px; }
+    .rb-addsections-label { font-size: 12px; font-weight: 700; color: var(--cva-muted); }
+    .rb-addsection-btn {
+      border: 1px dashed rgba(79,141,255,.4); background: rgba(79,141,255,.06); color: var(--cva-blue);
+      border-radius: 999px; padding: 6px 13px; font-size: 12.5px; font-weight: 700; cursor: pointer;
+    }
+    .rb-addsection-btn:hover { background: rgba(79,141,255,.12); }
     .rb-item { border: 1px dashed var(--cva-border-hi); border-radius: 12px; padding: 12px; margin-bottom: 10px; position: relative; }
     .rb-item .rb-remove {
       position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border-radius: 7px;
@@ -81,7 +88,7 @@
     .rb-spacer { height: 4px; }
     main { max-width: 880px; }
   </style>
-  <script src="/js/app-header.js?v=4"></script>
+  <script src="/js/app-header.js?v=5"></script>
   <script src="/js/credit-validation.js"></script>
   <script src="/js/cva-ui.js"></script>
   <script src="/js/app-footer.js"></script>
@@ -182,6 +189,7 @@
 
     // ── State ──
     let resumeData = null;                 // the structured resume object
+    let revealed = new Set();              // optional sections the user chose to add despite being empty
     let selectedRegion = 'generic';
     let selectedMode = 'onepage';
     const previewCache = {};               // region -> { previews:[...] }
@@ -269,6 +277,7 @@
 
     // ── Normalize a resumeData object so the editor never crashes ──
     function normalizeResume(rd) {
+      revealed = new Set();   // a freshly loaded/generated resume starts with empty sections collapsed
       rd = rd || {};
       rd.personal_info = rd.personal_info || {};
       rd.summary = rd.summary || '';
@@ -361,44 +370,66 @@
       html += textarea('summary', '', rd.summary, 4);
       html += blockClose();
 
-      // Experience
-      html += blockOpenList('Experience', 'addExperience');
-      rd.experience.forEach((ex, i) => { html += expItem(i, ex); });
-      html += '<div id="expList"></div>';
-      html += blockClose();
+      // Non-empty list text for the simple sections (drop blank entries)
+      const certLines = (rd.certifications || []).map(certText).filter(Boolean);
+      const langLines = (rd.languages || []).map(langText).filter(Boolean);
+      const achLines  = (rd.achievements || []).map(achText).filter(Boolean);
+
+      const hidden = [];   // [id, label] of empty, not-yet-revealed optional sections
+
+      // Experience (only when it has entries OR the user added it)
+      if (rd.experience.length || revealed.has('experience')) {
+        html += blockOpenList('Experience', 'addExperience');
+        rd.experience.forEach((ex, i) => { html += expItem(i, ex); });
+        html += blockClose();
+      } else hidden.push(['experience', 'Experience']);
 
       // Education
-      html += blockOpenList('Education', 'addEducation');
-      rd.education.forEach((ed, i) => { html += eduItem(i, ed); });
-      html += blockClose();
+      if (rd.education.length || revealed.has('education')) {
+        html += blockOpenList('Education', 'addEducation');
+        rd.education.forEach((ed, i) => { html += eduItem(i, ed); });
+        html += blockClose();
+      } else hidden.push(['education', 'Education']);
 
-      // Skills
+      // Skills (core)
       html += blockOpen('Skills', '');
       html += textarea('skills_technical', 'Technical (comma-separated)', tech, 2);
       html += textarea('skills_soft', 'Soft (comma-separated)', soft, 2);
       html += blockClose();
 
       // Projects
-      html += blockOpenList('Projects', 'addProject');
-      rd.projects.forEach((pr, i) => { html += projItem(i, pr); });
-      html += blockClose();
+      if (rd.projects.length || revealed.has('projects')) {
+        html += blockOpenList('Projects', 'addProject');
+        rd.projects.forEach((pr, i) => { html += projItem(i, pr); });
+        html += blockClose();
+      } else hidden.push(['projects', 'Projects']);
 
-      // Simple list sections: certifications, languages, achievements
-      html += blockOpen('Certifications', '');
-      html += textarea('certifications', 'One per line', (rd.certifications || []).map(certText).join('\n'), 3);
-      html += blockClose();
+      // Certifications / Languages / Achievements (only when they have content)
+      if (certLines.length || revealed.has('certifications')) {
+        html += blockOpen('Certifications', '') + textarea('certifications', 'One per line', certLines.join('\n'), 3) + blockClose();
+      } else hidden.push(['certifications', 'Certifications']);
 
-      html += blockOpen('Languages', '');
-      html += textarea('languages', 'One per line', (rd.languages || []).map(langText).join('\n'), 2);
-      html += blockClose();
+      if (langLines.length || revealed.has('languages')) {
+        html += blockOpen('Languages', '') + textarea('languages', 'One per line', langLines.join('\n'), 2) + blockClose();
+      } else hidden.push(['languages', 'Languages']);
 
-      html += blockOpen('Achievements', '');
-      html += textarea('achievements', 'One per line', (rd.achievements || []).map(achText).join('\n'), 3);
-      html += blockClose();
+      if (achLines.length || revealed.has('achievements')) {
+        html += blockOpen('Achievements', '') + textarea('achievements', 'One per line', achLines.join('\n'), 3) + blockClose();
+      } else hidden.push(['achievements', 'Achievements']);
+
+      // Compact "add a section" row for the empty ones (no clutter unless the user wants it)
+      if (hidden.length) {
+        html += '<div class="rb-addsections"><span class="rb-addsections-label">Add a section:</span>';
+        hidden.forEach((h) => { html += '<button type="button" class="rb-addsection-btn" onclick="rbAddSection(\'' + h[0] + '\')">+ ' + esc(h[1]) + '</button>'; });
+        html += '</div>';
+      }
 
       $('resumeForm').innerHTML = html;
       wireListButtons();
     }
+
+    // Reveal an empty optional section so the user can fill it in.
+    window.rbAddSection = function(name) { revealed.add(name); renderResumeForm(); };
 
     // text extractors for object-or-string list items
     function certText(c) { return typeof c === 'string' ? c : (c && (c.name || c.title || c.certification) || ''); }
