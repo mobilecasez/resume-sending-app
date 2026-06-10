@@ -1,0 +1,157 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   cva-ui.css — shared design system for the desktop site, ported from the
+   mobile app's design language (theme tokens, cards, gradient buttons,
+   progress-in-button, region chips, attachment chips, gender control, lightbox).
+   Load this on any app page, then use the components below + cva-ui.js helpers.
+   ────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --cva-ink:      #0B0F22;
+  --cva-ink-soft: #1A2046;
+  --cva-muted:    #5B6B8A;
+  --cva-faint:    #8A93B2;
+  --cva-surface:  #FFFFFF;
+  --cva-bg:       #E5EAF3;
+  --cva-navy:     #0B1120;
+  --cva-border:   rgba(11,15,34,0.06);
+  --cva-border-hi:rgba(11,15,34,0.10);
+  --cva-blue:     #4F8DFF;
+  --cva-blue-deep:#2563EB;
+  --cva-purple:   #7C6BFF;
+  --cva-teal:     #14B8A6;
+  --cva-emerald:  #10B981;
+  --cva-amber:    #F59E0B;
+  --cva-rose:     #EF4444;
+}
+
+/* ── Card ── */
+.cva-card {
+  background: var(--cva-surface);
+  border: 1px solid var(--cva-border);
+  border-radius: 20px;
+  box-shadow: 0 12px 32px rgba(11,15,34,0.08);
+  padding: 18px;
+}
+
+/* ── Card header (icon + title + subtitle) ── */
+.cva-card-head { display: flex; align-items: flex-start; gap: 11px; margin-bottom: 14px; }
+.cva-card-head .ico {
+  width: 34px; height: 34px; border-radius: 10px; flex: none;
+  display: flex; align-items: center; justify-content: center; font-size: 18px;
+}
+.cva-card-head h3 { margin: 0; font-size: 15px; font-weight: 800; color: var(--cva-ink); letter-spacing: -0.2px; }
+.cva-card-head p  { margin: 2px 0 0; font-size: 12px; line-height: 16px; color: var(--cva-muted); }
+
+/* ── Gradient primary button (+ progress-in-button states) ── */
+.cva-btn-primary {
+  position: relative; overflow: hidden;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 46px; padding: 0 18px; border: none; border-radius: 12px; cursor: pointer;
+  color: #fff; font-size: 14px; font-weight: 800; letter-spacing: -0.1px;
+  background: linear-gradient(135deg, #4F8DFF 0%, #7C6BFF 55%, #5B4FE8 100%);
+  box-shadow: 0 8px 20px rgba(79,141,255,0.34);
+  transition: filter .15s ease, transform .05s ease;
+}
+.cva-btn-primary:hover  { filter: brightness(1.04); }
+.cva-btn-primary:active { transform: translateY(1px); }
+.cva-btn-primary:disabled { cursor: default; }
+.cva-btn-primary.is-block { display: flex; width: 100%; }
+/* loading: keep footprint, show base + fill + shimmer + ring + % */
+.cva-btn-primary.is-loading { background: #9FB9E8; }
+.cva-btn-primary .cva-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+  background: linear-gradient(90deg, #4F8DFF, #7C6BFF);
+  transition: width .2s ease;
+}
+.cva-btn-primary .cva-shimmer {
+  position: absolute; top: 0; bottom: 0; width: 80px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.28), transparent);
+  animation: cva-shimmer 1.6s linear infinite;
+}
+.cva-btn-primary .cva-label,
+.cva-btn-primary .cva-pct { position: relative; z-index: 2; }
+.cva-btn-primary .cva-pct { min-width: 38px; text-align: right; font-weight: 800; }
+.cva-btn-primary.is-done { background: linear-gradient(90deg, #10B981, #059669); box-shadow: 0 8px 20px rgba(16,185,129,0.3); }
+
+/* Ring spinner (white) */
+.cva-ring {
+  width: 15px; height: 15px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff;
+  animation: cva-spin .8s linear infinite; position: relative; z-index: 2;
+}
+@keyframes cva-spin    { to { transform: rotate(360deg); } }
+@keyframes cva-shimmer { from { transform: translateX(-120px); } to { transform: translateX(360px); } }
+
+/* ── Icon-only square button (46×46) ── */
+.cva-icon-btn {
+  position: relative; overflow: hidden;
+  width: 46px; height: 46px; border-radius: 12px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  border: 1.5px solid #CBD5E1; background: #fff; color: var(--cva-ink);
+}
+.cva-icon-btn.is-done { border-color: rgba(16,185,129,0.45); background: rgba(16,185,129,0.10); color: var(--cva-emerald); }
+
+/* One-row action group: big primary (flex) + icon squares */
+.cva-action-row { display: flex; align-items: center; gap: 8px; }
+.cva-action-row .cva-btn-primary { flex: 1 1 auto; }
+
+/* ── Region chips ── */
+.cva-chip-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+.cva-region-chip {
+  border: 1px solid var(--cva-border-hi); background: #fff; color: var(--cva-ink-soft);
+  border-radius: 999px; padding: 7px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.cva-region-chip.selected { background: var(--cva-navy); border-color: var(--cva-navy); color: #fff; }
+
+/* ── Attachment chip ── */
+.cva-attach {
+  background: var(--cva-bg); border: 1px solid var(--cva-border-hi);
+  border-radius: 12px; padding: 9px 10px; margin-bottom: 8px;
+}
+.cva-attach-main { display: flex; align-items: center; gap: 9px; }
+.cva-attach .ico-box { width: 32px; height: 32px; border-radius: 9px; flex: none; display: flex; align-items: center; justify-content: center; }
+.cva-attach .name { font-size: 13px; font-weight: 700; color: var(--cva-ink); }
+.cva-attach .meta { font-size: 11px; color: var(--cva-muted); margin-top: 1px; }
+.cva-attach-btn { width: 32px; height: 32px; border-radius: 8px; border: none; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--cva-muted); }
+.cva-attach-addback {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  background: rgba(79,141,255,0.07); border: 1px dashed rgba(79,141,255,0.35);
+  color: var(--cva-blue); font-size: 12.5px; font-weight: 700;
+  border-radius: 10px; padding: 9px 13px; margin-bottom: 8px;
+}
+
+/* ── Gender segmented control ── */
+.cva-gender { display: flex; gap: 8px; flex-wrap: wrap; }
+.cva-gender-opt {
+  flex: 1 1 0; min-width: 96px; cursor: pointer;
+  padding: 11px 8px; border-radius: 10px; text-align: center;
+  border: 1.5px solid #E5E7EB; background: #fff;
+  font-size: 13px; font-weight: 600; color: #374151;
+}
+.cva-gender-opt.selected { border-color: var(--cva-blue-deep); background: #EFF2FF; color: var(--cva-blue-deep); font-weight: 700; }
+.cva-gender-hint { font-size: 12px; color: var(--cva-muted); margin: 8px 0 0; line-height: 16px; }
+
+/* ── Section label ── */
+.cva-section-label { font-size: 10px; font-weight: 800; color: var(--cva-faint); letter-spacing: 1.2px; text-transform: uppercase; }
+
+/* ── Lightbox (document/image preview overlay) — used by later phases ── */
+.cva-lightbox {
+  position: fixed; inset: 0; z-index: 9999; display: none;
+  background: rgba(11,17,34,0.82); align-items: center; justify-content: center; padding: 24px;
+}
+.cva-lightbox.open { display: flex; }
+.cva-lightbox-inner { max-width: min(820px, 94vw); max-height: 92vh; overflow: auto; border-radius: 12px; background: #54607a; }
+.cva-lightbox-inner img { display: block; width: 100%; height: auto; background: #fff; }
+.cva-lightbox-close {
+  position: absolute; top: 16px; right: 18px; width: 40px; height: 40px; border-radius: 20px;
+  border: none; background: #fff; color: var(--cva-ink); font-size: 20px; cursor: pointer;
+}
+
+/* Toast (lightweight, for credit/errors) */
+.cva-toast {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+  background: var(--cva-ink); color: #fff; padding: 12px 18px; border-radius: 12px;
+  font-size: 13px; font-weight: 600; z-index: 10000; box-shadow: 0 12px 30px rgba(0,0,0,0.25);
+  opacity: 0; transition: opacity .2s ease;
+}
+.cva-toast.show { opacity: 1; }

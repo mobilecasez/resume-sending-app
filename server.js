@@ -1377,7 +1377,7 @@ app.get('/api/user-profile', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
 
-        const user = await dbConfig.get('SELECT full_name as "fullName", email, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath", smtp_email as "smtpEmail", smtp_password as "smtpPassword", sender_name as "senderName", date_of_birth as "dateOfBirth", phone_number as "phoneNumber", address, created_at as "createdAt", oauth_provider as "oauthProvider" FROM users WHERE id = ?', [userId]);
+        const user = await dbConfig.get('SELECT full_name as "fullName", email, resume_path as "resumePath", photo_path as "photoPath", signature_path as "signaturePath", smtp_email as "smtpEmail", smtp_password as "smtpPassword", sender_name as "senderName", date_of_birth as "dateOfBirth", phone_number as "phoneNumber", address, gender, created_at as "createdAt", oauth_provider as "oauthProvider" FROM users WHERE id = ?', [userId]);
 
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
@@ -1408,6 +1408,7 @@ app.get('/api/user-profile', authenticateToken, async (req, res) => {
         dateOfBirth: formattedDOB,
         phoneNumber: user.phoneNumber,
         address: user.address,
+        gender: user.gender || '',
         createdAt: user.createdAt,
         oauthProvider: user.oauthProvider || null,
             }
@@ -1450,10 +1451,21 @@ app.post('/api/save-settings', authenticateToken, async (req, res) => {
 app.post('/api/update-user-details', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
-        const { fullName, dateOfBirth, phoneNumber, address, city, country, zipcode } = req.body;
+        const { fullName, dateOfBirth, phoneNumber, address, city, country, zipcode, gender } = req.body;
 
         if (!fullName) {
             return res.status(400).json({ error: 'Full name is required' });
+        }
+
+        // Optional self-declared gender (consent-based, used to auto-fill pronoun/gender questions).
+        // Only three allowed values; '' clears it. `undefined` = field not sent → leave unchanged.
+        let genderValue;
+        if (gender !== undefined) {
+            const allowed = ['Male', 'Female', 'Prefer Not to Say', ''];
+            if (!allowed.includes(gender)) {
+                return res.status(400).json({ error: 'Invalid gender value' });
+            }
+            genderValue = gender === '' ? null : gender;
         }
 
         // THE NOON TRICK: Set time to 12:00 PM to prevent midnight timezone shifts
@@ -1461,17 +1473,24 @@ app.post('/api/update-user-details', authenticateToken, async (req, res) => {
         if (dateOfBirth) {
             const date = new Date(dateOfBirth);
             date.setHours(12, 0, 0, 0);
-            
+
             const year = date.getFullYear();
             const month = String(date.getMonth() + 1).padStart(2, '0');
             const day = String(date.getDate()).padStart(2, '0');
             dateOnly = `${year}-${month}-${day}`;
         }
 
-        await dbConfig.run(
-            'UPDATE users SET full_name = ?, date_of_birth = ?, phone_number = ?, address = ? WHERE id = ?',
-            [fullName, dateOnly, phoneNumber || null, address || null, userId]
-        );
+        if (gender !== undefined) {
+            await dbConfig.run(
+                'UPDATE users SET full_name = ?, date_of_birth = ?, phone_number = ?, address = ?, gender = ? WHERE id = ?',
+                [fullName, dateOnly, phoneNumber || null, address || null, genderValue, userId]
+            );
+        } else {
+            await dbConfig.run(
+                'UPDATE users SET full_name = ?, date_of_birth = ?, phone_number = ?, address = ? WHERE id = ?',
+                [fullName, dateOnly, phoneNumber || null, address || null, userId]
+            );
+        }
 
         res.json({
             success: true,
