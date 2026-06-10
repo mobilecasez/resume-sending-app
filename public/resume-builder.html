@@ -281,15 +281,16 @@
       rd = rd || {};
       rd.personal_info = rd.personal_info || {};
       rd.summary = rd.summary || '';
-      // Drop blank objects the AI sometimes returns (e.g. projects:[{},{}]) so empty cards don't show.
-      const nonEmptyObj = (o) => o && typeof o === 'object' && Object.keys(o).some((k) => {
-        const v = o[k];
-        if (Array.isArray(v)) return v.some((x) => x != null && String(x).trim() !== '');
-        return v != null && String(v).trim() !== '';
-      });
-      rd.experience = (Array.isArray(rd.experience) ? rd.experience : []).filter(nonEmptyObj);
-      rd.education = (Array.isArray(rd.education) ? rd.education : []).filter(nonEmptyObj);
-      rd.projects = (Array.isArray(rd.projects) ? rd.projects : []).filter(nonEmptyObj);
+      // Drop entries the AI pads out — keep only items whose DISPLAYED fields have content,
+      // so empty cards never render (a project needs a name or description, etc.).
+      const has = (s) => s != null && String(s).trim() !== '';
+      rd.experience = (Array.isArray(rd.experience) ? rd.experience : []).filter((ex) => ex && (
+        has(ex.title) || has(ex.company) || has(ex.location) || has(ex.start_date) || has(ex.end_date) || has(ex.dates)
+        || (Array.isArray(ex.bullets) && ex.bullets.some(has))));
+      rd.education = (Array.isArray(rd.education) ? rd.education : []).filter((ed) => ed && (
+        has(ed.degree) || has(ed.institution) || has(ed.year) || has(ed.location)));
+      rd.projects = (Array.isArray(rd.projects) ? rd.projects : []).filter((pr) => pr && (
+        has(pr.name) || has(pr.description)));
       rd.certifications = Array.isArray(rd.certifications) ? rd.certifications : [];
       rd.languages = Array.isArray(rd.languages) ? rd.languages : [];
       rd.achievements = Array.isArray(rd.achievements) ? rd.achievements : [];
