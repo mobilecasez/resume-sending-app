@@ -24,6 +24,7 @@
     <link rel="stylesheet" href="/css/animate.css">
     <!-- Main CSS -->
     <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/cva-ui.css">
 
     <style>
         :root {
@@ -804,6 +805,7 @@
     </style>
     <script src="/js/app-header.js?v=3"></script>
     <script src="/js/credit-validation.js"></script>
+    <script src="/js/cva-ui.js"></script>
     <script src="/js/app-footer.js"></script>
 </head>
 
@@ -1380,9 +1382,14 @@
                             <label>Cover Letter</label>
                             <div class="rich-text-editor" id="cover-letter-${index}" data-field="coverLetterHtml"></div>
                         </div>
+                        <div class="form-group full-width" style="margin-top:6px;">
+                            <label class="cva-section-label">Cover-letter format <span style="font-weight:600;color:#8A93B2;text-transform:none;letter-spacing:0;">· preview is free · region templates cost 2 credits to download</span></label>
+                            <div class="cva-chip-wrap" id="cl-regions-${index}" style="margin-top:6px;"></div>
+                        </div>
                         <div class="buttons">
                             <button class="btn btn-primary" onclick="regenerateCoverLetter(${index})">🔄 Regenerate</button>
-                            <button class="btn btn-secondary" onclick="downloadCoverLetterPDF(${index})">📥 Download</button>
+                            <button class="btn btn-secondary" id="cl-preview-${index}" onclick="previewClTemplate(${index})">👁️ Preview</button>
+                            <button class="btn btn-secondary" id="cl-download-${index}" onclick="downloadCoverLetterPDF(${index})">📥 Download</button>
                             <button class="btn btn-success" onclick="sendApplication(${index})">📧 Send</button>
                         </div>
                     </div>
@@ -1566,6 +1573,7 @@
                     const htmlContent = data.coverLetterHtml || data.cover_letter_html;
                     coverLetterDiv.innerHTML = htmlContent;
                     coverLetterDiv.contentEditable = false;
+                    initClRegionUI(index);   // Phase 2: region format chips
                     
                     // Show form, hide loading
                     const loading = document.querySelector(`#tab-${index} .loading`);
@@ -1760,6 +1768,7 @@
                 const coverLetterDiv = document.getElementById(`cover-letter-${index}`);
                 coverLetterDiv.innerHTML = data.coverLetterHtml;
                 coverLetterDiv.contentEditable = false; // Not editable until edit mode is toggled
+                initClRegionUI(index);   // Phase 2: region format chips
 
                 // Get the selected address from dropdown
                 const selectedAddress = addressDropdown.value;
@@ -1992,14 +2001,126 @@
             }
         }
 
+        // ── Phase 2: region cover-letter templates (free preview + 2-credit templated PDF) ──
+        window.clRegion = window.clRegion || {};       // index → selected region id
+        window.clRegionManual = window.clRegionManual || {}; // index → true if user explicitly picked
+        window.clPreview = window.clPreview || {};      // index → { key, region, templateId, image }
+
+        function renderClRegions(index) {
+            const wrap = document.getElementById(`cl-regions-${index}`);
+            if (!wrap || !window.CVA) return;
+            const ad = document.getElementById(`address-${index}`);
+            if (!window.clRegion[index]) window.clRegion[index] = CVA.regionFromCountry(ad ? ad.value : '');
+            const sel = window.clRegion[index];
+            wrap.innerHTML = '';
+            CVA.REGION_OPTIONS.forEach((opt) => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'cva-region-chip' + (opt.id === sel ? ' selected' : '');
+                b.textContent = opt.label;
+                b.onclick = () => { window.clRegion[index] = opt.id; window.clRegionManual[index] = true; renderClRegions(index); };
+                wrap.appendChild(b);
+            });
+        }
+
+        // Wire the address-driven default + render chips. Safe to call multiple times.
+        function initClRegionUI(index) {
+            try {
+                if (window.clPreview) delete window.clPreview[index]; // letter (re)generated/restored → drop stale preview
+                const ad = document.getElementById(`address-${index}`);
+                if (ad && !ad.dataset.cvaWired) {
+                    ad.dataset.cvaWired = '1';
+                    ad.addEventListener('change', () => {
+                        // Re-default region from the new office UNLESS the user explicitly picked one.
+                        if (!window.clRegionManual[index] && window.clRegion) delete window.clRegion[index];
+                        if (window.clPreview) delete window.clPreview[index]; // address changed → drop stale preview
+                        renderClRegions(index);
+                    });
+                }
+                renderClRegions(index);
+            } catch (e) { console.warn('region UI init failed', e); }
+        }
+
+        // Resolve the template id + preview image for the card's selected region (cached per card).
+        async function ensureClPreview(index) {
+            const region = window.clRegion[index] || 'generic';
+            const coverLetterHtml = document.getElementById(`cover-letter-${index}`).innerHTML;
+            const companyName = document.getElementById(`employer-${index}`).value;
+            const ad = document.getElementById(`address-${index}`);
+            const companyAddress = ad ? ad.value : '';
+            // Cache on region + company + address so any of those changing re-renders the preview.
+            const key = region + '|' + companyName + '|' + companyAddress;
+            const cached = window.clPreview[index];
+            if (cached && cached.key === key && cached.templateId) return cached;
+            const data = await CVA.postAndPoll('/api/cover-letter/preview-templates',
+                { region, coverLetterHtml, companyName, companyAddress }, { poller: '/api/ai-hub/job-status' });
+            const p = data && data.previews && data.previews[0];
+            if (!p || !p.image) throw new Error('Could not render this format.');
+            window.clPreview[index] = { key, region, templateId: p.id, image: p.image };
+            return window.clPreview[index];
+        }
+
+        // Preview button — always free.
+        async function previewClTemplate(index) {
+            const coverLetterHtml = document.getElementById(`cover-letter-${index}`).innerHTML;
+            if (!coverLetterHtml || !coverLetterHtml.trim()) { CVA.toast('Generate a cover letter first.'); return; }
+            const btn = document.getElementById(`cl-preview-${index}`);
+            const orig = btn ? btn.innerHTML : '';
+            if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Rendering…'; }
+            try {
+                const pv = await ensureClPreview(index);
+                CVA.lightbox(pv.image, 'Cover letter preview');
+            } catch (e) { CVA.toast(e.message || 'Preview failed.'); }
+            finally { if (btn) { btn.disabled = false; btn.innerHTML = orig; } }
+        }
+
         async function downloadCoverLetterPDF(index) {
+            const region = (window.clRegion && window.clRegion[index]) || 'generic';
+            const coverLetterDivR = document.getElementById(`cover-letter-${index}`);
+            const coverLetterHtmlR = coverLetterDivR.innerHTML;
+            const companyNameR = document.getElementById(`employer-${index}`).value;
+            const adR = document.getElementById(`address-${index}`);
+            const companyAddressR = adR ? adR.value : '';
+            if (!coverLetterHtmlR || !coverLetterHtmlR.trim()) { showToast('Generate a cover letter first.', 'error'); return; }
+
+            // Region template → 2-credit templated PDF. Generic falls through to the original free path.
+            if (region && region !== 'generic') {
+                const bal = await CVA.getCredits();
+                if (bal < 2) { creditValidation.showModal(); return; }
+                const btn = document.getElementById(`cl-download-${index}`);
+                const orig = btn ? btn.innerHTML : '';
+                if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Generating…'; }
+                try {
+                    const pv = await ensureClPreview(index); // gives us the region's template id
+                    const res = await CVA.apiFetch('/api/cover-letter/generate-template-pdf', {
+                        method: 'POST',
+                        body: JSON.stringify({ template: pv.templateId, mode: 'onepage', coverLetterHtml: coverLetterHtmlR, companyName: companyNameR, companyAddress: companyAddressR })
+                    });
+                    const data = await res.json();
+                    if (!res.ok || !data.downloadUrl) { showToast(data.error || 'Failed to generate PDF', 'error'); return; }
+                    const dr = await fetch(data.downloadUrl, { headers: { 'Authorization': `Bearer ${token}` } });
+                    if (!dr.ok) throw new Error('Failed to download PDF');
+                    const blob = await dr.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url; a.download = data.fileName || 'Cover_Letter.pdf';
+                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                    if (typeof getCredits === 'function') getCredits();
+                    showToast('PDF downloaded successfully!', 'success');
+                } catch (e) { console.error(e); showToast(e.message || 'Failed to generate PDF', 'error'); }
+                finally { if (btn) { btn.disabled = false; btn.innerHTML = orig; } }
+                return;
+            }
+
+            // ── Generic region: original branded PDF (existing free path) ──
             // Check credits before downloading
             const hasCredits = await creditValidation.checkCredits();
             if (!hasCredits) {
                 creditValidation.showModal();
                 return;
             }
-            
+
             const recipient = recipients[index];
             const coverLetterDiv = document.getElementById(`cover-letter-${index}`);
             const coverLetterHtml = coverLetterDiv.innerHTML;
@@ -2185,6 +2306,7 @@
 
                 // Update cover letter HTML with formatting preserved
                 coverLetterDiv.innerHTML = updatedRecipient.coverLetterHtml;
+                if (window.clPreview) delete window.clPreview[index]; // edited text → drop stale preview
 
                 // Update reviewCoverLetters data
                 reviewCoverLetters[index] = updatedRecipient;
