@@ -318,31 +318,12 @@ const googleMobileCallback = (req, res) => {
         provider: 'google',
         oauth_provider: 'google'
     };
-    // Deep link without path to avoid expo-router trying to route it
-    // Just query params so the Linking listener can catch it directly
-    const IS_PROD = process.env.NODE_ENV === 'production';
-    // Derive the Expo dev IP from the request's Referer/Origin or fall back to env/default
-    let devIp = process.env.LOCAL_IP || '127.0.0.1';
-    if (!IS_PROD) {
-        const hostHeader = req.headers['x-forwarded-host'] || req.headers.host;
-        if (hostHeader) {
-            const hostMatch = hostHeader.match(/^([^:]+)/);
-            if (hostMatch && hostMatch[1] !== 'localhost' && hostMatch[1] !== '127.0.0.1') {
-                devIp = hostMatch[1];
-            }
-        }
-
-        if (devIp === '127.0.0.1') {
-            const referer = req.headers.referer || req.headers.origin || '';
-            const ipMatch = referer.match(/\/\/([\d.]+):/);
-            if (ipMatch) {
-                devIp = ipMatch[1];
-            }
-        }
-    }
-    const deepLink = IS_PROD
-        ? `cvapplyr://oauth-success?token=${encodeURIComponent(token)}&user=${encodeURIComponent(JSON.stringify(userData))}`
-        : `exp://${devIp}:8081/?token=${encodeURIComponent(token)}&user=${encodeURIComponent(JSON.stringify(userData))}`;
+    // Deep link without path to avoid expo-router trying to route it.
+    // Always use the app's own scheme: dev-client and standalone builds both
+    // register cvapplyr://, and openAuthSessionAsync waits for exactly that.
+    // (The old exp:// branch targeted Expo Go, which this project no longer uses —
+    // nothing on the device handles exp://, so the browser tab spun forever.)
+    const deepLink = `cvapplyr://oauth-success?token=${encodeURIComponent(token)}&user=${encodeURIComponent(JSON.stringify(userData))}`;
     console.log('Mobile OAuth: redirecting to deep link:', deepLink.substring(0, 100) + '...');
     res.redirect(deepLink);
 };
