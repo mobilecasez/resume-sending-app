@@ -1775,14 +1775,22 @@ async function removeDashboardItem(req, res) {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
-    const { jobId } = req.params; // async_job_id from the client
+    const { jobId } = req.params; // async_job_id (mobile) OR employer_id (web) from the client
 
     try {
         // Find the employer via the async_job_id link on user_tracked_employers
-        const row = await dbConfig.get(
+        let row = await dbConfig.get(
             `SELECT employer_id FROM user_tracked_employers WHERE user_id = $1 AND async_job_id = $2`,
             [userId, jobId]
         );
+        // Fallback: the param may be the employer_id directly (web dashboard keys off
+        // employer.id because async_job_id is null once a search completes).
+        if (!row?.employer_id) {
+            row = await dbConfig.get(
+                `SELECT employer_id FROM user_tracked_employers WHERE user_id = $1 AND employer_id = $2`,
+                [userId, jobId]
+            );
+        }
         if (row?.employer_id) {
             await jobService.archiveUserEmployer(userId, row.employer_id);
         }

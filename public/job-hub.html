@@ -343,10 +343,22 @@
       }
 
       // ── State ────────────────────────────────────────────────────────────
-      let selectedJobId = null;
+      // Selection is keyed off a GUARANTEED-UNIQUE key (employer.id based),
+      // never off jobId — async_job_id is null once a search completes, so
+      // keying off it makes every finished card collide on an empty id.
+      let selectedKey = null;
+
+      function keyOf(it) {
+        if (it && it.employer && it.employer.id != null && it.employer.id !== '') return 'emp-' + it.employer.id;
+        if (it && it.jobId != null && it.jobId !== '') return 'job-' + it.jobId;
+        return 'idx-' + items.indexOf(it);
+      }
+      function itemByKey(key) {
+        return items.find(function (x) { return keyOf(x) === key; });
+      }
 
       // ── Rendering ────────────────────────────────────────────────────────
-      function jobRowHTML(emp, job, jobId) {
+      function jobRowHTML(emp, job, key) {
         const skills = Array.isArray(job.skills) ? job.skills : [];
         const shown = skills.slice(0, 5);
         const extra = skills.length - shown.length;
@@ -372,7 +384,7 @@
             '</div>' +
             '<div class="jh-job-action">' +
               '<button class="cva-btn-primary is-block jh-view-btn" type="button" ' +
-                'data-jobid="' + esc(jobId) + '" data-job="' + esc(job.id) + '">' +
+                'data-key="' + esc(key) + '" data-job="' + esc(job.id) + '">' +
                 '<span class="material-icons" style="font-size:17px;">open_in_new</span>' +
                 '<span>View / Apply</span>' +
               '</button>' +
@@ -386,14 +398,15 @@
         const contacts = contactCount(emp);
         const name = (emp && emp.name) || 'Company';
         const wm = name.replace(/\s+/g, '').slice(0, 4).toUpperCase();
-        const isSelected = String(it.jobId) === String(selectedJobId);
+        const key = keyOf(it);
+        const isSelected = key === selectedKey;
 
         return '' +
-          '<div class="jh-cc' + (isSelected ? ' selected' : '') + '" data-jobid="' + esc(it.jobId) + '">' +
+          '<div class="jh-cc' + (isSelected ? ' selected' : '') + '" data-key="' + esc(key) + '">' +
             '<div class="jh-cc-ring"></div>' +
             '<div class="jh-cc-inner">' +
               '<span class="jh-cc-wm">' + esc(wm) + '</span>' +
-              '<button class="jh-cc-del" type="button" title="Remove" data-jobid="' + esc(it.jobId) + '">&times;</button>' +
+              '<button class="jh-cc-del" type="button" title="Remove" data-key="' + esc(key) + '">&times;</button>' +
               '<div class="jh-cc-tick">✓</div>' +
               '<div class="jh-cc-logo" style="background:' + gradient(emp && emp.logoColor) + ';">' +
                 esc(initialOf(emp)) +
@@ -417,6 +430,7 @@
         const headEl = document.getElementById('jobsPanelHeadName');
         const emp = it && it.employer;
         const name = (emp && emp.name) || 'Company';
+        const key = keyOf(it);
         nameEl.textContent = name;
         headEl.textContent = name;
         panel.style.display = '';
@@ -424,10 +438,10 @@
         if (!emp || !Array.isArray(emp.jobs) || !emp.jobs.length) {
           listEl.innerHTML = '<div class="jh-empty"><span class="material-icons">work_off</span>No open roles surfaced yet.</div>';
         } else {
-          listEl.innerHTML = emp.jobs.map(function (j) { return jobRowHTML(emp, j, it.jobId); }).join('');
+          listEl.innerHTML = emp.jobs.map(function (j) { return jobRowHTML(emp, j, key); }).join('');
           Array.prototype.forEach.call(listEl.querySelectorAll('.jh-view-btn'), function (btn) {
             btn.addEventListener('click', function () {
-              openJob(btn.getAttribute('data-jobid'), btn.getAttribute('data-job'));
+              openJob(btn.getAttribute('data-key'), btn.getAttribute('data-job'));
             });
           });
         }
@@ -436,23 +450,23 @@
       }
 
       function closeJobsPanel() {
-        selectedJobId = null;
+        selectedKey = null;
         document.getElementById('jobsPanel').style.display = 'none';
         Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-cc.selected'), function (el) {
           el.classList.remove('selected');
         });
       }
 
-      function selectCompany(jobId) {
-        if (String(selectedJobId) === String(jobId)) {
+      function selectCompany(key) {
+        if (selectedKey === key) {
           closeJobsPanel();
           return;
         }
-        selectedJobId = jobId;
+        selectedKey = key;
         Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-cc'), function (el) {
-          el.classList.toggle('selected', el.getAttribute('data-jobid') === String(jobId));
+          el.classList.toggle('selected', el.getAttribute('data-key') === key);
         });
-        const it = items.find(function (x) { return String(x.jobId) === String(jobId); });
+        const it = itemByKey(key);
         if (it) renderJobsPanel(it);
       }
 
@@ -481,13 +495,13 @@
         Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-cc-del'), function (btn) {
           btn.addEventListener('click', function (e) {
             e.stopPropagation();
-            removeCompany(btn.getAttribute('data-jobid'));
+            removeCompany(btn.getAttribute('data-key'));
           });
         });
         // Card click → select / deselect
         Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-cc'), function (card) {
           card.addEventListener('click', function () {
-            selectCompany(card.getAttribute('data-jobid'));
+            selectCompany(card.getAttribute('data-key'));
           });
         });
         // Jobs panel close button
@@ -496,8 +510,8 @@
       }
 
       // ── View / Apply → stash active job + navigate ───────────────────────
-      function openJob(jobId, jobLocalId) {
-        const it = items.find(function (x) { return String(x.jobId) === String(jobId); });
+      function openJob(key, jobLocalId) {
+        const it = itemByKey(key);
         if (!it || !it.employer) { CVA.toast('Job is still loading — try again in a moment.'); return; }
         const job = (it.employer.jobs || []).find(function (j) { return String(j.id) === String(jobLocalId); });
         if (!job) { CVA.toast('Could not open that role.'); return; }
@@ -510,15 +524,21 @@
       }
 
       // ── Remove ───────────────────────────────────────────────────────────
-      async function removeCompany(jobId) {
+      async function removeCompany(key) {
+        const it = itemByKey(key);
+        if (!it) return;
+        // Server identifier: employer.id (web) — falls back to async_job_id match.
+        const serverId = (it.employer && it.employer.id) ? it.employer.id : it.jobId;
         try {
-          const res = await CVA.apiFetch('/api/ai-hub/dashboard/' + encodeURIComponent(jobId), { method: 'DELETE' });
-          if (!res.ok) { CVA.toast('Could not remove that company.'); return; }
-          if (String(selectedJobId) === String(jobId)) {
-            selectedJobId = null;
+          if (serverId != null && serverId !== '') {
+            const res = await CVA.apiFetch('/api/ai-hub/dashboard/' + encodeURIComponent(serverId), { method: 'DELETE' });
+            if (!res.ok) { CVA.toast('Could not remove that company.'); return; }
+          }
+          if (selectedKey === key) {
+            selectedKey = null;
             document.getElementById('jobsPanel').style.display = 'none';
           }
-          items = items.filter(function (x) { return String(x.jobId) !== String(jobId); });
+          items = items.filter(function (x) { return keyOf(x) !== key; });
           renderDashboard();
           CVA.toast('Removed from your hub.');
         } catch (e) {
@@ -599,15 +619,14 @@
             }
           });
 
-          upsertItem(jobId, employer, (employer && employer.status) || 'tracked');
-          selectedJobId = jobId;
+          const newIt = upsertItem(jobId, employer, (employer && employer.status) || 'tracked');
+          selectedKey = keyOf(newIt);
           renderDashboard();
           prog.done('Found');
           CVA.toast('Added ' + ((employer && employer.name) || 'company') + ' to your hub.');
           input.value = '';
           setTimeout(function () { prog.reset(); }, 1600);
-          // auto-open jobs panel for the newly added company
-          const newIt = items.find(function (x) { return String(x.jobId) === String(jobId); });
+          // auto-open the jobs panel for the newly added company
           if (newIt) renderJobsPanel(newIt);
         } catch (e) {
           prog.reset();
