@@ -30,8 +30,14 @@
         
         let authLinksDesktop = '';
         let authLinksMobile = '';
-        
+        let appNavLinks = '';   // primary app links in the centre menu (logged-in only)
+
         if (token && userData.email) {
+            appNavLinks = `
+                <a href="/dashboard" class="nav-app-link">Letters</a>
+                <a href="/job-hub" class="nav-app-link">AI Job Hub</a>
+                <a href="/resume-builder" class="nav-app-link">Resume Builder</a>
+            `;
             const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2) : 'U';
             
             // Generate avatar HTML - use image if available, else initials
@@ -60,16 +66,6 @@
                 <!-- Dashboard -->
                 <a href="/dashboard" class="hdr-icon-btn" title="Dashboard">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg>
-                </a>
-
-                <!-- AI Job Hub -->
-                <a href="/job-hub" class="hdr-icon-btn" title="AI Job Hub">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-4V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2H4a1 1 0 00-1 1v11a1 1 0 001 1h16a1 1 0 001-1V8a1 1 0 00-1-1zM10 5h4v2h-4V5z"/></svg>
-                </a>
-
-                <!-- Resume Builder -->
-                <a href="/resume-builder" class="hdr-icon-btn" title="Resume Builder">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6m-6 4h4m4 6H7a2 2 0 01-2-2V5a2 2 0 012-2h6l6 6v11a2 2 0 01-2 2zM13 3v6h6" /></svg>
                 </a>
 
                 <!-- Notifications -->
@@ -159,6 +155,8 @@
     border-radius: 8px; transition: all 0.2s; text-decoration: none;
 }
 .nav-links a:hover { color: #ECEFF7; background: rgba(255,255,255,0.05); text-decoration: none; }
+.nav-links a.nav-app-link { color: #ECEFF7; font-weight: 600; }
+.nav-links a.nav-app-link:hover { background: rgba(79,141,255,0.16); color: #fff; }
 
 .nav-cta { display: flex; gap: 10px; align-items: center; }
 
@@ -292,11 +290,13 @@
                         <span class="brand-text"><span class="cv">CV</span><span class="applyr">Applyr</span></span>
                     </a>
                     <div class="nav-links">
+                        ${appNavLinks || `
                         <a href="/index.html">Home</a>
                         <a href="/index.html#why">Why CVApplyr</a>
                         <a href="/index.html#features">Features</a>
                         <a href="/index.html#pricing">Pricing</a>
                         <a href="/index.html#contact">Contact</a>
+                        `}
                     </div>
                     <div class="nav-cta">
                         ${authLinksDesktop}
