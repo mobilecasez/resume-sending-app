@@ -64,6 +64,18 @@ EXPO_PID=$!
 echo "✅ Expo started (PID: $EXPO_PID)"
 echo ""
 
+# Android emulator: bridge localhost ports into the emulator.
+# Needed because the Google OAuth callback redirects to localhost:3000,
+# and inside the emulator "localhost" is the emulator itself.
+ADB="$HOME/Library/Android/sdk/platform-tools/adb"
+if [ -x "$ADB" ] && "$ADB" devices | grep -q "emulator-.*device"; then
+    echo "🔌 Android emulator detected — bridging ports (adb reverse)..."
+    "$ADB" reverse tcp:8081 tcp:8081 2>/dev/null
+    "$ADB" reverse tcp:3000 tcp:3000 2>/dev/null
+    echo "✅ Emulator can now reach Metro (8081) and backend/OAuth callback (3000) via localhost"
+    echo ""
+fi
+
 echo "========================================="
 echo "✅ ALL SERVERS STARTED SUCCESSFULLY!"
 echo "========================================="
