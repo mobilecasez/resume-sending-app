@@ -94,8 +94,46 @@
     }
     .jh-remove:hover { border-color: rgba(239,68,68,0.5); color: var(--cva-rose); background: rgba(239,68,68,0.06); }
 
+    /* Company list (compact, selectable) */
+    .jh-co-list { display: flex; flex-direction: column; gap: 10px; }
+    .jh-co {
+      background: #fff; border-radius: 14px;
+      border: 1.5px solid var(--cva-border-hi);
+      padding: 13px 14px;
+      display: flex; align-items: center; gap: 12px;
+      cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .jh-co.selected {
+      border-color: var(--cva-blue);
+      box-shadow: 0 0 0 3px rgba(79,141,255,0.13);
+    }
+    .jh-co:hover:not(.selected) { border-color: #B0C4FF; }
+    .jh-co-body { flex: 1 1 auto; min-width: 0; }
+    .jh-co-name { font-size: 15px; font-weight: 800; color: var(--cva-ink); letter-spacing: -0.2px; }
+    .jh-co-sub  { font-size: 11.5px; color: var(--cva-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .jh-co-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+
+    /* Jobs panel */
+    .jh-jobs-panel {
+      background: #fff; border-radius: 18px;
+      border: 1px solid var(--cva-border-hi);
+      overflow: hidden; margin-top: 14px;
+    }
+    .jh-jobs-panel-head {
+      padding: 14px 18px 12px; border-bottom: 1px solid var(--cva-border-hi);
+      display: flex; align-items: center; gap: 10px;
+    }
+    .jh-jobs-panel-name { font-size: 16px; font-weight: 800; color: var(--cva-ink); flex: 1 1 auto; }
+    .jh-jobs-panel-close {
+      width: 32px; height: 32px; flex: none; border-radius: 8px;
+      border: 1.5px solid #E5E7EB; background: #fff; color: var(--cva-muted);
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      font-size: 18px; line-height: 1;
+    }
+    .jh-jobs-panel-close:hover { border-color: rgba(239,68,68,0.4); color: var(--cva-rose); background: rgba(239,68,68,0.05); }
+    .jh-jobs-inner { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+
     /* Job rows */
-    .jh-jobs { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
     .jh-job {
       border: 1px solid var(--cva-border-hi); border-radius: 14px;
       padding: 13px 14px; background: #fff;
@@ -190,6 +228,20 @@
     <div id="dashboard">
       <div class="cva-card"><div class="jh-loading"><div class="jh-spin"></div>Loading your tracked companies…</div></div>
     </div>
+
+    <!-- JOBS PANEL (shown when a company is selected) -->
+    <div id="jobsPanel" style="display:none;">
+      <h2 class="jh-section-title" style="display:flex;align-items:center;gap:8px;">
+        <span>Jobs at </span><span id="jobsPanelName" style="color:#7BAAFF;"></span>
+      </h2>
+      <div class="jh-jobs-panel">
+        <div class="jh-jobs-panel-head">
+          <div class="jh-jobs-panel-name" id="jobsPanelHeadName"></div>
+          <button class="jh-jobs-panel-close" id="jobsPanelClose" title="Close">&times;</button>
+        </div>
+        <div class="jh-jobs-inner" id="jobsList"></div>
+      </div>
+    </div>
   </main>
 
   <div id="app-footer"></div>
@@ -246,6 +298,9 @@
         document.getElementById('statContacts').textContent = contacts;
       }
 
+      // ── State ────────────────────────────────────────────────────────────
+      let selectedJobId = null;
+
       // ── Rendering ────────────────────────────────────────────────────────
       function jobRowHTML(emp, job, jobId) {
         const skills = Array.isArray(job.skills) ? job.skills : [];
@@ -281,37 +336,82 @@
           '</div>';
       }
 
-      function employerCardHTML(it) {
+      function companyCardHTML(it) {
         const emp = it.employer;
         const jobs = jobCount(emp);
         const contacts = contactCount(emp);
-        const status = (it.status || emp.status || 'tracked');
+        const status = (it.status || (emp && emp.status) || 'tracked');
         let statusClass = '';
         const st = String(status).toLowerCase();
         if (st.indexOf('pend') >= 0 || st.indexOf('progress') >= 0 || st.indexOf('search') >= 0) statusClass = 'pending';
         if (st.indexOf('fail') >= 0 || st.indexOf('error') >= 0) statusClass = 'failed';
 
-        const jobsHTML = (Array.isArray(emp.jobs) && emp.jobs.length)
-          ? emp.jobs.map(function (j) { return jobRowHTML(emp, j, it.jobId); }).join('')
-          : '<div class="jh-empty" style="padding:16px;"><span class="material-icons">work_off</span>No open roles surfaced yet.</div>';
+        const isSelected = String(it.jobId) === String(selectedJobId);
 
         return '' +
-          '<div class="cva-card jh-emp" data-jobid="' + esc(it.jobId) + '">' +
-            '<div class="jh-emp-head">' +
-              '<div class="jh-logo" style="background:' + gradient(emp.logoColor) + ';">' + esc(initialOf(emp)) + '</div>' +
-              '<div class="jh-emp-info">' +
-                '<div class="jh-emp-name">' + esc(emp.name || 'Company') + '</div>' +
-                (emp.subInfo ? '<div class="jh-emp-sub">' + esc(emp.subInfo) + '</div>' : '') +
-                '<div class="jh-emp-counts">' +
-                  '<span class="jh-status-pill ' + statusClass + '">' + esc(status) + '</span>' +
-                  '<span class="jh-count-pill"><span class="material-icons" style="font-size:13px;">work</span>' + jobs + ' job' + (jobs === 1 ? '' : 's') + '</span>' +
-                  '<span class="jh-count-pill"><span class="material-icons" style="font-size:13px;">group</span>' + contacts + ' contact' + (contacts === 1 ? '' : 's') + '</span>' +
-                '</div>' +
-              '</div>' +
-              '<button class="jh-remove" type="button" title="Remove" data-jobid="' + esc(it.jobId) + '">&times;</button>' +
+          '<div class="jh-co' + (isSelected ? ' selected' : '') + '" data-jobid="' + esc(it.jobId) + '">' +
+            '<div class="jh-logo" style="background:' + gradient(emp && emp.logoColor) + ';width:44px;height:44px;flex:none;border-radius:12px;font-size:18px;">' +
+              esc(initialOf(emp)) +
             '</div>' +
-            '<div class="jh-jobs">' + jobsHTML + '</div>' +
+            '<div class="jh-co-body">' +
+              '<div class="jh-co-name">' + esc((emp && emp.name) || 'Company') + '</div>' +
+              (emp && emp.subInfo ? '<div class="jh-co-sub">' + esc(emp.subInfo) + '</div>' : '') +
+              '<div class="jh-co-pills">' +
+                '<span class="jh-status-pill ' + statusClass + '">' + esc(status) + '</span>' +
+                '<span class="jh-count-pill"><span class="material-icons" style="font-size:12px;">work</span>' + jobs + ' job' + (jobs === 1 ? '' : 's') + '</span>' +
+                '<span class="jh-count-pill"><span class="material-icons" style="font-size:12px;">group</span>' + contacts + ' contact' + (contacts === 1 ? '' : 's') + '</span>' +
+              '</div>' +
+            '</div>' +
+            '<button class="jh-remove" type="button" title="Remove" data-jobid="' + esc(it.jobId) + '" style="margin-left:4px;">&times;</button>' +
           '</div>';
+      }
+
+      function renderJobsPanel(it) {
+        const panel = document.getElementById('jobsPanel');
+        const listEl = document.getElementById('jobsList');
+        const nameEl = document.getElementById('jobsPanelName');
+        const headEl = document.getElementById('jobsPanelHeadName');
+        const emp = it && it.employer;
+        const name = (emp && emp.name) || 'Company';
+        nameEl.textContent = name;
+        headEl.textContent = name;
+        panel.style.display = '';
+
+        if (!emp || !Array.isArray(emp.jobs) || !emp.jobs.length) {
+          listEl.innerHTML = '<div class="jh-empty"><span class="material-icons">work_off</span>No open roles surfaced yet.</div>';
+        } else {
+          listEl.innerHTML = emp.jobs.map(function (j) { return jobRowHTML(emp, j, it.jobId); }).join('');
+          Array.prototype.forEach.call(listEl.querySelectorAll('.jh-view-btn'), function (btn) {
+            btn.addEventListener('click', function () {
+              openJob(btn.getAttribute('data-jobid'), btn.getAttribute('data-job'));
+            });
+          });
+        }
+
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+
+      function closeJobsPanel() {
+        selectedJobId = null;
+        document.getElementById('jobsPanel').style.display = 'none';
+        // deselect all company cards
+        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-co.selected'), function (el) {
+          el.classList.remove('selected');
+        });
+      }
+
+      function selectCompany(jobId) {
+        if (String(selectedJobId) === String(jobId)) {
+          closeJobsPanel();
+          return;
+        }
+        selectedJobId = jobId;
+        // update selected highlight without full re-render
+        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-co'), function (el) {
+          el.classList.toggle('selected', el.getAttribute('data-jobid') === String(jobId));
+        });
+        const it = items.find(function (x) { return String(x.jobId) === String(jobId); });
+        if (it) renderJobsPanel(it);
       }
 
       function renderDashboard() {
@@ -322,21 +422,27 @@
               '<span class="material-icons">travel_explore</span>' +
               'No companies tracked yet. Search a company above to surface live roles.' +
             '</div></div>';
+          document.getElementById('jobsPanel').style.display = 'none';
           return;
         }
-        dashEl.innerHTML = items.map(employerCardHTML).join('');
+        dashEl.innerHTML = '<div class="jh-co-list">' + items.map(companyCardHTML).join('') + '</div>';
         wireDashboardEvents();
       }
 
       function wireDashboardEvents() {
         Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-remove'), function (btn) {
-          btn.addEventListener('click', function () { removeCompany(btn.getAttribute('data-jobid')); });
-        });
-        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-view-btn'), function (btn) {
-          btn.addEventListener('click', function () {
-            openJob(btn.getAttribute('data-jobid'), btn.getAttribute('data-job'));
+          btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            removeCompany(btn.getAttribute('data-jobid'));
           });
         });
+        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-co'), function (card) {
+          card.addEventListener('click', function () {
+            selectCompany(card.getAttribute('data-jobid'));
+          });
+        });
+        const closeBtn = document.getElementById('jobsPanelClose');
+        if (closeBtn) closeBtn.onclick = closeJobsPanel;
       }
 
       // ── View / Apply → stash active job + navigate ───────────────────────
@@ -358,6 +464,10 @@
         try {
           const res = await CVA.apiFetch('/api/ai-hub/dashboard/' + encodeURIComponent(jobId), { method: 'DELETE' });
           if (!res.ok) { CVA.toast('Could not remove that company.'); return; }
+          if (String(selectedJobId) === String(jobId)) {
+            selectedJobId = null;
+            document.getElementById('jobsPanel').style.display = 'none';
+          }
           items = items.filter(function (x) { return String(x.jobId) !== String(jobId); });
           renderDashboard();
           CVA.toast('Removed from your hub.');
@@ -440,11 +550,15 @@
           });
 
           upsertItem(jobId, employer, (employer && employer.status) || 'tracked');
+          selectedJobId = jobId;
           renderDashboard();
           prog.done('Found');
           CVA.toast('Added ' + ((employer && employer.name) || 'company') + ' to your hub.');
           input.value = '';
           setTimeout(function () { prog.reset(); }, 1600);
+          // auto-open jobs panel for the newly added company
+          const newIt = items.find(function (x) { return String(x.jobId) === String(jobId); });
+          if (newIt) renderJobsPanel(newIt);
         } catch (e) {
           prog.reset();
           CVA.toast((e && e.message) || 'Search failed — please try again.');
