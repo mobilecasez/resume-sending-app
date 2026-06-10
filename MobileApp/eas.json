@@ -18,14 +18,18 @@
       "android": {
         "buildType": "app-bundle",
         "credentialsSource": "local"
-      }
+      },
+      "autoIncrement": true
     }
   },
   "submit": {
     "production": {
       "ios": {
         "companyName": "zSellr (OPC) Private Limited",
-        "ascAppId": "6762126502"
+        "ascAppId": "6762126502",
+        "ascApiKeyPath": "../Keys/AuthKey_33Y3J5248R.p8",
+        "ascApiKeyId": "33Y3J5248R",
+        "ascApiKeyIssuerId": "bc162399-5ecc-4cdd-baf4-a143d5b1eb65"
       },
       "android": {
         "serviceAccountKeyPath": "../Keys/cvapplyr-e46cebab373e.json",
