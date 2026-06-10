@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Job Hub - CVApplyr</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/cva-ui.css">
+  <style>
+    /* Page-specific — reuses cva- classes + var(--cva-*) tokens only */
+    body {
+      background: linear-gradient(135deg, #3449a7 0%, #2c3552 50%, #172b6d 100%) !important;
+      background-attachment: fixed !important;
+      min-height: 100vh;
+      font-family: 'Montserrat', system-ui, -apple-system, sans-serif;
+    }
+    .navbar, .navbar-light, #home .navbar { background: transparent !important; box-shadow: none !important; }
+
+    /* Hero card (dark navy, mesh blobs) */
+    .jh-hero {
+      position: relative; overflow: hidden;
+      background: var(--cva-ink); color: #fff;
+      border-radius: 22px; padding: 26px 24px;
+      box-shadow: 0 18px 48px rgba(11,15,34,0.30);
+      margin-bottom: 20px;
+    }
+    .jh-hero .blob { position: absolute; border-radius: 50%; filter: blur(42px); opacity: 0.55; pointer-events: none; }
+    .jh-hero .blob.b1 { width: 220px; height: 220px; background: var(--cva-blue); top: -70px; right: -40px; }
+    .jh-hero .blob.b2 { width: 180px; height: 180px; background: var(--cva-purple); bottom: -80px; left: 30%; opacity: 0.4; }
+    .jh-eyebrow {
+      position: relative; z-index: 2;
+      font-size: 11px; font-weight: 800; letter-spacing: 1.6px; text-transform: uppercase;
+      color: #9FB9E8;
+    }
+    .jh-title { position: relative; z-index: 2; font-size: 30px; font-weight: 800; letter-spacing: -0.6px; margin: 6px 0 2px; }
+    .jh-sub   { position: relative; z-index: 2; font-size: 13px; color: rgba(255,255,255,0.78); margin: 0 0 18px; }
+    .jh-stats { position: relative; z-index: 2; display: flex; gap: 10px; flex-wrap: wrap; }
+    .jh-stat {
+      flex: 1 1 0; min-width: 110px;
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 14px; padding: 12px 14px;
+    }
+    .jh-stat .num { font-size: 26px; font-weight: 800; line-height: 1; letter-spacing: -0.5px; }
+    .jh-stat .lbl { font-size: 10.5px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #9FB9E8; margin-top: 6px; }
+
+    /* Add-company row */
+    .jh-add-row { display: flex; gap: 8px; align-items: stretch; }
+    .jh-input {
+      flex: 1 1 auto; min-width: 0;
+      height: 46px; padding: 0 14px; border-radius: 12px;
+      border: 1.5px solid #E5E7EB; background: #fff; color: var(--cva-ink);
+      font-size: 14px; font-weight: 600; font-family: inherit;
+    }
+    .jh-input:focus { outline: none; border-color: var(--cva-blue-deep); box-shadow: 0 0 0 4px rgba(37,99,235,0.10); }
+    .jh-hint { font-size: 12px; color: var(--cva-muted); margin: 10px 0 0; line-height: 16px; }
+    .jh-add-row .cva-btn-primary { flex: 0 0 auto; min-width: 150px; }
+
+    /* Employer card */
+    .jh-emp-head { display: flex; align-items: center; gap: 12px; }
+    .jh-logo {
+      width: 52px; height: 52px; border-radius: 14px; flex: none;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 22px; font-weight: 800;
+      box-shadow: 0 8px 18px rgba(11,15,34,0.18);
+    }
+    .jh-emp-info { flex: 1 1 auto; min-width: 0; }
+    .jh-emp-name { font-size: 17px; font-weight: 800; color: var(--cva-ink); letter-spacing: -0.3px; }
+    .jh-emp-sub  { font-size: 12px; color: var(--cva-muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .jh-emp-counts { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+    .jh-count-pill {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: var(--cva-bg); border: 1px solid var(--cva-border-hi);
+      border-radius: 999px; padding: 4px 10px; font-size: 11.5px; font-weight: 700; color: var(--cva-ink-soft);
+    }
+    .jh-status-pill {
+      display: inline-flex; align-items: center; gap: 5px;
+      border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 800;
+      text-transform: capitalize;
+      background: rgba(16,185,129,0.12); color: #059669; border: 1px solid rgba(16,185,129,0.25);
+    }
+    .jh-status-pill.pending { background: rgba(245,158,11,0.12); color: #B45309; border-color: rgba(245,158,11,0.25); }
+    .jh-status-pill.failed  { background: rgba(239,68,68,0.12);  color: #B91C1C; border-color: rgba(239,68,68,0.25); }
+    .jh-remove {
+      width: 36px; height: 36px; flex: none; border-radius: 10px;
+      border: 1.5px solid #E5E7EB; background: #fff; color: var(--cva-muted);
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      font-size: 20px; line-height: 1;
+    }
+    .jh-remove:hover { border-color: rgba(239,68,68,0.5); color: var(--cva-rose); background: rgba(239,68,68,0.06); }
+
+    /* Job rows */
+    .jh-jobs { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .jh-job {
+      border: 1px solid var(--cva-border-hi); border-radius: 14px;
+      padding: 13px 14px; background: #fff;
+    }
+    .jh-job-top { display: flex; align-items: flex-start; gap: 10px; }
+    .jh-job-title { font-size: 14.5px; font-weight: 800; color: var(--cva-ink); letter-spacing: -0.2px; }
+    .jh-urgent {
+      display: inline-block; margin-left: 8px; vertical-align: middle;
+      background: rgba(239,68,68,0.12); color: var(--cva-rose);
+      border: 1px solid rgba(239,68,68,0.25); border-radius: 999px;
+      font-size: 9.5px; font-weight: 800; letter-spacing: 0.6px; text-transform: uppercase;
+      padding: 2px 7px;
+    }
+    .jh-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 7px; }
+    .jh-meta span { font-size: 12px; color: var(--cva-muted); display: inline-flex; align-items: center; gap: 4px; }
+    .jh-meta .material-icons { font-size: 14px; color: var(--cva-faint); }
+    .jh-skills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+    .jh-skill {
+      background: rgba(79,141,255,0.08); border: 1px solid rgba(79,141,255,0.20);
+      color: var(--cva-blue-deep); border-radius: 8px; padding: 3px 8px; font-size: 11px; font-weight: 700;
+    }
+    .jh-skill.more { background: var(--cva-bg); border-color: var(--cva-border-hi); color: var(--cva-muted); }
+    .jh-job-action { margin-top: 11px; }
+    .jh-job-action .cva-btn-primary { height: 40px; }
+
+    /* States */
+    .jh-empty, .jh-loading {
+      text-align: center; color: var(--cva-muted); font-size: 13.5px; font-weight: 600;
+      padding: 30px 16px;
+    }
+    .jh-empty .material-icons { font-size: 40px; color: #C7D0E0; display: block; margin: 0 auto 8px; }
+    .jh-spin {
+      width: 26px; height: 26px; border-radius: 50%; margin: 0 auto 12px;
+      border: 3px solid rgba(79,141,255,0.25); border-top-color: var(--cva-blue);
+      animation: cva-spin .8s linear infinite;
+    }
+    .jh-section-title { color: #fff; font-size: 14px; font-weight: 800; letter-spacing: 0.4px; margin: 22px 4px 12px; }
+    .cva-card + .cva-card { margin-top: 14px; }
+
+    @media (max-width: 560px) {
+      .jh-add-row { flex-direction: column; }
+      .jh-add-row .cva-btn-primary { width: 100%; min-width: 0; }
+      .jh-title { font-size: 24px; }
+    }
+  </style>
+  <script src="/js/app-header.js?v=3"></script>
+  <script src="/js/credit-validation.js"></script>
+  <script src="/js/cva-ui.js"></script>
+  <script src="/js/app-footer.js"></script>
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="container" style="max-width:880px;margin:0 auto;padding:24px 16px 80px;">
+    <!-- HERO -->
+    <section class="jh-hero">
+      <span class="blob b1"></span><span class="blob b2"></span>
+      <div class="jh-eyebrow">AI-Powered Job Search</div>
+      <h1 class="jh-title">Job Hub</h1>
+      <p class="jh-sub">Track companies, surface live roles, and find the right people to reach.</p>
+      <div class="jh-stats">
+        <div class="jh-stat"><div class="num" id="statCompanies">0</div><div class="lbl">Companies</div></div>
+        <div class="jh-stat"><div class="num" id="statJobs">0</div><div class="lbl">Jobs</div></div>
+        <div class="jh-stat"><div class="num" id="statContacts">0</div><div class="lbl">Contacts</div></div>
+      </div>
+    </section>
+
+    <!-- ADD COMPANY -->
+    <section class="cva-card">
+      <div class="cva-card-head">
+        <div class="ico" style="background:rgba(79,141,255,0.12);color:var(--cva-blue-deep);">
+          <span class="material-icons" style="font-size:18px;">travel_explore</span>
+        </div>
+        <div>
+          <h3>Find jobs at a company</h3>
+          <p>Enter a company name or its careers-page URL. A search costs 3 credits.</p>
+        </div>
+      </div>
+      <div class="jh-add-row">
+        <input id="companyInput" class="jh-input" type="text" autocomplete="off"
+               placeholder="e.g. Stripe  ·  or  careers.stripe.com" />
+        <button id="findJobsBtn" class="cva-btn-primary" type="button">
+          <span class="material-icons" style="font-size:18px;">search</span>
+          <span class="cva-btn-label">Find Jobs</span>
+        </button>
+      </div>
+      <p class="jh-hint" id="addHint">Tip: enter the company's own name or careers page — not a job board like LinkedIn or Indeed.</p>
+    </section>
+
+    <!-- DASHBOARD -->
+    <h2 class="jh-section-title">Tracked Companies</h2>
+    <div id="dashboard">
+      <div class="cva-card"><div class="jh-loading"><div class="jh-spin"></div>Loading your tracked companies…</div></div>
+    </div>
+  </main>
+
+  <div id="app-footer"></div>
+
+  <script>
+    const token = localStorage.getItem('authToken');
+    if (!token) { window.location.href = '/login'; }
+
+    (function () {
+      'use strict';
+      const SEARCH_COST = 3;
+      const dashEl = document.getElementById('dashboard');
+      const findBtn = document.getElementById('findJobsBtn');
+      const input = document.getElementById('companyInput');
+
+      // In-memory dashboard items: { jobId, status, employer, ... }
+      let items = [];
+
+      // ── Helpers ──────────────────────────────────────────────────────────
+      function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+      }
+      function gradient(colors) {
+        const a = (colors && colors[0]) || '#4F8DFF';
+        const b = (colors && colors[1]) || '#7C6BFF';
+        return 'linear-gradient(135deg,' + a + ',' + b + ')';
+      }
+      function initialOf(emp) {
+        if (emp && emp.logoInitial) return String(emp.logoInitial).slice(0, 1).toUpperCase();
+        const n = (emp && emp.name) || '?';
+        return n.slice(0, 1).toUpperCase();
+      }
+      function jobCount(emp) { return (emp && Array.isArray(emp.jobs)) ? emp.jobs.length : 0; }
+      function contactCount(emp) {
+        if (!emp || !Array.isArray(emp.jobs)) return 0;
+        return emp.jobs.reduce(function (sum, j) {
+          return sum + ((j && Array.isArray(j.contacts)) ? j.contacts.length : 0);
+        }, 0);
+      }
+
+      function refreshStats() {
+        let companies = 0, jobs = 0, contacts = 0;
+        items.forEach(function (it) {
+          const emp = it && it.employer;
+          if (!emp) return;
+          companies += 1;
+          jobs += jobCount(emp);
+          contacts += contactCount(emp);
+        });
+        document.getElementById('statCompanies').textContent = companies;
+        document.getElementById('statJobs').textContent = jobs;
+        document.getElementById('statContacts').textContent = contacts;
+      }
+
+      // ── Rendering ────────────────────────────────────────────────────────
+      function jobRowHTML(emp, job, jobId) {
+        const skills = Array.isArray(job.skills) ? job.skills : [];
+        const shown = skills.slice(0, 5);
+        const extra = skills.length - shown.length;
+        let skillsHTML = shown.map(function (s) { return '<span class="jh-skill">' + esc(s) + '</span>'; }).join('');
+        if (extra > 0) skillsHTML += '<span class="jh-skill more">+' + extra + ' more</span>';
+
+        const meta = [];
+        if (job.location)   meta.push('<span><span class="material-icons">place</span>' + esc(job.location) + '</span>');
+        if (job.experience) meta.push('<span><span class="material-icons">work_history</span>' + esc(job.experience) + '</span>');
+        if (job.salary)     meta.push('<span><span class="material-icons">payments</span>' + esc(job.salary) + '</span>');
+        if (job.jobType)    meta.push('<span><span class="material-icons">schedule</span>' + esc(job.jobType) + '</span>');
+
+        return '' +
+          '<div class="jh-job">' +
+            '<div class="jh-job-top">' +
+              '<div style="flex:1 1 auto;min-width:0;">' +
+                '<div class="jh-job-title">' + esc(job.title || 'Role') +
+                  (job.urgent ? '<span class="jh-urgent">Urgent</span>' : '') +
+                '</div>' +
+                (meta.length ? '<div class="jh-meta">' + meta.join('') + '</div>' : '') +
+                (skillsHTML ? '<div class="jh-skills">' + skillsHTML + '</div>' : '') +
+              '</div>' +
+            '</div>' +
+            '<div class="jh-job-action">' +
+              '<button class="cva-btn-primary is-block jh-view-btn" type="button" ' +
+                'data-jobid="' + esc(jobId) + '" data-job="' + esc(job.id) + '">' +
+                '<span class="material-icons" style="font-size:17px;">open_in_new</span>' +
+                '<span>View / Apply</span>' +
+              '</button>' +
+            '</div>' +
+          '</div>';
+      }
+
+      function employerCardHTML(it) {
+        const emp = it.employer;
+        const jobs = jobCount(emp);
+        const contacts = contactCount(emp);
+        const status = (it.status || emp.status || 'tracked');
+        let statusClass = '';
+        const st = String(status).toLowerCase();
+        if (st.indexOf('pend') >= 0 || st.indexOf('progress') >= 0 || st.indexOf('search') >= 0) statusClass = 'pending';
+        if (st.indexOf('fail') >= 0 || st.indexOf('error') >= 0) statusClass = 'failed';
+
+        const jobsHTML = (Array.isArray(emp.jobs) && emp.jobs.length)
+          ? emp.jobs.map(function (j) { return jobRowHTML(emp, j, it.jobId); }).join('')
+          : '<div class="jh-empty" style="padding:16px;"><span class="material-icons">work_off</span>No open roles surfaced yet.</div>';
+
+        return '' +
+          '<div class="cva-card jh-emp" data-jobid="' + esc(it.jobId) + '">' +
+            '<div class="jh-emp-head">' +
+              '<div class="jh-logo" style="background:' + gradient(emp.logoColor) + ';">' + esc(initialOf(emp)) + '</div>' +
+              '<div class="jh-emp-info">' +
+                '<div class="jh-emp-name">' + esc(emp.name || 'Company') + '</div>' +
+                (emp.subInfo ? '<div class="jh-emp-sub">' + esc(emp.subInfo) + '</div>' : '') +
+                '<div class="jh-emp-counts">' +
+                  '<span class="jh-status-pill ' + statusClass + '">' + esc(status) + '</span>' +
+                  '<span class="jh-count-pill"><span class="material-icons" style="font-size:13px;">work</span>' + jobs + ' job' + (jobs === 1 ? '' : 's') + '</span>' +
+                  '<span class="jh-count-pill"><span class="material-icons" style="font-size:13px;">group</span>' + contacts + ' contact' + (contacts === 1 ? '' : 's') + '</span>' +
+                '</div>' +
+              '</div>' +
+              '<button class="jh-remove" type="button" title="Remove" data-jobid="' + esc(it.jobId) + '">&times;</button>' +
+            '</div>' +
+            '<div class="jh-jobs">' + jobsHTML + '</div>' +
+          '</div>';
+      }
+
+      function renderDashboard() {
+        refreshStats();
+        if (!items.length) {
+          dashEl.innerHTML =
+            '<div class="cva-card"><div class="jh-empty">' +
+              '<span class="material-icons">travel_explore</span>' +
+              'No companies tracked yet. Search a company above to surface live roles.' +
+            '</div></div>';
+          return;
+        }
+        dashEl.innerHTML = items.map(employerCardHTML).join('');
+        wireDashboardEvents();
+      }
+
+      function wireDashboardEvents() {
+        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-remove'), function (btn) {
+          btn.addEventListener('click', function () { removeCompany(btn.getAttribute('data-jobid')); });
+        });
+        Array.prototype.forEach.call(dashEl.querySelectorAll('.jh-view-btn'), function (btn) {
+          btn.addEventListener('click', function () {
+            openJob(btn.getAttribute('data-jobid'), btn.getAttribute('data-job'));
+          });
+        });
+      }
+
+      // ── View / Apply → stash active job + navigate ───────────────────────
+      function openJob(jobId, jobLocalId) {
+        const it = items.find(function (x) { return String(x.jobId) === String(jobId); });
+        if (!it || !it.employer) { CVA.toast('Job is still loading — try again in a moment.'); return; }
+        const job = (it.employer.jobs || []).find(function (j) { return String(j.id) === String(jobLocalId); });
+        if (!job) { CVA.toast('Could not open that role.'); return; }
+        try {
+          sessionStorage.setItem('cva_active_job', JSON.stringify({
+            employer: it.employer, job: job, jobId: it.jobId
+          }));
+        } catch (e) {}
+        window.location.href = '/job?id=' + encodeURIComponent(job.id);
+      }
+
+      // ── Remove ───────────────────────────────────────────────────────────
+      async function removeCompany(jobId) {
+        try {
+          const res = await CVA.apiFetch('/api/ai-hub/dashboard/' + encodeURIComponent(jobId), { method: 'DELETE' });
+          if (!res.ok) { CVA.toast('Could not remove that company.'); return; }
+          items = items.filter(function (x) { return String(x.jobId) !== String(jobId); });
+          renderDashboard();
+          CVA.toast('Removed from your hub.');
+        } catch (e) {
+          CVA.toast('Could not remove that company.');
+        }
+      }
+
+      // ── Load dashboard ───────────────────────────────────────────────────
+      async function loadDashboard() {
+        try {
+          const res = await CVA.apiFetch('/api/ai-hub/dashboard', { method: 'GET' });
+          const data = await res.json().catch(function () { return {}; });
+          const list = (data && Array.isArray(data.dashboard)) ? data.dashboard : [];
+          items = list.filter(function (x) { return x && x.employer; });
+          renderDashboard();
+        } catch (e) {
+          dashEl.innerHTML =
+            '<div class="cva-card"><div class="jh-empty">' +
+              '<span class="material-icons">cloud_off</span>' +
+              'Could not load your hub. Refresh to try again.' +
+            '</div></div>';
+        }
+      }
+
+      // ── Search a company (3 credits) ─────────────────────────────────────
+      function upsertItem(jobId, partialEmployer, status) {
+        let it = items.find(function (x) { return String(x.jobId) === String(jobId); });
+        if (!it) { it = { jobId: jobId, employer: null, status: status || 'searching' }; items.unshift(it); }
+        if (partialEmployer) it.employer = partialEmployer;
+        if (status) it.status = status;
+        return it;
+      }
+
+      async function findJobs() {
+        const q = (input.value || '').trim();
+        if (!q) { CVA.toast('Enter a company name or careers-page URL.'); input.focus(); return; }
+
+        const balance = await CVA.getCredits();
+        if (balance < SEARCH_COST) {
+          CVA.toast('You need ' + SEARCH_COST + ' credits to search. Get more in Packages.');
+          setTimeout(function () { window.location.href = '/packages'; }, 1400);
+          return;
+        }
+
+        const prog = CVA.progressButton(findBtn);
+        prog.start('Searching…');
+        prog.set(8, 'Researching…');
+
+        try {
+          const res = await CVA.apiFetch('/api/ai-hub/jobs?company=' + encodeURIComponent(q), { method: 'GET' });
+          const data = await res.json().catch(function () { return {}; });
+
+          if (res.status === 422 && data && data.error === 'job_portal') {
+            prog.reset();
+            CVA.toast(data.message || "That's a job board — enter the company's own name or careers page.");
+            return;
+          }
+          if (res.status === 400) {
+            prog.reset();
+            CVA.toast((data && data.error) || 'Please enter a company name or URL.');
+            return;
+          }
+          if (!res.ok || !data || !data.jobId) {
+            prog.reset();
+            CVA.toast((data && data.error) || 'Search failed — please try again.');
+            return;
+          }
+
+          const jobId = data.jobId;
+          upsertItem(jobId, null, 'searching');
+
+          const employer = await CVA.pollJob(jobId, {
+            poller: '/api/ai-hub/job-status',
+            onProgress: function (d) {
+              const pct = (typeof d.progress === 'number') ? Math.max(10, Math.min(95, d.progress)) : 40;
+              prog.set(pct, 'Researching…');
+              if (d && d.data) { upsertItem(jobId, d.data, 'searching'); renderDashboard(); }
+            }
+          });
+
+          upsertItem(jobId, employer, (employer && employer.status) || 'tracked');
+          renderDashboard();
+          prog.done('Found');
+          CVA.toast('Added ' + ((employer && employer.name) || 'company') + ' to your hub.');
+          input.value = '';
+          setTimeout(function () { prog.reset(); }, 1600);
+        } catch (e) {
+          prog.reset();
+          CVA.toast((e && e.message) || 'Search failed — please try again.');
+        }
+      }
+
+      // ── Wire ─────────────────────────────────────────────────────────────
+      findBtn.addEventListener('click', findJobs);
+      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') findJobs(); });
+
+      document.addEventListener('DOMContentLoaded', loadDashboard);
+      if (document.readyState !== 'loading') loadDashboard();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,692 @@
+<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Resume Builder - CVApplyr</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/cva-ui.css">
+  <style>
+    body {
+      background: linear-gradient(135deg, #3449a7 0%, #2c3552 50%, #172b6d 100%) !important;
+      background-attachment: fixed !important;
+      min-height: 100vh; font-family: 'Montserrat', sans-serif;
+    }
+    .navbar, .navbar-light, #home .navbar { background: transparent !important; box-shadow: none !important; }
+    @media (max-width: 991px) { #home .navbar { background: transparent !important; } }
+
+    .rb-head { text-align: center; margin: 8px 0 22px; }
+    .rb-head h1 { color: #fff; font-size: 2rem; font-weight: 800; margin: 0 0 6px; text-shadow: 0 2px 4px rgba(0,0,0,.15); }
+    .rb-head p { color: rgba(255,255,255,.92); font-size: .98rem; margin: 0; }
+
+    .cva-card { margin-bottom: 18px; padding: 22px; }
+
+    /* form fields reusing tokens */
+    .rb-field { margin-bottom: 14px; }
+    .rb-field label { display: block; font-size: 12px; font-weight: 700; color: var(--cva-ink-soft); margin-bottom: 6px; letter-spacing: .2px; }
+    .rb-input, .rb-textarea {
+      width: 100%; padding: 11px 13px; border: 1.5px solid #E5E7EB; border-radius: 10px;
+      font-size: 14px; font-family: inherit; color: var(--cva-ink); background: #fff; box-sizing: border-box;
+    }
+    .rb-input:focus, .rb-textarea:focus { outline: none; border-color: var(--cva-blue-deep); box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+    .rb-textarea { min-height: 150px; resize: vertical; line-height: 1.5; }
+    .rb-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 640px) { .rb-grid2 { grid-template-columns: 1fr; } }
+
+    .rb-check { display: flex; align-items: center; gap: 10px; margin: 4px 0 16px; cursor: pointer; }
+    .rb-check input { width: 18px; height: 18px; accent-color: var(--cva-blue-deep); cursor: pointer; }
+    .rb-check span { font-size: 13px; color: var(--cva-muted); font-weight: 600; }
+
+    .rb-hint { font-size: 12px; color: var(--cva-muted); margin: 8px 0 0; line-height: 16px; }
+
+    /* editable preview blocks */
+    .rb-block { border: 1px solid var(--cva-border-hi); border-radius: 14px; padding: 14px; margin-bottom: 12px; background: #FBFCFE; }
+    .rb-block-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .rb-block-head h4 { margin: 0; font-size: 13px; font-weight: 800; color: var(--cva-ink); letter-spacing: .2px; }
+    .rb-mini-btn {
+      border: 1.5px solid #CBD5E1; background: #fff; color: var(--cva-ink-soft);
+      border-radius: 9px; padding: 5px 11px; font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+    .rb-mini-btn.rb-danger { border-color: rgba(239,68,68,.4); color: var(--cva-rose); }
+    .rb-item { border: 1px dashed var(--cva-border-hi); border-radius: 12px; padding: 12px; margin-bottom: 10px; position: relative; }
+    .rb-item .rb-remove {
+      position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border-radius: 7px;
+      border: none; background: rgba(239,68,68,.08); color: var(--cva-rose); cursor: pointer; font-size: 15px; line-height: 1;
+    }
+
+    .rb-star { color: var(--cva-amber); font-size: 13px; }
+    .rb-star .off { color: #D5DAE3; }
+
+    /* segmented one-page / a4 */
+    .rb-seg { display: inline-flex; border: 1.5px solid #E5E7EB; border-radius: 11px; overflow: hidden; background: #fff; }
+    .rb-seg button {
+      border: none; background: transparent; padding: 9px 18px; font-size: 13px; font-weight: 700;
+      color: var(--cva-muted); cursor: pointer;
+    }
+    .rb-seg button.selected { background: var(--cva-navy); color: #fff; }
+
+    .rb-btn-dark {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%;
+      height: 46px; border: none; border-radius: 12px; cursor: pointer;
+      color: #fff; font-size: 14px; font-weight: 800; background: var(--cva-navy);
+      box-shadow: 0 8px 20px rgba(11,17,32,.28);
+    }
+    .rb-btn-dark:hover { filter: brightness(1.12); }
+    .rb-btn-dark:disabled { opacity: .6; cursor: default; }
+
+    .rb-footnote { font-size: 11.5px; color: var(--cva-muted); text-align: center; margin: 10px 0 0; }
+    .rb-empty { display: none; }
+    .rb-spacer { height: 4px; }
+    main { max-width: 880px; }
+  </style>
+  <script src="/js/app-header.js?v=3"></script>
+  <script src="/js/credit-validation.js"></script>
+  <script src="/js/cva-ui.js"></script>
+  <script src="/js/app-footer.js"></script>
+</head><body>
+  <div id="app-header"></div>
+  <main class="container" style="max-width:880px;margin:0 auto;padding:24px 16px 80px;">
+    <div class="rb-head">
+      <h1>Resume Builder</h1>
+      <p>Build an ATS-ready resume with AI, then download it in your country's format.</p>
+    </div>
+
+    <!-- BUILD CARD (shown when no resume yet, or via "Rebuild") -->
+    <div class="cva-card" id="buildCard">
+      <div class="cva-card-head">
+        <div class="ico" style="background:rgba(124,107,255,.12);color:var(--cva-purple);">✨</div>
+        <div>
+          <h3>Build with AI</h3>
+          <p>Paste your career story — AI structures it into a polished resume. Costs 2 credits.</p>
+        </div>
+      </div>
+
+      <div class="rb-grid2">
+        <div class="rb-field"><label>Full name</label><input class="rb-input" id="bName" type="text" placeholder="Jane Doe"></div>
+        <div class="rb-field"><label>Email</label><input class="rb-input" id="bEmail" type="email" placeholder="jane@email.com"></div>
+      </div>
+      <div class="rb-grid2">
+        <div class="rb-field"><label>Phone</label><input class="rb-input" id="bPhone" type="tel" placeholder="+1 555 000 0000"></div>
+        <div class="rb-field"><label>Location</label><input class="rb-input" id="bLocation" type="text" placeholder="City, Country"></div>
+      </div>
+
+      <div class="rb-field">
+        <label>Paste your career story / experience</label>
+        <textarea class="rb-textarea" id="bRawText" placeholder="Describe your roles, achievements, skills, education, projects… The more detail you give, the better your resume. (min 20 characters)"></textarea>
+      </div>
+
+      <label class="rb-check">
+        <input type="checkbox" id="bUseUploaded">
+        <span>Also use my uploaded resume as context</span>
+      </label>
+
+      <button class="cva-btn-primary is-block" id="genBtn" type="button">✨ Generate Resume with AI</button>
+      <p class="rb-hint">AI generation costs 2 credits. You can edit everything afterwards.</p>
+    </div>
+
+    <button class="cva-btn-primary is-block rb-empty" id="rebuildBtn" type="button" style="display:none;margin-bottom:18px;">✨ Rebuild with AI</button>
+
+    <!-- EDITABLE RESUME PREVIEW -->
+    <div class="cva-card rb-empty" id="resumeCard" style="display:none;">
+      <div class="cva-card-head">
+        <div class="ico" style="background:rgba(79,141,255,.12);color:var(--cva-blue-deep);">📝</div>
+        <div>
+          <h3>Your resume</h3>
+          <p>Edit any field below, then save. These details power every template.</p>
+        </div>
+      </div>
+      <div id="resumeForm"></div>
+      <div class="rb-spacer"></div>
+      <button class="cva-btn-primary is-block" id="saveBtn" type="button">💾 Save resume</button>
+    </div>
+
+    <!-- TEMPLATES CARD -->
+    <div class="cva-card rb-empty" id="templatesCard" style="display:none;">
+      <div class="cva-card-head">
+        <div class="ico" style="background:rgba(16,185,129,.12);color:var(--cva-emerald);">🎨</div>
+        <div>
+          <h3>Templates &amp; format</h3>
+          <p>Pick your country's format, preview free, then download.</p>
+        </div>
+      </div>
+
+      <label class="cva-section-label">Resume format</label>
+      <div class="cva-chip-wrap" id="regionChips" style="margin:6px 0 14px;"></div>
+
+      <div class="cva-action-row">
+        <button class="cva-btn-primary" id="previewBtn" type="button">👁️ Preview</button>
+        <button class="cva-icon-btn" id="atsBtn" type="button" title="ATS score" style="cursor:default;display:none;"></button>
+      </div>
+      <p class="rb-hint" id="atsLine" style="display:none;"></p>
+
+      <div class="rb-spacer" style="height:16px;"></div>
+
+      <label class="cva-section-label">Download</label>
+      <div style="display:flex;align-items:center;gap:12px;margin:8px 0 14px;flex-wrap:wrap;">
+        <div class="rb-seg" id="modeSeg">
+          <button type="button" data-mode="onepage" class="selected">One Page</button>
+          <button type="button" data-mode="a4">A4</button>
+        </div>
+      </div>
+      <button class="rb-btn-dark" id="downloadBtn" type="button">📥 Download Resume PDF</button>
+      <p class="rb-footnote">2 credits per download · previews are free</p>
+    </div>
+  </main>
+  <div id="app-footer"></div>
+
+  <script>
+    const token = localStorage.getItem('authToken');
+    if (!token) { window.location.href = '/login'; }
+
+    // ── State ──
+    let resumeData = null;                 // the structured resume object
+    let selectedRegion = 'generic';
+    let selectedMode = 'onepage';
+    const previewCache = {};               // region -> { previews:[...] }
+
+    // ── Small DOM helpers ──
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+    function showAfterBuild() {
+      $('resumeCard').style.display = 'block';
+      $('templatesCard').style.display = 'block';
+      $('rebuildBtn').style.display = 'block';
+      $('buildCard').style.display = 'none';
+    }
+
+    // ── Page load ──
+    window.addEventListener('DOMContentLoaded', async () => {
+      buildRegionChips();
+      wireModeSeg();
+      try { await CVA.getCredits(); } catch (e) {}
+      await prefillFromProfile();
+      await loadExistingResume();
+    });
+
+    async function prefillFromProfile() {
+      try {
+        const r = await CVA.apiFetch('/api/user-profile', { method: 'GET' });
+        if (!r.ok) return;
+        const d = await r.json();
+        const p = (d && d.profile) ? d.profile : (d || {});
+        if (p.fullName && !$('bName').value)      $('bName').value = p.fullName;
+        if (p.email && !$('bEmail').value)        $('bEmail').value = p.email;
+        if (p.phoneNumber && !$('bPhone').value)  $('bPhone').value = p.phoneNumber;
+        if (p.address && !$('bLocation').value)   $('bLocation').value = p.address;
+      } catch (e) { /* prefill is best-effort */ }
+    }
+
+    async function loadExistingResume() {
+      try {
+        const r = await CVA.apiFetch('/api/resume-builder/', { method: 'GET' });
+        if (!r.ok) return;
+        const d = await r.json();
+        let rd = d && d.resumeData;
+        if (typeof rd === 'string') { try { rd = JSON.parse(rd); } catch (e) { rd = null; } }
+        if (rd && typeof rd === 'object') {
+          resumeData = normalizeResume(rd);
+          renderResumeForm();
+          showAfterBuild();
+        }
+      } catch (e) { /* no resume yet — keep build form */ }
+    }
+
+    // ── Region chips ──
+    function buildRegionChips() {
+      const wrap = $('regionChips');
+      wrap.innerHTML = '';
+      CVA.RESUME_REGION_OPTIONS.forEach((opt) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'cva-region-chip' + (opt.id === selectedRegion ? ' selected' : '');
+        b.textContent = opt.label;
+        b.title = opt.sub || '';
+        b.addEventListener('click', () => {
+          selectedRegion = opt.id;
+          Array.prototype.forEach.call(wrap.children, (c, i) => {
+            c.classList.toggle('selected', CVA.RESUME_REGION_OPTIONS[i].id === selectedRegion);
+          });
+          renderAtsForRegion(); // reflect cached ATS if any
+        });
+        wrap.appendChild(b);
+      });
+    }
+
+    function wireModeSeg() {
+      const seg = $('modeSeg');
+      Array.prototype.forEach.call(seg.querySelectorAll('button'), (b) => {
+        b.addEventListener('click', () => {
+          selectedMode = b.getAttribute('data-mode');
+          Array.prototype.forEach.call(seg.querySelectorAll('button'), (x) =>
+            x.classList.toggle('selected', x === b));
+        });
+      });
+    }
+
+    // ── Normalize a resumeData object so the editor never crashes ──
+    function normalizeResume(rd) {
+      rd = rd || {};
+      rd.personal_info = rd.personal_info || {};
+      rd.summary = rd.summary || '';
+      rd.experience = Array.isArray(rd.experience) ? rd.experience : [];
+      rd.education = Array.isArray(rd.education) ? rd.education : [];
+      rd.projects = Array.isArray(rd.projects) ? rd.projects : [];
+      rd.certifications = Array.isArray(rd.certifications) ? rd.certifications : [];
+      rd.languages = Array.isArray(rd.languages) ? rd.languages : [];
+      rd.achievements = Array.isArray(rd.achievements) ? rd.achievements : [];
+      rd.skills = rd.skills || {};
+      rd.skills.technical = Array.isArray(rd.skills.technical) ? rd.skills.technical : [];
+      rd.skills.soft = Array.isArray(rd.skills.soft) ? rd.skills.soft : [];
+      return rd;
+    }
+
+    // ── Generate with AI ──
+    async function generateResume() {
+      const name = $('bName').value.trim();
+      const email = $('bEmail').value.trim();
+      const phone = $('bPhone').value.trim();
+      const location = $('bLocation').value.trim();
+      const rawText = $('bRawText').value.trim();
+      const includeUploadedResume = $('bUseUploaded').checked;
+
+      if (rawText.length < 20) {
+        CVA.toast('Please add more detail (at least 20 characters).');
+        return;
+      }
+      const bal = await CVA.getCredits();
+      if (bal < 2) { CVA.toast('Not enough credits — you need 2.'); return; }
+
+      const btnEl = $('genBtn');
+      const prog = CVA.progressButton(btnEl);
+      prog.start('Generating…');
+      let pct = 8;
+      const tick = setInterval(() => { pct = Math.min(pct + 4, 92); prog.set(pct); }, 1200);
+
+      try {
+        const data = await CVA.postAndPoll(
+          '/api/resume-builder/generate-ai',
+          { name, email, phone, location, rawText, includeUploadedResume },
+          { poller: '/api/ai-hub/job-status' }
+        );
+        clearInterval(tick);
+        const rd = data && data.resumeData;
+        if (!rd) throw new Error('No resume returned.');
+        resumeData = normalizeResume(rd);
+        for (const k in previewCache) delete previewCache[k]; // invalidate previews
+        prog.done('Done');
+        renderResumeForm();
+        showAfterBuild();
+        try { await CVA.getCredits(); } catch (e) {}
+        CVA.toast('Resume generated — review and save.');
+        setTimeout(() => prog.reset(), 1200);
+        $('resumeCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (err) {
+        clearInterval(tick);
+        prog.reset();
+        const msg = (err && err.message) || '';
+        if (/402|insufficient|enough credit/i.test(msg)) CVA.toast('Not enough credits to generate.');
+        else if (/504|timeout|taking too long/i.test(msg)) CVA.toast('The AI took too long — please try again.');
+        else CVA.toast('Could not generate the resume — please try again.');
+      }
+    }
+
+    // ── Editable form rendering ──
+    function renderResumeForm() {
+      const rd = resumeData;
+      const pi = rd.personal_info || {};
+      const tech = (rd.skills.technical || []).join(', ');
+      const soft = (rd.skills.soft || []).join(', ');
+
+      let html = '';
+
+      // Personal info
+      html += blockOpen('Personal information', '');
+      html += '<div class="rb-grid2">'
+        + field('pi_full_name', 'Full name', pi.full_name)
+        + field('pi_email', 'Email', pi.email) + '</div>';
+      html += '<div class="rb-grid2">'
+        + field('pi_phone', 'Phone', pi.phone)
+        + field('pi_location', 'Location', pi.location) + '</div>';
+      html += '<div class="rb-grid2">'
+        + field('pi_linkedin', 'LinkedIn', pi.linkedin)
+        + field('pi_website', 'Website / Portfolio', pi.website || pi.portfolio) + '</div>';
+      html += blockClose();
+
+      // Summary
+      html += blockOpen('Professional summary', '');
+      html += textarea('summary', '', rd.summary, 4);
+      html += blockClose();
+
+      // Experience
+      html += blockOpenList('Experience', 'addExperience');
+      rd.experience.forEach((ex, i) => { html += expItem(i, ex); });
+      html += '<div id="expList"></div>';
+      html += blockClose();
+
+      // Education
+      html += blockOpenList('Education', 'addEducation');
+      rd.education.forEach((ed, i) => { html += eduItem(i, ed); });
+      html += blockClose();
+
+      // Skills
+      html += blockOpen('Skills', '');
+      html += textarea('skills_technical', 'Technical (comma-separated)', tech, 2);
+      html += textarea('skills_soft', 'Soft (comma-separated)', soft, 2);
+      html += blockClose();
+
+      // Projects
+      html += blockOpenList('Projects', 'addProject');
+      rd.projects.forEach((pr, i) => { html += projItem(i, pr); });
+      html += blockClose();
+
+      // Simple list sections: certifications, languages, achievements
+      html += blockOpen('Certifications', '');
+      html += textarea('certifications', 'One per line', (rd.certifications || []).map(certText).join('\n'), 3);
+      html += blockClose();
+
+      html += blockOpen('Languages', '');
+      html += textarea('languages', 'One per line', (rd.languages || []).map(langText).join('\n'), 2);
+      html += blockClose();
+
+      html += blockOpen('Achievements', '');
+      html += textarea('achievements', 'One per line', (rd.achievements || []).map(achText).join('\n'), 3);
+      html += blockClose();
+
+      $('resumeForm').innerHTML = html;
+      wireListButtons();
+    }
+
+    // text extractors for object-or-string list items
+    function certText(c) { return typeof c === 'string' ? c : (c && (c.name || c.title || c.certification) || ''); }
+    function langText(l) { return typeof l === 'string' ? l : (l && (l.name || l.language) ? (l.name || l.language) + (l.proficiency ? ' — ' + l.proficiency : '') : ''); }
+    function achText(a)  { return typeof a === 'string' ? a : (a && (a.description || a.title || a.name) || ''); }
+
+    // builders
+    function blockOpen(title, headRight) {
+      return '<div class="rb-block"><div class="rb-block-head"><h4>' + esc(title) + '</h4>' + (headRight || '') + '</div>';
+    }
+    function blockOpenList(title, addAction) {
+      return '<div class="rb-block"><div class="rb-block-head"><h4>' + esc(title) + '</h4>'
+        + '<button class="rb-mini-btn" type="button" data-add="' + addAction + '">+ Add</button></div>'
+        + '<div data-list="' + addAction + '">';
+    }
+    function blockClose() { return '</div>'; }
+    function field(id, label, val) {
+      return '<div class="rb-field"><label>' + esc(label) + '</label>'
+        + '<input class="rb-input" id="' + id + '" type="text" value="' + esc(val) + '"></div>';
+    }
+    function textarea(id, label, val, rows) {
+      return '<div class="rb-field">' + (label ? '<label>' + esc(label) + '</label>' : '')
+        + '<textarea class="rb-textarea" id="' + id + '" style="min-height:' + (rows * 26 + 14) + 'px;">' + esc(val) + '</textarea></div>';
+    }
+
+    function expItem(i, ex) {
+      ex = ex || {};
+      return '<div class="rb-item" data-exp>'
+        + '<button class="rb-remove" type="button" data-remove-exp>×</button>'
+        + '<div class="rb-grid2">'
+          + field2('exp_title_' + i, 'Title', ex.title)
+          + field2('exp_company_' + i, 'Company', ex.company) + '</div>'
+        + '<div class="rb-grid2">'
+          + field2('exp_location_' + i, 'Location', ex.location)
+          + field2('exp_dates_' + i, 'Dates', joinDates(ex)) + '</div>'
+        + textarea('exp_bullets_' + i, 'Bullets (one per line)', (Array.isArray(ex.bullets) ? ex.bullets : []).join('\n'), 3)
+        + '</div>';
+    }
+    function eduItem(i, ed) {
+      ed = ed || {};
+      return '<div class="rb-item" data-edu>'
+        + '<button class="rb-remove" type="button" data-remove-edu>×</button>'
+        + '<div class="rb-grid2">'
+          + field2('edu_degree_' + i, 'Degree', ed.degree)
+          + field2('edu_institution_' + i, 'Institution', ed.institution) + '</div>'
+        + '<div class="rb-grid2">'
+          + field2('edu_year_' + i, 'Year', ed.year)
+          + field2('edu_location_' + i, 'Location', ed.location) + '</div>'
+        + '</div>';
+    }
+    function projItem(i, pr) {
+      pr = pr || {};
+      return '<div class="rb-item" data-proj>'
+        + '<button class="rb-remove" type="button" data-remove-proj>×</button>'
+        + field2('proj_name_' + i, 'Name', pr.name)
+        + textarea('proj_desc_' + i, 'Description', pr.description, 2)
+        + '</div>';
+    }
+    function field2(id, label, val) {
+      return '<div class="rb-field"><label>' + esc(label) + '</label>'
+        + '<input class="rb-input" id="' + id + '" type="text" value="' + esc(val) + '"></div>';
+    }
+    function joinDates(ex) {
+      const s = ex.start_date || ''; const e = ex.end_date || '';
+      if (s || e) return (s + (e ? ' – ' + e : '')).trim();
+      return ex.dates || '';
+    }
+
+    // dynamic add/remove for list sections
+    function wireListButtons() {
+      const form = $('resumeForm');
+      Array.prototype.forEach.call(form.querySelectorAll('[data-add]'), (b) => {
+        b.addEventListener('click', () => {
+          const action = b.getAttribute('data-add');
+          const list = form.querySelector('[data-list="' + action + '"]');
+          const idx = list.children.length + 1000; // unique enough id space for new rows
+          let frag = '';
+          if (action === 'addExperience') frag = expItem(idx, {});
+          else if (action === 'addEducation') frag = eduItem(idx, {});
+          else if (action === 'addProject') frag = projItem(idx, {});
+          const tmp = document.createElement('div');
+          tmp.innerHTML = frag;
+          const node = tmp.firstChild;
+          list.appendChild(node);
+          node.querySelector('.rb-remove').addEventListener('click', () => node.remove());
+        });
+      });
+      Array.prototype.forEach.call(form.querySelectorAll('.rb-remove'), (b) => {
+        b.addEventListener('click', () => { const it = b.closest('.rb-item'); if (it) it.remove(); });
+      });
+    }
+
+    // ── Read the form back into resumeData ──
+    function readFormIntoResume() {
+      const form = $('resumeForm');
+      const v = (id) => { const el = $(id); return el ? el.value.trim() : ''; };
+
+      resumeData.personal_info = resumeData.personal_info || {};
+      const pi = resumeData.personal_info;
+      pi.full_name = v('pi_full_name');
+      pi.email = v('pi_email');
+      pi.phone = v('pi_phone');
+      pi.location = v('pi_location');
+      pi.linkedin = v('pi_linkedin');
+      pi.website = v('pi_website');
+
+      resumeData.summary = v('summary');
+
+      // experience
+      resumeData.experience = [];
+      Array.prototype.forEach.call(form.querySelectorAll('[data-exp]'), (it) => {
+        const get = (sel) => { const el = it.querySelector(sel); return el ? el.value.trim() : ''; };
+        const inputs = it.querySelectorAll('.rb-input');
+        const ta = it.querySelector('textarea');
+        const title = inputs[0] ? inputs[0].value.trim() : '';
+        const company = inputs[1] ? inputs[1].value.trim() : '';
+        const location = inputs[2] ? inputs[2].value.trim() : '';
+        const dates = inputs[3] ? inputs[3].value.trim() : '';
+        const bullets = ta ? ta.value.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+        if (title || company || bullets.length) {
+          resumeData.experience.push({ title, company, location, dates, bullets });
+        }
+      });
+
+      // education
+      resumeData.education = [];
+      Array.prototype.forEach.call(form.querySelectorAll('[data-edu]'), (it) => {
+        const inputs = it.querySelectorAll('.rb-input');
+        const degree = inputs[0] ? inputs[0].value.trim() : '';
+        const institution = inputs[1] ? inputs[1].value.trim() : '';
+        const year = inputs[2] ? inputs[2].value.trim() : '';
+        const location = inputs[3] ? inputs[3].value.trim() : '';
+        if (degree || institution) resumeData.education.push({ degree, institution, year, location });
+      });
+
+      // skills
+      const splitCsv = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
+      resumeData.skills = resumeData.skills || {};
+      resumeData.skills.technical = splitCsv(v('skills_technical'));
+      resumeData.skills.soft = splitCsv(v('skills_soft'));
+
+      // projects
+      resumeData.projects = [];
+      Array.prototype.forEach.call(form.querySelectorAll('[data-proj]'), (it) => {
+        const nameEl = it.querySelector('.rb-input');
+        const ta = it.querySelector('textarea');
+        const name = nameEl ? nameEl.value.trim() : '';
+        const description = ta ? ta.value.trim() : '';
+        if (name || description) resumeData.projects.push({ name, description });
+      });
+
+      // line lists
+      const lines = (s) => s.split('\n').map((x) => x.trim()).filter(Boolean);
+      resumeData.certifications = lines(v('certifications'));
+      resumeData.languages = lines(v('languages'));
+      resumeData.achievements = lines(v('achievements'));
+    }
+
+    // ── Save ──
+    async function saveResumeData() {
+      readFormIntoResume();
+      const btn = $('saveBtn');
+      const prog = CVA.progressButton(btn);
+      prog.start('Saving…'); prog.set(60);
+      try {
+        const r = await CVA.apiFetch('/api/resume-builder/save', {
+          method: 'POST', body: JSON.stringify({ resumeData })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.success) throw new Error('save failed');
+        for (const k in previewCache) delete previewCache[k]; // edits invalidate cached previews
+        prog.done('Saved');
+        CVA.toast('Resume saved.');
+        setTimeout(() => prog.reset(), 1200);
+      } catch (e) {
+        prog.reset();
+        CVA.toast('Could not save — please try again.');
+      }
+    }
+
+    // ── Preview templates (free) ──
+    async function ensurePreviews(region) {
+      if (previewCache[region]) return previewCache[region];
+      const data = await CVA.postAndPoll(
+        '/api/resume-builder/preview-templates',
+        { region },
+        { poller: '/api/ai-hub/job-status' }
+      );
+      if (!data || !Array.isArray(data.previews) || !data.previews.length) {
+        const err = new Error('no_previews'); err.code = 'no_previews'; throw err;
+      }
+      previewCache[region] = { previews: data.previews };
+      return previewCache[region];
+    }
+
+    function starsHtml(n) {
+      n = Math.max(0, Math.min(5, Math.round(Number(n) || 0)));
+      let s = '';
+      for (let i = 1; i <= 5; i++) s += (i <= n ? '<span>★</span>' : '<span class="off">★</span>');
+      return s;
+    }
+
+    function renderAtsForRegion() {
+      const cache = previewCache[selectedRegion];
+      const line = $('atsLine');
+      if (cache && cache.previews && cache.previews[0] && cache.previews[0].ats != null) {
+        const ats = cache.previews[0].ats;
+        line.innerHTML = 'ATS score: <span class="rb-star">' + starsHtml(ats) + '</span> ' + Math.round(ats) + '/5';
+        line.style.display = 'block';
+      } else {
+        line.style.display = 'none';
+      }
+    }
+
+    async function previewTemplate() {
+      if (!resumeData) { CVA.toast('Build a resume first'); return; }
+      const btn = $('previewBtn');
+      const prog = CVA.progressButton(btn);
+      prog.start('Rendering…'); prog.set(45);
+      try {
+        const cache = await ensurePreviews(selectedRegion);
+        prog.done('Ready');
+        const p0 = cache.previews[0];
+        renderAtsForRegion();
+        CVA.lightbox(p0.image, CVA.regionLabel(selectedRegion));
+        setTimeout(() => prog.reset(), 900);
+      } catch (err) {
+        prog.reset();
+        const msg = (err && (err.code || err.message)) || '';
+        if (/no_previews|404|no resume/i.test(msg)) CVA.toast('Build a resume first');
+        else CVA.toast('Could not render preview — please try again.');
+      }
+    }
+
+    // ── Download PDF (2 credits) ──
+    async function downloadPdf() {
+      if (!resumeData) { CVA.toast('Build a resume first'); return; }
+      const bal = await CVA.getCredits();
+      if (bal < 2) { CVA.toast('Not enough credits — you need 2.'); return; }
+
+      const btn = $('downloadBtn');
+      const orig = btn.innerHTML;
+      btn.disabled = true; btn.textContent = 'Preparing…';
+      try {
+        // Resolve the region's template id from a preview (render if not cached)
+        const cache = await ensurePreviews(selectedRegion);
+        const template = cache.previews[0].id;
+
+        const r = await CVA.apiFetch('/api/resume-builder/generate-pdf', {
+          method: 'POST', body: JSON.stringify({ template, mode: selectedMode })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 402) { CVA.toast('Not enough credits to download.'); throw new Error('402'); }
+        if (!r.ok || !d.downloadUrl) throw new Error('pdf failed');
+
+        // Fetch the protected file as a blob and trigger a download
+        const fileRes = await fetch(d.downloadUrl, { headers: { Authorization: 'Bearer ' + token } });
+        if (!fileRes.ok) throw new Error('download failed');
+        const blob = await fileRes.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const nm = ((resumeData.personal_info && resumeData.personal_info.full_name) || 'resume')
+          .replace(/\s+/g, '_');
+        a.download = nm + '_' + selectedRegion + '_' + selectedMode + '.pdf';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+
+        try { await CVA.getCredits(); } catch (e) {}
+        CVA.toast('Resume downloaded.');
+      } catch (err) {
+        const msg = (err && err.message) || '';
+        if (msg === '402') { /* already toasted */ }
+        else if (/no_previews|404|no resume/i.test(msg)) CVA.toast('Build a resume first');
+        else CVA.toast('Could not download — please try again.');
+      } finally {
+        btn.disabled = false; btn.innerHTML = orig;
+      }
+    }
+
+    // ── Wire buttons ──
+    $('genBtn').addEventListener('click', generateResume);
+    $('rebuildBtn').addEventListener('click', () => {
+      $('buildCard').style.display = 'block';
+      $('buildCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    $('saveBtn').addEventListener('click', saveResumeData);
+    $('previewBtn').addEventListener('click', previewTemplate);
+    $('downloadBtn').addEventListener('click', downloadPdf);
+  </script>
+</body></html>

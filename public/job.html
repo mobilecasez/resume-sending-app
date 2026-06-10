@@ -1,0 +1,985 @@
+<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job Detail - CVApplyr</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/cva-ui.css">
+  <style>
+    /* page-specific — reuse cva- classes + var(--cva-*) tokens */
+    body { background: linear-gradient(135deg, #3449a7 0%, #2c3552 50%, #172b6d 100%) !important; background-attachment: fixed !important; min-height: 100vh; margin: 0; }
+    .navbar, .navbar-light, #home .navbar { background: transparent !important; box-shadow: none !important; }
+    main.container { max-width: 880px; margin: 0 auto; padding: 24px 16px 96px; }
+    .cva-card { margin-bottom: 16px; }
+
+    /* Hero (dark navy) */
+    .job-hero { background: var(--cva-navy); border-radius: 20px; padding: 22px 20px; margin-bottom: 16px; position: relative; overflow: hidden; box-shadow: 0 12px 32px rgba(11,15,34,0.30); }
+    .job-hero .hero-top { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+    .job-hero .logo-box { width: 46px; height: 46px; border-radius: 12px; flex: none; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 20px; font-weight: 800; }
+    .job-hero .emp-name { font-size: 15px; font-weight: 800; color: #fff; letter-spacing: -0.2px; }
+    .job-hero .emp-sub { font-size: 12px; color: rgba(255,255,255,0.55); margin-top: 2px; }
+    .job-hero .job-title { font-size: 22px; font-weight: 800; color: #fff; letter-spacing: -0.5px; line-height: 1.25; margin: 6px 0 14px; }
+    .urgent-badge { display: inline-flex; align-items: center; gap: 4px; background: rgba(255,78,100,0.2); border: 1px solid rgba(255,78,100,0.4); color: #FF4E64; font-size: 11px; font-weight: 800; padding: 5px 10px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .meta-chip { display: inline-flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; padding: 8px 12px; }
+    .meta-chip .material-icons { font-size: 15px; }
+    .meta-chip span.txt { font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.92); }
+
+    /* Skills + responsibilities */
+    .skill-chip { display: inline-flex; align-items: center; background: #fff; border: 1px solid #E2E8F0; border-radius: 20px; padding: 6px 13px; font-size: 12px; font-weight: 600; color: #334155; }
+    .resp-row { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 9px; }
+    .resp-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--cva-blue); margin-top: 7px; flex: none; }
+    .resp-text { font-size: 13.5px; line-height: 20px; color: var(--cva-ink-soft); }
+
+    /* Contacts */
+    .contact-row { display: flex; align-items: center; gap: 11px; padding: 10px 0; border-top: 1px solid var(--cva-border); }
+    .contact-row:first-of-type { border-top: none; }
+    .contact-avatar { width: 42px; height: 42px; border-radius: 12px; flex: none; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 14px; font-weight: 800; }
+    .contact-name { font-size: 14px; font-weight: 700; color: var(--cva-ink); }
+    .contact-role { font-size: 12px; color: var(--cva-muted); margin-top: 1px; }
+    .contact-email { font-size: 12px; color: var(--cva-blue-deep); font-family: 'SF Mono', ui-monospace, Menlo, monospace; margin-top: 2px; word-break: break-all; }
+    .contact-linkedin { font-size: 11.5px; color: var(--cva-blue); font-weight: 700; text-decoration: none; }
+    .verified-badge { color: var(--cva-emerald); display: inline-flex; align-items: center; }
+    .verified-badge .material-icons { font-size: 19px; }
+
+    /* Inline forms / inputs */
+    .cva-input { width: 100%; padding: 10px 12px; border: 1.5px solid #E2E8F0; border-radius: 10px; font-size: 13.5px; color: var(--cva-ink); font-family: inherit; background: #fff; box-sizing: border-box; }
+    .cva-input:focus { outline: none; border-color: var(--cva-blue); }
+    textarea.cva-input { resize: vertical; min-height: 80px; line-height: 1.55; }
+    .add-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+    .add-form-grid .full { grid-column: 1 / -1; }
+    @media (max-width: 620px) { .add-form-grid { grid-template-columns: 1fr; } }
+
+    .ghost-btn { display: inline-flex; align-items: center; gap: 7px; background: rgba(79,141,255,0.07); border: 1px dashed rgba(79,141,255,0.35); color: var(--cva-blue); font-size: 13px; font-weight: 700; border-radius: 10px; padding: 9px 14px; cursor: pointer; }
+    .ghost-btn .material-icons { font-size: 17px; }
+    .portal-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 46px; padding: 0 18px; border: 1.5px solid #CBD5E1; background: #fff; color: var(--cva-ink); border-radius: 12px; font-size: 14px; font-weight: 800; cursor: pointer; flex: 1 1 auto; }
+    .portal-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .portal-btn .material-icons { font-size: 18px; color: var(--cva-blue); }
+
+    /* Cover letter editor + region note */
+    .cl-note { font-size: 11.5px; color: var(--cva-muted); margin: 4px 0 8px; }
+    .cl-edit-area { margin-top: 10px; }
+
+    /* Compose modal */
+    .modal-ov { position: fixed; inset: 0; z-index: 9990; display: none; background: rgba(11,17,34,0.62); backdrop-filter: blur(3px); align-items: center; justify-content: center; padding: 20px; }
+    .modal-ov.open { display: flex; }
+    .modal-sheet { background: #fff; border-radius: 20px; width: 100%; max-width: 560px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 30px 60px rgba(0,0,0,0.35); overflow: hidden; }
+    .modal-head { display: flex; align-items: center; gap: 10px; padding: 18px 20px; border-bottom: 1px solid var(--cva-border); }
+    .modal-head .m-title { font-size: 15px; font-weight: 800; color: var(--cva-ink); }
+    .modal-head .m-sub { font-size: 12px; color: var(--cva-muted); margin-top: 2px; }
+    .modal-close { margin-left: auto; width: 32px; height: 32px; border: none; background: #F1F5F9; border-radius: 8px; cursor: pointer; color: var(--cva-muted); font-size: 18px; }
+    .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+    .modal-foot { display: flex; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--cva-border); }
+    .field-row { margin-bottom: 11px; }
+    .field-label { font-size: 11px; font-weight: 800; color: var(--cva-faint); letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 5px; display: block; }
+    .cc-toggle { display: block; margin: 0 0 11px auto; background: none; border: none; color: var(--cva-blue); font-size: 12.5px; font-weight: 700; cursor: pointer; padding: 0; }
+    .modal-cancel { flex: 0 0 auto; padding: 0 18px; height: 46px; border: 1.5px solid #E2E8F0; background: #fff; border-radius: 12px; font-size: 14px; font-weight: 700; color: var(--cva-ink); cursor: pointer; }
+
+    /* Recruiter rows */
+    .recruiter-row { display: flex; align-items: center; gap: 11px; padding: 10px 0; border-top: 1px solid var(--cva-border); }
+    .recruiter-row:first-of-type { border-top: none; }
+
+    .not-found { text-align: center; color: #fff; padding: 60px 20px; }
+    .not-found h2 { font-weight: 800; margin-bottom: 12px; }
+    .not-found a { color: #fff; font-weight: 800; text-decoration: underline; }
+    .muted-note { font-size: 12px; color: var(--cva-muted); }
+  </style>
+  <script src="/js/app-header.js?v=3"></script>
+  <script src="/js/credit-validation.js"></script>
+  <script src="/js/cva-ui.js"></script>
+  <script src="/js/app-footer.js"></script>
+</head><body>
+  <div id="app-header"></div>
+  <main class="container">
+    <div id="notFound" class="not-found" style="display:none;">
+      <h2>Job not found</h2>
+      <p>We couldn't find this job. It may have expired or been removed.</p>
+      <a href="/job-hub">Go to Job Hub →</a>
+    </div>
+
+    <div id="pageBody" style="display:none;">
+      <!-- HERO -->
+      <div class="job-hero">
+        <div class="hero-top">
+          <div class="logo-box" id="heroLogo">A</div>
+          <div style="flex:1;min-width:0;">
+            <div class="emp-name" id="heroEmpName">Employer</div>
+            <div class="emp-sub" id="heroEmpSub"></div>
+          </div>
+          <span class="urgent-badge" id="urgentBadge" style="display:none;">
+            <i class="material-icons" style="font-size:13px;">bolt</i> Urgent
+          </span>
+        </div>
+        <div class="job-title" id="heroTitle">Job Title</div>
+        <div class="meta-row" id="metaRow"></div>
+      </div>
+
+      <!-- HIRING CONTACTS -->
+      <div class="cva-card">
+        <div class="cva-card-head">
+          <div class="ico" style="background:rgba(79,141,255,0.12);color:var(--cva-blue);"><i class="material-icons">groups</i></div>
+          <div>
+            <h3>Hiring Contacts</h3>
+            <p id="contactsSub">Who your application will be sent to</p>
+          </div>
+        </div>
+        <div id="contactsList"></div>
+        <div style="margin-top:6px;">
+          <button type="button" class="ghost-btn" id="toggleAddContact"><i class="material-icons">person_add</i> Add Contact</button>
+        </div>
+        <div id="addContactForm" style="display:none;">
+          <div class="add-form-grid">
+            <input class="cva-input" id="acName" placeholder="Name">
+            <input class="cva-input" id="acRole" placeholder="Role (e.g. Recruiter)">
+            <input class="cva-input full" id="acEmail" placeholder="Email" type="email">
+          </div>
+          <div style="margin-top:10px;">
+            <button type="button" class="cva-btn-primary" id="acSave" style="height:42px;">Save Contact</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI COVER LETTER -->
+      <div class="cva-card">
+        <div class="cva-card-head">
+          <div class="ico" style="background:rgba(124,107,255,0.12);color:var(--cva-purple);"><i class="material-icons">auto_awesome</i></div>
+          <div>
+            <h3>AI Cover Letter</h3>
+            <p>Generate a letter tailored to this role; download as PDF or edit; attached automatically when you apply.</p>
+          </div>
+        </div>
+        <div id="clGenWrap">
+          <button type="button" class="cva-btn-primary is-block" id="clGenBtn">
+            <i class="material-icons" style="font-size:16px;">auto_awesome</i>
+            <span>Generate Cover Letter</span>
+          </button>
+        </div>
+        <div id="clActionRow" style="display:none;">
+          <div class="cva-action-row">
+            <button type="button" class="cva-btn-primary is-done" id="clDoneBtn"><span class="cva-label">✓ Generated</span></button>
+            <button type="button" class="cva-icon-btn" id="clPreviewBtn" title="Preview"><i class="material-icons" style="font-size:20px;">visibility</i></button>
+            <button type="button" class="cva-icon-btn" id="clDownloadBtn" title="Download PDF"><i class="material-icons" style="font-size:20px;">file_download</i></button>
+            <button type="button" class="cva-icon-btn" id="clEditBtn" title="Edit letter"><i class="material-icons" style="font-size:20px;color:var(--cva-blue);">edit</i></button>
+          </div>
+          <div class="cl-edit-area" id="clEditArea" style="display:none;">
+            <textarea class="cva-input" id="clEditText" rows="10" placeholder="Cover letter text…"></textarea>
+            <div style="margin-top:8px;">
+              <button type="button" class="cva-btn-primary" id="clSaveEdit" style="height:40px;">Save edits</button>
+            </div>
+          </div>
+          <div style="margin-top:14px;">
+            <span class="cva-section-label">Cover-letter format</span>
+            <p class="cl-note">Preview is free · region templates cost 2 credits to download.</p>
+            <div class="cva-chip-wrap" id="clRegions"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SKILLS -->
+      <div class="cva-card" id="skillsCard" style="display:none;">
+        <span class="cva-section-label">Required Skills</span>
+        <div class="cva-chip-wrap" id="skillsRow" style="margin-top:10px;"></div>
+      </div>
+
+      <!-- RESPONSIBILITIES -->
+      <div class="cva-card" id="respCard" style="display:none;">
+        <span class="cva-section-label">Responsibilities</span>
+        <div id="respList" style="margin-top:10px;"></div>
+      </div>
+
+      <!-- RECRUITER FINDER (only if 0 contacts) -->
+      <div class="cva-card" id="recruiterCard" style="display:none;">
+        <div class="cva-card-head">
+          <div class="ico" style="background:rgba(16,185,129,0.12);color:var(--cva-emerald);"><i class="material-icons">person_search</i></div>
+          <div>
+            <h3>Find Recruiters</h3>
+            <p>No contacts yet. Find LinkedIn recruiters at this company, then look up their work emails.</p>
+          </div>
+        </div>
+        <button type="button" class="cva-btn-primary is-block" id="findRecruitersBtn" style="margin-bottom:10px;">
+          <i class="material-icons" style="font-size:16px;">search</i><span>Find Recruiters on LinkedIn (1 credit)</span>
+        </button>
+        <div id="recruiterList"></div>
+        <button type="button" class="cva-btn-primary is-block" id="findEmailsBtn" style="display:none;margin-top:10px;">
+          <i class="material-icons" style="font-size:16px;">alternate_email</i><span>Find Work Emails (1 credit)</span>
+        </button>
+      </div>
+
+      <!-- APPLY ACTION ROW -->
+      <div class="cva-card">
+        <div class="cva-action-row" style="gap:10px;">
+          <button type="button" class="portal-btn" id="applyPortalBtn"><i class="material-icons">public</i> Apply on Portal</button>
+          <button type="button" class="cva-btn-primary" id="applyMailBtn" style="flex:1 1 auto;">
+            <i class="material-icons" style="font-size:16px;">mail</i><span>Apply via Mail</span>
+          </button>
+        </div>
+        <p class="muted-note" id="portalNote" style="display:none;margin-top:8px;">No portal link available for this listing.</p>
+      </div>
+    </div>
+  </main>
+
+  <!-- COMPOSE MODAL -->
+  <div class="modal-ov" id="composeModal">
+    <div class="modal-sheet">
+      <div class="modal-head">
+        <div style="min-width:0;">
+          <div class="m-title" id="composeTitle">New Application</div>
+          <div class="m-sub" id="composeSubTitle"></div>
+        </div>
+        <button class="modal-close" id="composeClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="field-row">
+          <label class="field-label">To</label>
+          <input class="cva-input" id="composeTo" placeholder="Recipient email(s)">
+        </div>
+        <button type="button" class="cc-toggle" id="ccToggle">▾ Add Cc / Bcc</button>
+        <div id="ccFields" style="display:none;">
+          <div class="field-row">
+            <label class="field-label">Cc</label>
+            <input class="cva-input" id="composeCc" placeholder="Cc email(s)">
+          </div>
+          <div class="field-row">
+            <label class="field-label">Bcc</label>
+            <input class="cva-input" id="composeBcc" placeholder="Bcc email(s)">
+          </div>
+        </div>
+        <div class="field-row">
+          <label class="field-label">Subject</label>
+          <input class="cva-input" id="composeSubject" placeholder="Email subject">
+        </div>
+
+        <label class="field-label" style="margin-top:6px;">Attachments</label>
+        <div id="attachResume"></div>
+        <div id="attachCover"></div>
+
+        <div class="field-row" style="margin-top:6px;">
+          <label class="field-label">Body</label>
+          <textarea class="cva-input" id="composeBody" rows="8" placeholder="Email body…"></textarea>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="modal-cancel" id="composeCancel">Cancel</button>
+        <button type="button" class="cva-btn-primary" id="composeSend" style="flex:1 1 auto;">
+          <i class="material-icons" style="font-size:16px;">send</i><span>Send Application</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div id="app-footer"></div>
+
+  <script>
+    const token = localStorage.getItem('authToken');
+    if (!token) { window.location.href = '/login'; }
+
+    // ── Page state ──
+    let JOB = null, EMPLOYER = null, JOB_ID = null;
+    let CONTACTS = [];
+    let COVER = null;        // { coverLetterHtml, companyName, websiteUrl, companyAddress, companyLocations }
+    let YOUR_NAME = 'Applicant';
+    let recruitersFound = [];
+
+    // Region state for cover letter (preview/download/attachment)
+    let clRegionSel = 'generic';
+    let clPreviewCache = null;   // { key, templateId, image }
+    // Compose attachment region + on/off state
+    let resumeRegionSel = 'generic', resumeOn = true, resumeEdit = false;
+    let coverRegionSel = 'generic', coverOn = true, coverEdit = false;
+
+    function qp(name) { return new URLSearchParams(window.location.search).get(name); }
+    function initials(str) { return (str || '?').split(' ').map(function (n) { return n[0]; }).join('').slice(0, 2).toUpperCase(); }
+    function gradFrom(arr) {
+      var c = (arr && arr.length >= 2) ? arr : ['#4F8DFF', '#7C6BFF'];
+      return 'linear-gradient(135deg,' + c[0] + ',' + c[1] + ')';
+    }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (m) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]; }); }
+    function employerWebsite() {
+      if (COVER && COVER.websiteUrl) return COVER.websiteUrl;
+      var dom = EMPLOYER && (EMPLOYER.domain || EMPLOYER.website);
+      if (dom && String(dom).indexOf('.') >= 0) return /^https?:\/\//.test(dom) ? dom : 'https://' + dom;
+      var apply = JOB && (JOB.applyUrl || JOB.apply_url || JOB.url);
+      if (apply) { try { var u = new URL(apply); return u.protocol + '//' + u.hostname.replace(/^www\./, ''); } catch (e) {} }
+      return '';
+    }
+    function applyUrlOf() { return (JOB && (JOB.applyUrl || JOB.apply_url || JOB.url)) || ''; }
+    function jobRegion() { return (window.CVA && JOB) ? CVA.regionFromCountry(JOB.location || '') : 'generic'; }
+    function coverText() { return (COVER && COVER.coverLetterHtml) || ''; }
+    function companyName() { return (COVER && COVER.companyName) || (EMPLOYER && EMPLOYER.name) || ''; }
+    function companyAddress() { return (COVER && COVER.companyAddress) || ''; }
+
+    // ── Boot ──
+    window.addEventListener('DOMContentLoaded', init);
+    async function init() {
+      JOB_ID = qp('id');
+      await loadYourName();
+      const located = await locateJob();
+      if (!located) {
+        document.getElementById('notFound').style.display = 'block';
+        return;
+      }
+      document.getElementById('pageBody').style.display = 'block';
+      renderHero();
+      renderSkills();
+      renderResponsibilities();
+      await loadContacts();
+      await loadSavedCoverLetter();
+      // Default regions from the job location
+      clRegionSel = jobRegion();
+      resumeRegionSel = jobRegion();
+      coverRegionSel = jobRegion();
+      renderClRegions();
+      wireEvents();
+    }
+
+    async function loadYourName() {
+      try {
+        const ud = JSON.parse(localStorage.getItem('userData') || '{}');
+        if (ud.fullName) YOUR_NAME = ud.fullName;
+      } catch (e) {}
+      try {
+        const r = await CVA.apiFetch('/api/user-profile', { method: 'GET' });
+        if (r.ok) {
+          const d = await r.json();
+          const p = d.profile || d;
+          if (p && (p.fullName || p.full_name || p.senderName)) YOUR_NAME = p.fullName || p.full_name || p.senderName;
+        }
+      } catch (e) {}
+    }
+
+    // 1) sessionStorage first, then dashboard lookup by ?id=
+    async function locateJob() {
+      try {
+        const raw = sessionStorage.getItem('cva_active_job');
+        if (raw) {
+          const obj = JSON.parse(raw);
+          if (obj && obj.job && obj.employer) {
+            JOB = obj.job; EMPLOYER = obj.employer;
+            JOB_ID = JOB_ID || obj.jobId || JOB.id;
+            if (!JOB_ID || JOB.id === JOB_ID || !qp('id')) return true;
+          }
+        }
+      } catch (e) {}
+      if (!JOB_ID) return false;
+      try {
+        const r = await CVA.apiFetch('/api/ai-hub/dashboard', { method: 'GET' });
+        if (!r.ok) return false;
+        const d = await r.json();
+        const list = (d && d.dashboard) || [];
+        for (var i = 0; i < list.length; i++) {
+          var emp = list[i].employer;
+          if (!emp || !emp.jobs) continue;
+          for (var j = 0; j < emp.jobs.length; j++) {
+            if (String(emp.jobs[j].id) === String(JOB_ID)) {
+              JOB = emp.jobs[j]; EMPLOYER = emp; return true;
+            }
+          }
+        }
+      } catch (e) {}
+      return false;
+    }
+
+    // ── HERO ──
+    function renderHero() {
+      const logo = document.getElementById('heroLogo');
+      logo.style.background = gradFrom(EMPLOYER.logoColor);
+      logo.textContent = EMPLOYER.logoInitial || initials(EMPLOYER.name);
+      document.getElementById('heroEmpName').textContent = EMPLOYER.name || '';
+      document.getElementById('heroEmpSub').textContent = EMPLOYER.subInfo || '';
+      document.getElementById('heroTitle').textContent = JOB.title || 'Job';
+      if (JOB.urgent) document.getElementById('urgentBadge').style.display = 'inline-flex';
+
+      const metas = [
+        { icon: 'location_on', color: '#06B6D4', val: JOB.location },
+        { icon: 'schedule', color: '#A78BFA', val: JOB.experience },
+        { icon: 'payments', color: '#34D399', val: (JOB.salary && JOB.salary !== 'Not listed') ? JOB.salary : '' },
+        { icon: 'work', color: '#FB923C', val: JOB.jobType }
+      ];
+      const row = document.getElementById('metaRow');
+      row.innerHTML = '';
+      metas.forEach(function (m) {
+        if (!m.val) return;
+        const el = document.createElement('div');
+        el.className = 'meta-chip';
+        el.innerHTML = '<i class="material-icons" style="color:' + m.color + ';">' + m.icon + '</i><span class="txt">' + esc(m.val) + '</span>';
+        row.appendChild(el);
+      });
+    }
+
+    function renderSkills() {
+      const skills = (JOB.skills || []);
+      if (!skills.length) return;
+      const card = document.getElementById('skillsCard');
+      const row = document.getElementById('skillsRow');
+      row.innerHTML = '';
+      skills.forEach(function (sk) {
+        const c = document.createElement('span');
+        c.className = 'skill-chip';
+        c.textContent = sk;
+        row.appendChild(c);
+      });
+      card.style.display = 'block';
+    }
+
+    function renderResponsibilities() {
+      const resp = (JOB.responsibilities || []);
+      if (!resp.length) return;
+      const card = document.getElementById('respCard');
+      const list = document.getElementById('respList');
+      list.innerHTML = '';
+      resp.forEach(function (item) {
+        const r = document.createElement('div');
+        r.className = 'resp-row';
+        r.innerHTML = '<div class="resp-dot"></div><div class="resp-text">' + esc(item) + '</div>';
+        list.appendChild(r);
+      });
+      card.style.display = 'block';
+    }
+
+    // ── CONTACTS ──
+    async function loadContacts() {
+      CONTACTS = Array.isArray(JOB.contacts) ? JOB.contacts.slice() : [];
+      try {
+        const r = await CVA.apiFetch('/api/ai-hub/jobs/' + encodeURIComponent(JOB_ID) + '/contacts', { method: 'GET' });
+        if (r.ok) {
+          const d = await r.json();
+          const fetched = (d && d.contacts) || [];
+          const seen = {};
+          CONTACTS.forEach(function (c) { seen[(c.email || c.name || '').toLowerCase()] = true; });
+          fetched.forEach(function (c) {
+            const k = (c.email || c.name || '').toLowerCase();
+            if (k && !seen[k]) { seen[k] = true; CONTACTS.push(c); }
+          });
+        }
+      } catch (e) {}
+      renderContacts();
+    }
+
+    function renderContacts() {
+      const list = document.getElementById('contactsList');
+      list.innerHTML = '';
+      if (!CONTACTS.length) {
+        list.innerHTML = '<p class="muted-note">No contact details found for this listing.</p>';
+        document.getElementById('contactsSub').textContent = 'Add a recipient so you can apply by email';
+      } else {
+        document.getElementById('contactsSub').textContent = 'Who your application will be sent to';
+        CONTACTS.forEach(function (c) {
+          const row = document.createElement('div');
+          row.className = 'contact-row';
+          const av = '<div class="contact-avatar" style="background:' + gradFrom(c.avatarColor) + ';">' + esc(initials(c.name)) + '</div>';
+          var info = '<div style="flex:1;min-width:0;">' +
+            '<div class="contact-name">' + esc(c.name || '') + '</div>' +
+            (c.role ? '<div class="contact-role">' + esc(c.role) + '</div>' : '') +
+            (c.email ? '<div class="contact-email">' + esc(c.email) + '</div>' : '') +
+            (c.linkedin ? '<a class="contact-linkedin" href="' + esc(c.linkedin) + '" target="_blank" rel="noopener">LinkedIn ↗</a>' : '') +
+            '</div>';
+          const badge = c.verified ? '<span class="verified-badge" title="Verified"><i class="material-icons">check_circle</i></span>' : '';
+          row.innerHTML = av + info + badge;
+          list.appendChild(row);
+        });
+      }
+      // recruiter finder visibility depends on contact count
+      document.getElementById('recruiterCard').style.display = CONTACTS.length === 0 ? 'block' : 'none';
+    }
+
+    async function addContact() {
+      const name = document.getElementById('acName').value.trim();
+      const role = document.getElementById('acRole').value.trim();
+      const email = document.getElementById('acEmail').value.trim();
+      if (!name || !email) { CVA.toast('Name and email are required.'); return; }
+      const btn = document.getElementById('acSave');
+      btn.disabled = true;
+      try {
+        const r = await CVA.apiFetch('/api/ai-hub/jobs/' + encodeURIComponent(JOB_ID) + '/contacts', {
+          method: 'POST', body: JSON.stringify({ name: name, role: role, email: email })
+        });
+        const d = await r.json().catch(function () { return {}; });
+        if (!r.ok) { CVA.toast(d.error || 'Could not add contact.'); return; }
+        CONTACTS.unshift(d.id ? d : { name: name, role: role, email: email, verified: false, avatarColor: ['#4F8DFF', '#7C6BFF'] });
+        renderContacts();
+        document.getElementById('acName').value = '';
+        document.getElementById('acRole').value = '';
+        document.getElementById('acEmail').value = '';
+        document.getElementById('addContactForm').style.display = 'none';
+        CVA.toast('Contact added.');
+      } catch (e) { CVA.toast('Could not add contact.'); }
+      finally { btn.disabled = false; }
+    }
+
+    // ── COVER LETTER ──
+    async function loadSavedCoverLetter() {
+      try {
+        const r = await CVA.apiFetch('/api/ai-hub/jobs/' + encodeURIComponent(JOB_ID) + '/cover-letter', { method: 'GET' });
+        if (!r.ok) return;
+        const d = await r.json();
+        const rec = d && d.coverLetter;
+        if (rec && (rec.cover_letter_html || rec.coverLetterHtml)) {
+          COVER = {
+            coverLetterHtml: rec.cover_letter_html || rec.coverLetterHtml,
+            companyName: rec.company_name || rec.companyName || (EMPLOYER && EMPLOYER.name) || '',
+            websiteUrl: rec.website_url || rec.websiteUrl || '',
+            companyAddress: rec.company_address || rec.companyAddress || '',
+            companyLocations: []
+          };
+          try { COVER.companyLocations = rec.company_locations ? JSON.parse(rec.company_locations) : []; } catch (e) {}
+          showCoverGenerated();
+        }
+      } catch (e) {}
+    }
+
+    function showCoverGenerated() {
+      document.getElementById('clGenWrap').style.display = 'none';
+      document.getElementById('clActionRow').style.display = 'block';
+    }
+
+    async function generateCoverLetter() {
+      if (COVER && COVER.coverLetterHtml) return coverText();
+      const recipientEmail = (CONTACTS[0] && CONTACTS[0].email) || '';
+      const websiteUrl = employerWebsite();
+      const btn = document.getElementById('clGenBtn');
+      const prog = CVA.progressButton(btn);
+      // 1 credit via the details flow — pre-check
+      const bal = await CVA.getCredits();
+      if (bal < 1) { CVA.toast('Not enough credits — you need 1.'); return null; }
+      prog.start('Generating cover letter…');
+      let fake = 0;
+      const tick = setInterval(function () { if (fake < 85) { fake += 2; prog.set(fake); } }, 600);
+      try {
+        const startRes = await CVA.apiFetch('/api/generate-cover-letter-details', {
+          method: 'POST',
+          body: JSON.stringify({
+            recipientEmail: recipientEmail,
+            websiteUrl: websiteUrl,
+            position: JOB.title,
+            responsibilities: JOB.responsibilities || [],
+            jobLocation: JOB.location || ''
+          })
+        });
+        const startData = await startRes.json().catch(function () { return {}; });
+        if (!startData.jobId) throw new Error(startData.error || 'Could not start generation.');
+        const result = await CVA.pollJob(startData.jobId, { poller: '/api/job-status' });
+        clearInterval(tick); prog.set(100);
+        const html = (result && result.coverLetterHtml) || '';
+        if (!html) throw new Error('Generation returned no content.');
+        const cName = (result && result.companyName) || (EMPLOYER && EMPLOYER.name) || '';
+        const locs = (result && result.locations) || [];
+        const jobLocLower = (JOB.location || '').toLowerCase();
+        let best = locs.find(function (l) { return l.matchesJobLocation; })
+          || locs.find(function (l) { return l.isHeadquarters; })
+          || locs[0];
+        const addr = best ? [best.address, best.city, best.country].filter(Boolean).join(', ') : '';
+        COVER = { coverLetterHtml: html, companyName: cName, websiteUrl: websiteUrl, companyAddress: addr, companyLocations: locs };
+        clPreviewCache = null;
+        // Save to backend (non-blocking)
+        try {
+          CVA.apiFetch('/api/ai-hub/jobs/' + encodeURIComponent(JOB_ID) + '/cover-letter', {
+            method: 'POST',
+            body: JSON.stringify({
+              coverLetterHtml: html, companyName: cName, websiteUrl: websiteUrl, position: JOB.title,
+              companyAddress: addr, companyLocations: locs
+            })
+          });
+        } catch (e) {}
+        prog.done('Generated');
+        showCoverGenerated();
+        return html;
+      } catch (e) {
+        clearInterval(tick);
+        prog.reset();
+        CVA.toast(e.message || 'Failed to generate. Please try again.');
+        return null;
+      }
+    }
+
+    // Region chips for cover letter
+    function renderClRegions() {
+      const wrap = document.getElementById('clRegions');
+      if (!wrap || !window.CVA) return;
+      wrap.innerHTML = '';
+      CVA.REGION_OPTIONS.forEach(function (opt) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'cva-region-chip' + (opt.id === clRegionSel ? ' selected' : '');
+        b.textContent = opt.label;
+        b.onclick = function () { clRegionSel = opt.id; clPreviewCache = null; renderClRegions(); };
+        wrap.appendChild(b);
+      });
+    }
+
+    // Resolve template id + preview image for selected cover-letter region (free).
+    async function ensureClPreview() {
+      const region = clRegionSel || 'generic';
+      const key = region + '|' + companyName() + '|' + companyAddress();
+      if (clPreviewCache && clPreviewCache.key === key && clPreviewCache.templateId) return clPreviewCache;
+      const data = await CVA.postAndPoll('/api/cover-letter/preview-templates',
+        { region: region, coverLetterHtml: coverText(), companyName: companyName(), companyAddress: companyAddress() },
+        { poller: '/api/ai-hub/job-status' });
+      const p = data && data.previews && data.previews[0];
+      if (!p || !p.image) throw new Error('Could not render this format.');
+      clPreviewCache = { key: key, region: region, templateId: p.id, image: p.image };
+      return clPreviewCache;
+    }
+
+    async function previewCoverLetter() {
+      if (!coverText().trim()) { CVA.toast('Generate a cover letter first.'); return; }
+      const btn = document.getElementById('clPreviewBtn');
+      btn.disabled = true;
+      try {
+        const pv = await ensureClPreview();
+        CVA.lightbox(pv.image, 'Cover letter preview');
+      } catch (e) { CVA.toast(e.message || 'Preview failed.'); }
+      finally { btn.disabled = false; }
+    }
+
+    async function downloadCoverLetter() {
+      if (!coverText().trim()) { CVA.toast('Generate a cover letter first.'); return; }
+      const region = clRegionSel || 'generic';
+      const btn = document.getElementById('clDownloadBtn');
+      // Region template → 2-credit templated PDF. Generic → free original path.
+      if (region !== 'generic') {
+        const bal = await CVA.getCredits();
+        if (bal < 2) { CVA.toast('Not enough credits — you need 2.'); return; }
+        btn.disabled = true;
+        try {
+          const pv = await ensureClPreview();
+          const res = await CVA.apiFetch('/api/cover-letter/generate-template-pdf', {
+            method: 'POST',
+            body: JSON.stringify({ template: pv.templateId, mode: 'onepage', coverLetterHtml: coverText(), companyName: companyName(), companyAddress: companyAddress() })
+          });
+          const data = await res.json().catch(function () { return {}; });
+          if (!res.ok || !data.downloadUrl) { CVA.toast(data.error || 'Failed to generate PDF.'); return; }
+          await downloadBlob(data.downloadUrl, data.fileName || 'Cover_Letter.pdf');
+          CVA.toast('PDF downloaded.');
+        } catch (e) { CVA.toast(e.message || 'Failed to generate PDF.'); }
+        finally { btn.disabled = false; }
+        return;
+      }
+      // Generic — free branded PDF
+      btn.disabled = true;
+      try {
+        const res = await CVA.apiFetch('/api/generate-cover-letter-pdf', {
+          method: 'POST',
+          body: JSON.stringify({ coverLetterHtml: coverText(), companyName: companyName(), companyAddress: companyAddress() })
+        });
+        let data = await res.json().catch(function () { return {}; });
+        if (res.status === 202 && data.jobId) data = await CVA.pollJob(data.jobId, { poller: '/api/job-status' });
+        if (!data || !data.downloadUrl) { CVA.toast('Failed to generate PDF.'); return; }
+        await downloadBlob(data.downloadUrl, data.fileName || 'cover-letter.pdf');
+        CVA.toast('PDF downloaded.');
+      } catch (e) { CVA.toast(e.message || 'Failed to generate PDF.'); }
+      finally { btn.disabled = false; }
+    }
+
+    async function downloadBlob(url, filename) {
+      const dr = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+      if (!dr.ok) throw new Error('Failed to download PDF');
+      const blob = await dr.blob();
+      const objUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl; a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      window.URL.revokeObjectURL(objUrl);
+    }
+
+    function toggleClEdit() {
+      const area = document.getElementById('clEditArea');
+      if (area.style.display === 'none') {
+        document.getElementById('clEditText').value = coverText();
+        area.style.display = 'block';
+      } else {
+        area.style.display = 'none';
+      }
+    }
+
+    function saveClEdit() {
+      const txt = document.getElementById('clEditText').value;
+      if (!COVER) COVER = { companyName: (EMPLOYER && EMPLOYER.name) || '', websiteUrl: employerWebsite(), companyAddress: '', companyLocations: [] };
+      COVER.coverLetterHtml = txt;
+      clPreviewCache = null;
+      try {
+        CVA.apiFetch('/api/ai-hub/jobs/' + encodeURIComponent(JOB_ID) + '/cover-letter', {
+          method: 'POST',
+          body: JSON.stringify({
+            coverLetterHtml: txt, companyName: companyName(), websiteUrl: employerWebsite(), position: JOB.title,
+            companyAddress: companyAddress(), companyLocations: (COVER && COVER.companyLocations) || []
+          })
+        });
+      } catch (e) {}
+      document.getElementById('clEditArea').style.display = 'none';
+      CVA.toast('Cover letter updated.');
+    }
+
+    // ── APPLY: portal ──
+    function applyOnPortal() {
+      const url = applyUrlOf();
+      if (!url) return;
+      window.open(/^https?:\/\//.test(url) ? url : 'https://' + url, '_blank', 'noopener');
+    }
+
+    // ── APPLY: via mail ──
+    async function applyViaMail() {
+      const btn = document.getElementById('applyMailBtn');
+      const prog = CVA.progressButton(btn);
+      prog.start('Preparing…');
+      try {
+        if (!coverText()) {
+          const html = await generateCoverLetter();
+          if (!html) { prog.reset(); return; }
+        }
+        await openComposeModal();
+        prog.reset();
+      } catch (e) { prog.reset(); CVA.toast(e.message || 'Could not prepare application.'); }
+    }
+
+    async function openComposeModal() {
+      // reset attachment region defaults
+      resumeRegionSel = jobRegion(); coverRegionSel = jobRegion();
+      resumeOn = true; coverOn = true; resumeEdit = false; coverEdit = false;
+      document.getElementById('composeTo').value = CONTACTS.map(function (c) { return c.email; }).filter(Boolean).join(', ');
+      document.getElementById('composeCc').value = '';
+      document.getElementById('composeBcc').value = '';
+      document.getElementById('ccFields').style.display = 'none';
+      document.getElementById('ccToggle').textContent = '▾ Add Cc / Bcc';
+      const cName = companyName();
+      document.getElementById('composeTitle').textContent = 'New Application (' + (cName || 'Employer') + ')';
+      document.getElementById('composeSubTitle').textContent = JOB.title || '';
+      document.getElementById('composeSubject').value = 'Application for ' + (JOB.title || '') + ' - ' + YOUR_NAME;
+      renderAttachments();
+
+      // Body — AI generated with template fallback
+      const bodyEl = document.getElementById('composeBody');
+      bodyEl.value = 'Loading email body…';
+      const fallback = 'Dear Hiring Manager,\n\nI am excited to submit my application for the ' + (JOB.title || '') + ' role at ' + (cName || 'your company') +
+        '. Please find my resume and cover letter attached for your consideration.\n\nI would love the opportunity to discuss how my background aligns with your team\'s needs.\n\nBest regards,\n' + YOUR_NAME;
+      try {
+        const data = await CVA.postAndPoll('/api/ai-hub/generate-email-body', { position: JOB.title, companyName: cName }, { poller: '/api/ai-hub/job-status' });
+        bodyEl.value = (data && typeof data.body === 'string' && data.body) ? data.body : fallback;
+      } catch (e) { bodyEl.value = fallback; }
+
+      // reset send button
+      const sendBtn = document.getElementById('composeSend');
+      sendBtn.disabled = false;
+      sendBtn.innerHTML = '<i class="material-icons" style="font-size:16px;">send</i><span>Send Application</span>';
+      document.getElementById('composeModal').classList.add('open');
+    }
+
+    function renderAttachments() {
+      renderAttachRow('resume', 'Resume', 'description', 'rgba(79,141,255,0.12)', 'var(--cva-blue)', resumeOn, resumeRegionSel, resumeEdit, document.getElementById('attachResume'));
+      // Cover letter row only when a letter exists
+      const coverWrap = document.getElementById('attachCover');
+      if (!coverText()) { coverWrap.innerHTML = ''; return; }
+      renderAttachRow('cover', 'Cover Letter', 'mail', 'rgba(124,107,255,0.12)', 'var(--cva-purple)', coverOn, coverRegionSel, coverEdit, coverWrap);
+    }
+
+    function renderAttachRow(kind, label, icon, iconBg, iconColor, on, region, editing, container) {
+      const opts = (kind === 'resume') ? CVA.RESUME_REGION_OPTIONS : CVA.REGION_OPTIONS;
+      if (!on) {
+        container.innerHTML = '<button type="button" class="cva-attach-addback" data-addback="' + kind + '">' +
+          '<i class="material-icons" style="font-size:17px;">add_circle_outline</i> Attach ' + label.toLowerCase() + '</button>';
+        container.querySelector('[data-addback]').onclick = function () {
+          if (kind === 'resume') resumeOn = true; else coverOn = true;
+          renderAttachments();
+        };
+        return;
+      }
+      let chips = '';
+      if (editing) {
+        chips = '<div class="cva-chip-wrap" style="margin-top:9px;">' + opts.map(function (o) {
+          return '<button type="button" class="cva-region-chip' + (o.id === region ? ' selected' : '') + '" data-rgn="' + o.id + '">' + esc(o.label) + '</button>';
+        }).join('') + '</div>';
+      }
+      container.innerHTML =
+        '<div class="cva-attach">' +
+          '<div class="cva-attach-main">' +
+            '<div class="ico-box" style="background:' + iconBg + ';color:' + iconColor + ';"><i class="material-icons" style="font-size:17px;">' + icon + '</i></div>' +
+            '<div style="flex:1;min-width:0;"><div class="name">' + label + '</div><div class="meta">' + esc(CVA.regionLabel(region)) + '</div></div>' +
+            '<button type="button" class="cva-attach-btn" data-act="preview" title="Preview"><i class="material-icons" style="font-size:18px;color:var(--cva-blue);">visibility</i></button>' +
+            '<button type="button" class="cva-attach-btn" data-act="opts" title="Change format"><i class="material-icons" style="font-size:18px;">tune</i></button>' +
+            '<button type="button" class="cva-attach-btn" data-act="remove" title="Remove"><i class="material-icons" style="font-size:19px;">cancel</i></button>' +
+          '</div>' + chips +
+        '</div>';
+      container.querySelector('[data-act="preview"]').onclick = function () { previewAttachment(kind, region, this); };
+      container.querySelector('[data-act="opts"]').onclick = function () {
+        if (kind === 'resume') { resumeEdit = !resumeEdit; coverEdit = false; } else { coverEdit = !coverEdit; resumeEdit = false; }
+        renderAttachments();
+      };
+      container.querySelector('[data-act="remove"]').onclick = function () {
+        if (kind === 'resume') resumeOn = false; else coverOn = false;
+        renderAttachments();
+      };
+      Array.prototype.forEach.call(container.querySelectorAll('[data-rgn]'), function (b) {
+        b.onclick = function () {
+          const v = b.getAttribute('data-rgn');
+          if (kind === 'resume') { resumeRegionSel = v; resumeEdit = false; } else { coverRegionSel = v; coverEdit = false; }
+          renderAttachments();
+        };
+      });
+    }
+
+    async function previewAttachment(kind, region, btn) {
+      btn.disabled = true;
+      try {
+        let path, body;
+        if (kind === 'resume') {
+          path = '/api/resume-builder/preview-templates';
+          body = { region: region };
+        } else {
+          if (!coverText()) { CVA.toast('Generate a cover letter first.'); return; }
+          path = '/api/cover-letter/preview-templates';
+          body = { region: region, coverLetterHtml: coverText(), companyName: companyName(), companyAddress: companyAddress() };
+        }
+        const data = await CVA.postAndPoll(path, body, { poller: '/api/ai-hub/job-status' });
+        const p = data && data.previews && data.previews[0];
+        if (!p || !p.image) { CVA.toast(kind === 'resume' ? 'Build a resume to preview it.' : 'Could not render preview.'); return; }
+        CVA.lightbox(p.image, kind === 'resume' ? 'Resume preview' : 'Cover letter preview');
+      } catch (e) { CVA.toast('Could not load the preview.'); }
+      finally { btn.disabled = false; }
+    }
+
+    async function sendApplication() {
+      const toVal = document.getElementById('composeTo').value.trim();
+      if (!toVal) { CVA.toast('Please enter a To email address.'); return; }
+      if (!coverText() && coverOn) { CVA.toast('Generate a cover letter first.'); return; }
+      const sendBtn = document.getElementById('composeSend');
+      const prog = CVA.progressButton(sendBtn);
+      prog.start('Sending…');
+      const primaryEmail = toVal.split(',')[0].trim();
+      try {
+        const res = await CVA.apiFetch('/api/send-single-application', {
+          method: 'POST',
+          body: JSON.stringify({
+            recipientEmail: primaryEmail,
+            websiteUrl: employerWebsite(),
+            position: JOB.title,
+            coverLetterText: coverText(),
+            companyName: companyName(),
+            companyAddress: companyAddress(),
+            resumeRegion: resumeRegionSel,
+            coverLetterRegion: coverRegionSel,
+            includeResume: resumeOn,
+            includeCoverLetter: coverOn
+          })
+        });
+        let data = await res.json().catch(function () { return {}; });
+        if (res.status === 202 && data.jobId) {
+          data = await CVA.pollJob(data.jobId, { poller: '/api/job-status' });
+        } else if (!res.ok) {
+          throw new Error(data.error || data.message || ('Server error ' + res.status));
+        }
+        if (data && data.success === false) throw new Error(data.error || 'Could not send.');
+        prog.done('Sent!');
+        CVA.toast('Sent! Your application is on its way.');
+        try {
+          CVA.apiFetch('/api/ai-hub/jobs/' + encodeURIComponent(JOB_ID) + '/cover-letter/status', {
+            method: 'PATCH', body: JSON.stringify({ status: 'applied' })
+          });
+        } catch (e) {}
+        setTimeout(function () { closeCompose(); }, 1200);
+      } catch (e) {
+        prog.reset();
+        CVA.toast(e.message || 'Could not send. Please try again.');
+      }
+    }
+
+    function closeCompose() { document.getElementById('composeModal').classList.remove('open'); }
+
+    // ── RECRUITER FINDER ──
+    async function findRecruiters() {
+      const empId = EMPLOYER && (EMPLOYER.id);
+      if (!empId) { CVA.toast('No employer to search.'); return; }
+      const bal = await CVA.getCredits();
+      if (bal < 1) { CVA.toast('Not enough credits — you need 1.'); return; }
+      const btn = document.getElementById('findRecruitersBtn');
+      const prog = CVA.progressButton(btn);
+      prog.start('Searching LinkedIn…');
+      try {
+        const data = await CVA.postAndPoll('/api/ai-hub/employers/' + encodeURIComponent(empId) + '/find-recruiters', {}, { poller: '/api/ai-hub/job-status' });
+        recruitersFound = (data && data.recruiters) || [];
+        prog.reset();
+        renderRecruiters();
+        if (recruitersFound.length) document.getElementById('findEmailsBtn').style.display = 'flex';
+        else CVA.toast('No LinkedIn recruiters found for this company.');
+      } catch (e) { prog.reset(); CVA.toast(e.message || 'Failed to find recruiters.'); }
+    }
+
+    async function findEmails() {
+      const empId = EMPLOYER && (EMPLOYER.id);
+      if (!empId) return;
+      const bal = await CVA.getCredits();
+      if (bal < 1) { CVA.toast('Not enough credits — you need 1.'); return; }
+      const btn = document.getElementById('findEmailsBtn');
+      const prog = CVA.progressButton(btn);
+      prog.start('Finding work emails…');
+      try {
+        const data = await CVA.postAndPoll('/api/ai-hub/employers/' + encodeURIComponent(empId) + '/find-emails', {}, { poller: '/api/ai-hub/job-status' });
+        const results = (data && data.results) || [];
+        // Merge emails back into recruiter rows by name
+        results.forEach(function (r) {
+          const match = recruitersFound.find(function (x) { return (x.name || '').toLowerCase() === (r.name || '').toLowerCase(); });
+          if (match && r.email) { match.email = r.email; match.email_verified = r.email_verified; }
+        });
+        if (!recruitersFound.length && results.length) recruitersFound = results;
+        prog.reset();
+        renderRecruiters();
+        CVA.toast('Work emails updated.');
+      } catch (e) { prog.reset(); CVA.toast(e.message || 'Failed to find emails.'); }
+    }
+
+    function renderRecruiters() {
+      const list = document.getElementById('recruiterList');
+      list.innerHTML = '';
+      recruitersFound.forEach(function (r) {
+        const row = document.createElement('div');
+        row.className = 'recruiter-row';
+        const av = '<div class="contact-avatar" style="background:' + gradFrom(r.avatarColor) + ';">' + esc(initials(r.name)) + '</div>';
+        var info = '<div style="flex:1;min-width:0;">' +
+          '<div class="contact-name">' + esc(r.name || '') + '</div>' +
+          (r.role ? '<div class="contact-role">' + esc(r.role) + '</div>' : '') +
+          (r.email ? '<div class="contact-email">' + esc(r.email) + '</div>' : '') +
+          (r.linkedin_url ? '<a class="contact-linkedin" href="' + esc(r.linkedin_url) + '" target="_blank" rel="noopener">LinkedIn ↗</a>' : '') +
+          '</div>';
+        const badge = r.email_verified ? '<span class="verified-badge" title="Verified"><i class="material-icons">check_circle</i></span>' : '';
+        row.innerHTML = av + info + badge;
+        list.appendChild(row);
+      });
+    }
+
+    // ── Wire all events ──
+    function wireEvents() {
+      document.getElementById('toggleAddContact').onclick = function () {
+        const f = document.getElementById('addContactForm');
+        f.style.display = (f.style.display === 'none') ? 'block' : 'none';
+      };
+      document.getElementById('acSave').onclick = addContact;
+
+      document.getElementById('clGenBtn').onclick = generateCoverLetter;
+      document.getElementById('clPreviewBtn').onclick = previewCoverLetter;
+      document.getElementById('clDownloadBtn').onclick = downloadCoverLetter;
+      document.getElementById('clEditBtn').onclick = toggleClEdit;
+      document.getElementById('clSaveEdit').onclick = saveClEdit;
+
+      const applyUrl = applyUrlOf();
+      const portalBtn = document.getElementById('applyPortalBtn');
+      if (!applyUrl) { portalBtn.disabled = true; document.getElementById('portalNote').style.display = 'block'; }
+      else portalBtn.onclick = applyOnPortal;
+      document.getElementById('applyMailBtn').onclick = applyViaMail;
+
+      document.getElementById('ccToggle').onclick = function () {
+        const cc = document.getElementById('ccFields');
+        const open = cc.style.display === 'none';
+        cc.style.display = open ? 'block' : 'none';
+        this.textContent = open ? '▴ Hide Cc / Bcc' : '▾ Add Cc / Bcc';
+      };
+      document.getElementById('composeClose').onclick = closeCompose;
+      document.getElementById('composeCancel').onclick = closeCompose;
+      document.getElementById('composeSend').onclick = sendApplication;
+      document.getElementById('composeModal').addEventListener('click', function (e) { if (e.target === this) closeCompose(); });
+
+      document.getElementById('findRecruitersBtn').onclick = findRecruiters;
+      document.getElementById('findEmailsBtn').onclick = findEmails;
+    }
+  </script>
+</body></html>
