@@ -755,7 +755,12 @@ const generateCoverLetterDetails = async (req, res) => {
             // Fire and forget — process in background
             processGenerationJob(jobId, userId, { recipientEmail, websiteUrl, position, responsibilities, jobLocation }).catch(err => {
                 console.error(`❌ [${requestId}] Async job ${jobId} failed:`, err.message);
-                jobService.failJob(jobId, err.message).catch(console.error);
+                // The stored failure message is shown to the user by the poller —
+                // only deliberately user-facing text may pass through.
+                const safeMsg = (err.userFacing || /^Resume not processed yet/.test(err.message || ''))
+                    ? err.message
+                    : 'Failed to generate the cover letter. Please try again.';
+                jobService.failJob(jobId, safeMsg).catch(console.error);
             });
 
         } else {
@@ -771,7 +776,12 @@ const generateCoverLetterDetails = async (req, res) => {
     } catch (error) {
         const duration = Date.now() - startTime;
         console.error(`❌ [${requestId}] Error (${duration}ms):`, error.message);
-        res.status(500).json({ error: error.message || 'Failed to generate cover letter' });
+        // Only deliberately user-facing messages may reach the client; raw internal
+        // errors (JSON SyntaxError, DB, API) are logged above and replaced.
+        const safeMessage = (error.userFacing || /^Resume not processed yet/.test(error.message || ''))
+            ? error.message
+            : 'Failed to generate the cover letter. Please try again.';
+        res.status(500).json({ error: safeMessage });
     }
 };
 

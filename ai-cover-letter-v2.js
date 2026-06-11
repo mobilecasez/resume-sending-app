@@ -254,7 +254,10 @@ async function callGemini(promptText) {
         generationConfig: {
             temperature: 1,
             topP: 0.95,
-            maxOutputTokens: 8192,
+            // 2.5-flash spends "thinking" tokens from this same budget; 8192 was low
+            // enough that long research+letter runs could get truncated mid-JSON. A
+            // larger cap does NOT change the letter — it only stops it being cut off.
+            maxOutputTokens: 32768,
         },
     });
 
@@ -440,11 +443,33 @@ async function generateCoverLetter(userMetadata, employerUrl, targetPosition, re
     // via Google Search grounding. No manual scraping required.
     const prompt = buildPrompt(userMetadata, targetPosition, normalizedUrl, responsibilities, jobLocation);
 
-    console.log(`[ai-cover-letter-v2] Calling Gemini to research ${normalizedUrl} and generate cover letter...`);
-    const result = await callGemini(prompt);
-    console.log('[ai-cover-letter-v2] Done ✅');
+    // Up to 3 attempts: an empty/truncated/unparseable AI response is retried
+    // silently with the identical prompt (exactly what a user's manual retry did)
+    // instead of surfacing a raw "JSON parse failed" error. The multi-stage JSON
+    // recovery inside callGemini remains the first line of defense; this loop is
+    // the second.
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            console.log(`[ai-cover-letter-v2] Calling Gemini to research ${normalizedUrl} and generate cover letter... (attempt ${attempt}/3)`);
+            const result = await callGemini(prompt);
+            console.log('[ai-cover-letter-v2] Done ✅');
+            return result;
+        } catch (e) {
+            lastErr = e;
+            if (/GEMINI_API_KEY/.test(e.message)) break; // config error — retrying won't help
+            console.warn(`[ai-cover-letter-v2] attempt ${attempt}/3 failed: ${e.message}`);
+        }
+    }
 
-    return result;
+    // All attempts failed — throw a USER-SAFE message (this text reaches the app
+    // via both the sync error response and the async job's failJob), keep the
+    // technical details in the server log only.
+    console.error('[ai-cover-letter-v2] all attempts failed:', lastErr?.message);
+    const err = new Error('We could not finish generating your cover letter. Please try again.');
+    err.userFacing = true;
+    err.cause = lastErr;
+    throw err;
 }
 
 module.exports = { generateCoverLetter };

@@ -82,6 +82,12 @@ async function scrapePage(url) {
 }
 
 // ── Gemini call with 90-second hard timeout ───────────────────────────────────
+// responseMimeType forces valid-JSON decoding (prompt already demands raw JSON, so
+// the CONTENT is unchanged — this only guarantees the syntax). maxOutputTokens was
+// 8192, which big resumes (esp. with "include uploaded resume") overflowed — Gemini
+// then truncated mid-JSON and JSON.parse threw. 2.5-flash also spends "thinking"
+// tokens from the same budget, so the cap must be generous; it does NOT change the
+// output, only stops it being cut off.
 async function callGemini(prompt) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error('GEMINI_API_KEY not set');
@@ -89,7 +95,7 @@ async function callGemini(prompt) {
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
         model: 'gemini-2.5-flash',
-        generationConfig: { temperature: 0.4, maxOutputTokens: 8192 },
+        generationConfig: { temperature: 0.4, maxOutputTokens: 32768, responseMimeType: 'application/json' },
     });
 
     const timeoutPromise = new Promise((_, reject) =>
@@ -100,7 +106,8 @@ async function callGemini(prompt) {
         model.generateContent(prompt),
         timeoutPromise,
     ]);
-    return result.response.text().trim();
+    const finishReason = result.response.candidates?.[0]?.finishReason || '';
+    return { text: result.response.text().trim(), finishReason };
 }
 
 // ── Build the structured Gemini prompt ───────────────────────────────────────
@@ -330,10 +337,29 @@ async function generateAI(req, res) {
             } catch (e) { console.warn('[resumeBuilder] uploaded resume merge failed:', e.message); }
         }
 
-        const prompt    = buildParsePrompt(name || '', email || '', phone || '', location || '', rawText, scrapedProjects, uploadedResumeContext);
-        const raw       = await callGemini(prompt);
-        const cleaned   = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-        const resumeData = JSON.parse(cleaned);
+        const prompt = buildParsePrompt(name || '', email || '', phone || '', location || '', rawText, scrapedProjects, uploadedResumeContext);
+
+        // Up to 3 attempts: a truncated or malformed AI response is retried silently
+        // (identical prompt — exactly what a user's manual "try again" did) instead of
+        // surfacing a raw JSON SyntaxError to the user.
+        let resumeData = null;
+        let lastErr = null;
+        for (let attempt = 1; attempt <= 3 && !resumeData; attempt++) {
+            try {
+                const { text, finishReason } = await callGemini(prompt);
+                if (finishReason === 'MAX_TOKENS') throw new Error('TRUNCATED_OUTPUT');
+                const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+                resumeData = JSON.parse(cleaned);
+            } catch (e) {
+                lastErr = e;
+                if (e.message === 'AI_TIMEOUT' || e.message === 'GEMINI_API_KEY not set') throw e;
+                console.warn(`[resumeBuilder] generation attempt ${attempt}/3 failed: ${e.message}`);
+            }
+        }
+        if (!resumeData) {
+            console.error('[resumeBuilder] all generation attempts failed:', lastErr?.message);
+            throw new Error('AI_BAD_OUTPUT');
+        }
 
         if (name)     resumeData.personal_info.full_name = name;
         if (email)    resumeData.personal_info.email     = email;
@@ -358,11 +384,13 @@ async function generateAI(req, res) {
 
         return res.json({ success: true, resumeData });
     } catch (e) {
+        // Never forward internal error text (JSON SyntaxErrors, DB errors, API errors)
+        // to the user — log it here, send a friendly message out.
         console.error('[resumeBuilder] generateAI error:', e.message);
         const isTimeout = e.message === 'AI_TIMEOUT' || e.message?.includes('timeout') || e.message?.includes('ETIMEDOUT');
         const userMessage = isTimeout
             ? 'The AI took too long to respond. Please try again — it usually works on the second attempt.'
-            : (e.message || 'AI generation failed. Please try again.');
+            : 'We could not finish generating your resume. Please tap Generate again.';
         return res.status(isTimeout ? 504 : 500).json({ error: userMessage, isTimeout });
     }
 }
