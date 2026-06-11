@@ -22,8 +22,19 @@ async function launchBrowser() {
 
 async function preparePage(browser, html) {
   const page = await browser.newPage({ viewport: { width: A4_W, height: A4_H } });
-  await page.setContent(html, { waitUntil: 'networkidle', timeout: 20000 });
-  try { await page.evaluate(() => (document.fonts ? document.fonts.ready : Promise.resolve())); } catch {}
+  // Render must NOT hang on slow/unreachable external web fonts (Google Fonts) —
+  // a frequent failure on Railway, where 'networkidle' never settles within the
+  // timeout and the whole preview throws "unable to load". Use 'load'; if even
+  // that times out (external stylesheet slow), the DOM content is already set, so
+  // swallow it and render with whatever loaded (system-font fallback).
+  await page.setContent(html, { waitUntil: 'load', timeout: 12000 }).catch(() => {});
+  // Give fonts a brief, bounded chance to settle — never block forever.
+  try {
+    await page.evaluate(() => Promise.race([
+      (document.fonts ? document.fonts.ready : Promise.resolve()),
+      new Promise((r) => setTimeout(r, 2500)),
+    ]));
+  } catch {}
   return page;
 }
 
