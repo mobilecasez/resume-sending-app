@@ -174,6 +174,14 @@ async function upsertJob(employerId, locationId, title, jobUrl, experience, sala
         `INSERT INTO jobs (employer_id, location_id, title, job_url, experience, salary, job_type, urgent, responsibilities)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (job_url) DO UPDATE SET
+            -- Re-point the job to the CURRENT search's employer. ATS jobs live on a
+            -- subdomain (jobs.acme.com) while users search the corporate domain
+            -- (acme.com); extractDomain() keys the employer off whatever URL was
+            -- entered, so the same job_url can be searched under different employer
+            -- rows. Without this, the first employer to insert a job_url owns it
+            -- forever, and a later searcher's dashboard (which filters by the employer
+            -- THEY track) shows 0 jobs even though their user_job_matches exist.
+            employer_id = EXCLUDED.employer_id,
             title = EXCLUDED.title,
             location_id = EXCLUDED.location_id,
             experience = EXCLUDED.experience,
