@@ -1026,7 +1026,11 @@ export default function AIHubScreen() {
       const pill = prev.find((p) => p.id === id);
       if (pill?.employerId) {
         const target = employers.find((e) => e.id === pill.employerId);
-        if (target?.jobId) removeDashboardItem(target.jobId).catch(console.error);
+        // Use jobId (async_job_id) when present, else the employer id — the server
+        // resolves either. Guards against a null jobId silently skipping the server
+        // call (which left removed companies reappearing on reload).
+        const removeKey = target?.jobId || target?.id || pill.employerId;
+        if (removeKey) removeDashboardItem(removeKey).catch(console.error);
         setEmployers((emp) => emp.filter((e) => e.id !== pill.employerId));
         if (selectedEmployerId === pill.employerId) setSelectedEmployerId(null);
       }

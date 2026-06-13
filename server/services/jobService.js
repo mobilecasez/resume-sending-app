@@ -382,7 +382,13 @@ async function getUserDashboard(userId) {
             progress: emp.job_progress || 100,
             employer: {
                 id: String(emp.id),
-                jobId: emp.async_job_id || null,
+                // Fall back to employer_id when async_job_id is null (it's null for
+                // cache-loaded / older tracked employers). The mobile remove handler
+                // only calls the server when employer.jobId is truthy, and
+                // removeDashboardItem already resolves an employer_id param — so this
+                // makes "remove company" actually persist instead of being local-only
+                // (the removed company was reappearing on reload).
+                jobId: emp.async_job_id || String(emp.id),
                 name: emp.name,
                 subInfo: emp.sub_info || '',
                 logoColor,
