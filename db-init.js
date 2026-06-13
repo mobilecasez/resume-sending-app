@@ -379,6 +379,7 @@ async function runPostgresMigrations(db) {
                 salary VARCHAR(255),
                 job_type VARCHAR(255),
                 urgent BOOLEAN DEFAULT FALSE,
+                responsibilities JSONB,
                 is_active BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -535,6 +536,13 @@ async function runPostgresMigrations(db) {
         // "column async_job_id does not exist". async_jobs.id is UUID.
         await col(`ALTER TABLE user_tracked_employers ADD COLUMN IF NOT EXISTS async_job_id UUID DEFAULT NULL`);
         console.log('✅ Migration 005b: user_tracked_employers.async_job_id done');
+
+        // AI Job Hub — jobs.responsibilities. upsertJob() inserts this column but it
+        // was never in the jobs CREATE nor a migration, so EVERY job insert threw
+        // "column responsibilities does not exist" → 0 jobs persisted (they streamed
+        // to the UI but vanished on reload). JSONB array of responsibility strings.
+        await col(`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS responsibilities JSONB`);
+        console.log('✅ Migration 005c: jobs.responsibilities done');
 
         // users — Apple OAuth
         await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_user_id TEXT DEFAULT NULL`);
