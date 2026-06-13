@@ -31,6 +31,7 @@ export type Job = {
   contacts: Contact[];
   matchScore?: number;   // 0–100, AI-computed resume match
   applyUrl?: string | null;
+  lang?: string;         // detected language ('en' or e.g. 'de'); non-'en' shows the Translate toggle
 };
 
 /**

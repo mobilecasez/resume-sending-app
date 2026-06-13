@@ -347,6 +347,8 @@
       // never off jobId — async_job_id is null once a search completes, so
       // keying off it makes every finished card collide on an empty id.
       let selectedKey = null;
+      // Per-job translation state: jobId -> { fields, showing, loading }
+      const jobTr = {};
 
       function keyOf(it) {
         if (it && it.employer && it.employer.id != null && it.employer.id !== '') return 'emp-' + it.employer.id;
@@ -359,28 +361,49 @@
 
       // ── Rendering ────────────────────────────────────────────────────────
       function jobRowHTML(emp, job, key) {
-        const skills = Array.isArray(job.skills) ? job.skills : [];
+        // Translate-to-English: show the toggle only for non-English jobs (job.lang
+        // set by the server). `v` is the displayed view — original or translated.
+        const canTr = !!job.lang && job.lang !== 'en';
+        const st = jobTr[job.id];
+        const showEng = !!(st && st.showing && st.fields);
+        const loading = !!(st && st.loading);
+        const v = showEng ? Object.assign({}, job, st.fields) : job;
+
+        const skills = Array.isArray(v.skills) ? v.skills : [];
         const shown = skills.slice(0, 5);
         const extra = skills.length - shown.length;
         let skillsHTML = shown.map(function (s) { return '<span class="jh-skill">' + esc(s) + '</span>'; }).join('');
         if (extra > 0) skillsHTML += '<span class="jh-skill more">+' + extra + ' more</span>';
 
         const meta = [];
-        if (job.location)   meta.push('<span><span class="material-icons">place</span>' + esc(job.location) + '</span>');
-        if (job.experience) meta.push('<span><span class="material-icons">work_history</span>' + esc(job.experience) + '</span>');
-        if (job.salary)     meta.push('<span><span class="material-icons">payments</span>' + esc(job.salary) + '</span>');
-        if (job.jobType)    meta.push('<span><span class="material-icons">schedule</span>' + esc(job.jobType) + '</span>');
+        if (v.location)   meta.push('<span><span class="material-icons">place</span>' + esc(v.location) + '</span>');
+        if (v.experience) meta.push('<span><span class="material-icons">work_history</span>' + esc(v.experience) + '</span>');
+        if (v.salary)     meta.push('<span><span class="material-icons">payments</span>' + esc(v.salary) + '</span>');
+        if (v.jobType)    meta.push('<span><span class="material-icons">schedule</span>' + esc(v.jobType) + '</span>');
+
+        const trBtn = canTr
+          ? '<button class="jh-tr-btn" type="button" data-job="' + esc(job.id) + '" title="Translate to English" ' +
+              'style="flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;cursor:pointer;' +
+              'border-radius:8px;padding:4px 9px;font-size:11px;font-weight:700;' +
+              'border:1px solid ' + (showEng ? '#2563EB' : 'rgba(37,99,235,0.35)') + ';' +
+              'background:' + (showEng ? '#2563EB' : 'rgba(37,99,235,0.08)') + ';' +
+              'color:' + (showEng ? '#fff' : '#2563EB') + ';">' +
+              '<span class="material-icons" style="font-size:14px;">translate</span>' +
+              '<span>' + (loading ? '…' : (showEng ? 'English' : 'Translate')) + '</span>' +
+            '</button>'
+          : '';
 
         return '' +
           '<div class="jh-job">' +
             '<div class="jh-job-top">' +
               '<div style="flex:1 1 auto;min-width:0;">' +
-                '<div class="jh-job-title">' + esc(job.title || 'Role') +
+                '<div class="jh-job-title">' + esc(v.title || 'Role') +
                   (job.urgent ? '<span class="jh-urgent">Urgent</span>' : '') +
                 '</div>' +
                 (meta.length ? '<div class="jh-meta">' + meta.join('') + '</div>' : '') +
                 (skillsHTML ? '<div class="jh-skills">' + skillsHTML + '</div>' : '') +
               '</div>' +
+              trBtn +
             '</div>' +
             '<div class="jh-job-action">' +
               '<button class="cva-btn-primary is-block jh-view-btn" type="button" ' +
@@ -423,7 +446,7 @@
           '</div>';
       }
 
-      function renderJobsPanel(it) {
+      function renderJobsPanel(it, skipScroll) {
         const panel = document.getElementById('jobsPanel');
         const listEl = document.getElementById('jobsList');
         const nameEl = document.getElementById('jobsPanelName');
@@ -444,9 +467,37 @@
               openJob(btn.getAttribute('data-key'), btn.getAttribute('data-job'));
             });
           });
+          Array.prototype.forEach.call(listEl.querySelectorAll('.jh-tr-btn'), function (btn) {
+            btn.addEventListener('click', function () {
+              toggleTranslate(it, btn.getAttribute('data-job'));
+            });
+          });
         }
 
-        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (!skipScroll) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+
+      // Translate a job card to English (toggle). Server caches per job.
+      async function toggleTranslate(it, jobId) {
+        const cur = jobTr[jobId];
+        if (cur && cur.loading) return;    // in-flight → ignore repeat clicks
+        if (cur && cur.fields) {            // already fetched → just flip view
+          cur.showing = !cur.showing;
+          renderJobsPanel(it, true);
+          return;
+        }
+        jobTr[jobId] = { loading: true, showing: false, fields: null };
+        renderJobsPanel(it, true);          // show the "…" spinner state
+        try {
+          const res = await CVA.apiFetch('/api/ai-hub/jobs/' + encodeURIComponent(jobId) + '/translate', { method: 'POST' });
+          const data = await res.json().catch(function () { return {}; });
+          if (!res.ok || !data || !data.translated) throw new Error('translate failed');
+          jobTr[jobId] = { loading: false, showing: true, fields: data.translated };
+        } catch (e) {
+          jobTr[jobId] = null;
+          CVA.toast('Could not translate this job. Please try again.');
+        }
+        renderJobsPanel(it, true);
       }
 
       function closeJobsPanel() {

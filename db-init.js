@@ -544,6 +544,21 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS responsibilities JSONB`);
         console.log('✅ Migration 005c: jobs.responsibilities done');
 
+        // AI Job Hub — per-job English translation cache (Translate-to-English
+        // toggle on job cards). ATS jobs are parsed from HTML in their original
+        // language; this caches the Gemini English translation once per job.
+        await col(`
+            CREATE TABLE IF NOT EXISTS job_translations (
+                job_id UUID NOT NULL,
+                target_lang VARCHAR(8) NOT NULL DEFAULT 'en',
+                source_lang VARCHAR(16),
+                payload JSONB NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (job_id, target_lang)
+            )
+        `);
+        console.log('✅ Migration 005d: job_translations table done');
+
         // users — Apple OAuth
         await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_user_id TEXT DEFAULT NULL`);
         await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_identity_token TEXT DEFAULT NULL`);

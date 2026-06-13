@@ -222,6 +222,11 @@ function buildPrompt(userMetadata, targetPosition, employerUrlOrText, responsibi
         prompt += block;
     }
 
+    // OUTPUT LANGUAGE — hard rule, last so it has the highest salience. Some job
+    // details (title/responsibilities/scraped text) can be in another language
+    // (e.g. German/French/Dutch ATS postings); the letter must still be English.
+    prompt += `\n\n---\n\nOUTPUT LANGUAGE — ABSOLUTE REQUIREMENT: Write the prose of the ENTIRE cover letter in English. Even when the job title, responsibilities, location, or scraped company text are in another language (German, French, Dutch, Spanish, etc.), translate that context and write the whole letter in plain professional English — greeting, body and sign-off all in English. EXCEPTION — do NOT translate or anglicize proper nouns: keep official company/legal names, product, brand and technology names, and city/country names exactly as they are. Physical street addresses (the entries in the "addresses" array) must be returned EXACTLY as found, never translated (e.g. keep "Hauptstraße 12, 45128 Essen" verbatim). Only the sentences you write must be English.\n\n---`;
+
     return prompt;
 }
 

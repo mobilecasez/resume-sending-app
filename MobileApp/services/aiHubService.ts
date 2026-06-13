@@ -203,6 +203,38 @@ export async function addContactToJob(
 }
 
 /**
+ * Translates a job card's text fields to English. The server caches the result
+ * per job (shared across users), so repeat calls are instant. Returns the
+ * translated fields; the caller merges them onto the Job object.
+ */
+export type TranslatedJob = {
+  title?: string;
+  location?: string;
+  experience?: string;
+  salary?: string;
+  jobType?: string;
+  skills?: string[];
+  responsibilities?: string[];
+};
+
+export async function translateJob(jobId: string): Promise<TranslatedJob> {
+  try {
+    const headers = await getAuthHeader();
+    const response = await axios.post(
+      `${API_BASE_URL}/ai-hub/jobs/${jobId}/translate`,
+      {},
+      { headers }
+    );
+    return (response.data?.translated ?? {}) as TranslatedJob;
+  } catch (error: unknown) {
+    const msg = axios.isAxiosError(error)
+      ? error.response?.data?.error ?? error.message
+      : `Failed to translate job ${jobId}`;
+    throw new Error(msg);
+  }
+}
+
+/**
  * Fetches the persisted contacts for a job (used to refresh after adding one).
  * Returns [] on any error so the caller can keep showing the snapshot.
  */

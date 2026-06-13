@@ -13,6 +13,7 @@ const {
 } = require('../utils/domOptimizer');
 const { smartScrape, stripHtmlToText } = require('../utils/playwrightScraper');
 const { discoverSitemapJobUrls } = require('../utils/atsSitemap');
+const { detectJobLanguage, jobTextForDetection } = require('../utils/jobLanguage');
 
 // ─── Batch tuning ─────────────────────────────────────────────────────────────
 // How many job-detail pages to scrape + process per Gemini call
@@ -1252,6 +1253,7 @@ function buildJobFromRaw(raw, index, employerDbId, careersUrl, dbJobId = null) {
         urgent: !!raw.urgent,
         matchScore: 0,
         applyUrl,
+        lang: detectJobLanguage(jobTextForDetection({ title: raw.title, responsibilities: raw.responsibilities, skills: raw.skills })).lang,
         skills: Array.isArray(raw.skills) ? raw.skills : [],
         responsibilities: Array.isArray(raw.responsibilities) ? raw.responsibilities : [],
         contacts,
@@ -2420,8 +2422,9 @@ INSTRUCTIONS:
 7. Use the candidate's actual experience from the resume — be specific
 8. Address to "Hiring Manager" unless a contact name is known
 9. Sign off with the candidate's full name from the resume
+10. LANGUAGE: Write the ENTIRE cover letter in English. Even if the job title, responsibilities, or any provided details are in another language (e.g. German, French, Dutch), the cover letter MUST be written wholly in professional English. Translate any non-English job details into English as needed. Do NOT output any non-English text.
 
-Return ONLY the cover letter text — no explanation, no markdown, no formatting tags.`;
+Return ONLY the cover letter text in English — no explanation, no markdown, no formatting tags.`;
 
         console.log(`[aiHub] Generating cover letter for job "${job.title}" at "${employer?.name}"`);
         const result = await model.generateContent(prompt);
@@ -2438,6 +2441,138 @@ Return ONLY the cover letter text — no explanation, no markdown, no formatting
     } catch (error) {
         console.error('[aiHub] generateJobCoverLetter error:', error.message);
         return res.status(500).json({ error: 'Failed to generate cover letter. Please try again.' });
+    }
+}
+
+// ─── Translate a job card to English ─────────────────────────────────────────
+// ATS-sourced jobs are parsed straight from HTML (no AI) so they keep their
+// original language. This endpoint translates the visible job fields to English
+// with Gemini, caching the result per job (shared across users) so each job is
+// translated once. Free (no credit cost) — it's a convenience toggle.
+
+async function ensureJobTranslationsTable() {
+    await dbConfig.run(`
+        CREATE TABLE IF NOT EXISTS job_translations (
+            job_id UUID NOT NULL,
+            target_lang VARCHAR(8) NOT NULL DEFAULT 'en',
+            source_lang VARCHAR(16),
+            payload JSONB NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (job_id, target_lang)
+        )
+    `);
+}
+
+async function translateJob(req, res) {
+    const { jobId } = req.params;
+    try {
+        await ensureJobTranslationsTable();
+
+        // 1. Cache hit → return immediately (translate once per job, ever).
+        const cached = await dbConfig.get(
+            `SELECT payload, source_lang FROM job_translations WHERE job_id = $1 AND target_lang = 'en'`,
+            [jobId]
+        );
+        if (cached && cached.payload) {
+            const p = typeof cached.payload === 'string' ? JSON.parse(cached.payload) : cached.payload;
+            return res.json({ jobId, sourceLang: cached.source_lang || null, cached: true, translated: p });
+        }
+
+        // 2. Load the job (+ location text via join, + skills).
+        const job = await dbConfig.get(
+            `SELECT j.*, l.raw_text AS location_text
+             FROM jobs j LEFT JOIN locations l ON l.id = j.location_id
+             WHERE j.id = $1`,
+            [jobId]
+        );
+        if (!job) return res.status(404).json({ error: 'Job not found' });
+
+        const skillRows = await dbConfig.query(
+            `SELECT s.name FROM skills s JOIN job_skills js ON js.skill_id = s.id WHERE js.job_id = $1`,
+            [jobId]
+        );
+        const skills = skillRows.map(s => s.name);
+        const responsibilities = (() => {
+            try {
+                if (!job.responsibilities) return [];
+                return typeof job.responsibilities === 'string' ? JSON.parse(job.responsibilities) : job.responsibilities;
+            } catch { return []; }
+        })();
+
+        const fields = {
+            title: job.title || '',
+            location: job.location_text || '',
+            experience: job.experience || '',
+            salary: job.salary || '',
+            jobType: job.job_type || '',
+            skills,
+            responsibilities,
+        };
+
+        // 3. Translate with Gemini (flash-lite, JSON out). One retry on bad JSON.
+        const model = geminiModel(false, 'gemini-2.5-flash-lite');
+        const prompt = `Translate the following job-posting fields into natural, professional English.
+
+Return ONLY a JSON object with EXACTLY these keys:
+"sourceLang" (ISO 639-1 code of the original language, or "en" if it is already English),
+"title" (string), "location" (string), "experience" (string), "salary" (string),
+"jobType" (string), "skills" (array of strings), "responsibilities" (array of strings).
+
+Rules:
+- Translate every value into English. If a value is already English, return it unchanged.
+- Keep proper nouns as-is: company names, city/country names, product and technology names (e.g. "Python", "Berlin", "SAP").
+- Preserve array lengths: translate each skill and each responsibility item individually; do not merge, drop, or add items.
+- Keep it faithful — do not summarise, embellish, or invent.
+- No commentary, no markdown — JSON only.
+
+FIELDS:
+${JSON.stringify(fields, null, 2)}`;
+
+        async function callOnce() {
+            const result = await model.generateContent({
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                generationConfig: { responseMimeType: 'application/json', temperature: 0.2, maxOutputTokens: 8192 },
+            });
+            return parseJsonObject(result.response.text());
+        }
+
+        let out = null;
+        try { out = await callOnce(); } catch (e1) {
+            try { out = await callOnce(); } catch (e2) {
+                console.error('[aiHub] translateJob AI error:', e2.message);
+                return res.status(502).json({ error: 'Translation failed. Please try again.' });
+            }
+        }
+        if (!out || typeof out !== 'object') {
+            return res.status(502).json({ error: 'Translation failed. Please try again.' });
+        }
+
+        // Normalise + fall back to originals for any missing field.
+        const translated = {
+            title: typeof out.title === 'string' && out.title.trim() ? out.title.trim() : fields.title,
+            location: typeof out.location === 'string' && out.location.trim() ? out.location.trim() : fields.location,
+            experience: typeof out.experience === 'string' && out.experience.trim() ? out.experience.trim() : fields.experience,
+            salary: typeof out.salary === 'string' && out.salary.trim() ? out.salary.trim() : fields.salary,
+            jobType: typeof out.jobType === 'string' && out.jobType.trim() ? out.jobType.trim() : fields.jobType,
+            skills: Array.isArray(out.skills) && out.skills.length ? out.skills.map(String) : fields.skills,
+            responsibilities: Array.isArray(out.responsibilities) && out.responsibilities.length ? out.responsibilities.map(String) : fields.responsibilities,
+        };
+        const sourceLang = typeof out.sourceLang === 'string' ? out.sourceLang.slice(0, 16) : null;
+
+        // 4. Cache it (best-effort; ON CONFLICT keeps the first translation).
+        try {
+            await dbConfig.run(
+                `INSERT INTO job_translations (job_id, target_lang, source_lang, payload)
+                 VALUES ($1, 'en', $2, $3)
+                 ON CONFLICT (job_id, target_lang) DO NOTHING`,
+                [jobId, sourceLang, JSON.stringify(translated)]
+            );
+        } catch (e) { console.warn('[aiHub] translateJob cache write failed:', e.message); }
+
+        return res.json({ jobId, sourceLang, cached: false, translated });
+    } catch (error) {
+        console.error('[aiHub] translateJob error:', error.message);
+        return res.status(500).json({ error: 'Failed to translate job. Please try again.' });
     }
 }
 
@@ -2774,6 +2909,7 @@ module.exports = {
     getRecruiters,
     findRecruiterEmails,
     generateJobCoverLetter,
+    translateJob,
     saveJobCoverLetter,
     getJobCoverLetter,
     updateJobCoverLetterStatus,

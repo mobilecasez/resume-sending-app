@@ -29,7 +29,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type { Contact, Job, Employer, WishlistPill } from '../../types/aiHub';
-import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses } from '../../services/aiHubService';
+import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, translateJob } from '../../services/aiHubService';
 import type { Recruiter } from '../../services/aiHubService';
 import { API_BASE } from '../../config';
 import axios from 'axios';
@@ -275,8 +275,43 @@ type JobCardProps = {
 
 function JobCard({ job, employerName, clStatus, onApply, onAddContact, onVisitJob }: JobCardProps) {
   const [skillsExpanded, setSkillsExpanded] = useState(false);
+
+  // ── Translate-to-English toggle ──
+  // The backend sets job.lang; the icon shows only for non-English jobs (mostly
+  // ATS postings parsed without AI). First tap fetches + caches the English
+  // version; subsequent taps just flip between original and English.
+  const canTranslate = !!job.lang && job.lang !== 'en';
+  const [englishJob, setEnglishJob] = useState<Job | null>(null);
+  const [showEnglish, setShowEnglish] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  const display = showEnglish && englishJob ? englishJob : job;
+
+  const handleTranslate = async () => {
+    if (translating) return;
+    if (englishJob) { setShowEnglish((v) => !v); return; }
+    try {
+      setTranslating(true);
+      const t = await translateJob(job.id);
+      setEnglishJob({
+        ...job,
+        title: t.title || job.title,
+        location: t.location || job.location,
+        experience: t.experience || job.experience,
+        salary: t.salary || job.salary,
+        jobType: t.jobType || job.jobType,
+        skills: Array.isArray(t.skills) && t.skills.length ? t.skills : job.skills,
+        responsibilities: Array.isArray(t.responsibilities) && t.responsibilities.length ? t.responsibilities : job.responsibilities,
+      });
+      setShowEnglish(true);
+    } catch (e) {
+      Alert.alert('Translation unavailable', 'Could not translate this job right now. Please try again.');
+    } finally {
+      setTranslating(false);
+    }
+  };
+
   const SKILLS_PREVIEW = 5;
-  const allSkills = job.skills || [];
+  const allSkills = display.skills || [];
   const visibleSkills = skillsExpanded ? allSkills : allSkills.slice(0, SKILLS_PREVIEW);
   const hiddenCount = allSkills.length - SKILLS_PREVIEW;
 
@@ -298,9 +333,28 @@ function JobCard({ job, employerName, clStatus, onApply, onAddContact, onVisitJo
     {/* ── Header: title + badges ── */}
     <View style={styles.cardHeader}>
       <View style={styles.cardHeaderMid}>
-        <Text style={styles.jobTitle} numberOfLines={2}>{job.title}</Text>
+        <Text style={styles.jobTitle} numberOfLines={2}>{display.title}</Text>
       </View>
       <View style={styles.cardBadgesCol}>
+        {canTranslate && (
+          <TouchableOpacity
+            onPress={handleTranslate}
+            disabled={translating}
+            activeOpacity={0.7}
+            style={[styles.translateBtn, showEnglish && styles.translateBtnActive]}
+          >
+            {translating ? (
+              <ActivityIndicator size="small" color={showEnglish ? '#fff' : T.blue} />
+            ) : (
+              <>
+                <Ionicons name="language" size={12} color={showEnglish ? '#fff' : T.blue} />
+                <Text style={[styles.translateBtnText, showEnglish && styles.translateBtnTextActive]}>
+                  {showEnglish ? 'English' : 'Translate'}
+                </Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
         {job.urgent && (
           <View style={styles.urgentBadge}>
             <Ionicons name="flash" size={10} color="#EF4444" />
@@ -337,24 +391,24 @@ function JobCard({ job, employerName, clStatus, onApply, onAddContact, onVisitJo
     <View style={styles.metaRow}>
       <View style={styles.metaChip}>
         <Ionicons name="location-outline" size={12} color={T.blue} />
-        <Text style={styles.metaChipText}>{job.location}</Text>
+        <Text style={styles.metaChipText}>{display.location}</Text>
       </View>
-      {!!job.experience && (
+      {!!display.experience && (
         <View style={styles.metaChip}>
           <Ionicons name="time-outline" size={12} color="#A78BFA" />
-          <Text style={styles.metaChipText}>{job.experience}</Text>
+          <Text style={styles.metaChipText}>{display.experience}</Text>
         </View>
       )}
-      {!!job.salary && job.salary !== 'Not listed' && (
+      {!!display.salary && display.salary !== 'Not listed' && (
         <View style={styles.metaChip}>
           <Ionicons name="cash-outline" size={12} color="#34D399" />
-          <Text style={styles.metaChipText}>{job.salary}</Text>
+          <Text style={styles.metaChipText}>{display.salary}</Text>
         </View>
       )}
-      {!!job.jobType && (
+      {!!display.jobType && (
         <View style={styles.metaChip}>
           <Ionicons name="briefcase-outline" size={12} color="#FB923C" />
-          <Text style={styles.metaChipText}>{job.jobType}</Text>
+          <Text style={styles.metaChipText}>{display.jobType}</Text>
         </View>
       )}
     </View>
@@ -385,10 +439,10 @@ function JobCard({ job, employerName, clStatus, onApply, onAddContact, onVisitJo
     )}
 
     {/* ── Responsibilities ── */}
-    {(job.responsibilities || []).length > 0 && (
+    {(display.responsibilities || []).length > 0 && (
       <View style={styles.cardSection}>
         <Text style={styles.cardSectionLabel}>RESPONSIBILITIES</Text>
-        {(job.responsibilities || []).slice(0, 3).map((r, i) => (
+        {(display.responsibilities || []).slice(0, 3).map((r, i) => (
           <View key={i} style={styles.respRow}>
             <View style={styles.respDot} />
             <Text style={styles.respText}>{r}</Text>
@@ -1844,6 +1898,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   urgentText: { fontSize: 10, fontWeight: '700', color: '#EF4444' },
+  translateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    minWidth: 74,
+    minHeight: 22,
+    borderRadius: 10,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(79,141,255,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(79,141,255,0.25)',
+  },
+  translateBtnActive: {
+    backgroundColor: T.blue,
+    borderColor: T.blue,
+  },
+  translateBtnText: { fontSize: 10, fontWeight: '700', color: T.blue },
+  translateBtnTextActive: { color: '#fff' },
   matchBadge: { borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4 },
   statusBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3, backgroundColor: 'rgba(79,141,255,0.08)' },
   statusBadgeText: { fontSize: 9, fontWeight: '700', letterSpacing: 0.2 },

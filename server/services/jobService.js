@@ -1,4 +1,5 @@
 const dbConfig = require('../../db-config');
+const { detectJobLanguage } = require('../utils/jobLanguage');
 
 /**
  * Create a new async job
@@ -349,6 +350,14 @@ async function getUserDashboard(userId) {
                     } catch { return []; }
                 })();
 
+                const skillNames = skillsRows.map(s => s.name);
+                // Detect language so the client can show a "Translate to English"
+                // icon only on non-English jobs (ATS jobs are parsed without AI and
+                // keep their original language).
+                const { lang } = detectJobLanguage(
+                    [jRow.title, Array.isArray(responsibilities) ? responsibilities.join(' ') : '', skillNames.join(' ')].join(' ')
+                );
+
                 jobs.push({
                     id: String(jRow.id),
                     title: jRow.title,
@@ -359,7 +368,8 @@ async function getUserDashboard(userId) {
                     urgent: !!jRow.urgent,
                     matchScore: jRow.match_score || 0,
                     applyUrl: jRow.job_url,
-                    skills: skillsRows.map(s => s.name),
+                    lang,
+                    skills: skillNames,
                     responsibilities,
                     contacts: contactsRows.map((c, ci) => ({
                         id: String(c.id),
