@@ -120,21 +120,21 @@ const register = async (req, res) => {
             userId = result.lastID || result.id;
         }
 
-        // Give 2 free credits ONLY to first-time registrations
+        // Give 5 free credits ONLY to first-time registrations
         let freeCredits = 0;
         if (!wasPreviouslyDeleted) {
             try {
                 await dbConfig.run(
                     'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
-                    [userId, 2, 2]
+                    [userId, 5, 5]
                 );
                 await dbConfig.run(
                     `INSERT INTO credit_transactions
                     (user_id, transaction_type, credits_change, balance_after, description)
                     VALUES (?, ?, ?, ?, ?)`,
-                    [userId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                    [userId, 'purchase', 5, 5, 'Welcome bonus - Free credits']
                 );
-                freeCredits = 2;
+                freeCredits = 5;
             } catch (creditErr) {
                 console.error('Failed to add welcome credits:', creditErr);
             }
@@ -159,7 +159,7 @@ const register = async (req, res) => {
         res.json({
             success: true,
             message: freeCredits > 0
-                ? 'User created successfully! You received 2 free credits.'
+                ? 'User created successfully! You received 5 free credits.'
                 : 'Account reactivated successfully.',
             token,
             user: {
@@ -526,18 +526,18 @@ const googleAuth = async (req, res) => {
                     newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
                 }
 
-                // Give 2 free credits ONLY to first-time registrations
+                // Give 5 free credits ONLY to first-time registrations
                 if (!wasPreviouslyDeleted) {
                     try {
                         await dbConfig.run(
                             'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
-                            [newUserId, 2, 2]
+                            [newUserId, 5, 5]
                         );
                         await dbConfig.run(
                             `INSERT INTO credit_transactions
                             (user_id, transaction_type, credits_change, balance_after, description)
                             VALUES (?, ?, ?, ?, ?)`,
-                            [newUserId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                            [newUserId, 'purchase', 5, 5, 'Welcome bonus - Free credits']
                         );
                     } catch (creditErr) {
                         console.error('Failed to add welcome credits:', creditErr);
@@ -832,20 +832,20 @@ const microsoftAuth = async (req, res) => {
                 newUserId = result.rows && result.rows[0] ? result.rows[0].id : result.lastID;
             }
 
-            // Give 2 free credits ONLY to first-time registrations
+            // Give 5 free credits ONLY to first-time registrations
             if (!wasPreviouslyDeleted) {
                 try {
                     await dbConfig.run(
                         'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
-                        [newUserId, 2, 2]
+                        [newUserId, 5, 5]
                     );
                     await dbConfig.run(
                         `INSERT INTO credit_transactions
                         (user_id, transaction_type, credits_change, balance_after, description)
                         VALUES (?, ?, ?, ?, ?)`,
-                        [newUserId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                        [newUserId, 'purchase', 5, 5, 'Welcome bonus - Free credits']
                     );
-                    console.log(`🎁 Gave 2 free welcome credits to new Microsoft user ${msEmail}`);
+                    console.log(`🎁 Gave 5 free welcome credits to new Microsoft user ${msEmail}`);
                 } catch (creditErr) {
                     console.error('Failed to add welcome credits:', creditErr);
                 }
@@ -858,7 +858,7 @@ const microsoftAuth = async (req, res) => {
                 provider: 'microsoft',
                 flow: 'mobile_api',
                 reactivated: wasPreviouslyDeleted,
-                free_credits_given: wasPreviouslyDeleted ? 0 : 2
+                free_credits_given: wasPreviouslyDeleted ? 0 : 5
             }, req);
 
             await logSecurityEvent(newUserId, 'OAUTH_TOKEN_GRANTED', 'oauth', {
@@ -1134,18 +1134,18 @@ const appleAuth = async (req, res) => {
             // If we successfully created/reactivated a user (no duplicate)
             if (newUserId && !user) {
 
-            // Give 2 free credits ONLY to first-time registrations
+            // Give 5 free credits ONLY to first-time registrations
             if (!wasPreviouslyDeletedApple) {
                 try {
                     await dbConfig.run(
                         'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
-                        [newUserId, 2, 2]
+                        [newUserId, 5, 5]
                     );
                     await dbConfig.run(
                         `INSERT INTO credit_transactions
                         (user_id, transaction_type, credits_change, balance_after, description)
                         VALUES (?, ?, ?, ?, ?)`,
-                        [newUserId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                        [newUserId, 'purchase', 5, 5, 'Welcome bonus - Free credits']
                     );
                 } catch (creditErr) {
                     console.error('Failed to add welcome credits:', creditErr);
@@ -1403,13 +1403,13 @@ const appleWebCallback = async (req, res) => {
             userEmail = email;
             userName = displayName;
 
-            // Give 2 free credits ONLY to first-time registrations
+            // Give 5 free credits ONLY to first-time registrations
             if (!wasPreviouslyDeletedWeb) {
                 try {
-                    await dbConfig.run('INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)', [userId, 2, 2]);
+                    await dbConfig.run('INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)', [userId, 5, 5]);
                     await dbConfig.run(
                         `INSERT INTO credit_transactions (user_id, transaction_type, credits_change, balance_after, description) VALUES (?, ?, ?, ?, ?)`,
-                        [userId, 'purchase', 2, 2, 'Welcome bonus - Free credits']
+                        [userId, 'purchase', 5, 5, 'Welcome bonus - Free credits']
                     );
                 } catch (creditErr) {
                     console.error('Failed to add welcome credits:', creditErr);

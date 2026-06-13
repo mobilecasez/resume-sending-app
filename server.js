@@ -985,6 +985,30 @@ async function handleOAuthUser(profile, provider, accessToken, refreshToken, cal
             }
             
             const newUser = await dbConfig.get('SELECT * FROM users WHERE id = ?', [result.lastID || result.id]);
+
+            // Welcome credits — grant the same 5 free credits the email / API-OAuth signup
+            // paths give (authController.js). This Passport path (Google web + Google mobile
+            // deep-link + Microsoft web) previously created NO user_credits row, so those new
+            // users silently got 0. Only granted to genuinely-new users (no existing row).
+            try {
+                if (newUser && newUser.id) {
+                    const existingCredits = await dbConfig.get('SELECT user_id FROM user_credits WHERE user_id = ?', [newUser.id]);
+                    if (!existingCredits) {
+                        await dbConfig.run(
+                            'INSERT INTO user_credits (user_id, credits_remaining, credits_total) VALUES (?, ?, ?)',
+                            [newUser.id, 5, 5]
+                        );
+                        await dbConfig.run(
+                            `INSERT INTO credit_transactions (user_id, transaction_type, credits_change, balance_after, description) VALUES (?, ?, ?, ?, ?)`,
+                            [newUser.id, 'purchase', 5, 5, 'Welcome bonus - Free credits']
+                        );
+                        console.log(`🎁 Gave 5 free welcome credits to new ${provider} (passport) user ${email}`);
+                    }
+                }
+            } catch (creditErr) {
+                console.error('[handleOAuthUser] welcome credit grant failed:', creditErr.message);
+            }
+
             return callback(null, newUser);
         }
     } catch (err) {

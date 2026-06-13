@@ -114,8 +114,8 @@ CREATE TABLE IF NOT EXISTS plans (
 CREATE TABLE IF NOT EXISTS user_credits (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL UNIQUE,
-    credits_remaining INTEGER DEFAULT 2,
-    credits_total INTEGER DEFAULT 2,
+    credits_remaining INTEGER DEFAULT 5,
+    credits_total INTEGER DEFAULT 5,
     last_purchase_date TIMESTAMP,
     expiry_date TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
