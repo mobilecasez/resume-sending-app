@@ -23,8 +23,10 @@ const BATCH_CONCURRENCY = 2;
 const CACHE_TTL_HOURS   = 24;
 // Max job links to collect from a portal (pagination-aware)
 const MAX_JOB_LINKS     = 80;
-// Max jobs to pull from an ATS sitemap when normal discovery found nothing
-const ATS_FALLBACK_LIMIT = 30;
+// Max jobs to pull from an ATS sitemap when normal discovery found nothing.
+// ATS pages are server-rendered, so these are fetched+parsed directly (no
+// Playwright/AI) — we can afford the full listing, not a small sample.
+const ATS_FALLBACK_LIMIT = 200;
 // Max pagination pages to follow per listing URL
 const MAX_PAGES         = 12;
 
@@ -1066,6 +1068,24 @@ function normalizeAiJob(aiJob, originalJob) {
 }
 
 async function fetchJobDetailsBatch(jobBatch, careersUrl, candidateProfile, listingPageText = '') {
+    // ── ATS fast path ────────────────────────────────────────────────────────
+    // Jobs discovered from a SuccessFactors/Workday-style sitemap are server-
+    // rendered, so we fetch each with a plain HTTP GET and parse the structured
+    // data directly — NO Playwright, NO AI. This is what lets us return the full
+    // listing (e.g. all 184 RWE roles) fast and free. Streams per batch like usual.
+    if (jobBatch.length && jobBatch.every(j => j._ats)) {
+        const { fetchJobPage, parseAtsJobPage } = require('../utils/atsSitemap');
+        return Promise.all(jobBatch.map(async (j) => {
+            try {
+                const html = await fetchJobPage(j.job_url);
+                return parseAtsJobPage(html, j.job_url);
+            } catch (e) {
+                // Keep the job (title from URL) even if its page fetch failed.
+                return { title: j.title, location: '', skills: [], responsibilities: [], job_url: j.job_url };
+            }
+        }));
+    }
+
     // ── Step 1: Scrape all pages concurrently with Playwright ────────────────
     // listing_page_only jobs: no individual URL exists — reuse already-scraped
     // careers listing page text instead of making a redundant Playwright fetch.
@@ -1404,8 +1424,9 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
             const atsJobs = await discoverSitemapJobUrls(scrapeUrl, domain, ATS_FALLBACK_LIMIT)
                 .catch(e => { console.error('[aiHub] ATS sitemap fallback error:', e.message); return []; });
             if (atsJobs.length) {
-                console.log(`[aiHub] ATS sitemap fallback recovered ${atsJobs.length} job URLs for "${domain}" — feeding into Phase 2`);
-                rawJobs = atsJobs;
+                console.log(`[aiHub] ATS sitemap fallback recovered ${atsJobs.length} job URLs for "${domain}" — fast HTTP+parse path`);
+                // Mark _ats so fetchJobDetailsBatch fetch+parses them directly (no Playwright/AI).
+                rawJobs = atsJobs.map(j => ({ ...j, _ats: true }));
             }
         }
 

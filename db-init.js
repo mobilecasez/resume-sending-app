@@ -529,6 +529,13 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS microsoft_token_expires_at TIMESTAMP DEFAULT NULL`);
         console.log('✅ Migration 005: Microsoft OAuth columns done');
 
+        // AI Job Hub — async-job tracking column. Referenced in code
+        // (processJobSearch links each search's async_jobs.id here) but never had
+        // a migration, so production was missing it → every job search threw
+        // "column async_job_id does not exist". async_jobs.id is UUID.
+        await col(`ALTER TABLE user_tracked_employers ADD COLUMN IF NOT EXISTS async_job_id UUID DEFAULT NULL`);
+        console.log('✅ Migration 005b: user_tracked_employers.async_job_id done');
+
         // users — Apple OAuth
         await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_user_id TEXT DEFAULT NULL`);
         await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_identity_token TEXT DEFAULT NULL`);
