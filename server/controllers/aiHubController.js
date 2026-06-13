@@ -12,6 +12,7 @@ const {
     extractCompanyInfoFromHtml,
 } = require('../utils/domOptimizer');
 const { smartScrape, stripHtmlToText } = require('../utils/playwrightScraper');
+const { discoverSitemapJobUrls } = require('../utils/atsSitemap');
 
 // ─── Batch tuning ─────────────────────────────────────────────────────────────
 // How many job-detail pages to scrape + process per Gemini call
@@ -22,6 +23,8 @@ const BATCH_CONCURRENCY = 2;
 const CACHE_TTL_HOURS   = 24;
 // Max job links to collect from a portal (pagination-aware)
 const MAX_JOB_LINKS     = 80;
+// Max jobs to pull from an ATS sitemap when normal discovery found nothing
+const ATS_FALLBACK_LIMIT = 30;
 // Max pagination pages to follow per listing URL
 const MAX_PAGES         = 12;
 
@@ -1387,8 +1390,24 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
             listingData = await findJobListings(companyInput, pageData, userProfile);
         }
 
-        const rawJobs = (listingData.jobs || []).filter(j => j.title);
+        let rawJobs = (listingData.jobs || []).filter(j => j.title);
         console.log(`[aiHub] Phase 1 done: ${rawJobs.length} jobs found for "${listingData.company_name}"`);
+
+        // ── ATS sitemap fallback ──────────────────────────────────────────────
+        // When normal discovery found NOTHING, the careers portal is almost always
+        // a JS-rendered ATS (SAP SuccessFactors, Workday, etc.) whose search page
+        // has no jobs in its HTML. Such portals still expose every job in
+        // {host}/sitemap.xml as a server-rendered page. Pull those URLs and feed
+        // them through the SAME Phase-2 scrape+extract pipeline below — no AI here,
+        // no prompt changes. This is what makes "just enter the company URL" work.
+        if (rawJobs.length === 0) {
+            const atsJobs = await discoverSitemapJobUrls(scrapeUrl, domain, ATS_FALLBACK_LIMIT)
+                .catch(e => { console.error('[aiHub] ATS sitemap fallback error:', e.message); return []; });
+            if (atsJobs.length) {
+                console.log(`[aiHub] ATS sitemap fallback recovered ${atsJobs.length} job URLs for "${domain}" — feeding into Phase 2`);
+                rawJobs = atsJobs;
+            }
+        }
 
         // Resolve domain (domain was already declared above for cache check; re-use here)
         const careersUrl = listingData.careers_page_url || scrapeUrl || companyInput;
