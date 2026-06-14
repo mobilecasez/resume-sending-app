@@ -7,7 +7,8 @@ const {
     generateCoverLetterDetails,
     generateCoverLetterPdf,
     previewCoverLetterTemplates,
-    generateCoverLetterTemplatePdf
+    generateCoverLetterTemplatePdf,
+    generateCoverLetterTemplateDocx
 } = require('../controllers/coverLetterController');
 
 // Generate cover letters (bulk)
@@ -22,5 +23,6 @@ router.post('/generate-cover-letter-pdf', authenticateToken, generateCoverLetter
 // Country-format templates: free previews + credited template download
 router.post('/cover-letter/preview-templates',    authenticateToken, asJob('cl_preview')(previewCoverLetterTemplates));
 router.post('/cover-letter/generate-template-pdf', authenticateToken, generateCoverLetterTemplatePdf);
+router.post('/cover-letter/generate-template-docx', authenticateToken, generateCoverLetterTemplateDocx);
 
 module.exports = router;

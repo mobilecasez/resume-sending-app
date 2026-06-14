@@ -2409,7 +2409,8 @@ function exportSig(){
   const validateProfileForGeneration = () => {
     const missing = [];
     if (!profileData?.resume) missing.push('Resume');
-    if (!profileData?.profileImage) missing.push('Photo');
+    // Photo is OPTIONAL for cover letters — the renderer falls back to initials
+    // when none is set, so we no longer block generation on a missing photo.
     if (!profileData?.signature) missing.push('Signature');
     if (!profileData?.fullName) missing.push('Full Name');
     if (!profileData?.email) missing.push('Email');
@@ -7201,7 +7202,25 @@ function exportSig(){
           </TouchableWithoutFeedback>
         </Modal>
 
-        {/* Date of Birth Picker Modal */}
+        {/* Date of Birth Picker — Android renders the native dialog directly (no
+            modal wrapper) so a tap selects the date, applies it, and closes. The
+            iOS inline-spinner modal below is unchanged. */}
+        {Platform.OS === 'android' && showDatePicker && (
+          <DateTimePicker
+            value={tempDobDate}
+            mode="date"
+            display="default"
+            maximumDate={new Date()}
+            onChange={(event, date) => {
+              setShowDatePicker(false);
+              if (event.type === 'set' && date) {
+                setProfileData({ ...profileData, dateOfBirth: date.toLocaleDateString('en-CA') });
+              }
+            }}
+          />
+        )}
+        {/* Date of Birth Picker Modal (iOS) */}
+        {Platform.OS === 'ios' && (
         <Modal
           transparent={true}
           visible={showDatePicker}
@@ -7264,6 +7283,7 @@ function exportSig(){
             </SafeAreaViewContext>
           </View>
         </Modal>
+        )}
 
         <FloatingTabBar currentScreen="profile" setScreen={setScreen} handleReview={handleReview} />
       </SafeAreaViewContext>
@@ -8849,7 +8869,26 @@ function exportSig(){
           </SafeAreaViewContext>
         </Modal>
 
-        {/* Review Date Picker Modal */}
+        {/* Review Date Picker — Android renders the native dialog directly (tap
+            selects, applies, and closes). iOS modal below is unchanged. */}
+        {Platform.OS === 'android' && showReviewDatePicker && (
+          <DateTimePicker
+            value={selectedReviewDate}
+            mode="date"
+            display="default"
+            onChange={(event, date) => {
+              setShowReviewDatePicker(false);
+              if (event.type === 'set' && date) {
+                setEditedCoverLetterData({
+                  ...editedCoverLetterData,
+                  date: date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+                });
+              }
+            }}
+          />
+        )}
+        {/* Review Date Picker Modal (iOS) */}
+        {Platform.OS === 'ios' && (
         <Modal
           transparent={true}
           visible={showReviewDatePicker}
@@ -8924,6 +8963,7 @@ function exportSig(){
             </SafeAreaViewContext>
           </View>
         </Modal>
+        )}
       </SafeAreaViewContext>
     );
   }

@@ -120,14 +120,15 @@ export default function CoverLetterTemplates() {
     setActive(idx);
   }
 
-  async function handleDownload() {
+  async function handleDownload(fmt: 'pdf' | 'docx' = 'pdf') {
     if (downloading || !previews[active] || !ctx) return;
     setDownloading(true);
     try {
       const token = await getToken();
       if (!token) throw new Error('Not logged in');
       const selected = previews[active];
-      const res = await fetch(`${API_BASE}/cover-letter/generate-template-pdf`, {
+      const endpoint = fmt === 'docx' ? 'generate-template-docx' : 'generate-template-pdf';
+      const res = await fetch(`${API_BASE}/cover-letter/${endpoint}`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ template: selected.id, mode, coverLetterHtml: downloadHtml || ctx.coverLetterHtml, companyName: ctx.companyName, companyAddress: ctx.companyAddress }),
@@ -137,19 +138,22 @@ export default function CoverLetterTemplates() {
         Alert.alert('Not enough credits', json.error || `You need ${DOWNLOAD_CREDITS} credits to download.`);
         return;
       }
-      if (!res.ok || !json.downloadUrl) throw new Error(json.error || 'Failed to generate PDF');
+      if (!res.ok || !json.downloadUrl) throw new Error(json.error || 'Failed to generate file');
 
       const cleanPath = json.downloadUrl.replace(/^\/api/, '');
       const fullUrl   = `${API_BASE}${cleanPath}`;
-      const fileName  = decodeURIComponent(json.downloadUrl.split('/').pop() || 'Cover_Letter.pdf');
+      const fileName  = decodeURIComponent(json.downloadUrl.split('/').pop() || (fmt === 'docx' ? 'Cover_Letter.docx' : 'Cover_Letter.pdf'));
       const fileUri   = cacheDirectory + fileName;
       const dl = await downloadAsync(fullUrl, fileUri, { headers: { Authorization: `Bearer ${token}` } });
       if (dl.status !== 200) throw new Error('Download failed');
 
+      const mimeType = fmt === 'docx'
+        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        : 'application/pdf';
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(dl.uri, { mimeType: 'application/pdf', dialogTitle: 'Save or share your cover letter' });
+        await Sharing.shareAsync(dl.uri, { mimeType, dialogTitle: 'Save or share your cover letter' });
       } else {
-        Alert.alert('Downloaded', 'Cover letter PDF saved successfully.');
+        Alert.alert('Downloaded', `Cover letter ${fmt === 'docx' ? 'Word document' : 'PDF'} saved successfully.`);
       }
     } catch (e: any) {
       Alert.alert('Download failed', e.message || 'Please try again.');
@@ -258,14 +262,30 @@ export default function CoverLetterTemplates() {
             <SegBtn icon="document-outline"  label="One Page" active={mode === 'onepage'} onPress={() => setMode('onepage')} />
             <SegBtn icon="documents-outline" label="A4 Pages" active={mode === 'a4'}      onPress={() => setMode('a4')} />
           </View>
-          <TouchableOpacity style={s.dlOuter} activeOpacity={0.9} onPress={handleDownload} disabled={downloading}>
+          <TouchableOpacity style={s.dlOuter} activeOpacity={0.9} onPress={() => handleDownload('pdf')} disabled={downloading}>
             <LinearGradient colors={[T.navy, '#1a2346']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}>
               {downloading ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
                 <>
                   <Ionicons name="download-outline" size={17} color="#fff" />
-                  <Text style={s.dlText}>Download Cover Letter</Text>
+                  <Text style={s.dlText}>Download PDF</Text>
+                  <View style={s.credBadge}>
+                    <Ionicons name="diamond" size={9} color="#fff" />
+                    <Text style={s.credBadgeText}>{DOWNLOAD_CREDITS}</Text>
+                  </View>
+                </>
+              )}
+            </LinearGradient>
+          </TouchableOpacity>
+          <TouchableOpacity style={[s.dlOuter, { marginTop: 8 }]} activeOpacity={0.9} onPress={() => handleDownload('docx')} disabled={downloading}>
+            <LinearGradient colors={['#2B579A', '#1f407a']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}>
+              {downloading ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="document-text-outline" size={17} color="#fff" />
+                  <Text style={s.dlText}>Download as Word</Text>
                   <View style={s.credBadge}>
                     <Ionicons name="diamond" size={9} color="#fff" />
                     <Text style={s.credBadgeText}>{DOWNLOAD_CREDITS}</Text>

@@ -178,6 +178,7 @@
         </div>
       </div>
       <button class="rb-btn-dark" id="downloadBtn" type="button">📥 Download Resume PDF</button>
+      <button class="rb-btn-dark" id="downloadDocxBtn" type="button" style="margin-top:8px;">📝 Download as Word (.docx)</button>
       <p class="rb-footnote">2 credits per download · previews are free</p>
     </div>
   </main>
@@ -717,6 +718,43 @@
       }
     }
 
+    // ── Download as Word .docx (2 credits) — clean Word-native layout ──
+    async function downloadDocx() {
+      if (!resumeData) { CVA.toast('Build a resume first'); return; }
+      const bal = await CVA.getCredits();
+      if (bal < 2) { CVA.toast('Not enough credits — you need 2.'); return; }
+      const btn = $('downloadDocxBtn');
+      const orig = btn.innerHTML;
+      btn.disabled = true; btn.textContent = 'Preparing…';
+      try {
+        const r = await CVA.apiFetch('/api/resume-builder/generate-docx', {
+          method: 'POST', body: JSON.stringify({})
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 402) { CVA.toast('Not enough credits to download.'); throw new Error('402'); }
+        if (!r.ok || !d.downloadUrl) throw new Error('docx failed');
+        const fileRes = await fetch(d.downloadUrl, { headers: { Authorization: 'Bearer ' + token } });
+        if (!fileRes.ok) throw new Error('download failed');
+        const blob = await fileRes.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const nm = ((resumeData.personal_info && resumeData.personal_info.full_name) || 'resume').replace(/\s+/g, '_');
+        a.download = nm + '_Resume.docx';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        try { await CVA.getCredits(); } catch (e) {}
+        CVA.toast('Resume (Word) downloaded.');
+      } catch (err) {
+        const msg = (err && err.message) || '';
+        if (msg === '402') { /* already toasted */ }
+        else if (/404|no resume/i.test(msg)) CVA.toast('Build a resume first');
+        else CVA.toast('Could not download — please try again.');
+      } finally {
+        btn.disabled = false; btn.innerHTML = orig;
+      }
+    }
+
     // ── Wire buttons ──
     $('genBtn').addEventListener('click', generateResume);
     $('rebuildBtn').addEventListener('click', () => {
@@ -726,5 +764,6 @@
     $('saveBtn').addEventListener('click', saveResumeData);
     $('previewBtn').addEventListener('click', previewTemplate);
     $('downloadBtn').addEventListener('click', downloadPdf);
+    $('downloadDocxBtn').addEventListener('click', downloadDocx);
   </script>
 </body></html>

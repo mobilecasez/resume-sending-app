@@ -1961,6 +1961,34 @@ export default function HomeScreen({
       </Modal>
 
       {/* ── REPLY DATE PICKER ────────────────────────────── */}
+      {/* Android: native dialog applies + closes on tap (mirrors the Confirm PATCH) */}
+      {Platform.OS === 'android' && showReplyDatePicker && (
+        <DateTimePicker
+          value={selectedReplyDate}
+          mode="date"
+          display="default"
+          maximumDate={new Date()}
+          onChange={async (event, date) => {
+            setShowReplyDatePicker(false);
+            if (event.type !== 'set' || !date) return;
+            setSelectedReplyDate(date);
+            if (selectedReplyDateRef) selectedReplyDateRef.current = date;
+            try {
+              const iso = date.toLocaleDateString('en-CA');
+              const response = await fetch(`${API_BASE}/users/application-history/${replyAppId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${userRef?.current?.token}` },
+                body: JSON.stringify({ replyReceived: true, replyDate: iso }),
+              });
+              if (response.ok) {
+                setApplicationHistory(prev => prev.map(item => item.id === replyAppId ? { ...item, replyReceived: true, replyDate: iso } : item));
+                setTotalReplied(p => p + 1);
+              }
+            } catch (e) { console.error(e); }
+          }}
+        />
+      )}
+      {Platform.OS === 'ios' && (
       <Modal visible={showReplyDatePicker} transparent animationType="slide" onRequestClose={() => setShowReplyDatePicker(false)}>
         <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' }}>
           <TouchableWithoutFeedback onPress={() => setShowReplyDatePicker(false)}>
@@ -2016,6 +2044,7 @@ export default function HomeScreen({
           </SafeAreaViewContext>
         </View>
       </Modal>
+      )}
     </SafeAreaViewContext>
   );
 

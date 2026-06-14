@@ -1389,7 +1389,8 @@
                         <div class="buttons">
                             <button class="btn btn-primary" onclick="regenerateCoverLetter(${index})">🔄 Regenerate</button>
                             <button class="btn btn-secondary" id="cl-preview-${index}" onclick="previewClTemplate(${index})">👁️ Preview</button>
-                            <button class="btn btn-secondary" id="cl-download-${index}" onclick="downloadCoverLetterPDF(${index})">📥 Download</button>
+                            <button class="btn btn-secondary" id="cl-download-${index}" onclick="downloadCoverLetterPDF(${index})">📥 PDF</button>
+                            <button class="btn btn-secondary" id="cl-download-docx-${index}" onclick="downloadCoverLetterDOCX(${index})">📝 Word</button>
                             <button class="btn btn-success" onclick="sendApplication(${index})">📧 Send</button>
                         </div>
                     </div>
@@ -2079,6 +2080,44 @@
                 const pv = await ensureClPreview(index);
                 CVA.lightbox(pv.image, 'Cover letter preview');
             } catch (e) { CVA.toast(e.message || 'Preview failed.'); }
+            finally { if (btn) { btn.disabled = false; btn.innerHTML = orig; } }
+        }
+
+        // Download the cover letter as a Word .docx (clean, reuses the template HTML).
+        async function downloadCoverLetterDOCX(index) {
+            const region = (window.clRegion && window.clRegion[index]) || 'generic';
+            const coverLetterDivR = document.getElementById(`cover-letter-${index}`);
+            const coverLetterHtmlR = coverLetterDivR ? coverLetterDivR.innerHTML : '';
+            const companyNameR = document.getElementById(`employer-${index}`).value;
+            const adR = document.getElementById(`address-${index}`);
+            const companyAddressR = adR ? adR.value : '';
+            if (!coverLetterHtmlR || !coverLetterHtmlR.trim()) { showToast('Generate a cover letter first.', 'error'); return; }
+            const bal = await CVA.getCredits();
+            if (bal < 2) { creditValidation.showModal(); return; }
+            const btn = document.getElementById(`cl-download-docx-${index}`);
+            const orig = btn ? btn.innerHTML : '';
+            if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Generating…'; }
+            try {
+                let templateId = 'ats_pro';
+                if (region && region !== 'generic') { try { const pv = await ensureClPreview(index); templateId = pv.templateId; } catch (e) {} }
+                const res = await CVA.apiFetch('/api/cover-letter/generate-template-docx', {
+                    method: 'POST',
+                    body: JSON.stringify({ template: templateId, mode: 'onepage', coverLetterHtml: coverLetterHtmlR, companyName: companyNameR, companyAddress: companyAddressR })
+                });
+                const data = await res.json();
+                if (!res.ok || !data.downloadUrl) { showToast(data.error || 'Failed to generate Word doc', 'error'); return; }
+                const dr = await fetch(data.downloadUrl, { headers: { 'Authorization': `Bearer ${token}` } });
+                if (!dr.ok) throw new Error('Failed to download');
+                const blob = await dr.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = (companyNameR ? 'Cover_Letter_' + companyNameR.replace(/[^a-zA-Z0-9]/g, '_') : 'Cover_Letter') + '.docx';
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+                if (typeof getCredits === 'function') getCredits();
+                showToast('Word document downloaded!', 'success');
+            } catch (e) { console.error(e); showToast(e.message || 'Failed to generate Word doc', 'error'); }
             finally { if (btn) { btn.disabled = false; btn.innerHTML = orig; } }
         }
 

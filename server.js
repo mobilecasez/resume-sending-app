@@ -3435,6 +3435,38 @@ app.get('/api/download-resume/:filename', authenticateToken, async (req, res) =>
     }
 });
 
+// Word (.docx) downloads — mirror the PDF download routes (same auth + temp dir).
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+app.get('/api/download-cover-letter-docx/:filename', authenticateToken, async (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const filePath = path.join(__dirname, 'temp', filename);
+        try { await fs.access(filePath); } catch {
+            return res.status(404).json({ error: 'Cover letter not found' });
+        }
+        res.setHeader('Content-Type', DOCX_MIME);
+        res.download(filePath, filename);
+    } catch (error) {
+        console.error('CL docx download error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/download-resume-docx/:filename', authenticateToken, async (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const filePath = path.join(__dirname, 'temp', filename);
+        try { await fs.access(filePath); } catch {
+            return res.status(404).json({ error: 'Resume Word document not found or expired.' });
+        }
+        res.setHeader('Content-Type', DOCX_MIME);
+        res.download(filePath, filename);
+    } catch (error) {
+        console.error('Resume docx download error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // ============================================
 // EMAIL SENDING ENDPOINTS - NOW USING REFACTORED CONTROLLERS
 // Endpoints: /api/send-applications, /api/send-single-application

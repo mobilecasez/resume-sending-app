@@ -867,6 +867,57 @@ async function generatePDF(req, res) {
     }
 }
 
+// POST /api/resume-builder/generate-docx — Word (.docx) export of the saved resume.
+// Uses a clean, Word-native single-column layout (resumeDocxTemplate) — independent
+// of the PDF design templates so nothing in the PDF path changes. Same credit cost.
+async function generateDocx(req, res) {
+    const userId = req.user.id;
+    try {
+        await ensureResumeTable();
+        const row = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = $1', [userId]);
+        if (!row || !row.resume_data) {
+            return res.status(404).json({ error: 'No resume found. Please generate your resume first.' });
+        }
+
+        const creditCheck = await checkUserCredits(userId, DOWNLOAD_CREDIT_COST);
+        if (!creditCheck.hasCredits) {
+            return res.status(402).json({ error: creditCheck.message, creditsRequired: DOWNLOAD_CREDIT_COST, creditsRemaining: creditCheck.remaining });
+        }
+
+        // Optional profile photo (renders to the right of the name; omitted if none).
+        let photoDataUri = null;
+        try {
+            const uRow = await dbConfig.get('SELECT photo_path FROM users WHERE id = $1', [userId]);
+            if (uRow && uRow.photo_path) {
+                const photoPath = path.join(__dirname, '../../', uRow.photo_path);
+                await fs.access(photoPath);
+                photoDataUri = await loadPhotoDataUri(photoPath);
+            }
+        } catch { photoDataUri = null; }
+
+        const { buildResumeDocxHtml } = require('../utils/resumeDocxTemplate');
+        const { htmlToDocx } = require('../utils/docxRenderer');
+        const resume = row.resume_data;
+        const pi = resume.personal_info || {};
+        const strip = (t) => (t || '').replace(/\*\*(.+?)\*\*/g, '$1').trim();
+
+        const html = buildResumeDocxHtml(resume, { photo: photoDataUri });
+        const docxBuffer = await htmlToDocx(html);
+
+        const safeName = strip(pi.full_name || 'Resume').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_');
+        const fileName = `${safeName}_Resume_${Date.now()}.docx`;
+        const tempDir = path.join(__dirname, '../../temp');
+        await fs.mkdir(tempDir, { recursive: true });
+        await fs.writeFile(path.join(tempDir, fileName), docxBuffer);
+
+        try { await deductCredits(userId, DOWNLOAD_CREDIT_COST, 'resume_download', { format: 'docx' }); } catch (e) { console.warn('[resumeBuilder] credit deduction failed:', e.message); }
+        return res.json({ success: true, downloadUrl: `/api/download-resume-docx/${encodeURIComponent(fileName)}`, creditsRemaining: Math.max(0, creditCheck.remaining - DOWNLOAD_CREDIT_COST) });
+    } catch (e) {
+        console.error('[resumeBuilder] generateDocx error:', e.message);
+        return res.status(500).json({ error: 'Failed to generate Word document. Please try again.' });
+    }
+}
+
 // POST /api/resume-builder/preview-templates — renders the saved resume in the
 // templates recommended for a region (free) so the user can pick before download.
 async function previewTemplates(req, res) {
@@ -919,4 +970,4 @@ async function buildResumePdfForRegion(userId, region, mode) {
     return { filePath, fileName, template: tplId };
 }
 
-module.exports = { generateAI, saveResume, getResume, generatePDF, previewTemplates, buildResumePdfForRegion };
+module.exports = { generateAI, saveResume, getResume, generatePDF, generateDocx, previewTemplates, buildResumePdfForRegion };

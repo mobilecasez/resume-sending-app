@@ -1194,6 +1194,45 @@ async function generateCoverLetterTemplatePdf(req, res) {
     }
 }
 
+// POST /api/cover-letter/generate-template-docx — Word (.docx) export of a cover
+// letter. Reuses the SAME template HTML as the PDF path (renderCoverLetterHtml,
+// which falls back to a clean letter for the generic template), then converts via
+// html-to-docx. Additive — the PDF path is untouched. Same credit cost.
+async function generateCoverLetterTemplateDocx(req, res) {
+    const userId = req.user.id;
+    const { template, mode, coverLetterHtml, companyName, companyAddress } = req.body || {};
+    try {
+        if (!coverLetterHtml || !String(coverLetterHtml).trim()) {
+            return res.status(400).json({ error: 'No cover letter content. Generate a cover letter first.' });
+        }
+        const credit = await checkUserCredits(userId, CL_DOWNLOAD_CREDIT_COST);
+        if (!credit.hasCredits) {
+            return res.status(402).json({ error: credit.message, creditsRequired: CL_DOWNLOAD_CREDIT_COST, creditsRemaining: credit.remaining });
+        }
+        const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
+        const sender = await buildCLSender(userId);
+        const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml };
+        const html = clTemplates.renderCoverLetterHtml(tplId, data, { mode });
+
+        const { htmlToDocx } = require('../utils/docxRenderer');
+        const docxBuffer = await htmlToDocx(html);
+
+        const safeCo = (companyName || 'Company').replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
+        const fileName = `Cover_Letter_${safeCo}_${Date.now()}.docx`;
+        const tempDir = path.join(__dirname, '../../temp');
+        await fs.mkdir(tempDir, { recursive: true });
+        await fs.writeFile(path.join(tempDir, fileName), docxBuffer);
+
+        try { await deductCredits(userId, CL_DOWNLOAD_CREDIT_COST, 'cover_letter_download', { template: tplId, format: 'docx' }); }
+        catch (e) { console.warn('[coverLetter] credit deduction failed:', e.message); }
+
+        return res.json({ success: true, downloadUrl: `/api/download-cover-letter-docx/${encodeURIComponent(fileName)}`, template: tplId, creditsRemaining: Math.max(0, credit.remaining - CL_DOWNLOAD_CREDIT_COST) });
+    } catch (e) {
+        console.error('[coverLetter] generateCoverLetterTemplateDocx error:', e.message);
+        return res.status(500).json({ error: 'Failed to generate cover letter Word document. Please try again.' });
+    }
+}
+
 // Point 6: enrich the cover-letter context with the user's Resume-Builder resume (if any),
 // so letters have richer, more specific detail than the uploaded resume alone. Additive —
 // returns the same metadata object untouched when no builder resume exists.
@@ -1249,5 +1288,6 @@ module.exports = {
     executeGenerationWork,
     previewCoverLetterTemplates,
     generateCoverLetterTemplatePdf,
+    generateCoverLetterTemplateDocx,
     buildCoverLetterPdfForRegion
 };

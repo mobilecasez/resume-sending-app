@@ -1464,10 +1464,14 @@ export default function AIHubScreen() {
       )}
 
       {/* ── Add Company Modal ── */}
-      <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => { setInputValue('https://'); setModalVisible(false); }}>
+      <Modal visible={modalVisible} transparent statusBarTranslucent animationType="fade" onRequestClose={() => { setInputValue('https://'); setModalVisible(false); }}>
+        {/* iOS needs KAV 'padding' to lift the bottom sheet above the keyboard;
+            Android already does this via windowSoftInputMode=adjustResize, so KAV
+            must NOT add its own inset (undefined) or it double-counts and overshoots.
+            statusBarTranslucent makes the KAV measure the full screen on iOS. */}
         <KeyboardAvoidingView
           style={styles.modalKAV}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => { setInputValue('https://'); setModalVisible(false); }}>
           <View style={styles.modalBox} onStartShouldSetResponder={() => true}>

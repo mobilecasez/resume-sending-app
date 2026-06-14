@@ -1077,7 +1077,25 @@ export default function ReviewScreen({
         />
       </Modal>
 
-      {/* ── DATE PICKER MODAL ───────────────────────────────────────── */}
+      {/* ── DATE PICKER ─────────────────────────────────────────────── */}
+      {/* Android: native dialog applies + closes on tap; iOS modal below unchanged */}
+      {Platform.OS === 'android' && showReviewDatePicker && (
+        <DateTimePicker
+          value={selectedReviewDate}
+          mode="date"
+          display="default"
+          onChange={(event, date) => {
+            setShowReviewDatePicker(false);
+            if (event.type === 'set' && date) {
+              setEditedCoverLetterData({
+                ...editedCoverLetterData,
+                date: date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+              });
+            }
+          }}
+        />
+      )}
+      {Platform.OS === 'ios' && (
       <Modal
         transparent
         visible={showReviewDatePicker}
@@ -1125,6 +1143,7 @@ export default function ReviewScreen({
           </SafeAreaViewContext>
         </View>
       </Modal>
+      )}
     </SafeAreaViewContext>
   );
 }
