@@ -213,6 +213,7 @@ export type TranslatedJob = {
   experience?: string;
   salary?: string;
   jobType?: string;
+  workMode?: string | null;
   skills?: string[];
   responsibilities?: string[];
 };
@@ -252,6 +253,42 @@ export async function getJobContacts(jobId: string): Promise<Contact[]> {
 }
 
 /**
+ * Smart-copy popup data: the user's reusable facts + a resume summary, shown inside the
+ * apply WebView so the user can copy-paste any field the autofill couldn't reach.
+ */
+export type SmartFillField = { id: string; label: string; value: string };
+export type SmartFillData = { fields: SmartFillField[]; resumeSummary: string; skills: string[]; jobTitles: string[] };
+
+export async function getSmartFillData(): Promise<SmartFillData> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(`${API_BASE_URL}/ai-hub/smart-fill-data`, { headers });
+    return {
+      fields: Array.isArray(data?.fields) ? data.fields : [],
+      resumeSummary: typeof data?.resumeSummary === 'string' ? data.resumeSummary : '',
+      skills: Array.isArray(data?.skills) ? data.skills : [],
+      jobTitles: Array.isArray(data?.jobTitles) ? data.jobTitles : [],
+    };
+  } catch {
+    return { fields: [], resumeSummary: '', skills: [], jobTitles: [] };
+  }
+}
+
+/**
+ * Self-learning autofill: remember the answers the user filled manually so the next form
+ * with the same questions auto-fills. Best-effort — never throws to the caller.
+ */
+export async function recordAutofillMemory(
+  answers: { label: string; value: string; type?: string }[]
+): Promise<void> {
+  try {
+    if (!Array.isArray(answers) || answers.length === 0) return;
+    const headers = await getAuthHeader();
+    await axios.post(`${API_BASE_URL}/ai-hub/autofill-memory`, { answers }, { headers });
+  } catch { /* learning is best-effort */ }
+}
+
+/**
  * Fetches the user's tracked employers / search history.
  */
 export async function fetchDashboard(): Promise<{
@@ -272,6 +309,31 @@ export async function fetchDashboard(): Promise<{
       ? error.response?.data?.error ?? error.message
       : 'Failed to fetch AI Hub dashboard';
     throw new Error(msg);
+  }
+}
+
+/**
+ * Background job-match scorer. POSTs the visible job ids; returns a { jobId: 0..100 }
+ * map for the ones just scored (server caches them, so each job is scored once).
+ * Never throws into the UI — returns empty scores on any failure.
+ */
+export async function fetchJobMatchScores(
+  jobIds: string[],
+): Promise<{ scores: Record<string, number>; noProfile?: boolean }> {
+  try {
+    if (!jobIds || !jobIds.length) return { scores: {} };
+    const headers = await getAuthHeader();
+    const response = await axios.post(
+      `${API_BASE_URL}/ai-hub/match-scores`,
+      { jobIds },
+      { headers, timeout: 60000 },
+    );
+    return {
+      scores: (response.data && response.data.scores) || {},
+      noProfile: !!(response.data && response.data.noProfile),
+    };
+  } catch {
+    return { scores: {} };
   }
 }
 
@@ -298,9 +360,11 @@ export async function fetchCreditBalance(): Promise<number> {
 export async function deductSearchCredits(amount: number): Promise<number> {
   try {
     const headers = await getAuthHeader();
+    // Send the event key so the SERVER decides the (admin-configurable) cost; `amount`
+    // stays as a backward-compatible fallback.
     const response = await axios.post(
       `${API_BASE_URL}/ai-hub/deduct-credits`,
-      { amount },
+      { amount, eventKey: 'company_search' },
       { headers }
     );
     return response.data.balance ?? 0;
@@ -493,6 +557,119 @@ export async function pollJobCoverLetter(
     };
     tick();
   });
+}
+
+// ── AI event credit costs (admin-configurable) ──────────────────────────────
+export type AiEventCost = {
+  id: number; event_key: string; label: string; description: string;
+  category: string; credits: number; is_active: number; sort_order: number;
+};
+
+let _eventCostsCache: Record<string, number> | null = null;
+
+/** Public { event_key: credits } map, for showing the cost on each spending button. */
+export async function fetchEventCosts(force = false): Promise<Record<string, number>> {
+  if (_eventCostsCache && !force) return _eventCostsCache;
+  try {
+    const { data } = await axios.get(`${API_BASE_URL}/ai-event-costs`);
+    _eventCostsCache = (data && data.costs) || {};
+    return _eventCostsCache!;
+  } catch {
+    return _eventCostsCache || {};
+  }
+}
+
+/** Admin: full catalog (requires admin token). */
+export async function fetchAdminAiEvents(): Promise<AiEventCost[]> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/admin/ai-event-costs`, { headers });
+  return (data && data.events) || [];
+}
+
+/** Admin: change an event's credit cost and/or active flag. */
+export async function updateAiEventCost(eventKey: string, credits: number, isActive: boolean): Promise<void> {
+  const headers = await getAuthHeader();
+  await axios.put(
+    `${API_BASE_URL}/admin/ai-event-costs/${encodeURIComponent(eventKey)}`,
+    { credits, is_active: isActive ? 1 : 0 },
+    { headers }
+  );
+  _eventCostsCache = null; // refresh labels next read
+}
+
+// ── Admin: user credit management ────────────────────────────────────────────
+export type AdminUser = { id: number; email: string; full_name: string; credits_remaining: number };
+
+/** Admin: typeahead search users by email substring. */
+export async function adminSearchUsers(q: string): Promise<AdminUser[]> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/admin/users/search`, { params: { q }, headers });
+  return (data && data.users) || [];
+}
+
+/** Admin: set a user's remaining credits; returns the new balance. */
+export async function adminSetUserCredits(userId: number, credits: number): Promise<number> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.put(`${API_BASE_URL}/admin/users/${userId}/credits`, { credits }, { headers });
+  return data?.credits_remaining ?? credits;
+}
+
+// ── Self-improving employer fix loop ────────────────────────────────────────
+export type EmployerFixOverride = {
+  id: number; version: number; fixConfig: any; verified: boolean;
+  verifyJobCount: number; verifySample?: any[]; createdBy: string; notes?: string; active?: boolean; createdAt?: string;
+};
+export type EmployerFixRequest = {
+  id: number; email?: string; employerInput: string; domain: string;
+  detectedAts?: string; jobCount: number; status: string; diagnosis?: any; attempts: number;
+  createdAt?: string; resolvedAt?: string; activeOverride?: EmployerFixOverride | null;
+};
+
+/** User: ask us to learn an employer we couldn't fetch. Returns the request id. */
+export async function submitEmployerFixRequest(employerInput: string): Promise<{ requestId: number; status: string }> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.post(`${API_BASE_URL}/ai-hub/fix-requests`, { employerInput }, { headers });
+  return { requestId: data?.requestId, status: data?.status || 'investigating' };
+}
+
+/** User: poll a fix request's status (app re-runs the search when 'resolved'). */
+export async function getFixRequestStatus(id: number): Promise<{ status: string; jobCount: number; resolved: boolean }> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/ai-hub/fix-requests/${id}`, { headers });
+  return { status: data?.status, jobCount: data?.jobCount || 0, resolved: !!data?.resolved };
+}
+
+/** Admin: list every employer fix request with its active fix. */
+export async function adminListEmployerRequests(): Promise<EmployerFixRequest[]> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/admin/employer-requests`, { headers });
+  return (data && data.requests) || [];
+}
+
+/** Admin: run / re-run the diagnostic agent ("rethink") on a request. */
+export async function adminInvestigateRequest(id: number): Promise<any> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.post(`${API_BASE_URL}/admin/employer-requests/${id}/investigate`, {}, { headers });
+  return data?.result;
+}
+
+/** Admin: full version history for a request's domain. */
+export async function adminOverrideHistory(id: number): Promise<{ domain: string; overrides: EmployerFixOverride[] }> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/admin/employer-requests/${id}/overrides`, { headers });
+  return { domain: data?.domain, overrides: (data && data.overrides) || [] };
+}
+
+/** Admin: roll back / re-apply a specific override version. */
+export async function adminActivateOverride(overrideId: number): Promise<void> {
+  const headers = await getAuthHeader();
+  await axios.post(`${API_BASE_URL}/admin/employer-overrides/${overrideId}/activate`, {}, { headers });
+}
+
+/** Admin: turn the fix OFF for a request's domain. */
+export async function adminDeactivateOverride(requestId: number): Promise<void> {
+  const headers = await getAuthHeader();
+  await axios.post(`${API_BASE_URL}/admin/employer-requests/${requestId}/deactivate`, {}, { headers });
 }
 
 const aiHubService = {

@@ -8,7 +8,9 @@ const path         = require('path');
 const fs           = require('fs').promises;
 const { renderPdf, renderPreviews } = require('../utils/resumeRenderer');
 const { TEMPLATE_IDS, templatesForRegion } = require('../utils/resumeTemplates');
+const { getEventCost } = require('../services/eventCosts');
 
+// Fallback defaults; the live per-request cost is resolved via getEventCost() (admin-editable).
 const RESUME_CREDIT_COST   = 2; // credits charged per AI generation / regeneration
 const DOWNLOAD_CREDIT_COST = 2; // credits charged per resume PDF download
 
@@ -310,6 +312,7 @@ async function generateAI(req, res) {
     }
 
     try {
+        const RESUME_CREDIT_COST = await getEventCost('resume_ai_generate');   // admin-configurable
         const creditCheck = await checkUserCredits(userId, RESUME_CREDIT_COST);
         if (!creditCheck.hasCredits) {
             return res.status(402).json({ error: creditCheck.message, creditsRequired: RESUME_CREDIT_COST, creditsRemaining: creditCheck.remaining });
@@ -488,6 +491,7 @@ async function generatePDF(req, res) {
     const userId = req.user.id;
     const { template, mode } = req.body || {};
     try {
+        const DOWNLOAD_CREDIT_COST = await getEventCost('resume_download');   // admin-configurable
         await ensureResumeTable();
         const row = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = $1', [userId]);
         if (!row || !row.resume_data) {
@@ -868,11 +872,12 @@ async function generatePDF(req, res) {
 }
 
 // POST /api/resume-builder/generate-docx — Word (.docx) export of the saved resume.
-// Uses a clean, Word-native single-column layout (resumeDocxTemplate) — independent
-// of the PDF design templates so nothing in the PDF path changes. Same credit cost.
+// Built programmatically with the `docx` library (docxBuilder) for clean Word
+// formatting — independent of the PDF design templates. Same credit cost.
 async function generateDocx(req, res) {
     const userId = req.user.id;
     try {
+        const DOWNLOAD_CREDIT_COST = await getEventCost('resume_download');   // admin-configurable
         await ensureResumeTable();
         const row = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = $1', [userId]);
         if (!row || !row.resume_data) {
@@ -884,25 +889,27 @@ async function generateDocx(req, res) {
             return res.status(402).json({ error: creditCheck.message, creditsRequired: DOWNLOAD_CREDIT_COST, creditsRemaining: creditCheck.remaining });
         }
 
-        // Optional profile photo (renders to the right of the name; omitted if none).
-        let photoDataUri = null;
+        // Optional profile photo — square (sidebar/banner) + rectangular (German/Europass header).
+        let photoDataUri = null, photoRectUri = null;
         try {
             const uRow = await dbConfig.get('SELECT photo_path FROM users WHERE id = $1', [userId]);
             if (uRow && uRow.photo_path) {
                 const photoPath = path.join(__dirname, '../../', uRow.photo_path);
                 await fs.access(photoPath);
                 photoDataUri = await loadPhotoDataUri(photoPath);
+                try { photoRectUri = await loadPhotoDataUri(photoPath, 'rect'); } catch { photoRectUri = null; }
             }
         } catch { photoDataUri = null; }
 
-        const { buildResumeDocxHtml } = require('../utils/resumeDocxTemplate');
-        const { htmlToDocx } = require('../utils/docxRenderer');
+        const { buildResumeDocx } = require('../utils/docxBuilder');
+        const { template } = req.body || {};
+        const tplId = TEMPLATE_IDS.includes(template) ? template : TEMPLATE_IDS[0];
         const resume = row.resume_data;
         const pi = resume.personal_info || {};
         const strip = (t) => (t || '').replace(/\*\*(.+?)\*\*/g, '$1').trim();
 
-        const html = buildResumeDocxHtml(resume, { photo: photoDataUri });
-        const docxBuffer = await htmlToDocx(html);
+        // Vary the Word layout/accent by the selected template, like the PDF.
+        const docxBuffer = await buildResumeDocx(resume, { photo: photoDataUri, photoRect: photoRectUri, template: tplId });
 
         const safeName = strip(pi.full_name || 'Resume').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_');
         const fileName = `${safeName}_Resume_${Date.now()}.docx`;

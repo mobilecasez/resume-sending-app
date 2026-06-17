@@ -12,8 +12,13 @@ const {
     extractCompanyInfoFromHtml,
 } = require('../utils/domOptimizer');
 const { smartScrape, stripHtmlToText } = require('../utils/playwrightScraper');
-const { discoverSitemapJobUrls } = require('../utils/atsSitemap');
-const { detectJobLanguage, jobTextForDetection } = require('../utils/jobLanguage');
+const { discoverSitemapJobUrls, parseAtsJobPage, fetchJobPage, assessDetailQuality } = require('../utils/atsSitemap');
+const { detectAndFetchAts } = require('../utils/atsDiscovery');
+const employerFix = require('../services/employerFix');
+const detailRecipeStore = require('../services/detailRecipe');
+const aiJobExtractor = require('../services/aiJobExtractor');
+const { applyOverride, investigate: investigateEmployer, learnDetailRecipe, validateExtraction } = require('../services/employerDiagnosticAgent');
+const { getEventCost, chargeCredits } = require('../services/eventCosts');
 
 // ─── Batch tuning ─────────────────────────────────────────────────────────────
 // How many job-detail pages to scrape + process per Gemini call
@@ -28,6 +33,11 @@ const MAX_JOB_LINKS     = 80;
 // ATS pages are server-rendered, so these are fetched+parsed directly (no
 // Playwright/AI) — we can afford the full listing, not a small sample.
 const ATS_FALLBACK_LIMIT = 200;
+// Best-200 ranking: we DISPLAY at most STORE_LIMIT jobs per user, but when an employer
+// has more, we CONSIDER up to CONSIDER_LIMIT (fetch + match-score them) so the kept set
+// is the best-matching STORE_LIMIT — not just the first ones discovered.
+const STORE_LIMIT       = 200;
+const CONSIDER_LIMIT    = 700;
 // Max pagination pages to follow per listing URL
 const MAX_PAGES         = 12;
 
@@ -457,9 +467,14 @@ async function scrapeWithPagination(listingUrl, origin, usePuppeteer = false) {
         // Stop if this page had zero new job links (end of pagination)
         if (newJobLinks.length === 0) break;
 
-        // Find next page URL
+        // Find next page URL — and refuse to follow a "next" that loops BACKWARD to the
+        // same/earlier page (sliders & circular pagination wrap last→first; following that
+        // re-fetches the same jobs forever).
+        const curPageNum = (() => { try { const u = new URL(currentUrl); return parseInt(u.searchParams.get('page') || u.searchParams.get('p') || '1', 10) || 1; } catch { return 1; } })();
         const nextCandidates = extractPaginationUrls(page.links, currentUrl, origin)
-            .filter(u => !seenPages.has(u));
+            .filter(u => !seenPages.has(u))
+            .filter(u => normalizeJobUrl(u) !== normalizeJobUrl(listingUrl))   // not back to page 1
+            .filter(u => { try { const n = new URL(u); const np = parseInt(n.searchParams.get('page') || n.searchParams.get('p') || '0', 10); return !(np > 0 && np <= curPageNum); } catch { return true; } });
         if (nextCandidates.length === 0) break;
 
         // Pick the most likely next-page URL (prefer the one we synthetically built)
@@ -547,7 +562,7 @@ function looksLikeJobDetailUrl(url, listingUrl) {
     } catch { return false; }
 }
 
-async function fetchCareersPageData(url) {
+async function fetchCareersPageData(url, { light = false } = {}) {
     try {
         const origin = new URL(url).origin;
         const { pathname } = new URL(url);
@@ -576,7 +591,7 @@ async function fetchCareersPageData(url) {
         let neededBrowser = false;
         console.log(`[aiHub] Primary scrape: ${primary.links.length} links, ${jobDetailLinks.length} job-detail-like`);
 
-        if (jobDetailLinks.length < 3) {
+        if (jobDetailLinks.length < 3 && !light) {
             console.log(`[aiHub] Few links — trying Playwright…`);
             try {
                 const pupPrimary = await scrapePage(url, origin, true);
@@ -602,6 +617,14 @@ async function fetchCareersPageData(url) {
                     }
                 } catch (e) { console.log(`[aiHub] Pagination error: ${e.message}`); }
             }
+            return { pageText: primary.pageText, rawHtml: primary.rawHtml || '', jobLinks: jobDetailLinks };
+        }
+
+        // LIGHT mode: stop here — skip the expensive sub-section / fallback-URL / career-page
+        // cascade (a dozen Playwright renders that, for SPA/custom sites, mostly find nothing
+        // and cost minutes). The caller goes straight to sitemap + the AI extractor, which do
+        // their own smarter, faster discovery. The heavy cascade is reserved as a last resort.
+        if (light) {
             return { pageText: primary.pageText, rawHtml: primary.rawHtml || '', jobLinks: jobDetailLinks };
         }
 
@@ -870,8 +893,14 @@ async function resolveCareersUrl(companyName) {
         console.log(`[aiHub] Could not resolve careers URL for "${companyName}": ${e.message}`);
     }
 
-    // Last resort fallback
-    return `https://www.${slug}.com/careers`;
+    // Last resort — verify the ROOT domain actually exists before keying everything off it.
+    // Returning a fabricated "/careers" path (the loop above already proved it 404s) would
+    // persist a bogus employer and poison the 24h cache. Prefer a reachable root so the
+    // normal candidate discovery (careersCandidates) can still find the real page. (M27)
+    for (const root of [`https://www.${slug}.com`, `https://${slug}.com`]) {
+        try { const r = await axios.head(root, { timeout: 5000, headers: HTTP_HEADERS, maxRedirects: 5 }); if (r.status < 400) return root; } catch {}
+    }
+    return `https://www.${slug}.com`;
 }
 
 // ─── Phase 1: Find all job listing URLs ──────────────────────────────────────
@@ -983,8 +1012,9 @@ ${jobBlocks}
 5. **Salary** — scan for ANY compensation mention in ANY language (salaris, Gehalt, salaire, salary, RAL, €, £, $, ¥, ₹). Include currency symbol.
 6. **Skills** — extract ALL required skills and competencies from the job: technical skills (languages, frameworks, tools, cloud, DBs, certs), domain/industry skills (equipment, machinery, processes, methodologies), education/qualification requirements (e.g. "Diploma/Graduate", "3-5 years experience"), and any specific knowledge areas listed under Requirements, Skills, or Qualifications sections. Include soft skills only if explicitly listed as requirements (e.g. "Willingness to travel", "Team player"). Break compound skill names into individual English terms. Do NOT omit anything listed under Requirements.
 7. **Responsibilities** — 4–6 concise English bullet points of actual day-to-day tasks.
-8. **Job Type** — one of: "Full-time", "Part-time", "Contract", "Internship", "Freelance", "N/A"
-9. **Dedup contacts** — if two contacts share the same email, keep only one.
+8. **Employment Type** — the working-time contract, one of: "Full-time", "Part-time", "Contract", "Internship", "Freelance", "N/A" (Vollzeit→Full-time, Teilzeit→Part-time, Praktikum→Internship).
+9. **Work Mode** — the work-LOCATION arrangement, one of: "Remote", "Hybrid", "Office", "N/A" (Thuiswerken→Remote, vor Ort→Office). Use "N/A" if not stated — do not guess.
+10. **Dedup contacts** — if two contacts share the same email, keep only one.
 
 Return ONLY a raw JSON array — no markdown fences, no explanation. Start with [ and end with ].
 
@@ -994,8 +1024,9 @@ One object per job, same order as input:
     "index": 0,
     "Employer Name": "Official company name (e.g. Experis, Hemmersbach) — NOT navigation labels like 'Back Button' or 'Filter Icon'",
     "Job Title": "English Translated Title",
-    "Location": "City, Country or Remote or Hybrid – City, Country",
-    "Type of Job": "Full-time | Part-time | Contract | Internship | Freelance | N/A",
+    "Location": "City, Country (the office location)",
+    "Employment Type": "Full-time | Part-time | Contract | Internship | Freelance | N/A",
+    "Work Mode": "Remote | Hybrid | Office | N/A",
     "Salary": "e.g. €3500–€6500/month or N/A",
     "Experience": "e.g. 3–5 years or N/A",
     "Urgent": false,
@@ -1046,44 +1077,74 @@ function normalizeAiJob(aiJob, originalJob) {
         return true;
     });
 
-    const salary = aiJob['Salary'] && aiJob['Salary'] !== 'N/A' ? aiJob['Salary'] : null;
-    const location = aiJob['Location'] && aiJob['Location'] !== 'N/A' ? aiJob['Location'] : 'Not specified';
-    const jobType  = aiJob['Type of Job'] && aiJob['Type of Job'] !== 'N/A' ? aiJob['Type of Job'] : 'Full-time';
+    // When enriching an AI-extractor LISTING job from its detail page, the listing already
+    // gave us good title/location/work_mode/salary — keep those as a FLOOR so a thin detail
+    // extraction never wipes them out. Detail values win when present; listing fills gaps.
+    const orig = originalJob || {};
+    const naOk = (v) => v && v !== 'N/A' ? v : null;
+    const salary = naOk(aiJob['Salary']) || orig.salary || null;
+    const location = naOk(aiJob['Location']) || (orig.location && orig.location !== 'Not specified' ? orig.location : null) || 'Not specified';
+    // Employment type vs work mode kept separate. Back-compat: an older payload's
+    // "Type of Job" carried the work mode, so fall back to it for work_mode.
+    const jobType  = naOk(aiJob['Employment Type']) || orig.job_type || 'Full-time';
+    const workMode = naOk(aiJob['Work Mode']) || naOk(aiJob['Type of Job']) || orig.work_mode || null;
+    const detailSkills = Array.isArray(aiJob['Skills List']) ? aiJob['Skills List'].filter(Boolean) : [];
+    const detailResp   = Array.isArray(aiJob['Responsibilities']) ? aiJob['Responsibilities'].filter(Boolean) : [];
+    const skills = detailSkills.length ? detailSkills : (Array.isArray(orig.skills) ? orig.skills : []);
+    const responsibilities = detailResp.length ? detailResp : (Array.isArray(orig.responsibilities) ? orig.responsibilities : []);
 
     const employerName = (aiJob['Employer Name'] || '').trim();
 
     return {
-        employer_name:   employerName || null,  // used by processJobSearch to fix Phase-1 name
-        title:           aiJob['Job Title'] || originalJob.title,
-        job_url:         originalJob.job_url,
+        employer_name:   employerName || orig.employer_name || null,  // used by processJobSearch to fix Phase-1 name
+        title:           aiJob['Job Title'] || orig.title,
+        job_url:         orig.job_url,
         location,
-        experience:      aiJob['Experience'] && aiJob['Experience'] !== 'N/A' ? aiJob['Experience'] : 'Not specified',
+        experience:      naOk(aiJob['Experience']) || orig.experience || 'Not specified',
         salary,
         job_type:        jobType,
+        work_mode:       workMode,
         urgent:          !!aiJob['Urgent'],
         match_score:     0,
-        skills:          Array.isArray(aiJob['Skills List']) ? aiJob['Skills List'] : [],
-        responsibilities: Array.isArray(aiJob['Responsibilities']) ? aiJob['Responsibilities'] : [],
-        contacts:        dedupedContacts,
+        skills,
+        responsibilities,
+        contacts:        (dedupedContacts && dedupedContacts.length) ? dedupedContacts : (Array.isArray(orig.contacts) ? orig.contacts : []),
     };
 }
 
-async function fetchJobDetailsBatch(jobBatch, careersUrl, candidateProfile, listingPageText = '') {
+async function fetchJobDetailsBatch(jobBatch, careersUrl, candidateProfile, listingPageText = '', detailRecipe = null) {
     // ── ATS fast path ────────────────────────────────────────────────────────
     // Jobs discovered from a SuccessFactors/Workday-style sitemap are server-
     // rendered, so we fetch each with a plain HTTP GET and parse the structured
     // data directly — NO Playwright, NO AI. This is what lets us return the full
     // listing (e.g. all 184 RWE roles) fast and free. Streams per batch like usual.
+    // A learned per-employer recipe (detailRecipe) fills fields the generic parser
+    // misses (still no AI per job).
     if (jobBatch.length && jobBatch.every(j => j._ats)) {
-        const { fetchJobPage, parseAtsJobPage } = require('../utils/atsSitemap');
         return Promise.all(jobBatch.map(async (j) => {
             try {
                 const html = await fetchJobPage(j.job_url);
-                return parseAtsJobPage(html, j.job_url);
+                return parseAtsJobPage(html, j.job_url, detailRecipe);
             } catch (e) {
                 // Keep the job (title from URL) even if its page fetch failed.
                 return { title: j.title, location: '', skills: [], responsibilities: [], job_url: j.job_url };
             }
+        }));
+    }
+
+    // ── ATS API fast path ────────────────────────────────────────────────────
+    // Jobs from an ATS public API (atsDiscovery) are already fully structured —
+    // return them directly, NO fetch and NO AI. employer_name flows through so the
+    // company name is correct (fixes the "N/A" cards).
+    if (jobBatch.length && jobBatch.every(j => j._atsApi)) {
+        return jobBatch.map((j) => ({
+            title: j.title, location: j.location || '',
+            experience: j.experience || null, salary: j.salary || null, job_type: j.job_type || 'Full-time',
+            work_mode: j.work_mode || null,                          // pass through AI-extracted work mode (Remote/Hybrid/Office)
+            skills: Array.isArray(j.skills) ? j.skills : [],
+            responsibilities: Array.isArray(j.responsibilities) ? j.responsibilities : [],
+            job_url: j.job_url, employer_name: j.employer_name || null,
+            contacts: Array.isArray(j.contacts) ? j.contacts : [],   // pass through AI-extracted recruiter contacts (M9)
         }));
     }
 
@@ -1223,6 +1284,10 @@ function buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, j
         status: 'active',
         domain: domain || null,   // full registrable domain WITH TLD (e.g. vertigis.com) for the company card
         jobs,
+        // Best-200 surfacing: when an employer has more open roles than we keep, the UI
+        // shows "more than N positions — matching the best 200 for you".
+        totalOpen: listingData.total_open || null,
+        moreAvailable: !!listingData.more_available,
     };
 }
 
@@ -1250,14 +1315,57 @@ function buildJobFromRaw(raw, index, employerDbId, careersUrl, dbJobId = null) {
         experience: raw.experience || 'Not specified',
         salary: raw.salary || 'Not listed',
         jobType: raw.job_type || 'Full-time',
+        workMode: raw.work_mode || null,
         urgent: !!raw.urgent,
-        matchScore: 0,
+        matchScore: null,   // unscored — the card shows "Evaluating…" until the background scorer fills it in
         applyUrl,
-        lang: detectJobLanguage(jobTextForDetection({ title: raw.title, responsibilities: raw.responsibilities, skills: raw.skills })).lang,
         skills: Array.isArray(raw.skills) ? raw.skills : [],
         responsibilities: Array.isArray(raw.responsibilities) ? raw.responsibilities : [],
         contacts,
     };
+}
+
+// Persist one extracted job: upsert job + skills + contacts (+ generic HR email fallback)
+// and link it to the user (optionally with a computed match score). Returns the DB job id.
+// Shared by Phase-2 streaming and the best-200 overflow ranking.
+async function persistOneJob(raw, jobUrl, employerDbId, userId, hrEmails = [], matchScore = null) {
+    let dbJobId = null;
+    try {
+        const locationId = await jobService.upsertLocation(raw.location || 'Not specified');
+        const responsibilities = Array.isArray(raw.responsibilities) ? raw.responsibilities : [];
+        dbJobId = await jobService.upsertJob(
+            employerDbId, locationId,
+            raw.title || 'Open Position', jobUrl,
+            raw.experience || null, raw.salary || null,
+            raw.job_type || 'Full-time', !!raw.urgent, responsibilities,
+            raw.work_mode || null
+        );
+        for (const skill of (raw.skills || [])) {
+            if (!skill || skill.length > 100) continue;
+            try { const skillId = await jobService.upsertSkill(skill); await jobService.linkJobSkill(dbJobId, skillId); } catch {}
+        }
+        const contactEmailsSaved = new Set();
+        for (const contact of (raw.contacts || [])) {
+            if (!contact?.name) continue;
+            const nameLower = contact.name.toLowerCase().trim();
+            if (/^(recruiter|hiring manager|contact|hr|location|contactperson|ansprechpartner|contactpersoon)$/.test(nameLower)) continue;
+            const emailKey = (contact.email || '').toLowerCase().trim();
+            if (emailKey && contactEmailsSaved.has(emailKey)) continue;
+            if (emailKey) contactEmailsSaved.add(emailKey);
+            try {
+                await jobService.addJobContact(dbJobId, contact.name, contact.role, contact.email || null, contact.phone || null, null, contact.linkedin || null, contact.image_url || null);
+            } catch {}
+        }
+        if (contactEmailsSaved.size === 0 && hrEmails.length > 0) {
+            for (const hrEmail of hrEmails) {
+                try { await jobService.addJobContact(dbJobId, 'Recruitment Team', 'Recruiter', hrEmail, null, null, null, null); break; } catch {}
+            }
+        }
+        await jobService.saveUserJobMatch(userId, dbJobId, typeof matchScore === 'number' ? matchScore : null);
+    } catch (e) {
+        console.error(`[aiHub] DB save error for job "${raw && raw.title}":`, e.message);
+    }
+    return dbJobId;
 }
 
 // ─── Get user profile from resume_metadata ────────────────────────────────────
@@ -1285,6 +1393,162 @@ async function getUserProfile(userId) {
     } catch (e) {
         console.error('[aiHub] getUserProfile error:', e.message);
         return { skills: [], job_titles: [], experience_years: 0 };
+    }
+}
+
+// ─── Background job-match scorer ──────────────────────────────────────────────
+// Scores how well the user's resume skills fit each job's required skills +
+// responsibilities. Runs OFF the job-fetch path (its own endpoint), batches all
+// jobs into one cheap Gemini (flash-lite) call returning {id,score} only, and the
+// result is cached per (user, job) so each job is scored exactly once.
+
+// Deterministic fallback so cards never get stuck "Evaluating" if the AI call fails.
+function localSkillScore(userSkills, jobSkills) {
+    if (!Array.isArray(jobSkills) || !jobSkills.length) return null;
+    const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9+#.]/g, '');
+    const u = (userSkills || []).map(norm).filter(Boolean);
+    if (!u.length) return null;
+    const uSet = new Set(u);
+    let hit = 0;
+    for (const js of jobSkills) {
+        const n = norm(js);
+        if (!n) continue;
+        if (uSet.has(n) || u.some((x) => x.length > 2 && (x.includes(n) || n.includes(x)))) hit++;
+    }
+    return Math.max(0, Math.min(100, Math.round((hit / jobSkills.length) * 100)));
+}
+
+// jobs: [{ id, title, skills:[], responsibilities:[] }] → { [jobId]: 0..100 }
+async function scoreJobsForUser(userProfile, jobs) {
+    const out = {};
+    if (!Array.isArray(jobs) || !jobs.length) return out;
+    const skills = (userProfile?.skills || []).slice(0, 40);
+    if (!skills.length) return out; // no resume skills → caller signals noProfile
+    const titles = (userProfile?.job_titles || []).slice(0, 6);
+    const years = Number(userProfile?.experience_years) || 0;
+
+    const CHUNK = 25;
+    let model = null;
+    try { model = geminiModel(false, 'gemini-2.5-flash-lite'); } catch { model = null; }
+
+    for (let i = 0; i < jobs.length; i += CHUNK) {
+        const batch = jobs.slice(i, i + CHUNK).map((j) => ({
+            id: String(j.id),
+            title: j.title || '',
+            skills: (Array.isArray(j.skills) ? j.skills : []).slice(0, 12),
+            responsibilities: (Array.isArray(j.responsibilities) ? j.responsibilities : []).slice(0, 6),
+        }));
+
+        let scored = false;
+        if (model) {
+            const prompt = `You are a precise job-fit scorer. Score how well the CANDIDATE matches each JOB on a 0-100 scale (0 = no overlap, 100 = excellent fit). Judge SEMANTICALLY — treat synonyms and closely related technologies as matches (e.g. "React" ≈ "React.js", "Postgres" ≈ "PostgreSQL", "AWS" covers "EC2/S3/Lambda", "JS" ≈ "JavaScript", "k8s" ≈ "Kubernetes"). Weight required hard skills most, then responsibilities, then seniority/title fit. Be realistic and discriminating — do NOT give everything a high score.
+
+CANDIDATE:
+skills: ${JSON.stringify(skills)}
+titles: ${JSON.stringify(titles)}
+years_experience: ${years}
+
+JOBS:
+${JSON.stringify(batch)}
+
+Return ONLY a JSON array, one object per job, reusing the SAME id values, no commentary:
+[{"id":"<jobId>","score":<integer 0-100>}]`;
+            const callOnce = async () => {
+                const r = await model.generateContent({
+                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                    generationConfig: { responseMimeType: 'application/json', temperature: 0, maxOutputTokens: 2048 },
+                });
+                return parseJsonArray(r.response.text());
+            };
+            let arr = null;
+            try { arr = await callOnce(); } catch { try { arr = await callOnce(); } catch (e) { arr = null; } }
+            if (Array.isArray(arr)) {
+                for (const it of arr) {
+                    if (!it || it.id == null) continue;
+                    const s = Math.round(Number(it.score));
+                    if (!Number.isFinite(s)) continue;
+                    out[String(it.id)] = Math.max(0, Math.min(100, s));
+                }
+                scored = true;
+            }
+        }
+        if (!scored) {
+            // AI unavailable/failed → deterministic local overlap so the UI still resolves.
+            for (const j of batch) {
+                const ls = localSkillScore(skills, j.skills);
+                if (ls != null) out[String(j.id)] = ls;
+            }
+        }
+    }
+    return out;
+}
+
+// POST /ai-hub/match-scores  body { jobIds: string[] }
+// Scores ONLY the caller's not-yet-scored jobs among jobIds, caches them, and returns
+// { scores: { jobId: 0..100 } }. Meant to be called in the background after the job
+// cards render — it never touches the job-fetch path.
+async function getMatchScores(req, res) {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    try {
+        const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const requested = Array.isArray(req.body?.jobIds) ? req.body.jobIds.map(String) : [];
+        const jobIds = [...new Set(requested.filter((id) => UUID.test(id)))];
+        if (!jobIds.length) return res.json({ scores: {} });
+
+        // Only the rows this user hasn't scored yet.
+        const unscoredRows = await dbConfig.query(
+            `SELECT job_id FROM user_job_matches
+             WHERE user_id = $1 AND job_id = ANY($2::uuid[]) AND scored_at IS NULL`,
+            [userId, jobIds]
+        );
+        const toScore = (unscoredRows || []).map((r) => String(r.job_id));
+        if (!toScore.length) return res.json({ scores: {} });
+
+        const userProfile = await getUserProfile(userId);
+        if (!userProfile.skills || !userProfile.skills.length) {
+            return res.json({ scores: {}, noProfile: true });
+        }
+
+        const jobRows = await dbConfig.query(
+            `SELECT id, title, responsibilities FROM jobs WHERE id = ANY($1::uuid[])`,
+            [toScore]
+        );
+        const skillRows = await dbConfig.query(
+            `SELECT js.job_id, s.name FROM job_skills js JOIN skills s ON s.id = js.skill_id
+             WHERE js.job_id = ANY($1::uuid[])`,
+            [toScore]
+        );
+        const skillsByJob = {};
+        for (const r of (skillRows || [])) {
+            const k = String(r.job_id);
+            (skillsByJob[k] || (skillsByJob[k] = [])).push(r.name);
+        }
+        const jobs = (jobRows || []).map((j) => {
+            let resp = [];
+            try {
+                resp = j.responsibilities
+                    ? (typeof j.responsibilities === 'string' ? JSON.parse(j.responsibilities) : j.responsibilities)
+                    : [];
+            } catch { resp = []; }
+            return {
+                id: String(j.id),
+                title: j.title,
+                skills: skillsByJob[String(j.id)] || [],
+                responsibilities: Array.isArray(resp) ? resp : [],
+            };
+        });
+
+        const scores = await scoreJobsForUser(userProfile, jobs);
+
+        // Persist each score (also stamps scored_at so each job is computed once).
+        for (const jid of Object.keys(scores)) {
+            try { await jobService.saveUserJobMatch(userId, jid, scores[jid]); } catch (e) { /* non-fatal */ }
+        }
+        return res.json({ scores });
+    } catch (e) {
+        console.error('[aiHub] getMatchScores error:', e.message);
+        return res.status(500).json({ error: 'Failed to score jobs' });
     }
 }
 
@@ -1369,6 +1633,17 @@ async function logScrapeAudit({ userId, employerDomain, companyName, inputUrl,
 
 // ─── Background processing ────────────────────────────────────────────────────
 
+// A real job title has letters and isn't a bare number/price. Filters out the junk the
+// scrape sometimes hallucinates on non-careers pages (e.g. "1000", "43", "€2,500").
+function isPlausibleJobTitle(t) {
+    if (!t || typeof t !== 'string') return false;
+    const s = t.trim();
+    if (s.length < 3) return false;
+    if (!/[a-zA-ZÀ-ɏ]{2,}/.test(s)) return false;   // must contain ≥2 letters (incl. accented)
+    if (/^[\d\s.,%+\-€$£¥]+$/.test(s)) return false;          // pure number / price
+    return true;
+}
+
 async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
     console.log(`[aiHub] Starting job search for "${companyInput}" (jobId: ${asyncJobId})`);
     try {
@@ -1376,8 +1651,29 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
 
         // Determine a URL to scrape
         const isUrl = companyInput.startsWith('http://') || companyInput.startsWith('https://');
-        const scrapeUrl = isUrl ? companyInput : await resolveCareersUrl(companyInput);
+        let scrapeUrl = isUrl ? companyInput : await resolveCareersUrl(companyInput);
         console.log(`[aiHub] Scraping: ${scrapeUrl}`);
+
+        // ── Self-improving fix loop: apply a learned override for this employer ──
+        // If the diagnostic agent previously found a working fix for this domain, use it.
+        //  • careers_url → redirect the scrape to the real jobs URL (normal flow handles it)
+        //  • api / jsonld → pull the jobs directly and skip discovery
+        let overrideJobs = null;
+        let pendingOverrideFc = null;   // expensive api/jsonld/render override — apply only on cache miss (M20)
+        try {
+            const ov = await employerFix.getActiveOverride(extractDomain(scrapeUrl));
+            if (ov && ov.fix_config) {
+                const fc = ov.fix_config;
+                if (fc.kind === 'careers_url' && fc.url) {
+                    // Cheap string redirect — must happen before the cache key is computed.
+                    console.log(`[aiHub] Override (careers_url) for ${extractDomain(scrapeUrl)} → ${fc.url}`);
+                    scrapeUrl = fc.url;
+                } else if (fc.kind === 'api' || fc.kind === 'jsonld' || fc.kind === 'render_ai') {
+                    // Defer the expensive fetch (Playwright/API) until we know the cache missed.
+                    pendingOverrideFc = fc;
+                }
+            }
+        } catch (e) { console.error('[aiHub] override lookup error:', e.message); }
 
         // ── Opt-5: Cache check — serve from DB if employer was scraped recently ──
         const domain = extractDomain(scrapeUrl);
@@ -1395,42 +1691,145 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
             return;
         }
 
-        // ── Scrape careers page ───────────────────────────────────────────────
-        const pageData = await fetchCareersPageData(scrapeUrl).catch(() => ({ pageText: '', rawHtml: '', jobLinks: [] }));
-        console.log(`[aiHub] Scraped page: ${pageData.jobLinks.length} job links found`);
-
-        // ── Phase 1 — discover job listings ──────────────────────────────────
-        // Opt-4: If we have sitemap/HTML links already, skip the Gemini Phase-1 call
-        //        and extract company info from HTML meta tags instead (zero AI cost).
-        let listingData;
-        if (pageData.jobLinks.length >= 3) {
-            console.log(`[aiHub] Opt-4: ${pageData.jobLinks.length} links available — skipping Phase-1 Gemini call`);
-            listingData = buildListingDataFromHtml(pageData.jobLinks, pageData.rawHtml, scrapeUrl);
-            console.log(`[aiHub] Company: "${listingData.company_name}" (from meta tags)`);
-        } else {
-            // Fallback: use Gemini (with search if no links) to discover jobs
-            listingData = await findJobListings(companyInput, pageData, userProfile);
-        }
-
-        let rawJobs = (listingData.jobs || []).filter(j => j.title);
-        console.log(`[aiHub] Phase 1 done: ${rawJobs.length} jobs found for "${listingData.company_name}"`);
-
-        // ── ATS sitemap fallback ──────────────────────────────────────────────
-        // When normal discovery found NOTHING, the careers portal is almost always
-        // a JS-rendered ATS (SAP SuccessFactors, Workday, etc.) whose search page
-        // has no jobs in its HTML. Such portals still expose every job in
-        // {host}/sitemap.xml as a server-rendered page. Pull those URLs and feed
-        // them through the SAME Phase-2 scrape+extract pipeline below — no AI here,
-        // no prompt changes. This is what makes "just enter the company URL" work.
-        if (rawJobs.length === 0) {
-            const atsJobs = await discoverSitemapJobUrls(scrapeUrl, domain, ATS_FALLBACK_LIMIT)
-                .catch(e => { console.error('[aiHub] ATS sitemap fallback error:', e.message); return []; });
-            if (atsJobs.length) {
-                console.log(`[aiHub] ATS sitemap fallback recovered ${atsJobs.length} job URLs for "${domain}" — fast HTTP+parse path`);
-                // Mark _ats so fetchJobDetailsBatch fetch+parses them directly (no Playwright/AI).
-                rawJobs = atsJobs.map(j => ({ ...j, _ats: true }));
+        // Cache missed — NOW run the deferred (expensive) override fetch. (M20)
+        if (pendingOverrideFc) {
+            const applied = await applyOverride(pendingOverrideFc).catch(() => null);
+            if (applied && applied.jobs && applied.jobs.length) {
+                overrideJobs = applied;
+                console.log(`[aiHub] Override (${pendingOverrideFc.kind}) for ${domain} → ${applied.jobs.length} jobs`);
             }
         }
+
+        // ── Early STATIC ATS detection (root + /careers) — BEFORE the heavy scrape ──
+        // If the employer runs a known ATS (Ashby/Greenhouse/… on the root OR a /careers
+        // subpage — e.g. Notion), pull the full structured listing in ~5s and skip the
+        // slow Playwright scrape entirely. Provenance-guarded, so no wrong-employer jobs.
+        const domainName = (domain.split('.')[0] || domain).replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        let atsApiResult = overrideJobs
+            ? { ats: 'override', companyName: overrideJobs.companyName || domainName, jobs: overrideJobs.jobs }
+            : null;
+        if (!atsApiResult) {
+            try {
+                const careersAts = await aiJobExtractor.detectAtsOnCareers(scrapeUrl);
+                if (careersAts && careersAts.jobs.length) {
+                    atsApiResult = { ats: careersAts.ats, companyName: careersAts.employer || domainName, jobs: careersAts.jobs };
+                    console.log(`[aiHub] ATS detected early (${careersAts.ats}): ${careersAts.jobs.length} jobs @ ${careersAts.sourceUrl} — skipping heavy scrape`);
+                }
+            } catch (e) { console.error('[aiHub] early ATS check error:', e.message); }
+        }
+
+        // ── LIGHT careers-page scrape — ONLY if we don't already have ATS jobs ──
+        // Fast static-only pass (no fallback-URL cascade): just enough for the backup ATS
+        // check + pageText context. The slow brute-force discovery is deferred — sitemap and
+        // the AI extractor (their own smart discovery) run next, and the heavy cascade is a
+        // last resort. This is what turns a 4-minute SPA search into well under a minute.
+        let pageData = { pageText: '', rawHtml: '', jobLinks: [] };
+        let heavyScrapeDone = false;
+        if (!atsApiResult || !atsApiResult.jobs.length) {
+            pageData = await fetchCareersPageData(scrapeUrl, { light: true }).catch(() => ({ pageText: '', rawHtml: '', jobLinks: [] }));
+            console.log(`[aiHub] Light scrape: ${pageData.jobLinks.length} job links found`);
+            // Root ATS detection on the scraped HTML (backup to the static check above).
+            if (!atsApiResult) {
+                try { atsApiResult = await detectAndFetchAts(scrapeUrl, pageData.rawHtml); }
+                catch (e) { console.error('[aiHub] ATS API discovery error:', e.message); }
+            }
+        }
+
+        let listingData;
+        let rawJobs;
+        // Whether the chosen source already passed a relevance/junk check, so the post-block
+        // validateExtraction doesn't run a second time. Declared here (not inside the else)
+        // so it's in scope at the post-block check below. (M13)
+        let alreadyValidated = false;
+        if (atsApiResult && atsApiResult.jobs.length > 0) {
+            listingData = {
+                company_name: atsApiResult.companyName,
+                careers_page_url: scrapeUrl,
+                sub_info: `${atsApiResult.jobs.length} open role${atsApiResult.jobs.length === 1 ? '' : 's'}`,
+                jobs: atsApiResult.jobs,
+            };
+            rawJobs = atsApiResult.jobs;
+            // ATS jobs are already provenance-guarded; the post-block validate would only run
+            // with blank pageText context here (weak, pointless) — skip it. (L2)
+            alreadyValidated = true;
+            console.log(`[aiHub] ATS "${atsApiResult.ats}" API: ${rawJobs.length} jobs for "${atsApiResult.companyName}" — using API data (no scrape discovery)`);
+        } else {
+        // ── Non-ATS discovery: sitemap (validated) → NEW AI extractor → legacy ─
+        let resolved = false;
+
+        // 1) ATS sitemap (SAP SuccessFactors / Workday — e.g. PORR's 670). Cheap, full
+        //    listing. BUT only trust it if the titles are REAL jobs — many sites expose a
+        //    sitemap of generic pages that merely match the URL pattern (e.g. ebcont's 56).
+        // Cap the sitemap probe — some sites (notion) have enormous sitemaps that would
+        // otherwise stall the search for minutes before the AI extractor even runs.
+        let sitemapJobs = [];
+        try {
+            sitemapJobs = await Promise.race([
+                discoverSitemapJobUrls(scrapeUrl, domain, CONSIDER_LIMIT),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('sitemap probe timeout')), 12000)),
+            ]);
+        } catch (e) { console.error('[aiHub] ATS sitemap probe:', e.message); sitemapJobs = []; }
+        if (sitemapJobs.length >= 10) {
+            const sv = await validateExtraction({ employerName: domainName, domain, context: (pageData.pageText || '').slice(0, 700), jobs: sitemapJobs.slice(0, 40) }).catch(() => ({ ok: true }));
+            if (sv.ok) {
+                rawJobs = sitemapJobs.map(j => ({ ...j, _ats: true }));
+                listingData = { company_name: domainName, careers_page_url: scrapeUrl, sub_info: `${rawJobs.length} open role${rawJobs.length === 1 ? '' : 's'}`, jobs: rawJobs };
+                console.log(`[aiHub] Sitemap: ${rawJobs.length} jobs for "${domain}" (validated)`);
+                resolved = true;
+                alreadyValidated = true;   // sv.ok above already vouched for these titles (M13)
+            } else {
+                console.log(`[aiHub] Sitemap ${sitemapJobs.length} jobs REJECTED as junk (${sv.reason}) — using AI extractor`);
+            }
+        }
+
+        // 2) NEW optimized extractor (trim → ONE LLM call → strict English JSON). The
+        //    primary technique for custom sites: fast, reliable, multilingual.
+        if (!resolved) {
+            let exResult = null;
+            // Hard cap the extractor — a pathological SPA can otherwise keep rendering candidate
+            // pages for minutes. 140s covers legit hard-SPA cases (Adyen ~110s, celonis ~85s)
+            // with margin for network variance, while still bounding the worst case. findAndExtract
+            // self-budgets its facet→board exploration well under this. (M1/Limit 1)
+            try {
+                exResult = await Promise.race([
+                    aiJobExtractor.findAndExtract(scrapeUrl, domain),
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('extractor timeout')), 140000)),
+                ]);
+            } catch (e) { console.error('[aiHub] aiJobExtractor error:', e.message); }
+            if (exResult && exResult.jobs && exResult.jobs.length) {
+                rawJobs = exResult.jobs;
+                listingData = { company_name: exResult.employer || domainName, careers_page_url: exResult.sourceUrl || scrapeUrl, sub_info: `${rawJobs.length} open role${rawJobs.length === 1 ? '' : 's'}`, jobs: rawJobs };
+                console.log(`[aiHub] AI extractor: ${rawJobs.length} jobs for "${listingData.company_name}" @ ${exResult.sourceUrl}`);
+                resolved = true;
+                // NOTE: do NOT mark alreadyValidated here. The AI-extractor path has no prior
+                // validation, and its prompt can be fooled by job-shaped non-jobs (e.g. Typeform's
+                // "Job Application Form" TEMPLATES). The post-block validateExtraction is this
+                // path's only relevance backstop — keep it. (regression caught in testing)
+            }
+        }
+
+        // 3) Legacy scrape discovery — LAST RESORT (sitemap + AI extractor both came up empty).
+        //    NOW run the heavy fetchCareersPageData cascade (sub-section / fallback-URL / career-
+        //    page discovery) that we deferred — only here, only when nothing else worked.
+        if (!resolved) {
+            if (pageData.jobLinks.length < 3 && !heavyScrapeDone) {
+                console.log(`[aiHub] Nothing found yet — running full discovery cascade as last resort…`);
+                const heavy = await fetchCareersPageData(scrapeUrl).catch(() => null);
+                if (heavy) pageData = heavy;
+                heavyScrapeDone = true;
+            }
+            if (pageData.jobLinks.length >= 3) listingData = buildListingDataFromHtml(pageData.jobLinks, pageData.rawHtml, scrapeUrl);
+            else listingData = await findJobListings(companyInput, pageData, userProfile);
+            rawJobs = (listingData.jobs || []).filter(j => j.title);
+            console.log(`[aiHub] Legacy scrape: ${rawJobs.length} jobs for "${listingData.company_name}"`);
+        }
+        }
+
+        // Drop hallucinated junk titles (bare numbers/prices, too short) that the scrape
+        // sometimes returns on non-careers pages (e.g. a marketing homepage).
+        const beforeJunk = rawJobs.length;
+        rawJobs = rawJobs.filter(j => isPlausibleJobTitle(j && j.title));
+        if (rawJobs.length !== beforeJunk) console.log(`[aiHub] Dropped ${beforeJunk - rawJobs.length} junk-title job(s)`);
 
         // Resolve domain (domain was already declared above for cache check; re-use here)
         const careersUrl = listingData.careers_page_url || scrapeUrl || companyInput;
@@ -1451,6 +1850,73 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         const initialEmployer = buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, [], domain);
         await jobService.updateJobPartialResult(asyncJobId, initialEmployer);
 
+        // ── Minimum AI sanity check ───────────────────────────────────────────
+        // Before trusting whatever the scrape produced, ask a cheap model: are these
+        // REAL job postings that belong to THIS employer? This catches the case where
+        // the scrape returns a few junk/irrelevant "jobs" (nav labels, a mis-detected
+        // board, wrong-industry results) that look title-shaped and would otherwise be
+        // accepted. On failure we drop them and let the agent find the real source.
+        if (rawJobs.length > 0 && !alreadyValidated) {
+            const val = await validateExtraction({
+                employerName: listingData.company_name, domain,
+                context: (pageData.pageText || '').slice(0, 700), jobs: rawJobs,
+            }).catch(() => ({ ok: true }));
+            if (!val.ok) {
+                console.log(`[aiHub] Result validation FAILED for "${domain}" (${rawJobs.length} jobs): ${val.reason} — discarding & invoking agent`);
+                rawJobs = [];
+            }
+        }
+
+        // ── Silent self-improving fix loop ────────────────────────────────────
+        // None of our normal methods found jobs. Instead of bothering the user with a
+        // "submit a request?" popup, we silently dispatch the AI agent INLINE: it
+        // investigates the employer, and if it finds verifiable jobs we return them in
+        // THIS same search — the user just sees an encouraging "learning" message and
+        // then the jobs appear. Everything is logged for the admin dashboard. We skip
+        // the (slow, paid) agent on domains it already failed to crack recently.
+        if (rawJobs.length === 0 && /\./.test(companyInput)) {
+            try {
+                const dead = await employerFix.recentDeadAttempt(domain).catch(() => null);
+                if (dead) {
+                    console.log(`[aiHub] Silent agent skipped for "${domain}" — recent ${dead.status} attempt (#${dead.id}); graceful empty.`);
+                } else {
+                    // Show the "we're learning this employer" message while the agent works.
+                    await jobService.updateJobPartialResult(asyncJobId, {
+                        ...initialEmployer, learning: true,
+                        learningMessage: "New employer — we're training our system to read it. Hang tight…",
+                    });
+                    const userRow = await dbConfig.get(`SELECT email FROM users WHERE id = ?`, [userId]).catch(() => null);
+                    const reqId = await employerFix.createFixRequest({
+                        userId, email: userRow && userRow.email, employerInput: companyInput, domain,
+                    });
+                    await employerFix.updateRequest(reqId, { status: 'investigating' });
+                    console.log(`[aiHub] Silent agent investigating "${domain}" (request #${reqId})…`);
+                    const t0 = Date.now();
+                    const result = await investigateEmployer(scrapeUrl).catch(e => { console.error('[aiHub] silent agent error:', e.message); return null; });
+                    const took = ((Date.now() - t0) / 1000).toFixed(0);
+                    if (result && result.verified && result.fixConfig && result.jobs && result.jobs.length) {
+                        await employerFix.saveOverride({
+                            domain, requestId: reqId, fixConfig: result.fixConfig, verified: true,
+                            verifyJobCount: result.jobCount, verifySample: result.sample, createdBy: 'agent',
+                            notes: `auto (silent) via ${result.diagnosis && result.diagnosis.method}`,
+                        });
+                        await employerFix.updateRequest(reqId, {
+                            status: 'resolved', diagnosis: result.diagnosis, jobCount: result.jobCount,
+                            detectedAts: (result.diagnosis && (result.diagnosis.ats || result.diagnosis.method)) || null, resolved: true,
+                        });
+                        rawJobs = result.jobs.map(j => ({ ...j, _atsApi: true }));
+                        console.log(`[aiHub] Silent agent FIXED "${domain}" in ${took}s → ${rawJobs.length} jobs (${result.fixConfig.kind}); returning inline.`);
+                    } else {
+                        await employerFix.updateRequest(reqId, {
+                            status: (result && result.status === 'needs_review') ? 'needs_review' : 'failed',
+                            diagnosis: result && result.diagnosis, jobCount: 0,
+                        });
+                        console.log(`[aiHub] Silent agent could not crack "${domain}" in ${took}s — graceful empty (logged #${reqId}).`);
+                    }
+                }
+            } catch (e) { console.error('[aiHub] silent fix loop error:', e.message); }
+        }
+
         // ── Extract common HR/careers emails from the page ────────────────────
         // Scan mailto links + plain-text patterns for generic recruitment addresses.
         // These will be attached as a fallback contact on jobs that have no contacts.
@@ -1467,31 +1933,89 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         // already-scraped page text instead of wasting a Playwright fetch.
         // Also normalize URLs (strip pagination params) and dedup to prevent the same job
         // appearing multiple times with ?page=2, ?page=3, etc. appended.
-        const seenJobUrls = new Set();
+        // Dedup safety net. Two cases:
+        //  • Real detail URL  → dedup by URL (keeps genuinely distinct same-title roles).
+        //  • Listing-page-only or synthetic "#role-N" fragment (AI-extracted) → dedup by
+        //    normalized title+location. This is what stops a looping slider/carousel (which
+        //    clones the same jobs) from adding the same role over and over.
+        const _normTL = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+        const seenJobSig = new Set();
         const validJobs = rawJobs
             .map(j => {
                 if (!j.job_url) return { ...j, job_url: careersUrl, listing_page_only: true };
                 return { ...j, job_url: normalizeJobUrl(j.job_url) };
             })
             .filter(j => {
-                if (j.listing_page_only) return true; // keep all listing-page jobs
-                if (seenJobUrls.has(j.job_url)) {
-                    console.log(`[aiHub] Dedup: skipping duplicate job URL "${j.job_url}"`);
+                const synthetic = j.listing_page_only || /#role-\d+$/.test(j.job_url || '');
+                const sig = synthetic
+                    ? `t:${_normTL(j.title)}|${_normTL(j.location)}`
+                    : `u:${(j.job_url || '').split('#')[0]}`;
+                if (seenJobSig.has(sig)) {
+                    console.log(`[aiHub] Dedup: skipping repeated job "${j.title || j.job_url}" (${synthetic ? 'content' : 'url'})`);
                     return false;
                 }
-                seenJobUrls.add(j.job_url);
+                seenJobSig.add(sig);
                 return true;
             });
         const listingPageText = pageData.pageText || pageData.markdown || '';
         const streamedJobs = [];
 
-        // Split all jobs into batches of DETAIL_BATCH_SIZE
-        const allBatches = [];
-        for (let i = 0; i < validJobs.length; i += DETAIL_BATCH_SIZE) {
-            allBatches.push(validJobs.slice(i, i + DETAIL_BATCH_SIZE));
+        // ── Best-200 split ────────────────────────────────────────────────────
+        // Display at most STORE_LIMIT jobs. If the employer has more, stream the first
+        // STORE_LIMIT fast (Phase A), then upgrade them with better-matching overflow
+        // jobs (Phase B, below). Flags drive the "more than N positions" UI label.
+        const totalOpen = validJobs.length;
+        const phaseAJobs = validJobs.slice(0, STORE_LIMIT);
+        const overflowJobs = validJobs.slice(STORE_LIMIT);
+        listingData.total_open = totalOpen;
+        listingData.more_available = overflowJobs.length > 0;
+
+        // ── Detail-recipe (learn-once-apply-to-all) ───────────────────────────
+        // For the free sitemap (_ats) path: make sure we can pull the required detail
+        // fields for THIS employer's page template. If a recipe already exists, use it.
+        // Otherwise peek at 1-2 sample pages; if the generic parser is systematically
+        // missing fields, let the agent learn a recipe from those samples (1 AI call)
+        // and apply it to EVERY job below. Fully additive — never removes good data.
+        let detailRecipe = null;
+        if (validJobs.length >= 3 && validJobs.every(j => j._ats)) {
+            try {
+                const hasFields = (r) => r && Object.keys(r).some(k => r[k]);
+                const existing = await detailRecipeStore.getRecipe(domain).catch(() => null);
+                if (existing) {
+                    detailRecipe = hasFields(existing.recipe) ? existing.recipe : null;   // {} = "checked, generic parser is fine"
+                    if (detailRecipe) console.log(`[aiHub] Detail recipe in place for "${domain}" (recovers: ${existing.fields_recovered || 'n/a'})`);
+                } else {
+                    const picks = [phaseAJobs[0], phaseAJobs[Math.floor(phaseAJobs.length / 2)]].filter(Boolean);
+                    const samples = (await Promise.all(picks.map(async p => {
+                        try { return { url: p.job_url, html: await fetchJobPage(p.job_url) }; } catch { return null; }
+                    }))).filter(Boolean);
+                    if (samples.length) {
+                        const parsedSamples = samples.map(s => parseAtsJobPage(s.html, s.url));
+                        const quality = assessDetailQuality(parsedSamples);
+                        if (!quality.missingFields.length) {
+                            // Generic parser already covers this employer — mark checked so we don't peek again.
+                            await detailRecipeStore.saveRecipe({ domain, recipe: {}, verified: true, fieldsRecovered: [], sampleUrl: samples[0].url }).catch(() => {});
+                        } else {
+                            console.log(`[aiHub] Detail extraction weak for "${domain}" (missing: ${quality.missingFields.join(',')}) — learning recipe from ${samples.length} sample(s)…`);
+                            const learned = await learnDetailRecipe(samples, quality.missingFields).catch(e => { console.error('[aiHub] learnDetailRecipe error:', e.message); return null; });
+                            if (learned && learned.recipe) {
+                                detailRecipe = hasFields(learned.recipe) ? learned.recipe : null;
+                                await detailRecipeStore.saveRecipe({ domain, recipe: learned.recipe, verified: learned.verifiedFields.length > 0, fieldsRecovered: learned.verifiedFields, sampleUrl: samples[0].url }).catch(() => {});
+                                console.log(`[aiHub] Detail recipe learned for "${domain}" — now recovers: ${learned.verifiedFields.join(',') || 'none'}`);
+                            }
+                        }
+                    }
+                }
+            } catch (e) { console.error('[aiHub] detail-recipe step error:', e.message); }
         }
 
-        console.log(`[aiHub] Phase 2: ${validJobs.length} jobs (${validJobs.filter(j => j.listing_page_only).length} listing-page-only) → ${allBatches.length} batches (size=${DETAIL_BATCH_SIZE}, concurrency=${BATCH_CONCURRENCY})`);
+        // Split Phase-A jobs into batches of DETAIL_BATCH_SIZE
+        const allBatches = [];
+        for (let i = 0; i < phaseAJobs.length; i += DETAIL_BATCH_SIZE) {
+            allBatches.push(phaseAJobs.slice(i, i + DETAIL_BATCH_SIZE));
+        }
+
+        console.log(`[aiHub] Phase 2: ${phaseAJobs.length}/${totalOpen} jobs (${phaseAJobs.filter(j => j.listing_page_only).length} listing-page-only) → ${allBatches.length} batches (size=${DETAIL_BATCH_SIZE}, concurrency=${BATCH_CONCURRENCY})${overflowJobs.length ? ` — ${overflowJobs.length} overflow for best-200 ranking` : ''}`);
 
         // Process BATCH_CONCURRENCY batches in parallel, then save results in order
         for (let b = 0; b < allBatches.length; b += BATCH_CONCURRENCY) {
@@ -1502,7 +2026,7 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                 concurrentSlice.map((batch, sliceIdx) => {
                     const batchNum = b + sliceIdx + 1;
                     console.log(`[aiHub] Phase 2 batch ${batchNum}/${allBatches.length}: scraping ${batch.length} pages in parallel`);
-                    return fetchJobDetailsBatch(batch, careersUrl, userProfile, listingPageText)
+                    return fetchJobDetailsBatch(batch, careersUrl, userProfile, listingPageText, detailRecipe)
                         .then(results => ({ batch, results }));
                 })
             );
@@ -1536,81 +2060,13 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                 for (let j = 0; j < batch.length; j++) {
                     const raw = (detailedJobs && detailedJobs[j]) ? detailedJobs[j] : {};
                     const original = batch[j];
-                    let dbJobId = null;   // hoisted: the job card must carry the REAL DB id (job.id) so contacts/CL persist & reload
 
                     // Fallback to Phase 1 title/url if Gemini missed it
                     if (!raw.title)   raw.title   = original.title;
                     if (!raw.job_url) raw.job_url = original.job_url;
 
-                    try {
-                        const locationId = await jobService.upsertLocation(raw.location || 'Not specified');
-                        const responsibilities = Array.isArray(raw.responsibilities) ? raw.responsibilities : [];
-                        dbJobId = await jobService.upsertJob(
-                            employerDbId, locationId,
-                            raw.title || 'Open Position',
-                            original.job_url,
-                            raw.experience || null,
-                            raw.salary || null,
-                            raw.job_type || 'Full-time',
-                            !!raw.urgent,
-                            responsibilities
-                        );
-
-                        for (const skill of (raw.skills || [])) {
-                            if (!skill || skill.length > 100) continue;
-                            try {
-                                const skillId = await jobService.upsertSkill(skill);
-                                await jobService.linkJobSkill(dbJobId, skillId);
-                            } catch {}
-                        }
-
-                        const contactEmailsSaved = new Set();
-                        const jobContacts = raw.contacts || [];
-                        for (const contact of jobContacts) {
-                            if (!contact?.name) continue;
-                            // Skip contacts whose "name" is clearly a label, not a person
-                            const nameLower = contact.name.toLowerCase().trim();
-                            if (/^(recruiter|hiring manager|contact|hr|location|contactperson|ansprechpartner|contactpersoon)$/.test(nameLower)) continue;
-                            // Dedup by email — skip if we already saved this email for this job
-                            const emailKey = (contact.email || '').toLowerCase().trim();
-                            if (emailKey && contactEmailsSaved.has(emailKey)) continue;
-                            if (emailKey) contactEmailsSaved.add(emailKey);
-                            try {
-                                await jobService.addJobContact(
-                                    dbJobId,
-                                    contact.name,
-                                    contact.role,
-                                    contact.email || null,
-                                    contact.phone || null,
-                                    null,                  // avatarUrl (not used)
-                                    contact.linkedin || null,
-                                    contact.image_url || null
-                                );
-                            } catch {}
-                        }
-                        // If no named contacts were saved AND we found HR emails on the
-                        // careers page, attach the first one as a generic recruitment contact
-                        if (contactEmailsSaved.size === 0 && hrEmails.length > 0) {
-                            for (const hrEmail of hrEmails) {
-                                try {
-                                    await jobService.addJobContact(
-                                        dbJobId,
-                                        'Recruitment Team',
-                                        'Recruiter',
-                                        hrEmail,
-                                        null, null, null, null
-                                    );
-                                    console.log(`[aiHub] Attached HR email ${hrEmail} to job "${raw.title}"`);
-                                    break; // one generic contact is enough
-                                } catch {}
-                            }
-                        }
-
-                        await jobService.saveUserJobMatch(userId, dbJobId, 0);
-                    } catch (e) {
-                        console.error(`[aiHub] DB save error for job "${raw.title}":`, e.message);
-                    }
-
+                    // Persist (job + skills + contacts + user match, UNSCORED — match % is lazy).
+                    const dbJobId = await persistOneJob(raw, original.job_url, employerDbId, userId, hrEmails);
                     streamedJobs.push(buildJobFromRaw(raw, streamedJobs.length, employerDbId, careersUrl, dbJobId));
                 }
 
@@ -1621,7 +2077,73 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
             }
         }
 
-        // Mark the job complete
+        // ── Phase B — best-200 live upgrade ───────────────────────────────────
+        // The first STORE_LIMIT jobs are shown. If there are more open roles AND the user
+        // has a resume to rank against, fetch + match-score the overflow and swap any job
+        // that beats the current weakest kept match — converging on the best STORE_LIMIT
+        // for THIS user. Only the kept set stays in the DB (evicted jobs are deleted), so
+        // the per-employer cache remains the displayed set. No profile → keep the first set.
+        const userHasProfile = Array.isArray(userProfile?.skills) && userProfile.skills.length > 0;
+        if (overflowJobs.length > 0 && userHasProfile && streamedJobs.length >= STORE_LIMIT) {
+            try {
+                console.log(`[aiHub] Best-200: ranking ${overflowJobs.length} overflow against the kept ${streamedJobs.length} for "${name}"`);
+                // Score the kept set so we know each one's match strength.
+                const keptScores = await scoreJobsForUser(userProfile, streamedJobs.map(j => ({ id: j.id, title: j.title, skills: j.skills, responsibilities: j.responsibilities }))).catch(() => ({}));
+                for (const j of streamedJobs) {
+                    j._score = keptScores[String(j.id)] ?? 0;
+                    if (j.id) { j.matchScore = j._score; await jobService.saveUserJobMatch(userId, j.id, j._score).catch(() => {}); }
+                }
+
+                const OV_ROUND = DETAIL_BATCH_SIZE * BATCH_CONCURRENCY;
+                let swaps = 0;
+                for (let i = 0; i < overflowJobs.length; i += OV_ROUND) {
+                    const round = overflowJobs.slice(i, i + OV_ROUND);
+                    // Fetch details for this round (sub-batched, same as Phase A).
+                    const detailed = [];
+                    for (let s = 0; s < round.length; s += DETAIL_BATCH_SIZE) {
+                        const sub = round.slice(s, s + DETAIL_BATCH_SIZE);
+                        const res = await fetchJobDetailsBatch(sub, careersUrl, userProfile, listingPageText, detailRecipe).catch(() => []);
+                        for (let k = 0; k < sub.length; k++) {
+                            const raw = (res && res[k]) ? res[k] : {};
+                            if (!raw.title) raw.title = sub[k].title;
+                            if (!raw.job_url) raw.job_url = sub[k].job_url;
+                            detailed.push({ raw, jobUrl: sub[k].job_url });
+                        }
+                    }
+                    // Score this round and swap any that beat the current weakest kept job.
+                    const ovScores = await scoreJobsForUser(userProfile, detailed.map((d, k) => ({ id: 'ov-' + (i + k), title: d.raw.title, skills: d.raw.skills, responsibilities: d.raw.responsibilities }))).catch(() => ({}));
+                    let changed = false;
+                    for (let k = 0; k < detailed.length; k++) {
+                        const s = ovScores['ov-' + (i + k)] ?? 0;
+                        let minIdx = 0;
+                        for (let m = 1; m < streamedJobs.length; m++) if ((streamedJobs[m]._score ?? 0) < (streamedJobs[minIdx]._score ?? 0)) minIdx = m;
+                        if (s > (streamedJobs[minIdx]._score ?? 0)) {
+                            const evicted = streamedJobs[minIdx];
+                            // Per-user eviction — only drops the shared job if no other user
+                            // still tracks it (prevents cross-user data loss). (H4/M22)
+                            if (evicted.id) await jobService.evictUserJob(evicted.id, userId).catch(() => {});
+                            const newId = await persistOneJob(detailed[k].raw, detailed[k].jobUrl, employerDbId, userId, hrEmails, s);
+                            const newJob = buildJobFromRaw(detailed[k].raw, minIdx, employerDbId, careersUrl, newId);
+                            newJob._score = s; newJob.matchScore = s;
+                            streamedJobs[minIdx] = newJob;
+                            changed = true; swaps++;
+                        }
+                    }
+                    if (changed) {
+                        const sorted = [...streamedJobs].sort((a, b) => (b._score ?? 0) - (a._score ?? 0));
+                        await jobService.updateJobPartialResult(asyncJobId, buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, sorted, domain));
+                    }
+                }
+                streamedJobs.sort((a, b) => (b._score ?? 0) - (a._score ?? 0));
+                console.log(`[aiHub] Best-200: done — ${swaps} swap(s); kept set is now the best ${streamedJobs.length} of ${totalOpen} for the user`);
+            } catch (e) {
+                console.error('[aiHub] Best-200 ranking error:', e.message);
+            }
+        }
+
+        // Mark the job complete. (Failed discoveries are handled silently inline above
+        // by the AI agent; if we still have 0 jobs here, it's a graceful empty result —
+        // no popups. The attempt is already logged for the admin dashboard.)
         const finalEmployer = buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, streamedJobs, domain);
         await jobService.completeJob(asyncJobId, finalEmployer);
         console.log(`[aiHub] Completed "${name}": ${streamedJobs.length} jobs saved`);
@@ -1881,8 +2403,10 @@ async function getCreditBalance(req, res) {
 async function deductCredits(req, res) {
     try {
         const userId = req.user.id;
-        const amount = Number(req.body.amount) || 0;
-        if (amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
+        // Prefer a server-resolved cost when the client names a known event (so the
+        // client can't pick its own price); fall back to a raw amount for compatibility.
+        const eventKey = typeof req.body.eventKey === 'string' ? req.body.eventKey : null;
+        const amount = eventKey ? await getEventCost(eventKey) : (Number(req.body.amount) || 0);
 
         const row = await dbConfig.get(
             'SELECT credits_remaining FROM user_credits WHERE user_id = ?',
@@ -1890,6 +2414,9 @@ async function deductCredits(req, res) {
         );
         const current = row ? (row.credits_remaining || 0) : 0;
 
+        if (amount <= 0) {
+            return res.json({ success: true, balance: current, charged: 0 }); // free / no-cost event
+        }
         if (current < amount) {
             return res.status(402).json({
                 error: 'insufficient_credits',
@@ -1902,12 +2429,17 @@ async function deductCredits(req, res) {
             'UPDATE user_credits SET credits_remaining = credits_remaining - ? WHERE user_id = ?',
             [amount, userId]
         );
+        try {
+            await dbConfig.run(
+                'INSERT INTO credit_usage_history (user_id, credits_used, action_type, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
+                [userId, amount, eventKey || 'deduct']);
+        } catch (e) { /* history best-effort */ }
 
         const updated = await dbConfig.get(
             'SELECT credits_remaining FROM user_credits WHERE user_id = ?',
             [userId]
         );
-        return res.json({ success: true, balance: updated ? updated.credits_remaining : current - amount });
+        return res.json({ success: true, balance: updated ? updated.credits_remaining : current - amount, charged: amount });
     } catch (err) {
         console.error('[aiHub] deductCredits error:', err);
         return res.status(500).json({ error: 'Failed to deduct credits' });
@@ -2085,17 +2617,20 @@ async function findRecruiters(req, res) {
         );
         if (!employer) return res.status(404).json({ error: 'Employer not found' });
 
-        // Check credit balance
+        // Check credit balance (admin-configurable cost)
+        const findCost = await getEventCost('find_recruiters');
         const credits = await dbConfig.get(`SELECT credits_remaining FROM user_credits WHERE user_id = $1`, [userId]);
-        if (!credits || credits.credits_remaining < 1) {
-            return res.status(402).json({ error: 'Insufficient credits. 1 credit required.' });
+        if (findCost > 0 && (!credits || credits.credits_remaining < findCost)) {
+            return res.status(402).json({ error: `Insufficient credits. ${findCost} credit(s) required.` });
         }
 
-        // Deduct 1 credit upfront
-        await dbConfig.run(
-            `UPDATE user_credits SET credits_remaining = credits_remaining - 1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1`,
-            [userId]
-        );
+        // Deduct upfront
+        if (findCost > 0) {
+            await dbConfig.run(
+                `UPDATE user_credits SET credits_remaining = credits_remaining - $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2`,
+                [findCost, userId]
+            );
+        }
 
         // Gemini Google Search for LinkedIn recruiters
         // Uses the company domain + name as anchors to avoid hallucinated/wrong-company results
@@ -2225,15 +2760,18 @@ async function findRecruiterEmails(req, res) {
         );
         if (recruiters.length === 0) return res.status(400).json({ error: 'No recruiters found. Run Step 1 first.' });
 
-        // Check credits
+        // Check credits (admin-configurable cost)
+        const emailCost = await getEventCost('find_recruiter_emails');
         const credits = await dbConfig.get(`SELECT credits_remaining FROM user_credits WHERE user_id = $1`, [userId]);
-        if (!credits || credits.credits_remaining < 1) {
-            return res.status(402).json({ error: 'Insufficient credits. 1 credit required.' });
+        if (emailCost > 0 && (!credits || credits.credits_remaining < emailCost)) {
+            return res.status(402).json({ error: `Insufficient credits. ${emailCost} credit(s) required.` });
         }
-        await dbConfig.run(
-            `UPDATE user_credits SET credits_remaining = credits_remaining - 1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1`,
-            [userId]
-        );
+        if (emailCost > 0) {
+            await dbConfig.run(
+                `UPDATE user_credits SET credits_remaining = credits_remaining - $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2`,
+                [emailCost, userId]
+            );
+        }
 
         // Get company domain from employer domain field
         const domain = employer.domain;
@@ -2385,15 +2923,18 @@ async function generateJobCoverLetter(req, res) {
         );
         const skillsList = skills.map(s => s.name).join(', ') || 'Not specified';
 
-        // Check credits
+        // Check credits (admin-configurable cost)
+        const jclCost = await getEventCost('job_cover_letter');
         const credits = await dbConfig.get(`SELECT credits_remaining FROM user_credits WHERE user_id = $1`, [userId]);
-        if (!credits || credits.credits_remaining < 1) {
-            return res.status(402).json({ error: 'Insufficient credits. 1 credit required.' });
+        if (jclCost > 0 && (!credits || credits.credits_remaining < jclCost)) {
+            return res.status(402).json({ error: `Insufficient credits. ${jclCost} credit(s) required.` });
         }
-        await dbConfig.run(
-            `UPDATE user_credits SET credits_remaining = credits_remaining - 1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1`,
-            [userId]
-        );
+        if (jclCost > 0) {
+            await dbConfig.run(
+                `UPDATE user_credits SET credits_remaining = credits_remaining - $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2`,
+                [jclCost, userId]
+            );
+        }
 
         // Build Gemini prompt
         const resumeText = resumeMeta.parsed_text || resumeMeta.raw_text || '';
@@ -2487,6 +3028,15 @@ async function translateJob(req, res) {
         );
         if (!job) return res.status(404).json({ error: 'Job not found' });
 
+        // Charge only on a real (cache-miss) translation. Free today (cost 0) unless an admin sets a price.
+        const userId = req.user && req.user.id;
+        if (userId) {
+            const charge = await chargeCredits(userId, 'translate_job');
+            if (charge.insufficient) {
+                return res.status(402).json({ error: `Insufficient credits. ${charge.cost} credit(s) required.`, creditsRequired: charge.cost, creditsRemaining: charge.remaining });
+            }
+        }
+
         const skillRows = await dbConfig.query(
             `SELECT s.name FROM skills s JOIN job_skills js ON js.skill_id = s.id WHERE js.job_id = $1`,
             [jobId]
@@ -2505,6 +3055,7 @@ async function translateJob(req, res) {
             experience: job.experience || '',
             salary: job.salary || '',
             jobType: job.job_type || '',
+            workMode: job.work_mode || null,
             skills,
             responsibilities,
         };
@@ -2554,6 +3105,7 @@ ${JSON.stringify(fields, null, 2)}`;
             experience: typeof out.experience === 'string' && out.experience.trim() ? out.experience.trim() : fields.experience,
             salary: typeof out.salary === 'string' && out.salary.trim() ? out.salary.trim() : fields.salary,
             jobType: typeof out.jobType === 'string' && out.jobType.trim() ? out.jobType.trim() : fields.jobType,
+            workMode: fields.workMode,   // already English (Remote/Hybrid/Office) — pass through unchanged
             skills: Array.isArray(out.skills) && out.skills.length ? out.skills.map(String) : fields.skills,
             responsibilities: Array.isArray(out.responsibilities) && out.responsibilities.length ? out.responsibilities.map(String) : fields.responsibilities,
         };
@@ -2653,14 +3205,55 @@ async function updateJobCoverLetterStatus(req, res) {
     }
     try {
         await ensureCoverLetterTable();
+        // Detect the first transition INTO 'applied' so we record the application only once.
+        let alreadyApplied = false;
+        if (status === 'applied') {
+            const cur = await dbConfig.get(
+                `SELECT status FROM job_cover_letters WHERE user_id=$1 AND job_id=$2`, [userId, jobId]);
+            alreadyApplied = !!cur && cur.status === 'applied';
+        }
         await dbConfig.run(
             `UPDATE job_cover_letters SET status=$1, updated_at=CURRENT_TIMESTAMP WHERE user_id=$2 AND job_id=$3`,
             [status, userId, jobId]
         );
+        // Portal / auto-fill applies never send an email, so they don't hit the email
+        // controller's application_history insert. Record it here so the job shows up
+        // under "Recent applications" on the home dashboard. Runs once per job.
+        if (status === 'applied' && !alreadyApplied) {
+            recordJobHubApplication(userId, jobId).catch(
+                (err) => console.error('[aiHub] application_history record failed:', err.message));
+        }
         return res.json({ success: true });
     } catch (e) {
         return res.status(500).json({ error: 'Failed to update status' });
     }
+}
+
+/** Insert an application_history row for a Job Hub job marked "applied" (no email sent). */
+async function recordJobHubApplication(userId, jobId) {
+    const row = await dbConfig.get(
+        `SELECT j.title AS position, e.name AS company_name
+         FROM jobs j JOIN employers e ON e.id = j.employer_id
+         WHERE j.id = $1`, [jobId]);
+    if (!row) return;
+    const company = row.company_name || '';
+    const position = row.position || '';
+    // Dedup: if this application was already recorded recently (e.g. an email send via
+    // sendSingleApplication already inserted it), don't add a duplicate card. ISO-8601
+    // strings compare chronologically, so this works for text or timestamp columns.
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const dup = await dbConfig.get(
+        `SELECT id FROM application_history
+         WHERE user_id=$1 AND company_name=$2 AND position=$3 AND sent_date >= $4 AND deleted_at IS NULL
+         LIMIT 1`,
+        [userId, company, position, since]);
+    if (dup) return;
+    await dbConfig.run(
+        `INSERT INTO application_history
+           (user_id, company_name, position, recipient_email, sent_date, reply_received, reply_date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [userId, company, position, '', new Date().toISOString(), 0, null]
+    );
 }
 
 /** GET /api/ai-hub/employers/:employerId/job-statuses — bulk status for all jobs of an employer */
@@ -2689,6 +3282,11 @@ async function generateEmailBodyHandler(req, res) {
     const { position, companyName } = req.body;
     const userId = req.user.id;
     try {
+        // Free today (cost 0) unless an admin sets a price for 'ai_email_body'.
+        const charge = await chargeCredits(userId, 'ai_email_body');
+        if (charge.insufficient) {
+            return res.status(402).json({ error: `Insufficient credits. ${charge.cost} credit(s) required.`, creditsRequired: charge.cost, creditsRemaining: charge.remaining });
+        }
         const user = await dbConfig.get(`SELECT full_name FROM users WHERE id=$1`, [userId]);
         const fullName = user?.full_name || 'Applicant';
 
@@ -2750,6 +3348,12 @@ async function autofillMap(req, res) {
             return res.status(400).json({ error: 'No form fields provided' });
         }
 
+        // Free today (cost 0) unless an admin sets a price for 'ai_autofill'.
+        const charge = await chargeCredits(userId, 'ai_autofill');
+        if (charge.insufficient) {
+            return res.status(402).json({ error: `Insufficient credits. ${charge.cost} credit(s) required.`, creditsRequired: charge.cost, creditsRemaining: charge.remaining });
+        }
+
         const user = await dbConfig.get(
             'SELECT full_name, email, phone_number, city, country, address, date_of_birth, nationality, gender FROM users WHERE id = ?',
             [userId]
@@ -2758,6 +3362,10 @@ async function autofillMap(req, res) {
         try { meta = await dbConfig.get("SELECT * FROM resume_metadata WHERE user_id = ? AND parse_status = 'done' ORDER BY id DESC LIMIT 1", [userId]); } catch {}
         let builder = null;
         try { const r = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = ?', [userId]); builder = r && r.resume_data; if (typeof builder === 'string') builder = JSON.parse(builder); } catch {}
+        // The user's LEARNED answers to past portal questions (the self-learning Q&A store) —
+        // loaded alongside the profile so the AI can reuse them and the overlay can exact-match.
+        let portalQA = [];
+        try { portalQA = await dbConfig.query('SELECT q_key, question, answer FROM user_job_portal_details WHERE user_id = ? ORDER BY use_count DESC LIMIT 300', [userId]); } catch {}
 
         // Strip noisy/internal columns from resume_metadata
         if (meta) { delete meta.id; delete meta.user_id; delete meta.parse_status; delete meta.created_at; delete meta.updated_at; }
@@ -2769,6 +3377,10 @@ async function autofillMap(req, res) {
 
 CANDIDATE PROFILE (JSON — the source of truth; never invent anything not present here):
 ${JSON.stringify(profile)}
+
+SAVED ANSWERS — the candidate's OWN answers to questions they filled on past application forms
+(authoritative; reuse for any field asking the same thing, even if worded differently):
+${JSON.stringify(portalQA.map((q) => ({ question: q.question, answer: q.answer })))}
 
 COVER LETTER (plain text):
 """${clText.slice(0, 3500)}"""
@@ -2821,9 +3433,28 @@ RULES:
             console.warn('[aiHub] autofillMap AI failed:', aiErr.message);
             return res.json({ success: true, values: {}, resumeFileKeys: [], coverLetterFileKeys: [], warning: 'ai_unavailable' });
         }
+        const values = (parsed && parsed.values && typeof parsed.values === 'object') ? parsed.values : {};
+
+        // ── Self-learning overlay ────────────────────────────────────────────
+        // Belt-and-suspenders to the AI prompt above: for any field STILL empty, exact-match it
+        // against the user's saved Q&A by normalized question — so every learned answer fills.
+        try {
+            if (portalQA && portalQA.length) {
+                const memMap = {};
+                for (const m of portalQA) memMap[m.q_key] = m.answer;
+                let learned = 0;
+                for (const f of fields) {
+                    if (!f || !f.key || values[f.key] != null) continue;   // skip ones the AI already filled
+                    const ans = memMap[normalizeQ(fieldQuestion(f))];
+                    if (ans != null && ans !== '') { values[f.key] = ans; learned++; }
+                }
+                if (learned) console.log(`[aiHub] saved-answers filled ${learned} field(s) the AI left blank for user ${userId}`);
+            }
+        } catch (e) { console.warn('[aiHub] saved-answers overlay skipped:', e.message); }
+
         return res.json({
             success: true,
-            values: parsed && parsed.values && typeof parsed.values === 'object' ? parsed.values : {},
+            values,
             resumeFileKeys: parsed && Array.isArray(parsed.resumeFileKeys) ? parsed.resumeFileKeys : [],
             coverLetterFileKeys: parsed && Array.isArray(parsed.coverLetterFileKeys) ? parsed.coverLetterFileKeys : [],
         });
@@ -2892,6 +3523,108 @@ async function autofillFiles(req, res) {
     }
 }
 
+// ── Self-learning autofill memory ────────────────────────────────────────────
+// Normalize a form field's question into a stable match key so the SAME question on a
+// DIFFERENT portal resolves to the same memory row. Lowercase, drop punctuation/“*”/
+// “(required)”, collapse whitespace → spaceless token.
+function normalizeQ(s) {
+    return String(s || '')
+        .toLowerCase()
+        .replace(/\(required\)|\*|：|:/g, ' ')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\b(please|your|the|a|an|do|does|are|is|you|to|of|for|we|this|that|will|would|have|has|enter|select|choose)\b/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/\s/g, '');
+}
+// The best human label for a field (label → name → placeholder).
+function fieldQuestion(f) {
+    return String((f && (f.label || f.name || f.placeholder)) || '').trim();
+}
+// Don't remember secrets or per-job essays — only short, reusable factual answers.
+const _SENSITIVE_Q = /password|passwort|wachtwoord|ssn|social.?security|credit.?card|card.?number|\bcvv\b|\biban\b|routing|sort.?code|pin\b/i;
+function _isMemorable(label, value, type) {
+    const v = String(value == null ? '' : value).trim();
+    if (!v || v.length > 120) return false;                 // empty or essay-length → skip
+    if ((type || '').toLowerCase() === 'file' || (type || '').toLowerCase() === 'password') return false;
+    if (_SENSITIVE_Q.test(label) || _SENSITIVE_Q.test(v)) return false;
+    if (!normalizeQ(label)) return false;                   // unlabeled field → can't key it
+    return true;
+}
+
+// POST /ai-hub/autofill-memory — remember the answers the user just filled in manually so
+// the next form with the same questions auto-fills. Body: { answers: [{label, value, type}] }.
+async function recordAutofillMemory(req, res) {
+    try {
+        const userId = req.user.id;
+        const answers = Array.isArray(req.body && req.body.answers) ? req.body.answers : [];
+        let saved = 0;
+        for (const a of answers.slice(0, 100)) {
+            const question = fieldQuestion(a);
+            const value = a && a.value;
+            const type = (a && a.type) || null;
+            if (!_isMemorable(question, value, type)) continue;
+            const qKey = normalizeQ(question);
+            try {
+                await dbConfig.run(
+                    `INSERT INTO user_job_portal_details (user_id, q_key, question, answer, field_type)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT (user_id, q_key) DO UPDATE SET
+                        answer = EXCLUDED.answer, question = EXCLUDED.question, field_type = EXCLUDED.field_type,
+                        use_count = user_job_portal_details.use_count + 1, updated_at = CURRENT_TIMESTAMP`,
+                    [userId, qKey, question.slice(0, 300), String(value).trim().slice(0, 300), type]
+                );
+                saved++;
+            } catch (e) { /* skip one bad row */ }
+        }
+        return res.json({ success: true, saved });
+    } catch (error) {
+        console.error('[aiHub] recordAutofillMemory error:', error.message);
+        return res.status(500).json({ error: 'Failed to save autofill memory' });
+    }
+}
+
+// GET /ai-hub/smart-fill-data — the bundle the in-WebView "smart copy" popup shows: the
+// candidate's reusable facts + a resume summary, so they can copy-paste any field the
+// autofill couldn't reach.
+async function smartFillData(req, res) {
+    try {
+        const userId = req.user.id;
+        const user = await dbConfig.get(
+            'SELECT full_name, email, phone_number, city, country, address, nationality, date_of_birth FROM users WHERE id = ?',
+            [userId]
+        ).catch(() => null);
+        let meta = null;
+        try { meta = await dbConfig.get("SELECT summary, experience_summary, experience_years, skills, job_titles, languages FROM resume_metadata WHERE user_id = ? AND parse_status = 'done' ORDER BY id DESC LIMIT 1", [userId]); } catch {}
+        // Resume-builder data is a strong fallback for contact facts the users row may not have.
+        let b = null;
+        try { const r = await dbConfig.get('SELECT resume_data FROM user_resumes WHERE user_id = ?', [userId]); b = r && r.resume_data; if (typeof b === 'string') b = JSON.parse(b); } catch {}
+        b = b || {};
+        const u = user || {};
+        const pick = (...xs) => { for (const x of xs) { const v = String(x == null ? '' : x).trim(); if (v) return v; } return ''; };
+        const location = pick(b.location, [u.city, u.country].filter(Boolean).join(', '));
+        const resumeSummary = pick(meta && meta.summary, meta && meta.experience_summary, b.summary);
+        const fields = [
+            { id: 'fullName', label: 'Full name', value: pick(u.full_name, b.name, b.fullName) },
+            { id: 'email', label: 'Email', value: pick(u.email, b.email) },
+            { id: 'phone', label: 'Phone', value: pick(u.phone_number, b.phone) },
+            { id: 'location', label: 'Location', value: location },
+            { id: 'address', label: 'Address', value: pick(u.address, b.address) },
+            { id: 'nationality', label: 'Nationality', value: pick(u.nationality, b.nationality) },
+        ].filter((f) => f.value);
+        return res.json({
+            success: true,
+            fields,
+            resumeSummary,
+            skills: (meta && Array.isArray(meta.skills) ? meta.skills : []).slice(0, 20),
+            jobTitles: (meta && Array.isArray(meta.job_titles) ? meta.job_titles : []).slice(0, 8),
+        });
+    } catch (error) {
+        console.error('[aiHub] smartFillData error:', error.message);
+        return res.status(500).json({ error: 'Failed to load smart-fill data' });
+    }
+}
+
 module.exports = {
     analyzeWishlist,
     getJobMatches,
@@ -2903,6 +3636,8 @@ module.exports = {
     getJobContacts,
     autofillMap,
     autofillFiles,
+    recordAutofillMemory,
+    smartFillData,
     getCreditBalance,
     deductCredits,
     findRecruiters,
@@ -2915,4 +3650,5 @@ module.exports = {
     updateJobCoverLetterStatus,
     getJobStatuses,
     generateEmailBodyHandler,
+    getMatchScores,
 };

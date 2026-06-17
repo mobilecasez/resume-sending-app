@@ -15,6 +15,8 @@ import * as SecureStore from 'expo-secure-store';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { API_BASE } from '../../config';
+import { useEventCosts } from '../../hooks/useEventCosts';
+import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 
 const T = {
   bg: '#E5EAF3', bgSoft: '#F0F4FA', surface: '#FFFFFF',
@@ -25,7 +27,7 @@ const T = {
 
 type Preview = { id: string; name: string; accent: string; image: string; width: number; height: number };
 type Mode = 'onepage' | 'a4';
-type Ctx = { coverLetterHtml: string; companyName?: string; companyAddress?: string };
+type Ctx = { coverLetterHtml: string; companyName?: string; companyAddress?: string; format?: 'pdf' | 'docx' };
 
 // Region ids MUST match server coverLetterTemplates.js REGIONS.
 const REGIONS = [
@@ -51,6 +53,12 @@ async function getToken() {
 
 export default function CoverLetterTemplates() {
   const router = useRouter();
+  const { costs } = useEventCosts();
+  const dlCost = costs['cover_letter_download'] ?? DOWNLOAD_CREDITS;   // admin-configurable
+  const rating = useRatingPrompt();
+  // Ask for a rating when leaving the previewed cover letter; complete the back nav after.
+  const goBack = async () => { if (!(await rating.ask('cover_letter'))) router.back(); };
+  const closeRating = () => { rating.close(); router.back(); };
   const scrollRef = useRef<ScrollView>(null);
   const [ctx, setCtx]           = useState<Ctx | null>(null);
   const [region, setRegion]     = useState('generic');
@@ -62,6 +70,8 @@ export default function CoverLetterTemplates() {
   const [mode, setMode]         = useState<Mode>('onepage');
   const [pagerH, setPagerH]     = useState(0);
   const [downloading, setDownloading] = useState(false);
+  // Which format the user chose on the Review screen — shown first/prominent in the footer.
+  const [preferredFormat, setPreferredFormat] = useState<'pdf' | 'docx'>('pdf');
 
   // Load the cover-letter context (stashed by whichever screen opened the picker).
   useEffect(() => {
@@ -71,6 +81,7 @@ export default function CoverLetterTemplates() {
         const c = raw ? JSON.parse(raw) : null;
         if (!c?.coverLetterHtml) { setError('No cover letter found. Generate one first.'); setLoading(false); return; }
         setCtx(c);
+        setPreferredFormat(c.format === 'docx' ? 'docx' : 'pdf');
         loadPreviews('generic', c);
       } catch {
         setError('Could not load the cover letter.'); setLoading(false);
@@ -135,7 +146,7 @@ export default function CoverLetterTemplates() {
       });
       const json = await res.json();
       if (res.status === 402) {
-        Alert.alert('Not enough credits', json.error || `You need ${DOWNLOAD_CREDITS} credits to download.`);
+        Alert.alert('Not enough credits', json.error || `You need ${dlCost} credits to download.`);
         return;
       }
       if (!res.ok || !json.downloadUrl) throw new Error(json.error || 'Failed to generate file');
@@ -167,7 +178,7 @@ export default function CoverLetterTemplates() {
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <View style={s.topBar}>
-        <TouchableOpacity onPress={() => router.back()} style={s.backPill} activeOpacity={0.8}>
+        <TouchableOpacity onPress={goBack} style={s.backPill} activeOpacity={0.8}>
           <Ionicons name="arrow-back" size={14} color={T.ink} />
           <Text style={s.backPillText}>Back</Text>
         </TouchableOpacity>
@@ -262,43 +273,39 @@ export default function CoverLetterTemplates() {
             <SegBtn icon="document-outline"  label="One Page" active={mode === 'onepage'} onPress={() => setMode('onepage')} />
             <SegBtn icon="documents-outline" label="A4 Pages" active={mode === 'a4'}      onPress={() => setMode('a4')} />
           </View>
-          <TouchableOpacity style={s.dlOuter} activeOpacity={0.9} onPress={() => handleDownload('pdf')} disabled={downloading}>
-            <LinearGradient colors={[T.navy, '#1a2346']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}>
-              {downloading ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="download-outline" size={17} color="#fff" />
-                  <Text style={s.dlText}>Download PDF</Text>
-                  <View style={s.credBadge}>
-                    <Ionicons name="diamond" size={9} color="#fff" />
-                    <Text style={s.credBadgeText}>{DOWNLOAD_CREDITS}</Text>
-                  </View>
-                </>
-              )}
-            </LinearGradient>
-          </TouchableOpacity>
-          <TouchableOpacity style={[s.dlOuter, { marginTop: 8 }]} activeOpacity={0.9} onPress={() => handleDownload('docx')} disabled={downloading}>
-            <LinearGradient colors={['#2B579A', '#1f407a']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}>
-              {downloading ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="document-text-outline" size={17} color="#fff" />
-                  <Text style={s.dlText}>Download as Word</Text>
-                  <View style={s.credBadge}>
-                    <Ionicons name="diamond" size={9} color="#fff" />
-                    <Text style={s.credBadgeText}>{DOWNLOAD_CREDITS}</Text>
-                  </View>
-                </>
-              )}
-            </LinearGradient>
-          </TouchableOpacity>
+          {(preferredFormat === 'docx' ? ['docx', 'pdf'] : ['pdf', 'docx']).map((fmt, i) => (
+            <TouchableOpacity
+              key={fmt}
+              style={[s.dlOuter, i > 0 && { marginTop: 8 }]}
+              activeOpacity={0.9}
+              onPress={() => handleDownload(fmt as 'pdf' | 'docx')}
+              disabled={downloading}
+            >
+              <LinearGradient
+                colors={fmt === 'pdf' ? [T.navy, '#1a2346'] : ['#2B579A', '#1f407a']}
+                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.dlBtn}
+              >
+                {downloading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name={fmt === 'pdf' ? 'download-outline' : 'document-text-outline'} size={17} color="#fff" />
+                    <Text style={s.dlText}>{fmt === 'pdf' ? 'Download PDF' : 'Download as Word'}</Text>
+                    <View style={s.credBadge}>
+                      <Ionicons name="diamond" size={9} color="#fff" />
+                      <Text style={s.credBadgeText}>{dlCost}</Text>
+                    </View>
+                  </>
+                )}
+              </LinearGradient>
+            </TouchableOpacity>
+          ))}
           <Text style={s.footerNote}>
-            {`${DOWNLOAD_CREDITS} credits per download · ${mode === 'onepage' ? 'one continuous page' : 'A4, splits into pages'}`}
+            {`${dlCost} credits per download · ${mode === 'onepage' ? 'one continuous page' : 'A4, splits into pages'}`}
           </Text>
         </View>
       )}
+      <RatingPromptModal visible={!!rating.trigger} trigger={rating.trigger} onClose={closeRating} />
     </SafeAreaView>
   );
 }

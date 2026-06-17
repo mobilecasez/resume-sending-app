@@ -25,11 +25,13 @@ export type Job = {
   experience: string;
   salary: string;
   jobType: string;
+  workMode?: string | null;   // Remote / Hybrid / Office — work-location arrangement, distinct from jobType (employment type)
   urgent: boolean;
   skills: string[];
   responsibilities: string[];
   contacts: Contact[];
-  matchScore?: number;   // 0–100, AI-computed resume match
+  matchScore?: number | null;   // 0–100 AI-computed resume match; null = not scored yet ("Evaluating…"); -1 = unscorable (no badge)
+  createdAt?: string;    // ISO timestamp from the server, used to sort newest-first
   applyUrl?: string | null;
   lang?: string;         // detected language ('en' or e.g. 'de'); non-'en' shows the Translate toggle
 };

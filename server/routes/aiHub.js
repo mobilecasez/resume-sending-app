@@ -15,6 +15,8 @@ const {
     getJobContacts,
     autofillMap,
     autofillFiles,
+    recordAutofillMemory,
+    smartFillData,
     getCreditBalance,
     deductCredits,
     findRecruiters,
@@ -27,6 +29,7 @@ const {
     updateJobCoverLetterStatus,
     getJobStatuses,
     generateEmailBodyHandler,
+    getMatchScores,
 } = require('../controllers/aiHubController');
 
 router.get('/dashboard', authenticateToken, getDashboard);
@@ -34,11 +37,14 @@ router.delete('/dashboard/:jobId', authenticateToken, removeDashboardItem);
 router.post('/analyze-wishlist', authenticateToken, analyzeWishlist);
 router.get('/jobs', authenticateToken, getJobMatches);
 router.get('/job-status/:jobId', authenticateToken, getJobStatus);
+router.post('/match-scores', authenticateToken, getMatchScores);
 router.post('/verify-email', authenticateToken, verifyEmail);
 router.post('/jobs/:jobId/contacts', authenticateToken, addContactToJob);
 router.get('/jobs/:jobId/contacts', authenticateToken, getJobContacts);
 router.post('/autofill-map', authenticateToken, asJob('autofill_map')(autofillMap));
 router.post('/autofill-files', authenticateToken, asJob('autofill_files')(autofillFiles));
+router.post('/autofill-memory', authenticateToken, recordAutofillMemory);   // self-learning: remember manual answers
+router.get('/smart-fill-data', authenticateToken, smartFillData);           // bundle for the in-WebView smart-copy popup
 router.get('/credits', authenticateToken, getCreditBalance);
 router.post('/deduct-credits', authenticateToken, deductCredits);
 

@@ -544,6 +544,13 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS responsibilities JSONB`);
         console.log('✅ Migration 005c: jobs.responsibilities done');
 
+        // AI Job Hub — per-user job match % is computed lazily in the background
+        // (semantic skill match via Gemini). `scored_at` distinguishes "not yet
+        // scored" (NULL → the card shows "Evaluating…") from a real score (0–100).
+        // Existing rows have scored_at NULL, so each gets scored exactly once.
+        await col(`ALTER TABLE user_job_matches ADD COLUMN IF NOT EXISTS scored_at TIMESTAMP DEFAULT NULL`);
+        console.log('✅ Migration 005e: user_job_matches.scored_at done');
+
         // AI Job Hub — per-job English translation cache (Translate-to-English
         // toggle on job cards). ATS jobs are parsed from HTML in their original
         // language; this caches the Gemini English translation once per job.
@@ -576,6 +583,162 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE review_cover_letters ADD COLUMN IF NOT EXISTS font_name TEXT DEFAULT NULL`);
         await col(`ALTER TABLE review_cover_letters ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP DEFAULT NULL`);
         console.log('✅ Migration 007: review_cover_letters branding columns done');
+
+        // ai_event_costs — admin-configurable credit cost per AI event (see
+        // server/services/eventCosts.js). Seeded from the canonical CATALOG;
+        // re-seed updates labels/descriptions but PRESERVES admin-edited credits + is_active.
+        await col(`
+            CREATE TABLE IF NOT EXISTS ai_event_costs (
+                id SERIAL PRIMARY KEY,
+                event_key TEXT UNIQUE NOT NULL,
+                label TEXT NOT NULL,
+                description TEXT,
+                category TEXT DEFAULT 'paid',
+                credits INTEGER NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        try {
+            const { CATALOG } = require('./server/services/eventCosts');
+            for (const e of CATALOG) {
+                await db.query(
+                    `INSERT INTO ai_event_costs (event_key, label, description, category, credits, is_active, sort_order)
+                     VALUES ($1, $2, $3, $4, $5, 1, $6)
+                     ON CONFLICT (event_key) DO UPDATE SET
+                        label = EXCLUDED.label,
+                        description = EXCLUDED.description,
+                        category = EXCLUDED.category,
+                        sort_order = EXCLUDED.sort_order`,
+                    [e.key, e.label, e.description, e.category, e.credits, e.sort]
+                );
+            }
+            console.log('✅ Migration 008: ai_event_costs table + seed done');
+        } catch (seedErr) {
+            console.warn('⚠️ ai_event_costs seed warning:', seedErr.message);
+        }
+
+        // app_feedback — private in-app feedback (low ratings + messages). Happy users
+        // go to the native store review instead; only 1–3★ / written feedback lands here.
+        await col(`
+            CREATE TABLE IF NOT EXISTS app_feedback (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER,
+                rating INTEGER,
+                message TEXT,
+                trigger TEXT,
+                platform TEXT,
+                app_version TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        console.log('✅ Migration 009: app_feedback table done');
+
+        // employer_fix_requests — a user-submitted "we couldn't fetch this employer's
+        // jobs, please add support" request. Feeds the self-improving fix loop.
+        await col(`
+            CREATE TABLE IF NOT EXISTS employer_fix_requests (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER,
+                email TEXT,
+                employer_input TEXT NOT NULL,
+                domain TEXT,
+                detected_ats TEXT,
+                job_count INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'pending',          -- pending|investigating|fixed|no_jobs|failed
+                diagnosis JSONB,
+                attempts INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TIMESTAMP
+            )
+        `);
+        await col(`CREATE INDEX IF NOT EXISTS idx_efr_domain ON employer_fix_requests(domain)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_efr_status ON employer_fix_requests(status)`);
+
+        // employer_overrides — the VERSIONED per-employer fix the agent produces. The
+        // discovery pipeline checks the active override (by domain) first and applies it.
+        // History is kept (every version is a row) so a rolled-back fix can be re-applied.
+        await col(`
+            CREATE TABLE IF NOT EXISTS employer_overrides (
+                id SERIAL PRIMARY KEY,
+                domain TEXT NOT NULL,
+                request_id INTEGER,
+                fix_config JSONB NOT NULL,
+                verified BOOLEAN DEFAULT FALSE,
+                verify_job_count INTEGER DEFAULT 0,
+                verify_sample JSONB,
+                active BOOLEAN DEFAULT FALSE,
+                version INTEGER DEFAULT 1,
+                created_by TEXT DEFAULT 'agent',
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await col(`CREATE INDEX IF NOT EXISTS idx_eo_domain ON employer_overrides(domain)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_eo_active ON employer_overrides(domain, active)`);
+        console.log('✅ Migration 010: employer_fix_requests + employer_overrides done');
+
+        // ── Migration 011: employer_detail_recipes ────────────────────────────
+        // Per-employer "how to extract a job DETAIL page" recipe, LEARNED by the agent
+        // from 1-2 sample jobs when the generic parser comes up short, then applied
+        // deterministically (no AI) to all of that employer's jobs.
+        await col(`
+            CREATE TABLE IF NOT EXISTS employer_detail_recipes (
+                id SERIAL PRIMARY KEY,
+                domain TEXT NOT NULL UNIQUE,
+                recipe JSONB NOT NULL,
+                verified BOOLEAN DEFAULT FALSE,
+                fields_recovered TEXT,
+                sample_url TEXT,
+                created_by TEXT DEFAULT 'agent',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_edr_domain ON employer_detail_recipes(domain)`);
+        console.log('✅ Migration 011: employer_detail_recipes done');
+
+        // ── Migration 012: jobs.work_mode ─────────────────────────────────────
+        // Separates WORK MODE (Remote/Hybrid/Office) from job_type (employment type:
+        // Full-time/Part-time/…). Previously the AI extractor's "Type of Job" work-mode
+        // value was stuffed into job_type, conflating two distinct concepts. Nullable;
+        // legacy rows stay NULL and the UI simply omits the chip. ATS jobs have no work
+        // mode → NULL (correct).
+        await col(`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS work_mode VARCHAR(255) DEFAULT NULL`);
+        console.log('✅ Migration 012: jobs.work_mode done');
+
+        // ── Migration 013: user_job_portal_details ────────────────────────────
+        // Self-learning autofill memory. The `users` table holds ONLY the core profile
+        // (name/email/phone/city/country/address/nationality…). Every OTHER thing we learn from
+        // the forms the user fills (visa sponsorship, notice period, "how did you hear", and any
+        // ad-hoc portal question) is stored here as a simple QUESTION → ANSWER row — no new
+        // column per field. Keyed by a normalized question so the SAME question on ANY future
+        // portal auto-fills. Loaded alongside the user's details when auto-filling a form.
+        await db.query(`DROP TABLE IF EXISTS user_autofill_memory`);   // superseded by the Q&A table below
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS user_job_portal_details (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                q_key TEXT NOT NULL,          -- normalized question (the match key)
+                question TEXT NOT NULL,       -- the original question / field label
+                answer TEXT NOT NULL,
+                field_type TEXT,
+                use_count INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (user_id, q_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ujpd_user ON user_job_portal_details(user_id);
+        `);
+        console.log('✅ Migration 013: user_job_portal_details done');
+
+        // ── Migration 014: users.nationality ──────────────────────────────────
+        // The autofill profile queries already SELECT `nationality`, but the column was never
+        // created — so those queries silently failed (smart-fill-data returned no profile). Add
+        // it so learned/entered nationality is stored properly alongside city/country/address.
+        await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS nationality VARCHAR(120) DEFAULT NULL`);
+        console.log('✅ Migration 014: users.nationality done');
 
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {

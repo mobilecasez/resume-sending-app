@@ -1,0 +1,567 @@
+// Universal ATS discovery — detect which Applicant Tracking System a careers page
+// uses (even on a CUSTOM company domain) and pull ALL jobs from that ATS's public
+// JSON API, fully structured. The durable replacement for URL-pattern guessing:
+// one adapter per ATS covers every company on it.
+//
+// Additive + safe: detectAndFetchAts() returns null on any miss/error, so the caller
+// falls straight back to the existing scrape pipeline. Public no-auth endpoints only;
+// every adapter is wrapped so a wrong guess never throws.
+'use strict';
+
+const https = require('https');
+const http = require('http');
+
+const UA = 'Mozilla/5.0 (compatible; CVApplyrBot/1.0; +https://cvapplyr.com)';
+const TIMEOUT = 12000;
+
+function fetchText(url, redirects = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirects > 4) return reject(new Error('too many redirects'));
+    let parsed;
+    try { parsed = new URL(url); } catch (e) { return reject(e); }
+    const lib = parsed.protocol === 'http:' ? http : https;
+    const req = lib.get(url, { headers: { 'User-Agent': UA, Accept: 'application/json,text/html,*/*' }, timeout: TIMEOUT }, (r) => {
+      if (r.statusCode >= 300 && r.statusCode < 400 && r.headers.location) {
+        r.resume();
+        const next = r.headers.location.startsWith('http') ? r.headers.location : new URL(r.headers.location, url).href;
+        return resolve(fetchText(next, redirects + 1));
+      }
+      if (r.statusCode !== 200) { r.resume(); return reject(new Error('HTTP ' + r.statusCode)); }
+      let d = '';
+      r.setEncoding('utf8');
+      r.on('data', (c) => { d += c; if (d.length > 12_000_000) req.destroy(); });
+      r.on('end', () => resolve(d));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+  });
+}
+async function fetchJson(url) {
+  const txt = await fetchText(url);
+  // A 200 that isn't JSON (HTML error/maintenance/login wall) would otherwise throw an
+  // opaque SyntaxError; surface a clear, diagnosable message instead. (L9)
+  try { return JSON.parse(txt); }
+  catch { throw new Error(`non-JSON response from ${url} (${String(txt).slice(0, 80).replace(/\s+/g, ' ').trim()}…)`); }
+}
+
+function postJson(url, body) {
+  return new Promise((resolve, reject) => {
+    let parsed; try { parsed = new URL(url); } catch (e) { return reject(e); }
+    const lib = parsed.protocol === 'http:' ? http : https;
+    const data = Buffer.from(JSON.stringify(body || {}));
+    const req = lib.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': UA, 'Content-Length': data.length }, timeout: TIMEOUT }, (r) => {
+      if (r.statusCode !== 200) { r.resume(); return reject(new Error('HTTP ' + r.statusCode)); }
+      let d = ''; r.setEncoding('utf8');
+      r.on('data', (c) => { d += c; if (d.length > 12_000_000) req.destroy(); });
+      r.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.write(data); req.end();
+  });
+}
+
+// Bounded-concurrency map (for per-job detail fetches on Workday/SmartRecruiters).
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length); let i = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (i < items.length) { const idx = i++; try { out[idx] = await fn(items[idx], idx); } catch { out[idx] = null; } }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+// ── shared helpers ───────────────────────────────────────────────────────────
+const strip = (h) => String(h || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&#?[a-z0-9]+;/gi, ' ').replace(/\s+/g, ' ').trim();
+
+function bulletsFrom(html) {
+  const h = String(html || '');
+  let items = [...h.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)].map((m) => strip(m[1]));
+  if (items.length === 0) {
+    items = strip(h).split(/(?:•|·|‣|◦|•|\.\s+(?=[A-Z])|\n)/).map((s) => s.trim());
+  }
+  return items.filter((s) => s.length > 3 && s.length < 280);
+}
+
+function jobType(code) {
+  const c = String(code || '').toLowerCase();
+  if (/part/.test(c)) return 'Part-time';
+  if (/intern|trainee|werkstud|appren/.test(c)) return 'Internship';
+  if (/contract|temp|fixed|interim|freelanc|free/.test(c)) return /free/.test(c) ? 'Freelance' : 'Contract';
+  return 'Full-time';
+}
+
+function rootDomain(host) {
+  const clean = String(host || '').replace(/^www\./i, '').toLowerCase();
+  const parts = clean.split('.');
+  if (parts.length <= 2) return parts[0] || clean;
+  const twoPart = new Set(['co.uk', 'com.au', 'co.in', 'co.jp', 'com.br', 'co.nz', 'com.sg']);
+  return twoPart.has(parts.slice(-2).join('.')) ? parts[parts.length - 3] : parts[parts.length - 2];
+}
+
+function nameFromHtmlOrDomain(rawHtml, urlOrDomain) {
+  const h = String(rawHtml || '');
+  const og = h.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i);
+  if (og && og[1].trim().length > 1) return og[1].trim();
+  const appName = h.match(/<meta[^>]+name=["']application-name["'][^>]+content=["']([^"']+)["']/i);
+  if (appName && appName[1].trim().length > 1) return appName[1].trim();
+  let host = urlOrDomain;
+  try { host = new URL(urlOrDomain).hostname; } catch {}
+  const root = rootDomain(host);
+  return root ? root.charAt(0).toUpperCase() + root.slice(1) : (urlOrDomain || 'Company');
+}
+
+function htmlUnescape(s) {
+  return String(s || '').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, '"')
+    .replace(/&#0?39;|&apos;/gi, "'").replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&');
+}
+const titleCase = (slug) => String(slug || '').replace(/[-_]+/g, ' ').trim().replace(/\b\w/g, (m) => m.toUpperCase());
+// For path-based ATSes the company is the TOKEN (boards.greenhouse.io/AIRBNB), not the
+// ATS host — so prefer a real og:site_name, else title-case the token.
+function resolveCompany(html, token, url) {
+  const h = String(html || '');
+  const og = h.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i);
+  if (og && og[1].trim().length > 1 && !/greenhouse|lever|ashby|workable|recruitee|breezy/i.test(og[1])) return og[1].trim();
+  if (token) return titleCase(token);
+  return nameFromHtmlOrDomain(html, url);
+}
+
+// Curated skill/keyword vocabulary → short, chip-friendly skills extracted from the
+// full job text. Generalises across ATSes (whose "requirements" are long sentences).
+const SKILL_VOCAB = [
+  'JavaScript','TypeScript','Python','Java','C++','C#','Go','Rust','Ruby','PHP','Swift','Kotlin','Scala','SQL','HTML','CSS','Sass','Bash','Perl','Dart','Elixir','Objective-C',
+  'React','React Native','Angular','Vue','Svelte','Next.js','Nuxt','Node.js','Express','Django','Flask','FastAPI','Spring','Spring Boot','Rails','Laravel','.NET','ASP.NET','Symfony','jQuery','Redux','GraphQL','REST','gRPC','Tailwind','Bootstrap',
+  'Pandas','NumPy','TensorFlow','PyTorch','scikit-learn','Keras','Spark','Hadoop','Kafka','Airflow','dbt','Snowflake','Redshift','BigQuery','Tableau','Power BI','Looker','Machine Learning','Deep Learning','NLP','Computer Vision','Data Science','Data Engineering','ETL','LLM','Generative AI',
+  'AWS','Azure','GCP','Google Cloud','Kubernetes','Docker','Terraform','Ansible','Jenkins','GitLab','GitHub Actions','CI/CD','Helm','Prometheus','Grafana','Datadog','Linux','Nginx','Serverless','Microservices',
+  'PostgreSQL','MySQL','MongoDB','Redis','Elasticsearch','Cassandra','DynamoDB','Oracle','SQL Server','Firebase','Supabase',
+  'Git','Jira','Confluence','Figma','Sketch','Adobe','Photoshop','Illustrator','Salesforce','HubSpot','SAP','Workday','ServiceNow','Zendesk','Notion','Webflow','Shopify','WordPress',
+  'Project Management','Agile','Scrum','Kanban','Product Management','Stakeholder Management','Communication','Leadership','Marketing','SEO','SEM','Content Marketing','Copywriting','Sales','Business Development','Account Management','Customer Success','Customer Support','Financial Modeling','Accounting','Recruiting','Negotiation','Public Speaking',
+  'UI/UX','UX Design','UI Design','Product Design','Wireframing','Prototyping','User Research','Design Systems','Branding','Motion Design',
+];
+const SKILL_MATCHERS = SKILL_VOCAB.map((s) => ({
+  display: s,
+  re: new RegExp('(^|[^a-z0-9+#.])' + s.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9+#])', 'i'),
+}));
+function extractSkills(text) {
+  const t = ' ' + String(text || '').toLowerCase() + ' ';
+  const out = [];
+  for (const m of SKILL_MATCHERS) { if (m.re.test(t)) out.push(m.display); }
+  return [...new Set(out)].slice(0, 12);
+}
+
+// Salary fields vary wildly across ATSes (string, number, or {min,max,currency,period}
+// object). Always emit a clean human string or null — never a raw object.
+function formatSalary(s) {
+  if (s == null) return null;
+  if (typeof s === 'number') return String(s);
+  if (typeof s === 'string') return s.trim() || null;
+  if (typeof s === 'object') {
+    const min = s.min ?? s.minimum ?? s.minValue ?? s.from ?? null;
+    const max = s.max ?? s.maximum ?? s.maxValue ?? s.to ?? null;
+    if (min == null && max == null) return null;
+    const cur = s.currency || s.currency_code || s.currencyCode || '';
+    const per = s.period || s.unit || s.interval || '';
+    const num = (n) => (n == null ? '' : Number(n).toLocaleString('en-US'));
+    const range = (min != null && max != null) ? `${num(min)}–${num(max)}` : num(min != null ? min : max);
+    const out = `${cur ? cur + ' ' : ''}${range}${per ? '/' + per : ''}`.trim();
+    return out || null;
+  }
+  return null;
+}
+
+// Build the normalized raw job. responsibilities = description (+ requirement) bullets;
+// skills = curated keyword chips from the full text (clean, short).
+function makeJob({ title, location, job_url, employer_name, employmentCode, salary, experience, descHtml, reqHtml }) {
+  const fullText = strip(descHtml) + ' \n ' + strip(reqHtml);
+  let resp = bulletsFrom(descHtml);
+  if (resp.length < 3 && reqHtml) resp = resp.concat(bulletsFrom(reqHtml));
+  return {
+    title,
+    location: location || 'Not specified',
+    job_url: job_url || null,
+    job_type: jobType(employmentCode),
+    salary: formatSalary(salary),
+    experience: experience || null,
+    responsibilities: resp.slice(0, 10),
+    skills: extractSkills(fullText),
+    employer_name: employer_name || null,
+    _atsApi: true,
+  };
+}
+
+// ── Adapters ─────────────────────────────────────────────────────────────────
+// detect(ctx) → token|false ;  fetch(ctx) → rawJobs[]   ; ctx = { url, origin, host, pathname, html }
+const firstSeg = (pathname) => { const m = String(pathname || '').match(/^\/([^/?#]+)/); return m ? m[1] : ''; };
+// Generic words that are NEVER a real ATS company token — they leak in from form
+// labels (<label for="location">), nav, and JS, and resolve to bogus demo boards.
+const JUNK_TOKENS = new Set(['location', 'locations', 'careers', 'career', 'jobs', 'job', 'search', 'name', 'email', 'phone', 'company', 'apply', 'for', 'this', 'that', 'default', 'test', 'demo', 'example', 'sample', 'board', 'embed', 'iframe', 'widget', 'all', 'none', 'true', 'false', 'undefined', 'null', 'home', 'main', 'content', 'header', 'footer', 'menu', 'filter']);
+const validToken = (t) => !!t && typeof t === 'string' && t.length >= 2 && !JUNK_TOKENS.has(t.toLowerCase());
+
+const adapters = [
+  // RECRUITEE — {origin}/api/offers/ works on custom domains (verified: careers.hostaway.com)
+  {
+    name: 'recruitee',
+    detect: (c) => (/\.recruitee\.com$/i.test(c.host) || /recruiteecdn\.com|\.recruitee\.com|data-recruitee|window\.__recruitee|id=["']recruitee/i.test(c.html || '')) ? c.origin : false,
+    async fetch(c) {
+      const data = await fetchJson(`${c.origin}/api/offers/`);
+      const offers = (data && Array.isArray(data.offers)) ? data.offers : [];
+      const company = (offers[0] && (offers[0].company_name || offers[0].company)) || nameFromHtmlOrDomain(c.html, c.origin);
+      return offers.filter((o) => o.title).map((o) => makeJob({
+        title: o.title,
+        location: o.location || [o.city, o.country].filter(Boolean).join(', '),
+        job_url: o.careers_url || `${c.origin}/o/${o.slug}`,
+        employer_name: company, employmentCode: o.employment_type_code, salary: o.salary,
+        experience: (o.experience_code && o.experience_code !== 'not_applicable') ? o.experience_code : null,
+        descHtml: o.description, reqHtml: o.requirements,
+      }));
+    },
+  },
+
+  // GREENHOUSE — boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true
+  {
+    name: 'greenhouse',
+    detect: (c) => {
+      if (/(boards|job-boards)\.greenhouse\.io$/i.test(c.host)) { const t = firstSeg(c.pathname); return validToken(t) ? t : false; }
+      // Only trust a bare `for: "token"` when it sits in a GREENHOUSE context (grnhse.js
+      // init / greenhouse embed) — NOT a stray <label for="location"> form attribute.
+      const m = String(c.html || '').match(/greenhouse\.io\/embed\/job_board\?for=([a-z0-9_]+)|boards\.greenhouse\.io\/([a-z0-9_]+)|(?:grnhse|greenhouse)[\s\S]{0,100}?["']?for["']?\s*[:=]\s*["']([a-z0-9_]+)["']/i);
+      const t = m ? (m[1] || m[2] || m[3]) : '';
+      return validToken(t) ? t : false;
+    },
+    async fetch(c) {
+      const data = await fetchJson(`https://boards-api.greenhouse.io/v1/boards/${c.token}/jobs?content=true`);
+      const jobs = (data && Array.isArray(data.jobs)) ? data.jobs : [];
+      const company = resolveCompany(c.html, c.token, c.origin);
+      return jobs.filter((j) => j.title).map((j) => {
+        const content = htmlUnescape(j.content);
+        return makeJob({
+          title: j.title, location: (j.location && j.location.name) || 'Not specified',
+          job_url: j.absolute_url, employer_name: company, descHtml: content,
+        });
+      });
+    },
+  },
+
+  // LEVER — api.lever.co/v0/postings/{company}?mode=json
+  {
+    name: 'lever',
+    detect: (c) => {
+      if (/jobs\.(eu\.)?lever\.co$/i.test(c.host)) return firstSeg(c.pathname) || false;
+      const m = String(c.html || '').match(/jobs\.lever\.co\/([a-z0-9-]+)/i);
+      return m ? m[1] : false;
+    },
+    async fetch(c) {
+      const arr = await fetchJson(`https://api.lever.co/v0/postings/${c.token}?mode=json`);
+      const jobs = Array.isArray(arr) ? arr : [];
+      const company = resolveCompany(c.html, c.token, c.origin);
+      return jobs.filter((j) => j.text).map((j) => {
+        const lists = Array.isArray(j.lists) ? j.lists.map((l) => l.content).join(' ') : '';
+        return makeJob({
+          title: j.text, location: (j.categories && j.categories.location) || 'Not specified',
+          job_url: j.hostedUrl, employer_name: company, employmentCode: j.categories && j.categories.commitment,
+          descHtml: (j.description || '') + ' ' + lists, reqHtml: lists,
+        });
+      });
+    },
+  },
+
+  // ASHBY — api.ashbyhq.com/posting-api/job-board/{org}
+  {
+    name: 'ashby',
+    detect: (c) => {
+      if (/jobs\.ashbyhq\.com$/i.test(c.host)) return firstSeg(c.pathname) || false;
+      const m = String(c.html || '').match(/jobs\.ashbyhq\.com\/([a-zA-Z0-9-]+)|ashbyhq\.com\/([a-zA-Z0-9-]+)\/embed|_ashby_org["']?\s*[:=]\s*["']([a-zA-Z0-9-]+)/i);
+      return m ? (m[1] || m[2] || m[3]) : false;
+    },
+    async fetch(c) {
+      const data = await fetchJson(`https://api.ashbyhq.com/posting-api/job-board/${c.token}?includeCompensation=true`);
+      const jobs = (data && Array.isArray(data.jobs)) ? data.jobs : [];
+      const company = (data && data.organizationName) || resolveCompany(c.html, c.token, c.origin);
+      return jobs.filter((j) => j.title).map((j) => makeJob({
+        title: j.title,
+        location: j.location || (j.secondaryLocations && j.secondaryLocations[0] && j.secondaryLocations[0].location) || 'Not specified',
+        job_url: j.jobUrl || j.applyUrl, employer_name: company, employmentCode: j.employmentType,
+        descHtml: j.descriptionHtml || j.descriptionPlain,
+      }));
+    },
+  },
+
+  // BREEZY — {company}.breezy.hr/json  (public positions feed)
+  {
+    name: 'breezy',
+    detect: (c) => {
+      if (/\.breezy\.hr$/i.test(c.host)) return c.host.replace(/\.breezy\.hr$/i, '');
+      const m = String(c.html || '').match(/([a-z0-9-]+)\.breezy\.hr/i);
+      return m ? m[1] : false;
+    },
+    async fetch(c) {
+      const arr = await fetchJson(`https://${c.token}.breezy.hr/json`);
+      const jobs = Array.isArray(arr) ? arr : [];
+      const company = resolveCompany(c.html, c.token, c.origin);
+      return jobs.filter((j) => j.name).map((j) => {
+        const loc = (j.location && (j.location.name || [j.location.city, j.location.country].filter(Boolean).join(', '))) || 'Not specified';
+        return makeJob({
+          title: j.name, location: loc, job_url: j.url || `https://${c.token}.breezy.hr/p/${j._id}`,
+          employer_name: company, employmentCode: j.type && j.type.name, descHtml: j.description,
+        });
+      });
+    },
+  },
+
+  // WORKABLE — apply.workable.com/api/v1/widget/accounts/{account}?details=true
+  {
+    name: 'workable',
+    detect: (c) => {
+      if (/\.workable\.com$/i.test(c.host) && !/^apply\./i.test(c.host)) return c.host.replace(/\.workable\.com$/i, '');
+      if (/apply\.workable\.com$/i.test(c.host)) return firstSeg(c.pathname) || false;
+      const m = String(c.html || '').match(/([a-z0-9-]+)\.workable\.com|workable\.com\/(?:j|spi\/v3\/jobs\/)?([a-z0-9-]+)/i);
+      return m ? (m[1] || m[2]) : false;
+    },
+    async fetch(c) {
+      const data = await fetchJson(`https://apply.workable.com/api/v1/widget/accounts/${c.token}?details=true`);
+      const jobs = (data && Array.isArray(data.jobs)) ? data.jobs : [];
+      const company = (data && data.name) || resolveCompany(c.html, c.token, c.origin);
+      return jobs.filter((j) => j.title).map((j) => makeJob({
+        title: j.title, location: [j.city, j.country].filter(Boolean).join(', ') || 'Not specified',
+        job_url: j.url || j.application_url || j.shortlink, employer_name: company, employmentCode: j.type,
+        descHtml: j.description, reqHtml: j.requirements,
+      }));
+    },
+  },
+
+  // WORKDAY — the JS-wall case. Page is a JS shell, but {tenant}.wdN.myworkdayjobs.com
+  // exposes a JSON API at /wday/cxs/{tenant}/{site}/jobs (POST, paginated). Job detail
+  // (description) at /wday/cxs/{tenant}/{site}{externalPath} (GET).
+  {
+    name: 'workday',
+    detect: (c) => {
+      if (/\.myworkdayjobs\.com$/i.test(c.host)) {
+        const parts = c.host.split('.');                 // tenant.wdN.myworkdayjobs.com
+        const segs = String(c.pathname || '').split('/').filter(Boolean);
+        let site = segs[0]; if (/^[a-z]{2}-[A-Za-z]{2}$/.test(segs[0] || '')) site = segs[1];
+        return { tenant: parts[0], host: c.host, site: site || null };
+      }
+      const m = String(c.html || '').match(/([a-z0-9-]+)\.(wd\d+)\.myworkdayjobs\.com\/(?:wday\/cxs\/[a-z0-9-]+\/)?([A-Za-z0-9_]+)/i);
+      return m ? { tenant: m[1], host: `${m[1]}.${m[2]}.myworkdayjobs.com`, site: m[3] || null } : false;
+    },
+    async fetch(c) {
+      const { tenant, host } = c.token;
+      let site = c.token.site;
+      if (!site) { const m = String(c.html || '').match(new RegExp('cxs\\/' + tenant + '\\/([A-Za-z0-9_]+)', 'i')); site = m ? m[1] : null; }
+      if (!site) return [];
+      const base = `https://${host}/wday/cxs/${tenant}/${site}`;
+      const all = []; const CAP = 120;
+      for (let offset = 0; offset < CAP; offset += 20) {
+        let page; try { page = await postJson(`${base}/jobs`, { appliedFacets: {}, limit: 20, offset, searchText: '' }); } catch { break; }
+        const posts = (page && Array.isArray(page.jobPostings)) ? page.jobPostings : [];
+        all.push(...posts);
+        if (posts.length < 20 || all.length >= (page.total || CAP)) break;
+      }
+      const company = resolveCompany(c.html, tenant, c.url || `https://${host}`);
+      const jobs = await mapLimit(all.slice(0, CAP), 12, async (p) => {
+        let descHtml = '';
+        try { const d = await fetchJson(`${base}${p.externalPath}`); descHtml = (d && d.jobPostingInfo && d.jobPostingInfo.jobDescription) || ''; } catch {}
+        return makeJob({ title: p.title, location: p.locationsText || 'Not specified', job_url: `https://${host}/${site}${p.externalPath}`, employer_name: company, descHtml });
+      });
+      return jobs.filter(Boolean).filter((j) => j.title);
+    },
+  },
+
+  // SMARTRECRUITERS — api.smartrecruiters.com/v1/companies/{co}/postings (+ /postings/{id} detail)
+  {
+    name: 'smartrecruiters',
+    detect: (c) => {
+      if (/(careers|jobs)\.smartrecruiters\.com$/i.test(c.host)) return firstSeg(c.pathname) || false;
+      const m = String(c.html || '').match(/api\.smartrecruiters\.com\/v1\/companies\/([A-Za-z0-9]+)|jobs\.smartrecruiters\.com\/([A-Za-z0-9]+)|["']?companyIdentifier["']?\s*[:=]\s*["']([A-Za-z0-9]+)/i);
+      return m ? (m[1] || m[2] || m[3]) : false;
+    },
+    async fetch(c) {
+      const company = c.token;
+      const all = []; const CAP = 100;
+      for (let offset = 0; offset < CAP; offset += 100) {
+        let page; try { page = await fetchJson(`https://api.smartrecruiters.com/v1/companies/${company}/postings?limit=100&offset=${offset}`); } catch { break; }
+        const posts = (page && Array.isArray(page.content)) ? page.content : [];
+        all.push(...posts);
+        if (posts.length < 100) break;
+      }
+      const name = resolveCompany(c.html, company, c.origin);
+      const jobs = await mapLimit(all.slice(0, CAP), 12, async (p) => {
+        let descHtml = '', reqHtml = '';
+        try { const d = await fetchJson(`https://api.smartrecruiters.com/v1/companies/${company}/postings/${p.id}`); const s = (d && d.jobAd && d.jobAd.sections) || {}; descHtml = (s.jobDescription && s.jobDescription.text) || ''; reqHtml = (s.qualifications && s.qualifications.text) || ''; } catch {}
+        const loc = p.location ? [p.location.city, p.location.region, p.location.country].filter(Boolean).join(', ') : 'Not specified';
+        return makeJob({ title: p.name, location: loc, job_url: `https://jobs.smartrecruiters.com/${company}/${p.id}`, employer_name: name, employmentCode: p.typeOfEmployment && p.typeOfEmployment.label, descHtml, reqHtml });
+      });
+      return jobs.filter(Boolean).filter((j) => j.title);
+    },
+  },
+];
+
+/**
+ * Detect the ATS for a careers URL and return all its jobs (structured) or null.
+ * @param {string} url     the careers/scrape URL
+ * @param {string} rawHtml the already-fetched page HTML (for fingerprinting + name)
+ * @returns {Promise<{ats:string, companyName:string, jobs:Array}|null>}
+ */
+// Provenance: are two brand-ish strings the same company? Substring match, or a STRONG
+// shared prefix (≥6 chars AND ≥70% of the shorter string) — the old 4-char rule
+// false-accepted unrelated brands (e.g. "celonis" vs "celebrity"). (M16)
+function _brandRelated(a, b) {
+  const na = String(a || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const nb = String(b || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (na.length < 3 || nb.length < 3) return false;
+  if (na.includes(nb) || nb.includes(na)) return true;
+  let i = 0; while (i < na.length && i < nb.length && na[i] === nb[i]) i++;
+  return i >= 6 && i >= Math.min(na.length, nb.length) * 0.7;
+}
+
+async function detectAndFetchAts(url, rawHtml = '') {
+  let origin, host, pathname;
+  try { const u = new URL(url); origin = u.origin; host = u.hostname.toLowerCase(); pathname = u.pathname; } catch { return null; }
+  const targetRoot = rootDomain(host);
+  const targetBrand = (targetRoot.split('.')[0] || targetRoot);
+  const targetName = nameFromHtmlOrDomain(rawHtml, url);
+  // If the URL is ITSELF an ATS board (the user/agent targeted it directly), trust it —
+  // the provenance guard only applies when the target is a real EMPLOYER domain. The host
+  // alternatives are ANCHORED to a real host boundary so a legit employer like "clever.co"
+  // (contains "lever.co") doesn't bypass the guard. (H2)
+  const targetIsAtsHost = /(^|\.)(greenhouse\.io|grnh\.se|lever\.co|ashbyhq\.com|myworkdayjobs\.com|smartrecruiters\.com|recruitee\.com|breezy\.hr|workable\.com|personio\.(de|com)|teamtailor\.com|jobvite\.com|icims\.com|bamboohr\.com)$/i.test(host);
+  for (const a of adapters) {
+    let token;
+    try { token = a.detect({ url, origin, host, pathname, html: rawHtml }); } catch { token = false; }
+    if (!token) continue;
+    try {
+      const jobs = await a.fetch({ url, origin, host, pathname, html: rawHtml, token });
+      if (jobs && jobs.length > 0) {
+        // ── PROVENANCE GUARD ──────────────────────────────────────────────────
+        // The agent must NEVER return another employer's jobs. If the jobs are hosted
+        // on a THIRD-PARTY ATS board (not the target's own domain), the board's identity
+        // (its company name OR the detected token) MUST match the target employer. This
+        // kills mis-detections like a stray <label for="location"> → a stranger's board.
+        let jobRoot = ''; try { jobRoot = rootDomain(new URL(jobs[0].job_url || '').hostname); } catch {}
+        const sameDomain = jobRoot && jobRoot === targetRoot;
+        const boardCompany = jobs[0].employer_name || '';
+        // Coerce object tokens (Workday returns {tenant, site}) to a string so the
+        // provenance match doesn't see "[object Object]". (M14)
+        const tokenStr = (token && typeof token === 'object') ? (token.tenant || token.token || token.slug || Object.values(token).filter((v) => typeof v === 'string').join('')) : token;
+        const idMatch = [tokenStr, boardCompany].some((id) => _brandRelated(id, targetBrand) || _brandRelated(id, targetName));
+        if (!targetIsAtsHost && !sameDomain && !idMatch) {
+          console.log(`[atsDiscovery] ${a.name} REJECTED (provenance): board "${boardCompany}"/token "${token}" ≠ target "${targetBrand}"/"${targetName}" — not this employer`);
+          continue;
+        }
+        const companyName = boardCompany || targetName;
+        console.log(`[atsDiscovery] ${a.name}: ${jobs.length} jobs for "${companyName}"`);
+        return { ats: a.name, companyName, jobs };
+      }
+    } catch (e) {
+      console.log(`[atsDiscovery] ${a.name} detected but fetch failed: ${e.message}`);
+    }
+  }
+  return null;
+}
+
+// ── Generic SPA job-API parser ────────────────────────────────────────────────
+// Hard SPA career boards (e.g. Adyen) load their full job list via an XHR/GraphQL call
+// AFTER render; our Playwright layer intercepts that JSON (interceptedJson) but the HTML
+// handed to the LLM is just the empty shell. This parses the intercepted payload(s) into
+// structured jobs directly — zero LLM cost, full board. Heavily provenance-guarded so a
+// stray analytics/ads XHR can't inject jobs.
+const _TITLE_KEYS = ['title', 'name', 'jobtitle', 'position', 'positionname', 'positiontitle', 'role', 'displayname', 'vacancyname', 'postingtitle'];
+const _URL_KEYS = ['absolute_url', 'url', 'applyurl', 'joburl', 'link', 'href', 'canonicalurl', 'hostedurl', 'applicationurl', 'jobposturl', 'detailurl', 'permalink', 'applylink'];
+const _LOC_KEYS = ['location', 'city', 'office', 'locationname', 'primarylocation', 'place', 'region', 'joblocation', 'locations', 'workplace', 'cities'];
+const _SAL_KEYS = ['salary', 'salaryrange', 'compensation', 'payrange'];
+const _EMP_KEYS = ['employmenttype', 'jobtype', 'contracttype', 'employment', 'schedule', 'worktype'];
+const _MODE_KEYS = ['workplacetype', 'workmodel', 'workmode', 'remotetype', 'locationtype', 'remotestatus', 'workstyle'];
+const _DESC_KEYS = ['description', 'jobdescription', 'content', 'body', 'summary', 'descriptionhtml'];
+
+const _ci = (obj, keys) => {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const map = {}; for (const k of Object.keys(obj)) map[k.toLowerCase()] = obj[k];
+  for (const k of keys) if (map[k] != null && map[k] !== '') return map[k];
+  return undefined;
+};
+const _strv = (v) => {
+  if (v == null) return '';
+  if (typeof v === 'string') return v.trim();
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (Array.isArray(v)) return v.map(_strv).filter(Boolean).join(', ');
+  if (typeof v === 'object') return _strv(v.name || v.label || v.text || v.title || v.value || v.city || v.displayName || '');
+  return '';
+};
+const _normMode = (s) => {
+  const t = String(s || '').toLowerCase();
+  if (!t) return null;
+  if (/hybrid/.test(t)) return 'Hybrid';
+  if (/remote|anywhere|work[\s-]?from[\s-]?home|telecommut/.test(t)) return 'Remote';
+  if (/on[\s-]?site|in[\s-]?office|office|on[\s-]?premise/.test(t)) return 'Office';
+  return null;
+};
+const _looksJobish = (o) => o && typeof o === 'object' && !Array.isArray(o) && !!_strv(_ci(o, _TITLE_KEYS));
+
+// Walk an object (bounded depth) and return the LARGEST array of job-ish objects found.
+function _findJobArray(root) {
+  let best = [];
+  const seen = new Set();
+  const visit = (node, depth) => {
+    if (!node || typeof node !== 'object' || depth > 6) return;
+    if (Array.isArray(node)) {
+      const jobish = node.filter(_looksJobish);
+      if (jobish.length > best.length) best = jobish;
+      for (const el of node) if (el && typeof el === 'object') visit(el, depth + 1);
+      return;
+    }
+    if (seen.has(node)) return; seen.add(node);
+    for (const k of Object.keys(node)) { const v = node[k]; if (v && typeof v === 'object') visit(v, depth + 1); }
+  };
+  visit(root, 0);
+  return best;
+}
+
+function parseJobApiResponse(payload, sourceUrl, origin) {
+  if (!payload) return { jobs: [] };
+  let targetRoot = ''; try { targetRoot = rootDomain(new URL(origin || sourceUrl).hostname); } catch {}
+  const blobs = String(payload).split('\n\n---PAYLOAD---\n\n');
+  let best = [];
+  for (const blob of blobs) {
+    let data; try { data = JSON.parse(blob); } catch { continue; }
+    const arr = _findJobArray(data);
+    if (arr.length > best.length) best = arr;
+  }
+  if (best.length < 10) return { jobs: [] };   // provenance: a real board, not a tiny facet / ads XHR
+
+  let employer = '';
+  const jobs = best.map((o) => {
+    const title = _strv(_ci(o, _TITLE_KEYS));
+    let url = _strv(_ci(o, _URL_KEYS));
+    if (url && !/^https?:/i.test(url)) { try { url = new URL(url, origin || sourceUrl).href; } catch { url = ''; } }
+    const emp = _strv(_ci(o, ['company', 'companyname', 'employer', 'organization', 'brand']));
+    if (!employer && emp) employer = emp;
+    const desc = _strv(_ci(o, _DESC_KEYS));
+    return {
+      title,
+      location: _strv(_ci(o, _LOC_KEYS)) || 'Not specified',
+      job_url: url || null,
+      job_type: jobType(_strv(_ci(o, _EMP_KEYS))),
+      work_mode: _normMode(_strv(_ci(o, _MODE_KEYS))) || _normMode(title) || _normMode(_strv(_ci(o, _LOC_KEYS))),
+      salary: formatSalary(_strv(_ci(o, _SAL_KEYS))) || null,
+      experience: null,
+      responsibilities: bulletsFrom(desc).slice(0, 10),
+      skills: extractSkills(desc),
+      employer_name: emp || null,
+      _atsApi: true,
+    };
+  }).filter((j) => j.title);
+
+  // Provenance: if we know the target root, at least one job URL must be same-root-domain
+  // (filters cross-domain analytics/ads payloads that merely look list-shaped). Jobs with
+  // no URL at all are allowed only when SOME sibling carries a matching-domain URL.
+  if (targetRoot) {
+    const withUrl = jobs.filter((j) => j.job_url);
+    const sameRoot = withUrl.filter((j) => { try { return rootDomain(new URL(j.job_url).hostname) === targetRoot; } catch { return false; } }).length;
+    if (withUrl.length > 0 && sameRoot === 0) return { jobs: [] };
+  }
+  if (jobs.length < 10) return { jobs: [] };
+
+  return { employer: employer || null, jobs };
+}
+
+module.exports = { detectAndFetchAts, parseJobApiResponse, extractSkills, fetchText, fetchJson, postJson, mapLimit, makeJob, bulletsFrom, strip, jobType, formatSalary, nameFromHtmlOrDomain };

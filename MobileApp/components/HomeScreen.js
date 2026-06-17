@@ -3,9 +3,11 @@ import ReplyComposeModal from './ReplyComposeModal';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView,
   Animated, Modal, ActivityIndicator, SafeAreaView, StatusBar, Alert,
-  TouchableWithoutFeedback, Image, Dimensions, Linking, Platform,
+  TouchableWithoutFeedback, Image, Dimensions, Linking, Platform, RefreshControl,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useFocusEffect } from 'expo-router';
+import { useEventCosts } from '../hooks/useEventCosts';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView as SafeAreaViewContext } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -559,6 +561,8 @@ function CompanyCard({
   onGenerated,
   generateCoverLetterForReview,
 }) {
+  const { costs } = useEventCosts();
+  const clGenCost = costs['cover_letter_generate'] ?? 1;   // admin-configurable
   // ── Restore from module-level cache on mount ────────────────────────────────
   const cached = _cardStateCache[recipient.id] || {};
   const isReadyInit = !!(recipient.email && recipient.website);
@@ -803,7 +807,7 @@ function CompanyCard({
         <Text style={cardStyles.eyebrow}>{eyebrow}</Text>
         <LinearGradient colors={[T.blue, T.purple]} style={cardStyles.creditStamp} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
           <Ionicons name="diamond" size={8} color="#fff" />
-          <Text style={cardStyles.creditStampText}> 1 CREDIT</Text>
+          <Text style={cardStyles.creditStampText}>{` ${clGenCost} CREDIT${clGenCost === 1 ? '' : 'S'}`}</Text>
         </LinearGradient>
       </View>
 
@@ -1291,7 +1295,7 @@ const chipStyles = StyleSheet.create({
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 export default function HomeScreen({
   // data
-  user, creditBalance, unreadCount,
+  user, creditBalance, unreadCount, refreshCredits,
   totalSent, totalGenerated, totalReplied,
   recipients, applicationHistory,
   showSettings, setShowSettings,
@@ -1315,6 +1319,49 @@ export default function HomeScreen({
   usageData,
 }) {
   const firstName = user?.fullName?.split(' ')[0] || user?.name?.split(' ')[0] || 'User';
+
+  // Refresh "Recent applications" whenever the Home tab regains focus — e.g. after the
+  // user applies to a job via the Job Hub portal (which records server-side but doesn't
+  // touch this screen's state). Pulls the merged history straight from the backend.
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
+      if (refreshCredits) refreshCredits();          // live credit balance on every Home focus
+      (async () => {
+        try {
+          if (!user?.token || !API_BASE || !setApplicationHistory) return;
+          const res = await fetch(`${API_BASE}/users/application-history`, {
+            headers: { Authorization: `Bearer ${user.token}` },
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          if (alive && data?.success && Array.isArray(data.applicationHistory)) {
+            setApplicationHistory(data.applicationHistory);
+          }
+        } catch { /* offline — keep cached list */ }
+      })();
+      return () => { alive = false; };
+    }, [user?.token, API_BASE, setApplicationHistory, refreshCredits])
+  );
+
+  // Pull-to-refresh: live credits + recent applications.
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const tasks = [];
+      if (refreshCredits) tasks.push(refreshCredits());
+      if (user?.token && API_BASE && setApplicationHistory) {
+        tasks.push((async () => {
+          try {
+            const res = await fetch(`${API_BASE}/users/application-history`, { headers: { Authorization: `Bearer ${user.token}` } });
+            if (res.ok) { const d = await res.json(); if (d?.success && Array.isArray(d.applicationHistory)) setApplicationHistory(d.applicationHistory); }
+          } catch {}
+        })());
+      }
+      await Promise.all(tasks);
+    } finally { setRefreshing(false); }
+  }, [refreshCredits, user?.token, API_BASE, setApplicationHistory]);
   const isMicrosoft = user?.provider === 'microsoft' || user?.oauth_provider === 'microsoft';
 
   // Ref for scrolling to the companies section
@@ -1572,6 +1619,9 @@ export default function HomeScreen({
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#4F8DFF" colors={['#4F8DFF']} />
+        }
       >
         {/* ── HERO CARD ─────────────────────────────────────── */}
         <View style={styles.heroCard}>
@@ -1846,7 +1896,11 @@ export default function HomeScreen({
               { icon: 'settings-outline',   title: 'Account Settings',   sub: 'View your profile',          onPress: () => { setShowSettings(false); setScreen('profile'); } },
               { icon: 'briefcase-outline',   title: 'Jobs Dashboard',     sub: 'AI-powered job search hub',  onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(ai-hub)'); } },
               { icon: 'document-text-outline', title: 'Resume Builder',   sub: 'Build your AI-powered resume', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(resume-builder)'); } },
-            ].concat(isAdmin ? [{ icon: 'star-outline', title: 'Admin Panel', sub: 'Manage credit packages', onPress: () => { setShowSettings(false); setScreen('admin'); } }] : []).concat([
+            ].concat(isAdmin ? [
+              { icon: 'star-outline', title: 'Admin Panel', sub: 'Manage credit packages', onPress: () => { setShowSettings(false); setScreen('admin'); } },
+              { icon: 'pricetags-outline', title: 'AI Event Credits', sub: 'Set credits per AI action', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/ai-event-credits'); } },
+              { icon: 'construct-outline', title: 'Employer Fix Agent', sub: 'Auto-fix employers we missed', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/employer-requests'); } },
+            ] : []).concat([
               null,
               { icon: 'document-text-outline', title: 'Terms & Conditions', sub: 'View terms of service',   onPress: () => { setShowSettings(false); setScreen('terms'); } },
               { icon: 'shield-outline',          title: 'Privacy Policy',   sub: 'How we protect your data', onPress: () => { setShowSettings(false); setScreen('privacy'); } },

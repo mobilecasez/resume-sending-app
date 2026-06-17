@@ -1,5 +1,4 @@
 const dbConfig = require('../../db-config');
-const { detectJobLanguage } = require('../utils/jobLanguage');
 
 /**
  * Create a new async job
@@ -167,13 +166,13 @@ async function upsertSkill(skillName) {
     return result[0].id;
 }
 
-async function upsertJob(employerId, locationId, title, jobUrl, experience, salary, jobType, urgent, responsibilities = []) {
+async function upsertJob(employerId, locationId, title, jobUrl, experience, salary, jobType, urgent, responsibilities = [], workMode = null) {
     const respJson = Array.isArray(responsibilities) && responsibilities.length > 0
         ? JSON.stringify(responsibilities)
         : null;
     const result = await dbConfig.query(
-        `INSERT INTO jobs (employer_id, location_id, title, job_url, experience, salary, job_type, urgent, responsibilities)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO jobs (employer_id, location_id, title, job_url, experience, salary, job_type, urgent, responsibilities, work_mode)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (job_url) DO UPDATE SET
             -- Re-point the job to the CURRENT search's employer. ATS jobs live on a
             -- subdomain (jobs.acme.com) while users search the corporate domain
@@ -190,10 +189,11 @@ async function upsertJob(employerId, locationId, title, jobUrl, experience, sala
             job_type = EXCLUDED.job_type,
             urgent = EXCLUDED.urgent,
             responsibilities = EXCLUDED.responsibilities,
+            work_mode = EXCLUDED.work_mode,
             is_active = TRUE,
             updated_at = CURRENT_TIMESTAMP
          RETURNING id`,
-        [employerId, locationId, title, jobUrl, experience, salary, jobType, urgent, respJson]
+        [employerId, locationId, title, jobUrl, experience, salary, jobType, urgent, respJson, workMode]
     );
     return result[0].id;
 }
@@ -258,15 +258,38 @@ async function linkUserSkill(userId, skillId) {
     );
 }
 
-async function saveUserJobMatch(userId, jobId, matchScore) {
+// Create or update a user↔job match row. Pass a numeric `matchScore` to record a computed
+// score (also stamps scored_at so it counts as "scored"); pass null/undefined to only ENSURE
+// the row exists as UNSCORED (scored_at stays NULL → the card shows "Evaluating…") without
+// clobbering any score already stored.
+async function saveUserJobMatch(userId, jobId, matchScore = null) {
+    const scored = typeof matchScore === 'number' && Number.isFinite(matchScore);
     await dbConfig.query(
-        `INSERT INTO user_job_matches (user_id, job_id, match_score)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (user_id, job_id) DO UPDATE SET 
-            match_score = EXCLUDED.match_score,
-            updated_at = CURRENT_TIMESTAMP`,
-        [userId, jobId, matchScore]
+        `INSERT INTO user_job_matches (user_id, job_id, match_score, scored_at)
+         VALUES ($1, $2, $3, ${scored ? 'CURRENT_TIMESTAMP' : 'NULL'})
+         ON CONFLICT (user_id, job_id) DO UPDATE SET
+            match_score = ${scored ? 'EXCLUDED.match_score' : 'user_job_matches.match_score'},
+            scored_at   = ${scored ? 'CURRENT_TIMESTAMP' : 'user_job_matches.scored_at'},
+            updated_at  = CURRENT_TIMESTAMP`,
+        [userId, jobId, scored ? matchScore : 0]
     );
+}
+
+// Hard-delete a job (cascades job_skills, job_contacts, user_job_matches via FK ON DELETE
+// CASCADE). Used by the best-200 ranking to evict a weak-match job for a stronger one
+// during a fresh scrape (where the searching user owns all the just-created jobs).
+async function deleteJob(jobId) {
+    await dbConfig.run(`DELETE FROM jobs WHERE id = ?`, [jobId]);
+}
+
+// Per-user eviction for the best-200 ranking. Removes THIS user's match to the job, then
+// hard-deletes the shared job row ONLY if no other user still references it. This prevents
+// cross-user data loss: if user B is concurrently tracking the same employer, evicting a
+// job from user A's top-200 no longer wipes it out of B's dashboard. (H4/M22)
+async function evictUserJob(jobId, userId) {
+    await dbConfig.run(`DELETE FROM user_job_matches WHERE job_id = ? AND user_id = ?`, [jobId, userId]);
+    const other = await dbConfig.get(`SELECT 1 AS x FROM user_job_matches WHERE job_id = ? LIMIT 1`, [jobId]);
+    if (!other) await dbConfig.run(`DELETE FROM jobs WHERE id = ?`, [jobId]);
 }
 
 const AVATAR_COLORS_DB = [
@@ -319,12 +342,12 @@ async function getUserDashboard(userId) {
         } else {
             // Load from normalized tables
             const jobsRows = await dbConfig.query(
-                `SELECT j.*, ujm.match_score, l.raw_text as location_text
+                `SELECT j.*, ujm.match_score, ujm.scored_at, l.raw_text as location_text
                  FROM jobs j
                  JOIN user_job_matches ujm ON j.id = ujm.job_id
                  LEFT JOIN locations l ON j.location_id = l.id
                  WHERE j.employer_id = $1 AND ujm.user_id = $2 AND j.is_active = TRUE
-                 ORDER BY ujm.match_score DESC, j.created_at DESC`,
+                 ORDER BY j.created_at DESC`,
                 [emp.id, userId]
             );
 
@@ -351,12 +374,6 @@ async function getUserDashboard(userId) {
                 })();
 
                 const skillNames = skillsRows.map(s => s.name);
-                // Detect language so the client can show a "Translate to English"
-                // icon only on non-English jobs (ATS jobs are parsed without AI and
-                // keep their original language).
-                const { lang } = detectJobLanguage(
-                    [jRow.title, Array.isArray(responsibilities) ? responsibilities.join(' ') : '', skillNames.join(' ')].join(' ')
-                );
 
                 jobs.push({
                     id: String(jRow.id),
@@ -365,10 +382,11 @@ async function getUserDashboard(userId) {
                     experience: jRow.experience || 'Not specified',
                     salary: jRow.salary || 'Not listed',
                     jobType: jRow.job_type || 'Full-time',
+                    workMode: jRow.work_mode || null,
                     urgent: !!jRow.urgent,
-                    matchScore: jRow.match_score || 0,
+                    matchScore: jRow.scored_at ? (jRow.match_score ?? 0) : null,
+                    createdAt: jRow.created_at,
                     applyUrl: jRow.job_url,
-                    lang,
                     skills: skillNames,
                     responsibilities,
                     contacts: contactsRows.map((c, ci) => ({
@@ -431,12 +449,37 @@ async function getRecentEmployerData(domain, maxAgeHours = 24) {
     );
     if (!employer) return null;
 
-    // Does it have active jobs?
-    const jobCount = await dbConfig.get(
-        `SELECT COUNT(*) AS count FROM jobs WHERE employer_id = $1 AND is_active = TRUE`,
+    // Does it have active jobs — and are they actually ENRICHED? A previous failed
+    // scrape can leave active jobs with 0 skills and null responsibilities (e.g. an ATS
+    // whose detail pages weren't parsed). Serving that from cache forever is wrong, so
+    // when nothing is enriched we return null → the caller re-scrapes fresh.
+    // A job counts as ENRICHED if it carries real signal: parsed skills/responsibilities,
+    // a concrete salary, OR a deep apply URL (≥2 path segments — a real posting link, not
+    // the bare careers page or a synthetic "#role-N" fragment). This still rejects a failed
+    // scrape (title-only, no detail, no real link) while letting a legitimately thin ATS
+    // listing be cached instead of re-scraped on every single search. (M21)
+    const stats = await dbConfig.get(
+        `SELECT
+           COUNT(*) AS active_jobs,
+           COUNT(*) FILTER (
+             WHERE EXISTS (SELECT 1 FROM job_skills js WHERE js.job_id = j.id)
+                OR (j.responsibilities IS NOT NULL
+                    AND j.responsibilities <> '[]' AND j.responsibilities <> 'null')
+                OR (j.salary IS NOT NULL AND j.salary <> '')
+                OR (j.job_url IS NOT NULL AND j.job_url NOT LIKE '%#role-%'
+                    AND j.job_url ~ '^https?://[^/]+/[^/]+/.+')
+           ) AS enriched_jobs
+         FROM jobs j
+         WHERE j.employer_id = $1 AND j.is_active = TRUE`,
         [employer.id]
     );
-    if (!jobCount || parseInt(jobCount.count) < 1) return null;
+    const active   = parseInt(stats?.active_jobs   || 0, 10);
+    const enriched = parseInt(stats?.enriched_jobs || 0, 10);
+    if (active < 1) return null;
+    if (enriched === 0) {
+        console.log(`[aiHub] Cache bypass for "${domain}": ${active} active jobs but 0 enriched (no skills/responsibilities) — forcing re-scrape`);
+        return null;
+    }
 
     return employer;
 }
@@ -457,7 +500,7 @@ async function buildCachedEmployerObject(employer, userId, asyncJobId) {
     );
 
     const jobsRows = await dbConfig.query(
-        `SELECT j.*, ujm.match_score, l.raw_text AS location_text
+        `SELECT j.*, ujm.match_score, ujm.scored_at, l.raw_text AS location_text
          FROM jobs j
          JOIN user_job_matches ujm ON j.id = ujm.job_id
          LEFT JOIN locations l ON j.location_id = l.id
@@ -503,8 +546,10 @@ async function buildCachedEmployerObject(employer, userId, asyncJobId) {
             experience: jRow.experience || 'Not specified',
             salary: jRow.salary || 'Not listed',
             jobType: jRow.job_type || 'Full-time',
+            workMode: jRow.work_mode || null,
             urgent: !!jRow.urgent,
-            matchScore: jRow.match_score || 0,
+            matchScore: jRow.scored_at ? (jRow.match_score ?? 0) : null,
+            createdAt: jRow.created_at,
             applyUrl: jRow.job_url,
             skills: skillsRows.map(s => s.name),
             responsibilities,
@@ -562,6 +607,8 @@ module.exports = {
     trackUserEmployer,
     linkUserSkill,
     saveUserJobMatch,
+    deleteJob,
+    evictUserJob,
     getUserDashboard,
     archiveUserEmployer,
     getRecentEmployerData,

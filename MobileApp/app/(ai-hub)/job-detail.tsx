@@ -18,6 +18,7 @@ import {
   ActivityIndicator,
   AppState,
   AppStateStatus,
+  Clipboard,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
@@ -29,9 +30,38 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts } from '../../services/aiHubService';
+import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, translateJob, getSmartFillData, recordAutofillMemory, type TranslatedJob, type SmartFillData } from '../../services/aiHubService';
 import { API_BASE } from '../../config';
+import { SUBMIT_DETECT_JS, CONFIRM_URL_RE } from './submitDetect';
+import CreditCostPill from '../../components/CreditCostPill';
+import { useEventCosts } from '../../hooks/useEventCosts';
+import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import type { Contact, Job, Employer } from '../../types/aiHub';
+
+// Lightweight CLIENT-SIDE check: should we offer "Translate to English" for this
+// job? Runs on the data already in the app — no network call, no backend/search
+// cost. Biased to SHOW the toggle for non-English jobs (German/French/Dutch/…)
+// and hide it for English ones. The actual translation happens only on tap.
+const _TR_EN = ['the','and','for','with','you','your','our','are','will','we','this','that','have','from','experience','team','work','role','skills','requirements','responsibilities'];
+const _TR_NONEN = ['und','der','die','das','für','mit','sie','ihre','wir','sind','aufgaben','kenntnisse','erfahrung','les','des','une','pour','avec','vous','nous','votre','het','een','van','voor','los','para','con','gli','esperienza'];
+const _TR_DIA = /[äöüßàâçéèêëîïôûùœñãõ]/i;
+const _TR_GENDER = /\(?\s*[mwfdx]\s*\/\s*[mwfdx]\s*\/\s*[mwfdx]\s*\)?/i;
+const _TR_MORPH = ['entwickler','mitarbeiter','sachbearbeiter','bauleiter','gesucht','vertrieb','fachkraft','ingénieur','développeur','responsable','technicien','geschäft'];
+function isLikelyNonEnglish(text: string): boolean {
+  const raw = String(text || '');
+  if (_TR_GENDER.test(raw)) return true;
+  const toks = raw.toLowerCase().match(/[a-zà-ÿ]+/gi) || [];
+  if (toks.length < 3) return false;
+  const set = new Set(toks);
+  const en = _TR_EN.reduce((n, w) => n + (set.has(w) ? 1 : 0), 0);
+  const non = _TR_NONEN.reduce((n, w) => n + (set.has(w) ? 1 : 0), 0);
+  const morph = toks.some((t) => _TR_MORPH.some((m) => t.includes(m)));
+  if (_TR_DIA.test(raw) && en <= 2) return true;
+  if (morph && en === 0) return true;
+  if (non >= 2 && non >= en) return true;
+  if (non >= 1 && en === 0) return true;
+  return false;
+}
 
 async function getToken(): Promise<string | null> {
   try {
@@ -147,6 +177,7 @@ type CLBtnState = 'idle' | 'loading' | 'done';
 function GenerateCLButton({ state, progress, progressAnim, label, onPress }: {
   state: CLBtnState; progress: number; progressAnim: Animated.Value; label: string; onPress: () => void;
 }) {
+  const { costs } = useEventCosts();
   const spinAnim = useRef(new Animated.Value(0)).current;
   const shimAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -165,6 +196,7 @@ function GenerateCLButton({ state, progress, progressAnim, label, onPress }: {
       <View style={btn.idleContent}>
         <Ionicons name="sparkles" size={14} color="#fff" />
         <Text style={btn.label}>Generate Cover Letter</Text>
+        <CreditCostPill credits={costs['job_cover_letter'] ?? null} tone="dark" style={{ marginLeft: 2 }} />
       </View>
       <View style={btn.arrowPill}>
         <Ionicons name="arrow-forward" size={14} color="#fff" />
@@ -431,6 +463,47 @@ const INTERCEPT_FILES_JS = `(function(){
   }, true);
 })(); true;`;
 
+// Installed on every page load: tell RN which form field the user just focused, so the
+// "smart copy" popup can lead with the right value for that field. Self-contained helpers.
+const FOCUS_DETECT_JS = `(function(){
+  if (window.__cvfFocusHook) return; window.__cvfFocusHook = true;
+  ${JS_HELPERS}
+  document.addEventListener('focus', function(ev){
+    try {
+      var el = ev.target; if(!el) return; var tag = el.tagName;
+      if (tag!=='INPUT' && tag!=='TEXTAREA' && tag!=='SELECT') return;
+      var t = (el.type||'').toLowerCase();
+      if (['hidden','submit','button','reset','image','file'].indexOf(t) >= 0) return;
+      post({ type:'FIELD_FOCUS', key:sig(el), label:(t==='radio'?radioQuestion(el):nlbl(el)).slice(0,140), fieldType:t });
+    } catch(e){}
+  }, true);
+})(); true;`;
+
+// Injected on demand (at submit time) to HARVEST what the user filled, so autofill learns.
+// Reads each visible, non-sensitive field's question + value and posts them to RN.
+const HARVEST_JS = `(function(){
+  ${JS_HELPERS}
+  try {
+    var out=[], seenRadio={};
+    var els=document.querySelectorAll('input,textarea,select');
+    for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
+      if(['hidden','submit','button','reset','image','file','password'].indexOf(t)>=0) continue;
+      if(!vis(el)) continue;
+      var label='', value='';
+      if(t==='radio'){ if(!el.checked) continue; var rk=el.name||sig(el); if(seenRadio[rk]) continue; seenRadio[rk]=true; label=radioQuestion(el); value=nlbl(el)||el.value||''; }
+      else if(t==='checkbox'){ label=nlbl(el); value=el.checked?'Yes':'No'; }
+      else if(el.tagName==='SELECT'){ label=nlbl(el); var so=el.options&&el.options[el.selectedIndex]; value=so?(so.text||so.value||''):''; }
+      else { value=(el.value||'').trim(); if(!value) continue; label=nlbl(el); }
+      if(label && value) out.push({ label:String(label).slice(0,140), value:String(value).slice(0,200), type:t });
+    }
+    post({ type:'HARVEST', answers: out });
+  } catch(e){}
+})(); true;`;
+
+// 1b) Detect a SUCCESSFUL application submission inside the apply WebView (multilingual,
+//     language-agnostic — see submitDetect.ts). SUBMIT_DETECT_JS posts SUBMIT_INTENT on a
+//     real apply-form submit and SUBMIT_SUCCESS when a confirmation is detected.
+
 // 2) Fill by scrolling through the form and filling each field by signature AS it renders
 //    (handles lazy-loaded + virtualized fields). Reports real filled/total counts.
 function fillJs(values: Record<string, any>): string {
@@ -523,6 +596,31 @@ const AUTOFILL_STEPS: { key: string; label: string }[] = [
   { key: 'filling', label: 'Filling in your details' },
 ];
 
+// Cover-letter HTML → readable plain text (for pasting into a textarea).
+function clPlainText(html?: string | null): string {
+  if (!html) return '';
+  return String(html)
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\/\s*(p|div|li|h[1-6])\s*>/gi, '\n\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, '"')
+    .replace(/&[a-z#0-9]+;/gi, ' ')
+    .replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n')
+    .trim();
+}
+
+// Is this form field a free-text COVER LETTER box (so we paste the letter text, not a file)?
+function isCoverLetterTextarea(f: any): boolean {
+  if (!f) return false;
+  const tag = String(f.tag || '').toLowerCase();
+  const type = String(f.type || '').toLowerCase();
+  if (tag !== 'textarea' && !(tag === 'input' && (type === 'text' || type === ''))) return false;
+  const hay = `${f.label || ''} ${f.name || ''} ${f.placeholder || ''}`.toLowerCase();
+  return /cover\s*letter|covering\s*letter|cover\s*note|motivation|why (do|are|would) you|why (this|the) (role|job|position|company)|tell us (about yourself|why)|introduce yourself/.test(hay);
+}
+
 export default function JobDetailScreen() {
   const router = useRouter();
   const { jobId, jobStr, employerStr } = useLocalSearchParams<{ jobId?: string; jobStr?: string; employerStr?: string }>();
@@ -568,10 +666,26 @@ export default function JobDetailScreen() {
   const [applyProgress,  setApplyProgress]  = useState(0);
   const [applyCanGoBack, setApplyCanGoBack] = useState(false);
   const [applyHost,      setApplyHost]      = useState('');
+  const [appliedBanner,  setAppliedBanner]  = useState(false);   // green "submitted ✓" toast inside the web view
+  const submitMarkedRef = useRef(false);                          // fire the "Applied" mark only once per session
+  const submitIntentRef = useRef(0);                              // ts of last real apply-form submit (for the URL backstop)
+  useEffect(() => {                                                // auto-dismiss the "submitted ✓" toast
+    if (!appliedBanner) return;
+    const t = setTimeout(() => setAppliedBanner(false), 6000);
+    return () => clearTimeout(t);
+  }, [appliedBanner]);
+  // Mark the job "Applied" once (persists to backend → dashboard shows it on return).
+  const markApplied = useCallback(() => {
+    if (submitMarkedRef.current) return;
+    submitMarkedRef.current = true;
+    updateJobCLStatus(job.id, 'applied').catch(() => {});
+    setAppliedBanner(true);
+  }, [job?.id]);
   const applyWebRef = useRef<WebView>(null);
   const applyOriginRef = useRef<string>('');   // origin of the apply page — injections are gated to it
   const currentUrlRef  = useRef<string>('');   // live page URL (from onNavigationStateChange)
   const insets = useSafeAreaInsets();          // notch/home-indicator insets (Modal-safe)
+  const rating = useRatingPrompt();            // post-apply rating prompt (portal close + email send)
 
   // ── AI auto-fill state ──
   const [autofillState, setAutofillState] = useState<string | null>(null); // null|running|done|error
@@ -591,6 +705,16 @@ export default function JobDetailScreen() {
   const [preview,        setPreview]        = useState<{ image: string; title: string; ratio: number } | null>(null);
   const [previewBusy,    setPreviewBusy]    = useState<string | null>(null);
 
+  // ── Smart-copy control (in-WebView floating helper) ──
+  const [smartOpen,     setSmartOpen]     = useState(false);
+  const [smartData,     setSmartData]     = useState<SmartFillData | null>(null);
+  const [smartExpanded, setSmartExpanded] = useState(false);   // "See more": show ALL details
+  const [copiedKey,     setCopiedKey]     = useState<string | null>(null); // inline "Copied ✓"
+  const focusedFieldRef = useRef<{ key: string; label: string; type: string } | null>(null);
+  const smartValuesRef  = useRef<Record<string, string>>({});  // autofill-map field key -> value (for field-awareness)
+  const copyTimerRef    = useRef<any>(null);
+  const localFillRef    = useRef<{ fullName?: string; email?: string; phone?: string; location?: string }>({}); // local session + resume-builder facts
+
   const openApplyWebView = (url?: string) => {
     const u = (url || '').trim();
     if (!u) return;
@@ -608,12 +732,94 @@ export default function JobDetailScreen() {
     setFilePickBusy(null);
     filesRef.current = {};
     setResumeRegion(''); setClRegion(''); setResumeExpanded(false); setClExpanded(false); setPreview(null); setPreviewBusy(null);
+    submitMarkedRef.current = false; submitIntentRef.current = 0; setAppliedBanner(false);
+    // Smart-copy: reset + prefetch the user's reusable details for the floating helper.
+    setSmartOpen(false); setSmartExpanded(false); setCopiedKey(null);
+    focusedFieldRef.current = null; smartValuesRef.current = {};
+    loadLocalFill();
+    if (!smartData) { getSmartFillData().then(setSmartData).catch(() => {}); }
     setApplyWebUrl(u);
+  };
+
+  // Pull the user's reusable facts from local storage (session name/email + resume-builder
+  // phone/location) so the smart-copy popup is populated even if the server bundle is sparse.
+  const loadLocalFill = async () => {
+    const out: { fullName?: string; email?: string; phone?: string; location?: string } = {};
+    try { const raw = await SecureStore.getItemAsync('userSession'); if (raw) { const sx = JSON.parse(raw); out.fullName = sx.fullName || sx.full_name || ''; out.email = sx.email || ''; } } catch {}
+    try { const raw = await AsyncStorage.getItem('resumeBuilderFormData'); if (raw) { const b = JSON.parse(raw); out.fullName = out.fullName || b.name || ''; out.email = out.email || b.email || ''; out.phone = b.phone || ''; out.location = b.location || ''; } } catch {}
+    localFillRef.current = out;
   };
 
   const sameOrigin = () => {
     try { return !!applyOriginRef.current && new URL(currentUrlRef.current).origin === applyOriginRef.current; } catch { return false; }
   };
+
+  // ── Smart-copy helpers ──
+  const copyValue = (key: string, text: string) => {
+    const t = String(text || '').trim();
+    if (!t) return;
+    try { Clipboard.setString(t); } catch {}
+    setCopiedKey(key);
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => setCopiedKey(null), 1500);
+  };
+  const openSmart = () => {
+    if (!smartData) getSmartFillData().then(setSmartData).catch(() => {});
+    // Drop the on-screen keyboard so the bottom-sheet popup isn't hidden behind it.
+    try { applyWebRef.current?.injectJavaScript('try{if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();}catch(e){} true;'); } catch {}
+    setSmartExpanded(false);
+    setSmartOpen(true);
+  };
+  // The copyable rows shown in the popup — local facts (session + resume builder) merged
+  // with the server bundle (address/nationality + resume summary + skills).
+  const buildSmartItems = (): { key: string; label: string; value: string; multiline?: boolean }[] => {
+    const items: { key: string; label: string; value: string; multiline?: boolean }[] = [];
+    const cl = clPlainText(coverLetterHtml);
+    if (cl) items.push({ key: 'coverLetter', label: 'Cover letter', value: cl, multiline: true });
+    const lf = localFillRef.current || {};
+    const byId: Record<string, string> = {};
+    for (const f of (smartData?.fields || [])) byId[f.id] = f.value;
+    const add = (key: string, label: string, value?: string) => { const v = String(value || '').trim(); if (v) items.push({ key, label, value: v }); };
+    add('fullName', 'Full name', lf.fullName || byId.fullName);
+    add('email', 'Email', lf.email || byId.email);
+    add('phone', 'Phone', lf.phone || byId.phone);
+    add('location', 'Location', lf.location || byId.location);
+    add('address', 'Address', byId.address);
+    add('nationality', 'Nationality', byId.nationality);
+    if (smartData?.resumeSummary) items.push({ key: 'resumeSummary', label: 'Resume summary', value: smartData.resumeSummary, multiline: true });
+    if (smartData?.skills?.length) items.push({ key: 'skills', label: 'Skills', value: smartData.skills.join(', ') });
+    return items;
+  };
+  // Which row to lead with, based on the field the user last focused.
+  const primarySmartKey = (): string | null => {
+    const f = focusedFieldRef.current;
+    if (!f) return null;
+    if (f.key && smartValuesRef.current[f.key]) return '__field__';
+    const L = (f.label || '').toLowerCase();
+    if (/cover.?letter|motivat|why.*(you|us|company|role|join)|about.?yourself|tell us|introduce|message/.test(L)) return 'coverLetter';
+    if (/e-?mail/.test(L)) return 'email';
+    if (/phone|mobile|tel\b|contact number/.test(L)) return 'phone';
+    if (/full.?name|your name|first.?name|last.?name|^name/.test(L)) return 'fullName';
+    if (/location|city|address|town|postcode|zip|country/.test(L)) return 'location';
+    if (/summary|about you|\bbio\b|profile/.test(L)) return 'resumeSummary';
+    return null;
+  };
+  const renderSmartRow = (it: { key: string; label: string; value: string; multiline?: boolean }) => (
+    <View key={it.key} style={s.smartRow}>
+      <View style={{ flex: 1, paddingRight: 10 }}>
+        <Text style={s.smartRowLabel}>{it.label}</Text>
+        <Text style={s.smartRowValue} numberOfLines={it.multiline ? 4 : 1}>{it.value}</Text>
+      </View>
+      <TouchableOpacity
+        style={[s.smartCopyBtn, copiedKey === it.key && s.smartCopyBtnDone]}
+        onPress={() => copyValue(it.key, it.value)}
+        activeOpacity={0.8}
+      >
+        <Ionicons name={copiedKey === it.key ? 'checkmark' : 'copy-outline'} size={13} color={copiedKey === it.key ? '#fff' : T.blue} />
+        <Text style={[s.smartCopyTxt, copiedKey === it.key && { color: '#fff' }]}>{copiedKey === it.key ? 'Copied' : 'Copy'}</Text>
+      </TouchableOpacity>
+    </View>
+  );
 
   // Load CL from DB — triggered after jobId is known (see useEffect below)
 
@@ -644,6 +850,31 @@ export default function JobDetailScreen() {
 
   const job = foundJob;
   const employer = foundEmployer;
+
+  // ── Translate-to-English — lives in the detail (not on the card). Language is
+  // detected client-side (zero search cost); the translation runs on-demand only
+  // when the user taps. `display` swaps the SHOWN fields; `job` stays the original
+  // for all logic (cover-letter / email generation).
+  const [translatedJob, setTranslatedJob] = useState<TranslatedJob | null>(null);
+  const [showEnglish, setShowEnglish] = useState(false);
+  const [translatingJob, setTranslatingJob] = useState(false);
+  const display: any = (showEnglish && translatedJob)
+    ? { ...job, ...Object.fromEntries(Object.entries(translatedJob).filter(([, v]) => v != null && (!Array.isArray(v) || v.length > 0))) }
+    : job;
+  const canTranslate = isLikelyNonEnglish(
+    `${job.title || ''} ${Array.isArray((job as any).responsibilities) ? (job as any).responsibilities.join(' ') : ''} ${Array.isArray(job.skills) ? job.skills.join(' ') : ''}`
+  );
+  const onTranslate = async () => {
+    if (translatedJob) { setShowEnglish((v) => !v); return; }
+    setTranslatingJob(true);
+    try {
+      const t = await translateJob(job.id);
+      setTranslatedJob(t);
+      setShowEnglish(true);
+    } catch {
+      Alert.alert('Translation unavailable', 'Could not translate this job right now. Please try again.');
+    } finally { setTranslatingJob(false); }
+  };
   // Proper company website WITH TLD (e.g. https://vertigis.com). Priority:
   // 1) threaded domain IF it has a real TLD (contains a dot), 2) the job's apply-URL host,
   // 3) the raw domain as a last resort. Never the bare TLD-less company name → "https://vertigis".
@@ -656,7 +887,7 @@ export default function JobDetailScreen() {
   const jobRegion = regionFromCountry((job as any).location || '');   // default region from the job
   const effResumeRegion = resumeRegion || jobRegion;
   const effClRegion = clRegion || jobRegion;
-  const allSkills = job.skills || [];
+  const allSkills = display.skills || [];
   const SKILLS_LIMIT = 6;
   const visibleSkills = skillsExpanded ? allSkills : allSkills.slice(0, SKILLS_LIMIT);
 
@@ -801,7 +1032,10 @@ export default function JobDetailScreen() {
     setAutofillState(null);
     setPreview(null); setPreviewBusy(null);   // don't leave a stale preview / busy spinner
     setFilePick(null); setFilePickBusy(null);
+    const didApply = submitMarkedRef.current;
     setApplyWebUrl(null);
+    // If they actually submitted on the portal, ask for a rating after the web view closes.
+    if (didApply) setTimeout(() => { rating.ask('apply_portal'); }, 450);
   };
 
   // A run is still valid only if it's the current active run AND the page hasn't navigated
@@ -836,6 +1070,30 @@ export default function JobDetailScreen() {
       return;
     }
 
+    // Smart-copy: remember which field the user focused, so the popup leads with the
+    // right value (works independently of an auto-fill run).
+    if (msg.type === 'FIELD_FOCUS') {
+      focusedFieldRef.current = { key: msg.key || '', label: msg.label || '', type: msg.fieldType || '' };
+      return;
+    }
+
+    // Self-learning: the page is about to submit → harvest what the user filled, so the
+    // next form with the same questions auto-fills. (Harvest while the values are still in
+    // the DOM — SUBMIT_INTENT fires before the navigation completes.)
+    if (msg.type === 'SUBMIT_INTENT') {
+      submitIntentRef.current = Date.now();
+      try { if (sameOrigin()) applyWebRef.current?.injectJavaScript(HARVEST_JS); } catch {}
+      return;
+    }
+    if (msg.type === 'HARVEST') {
+      if (Array.isArray(msg.answers) && msg.answers.length) recordAutofillMemory(msg.answers);
+      return;
+    }
+
+    // Submission detected on the page (works whether the user auto-filled or filled
+    // manually, in any language). Mark the job "Applied" once — dashboard reflects it.
+    if (msg.type === 'SUBMIT_SUCCESS') { markApplied(); return; }
+
     if (!autofillRef.current.active) return;
     const gen = autofillRef.current.gen;
 
@@ -849,6 +1107,17 @@ export default function JobDetailScreen() {
         const data = await postAndPoll('/ai-hub/autofill-map', { fields: msg.fields, coverLetterHtml, jobTitle: job.title, companyName: companyNameCL || employer.name }, token);
         if (!stillValid(gen)) return;
         const values = (data && data.values) || {};
+        // If the form has a free-text cover-letter box (no file upload), paste the WHOLE
+        // cover letter straight in — deterministically, so it's never AI-truncated.
+        const clText = clPlainText(coverLetterHtml);
+        if (clText) {
+          for (const f of msg.fields) {
+            if (isCoverLetterTextarea(f)) values[f.key] = clText;
+          }
+        }
+        // Cache the field→value map so the smart-copy popup can lead with the exact value
+        // the AI/memory computed for whichever field the user focuses.
+        try { smartValuesRef.current = { ...smartValuesRef.current, ...values }; } catch {}
         setStep('mapping', 'done'); setStep('filling', 'active');
         applyWebRef.current?.injectJavaScript(fillJs(values));
       } catch (err: any) {
@@ -1106,6 +1375,7 @@ export default function JobDetailScreen() {
           setTimeout(() => {
             setComposeVisible(false);
             setTimeout(() => setSendState('idle'), 400);
+            setTimeout(() => { rating.ask('apply_email'); }, 700);   // ask for a rating after the email is sent
           }, 1200);
           Alert.alert('Sent! 🎉', `Your application has been sent to ${cName}.`);
         } else {
@@ -1200,6 +1470,20 @@ export default function JobDetailScreen() {
             {employer.name.toUpperCase()}
           </Text>
 
+          {typeof job.matchScore === 'number' && job.matchScore >= 0 && (
+            <View style={[s.matchBadge, {
+              backgroundColor: job.matchScore >= 70 ? 'rgba(16,185,129,0.22)'
+                : job.matchScore >= 40 ? 'rgba(251,146,60,0.22)'
+                : 'rgba(148,163,184,0.22)',
+            }]}>
+              <Text style={[s.matchBadgeText, {
+                color: job.matchScore >= 70 ? '#34D399'
+                  : job.matchScore >= 40 ? '#FB923C'
+                  : '#CBD5E1',
+              }]}>{job.matchScore}% match</Text>
+            </View>
+          )}
+
           <View style={s.heroTop}>
             <LinearGradient colors={employer.logoColor} style={s.logoBox}>
               <Text style={s.logoInitial}>{employer.logoInitial}</Text>
@@ -1216,35 +1500,57 @@ export default function JobDetailScreen() {
             )}
           </View>
 
-          <Text style={s.jobTitle}>{job.title}</Text>
+          <Text style={s.jobTitle}>{display.title}</Text>
 
           {/* Meta chips — dark style */}
           <View style={s.metaRow}>
-            {!!job.location && (
+            {!!display.location && (
               <View style={s.metaChip}>
                 <Ionicons name="location-outline" size={11} color="#06B6D4" />
-                <Text style={s.metaChipText}>{job.location}</Text>
+                <Text style={s.metaChipText}>{display.location}</Text>
               </View>
             )}
-            {!!(job as any).experience && (
+            {!!display.experience && (
               <View style={s.metaChip}>
                 <Ionicons name="time-outline" size={11} color="#A78BFA" />
-                <Text style={s.metaChipText}>{(job as any).experience}</Text>
+                <Text style={s.metaChipText}>{display.experience}</Text>
               </View>
             )}
-            {!!job.salary && job.salary !== 'Not listed' && (
+            {!!display.salary && display.salary !== 'Not listed' && (
               <View style={s.metaChip}>
                 <Ionicons name="cash-outline" size={11} color="#34D399" />
-                <Text style={s.metaChipText}>{job.salary}</Text>
+                <Text style={s.metaChipText}>{display.salary}</Text>
               </View>
             )}
-            {!!job.jobType && (
+            {!!display.jobType && (
               <View style={s.metaChip}>
                 <Ionicons name="briefcase-outline" size={11} color="#FB923C" />
-                <Text style={s.metaChipText}>{job.jobType}</Text>
+                <Text style={s.metaChipText}>{display.jobType}</Text>
+              </View>
+            )}
+            {!!display.workMode && (
+              <View style={s.metaChip}>
+                <Ionicons name="business-outline" size={11} color="#22D3EE" />
+                <Text style={s.metaChipText}>{display.workMode}</Text>
               </View>
             )}
           </View>
+
+          {/* Translate — bottom-right of the hero, clear of the top-right match badge */}
+          {canTranslate && (
+            <View style={s.heroTranslateRow}>
+              <TouchableOpacity onPress={onTranslate} disabled={translatingJob} activeOpacity={0.85} style={[s.translatePill, showEnglish && s.translatePillActive]}>
+                {translatingJob ? (
+                  <ActivityIndicator size="small" color={showEnglish ? '#fff' : '#06B6D4'} />
+                ) : (
+                  <>
+                    <Ionicons name="language" size={12} color={showEnglish ? '#fff' : '#06B6D4'} />
+                    <Text style={[s.translatePillText, showEnglish && s.translatePillTextActive]}>{showEnglish ? 'English' : 'Translate'}</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
 
         {/* ── Card 2: Hiring Contacts ── */}
@@ -1340,10 +1646,10 @@ export default function JobDetailScreen() {
         )}
 
         {/* ── Card 4: Responsibilities ── */}
-        {((job as any).responsibilities?.length > 0) && (
+        {(display.responsibilities?.length > 0) && (
           <View style={s.card}>
             <Text style={s.sectionLabel}>RESPONSIBILITIES</Text>
-            {((job as any).responsibilities as string[]).map((item, i) => (
+            {(display.responsibilities as string[]).map((item, i) => (
               <View key={i} style={s.respRow}>
                 <View style={s.respDot} />
                 <Text style={s.respText}>{item}</Text>
@@ -1645,7 +1951,7 @@ export default function JobDetailScreen() {
               source={{ uri: applyWebUrl }}
               style={s.webView}
               originWhitelist={['*']}
-              injectedJavaScript={INTERCEPT_FILES_JS}
+              injectedJavaScript={INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS}
               javaScriptEnabled
               domStorageEnabled
               thirdPartyCookiesEnabled
@@ -1662,6 +1968,12 @@ export default function JobDetailScreen() {
               onNavigationStateChange={(nav) => {
                 setApplyCanGoBack(nav.canGoBack);
                 if (nav.url) { currentUrlRef.current = nav.url; try { setApplyHost(new URL(nav.url).hostname.replace(/^www\./, '')); } catch {} }
+                // Backstop: a real submit just happened and we navigated to a clear
+                // confirmation URL (covers cross-origin pages that drop our injected state).
+                if (nav.url && !submitMarkedRef.current && submitIntentRef.current
+                    && Date.now() - submitIntentRef.current < 120000 && CONFIRM_URL_RE.test(nav.url)) {
+                  markApplied();
+                }
               }}
               renderLoading={() => (
                 <View style={s.webLoading}>
@@ -1670,6 +1982,79 @@ export default function JobDetailScreen() {
               )}
             />
           )}
+
+          {/* Submission detected → confirmation toast (job is now "Applied" on the dashboard) */}
+          {appliedBanner && (
+            <View style={[s.appliedToast, { top: insets.top + 56 }]} pointerEvents="box-none">
+              <View style={s.appliedToastCard}>
+                <Ionicons name="checkmark-circle" size={20} color="#fff" />
+                <Text style={s.appliedToastText} numberOfLines={2}>Application submitted — marked as Applied on your dashboard.</Text>
+                <TouchableOpacity onPress={() => setAppliedBanner(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Ionicons name="close" size={17} color="rgba(255,255,255,0.85)" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {/* ── Smart-copy floating helper — UPPER-right so the keyboard never hides it ── */}
+          {autofillState !== 'running' && !smartOpen && (
+            <TouchableOpacity
+              style={[s.smartFab, { top: insets.top + 110 }]}
+              activeOpacity={0.9}
+              onPress={openSmart}
+            >
+              <Ionicons name="copy-outline" size={20} color="#fff" />
+            </TouchableOpacity>
+          )}
+
+          {smartOpen && (() => {
+            const items = buildSmartItems();
+            const pk = primarySmartKey();
+            const focused = focusedFieldRef.current;
+            let primary: { key: string; label: string; value: string; multiline?: boolean } | null = null;
+            if (pk === '__field__' && focused) {
+              const v = smartValuesRef.current[focused.key] || '';
+              primary = { key: '__field__', label: focused.label || 'Suggested answer', value: v, multiline: v.length > 60 };
+            } else if (pk) {
+              primary = items.find(it => it.key === pk) || null;
+            }
+            const rest = primary && primary.key !== '__field__' ? items.filter(it => it.key !== primary!.key) : items;
+            const showAll = smartExpanded || !primary;
+            return (
+              <>
+                <TouchableOpacity style={s.smartBackdrop} activeOpacity={1} onPress={() => setSmartOpen(false)} />
+                <View style={[s.smartSheet, { paddingBottom: 12 + insets.bottom }]}>
+                  <View style={s.smartHandle} />
+                  <View style={s.smartHeader}>
+                    <Ionicons name="sparkles" size={15} color={T.blue} />
+                    <Text style={s.smartTitle}>Quick copy</Text>
+                    <View style={{ flex: 1 }} />
+                    <TouchableOpacity onPress={() => setSmartOpen(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                      <Ionicons name="close" size={18} color={T.textMuted} />
+                    </TouchableOpacity>
+                  </View>
+                  <ScrollView style={{ maxHeight: 380 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+                    {items.length === 0 && (
+                      <Text style={s.smartEmpty}>No saved details yet. Add your resume & profile, then your details appear here to copy.</Text>
+                    )}
+                    {primary && (
+                      <View style={s.smartPrimaryWrap}>
+                        <Text style={s.smartPrimaryHint}>For the field you tapped</Text>
+                        {renderSmartRow(primary)}
+                      </View>
+                    )}
+                    {!showAll && primary && (
+                      <TouchableOpacity style={s.smartMoreBtn} onPress={() => setSmartExpanded(true)} activeOpacity={0.8}>
+                        <Text style={s.smartMoreTxt}>See all details</Text>
+                        <Ionicons name="chevron-down" size={15} color={T.blue} />
+                      </TouchableOpacity>
+                    )}
+                    {showAll && rest.map(it => renderSmartRow(it))}
+                  </ScrollView>
+                </View>
+              </>
+            );
+          })()}
 
           {/* Bottom nav + Auto Fill */}
           <View style={[s.webNav, { paddingBottom: 9 + insets.bottom }]}>
@@ -1865,6 +2250,7 @@ export default function JobDetailScreen() {
         </View>
       </Modal>
 
+      <RatingPromptModal visible={!!rating.trigger} trigger={rating.trigger} onClose={rating.close} />
     </SafeAreaView>
   );
 }
@@ -1942,10 +2328,23 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(255,78,100,0.2)', borderWidth: 1, borderColor: 'rgba(255,78,100,0.4)',
     borderRadius: 10, paddingVertical: 4, paddingHorizontal: 8, flexShrink: 0,
   },
+  matchBadge: { position: 'absolute', top: 14, right: 14, zIndex: 3, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 5 },
+  matchBadgeText: { fontSize: 11, fontWeight: '800' },
   urgentText: { fontSize: 10, fontWeight: '700', color: '#FF4E64' },
+
+  // Translate-to-English pill (hero, top-right)
+  translatePill: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, minWidth: 34, minHeight: 26, justifyContent: 'center',
+    backgroundColor: 'rgba(6,182,212,0.15)', borderWidth: 1, borderColor: 'rgba(6,182,212,0.45)',
+    borderRadius: 10, paddingVertical: 4, paddingHorizontal: 8, flexShrink: 0,
+  },
+  translatePillActive: { backgroundColor: '#06B6D4', borderColor: '#06B6D4' },
+  translatePillText: { fontSize: 10, fontWeight: '700', color: '#06B6D4' },
+  translatePillTextActive: { color: '#fff' },
 
   // Meta chips — dark style
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  heroTranslateRow: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 12 },
   metaChip: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
@@ -2152,6 +2551,9 @@ const s = StyleSheet.create({
   webProgressFill: { height: 2.5, backgroundColor: T.blue, borderRadius: 2 },
   webView:         { flex: 1, backgroundColor: '#fff' },
   webLoading:      { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' },
+  appliedToast:    { position: 'absolute', left: 12, right: 12, zIndex: 70, alignItems: 'center' },
+  appliedToastCard:{ flexDirection: 'row', alignItems: 'center', gap: 9, maxWidth: 460, backgroundColor: '#16A34A', paddingVertical: 11, paddingHorizontal: 14, borderRadius: 14, shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 12, shadowOffset: { width: 0, height: 5 }, elevation: 7 },
+  appliedToastText:{ flex: 1, color: '#fff', fontSize: 13.5, fontWeight: '700', lineHeight: 18 },
   previewOverlay:       { ...StyleSheet.absoluteFillObject, backgroundColor: T.surface, zIndex: 60 },
   previewScroll:        { flex: 1, backgroundColor: '#54607a' },
   previewScrollContent: { padding: 14, alignItems: 'center' },
@@ -2207,4 +2609,38 @@ const s = StyleSheet.create({
   previewBtnText:{ fontSize: 14, fontWeight: '800', color: T.blue },
   sheetCancel:  { marginTop: 14, height: 46, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: T.bg, borderWidth: 1, borderColor: T.borderHi },
   sheetCancelText: { fontSize: 14, fontWeight: '700', color: T.textMuted },
+
+  // ── Smart-copy floating helper ──
+  smartFab: {
+    position: 'absolute', right: 16, width: 48, height: 48, borderRadius: 24,
+    backgroundColor: 'rgba(79,141,255,0.95)', alignItems: 'center', justifyContent: 'center',
+    shadowColor: T.ink, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.24, shadowRadius: 12, elevation: 11, zIndex: 60,
+  },
+  smartBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(11,15,34,0.28)', zIndex: 65 },
+  smartSheet: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 66,
+    backgroundColor: T.surface, borderTopLeftRadius: 22, borderTopRightRadius: 22,
+    paddingHorizontal: 16, paddingTop: 8,
+    shadowColor: T.ink, shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.16, shadowRadius: 22, elevation: 24,
+  },
+  smartHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: T.borderHi, marginBottom: 8 },
+  smartHeader: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 8 },
+  smartTitle: { fontSize: 15, fontWeight: '800', color: T.ink, letterSpacing: -0.2 },
+  smartEmpty: { fontSize: 13, color: T.textMuted, paddingVertical: 20, textAlign: 'center', lineHeight: 19 },
+  smartPrimaryWrap: { backgroundColor: 'rgba(79,141,255,0.07)', borderRadius: 14, borderWidth: 1, borderColor: 'rgba(79,141,255,0.18)', padding: 10, marginBottom: 10 },
+  smartPrimaryHint: { fontSize: 10.5, fontWeight: '800', color: T.blue, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6, marginLeft: 2 },
+  smartRow: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 9, paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: T.border,
+  },
+  smartRowLabel: { fontSize: 11, fontWeight: '700', color: T.textFaint, marginBottom: 2 },
+  smartRowValue: { fontSize: 13.5, fontWeight: '600', color: T.inkSoft, lineHeight: 18 },
+  smartCopyBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, height: 30, paddingHorizontal: 11, borderRadius: 9,
+    backgroundColor: 'rgba(79,141,255,0.10)', borderWidth: 1, borderColor: 'rgba(79,141,255,0.25)',
+  },
+  smartCopyBtnDone: { backgroundColor: T.emerald, borderColor: T.emerald },
+  smartCopyTxt: { fontSize: 12, fontWeight: '800', color: T.blue },
+  smartMoreBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 11, marginTop: 2 },
+  smartMoreTxt: { fontSize: 13, fontWeight: '800', color: T.blue },
 });

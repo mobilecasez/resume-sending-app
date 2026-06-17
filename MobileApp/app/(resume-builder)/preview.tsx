@@ -11,6 +11,7 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { API_BASE } from '../../config';
+import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 
 const T = {
   bg: '#E5EAF3', bgSoft: '#F0F4FA', surface: '#FFFFFF',
@@ -86,6 +87,10 @@ function ContentText({ text, style, bulletVerb }: { text: string; style?: any; b
 
 export default function ResumePreview() {
   const router = useRouter();
+  const rating = useRatingPrompt();
+  // Ask for a rating when leaving the previewed resume; complete the back nav after.
+  const goBack = async () => { if (!(await rating.ask('resume'))) router.replace('/(resume-builder)'); };
+  const closeRating = () => { rating.close(); router.replace('/(resume-builder)'); };
   const [data, setData] = useState<ResumeData | null>(null);
   const [loading, setLoading] = useState(true);
   const [profileImage, setProfileImage] = useState<string | null>(null);
@@ -152,7 +157,7 @@ export default function ResumePreview() {
     <SafeAreaView style={s.safe} edges={['top']}>
       {/* Top bar */}
       <View style={s.topBar}>
-        <TouchableOpacity onPress={() => router.replace('/(resume-builder)')} style={s.backPill} activeOpacity={0.8}>
+        <TouchableOpacity onPress={goBack} style={s.backPill} activeOpacity={0.8}>
           <Ionicons name="arrow-back" size={14} color={T.ink} />
           <Text style={s.backPillText}>Back</Text>
         </TouchableOpacity>
@@ -162,7 +167,7 @@ export default function ResumePreview() {
         </View>
         <TouchableOpacity onPress={() => router.push('/(resume-builder)/templates')} style={s.exportBtn} activeOpacity={0.8}>
           <Ionicons name="download-outline" size={14} color={T.blue} />
-          <Text style={s.exportText}>PDF</Text>
+          <Text style={s.exportText}>Download</Text>
         </TouchableOpacity>
       </View>
 
@@ -357,6 +362,7 @@ export default function ResumePreview() {
         </TouchableOpacity>
         <Text style={s.regenNote}>Uses 2 credits · re-runs AI with your saved story</Text>
       </View>
+      <RatingPromptModal visible={!!rating.trigger} trigger={rating.trigger} onClose={closeRating} />
     </SafeAreaView>
   );
 }

@@ -5,6 +5,7 @@ import React, {
   useCallback,
   useRef,
   useEffect,
+  useMemo,
 } from 'react';
 import { useFocusEffect } from 'expo-router';
 import {
@@ -22,19 +23,22 @@ import {
   Linking,
   Platform,
   Dimensions,
-  KeyboardAvoidingView,
+  Keyboard,
+  PanResponder,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type { Contact, Job, Employer, WishlistPill } from '../../types/aiHub';
-import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, translateJob } from '../../services/aiHubService';
+import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, fetchJobMatchScores } from '../../services/aiHubService';
 import type { Recruiter } from '../../services/aiHubService';
 import { API_BASE } from '../../config';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LoadingTips } from './LoadingTips';
+import CreditCostPill from '../../components/CreditCostPill';
+import { useEventCosts } from '../../hooks/useEventCosts';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
@@ -79,6 +83,7 @@ const MOCK_EMPLOYERS: Employer[] = [
         experience: '5+ years',
         salary: '$200K–$260K',
         jobType: 'Full-time',
+        workMode: 'Hybrid',
         urgent: false,
         skills: ['SwiftUI', 'Combine', 'Core Data', 'UIKit'],
         responsibilities: ['Build iOS features with SwiftUI', 'Maintain Core Data persistence layer', 'Collaborate with design team', 'Review pull requests'],
@@ -201,19 +206,257 @@ const ContactRow: React.FC<{ contact: Contact }> = ({ contact }) => {
 // COMPANY CARD
 // ─────────────────────────────────────────────────────────────────
 
+// ── Location parsing (pure JS, NO AI) ───────────────────────────────────────
+// Turns a free-form job location ("Cupertino, CA", "Berlin, Germany", "Remote (US)")
+// into { country, city } so the filter can offer Country → City selection.
+const US_STATES = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
+// Only non-ambiguous province/state codes (dropped NL/PE/SK etc. that collide with country codes).
+const CA_PROVINCES = new Set('ON QC BC AB MB'.split(' '));
+const AU_STATES = new Set('NSW VIC QLD TAS ACT'.split(' '));
+
+// Canonical country → all the ways it might be written (full names, ISO-3, and ISO-2
+// codes that DON'T collide with a US state). Ambiguous 2-letter codes (CA, DE, IN, CO,
+// IL, ID, AR…) are intentionally left out so they resolve to the US state.
+const COUNTRY_DEFS: [string, string][] = [
+  ['United States', 'us usa u s a united states united states of america america states'],
+  ['United Kingdom', 'uk gb gbr united kingdom great britain britain england scotland wales'],
+  ['Canada', 'can canada'],
+  ['Germany', 'deu ger germany deutschland'],
+  ['France', 'fr fra france'],
+  ['India', 'ind india bharat'],
+  ['Australia', 'au aus australia'],
+  ['Singapore', 'sg sgp singapore'],
+  ['Netherlands', 'nl nld netherlands holland the netherlands'],
+  ['Ireland', 'ie irl ireland eire'],
+  ['Spain', 'es esp spain espana'],
+  ['Italy', 'it ita italy italia'],
+  ['Japan', 'jp jpn japan'],
+  ['China', 'cn chn china'],
+  ['Brazil', 'br bra brazil brasil'],
+  ['Mexico', 'mx mex mexico'],
+  ['Switzerland', 'ch che switzerland schweiz suisse'],
+  ['Sweden', 'se swe sweden'],
+  ['Poland', 'pl pol poland polska'],
+  ['Portugal', 'pt prt portugal'],
+  ['Belgium', 'be bel belgium'],
+  ['Austria', 'at aut austria'],
+  ['Denmark', 'dk dnk denmark'],
+  ['Norway', 'no nor norway'],
+  ['Finland', 'fi fin finland'],
+  ['United Arab Emirates', 'ae are uae united arab emirates dubai abu dhabi'],
+  ['South Africa', 'za zaf south africa'],
+  ['New Zealand', 'nz nzl new zealand'],
+  ['Philippines', 'ph phl philippines'],
+  ['Indonesia', 'idn indonesia'],
+  ['Malaysia', 'my mys malaysia'],
+  ['South Korea', 'kr kor south korea korea republic of korea'],
+  ['Israel', 'isr israel'],
+  ['Czech Republic', 'cz cze czech republic czechia'],
+  ['Romania', 'ro rou romania'],
+  ['Hungary', 'hu hun hungary'],
+  ['Greece', 'gr grc greece'],
+  ['Turkey', 'tr tur turkey turkiye'],
+  ['Russia', 'ru rus russia'],
+  ['Ukraine', 'ua ukr ukraine'],
+  ['Argentina', 'arg argentina'],
+  ['Chile', 'cl chl chile'],
+  ['Colombia', 'col colombia'],
+  ['Egypt', 'eg egy egypt'],
+  ['Saudi Arabia', 'sau saudi arabia ksa'],
+  ['Thailand', 'th tha thailand'],
+  ['Vietnam', 'vn vnm vietnam viet nam'],
+  ['Pakistan', 'pk pak pakistan'],
+  ['Bangladesh', 'bd bgd bangladesh'],
+  ['Nigeria', 'ng nga nigeria'],
+  ['Kenya', 'ke ken kenya'],
+  ['Luxembourg', 'lu lux luxembourg'],
+  ['Hong Kong', 'hk hkg hong kong'],
+  ['Taiwan', 'tw twn taiwan'],
+  ['Estonia', 'ee est estonia'],
+  ['Lithuania', 'lt ltu lithuania'],
+  ['Latvia', 'lv lva latvia'],
+  ['Croatia', 'hr hrv croatia'],
+  ['Slovakia', 'svk slovakia'],
+  ['Slovenia', 'si svn slovenia'],
+  ['Bulgaria', 'bg bgr bulgaria'],
+  ['Serbia', 'rs srb serbia'],
+];
+const COUNTRY_LOOKUP: Record<string, string> = {};
+COUNTRY_DEFS.forEach(([name, aliases]) => aliases.split(' ').forEach((a) => { COUNTRY_LOOKUP[a] = name; }));
+
+// Does ONE location segment name a country? (US state / CA province / AU state / lookup)
+function matchCountrySeg(seg: string): string | null {
+  const code = seg.toUpperCase().replace(/[^A-Z]/g, '');
+  if (US_STATES.has(code)) return 'United States';
+  if (CA_PROVINCES.has(code)) return 'Canada';
+  if (AU_STATES.has(code)) return 'Australia';
+  const norm = seg.toLowerCase().replace(/[^a-z ]/g, '').replace(/\s+/g, ' ').trim();
+  return COUNTRY_LOOKUP[norm] || null;
+}
+
+function parseLocation(loc?: string): { country: string; city: string } {
+  const rawIn = String(loc || '').trim();
+  if (!rawIn) return { country: 'Other', city: 'Unknown' };
+  // Split off a trailing "(…)" then split the rest on commas / slashes / dashes / pipes.
+  const paren = rawIn.match(/\(([^)]+)\)\s*$/);
+  let parenTok: string | null = null;
+  let body = rawIn;
+  if (paren) { parenTok = paren[1].trim(); body = rawIn.slice(0, paren.index).trim(); }
+  const parts = body.split(/[,/|]|\s[–—-]\s/).map((s) => s.trim()).filter(Boolean);
+
+  // Scan candidates last→first (country is usually at the end), parenthetical first.
+  const candidates = parenTok ? [parenTok, ...[...parts].reverse()] : [...parts].reverse();
+  let country: string | null = null;
+  let matchedSeg: string | null = null;
+  for (const cand of candidates) {
+    const c = matchCountrySeg(cand);
+    if (c) { country = c; matchedSeg = cand; break; }
+  }
+
+  // City = the first part that isn't the matched country segment (else the whole thing).
+  let city: string;
+  const cityPart = parts.find((p) => p !== matchedSeg);
+  if (cityPart) city = cityPart;
+  else if (parenTok && body) city = body;          // "Remote (US)" → "Remote"
+  else city = country || rawIn;
+  if (!country) { country = 'Other'; city = rawIn; }
+  return { country, city: (city || rawIn).trim() };
+}
+
+// Indeterminate rotating-ring + shimmer overlay (same treatment as the cover-letter
+// buttons) shown over a company card while its jobs mount after a tap. Animations use
+// the native driver so they keep spinning even while the JS thread renders the cards.
+function CardBusyOverlay() {
+  const spin = useRef(new Animated.Value(0)).current;
+  const shim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const a = Animated.loop(Animated.timing(spin, { toValue: 1, duration: 800, useNativeDriver: true }));
+    const b = Animated.loop(Animated.timing(shim, { toValue: 1, duration: 1300, useNativeDriver: true }));
+    a.start(); b.start();
+    return () => { a.stop(); b.stop(); };
+  }, []);
+  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  const shimX = shim.interpolate({ inputRange: [0, 1], outputRange: [-70, 90] });
+  return (
+    <View style={styles.ccBusyOverlay}>
+      <Animated.View style={{ position: 'absolute', top: 0, bottom: 0, width: 50, transform: [{ translateX: shimX }] }}>
+        <LinearGradient colors={['transparent', 'rgba(79,141,255,0.28)', 'transparent']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+      </Animated.View>
+      <Animated.View style={[styles.ccBusyRing, { transform: [{ rotate }] }]} />
+    </View>
+  );
+}
+
+// Custom 0–100 "minimum match" slider (no slider lib is allowed). Drag or tap the track.
+// Smoothness notes: (1) we use absolute pageX minus the track's measured screen-x — NOT
+// locationX, which is relative to whatever child the finger is over (thumb/fill) and so
+// jumps; (2) the thumb tracks LOCAL state during the drag (cheap re-render of just the
+// slider) and only commits to the parent (re-filtering the list) on release.
+function MatchSlider({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [w, setW] = useState(0);
+  const [local, setLocal] = useState(value);
+  const wRef = useRef(0);
+  const xRef = useRef(0);              // track's x on screen
+  const localRef = useRef(value);
+  const valueRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+  const trackRef = useRef<View>(null);
+  valueRef.current = value;
+  onChangeRef.current = onChange;
+
+  // Sync when the value changes from outside (e.g. "Clear all").
+  useEffect(() => { setLocal(value); localRef.current = value; }, [value]);
+
+  const measure = () => {
+    trackRef.current?.measureInWindow((x, _y, width) => {
+      xRef.current = x;
+      if (width) { wRef.current = width; setW(width); }
+    });
+  };
+  const fromPageX = (pageX: number) => {
+    const width = wRef.current;
+    if (!width) return;
+    const rel = Math.max(0, Math.min(width, pageX - xRef.current));
+    const v = Math.round(((rel / width) * 100) / 5) * 5; // step 5
+    if (v !== localRef.current) { localRef.current = v; setLocal(v); }
+  };
+  const pan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (e) => { measure(); fromPageX(e.nativeEvent.pageX); },
+      onPanResponderMove: (e) => fromPageX(e.nativeEvent.pageX),
+      onPanResponderRelease: () => { if (localRef.current !== valueRef.current) onChangeRef.current(localRef.current); },
+      onPanResponderTerminate: () => { if (localRef.current !== valueRef.current) onChangeRef.current(localRef.current); },
+    }),
+  ).current;
+
+  const thumbLeft = w ? Math.max(0, Math.min(w - 22, (local / 100) * w - 11)) : 0;
+  return (
+    <View>
+      <View style={styles.filterRowBetween}>
+        <Text style={styles.filterLabel}>Minimum match</Text>
+        <Text style={styles.filterValue}>{local === 0 ? 'Any' : `${local}%+`}</Text>
+      </View>
+      <View style={styles.sliderWrap}>
+        <View
+          ref={trackRef}
+          style={styles.sliderTrack}
+          onLayout={measure}
+          {...pan.panHandlers}
+        >
+          <View style={[styles.sliderFill, { width: `${local}%` }]} pointerEvents="none" />
+          <View style={[styles.sliderThumb, { left: thumbLeft }]} pointerEvents="none" />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// While a card's search is still running in the background, the WHOLE card "heartbeats"
+// — a gentle double-pulse scale plus a cyan border/glow that throbs — signalling work.
+const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
+
 type CompanyCardProps = {
   employer: Employer;
   selected: boolean;
+  loading?: boolean;
+  processing?: boolean;
   onPress: () => void;
   onRemove: () => void;
 };
 
-const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, onPress, onRemove }) => {
+const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, loading, processing, onPress, onRemove }) => {
   const jobCount     = (employer.jobs || []).length;
   const contactCount = (employer.jobs || []).reduce((s, j) => s + (j.contacts || []).length, 0);
 
+  // Heartbeat animation while processing (double-thump + pause, like a pulse).
+  const beat = !!processing && !loading;
+  const hb = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!beat) { hb.setValue(0); return; }
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(hb, { toValue: 1,   duration: 170, useNativeDriver: false }),
+      Animated.timing(hb, { toValue: 0.3, duration: 170, useNativeDriver: false }),
+      Animated.timing(hb, { toValue: 0.9, duration: 170, useNativeDriver: false }),
+      Animated.timing(hb, { toValue: 0,   duration: 220, useNativeDriver: false }),
+      Animated.delay(520),
+    ]));
+    loop.start();
+    return () => loop.stop();
+  }, [beat]);
+  const beatStyle = beat ? {
+    transform: [{ scale: hb.interpolate({ inputRange: [0, 1], outputRange: [1, 1.05] }) }],
+    borderWidth: 2,
+    borderColor: hb.interpolate({ inputRange: [0, 1], outputRange: ['rgba(34,211,238,0.25)', 'rgba(34,211,238,0.95)'] }),
+    shadowColor: '#22D3EE',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: hb.interpolate({ inputRange: [0, 1], outputRange: [0.12, 0.55] }),
+    shadowRadius: hb.interpolate({ inputRange: [0, 1], outputRange: [4, 14] }),
+  } : null;
+
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={[styles.ccWrap, selected && styles.ccWrapSelected]}>
+    <AnimatedTouchable onPress={onPress} disabled={loading} activeOpacity={loading ? 1 : 0.85} style={[styles.ccWrap, selected && styles.ccWrapSelected, beatStyle]}>
       {selected && (
         <LinearGradient
           colors={[T.blue, T.purple]}
@@ -250,13 +493,14 @@ const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, onPress, 
           <Text style={[styles.ccStat, { color: '#A78BFA' }]}>{contactCount}</Text>
         </View>
         {/* Selected tick */}
-        {selected && (
+        {selected && !loading && (
           <View style={styles.ccTick}>
             <Ionicons name="checkmark" size={11} color="#fff" />
           </View>
         )}
       </View>
-    </TouchableOpacity>
+      {loading && <CardBusyOverlay />}
+    </AnimatedTouchable>
   );
 };
 
@@ -266,56 +510,86 @@ const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, onPress, 
 
 type JobCardProps = {
   job: Job;
-  employerName?: string;
+  employer: Employer;
   clStatus?: string | null;
-  onApply: () => void;
-  onAddContact: () => void;
-  onVisitJob?: () => void;
+  onApply: (employer: Employer, job: Job) => void;
+  onAddContact: (jobId: string) => void;
+  onVisitJob: (job: Job) => void;
 };
 
-function JobCard({ job, employerName, clStatus, onApply, onAddContact, onVisitJob }: JobCardProps) {
+// Top-right "Evaluating…" pill shown while the AI match % is being computed in the
+// background (matchScore === null). A gentle pulse signals work in progress.
+function EvaluatingBadge() {
+  const pulse = useRef(new Animated.Value(0.45)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 700, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0.45, duration: 700, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, []);
+  return (
+    <Animated.View style={[styles.evalBadge, { opacity: pulse }]}>
+      <View style={styles.evalDot} />
+      <Text style={styles.evalText}>Evaluating</Text>
+    </Animated.View>
+  );
+}
+
+// Shown while the AI agent is silently learning a brand-new employer. Rotating tips
+// keep the (longer) wait feeling alive instead of a dead spinner.
+const LEARNING_TIPS = [
+  'Reading their careers page the way a human would…',
+  'Teaching our AI how this company lists its roles…',
+  'First time we’ve seen this employer — learning its layout…',
+  'Hunting down every open position for you…',
+  'Almost there — pulling the roles together…',
+];
+function LearningBanner({ message }: { message?: string }) {
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setI((p) => (p + 1) % LEARNING_TIPS.length), 2800);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <View style={styles.learningCard}>
+      <View style={styles.learningHeaderRow}>
+        <ActivityIndicator size="small" color={T.blue} />
+        <Text style={styles.learningTitle}>{message || 'New employer — training our system…'}</Text>
+      </View>
+      <Text style={styles.learningTip}>{LEARNING_TIPS[i]}</Text>
+    </View>
+  );
+}
+
+// Top-of-section progress banner shown while a search is still streaming. When the
+// employer has more open roles than we keep, it tells the user we're matching the best 200.
+function SearchProgressBanner({ employer }: { employer: any }) {
+  const total = employer?.totalOpen;
+  const more = !!employer?.moreAvailable;
+  const msg = more
+    ? `${total && total > 200 ? `${total} open positions` : 'More than 200 open positions'} — matching the best 200 for you…`
+    : 'Finding more positions…';
+  return (
+    <View style={styles.progressBanner}>
+      <ActivityIndicator size="small" color={T.blue} />
+      <Text style={styles.progressBannerText}>{msg}</Text>
+    </View>
+  );
+}
+
+const JobCard = React.memo(function JobCard({ job, employer, clStatus, onApply, onAddContact, onVisitJob }: JobCardProps) {
   const [skillsExpanded, setSkillsExpanded] = useState(false);
 
-  // ── Translate-to-English toggle ──
-  // The backend sets job.lang; the icon shows only for non-English jobs (mostly
-  // ATS postings parsed without AI). First tap fetches + caches the English
-  // version; subsequent taps just flip between original and English.
-  const canTranslate = !!job.lang && job.lang !== 'en';
-  const [englishJob, setEnglishJob] = useState<Job | null>(null);
-  const [showEnglish, setShowEnglish] = useState(false);
-  const [translating, setTranslating] = useState(false);
-  const display = showEnglish && englishJob ? englishJob : job;
-
-  const handleTranslate = async () => {
-    if (translating) return;
-    if (englishJob) { setShowEnglish((v) => !v); return; }
-    try {
-      setTranslating(true);
-      const t = await translateJob(job.id);
-      setEnglishJob({
-        ...job,
-        title: t.title || job.title,
-        location: t.location || job.location,
-        experience: t.experience || job.experience,
-        salary: t.salary || job.salary,
-        jobType: t.jobType || job.jobType,
-        skills: Array.isArray(t.skills) && t.skills.length ? t.skills : job.skills,
-        responsibilities: Array.isArray(t.responsibilities) && t.responsibilities.length ? t.responsibilities : job.responsibilities,
-      });
-      setShowEnglish(true);
-    } catch (e) {
-      Alert.alert('Translation unavailable', 'Could not translate this job right now. Please try again.');
-    } finally {
-      setTranslating(false);
-    }
-  };
-
   const SKILLS_PREVIEW = 5;
-  const allSkills = display.skills || [];
+  const allSkills = job.skills || [];
   const visibleSkills = skillsExpanded ? allSkills : allSkills.slice(0, SKILLS_PREVIEW);
   const hiddenCount = allSkills.length - SKILLS_PREVIEW;
 
-  const watermark = (employerName || '').toUpperCase();
+  const watermark = (employer.name || '').toUpperCase();
 
   const cardBg =
     clStatus === 'applied' || clStatus === 'downloaded'
@@ -333,35 +607,18 @@ function JobCard({ job, employerName, clStatus, onApply, onAddContact, onVisitJo
     {/* ── Header: title + badges ── */}
     <View style={styles.cardHeader}>
       <View style={styles.cardHeaderMid}>
-        <Text style={styles.jobTitle} numberOfLines={2}>{display.title}</Text>
+        <Text style={styles.jobTitle} numberOfLines={2}>{job.title}</Text>
       </View>
       <View style={styles.cardBadgesCol}>
-        {canTranslate && (
-          <TouchableOpacity
-            onPress={handleTranslate}
-            disabled={translating}
-            activeOpacity={0.7}
-            style={[styles.translateBtn, showEnglish && styles.translateBtnActive]}
-          >
-            {translating ? (
-              <ActivityIndicator size="small" color={showEnglish ? '#fff' : T.blue} />
-            ) : (
-              <>
-                <Ionicons name="language" size={12} color={showEnglish ? '#fff' : T.blue} />
-                <Text style={[styles.translateBtnText, showEnglish && styles.translateBtnTextActive]}>
-                  {showEnglish ? 'English' : 'Translate'}
-                </Text>
-              </>
-            )}
-          </TouchableOpacity>
-        )}
         {job.urgent && (
           <View style={styles.urgentBadge}>
             <Ionicons name="flash" size={10} color="#EF4444" />
             <Text style={styles.urgentText}>Urgent</Text>
           </View>
         )}
-        {job.matchScore != null && job.matchScore > 0 && (
+        {job.matchScore == null ? (
+          <EvaluatingBadge />
+        ) : job.matchScore >= 0 ? (
           <View style={[
             styles.matchBadge,
             { backgroundColor: job.matchScore >= 70 ? 'rgba(16,185,129,0.12)' : job.matchScore >= 40 ? 'rgba(251,146,60,0.12)' : 'rgba(148,163,184,0.12)' }
@@ -371,7 +628,7 @@ function JobCard({ job, employerName, clStatus, onApply, onAddContact, onVisitJo
               { color: job.matchScore >= 70 ? '#059669' : job.matchScore >= 40 ? '#EA580C' : '#64748B' }
             ]}>{job.matchScore}% match</Text>
           </View>
-        )}
+        ) : null}
         {/* CL / Applied status dots */}
         {clStatus === 'applied' ? (
           <View style={styles.statusBadge}>
@@ -391,24 +648,30 @@ function JobCard({ job, employerName, clStatus, onApply, onAddContact, onVisitJo
     <View style={styles.metaRow}>
       <View style={styles.metaChip}>
         <Ionicons name="location-outline" size={12} color={T.blue} />
-        <Text style={styles.metaChipText}>{display.location}</Text>
+        <Text style={styles.metaChipText}>{job.location}</Text>
       </View>
-      {!!display.experience && (
+      {!!job.experience && (
         <View style={styles.metaChip}>
           <Ionicons name="time-outline" size={12} color="#A78BFA" />
-          <Text style={styles.metaChipText}>{display.experience}</Text>
+          <Text style={styles.metaChipText}>{job.experience}</Text>
         </View>
       )}
-      {!!display.salary && display.salary !== 'Not listed' && (
+      {!!job.salary && job.salary !== 'Not listed' && (
         <View style={styles.metaChip}>
           <Ionicons name="cash-outline" size={12} color="#34D399" />
-          <Text style={styles.metaChipText}>{display.salary}</Text>
+          <Text style={styles.metaChipText}>{job.salary}</Text>
         </View>
       )}
-      {!!display.jobType && (
+      {!!job.jobType && (
         <View style={styles.metaChip}>
           <Ionicons name="briefcase-outline" size={12} color="#FB923C" />
-          <Text style={styles.metaChipText}>{display.jobType}</Text>
+          <Text style={styles.metaChipText}>{job.jobType}</Text>
+        </View>
+      )}
+      {!!job.workMode && (
+        <View style={styles.metaChip}>
+          <Ionicons name="business-outline" size={12} color="#22D3EE" />
+          <Text style={styles.metaChipText}>{job.workMode}</Text>
         </View>
       )}
     </View>
@@ -439,10 +702,10 @@ function JobCard({ job, employerName, clStatus, onApply, onAddContact, onVisitJo
     )}
 
     {/* ── Responsibilities ── */}
-    {(display.responsibilities || []).length > 0 && (
+    {(job.responsibilities || []).length > 0 && (
       <View style={styles.cardSection}>
         <Text style={styles.cardSectionLabel}>RESPONSIBILITIES</Text>
-        {(display.responsibilities || []).slice(0, 3).map((r, i) => (
+        {(job.responsibilities || []).slice(0, 3).map((r, i) => (
           <View key={i} style={styles.respRow}>
             <View style={styles.respDot} />
             <Text style={styles.respText}>{r}</Text>
@@ -465,17 +728,17 @@ function JobCard({ job, employerName, clStatus, onApply, onAddContact, onVisitJo
 
     {/* ── Footer ── */}
     <View style={styles.cardFooter}>
-      <TouchableOpacity onPress={onAddContact} style={styles.addContactBtn}>
+      <TouchableOpacity onPress={() => onAddContact(job.id)} style={styles.addContactBtn}>
         <Ionicons name="person-add-outline" size={13} color={T.textMuted} />
         <Text style={styles.addContactBtnText}>Add Contact</Text>
       </TouchableOpacity>
       {!!job.applyUrl && (
-        <TouchableOpacity onPress={onVisitJob} style={styles.visitJobBtn}>
+        <TouchableOpacity onPress={() => onVisitJob(job)} style={styles.visitJobBtn}>
           <Ionicons name="open-outline" size={13} color={T.blue} />
           <Text style={styles.visitJobBtnText}>View Job</Text>
         </TouchableOpacity>
       )}
-      <TouchableOpacity onPress={onApply} activeOpacity={0.85} style={styles.applyBtnOuter}>
+      <TouchableOpacity onPress={() => onApply(employer, job)} activeOpacity={0.85} style={styles.applyBtnOuter}>
         <LinearGradient
           colors={[T.blue, T.blueDeep]}
           start={{ x: 0, y: 0 }}
@@ -489,7 +752,7 @@ function JobCard({ job, employerName, clStatus, onApply, onAddContact, onVisitJo
     </View>
   </View>
   );
-}
+});
 
 // ─────────────────────────────────────────────────────────────────
 // INDETERMINATE PROGRESS BAR
@@ -616,6 +879,7 @@ type RecruiterCardProps = {
 };
 
 function RecruiterCard({ employer, creditBalance }: RecruiterCardProps) {
+  const { costs } = useEventCosts();
   const [recruiters, setRecruiters] = useState<Recruiter[]>([]);
   const [step1Loading, setStep1Loading] = useState(false);
   const [step2Loading, setStep2Loading] = useState(false);
@@ -774,7 +1038,7 @@ function RecruiterCard({ employer, creditBalance }: RecruiterCardProps) {
               <Text style={rcStyles.btnText}>Find Recruiters on LinkedIn</Text>
               <View style={rcStyles.creditPill}>
                 <Ionicons name="flash" size={10} color="#F59E0B" />
-                <Text style={rcStyles.creditPillText}>1</Text>
+                <Text style={rcStyles.creditPillText}>{costs['find_recruiters'] ?? 1}</Text>
               </View>
             </>
           )}
@@ -893,6 +1157,8 @@ const rcStyles = StyleSheet.create({
 
 export default function AIHubScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { costs } = useEventCosts();
   const [pills, setPills] = useState<WishlistPill[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [inputValue, setInputValue] = useState('https://');
@@ -901,14 +1167,86 @@ export default function AIHubScreen() {
   useEffect(() => { employersRef.current = employers; }, [employers]);
   const [loadingCompanies, setLoadingCompanies] = useState<string[]>([]);
   const [processingEmployerIds, setProcessingEmployerIds] = useState<Set<string>>(new Set());
-  const [stats, setStats] = useState({ sources: 0, matches: 0, contacts: 0, verifiedPct: 0 });
+  // Derived (no setState → no extra render pass on every employers change).
   const [initialLoading, setInitialLoading] = useState(true);
   const [selectedEmployerId, setSelectedEmployerId] = useState<string | null>(null);
+  // Per-card loader shown while a tapped company's jobs mount (the switch render is heavy).
+  const [loadingEmployerId, setLoadingEmployerId] = useState<string | null>(null);
+  const lastRemoveRef = useRef(0);   // debounce company-card removal (the list re-render lags a beat)
+  const removedIdsRef = useRef<Set<string>>(new Set());  // employers removed this session — filtered out of any refetch
+  // Per-company job filter — resets whenever the selected company changes.
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [countryFilter, setCountryFilter] = useState<string[]>([]);
+  const [cityFilter, setCityFilter] = useState<string[]>([]);
+  const [minMatch, setMinMatch] = useState(0);
+  const [showFloatingFilter, setShowFloatingFilter] = useState(false);
+
+  // Clear the per-card loader once the new selection has rendered. The rAF outlasts the
+  // synchronous JobCard mount that causes the perceived delay; the timeout is a backstop.
+  useEffect(() => {
+    if (!loadingEmployerId) return;
+    const raf = requestAnimationFrame(() => setLoadingEmployerId(null));
+    const safety = setTimeout(() => setLoadingEmployerId(null), 4000);
+    return () => { cancelAnimationFrame(raf); clearTimeout(safety); };
+  }, [selectedEmployerId]);
+
+  // The per-company filter resets on every company switch.
+  useEffect(() => { setCountryFilter([]); setCityFilter([]); setMinMatch(0); setFilterOpen(false); }, [selectedEmployerId]);
   const [featureFlag, setFeatureFlag] = useState<{ status: string; title: string | null; message: string | null } | null>(null);
   const [creditBalance, setCreditBalance] = useState<number | null>(null);
   const [creditLoading, setCreditLoading] = useState(false);
   // jobId → status ('generated' | 'downloaded' | 'applied')
   const [jobStatuses, setJobStatuses] = useState<Record<string, string>>({});
+
+  // Keyboard height — used to lift the Add-Company bottom sheet above the keyboard.
+  // KeyboardAvoidingView is unreliable inside a React Native <Modal> (the modal is a
+  // separate window, so Android's adjustResize never reaches it), so we measure the
+  // keyboard ourselves and pad the sheet up. Works identically on iOS and Android.
+  const [kbHeight, setKbHeight] = useState(0);
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const sub1 = Keyboard.addListener(showEvt, (e) => setKbHeight(e.endCoordinates?.height ?? 0));
+    const sub2 = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => { sub1.remove(); sub2.remove(); };
+  }, []);
+
+  // ── Background AI match-% scoring ───────────────────────────────────────────
+  // Runs OFF the job-fetch path: whenever jobs appear that haven't been scored yet
+  // (matchScore == null), debounce briefly (so a streaming search batches into one
+  // request), score them via the cached server endpoint, and merge the % back in.
+  // Each job is requested once (scoreRequestedRef); the server caches forever.
+  const scoreRequestedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const pending: string[] = [];
+    for (const emp of employers) {
+      for (const job of (emp.jobs || [])) {
+        if (job.matchScore == null && UUID.test(job.id) && !scoreRequestedRef.current.has(job.id)) {
+          pending.push(job.id);
+        }
+      }
+    }
+    if (!pending.length) return;
+    const batch = pending.slice(0, 50); // cap per request; the merge re-triggers for the rest
+    const timer = setTimeout(async () => {
+      batch.forEach((id) => scoreRequestedRef.current.add(id));
+      const { scores } = await fetchJobMatchScores(batch);
+      setEmployers((prev) => prev.map((emp) => ({
+        ...emp,
+        jobs: (emp.jobs || []).map((job) => {
+          if (!batch.includes(job.id)) return job;
+          const sc = scores[job.id];
+          // scored → number; requested but unscorable (no résumé / AI down) → -1 → no badge
+          return { ...job, matchScore: typeof sc === 'number' ? sc : -1 };
+        }),
+      })));
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [employers]);
+
+  // Job cards always sort best-match-first (see the render). No sort toggle/prompt:
+  // whenever match %s exist, the list shows highest → lowest automatically.
 
   // Relay: if job-detail set aiHub_navigate_home, pop this screen too → reveals App.js HomeScreen
   useFocusEffect(
@@ -952,13 +1290,13 @@ export default function AIHubScreen() {
     return () => loop.stop();
   }, [pulseAnim]);
 
-  useEffect(() => {
+  const stats = useMemo(() => {
     let m = 0, c = 0;
-    employers.forEach(emp => {
+    employers.forEach((emp) => {
       m += (emp.jobs || []).length;
       c += (emp.jobs || []).reduce((s, j) => s + (j.contacts || []).length, 0);
     });
-    setStats({ sources: employers.length, matches: m, contacts: c, verifiedPct: 94 });
+    return { sources: employers.length, matches: m, contacts: c, verifiedPct: 94 };
   }, [employers]);
 
   useEffect(() => {
@@ -977,8 +1315,10 @@ export default function AIHubScreen() {
         const loadedEmployers: Employer[] = [];
         const loadedPills: WishlistPill[] = [];
         const currentlyProcessing = new Set<string>();
-        // Reverse so latest-added employer is first
-        const sorted = [...dashboard].reverse();
+        // Server already returns employers newest-first (ute.updated_at DESC) — keep that
+        // order so the most recently added company is first (leftmost) in the company strip.
+        // (The previous .reverse() flipped it to oldest-first.)
+        const sorted = [...dashboard];
         sorted.forEach((entry, i) => {
           const emp = entry.employer;
           loadedEmployers.push(emp);
@@ -1055,6 +1395,28 @@ export default function AIHubScreen() {
     loadDashboard();
   }, []);
 
+  // Safety net for the "comes back empty until restart" case: if we end up with NO
+  // companies after the initial load (e.g. a transient empty/failed refetch, or a
+  // post-remove glitch), re-fetch on focus and repopulate — minus anything removed this
+  // session. Only runs when empty, so it never clobbers a populated list.
+  useFocusEffect(
+    useCallback(() => {
+      if (initialLoading || employers.length > 0) return;
+      let cancelled = false;
+      (async () => {
+        try {
+          const dashboard = await fetchDashboard();
+          if (cancelled || !dashboard) return;
+          const live = dashboard.filter((e) => e?.employer && !removedIdsRef.current.has(e.employer.id));
+          if (!live.length) return;
+          setEmployers(live.map((e) => e.employer));
+          setPills(live.map((e, i) => ({ id: `pill-${e.employer.id}`, label: e.employer.name, colorVariant: COLOR_CYCLE[i % 3], employerId: e.employer.id })));
+        } catch (e) { /* keep whatever we have */ }
+      })();
+      return () => { cancelled = true; };
+    }, [initialLoading, employers.length]),
+  );
+
   const resumePolling = (jobId: string, companyName: string) => {
     const onPartialUpdate = (partialEmployer: Employer) => {
       setEmployers((prev) => {
@@ -1075,30 +1437,38 @@ export default function AIHubScreen() {
       .catch(() => Alert.alert('Error', `Failed to resume tracking jobs for ${companyName}`));
   };
 
-  const handleRemovePill = useCallback((id: string) => {
-    setPills((prev) => {
-      const pill = prev.find((p) => p.id === id);
-      if (pill?.employerId) {
-        const target = employers.find((e) => e.id === pill.employerId);
-        // Use jobId (async_job_id) when present, else the employer id — the server
-        // resolves either. Guards against a null jobId silently skipping the server
-        // call (which left removed companies reappearing on reload).
-        const removeKey = target?.jobId || target?.id || pill.employerId;
-        if (removeKey) removeDashboardItem(removeKey).catch(console.error);
-        setEmployers((emp) => emp.filter((e) => e.id !== pill.employerId));
-        if (selectedEmployerId === pill.employerId) setSelectedEmployerId(null);
-      }
-      return prev.filter((p) => p.id !== id);
-    });
+  // Detach an employer from the dashboard. Instant local removal; the backend archive is
+  // fire-and-forget. If we removed the SELECTED company we auto-select the NEXT one (never
+  // null — null would make visibleEmployers = ALL companies and render every job at once,
+  // which froze the app) and show a loader on it while its job list mounts.
+  const removeEmployerCore = useCallback((empId: string) => {
+    removedIdsRef.current.add(empId);  // so a racing refetch can't resurrect it
+    const target = employers.find((e) => e.id === empId);
+    const removeKey = target?.jobId || target?.id || empId;
+    if (removeKey) removeDashboardItem(removeKey).catch(console.error);  // fire-and-forget
+    const idx = employers.findIndex((e) => e.id === empId);
+    const remaining = employers.filter((e) => e.id !== empId);
+    setEmployers(remaining);
+    if (selectedEmployerId === empId) {
+      const nextId = remaining.length ? (remaining[Math.min(idx, remaining.length - 1)]?.id ?? null) : null;
+      setSelectedEmployerId(nextId);
+      if (nextId) setLoadingEmployerId(nextId);  // loader + "Loading jobs…" while the next list mounts
+    }
   }, [employers, selectedEmployerId]);
+
+  const handleRemovePill = useCallback((id: string) => {
+    const pill = pills.find((p) => p.id === id);
+    setPills((prev) => prev.filter((p) => p.id !== id));
+    if (pill?.employerId) removeEmployerCore(pill.employerId);
+  }, [pills, removeEmployerCore]);
 
   const handleAddPill = useCallback(() => {
     let trimmed = inputValue.trim();
     if (!trimmed || trimmed === 'https://' || trimmed === 'http://') return;
     if (!/^https?:\/\//i.test(trimmed) && /\./.test(trimmed)) trimmed = `https://${trimmed}`;
 
-    const SEARCH_COST = 3;
-    if (creditBalance !== null && creditBalance < SEARCH_COST) {
+    const SEARCH_COST = costs['company_search'] ?? 3;
+    if (creditBalance !== null && SEARCH_COST > 0 && creditBalance < SEARCH_COST) {
       Alert.alert(
         'Not Enough Credits',
         `This search costs ${SEARCH_COST} credits. You only have ${creditBalance} credit${creditBalance === 1 ? '' : 's'} remaining.\n\nPurchase more credits to continue.`,
@@ -1119,6 +1489,9 @@ export default function AIHubScreen() {
         setLoadingCompanies((prev) => prev.filter((c) => c !== trimmed));
         setProcessingEmployerIds((prev) => new Set([...prev, partialEmployer.id]));
         setPills((prev) => prev.map((p) => p.id === pillId ? { ...p, employerId: partialEmployer.id } : p));
+        // Auto-select the just-searched employer so the user sees ITS progress /
+        // "we're learning" message (not whichever card was selected before).
+        setSelectedEmployerId(partialEmployer.id);
       }
       setEmployers((prev) => {
         const idx = prev.findIndex((e) => e.id === partialEmployer.id);
@@ -1167,7 +1540,7 @@ export default function AIHubScreen() {
         });
       })
       .finally(() => setLoadingCompanies((prev) => prev.filter((c) => c !== trimmed)));
-  }, [inputValue]);
+  }, [inputValue, costs]);
 
   const handleApply = useCallback((employer: Employer, job: Job) => {
     router.push({
@@ -1183,6 +1556,10 @@ export default function AIHubScreen() {
     router.push({ pathname: '/(ai-hub)/add-contact', params: { jobId } });
   }, [router]);
 
+  const handleVisitJob = useCallback((job: Job) => {
+    if (job.applyUrl) Linking.openURL(job.applyUrl);
+  }, []);
+
   const openModal = () => {
     setInputValue('https://');
     setModalVisible(true);
@@ -1193,6 +1570,15 @@ export default function AIHubScreen() {
       .finally(() => setCreditLoading(false));
   };
   const visibleEmployers = selectedEmployerId ? employers.filter((e) => e.id === selectedEmployerId) : employers;
+  const selectedEmployer = selectedEmployerId ? employers.find((e) => e.id === selectedEmployerId) : null;
+  const filterParsed = selectedEmployer ? (selectedEmployer.jobs || []).map((j) => parseLocation(j.location)) : [];
+  const filterCountries = [...new Set(filterParsed.map((p) => p.country))].sort();
+  // Cities are grouped under the selected countries (or the only country, if there's one).
+  const effectiveCountries = countryFilter.length ? countryFilter : (filterCountries.length === 1 ? filterCountries : []);
+  const citiesByCountry = (country: string) =>
+    [...new Set(filterParsed.filter((p) => p.country === country).map((p) => p.city))].sort();
+  const filterActive = countryFilter.length > 0 || cityFilter.length > 0 || minMatch > 0;
+  const showFilterBtn = !!selectedEmployerId && (selectedEmployer?.jobs?.length || 0) > 1;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -1201,6 +1587,11 @@ export default function AIHubScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        scrollEventThrottle={16}
+        onScroll={(e) => {
+          const should = e.nativeEvent.contentOffset.y > 240;
+          setShowFloatingFilter((prev) => (prev === should ? prev : should));
+        }}
       >
 
         {/* ══ TOP BAR ══════════════════════════════════════════════════════════ */}
@@ -1360,16 +1751,23 @@ export default function AIHubScreen() {
                     key={employer.id}
                     employer={employer}
                     selected={selectedEmployerId === employer.id}
-                    onPress={() => setSelectedEmployerId(
-                      selectedEmployerId === employer.id ? null : employer.id
-                    )}
+                    loading={loadingEmployerId === employer.id}
+                    processing={processingEmployerIds.has(employer.id)}
+                    onPress={() => {
+                      if (loadingEmployerId) return;                       // a switch is already loading
+                      if (selectedEmployerId === employer.id) { setSelectedEmployerId(null); return; }
+                      setLoadingEmployerId(employer.id);                   // paint the loader first…
+                      requestAnimationFrame(() => setSelectedEmployerId(employer.id)); // …then the heavy switch
+                    }}
                     onRemove={() => {
+                      // Ignore rapid repeat taps: the list re-render lags a beat, and a
+                      // second tap would land on whichever card shifted into that spot.
+                      const now = Date.now();
+                      if (now - lastRemoveRef.current < 400) return;
+                      lastRemoveRef.current = now;
                       const pill = pills.find((p) => p.employerId === employer.id);
                       if (pill) handleRemovePill(pill.id);
-                      else {
-                        setEmployers((prev) => prev.filter((e) => e.id !== employer.id));
-                        if (selectedEmployerId === employer.id) setSelectedEmployerId(null);
-                      }
+                      else removeEmployerCore(employer.id);
                     }}
                   />
                 ))}
@@ -1377,7 +1775,27 @@ export default function AIHubScreen() {
 
               {/* ── Job cards for selected / all companies ── */}
               {visibleEmployers.map((employer) => {
-                const jobs = employer.jobs || [];
+                // Always best-match first: scored jobs rank by % (highest → lowest).
+                // Still-evaluating / unscorable jobs (matchScore null or -1) fall to the
+                // bottom, newest-first among themselves (createdAt desc).
+                const jobs = [...(employer.jobs || [])].sort((a, b) => {
+                  const ma = typeof a.matchScore === 'number' && a.matchScore >= 0 ? a.matchScore : -1;
+                  const mb = typeof b.matchScore === 'number' && b.matchScore >= 0 ? b.matchScore : -1;
+                  if (mb !== ma) return mb - ma;
+                  const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                  const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                  return tb - ta;
+                });
+                // Per-company filter (Location + minimum match) — applied ONLY when a single
+                // company is selected; switching company resets it (effect above).
+                const filteredJobs = selectedEmployerId
+                  ? jobs.filter((j) => {
+                      const { country, city } = parseLocation(j.location);
+                      return (countryFilter.length === 0 || countryFilter.includes(country)) &&
+                        (cityFilter.length === 0 || cityFilter.includes(city)) &&
+                        (minMatch === 0 || (typeof j.matchScore === 'number' && j.matchScore >= minMatch));
+                    })
+                  : jobs;
                 const isProcessing = processingEmployerIds.has(employer.id);
                 // No jobs and not processing — show a helpful empty-state card
                 if (jobs.length === 0 && !isProcessing) {
@@ -1410,24 +1828,58 @@ export default function AIHubScreen() {
                 }
                 return (
                 <View key={employer.id} style={styles.employerSection}>
-                  {/* RecruiterCard hidden until port 25 SMTP is unblocked on Oracle VM */}
-                  {jobs.map((job) => (
-                    <JobCard
-                      key={job.id}
-                      job={job}
-                      employerName={employer.name}
-                      clStatus={jobStatuses[job.id] ?? null}
-                      onApply={() => handleApply(employer, job)}
-                      onAddContact={() => handleAddContact(job.id)}
-                      onVisitJob={job.applyUrl ? () => Linking.openURL(job.applyUrl!) : undefined}
-                    />
-                  ))}
-                  {isProcessing && (
-                    <View style={styles.processingRow}>
-                      <ActivityIndicator size="small" color={T.blue} />
-                      <Text style={styles.processingText}>Finding more positions...</Text>
+                  {/* Progress banner pinned at the TOP so it's always visible that the
+                      search is running: the "learning" tips for a brand-new employer, else
+                      "finding more" / "matching the best 200 for you" while streaming. */}
+                  {(employer as any).learning && jobs.length === 0
+                    ? <LearningBanner message={(employer as any).learningMessage} />
+                    : isProcessing
+                      ? <SearchProgressBanner employer={employer} />
+                      : null}
+                  {/* Filter row above the first job — selected company with >1 job */}
+                  {showFilterBtn && (
+                    <View style={styles.filterHeaderRow}>
+                      <Text style={styles.filterCountText}>
+                        {filteredJobs.length}{filterActive ? ` of ${jobs.length}` : ''} {jobs.length === 1 ? 'job' : 'jobs'}
+                      </Text>
+                      <TouchableOpacity
+                        style={[styles.filterChip, filterActive && styles.filterChipActive]}
+                        activeOpacity={0.85}
+                        onPress={() => setFilterOpen(true)}
+                      >
+                        <Ionicons name="options-outline" size={14} color={filterActive ? '#fff' : T.ink} />
+                        <Text style={[styles.filterChipText, filterActive && styles.filterChipTextActive]}>Filter</Text>
+                        {filterActive && <View style={styles.filterChipDot} />}
+                      </TouchableOpacity>
                     </View>
                   )}
+                  {loadingEmployerId === employer.id ? (
+                    <View style={styles.jobsLoadingRow}>
+                      <ActivityIndicator size="small" color={T.blue} />
+                      <Text style={styles.jobsLoadingText}>Loading jobs for {employer.name}…</Text>
+                    </View>
+                  ) : filteredJobs.length === 0 && jobs.length > 0 ? (
+                    <View style={styles.noMatchCard}>
+                      <Ionicons name="funnel-outline" size={22} color={T.textFaint} />
+                      <Text style={styles.noMatchText}>No jobs match these filters</Text>
+                      <TouchableOpacity onPress={() => { setCountryFilter([]); setCityFilter([]); setMinMatch(0); }} activeOpacity={0.8}>
+                        <Text style={styles.noMatchClear}>Clear filters</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    filteredJobs.map((job) => (
+                      <JobCard
+                        key={job.id}
+                        job={job}
+                        employer={employer}
+                        clStatus={jobStatuses[job.id] ?? null}
+                        onApply={handleApply}
+                        onAddContact={handleAddContact}
+                        onVisitJob={handleVisitJob}
+                      />
+                    ))
+                  )}
+                  {/* (Progress indicator now lives at the TOP of the section, above.) */}
                 </View>
                 );
               })}
@@ -1435,6 +1887,14 @@ export default function AIHubScreen() {
           )}
         </View>
       </ScrollView>
+
+      {/* Floating filter — pinned top-right, fades in once scrolled into the job list */}
+      {showFilterBtn && showFloatingFilter && (
+        <TouchableOpacity style={[styles.floatingFilterBtn, { top: insets.top + 56 }]} activeOpacity={0.9} onPress={() => setFilterOpen(true)}>
+          <Ionicons name="options-outline" size={20} color="#fff" />
+          {filterActive && <View style={styles.floatingFilterDot} />}
+        </TouchableOpacity>
+      )}
 
       {/* ── Coming Soon Overlay ── */}
       {featureFlag?.status === 'under_construction' && (
@@ -1465,15 +1925,14 @@ export default function AIHubScreen() {
 
       {/* ── Add Company Modal ── */}
       <Modal visible={modalVisible} transparent statusBarTranslucent animationType="fade" onRequestClose={() => { setInputValue('https://'); setModalVisible(false); }}>
-        {/* iOS needs KAV 'padding' to lift the bottom sheet above the keyboard;
-            Android already does this via windowSoftInputMode=adjustResize, so KAV
-            must NOT add its own inset (undefined) or it double-counts and overshoots.
-            statusBarTranslucent makes the KAV measure the full screen on iOS. */}
-        <KeyboardAvoidingView
-          style={styles.modalKAV}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        {/* Lift the bottom sheet above the keyboard by the measured keyboard height
+            (see the kbHeight effect). This is reliable inside a <Modal> on both iOS
+            and Android, where KeyboardAvoidingView is not. */}
+        <TouchableOpacity
+          style={[styles.modalOverlay, kbHeight > 0 && { paddingBottom: kbHeight + 16 }]}
+          activeOpacity={1}
+          onPress={() => { setInputValue('https://'); setModalVisible(false); }}
         >
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => { setInputValue('https://'); setModalVisible(false); }}>
           <View style={styles.modalBox} onStartShouldSetResponder={() => true}>
             <View style={styles.modalHeader}>
               <LinearGradient colors={[T.blue, T.blueDeep]} style={styles.modalIconWrap}>
@@ -1539,9 +1998,102 @@ export default function AIHubScreen() {
                 </LinearGradient>
               </TouchableOpacity>
             </View>
+            <View style={{ alignItems: 'center', marginTop: 12 }}>
+              <CreditCostPill credits={costs['company_search'] ?? null} tone="dark" />
+            </View>
           </View>
         </TouchableOpacity>
-        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ── Filter popup (applies to the selected company only) ── */}
+      <Modal visible={filterOpen} transparent statusBarTranslucent animationType="fade" onRequestClose={() => setFilterOpen(false)}>
+        <TouchableOpacity style={styles.filterOverlay} activeOpacity={1} onPress={() => setFilterOpen(false)}>
+          <View style={styles.filterSheet} onStartShouldSetResponder={() => true}>
+            <View style={styles.filterSheetHandle} />
+            <View style={styles.filterSheetHead}>
+              <Text style={styles.filterSheetTitle} numberOfLines={1}>Filter jobs{selectedEmployer ? ` · ${selectedEmployer.name}` : ''}</Text>
+              {filterActive && (
+                <TouchableOpacity onPress={() => { setCountryFilter([]); setCityFilter([]); setMinMatch(0); }} activeOpacity={0.8}>
+                  <Text style={styles.filterClearLink}>Clear all</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity onPress={() => setFilterOpen(false)} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.filterCloseBtn}>
+                <Ionicons name="close" size={20} color={T.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Minimum match — fixed, always visible (label + value live inside the slider) */}
+            <View style={styles.filterSection}>
+              <MatchSlider value={minMatch} onChange={setMinMatch} />
+            </View>
+
+            {/* Country — fixed, MULTI-select (label + chips stay put) */}
+            {filterCountries.length > 1 && (
+              <View style={styles.filterSection}>
+                <Text style={styles.filterLabel}>Country</Text>
+                <View style={styles.filterChipsWrap}>
+                  {filterCountries.map((c) => {
+                    const on = countryFilter.includes(c);
+                    return (
+                      <TouchableOpacity
+                        key={c}
+                        style={[styles.locChip, on && styles.locChipOn]}
+                        activeOpacity={0.8}
+                        onPress={() => {
+                          setCountryFilter((prev) => (on ? prev.filter((x) => x !== c) : [...prev, c]));
+                          if (on) { const cc = new Set(citiesByCountry(c)); setCityFilter((prev) => prev.filter((ci) => !cc.has(ci))); }
+                        }}
+                      >
+                        <Text style={[styles.locChipText, on && styles.locChipTextOn]} numberOfLines={1}>{c}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
+
+            {/* City — label fixed; ONLY the chip list scrolls. Grouped per selected country. */}
+            {effectiveCountries.length > 0 ? (
+              <View style={[styles.filterSection, styles.filterCitySection]}>
+                <Text style={styles.filterLabel}>{filterCountries.length > 1 ? 'City' : 'Location'}</Text>
+                <ScrollView style={styles.filterCityScroll} contentContainerStyle={{ paddingBottom: 6 }} showsVerticalScrollIndicator keyboardShouldPersistTaps="handled">
+                  {effectiveCountries.map((country) => {
+                    const cities = citiesByCountry(country);
+                    if (!cities.length) return null;
+                    return (
+                      <View key={country} style={styles.filterCityGroup}>
+                        {effectiveCountries.length > 1 && <Text style={styles.filterCityGroupLabel}>{country}</Text>}
+                        <View style={styles.filterChipsWrap}>
+                          {cities.map((city) => {
+                            const on = cityFilter.includes(city);
+                            return (
+                              <TouchableOpacity
+                                key={`${country}::${city}`}
+                                style={[styles.locChip, on && styles.locChipOn]}
+                                activeOpacity={0.8}
+                                onPress={() => setCityFilter((prev) => (on ? prev.filter((l) => l !== city) : [...prev, city]))}
+                              >
+                                <Text style={[styles.locChipText, on && styles.locChipTextOn]} numberOfLines={1}>{city}</Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            ) : filterCountries.length > 1 ? (
+              <Text style={styles.filterHintText}>Pick one or more countries to choose cities.</Text>
+            ) : null}
+
+            <TouchableOpacity style={styles.filterDoneOuter} activeOpacity={0.9} onPress={() => setFilterOpen(false)}>
+              <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.filterDoneBtn}>
+                <Text style={styles.filterDoneText}>Show jobs</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
       </Modal>
 
       {/* ── Floating Tab Bar ── */}
@@ -1747,6 +2299,12 @@ const styles = StyleSheet.create({
   employerSection: { marginBottom: 28 },
   processingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4, paddingVertical: 8 },
   processingText: { fontSize: 12, color: T.textMuted, fontStyle: 'italic' },
+  learningCard: { backgroundColor: 'rgba(79,141,255,0.08)', borderRadius: 16, borderWidth: 1, borderColor: 'rgba(79,141,255,0.18)', padding: 16, marginTop: 6, gap: 8 },
+  learningHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  learningTitle: { flex: 1, fontSize: 14, fontWeight: '700', color: T.inkSoft },
+  learningTip: { fontSize: 13, color: T.textMuted, lineHeight: 18 },
+  progressBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(79,141,255,0.08)', borderRadius: 14, borderWidth: 1, borderColor: 'rgba(79,141,255,0.16)', paddingVertical: 11, paddingHorizontal: 14, marginBottom: 10 },
+  progressBannerText: { flex: 1, fontSize: 13, fontWeight: '600', color: T.inkSoft },
 
   // ── Company strip (horizontal scroll) ──
   companyStripScroll: { marginBottom: 16 },
@@ -1902,30 +2460,71 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   urgentText: { fontSize: 10, fontWeight: '700', color: '#EF4444' },
-  translateBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 3,
-    minWidth: 74,
-    minHeight: 22,
-    borderRadius: 10,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    backgroundColor: 'rgba(79,141,255,0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(79,141,255,0.25)',
-  },
-  translateBtnActive: {
-    backgroundColor: T.blue,
-    borderColor: T.blue,
-  },
-  translateBtnText: { fontSize: 10, fontWeight: '700', color: T.blue },
-  translateBtnTextActive: { color: '#fff' },
   matchBadge: { borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4 },
   statusBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3, backgroundColor: 'rgba(79,141,255,0.08)' },
   statusBadgeText: { fontSize: 9, fontWeight: '700', letterSpacing: 0.2 },
   matchBadgeText: { fontSize: 11, fontWeight: '700' },
+  evalBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(124,107,255,0.12)', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4 },
+  evalDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#7C6BFF' },
+  evalText: { fontSize: 10, fontWeight: '700', color: '#7C6BFF', letterSpacing: 0.2 },
+
+  // Company-card busy overlay (shown while a tapped company's jobs mount)
+  ccBusyOverlay: { ...StyleSheet.absoluteFillObject, borderRadius: 20, backgroundColor: 'rgba(11,17,32,0.55)', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  ccBusyRing: { width: 22, height: 22, borderRadius: 11, borderWidth: 2.5, borderColor: 'rgba(255,255,255,0.3)', borderTopColor: '#fff' },
+
+  // Inline filter header (above the first job of the selected company)
+  filterHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: -16, marginBottom: 8, paddingHorizontal: 2 },
+  filterCountText: { fontSize: 12, fontWeight: '700', color: T.textMuted },
+  filterChip: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: T.surface, borderWidth: 1, borderColor: T.borderHi, borderRadius: 20, paddingVertical: 7, paddingHorizontal: 12 },
+  filterChipActive: { backgroundColor: T.blue, borderColor: T.blue },
+  filterChipText: { fontSize: 12, fontWeight: '700', color: T.ink },
+  filterChipTextActive: { color: '#fff' },
+  filterChipDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#fff' },
+
+  // No-jobs-match-filter state
+  noMatchCard: { alignItems: 'center', gap: 8, backgroundColor: T.surface, borderRadius: 20, paddingVertical: 28, paddingHorizontal: 20, marginBottom: 12 },
+  noMatchText: { fontSize: 14, fontWeight: '700', color: T.textMuted },
+  noMatchClear: { fontSize: 13, fontWeight: '700', color: T.blue },
+  jobsLoadingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 44 },
+  jobsLoadingText: { fontSize: 13, fontWeight: '600', color: T.textMuted },
+
+  // Floating filter button (pinned)
+  floatingFilterBtn: { position: 'absolute', right: 16, width: 46, height: 46, borderRadius: 23, backgroundColor: 'rgba(79,141,255,0.90)', alignItems: 'center', justifyContent: 'center', shadowColor: T.ink, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.22, shadowRadius: 12, elevation: 10, zIndex: 50 },
+  floatingFilterDot: { position: 'absolute', top: 10, right: 10, width: 9, height: 9, borderRadius: 5, backgroundColor: '#FB923C', borderWidth: 1.5, borderColor: '#fff' },
+
+  // Filter modal (bottom sheet)
+  filterOverlay: { flex: 1, backgroundColor: 'rgba(11,15,34,0.65)', justifyContent: 'flex-end', alignItems: 'center', paddingHorizontal: 14, paddingBottom: 28 },
+  filterSheet: { width: '100%', maxHeight: '85%', backgroundColor: T.surface, borderRadius: 28, paddingHorizontal: 22, paddingTop: 12, paddingBottom: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 20 }, shadowOpacity: 0.2, shadowRadius: 40, elevation: 20 },
+  filterSheetHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: T.borderHi, marginBottom: 16 },
+  filterSheetHead: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 },
+  filterCloseBtn: { padding: 2 },
+  filterScroll: { flexGrow: 0, flexShrink: 1, marginTop: 4 },
+  filterCitySection: { flexShrink: 1 },
+  filterCityScroll: { maxHeight: 230, flexGrow: 0, flexShrink: 1, marginTop: 2 },
+  filterCityWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingTop: 8, paddingBottom: 6 },
+  filterCityGroup: { marginBottom: 4 },
+  filterCityGroupLabel: { fontSize: 11.5, fontWeight: '700', color: T.textMuted, letterSpacing: 0.2, marginTop: 10 },
+  filterHintText: { fontSize: 12.5, color: T.textFaint, marginTop: 14, fontStyle: 'italic' },
+  filterSheetTitle: { flex: 1, fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
+  filterClearLink: { fontSize: 13, fontWeight: '700', color: T.blue, marginLeft: 12 },
+  filterSection: { marginTop: 16 },
+  filterRowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  filterLabel: { fontSize: 13, fontWeight: '700', color: T.ink },
+  filterValue: { fontSize: 13, fontWeight: '800', color: T.blue },
+  filterChipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  locChip: { maxWidth: '100%', backgroundColor: T.inputBg, borderWidth: 1, borderColor: T.border, borderRadius: 18, paddingVertical: 8, paddingHorizontal: 13 },
+  locChipOn: { backgroundColor: T.blue, borderColor: T.blue },
+  locChipText: { fontSize: 12.5, fontWeight: '600', color: T.inkSoft },
+  locChipTextOn: { color: '#fff' },
+  filterDoneOuter: { marginTop: 22, borderRadius: 16, overflow: 'hidden' },
+  filterDoneBtn: { alignItems: 'center', justifyContent: 'center', paddingVertical: 15 },
+  filterDoneText: { fontSize: 15, fontWeight: '800', color: '#fff' },
+
+  // Custom match slider
+  sliderWrap: { paddingVertical: 14 },
+  sliderTrack: { height: 6, borderRadius: 3, backgroundColor: T.inputBg, justifyContent: 'center' },
+  sliderFill: { position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 3, backgroundColor: T.blue },
+  sliderThumb: { position: 'absolute', top: -8, width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', borderWidth: 2, borderColor: T.blue, shadowColor: T.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 4 },
 
   // Meta chips
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingHorizontal: 16, paddingBottom: 12 },
@@ -2150,9 +2749,6 @@ const styles = StyleSheet.create({
     color: T.blue,
   },
   // ── Modal ──
-  modalKAV: {
-    flex: 1,
-  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(11,15,34,0.65)',

@@ -9,8 +9,9 @@ const jobService = require('../services/jobService');
 const { generateCoverLetterPDF: generateRichCoverLetterPDF } = require('./emailController');
 const clTemplates = require('../utils/coverLetterTemplates');
 const clRenderer  = require('../utils/coverLetterRenderer');
+const { getEventCost } = require('../services/eventCosts');
 
-const CL_DOWNLOAD_CREDIT_COST = 2; // credits per country-template cover-letter download
+const CL_DOWNLOAD_CREDIT_COST = 2; // fallback; live cost via getEventCost('cover_letter_download')
 
 // Helper function: Check user credits
 async function checkUserCredits(userId, creditsRequired = 1) {
@@ -541,14 +542,15 @@ const generateCoverLetters = async (req, res) => {
             return res.status(400).json({ error: 'No recipients provided' });
         }
 
-        // CHECK CREDITS
+        // CHECK CREDITS — per-cover-letter cost is admin-configurable.
+        const clCost = await getEventCost('cover_letter_generate');
         try {
-            const creditCheck = await checkUserCredits(userId, recipients.length);
+            const creditCheck = await checkUserCredits(userId, recipients.length * clCost);
             if (!creditCheck.hasCredits) {
-                return res.status(402).json({ 
+                return res.status(402).json({
                     error: creditCheck.message,
                     remainingCredits: creditCheck.remaining,
-                    creditsRequired: recipients.length
+                    creditsRequired: recipients.length * clCost
                 });
             }
         } catch (error) {
@@ -620,7 +622,7 @@ const generateCoverLetters = async (req, res) => {
 
                     // DEDUCT CREDIT
                     try {
-                        await deductCredits(userId, 1, 'cover_letter_generation', {
+                        await deductCredits(userId, clCost, 'cover_letter_generation', {
                             companyName: companyName,
                             position: recipient.position,
                             recipientEmail: recipient.email
@@ -708,7 +710,7 @@ const generateCoverLetterDetails = async (req, res) => {
 
         // CHECK CREDITS (always synchronous — fast DB check)
         try {
-            const creditCheck = await checkUserCredits(userId, 1);
+            const creditCheck = await checkUserCredits(userId, await getEventCost('cover_letter_generate'));
             if (!creditCheck.hasCredits) {
                 return res.status(402).json({ 
                     error: creditCheck.message,
@@ -896,10 +898,11 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
     // letter is used for every region — the picker only changes PDF formatting.
     const coverLetterHtml = formatCoverLetterWithHTML(aiResult.cover_letter || '', {});
 
-    // DEDUCT CREDIT
+    // DEDUCT CREDIT (admin-configurable cost)
     try {
-        console.log(`💳 Deducting 1 credit from user ${userId}...`);
-        await deductCredits(userId, 1, 'cover_letter_generation', {
+        const clCost = await getEventCost('cover_letter_generate');
+        console.log(`💳 Deducting ${clCost} credit(s) from user ${userId}...`);
+        await deductCredits(userId, clCost, 'cover_letter_generation', {
             companyName,
             position,
             recipientEmail
@@ -1156,6 +1159,7 @@ async function generateCoverLetterTemplatePdf(req, res) {
     const userId = req.user.id;
     const { template, mode, coverLetterHtml, companyName, companyAddress, brandColor, websiteUrl } = req.body || {};
     try {
+        const CL_DOWNLOAD_CREDIT_COST = await getEventCost('cover_letter_download');   // admin-configurable
         if (!coverLetterHtml || !String(coverLetterHtml).trim()) {
             return res.status(400).json({ error: 'No cover letter content. Generate a cover letter first.' });
         }
@@ -1202,6 +1206,7 @@ async function generateCoverLetterTemplateDocx(req, res) {
     const userId = req.user.id;
     const { template, mode, coverLetterHtml, companyName, companyAddress } = req.body || {};
     try {
+        const CL_DOWNLOAD_CREDIT_COST = await getEventCost('cover_letter_download');   // admin-configurable
         if (!coverLetterHtml || !String(coverLetterHtml).trim()) {
             return res.status(400).json({ error: 'No cover letter content. Generate a cover letter first.' });
         }
@@ -1212,10 +1217,10 @@ async function generateCoverLetterTemplateDocx(req, res) {
         const tplId = clTemplates.TEMPLATE_IDS.includes(template) ? template : clTemplates.TEMPLATE_IDS[0];
         const sender = await buildCLSender(userId);
         const data = { sender, company: { name: companyName || '', address: companyAddress || '' }, bodyHtml: coverLetterHtml };
-        const html = clTemplates.renderCoverLetterHtml(tplId, data, { mode });
+        const photo = await loadCLPhotoDataUri(userId).catch(() => null);
 
-        const { htmlToDocx } = require('../utils/docxRenderer');
-        const docxBuffer = await htmlToDocx(html);
+        const { buildCoverLetterDocx } = require('../utils/docxBuilder');
+        const docxBuffer = await buildCoverLetterDocx(data, { template: tplId, photo });
 
         const safeCo = (companyName || 'Company').replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
         const fileName = `Cover_Letter_${safeCo}_${Date.now()}.docx`;

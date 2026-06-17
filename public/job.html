@@ -162,6 +162,7 @@
             <button type="button" class="cva-btn-primary is-done" id="clDoneBtn"><span class="cva-label">✓ Generated</span></button>
             <button type="button" class="cva-icon-btn" id="clPreviewBtn" title="Preview"><i class="material-icons" style="font-size:20px;">visibility</i></button>
             <button type="button" class="cva-icon-btn" id="clDownloadBtn" title="Download PDF"><i class="material-icons" style="font-size:20px;">file_download</i></button>
+            <button type="button" class="cva-icon-btn" id="clDownloadDocxBtn" title="Download Word (.docx)"><i class="material-icons" style="font-size:20px;">description</i></button>
             <button type="button" class="cva-icon-btn" id="clEditBtn" title="Edit letter"><i class="material-icons" style="font-size:20px;color:var(--cva-blue);">edit</i></button>
           </div>
           <div class="cl-edit-area" id="clEditArea" style="display:none;">
@@ -673,6 +674,27 @@
       finally { btn.disabled = false; }
     }
 
+    async function downloadCoverLetterDocx() {
+      if (!coverText().trim()) { CVA.toast('Generate a cover letter first.'); return; }
+      // The Word builder is always templated (2 credits) — there is no free generic path.
+      const bal = await CVA.getCredits();
+      if (bal < 2) { CVA.toast('Not enough credits — you need 2.'); return; }
+      const btn = document.getElementById('clDownloadDocxBtn');
+      btn.disabled = true;
+      try {
+        const pv = await ensureClPreview();
+        const res = await CVA.apiFetch('/api/cover-letter/generate-template-docx', {
+          method: 'POST',
+          body: JSON.stringify({ template: pv.templateId, mode: 'onepage', coverLetterHtml: coverText(), companyName: companyName(), companyAddress: companyAddress() })
+        });
+        const data = await res.json().catch(function () { return {}; });
+        if (!res.ok || !data.downloadUrl) { CVA.toast(data.error || 'Failed to generate Word file.'); return; }
+        await downloadBlob(data.downloadUrl, data.fileName || 'Cover_Letter.docx');
+        CVA.toast('Word file downloaded.');
+      } catch (e) { CVA.toast(e.message || 'Failed to generate Word file.'); }
+      finally { btn.disabled = false; }
+    }
+
     async function downloadBlob(url, filename) {
       const dr = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
       if (!dr.ok) throw new Error('Failed to download PDF');
@@ -958,6 +980,7 @@
       document.getElementById('clGenBtn').onclick = generateCoverLetter;
       document.getElementById('clPreviewBtn').onclick = previewCoverLetter;
       document.getElementById('clDownloadBtn').onclick = downloadCoverLetter;
+      document.getElementById('clDownloadDocxBtn').onclick = downloadCoverLetterDocx;
       document.getElementById('clEditBtn').onclick = toggleClEdit;
       document.getElementById('clSaveEdit').onclick = saveClEdit;
 

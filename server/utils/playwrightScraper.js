@@ -37,6 +37,30 @@ const REVEAL_SELECTORS = [
     '[class*="contact-reveal"]', '[class*="show-phone"]',
 ];
 
+// ─── "Load more" / pagination selectors ───────────────────────────────────────
+// Buttons that reveal MORE jobs on a listing (vs. infinite scroll). Clicked in a bounded
+// loop so a paginated board returns its full set instead of only the first page. (Limit 2)
+const LOAD_MORE_SELECTORS = [
+    // English
+    'button:has-text("Load more")', 'a:has-text("Load more")',
+    'button:has-text("Show more")', 'a:has-text("Show more")',
+    'button:has-text("View all")', 'a:has-text("View all")',
+    'button:has-text("See all")', 'a:has-text("See more")',
+    'button:has-text("More jobs")', 'button:has-text("Show all")',
+    // German
+    'button:has-text("Mehr anzeigen")', 'button:has-text("Mehr laden")',
+    'button:has-text("Weitere")', 'a:has-text("Mehr anzeigen")',
+    // Dutch
+    'button:has-text("Meer laden")', 'button:has-text("Toon meer")',
+    'button:has-text("Meer tonen")',
+    // French
+    'button:has-text("Afficher plus")', 'button:has-text("Voir plus")',
+    'button:has-text("Charger plus")',
+    // Class/attr fallbacks
+    '[class*="load-more"]', '[class*="show-more"]', '[class*="loadMore"]',
+    '[class*="showMore"]', '[data-action*="load-more"]', '[aria-label*="more" i]',
+];
+
 // ─── API interception patterns ─────────────────────────────────────────────────
 // URLs that typically carry job data payloads — intercept these for clean JSON
 const JOB_API_PATTERNS = [
@@ -105,6 +129,23 @@ function looksLikeJobApi(url) {
     return JOB_API_PATTERNS.some(p => p.test(url));
 }
 
+// ── Global Chromium concurrency limiter ───────────────────────────────────────
+// Each headless browser costs ~200-400MB. Without a cap, N concurrent user searches
+// each rendering an SPA could spawn N browsers at once and OOM the box. Bound the
+// number of simultaneous Chromium instances across ALL in-flight scrapes. (H3)
+const MAX_BROWSERS = Math.max(1, parseInt(process.env.MAX_BROWSERS || '3', 10));
+let _activeBrowsers = 0;
+const _browserWaiters = [];
+function _acquireBrowserSlot() {
+    if (_activeBrowsers < MAX_BROWSERS) { _activeBrowsers++; return Promise.resolve(); }
+    return new Promise((resolve) => _browserWaiters.push(resolve)); // slot handed over on release (count unchanged)
+}
+function _releaseBrowserSlot() {
+    const next = _browserWaiters.shift();
+    if (next) next();                 // transfer the slot directly to the next waiter
+    else _activeBrowsers = Math.max(0, _activeBrowsers - 1);
+}
+
 /**
  * Scrape a single URL using Playwright.
  * Returns { text, interceptedJson, rawHtml }
@@ -118,6 +159,7 @@ async function scrapeWithPlaywright(url) {
     let browser;
     const interceptedPayloads = [];
 
+    await _acquireBrowserSlot();
     try {
         browser = await chromium.launch({
             headless: true,
@@ -142,15 +184,29 @@ async function scrapeWithPlaywright(url) {
                     response.status() === 200
                 ) {
                     const body = await response.text().catch(() => '');
-                    if (body && body.length > 100 && body.length < 200_000) {
+                    // Allow large job-board API payloads (a 500-role ATS list easily exceeds
+                    // 200KB) — capped at 4MB so a runaway response can't blow up memory. (M25)
+                    if (body && body.length > 100 && body.length < 4_000_000) {
                         interceptedPayloads.push({ url: respUrl, body });
                     }
                 }
             } catch {}
         });
 
-        // Navigate and wait for full render
-        await page.goto(url, { waitUntil: 'networkidle', timeout: 28000 });
+        // Navigate. Use 'domcontentloaded' (fires reliably) instead of 'networkidle'
+        // (which NEVER settles on sites with ads/analytics/persistent sockets — e.g.
+        // ebcont). CRUCIALLY: if goto times out, do NOT bail — the page has usually
+        // loaded its content already, so we grab whatever rendered instead of returning
+        // an empty page. That's what made slow sites report "no openings".
+        try {
+            await page.goto(url, { waitUntil: 'commit', timeout: 20000 });   // fires as soon as the server responds
+        } catch (navErr) {
+            console.log(`[playwright] goto did not commit for ${url} (${navErr.message}) — using whatever loaded`);
+        }
+        // Best-effort, all capped so a never-idle site can't hang us: parse → settle → paint.
+        await page.waitForLoadState('domcontentloaded', { timeout: 9000 }).catch(() => {});
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(1500); // let client-rendered job lists paint
 
         // ── Layer 2: Click reveal buttons ─────────────────────────────────────
         for (const selector of REVEAL_SELECTORS) {
@@ -167,6 +223,47 @@ async function scrapeWithPlaywright(url) {
         // Extra wait for any post-click rendering
         await page.waitForTimeout(1000);
 
+        // ── Layer 2b: Load-more / infinite-scroll expansion (listing pages only) ──
+        // Many boards show only the first ~10-20 roles then need a "Load more" click or a
+        // scroll to reveal the rest. Run a BOUNDED loop: click a load-more button if present,
+        // else scroll to the bottom; stop when the page stops growing, after 6 iterations, or
+        // after 8s — whichever comes first. Gated to board-like URLs so detail pages skip it
+        // entirely (zero regression). Runs in-process: no extra browser slot. (Limit 2)
+        if (/career|job|vacan|stellen|position|opening|hiring|recruit|join-us/i.test(url)) {
+            const loopStart = Date.now();
+            let prevLen = (await page.content()).length;
+            let noButtonStreak = 0;
+            for (let iter = 0; iter < 4; iter++) {
+                if (Date.now() - loopStart > 5000) break;   // hard time guard vs the extractor cap
+                let clicked = false;
+                for (const selector of LOAD_MORE_SELECTORS) {
+                    try {
+                        const btn = page.locator(selector).first();
+                        if (await btn.isVisible({ timeout: 500 })) {
+                            await btn.scrollIntoViewIfNeeded({ timeout: 1000 }).catch(() => {});
+                            await btn.click({ timeout: 1500 });
+                            clicked = true;
+                            break;
+                        }
+                    } catch { /* not present / not clickable — try next */ }
+                }
+                if (!clicked) {
+                    // No load-more button. Try infinite scroll ONCE; if a button never appears and
+                    // scrolling doesn't reveal jobs, stop — don't keep scrolling lazy footer/img
+                    // content (which grows the DOM without adding roles). (Limit 2 cost guard)
+                    if (++noButtonStreak > 1) break;
+                    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+                }
+                await page.waitForLoadState('networkidle', { timeout: 1500 }).catch(() => {});
+                await page.waitForTimeout(700);   // let new rows paint
+                const len = (await page.content()).length;
+                const grew = len - prevLen;
+                if (grew < 50) break;             // page stopped growing → done
+                prevLen = len;
+                if (clicked) console.log(`[playwright] load-more iteration ${iter + 1} (+${grew} chars)`);
+            }
+        }
+
         const rawHtml = await page.content();
         const text    = stripHtmlToText(rawHtml);
 
@@ -182,6 +279,7 @@ async function scrapeWithPlaywright(url) {
         return { text: '', rawHtml: '', interceptedJson: null };
     } finally {
         if (browser) await browser.close().catch(() => {});
+        _releaseBrowserSlot();   // always free the slot, even on launch/close failure (H3)
     }
 }
 

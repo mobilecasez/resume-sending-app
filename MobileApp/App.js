@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Dimensions, StatusBar, Image, ImageBackground, SafeAreaView, Animated, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard, Linking, AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WebView } from 'react-native-webview';
@@ -3450,7 +3450,7 @@ function exportSig(){
     return null;
   };
 
-  const downloadCoverLetterPDFFromReview = async (recipientIndex) => {
+  const downloadCoverLetterPDFFromReview = async (recipientIndex, format = 'pdf') => {
     const coverLetter = getCoverLetter(recipientIndex);
 
     if (!coverLetter) {
@@ -3459,11 +3459,14 @@ function exportSig(){
     }
 
     // Open the country-format cover-letter picker (preview free, download = 2 credits).
+    // `format` ('pdf' | 'docx') is the choice made on the Review screen; the picker
+    // surfaces that format first so the user lands on their chosen download.
     try {
       await AsyncStorage.setItem('coverLetterPickerContext', JSON.stringify({
         coverLetterHtml: coverLetter.coverLetterHtml,
         companyName: coverLetter.companyName,
         companyAddress: coverLetter.address || '',
+        format,
       }));
       expoRouter.push('/(cover-letter)/templates');
     } catch (e) {
@@ -4447,47 +4450,39 @@ function exportSig(){
       // Recipients are prepended when added, so their array indices shift — using
       // index-based lookup causes false "data changed" alerts whenever a new company
       // is inserted at the front of the list.
-      let needsRegeneration = false;
+      // Robust normalize: ignore https / www / path / query / trailing-slash differences
+      // so we never false-flag "changed" when only the URL FORMAT differs.
+      const normalize = (url) => (url || '').trim().toLowerCase()
+        .replace(/^https?:\/\//, '').replace(/^www\./, '').split(/[/?#]/)[0].replace(/\/+$/, '');
 
-      // Build a lookup: email → cover letter entry (from all stored entries)
-      const coverLetterByEmail = {};
-      Object.values(reviewCoverLetters).forEach(entry => {
-        if (entry?.storedRecipientEmail) {
-          coverLetterByEmail[entry.storedRecipientEmail] = entry;
-        }
-      });
-
+      // Collect ONLY recipients whose company website genuinely changed since their letter
+      // was generated. CRITICAL: link strictly by the unique clKey — NEVER by email.
+      // Matching by email cross-linked companies that share an empty/placeholder email,
+      // so it falsely reported "changed" on every single visit. If a recipient isn't
+      // reliably linked (no clKey-keyed letter), we simply don't prompt (safe — the user
+      // can still regenerate manually) rather than risk a false alarm.
+      const changedIndices = [];
       recipients.forEach((recipient, index) => {
-        if (!recipient.email || !recipient.website) return; // skip incomplete entries
-
-        // Find the cover letter that was generated FOR this specific email
-        const savedCoverLetter = coverLetterByEmail[recipient.email];
-
-        // Only check if we have a stored entry with website data for this email
-        if (savedCoverLetter && savedCoverLetter.storedRecipientWebsite) {
-          // Normalize both URLs before comparing (handle https:// prefix differences)
-          const normalize = (url) => (url || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
-          const websiteChanged = normalize(savedCoverLetter.storedRecipientWebsite) !== normalize(recipient.website);
-
-          if (websiteChanged) {
-            console.log(`🔄 Recipient ${index} website changed - needs regeneration`);
-            console.log(`  Old: ${savedCoverLetter.storedRecipientEmail} / ${savedCoverLetter.storedRecipientWebsite}`);
-            console.log(`  New: ${recipient.email} / ${recipient.website}`);
-            needsRegeneration = true;
-          }
+        if (!recipient.website || !recipient.clKey) return;
+        const saved = reviewCoverLetters[recipient.clKey]
+          || Object.values(reviewCoverLetters).find(e => e?.storedRecipientClKey === recipient.clKey);
+        if (saved && saved.storedRecipientWebsite
+            && normalize(saved.storedRecipientWebsite) !== normalize(recipient.website)) {
+          changedIndices.push(index);
         }
       });
 
-      if (needsRegeneration) {
-        console.log('🔄 Recipient data changed - auto-regenerating all cover letters...');
+      // DO NOT auto-generate (that silently spent credits, sometimes for every recipient,
+      // and even after the user cancelled). Ask first; regenerate ONLY the changed
+      // letters, and ONLY if the user taps "Regenerate". "Not now" spends nothing.
+      if (changedIndices.length > 0) {
+        const n = changedIndices.length;
         Alert.alert(
-          'Recipient Data Changed',
-          'Recipient information has been updated. Cover letters will be regenerated automatically.',
+          'Regenerate cover letter?',
+          `The company details changed for ${n} application${n === 1 ? '' : 's'}. Regenerate ${n === 1 ? 'it' : 'them'} now? This uses 1 credit each. Tap "Not now" to keep your current letter${n === 1 ? '' : 's'} unchanged.`,
           [
-            {
-              text: 'OK',
-              onPress: () => generateAllCoverLettersForReview()
-            }
+            { text: 'Not now', style: 'cancel' },
+            { text: 'Regenerate', onPress: () => { changedIndices.forEach((i) => generateCoverLetterForReview(i)); } },
           ]
         );
       }
@@ -4510,6 +4505,28 @@ function exportSig(){
       setIsAdmin(false);
     }
   };
+
+  // Re-check admin status whenever a token is available — covers session restore on
+  // app launch and every login path (not just the email-login flow), so the "Admin
+  // Panel" menu item appears for admins after reopening the app.
+  useEffect(() => {
+    if (user?.token) checkAdminStatus(user.token);
+  }, [user?.token]);
+
+  // Re-fetch the live credit balance (used by pull-to-refresh + on Home focus, so an
+  // admin change or a top-up shows up without restarting the app).
+  const refreshCredits = useCallback(async () => {
+    try {
+      if (!user?.token) return;
+      const res = await fetch(`${API_BASE}/user/credits`, { headers: { 'Authorization': `Bearer ${user.token}` } });
+      if (!res.ok) return;
+      const data = await res.json();
+      const bal = (typeof data.balance === 'number') ? data.balance
+                : (typeof data.credits === 'number') ? data.credits
+                : (typeof data.credits_remaining === 'number') ? data.credits_remaining : null;
+      if (bal !== null) setCreditBalance(bal);
+    } catch { /* offline — keep current */ }
+  }, [user?.token]);
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -5760,6 +5777,7 @@ function exportSig(){
       <HomeScreen
         user={user}
         creditBalance={creditBalance}
+        refreshCredits={refreshCredits}
         unreadCount={unreadCount}
         totalSent={totalSent}
         totalGenerated={totalGenerated}
@@ -7325,6 +7343,15 @@ function exportSig(){
                 <Text style={styles.adminPageSubtitle}>Manage credit packages for users</Text>
               </View>
 
+              {/* AI Event Credits — configure per-event credit costs */}
+              <TouchableOpacity
+                style={[styles.adminCreateButton, { backgroundColor: '#0E7490', marginBottom: 16 }]}
+                onPress={() => { try { require('expo-router').router.push('/(admin)/ai-event-credits'); } catch (e) { console.warn('nav failed', e?.message); } }}
+              >
+                <Text style={styles.adminCreateButtonIcon}>⚙️</Text>
+                <Text style={styles.adminCreateButtonText}>AI Event Credits</Text>
+              </TouchableOpacity>
+
               {/* Create Package Button */}
               <TouchableOpacity 
                 style={styles.adminCreateButton}
@@ -8467,7 +8494,7 @@ function exportSig(){
                           if (creditBalance <= 0) {
                             Alert.alert(
                               'Insufficient Credits',
-                              'Remaining credits are 0. Please recharge to continue downloading PDFs.',
+                              'Remaining credits are 0. Please recharge to continue downloading.',
                               [
                                 { text: 'Cancel', style: 'cancel' },
                                 { text: 'Recharge Now', onPress: () => setScreen('packages') }
@@ -8475,7 +8502,15 @@ function exportSig(){
                             );
                             return;
                           }
-                          downloadCoverLetterPDFFromReview(currentReviewTab);
+                          Alert.alert(
+                            'Download Cover Letter',
+                            'Choose a format',
+                            [
+                              { text: 'PDF', onPress: () => downloadCoverLetterPDFFromReview(currentReviewTab, 'pdf') },
+                              { text: 'Word (.docx)', onPress: () => downloadCoverLetterPDFFromReview(currentReviewTab, 'docx') },
+                              { text: 'Cancel', style: 'cancel' },
+                            ]
+                          );
                         }}
                         disabled={reviewDownloading}
                         activeOpacity={0.8}

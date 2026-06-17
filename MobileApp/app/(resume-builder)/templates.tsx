@@ -113,7 +113,7 @@ export default function ResumeTemplates() {
       const res = await fetch(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(fmt === 'docx' ? {} : { template: selected.id, mode }),
+        body: JSON.stringify({ template: selected.id, mode }),
       });
       const json = await res.json();
       if (res.status === 402) {

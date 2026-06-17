@@ -727,8 +727,11 @@
       const orig = btn.innerHTML;
       btn.disabled = true; btn.textContent = 'Preparing…';
       try {
+        // Resolve the selected region's template so the Word layout matches the PDF.
+        const cache = await ensurePreviews(selectedRegion);
+        const template = cache.previews[0].id;
         const r = await CVA.apiFetch('/api/resume-builder/generate-docx', {
-          method: 'POST', body: JSON.stringify({})
+          method: 'POST', body: JSON.stringify({ template })
         });
         const d = await r.json().catch(() => ({}));
         if (r.status === 402) { CVA.toast('Not enough credits to download.'); throw new Error('402'); }

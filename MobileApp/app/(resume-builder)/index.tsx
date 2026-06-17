@@ -12,6 +12,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { API_BASE } from '../../config';
+import { useEventCosts } from '../../hooks/useEventCosts';
 
 const T = {
   bg:       '#E5EAF3',
@@ -89,6 +90,8 @@ async function getAuthHeader(): Promise<Record<string, string>> {
 
 export default function ResumeBuilderIndex() {
   const router = useRouter();
+  const { costs } = useEventCosts();
+  const genCost = costs['resume_ai_generate'] ?? 2;   // admin-configurable
   const [mode, setMode] = useState<'select' | 'ai' | 'loading'>('select');
   const [existingResume, setExistingResume] = useState<{ full_name?: string; email?: string } | null>(null);
   const [buildMethod, setBuildMethod] = useState<'ai' | 'manual'>('manual');
@@ -566,11 +569,11 @@ export default function ResumeBuilderIndex() {
               <Text style={s.generateText}>Generate My Resume with AI</Text>
               <View style={s.creditBadge}>
                 <Ionicons name="diamond" size={9} color="#fff" />
-                <Text style={s.creditBadgeText}>2</Text>
+                <Text style={s.creditBadgeText}>{genCost}</Text>
               </View>
             </LinearGradient>
           </TouchableOpacity>
-          <Text style={s.creditNote}>Uses 2 credits per generation</Text>
+          <Text style={s.creditNote}>{genCost > 0 ? `Uses ${genCost} credit${genCost === 1 ? '' : 's'} per generation` : 'Free'}</Text>
           <View style={{ height: 40 }} />
         </ScrollView>
       </KeyboardAvoidingView>
