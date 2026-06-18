@@ -377,7 +377,9 @@ async function findAndExtract(inputUrl, employerHint) {
     }
     const data = await llmExtract(text, cand.url, employerHint || origin);
     const out = toInternalJobs(data, cand.url, origin);
-    return { ...out, sourceUrl: cand.url };
+    // pageText = the actual text the jobs were extracted from, so the caller validates against
+    // the RIGHT page (the careers page), not the homepage it was searched from.
+    return { ...out, sourceUrl: cand.url, pageText: text };
   };
 
   // 1) Static-fetch the standard candidates + careers/derived links found on them.

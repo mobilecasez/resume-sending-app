@@ -234,16 +234,17 @@ async function validateExtraction({ employerName, domain, context, jobs }) {
   const model = geminiJson('gemini-2.5-flash-lite');
   if (!model) return { ok: true, realCount: list.length, reason: 'validator unavailable (fail-open)', junkIndexes: [] };
   const titles = list.slice(0, 40).map((j, i) => `${i + 1}. ${strip(j.title)}${j.location ? ` — ${strip(j.location)}` : ''}`).join('\n');
-  const prompt = `These were extracted as CURRENT JOB OPENINGS for one employer. Judge whether they are REAL, specific job postings that genuinely belong to THIS employer.
+  const prompt = `These were extracted as CURRENT JOB OPENINGS for one employer. Judge whether the TITLES are REAL, specific job roles that plausibly belong to THIS employer.
 EMPLOYER: ${employerName || domain} (${domain})
-PAGE CONTEXT (from their site): ${String(context || '').replace(/\s+/g, ' ').slice(0, 700)}
+PAGE CONTEXT (a SHORT, possibly TRUNCATED snippet from their site — often just a header/intro, NOT the full listing): ${String(context || '').replace(/\s+/g, ' ').slice(0, 1200)}
 EXTRACTED TITLES:
 ${titles}
 Return strict JSON: {"ok":true|false,"realCount":<int>,"reason":"<short>","junkIndexes":[<1-based indexes that are NOT real jobs or clearly belong to a different industry>]}
 RULES:
-- ok=true ONLY if these are real, specific job postings that plausibly belong to this employer.
-- Mark as junk: navigation/menu labels, cookie/consent text, section headings, "read more", category names, generic words, or postings that obviously belong to a DIFFERENT industry than this employer (e.g. dental jobs for a software/IT company).
-- If MOST titles are junk or irrelevant, set ok=false.`;
+- Judge PRIMARILY by the TITLES themselves. A concrete job role (e.g. "Senior .NET Engineer", "Java Developer", "Implementation Consultant") that fits this employer's likely industry → real.
+- DO NOT mark a title as junk merely because it does not appear in the short context snippet — the snippet is truncated and usually does NOT contain the listing.
+- Mark as junk ONLY: navigation/menu labels, cookie/consent text, section headings, "read more", category names, generic non-role words, form/template names, or roles that clearly belong to a DIFFERENT industry than this employer (e.g. dental jobs for a software/IT company).
+- ok=true unless MOST titles are junk by the rule above.`;
   const v = await geminiJsonCall(model, prompt);
   if (!v) return { ok: true, realCount: list.length, reason: 'validator unavailable (fail-open)', junkIndexes: [] };
   return { ok: !!v.ok, realCount: Number(v.realCount) || 0, reason: String(v.reason || ''), junkIndexes: Array.isArray(v.junkIndexes) ? v.junkIndexes : [] };

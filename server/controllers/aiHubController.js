@@ -1811,6 +1811,7 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         // validateExtraction doesn't run a second time. Declared here (not inside the else)
         // so it's in scope at the post-block check below. (M13)
         let alreadyValidated = false;
+        let validationContext = '';   // text of the page the jobs were actually found on (for the post-block validate)
         if (atsApiResult && atsApiResult.jobs.length > 0) {
             listingData = {
                 company_name: atsApiResult.companyName,
@@ -1871,6 +1872,9 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                 listingData = { company_name: exResult.employer || domainName, careers_page_url: exResult.sourceUrl || scrapeUrl, sub_info: `${rawJobs.length} open role${rawJobs.length === 1 ? '' : 's'}`, jobs: rawJobs };
                 console.log(`[aiHub] AI extractor: ${rawJobs.length} jobs for "${listingData.company_name}" @ ${exResult.sourceUrl}`);
                 resolved = true;
+                // Validate against the page the jobs were ACTUALLY found on (e.g. /careers), not
+                // the light homepage scrape — else real jobs get rejected as "no jobs on this page".
+                validationContext = exResult.pageText || '';
                 // NOTE: do NOT mark alreadyValidated here. The AI-extractor path has no prior
                 // validation, and its prompt can be fooled by job-shaped non-jobs (e.g. Typeform's
                 // "Job Application Form" TEMPLATES). The post-block validateExtraction is this
@@ -1927,9 +1931,13 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         // board, wrong-industry results) that look title-shaped and would otherwise be
         // accepted. On failure we drop them and let the agent find the real source.
         if (rawJobs.length > 0 && !alreadyValidated) {
+            // Use the page the jobs were actually found on (AI extractor's source page) as
+            // context, falling back to the homepage scrape. Validating real /careers jobs
+            // against the homepage text wrongly rejected them (e.g. novulo).
+            const valCtx = (validationContext || pageData.pageText || '').slice(0, 700);
             const val = await validateExtraction({
                 employerName: listingData.company_name, domain,
-                context: (pageData.pageText || '').slice(0, 700), jobs: rawJobs,
+                context: valCtx, jobs: rawJobs,
             }).catch(() => ({ ok: true }));
             if (!val.ok) {
                 console.log(`[aiHub] Result validation FAILED for "${domain}" (${rawJobs.length} jobs): ${val.reason} — discarding & invoking agent`);
