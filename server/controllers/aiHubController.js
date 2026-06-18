@@ -1518,18 +1518,32 @@ async function getMatchScores(req, res) {
         const jobIds = [...new Set(requested.filter((id) => UUID.test(id)))];
         if (!jobIds.length) return res.json({ scores: {} });
 
-        // Only the rows this user hasn't scored yet.
-        const unscoredRows = await dbConfig.query(
-            `SELECT job_id FROM user_job_matches
-             WHERE user_id = $1 AND job_id = ANY($2::uuid[]) AND scored_at IS NULL`,
+        // Current state of every requested match. CRUCIAL: return the CACHED score for jobs
+        // that are ALREADY scored — not just freshly-computed ones. Otherwise a job that got
+        // scored between the card rendering ("Evaluating") and this request (e.g. by the
+        // best-200 pass or a prior batch) would be missing from the response, and the app would
+        // treat it as unscorable (matchScore = -1) and hide the badge entirely.
+        const rows = await dbConfig.query(
+            `SELECT job_id, match_score, scored_at FROM user_job_matches
+             WHERE user_id = $1 AND job_id = ANY($2::uuid[])`,
             [userId, jobIds]
         );
-        const toScore = (unscoredRows || []).map((r) => String(r.job_id));
-        if (!toScore.length) return res.json({ scores: {} });
+        const result = {};            // jobId -> score (cached + newly computed)
+        const toScore = [];
+        for (const r of (rows || [])) {
+            const id = String(r.job_id);
+            if (r.scored_at) result[id] = (r.match_score ?? 0);   // already scored → return cached %
+            else toScore.push(id);
+        }
+        // Requested jobs with no match row yet (just-created) also need scoring.
+        const seenIds = new Set(Object.keys(result).concat(toScore));
+        for (const id of jobIds) if (!seenIds.has(id)) toScore.push(id);
+        if (!toScore.length) return res.json({ scores: result });
 
         const userProfile = await getUserProfile(userId);
         if (!userProfile.skills || !userProfile.skills.length) {
-            return res.json({ scores: {}, noProfile: true });
+            // No résumé → can't compute NEW scores, but still return any already-cached ones.
+            return res.json({ scores: result, noProfile: true });
         }
 
         const jobRows = await dbConfig.query(
@@ -1563,11 +1577,13 @@ async function getMatchScores(req, res) {
 
         const scores = await scoreJobsForUser(userProfile, jobs);
 
-        // Persist each score (also stamps scored_at so each job is computed once).
+        // Persist each score (also stamps scored_at so each job is computed once) and merge
+        // it into the result alongside the already-cached scores.
         for (const jid of Object.keys(scores)) {
             try { await jobService.saveUserJobMatch(userId, jid, scores[jid]); } catch (e) { /* non-fatal */ }
+            result[jid] = scores[jid];
         }
-        return res.json({ scores });
+        return res.json({ scores: result });
     } catch (e) {
         console.error('[aiHub] getMatchScores error:', e.message);
         return res.status(500).json({ error: 'Failed to score jobs' });
