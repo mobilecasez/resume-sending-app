@@ -222,13 +222,14 @@ function toInternalJobs(data, sourceUrl, origin) {
     const empType = naClean(j['Employment Type']) || 'Full-time';
     const skills = arrClean(j.Skills).slice(0, 15);
     const responsibilities = arrClean(j.Responsibilities).slice(0, 12);
-    // Most career LISTINGS only show a title + location per role; the salary, skills and
-    // responsibilities live on each job's DETAIL page. Mark a job for Phase-2 detail
-    // enrichment (visit its job_url) UNLESS it already came back detail-complete OR has no
-    // real detail page to visit. Detail-complete / synthetic-URL jobs pass straight through.
-    const detailComplete = responsibilities.length >= 2 || skills.length >= 4;
+    // A career LISTING only shows teasers (a title, a location, maybe a couple of bullets); the
+    // REAL salary/skills/responsibilities live on each job's own DETAIL page. So ALWAYS send a
+    // job through Phase-2 detail enrichment (open its job_url → trim the HTML → AI-extract the
+    // full details). Only pass a job straight through when there's NO real detail page to open
+    // (a synthetic "#role-N" url). The extracted details are cached, so it's done once per job
+    // and every later searcher reads it straight from the DB.
     const realUrl = !!url;
-    const passThrough = detailComplete || !realUrl;
+    const passThrough = !realUrl;
     return {
       title: naClean(j['Job Title']),
       location: naClean(j.Location) || 'Not specified',
