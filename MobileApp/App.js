@@ -27,7 +27,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import HomeScreen, { clearHomeScreenCache } from './components/HomeScreen';
 import FloatingTabBar from './components/FloatingTabBar';
 import ReviewScreen from './components/ReviewScreen';
-import { regionFromCountry } from './regionUtils';
+import { regionFromCountry, bestRegion, employerAddress } from './regionUtils';
 
 // Apple IAP Product IDs - must match App Store Connect products
 const IAP_PRODUCT_IDS = [
@@ -3238,9 +3238,13 @@ function exportSig(){
       console.log('API endpoint:', `${API_BASE}/send-single-application`);
       console.log('User token present:', !!user.token);
       
-      // Region selection (points 3,4): use the saved choice, else auto-detect from employer country.
-      const clRegion  = coverLetter.coverLetterRegion || regionFromCountry(coverLetter.address || '');
-      const resRegion = coverLetter.resumeRegion      || regionFromCountry(coverLetter.address || '');
+      // Region selection: honour the user's saved pick, else auto-detect. The employer address
+      // lives in coverLetter.locations[] (NOT coverLetter.address — that was empty → always
+      // 'generic'); bestRegion() resolves it and falls back to the website/email ccTLD.
+      const autoRegion = bestRegion(coverLetter, recipient);
+      const clRegion  = coverLetter.coverLetterRegion || autoRegion;
+      const resRegion = coverLetter.resumeRegion      || autoRegion;
+      console.log(`🌍 Region resolved: cover=${clRegion} resume=${resRegion} (auto=${autoRegion})`);
 
       const requestBody = {
         recipientEmail: recipient.email,
@@ -3248,7 +3252,7 @@ function exportSig(){
         position: recipient.position,
         coverLetterText: coverLetter.coverLetterHtml,
         companyName: coverLetter.companyName,
-        companyAddress: coverLetter.address || '',
+        companyAddress: employerAddress(coverLetter) || coverLetter.address || '',
         brandColor: coverLetter.brandColor || null,
         fontName: coverLetter.fontName || null,
         coverLetterRegion: clRegion,

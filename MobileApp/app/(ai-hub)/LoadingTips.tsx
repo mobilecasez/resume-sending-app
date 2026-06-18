@@ -1,17 +1,19 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, StyleSheet, Animated, Easing } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import MOTIVATION_TIPS from '../../assets/motivationTips.json';
 
-const TIPS = [
-  "AI prioritizes jobs where your skills match the requirements strongly.",
-  "A customized cover letter increases interview chances by 40%.",
-  "Soft skills are just as important as technical skills for senior roles.",
-  "Tailor your resume summary for the specific industry of the company.",
-  "Follow up within 48 hours after submitting your application.",
-  "Most recruiters spend only 6-8 seconds looking at a resume initially."
-];
+// Pull the analyzing-card tips from the SAME 500+ motivational/tip library used by the
+// processing-state MotivationProgress section (shuffled per mount so it doesn't repeat the
+// same few lines). Labels only — typing effect, animation and styling are unchanged.
+function shuffleTips(arr: string[]): string[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
 
 export function LoadingTips() {
+  const TIPS = useRef(shuffleTips(MOTIVATION_TIPS as string[])).current;
   const [tipIndex, setTipIndex] = useState(0);
   const [displayedText, setDisplayedText] = useState('');
   const [showCursor, setShowCursor] = useState(true);

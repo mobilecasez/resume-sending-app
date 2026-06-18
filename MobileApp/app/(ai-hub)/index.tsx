@@ -18,6 +18,7 @@ import {
   TextInput,
   StyleSheet,
   Animated,
+  Easing,
   Alert,
   ActivityIndicator,
   Linking,
@@ -31,12 +32,13 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type { Contact, Job, Employer, WishlistPill } from '../../types/aiHub';
-import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, fetchJobMatchScores } from '../../services/aiHubService';
+import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, fetchJobMatchScores, getMotivationLines } from '../../services/aiHubService';
 import type { Recruiter } from '../../services/aiHubService';
 import { API_BASE } from '../../config';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LoadingTips } from './LoadingTips';
+import MotivationProgress from '../../components/MotivationProgress';
 import CreditCostPill from '../../components/CreditCostPill';
 import { useEventCosts } from '../../hooks/useEventCosts';
 
@@ -516,6 +518,31 @@ type JobCardProps = {
   onAddContact: (jobId: string) => void;
   onVisitJob: (job: Job) => void;
 };
+
+// Gently-bobbing green tip in the Add-Company modal — nudges the user to paste the page where
+// ALL jobs are listed (not just the bare domain), which materially improves how many roles we find.
+function AddCompanyTip() {
+  const bob = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(bob, { toValue: 1, duration: 750, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(bob, { toValue: 0, duration: 750, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, []);
+  const translateY = bob.interpolate({ inputRange: [0, 1], outputRange: [0, -4] });
+  return (
+    <Animated.View style={[styles.tipNote, { transform: [{ translateY }] }]}>
+      <Ionicons name="bulb" size={15} color="#059669" />
+      <Text style={styles.tipNoteText}>
+        Tip: paste the URL of the page where you can <Text style={styles.tipNoteBold}>see all the jobs</Text> — not just the company domain — to find more roles.
+      </Text>
+    </Animated.View>
+  );
+}
 
 // Top-right "Evaluating…" pill shown while the AI match % is being computed in the
 // background (matchScore === null). A gentle pulse signals work in progress.
@@ -1180,6 +1207,22 @@ export default function AIHubScreen() {
   const [cityFilter, setCityFilter] = useState<string[]>([]);
   const [minMatch, setMinMatch] = useState(0);
   const [showFloatingFilter, setShowFloatingFilter] = useState(false);
+  // Résumé-aware praise lines for the processing-state motivation card. Fetched ONCE (cached in
+  // AsyncStorage + on the backend), mixed with the bundled generic tip library. Empty is fine —
+  // the card falls back to the generic library.
+  const [motivationLines, setMotivationLines] = useState<string[]>([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const cached = await AsyncStorage.getItem('aiHub_motivation_lines');
+        if (cached && alive) { const arr = JSON.parse(cached); if (Array.isArray(arr) && arr.length) setMotivationLines(arr); }
+      } catch {}
+      const lines = await getMotivationLines().catch(() => []);
+      if (alive && lines.length) { setMotivationLines(lines); AsyncStorage.setItem('aiHub_motivation_lines', JSON.stringify(lines)).catch(() => {}); }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   // Clear the per-card loader once the new selection has rendered. The rAF outlasts the
   // synchronous JobCard mount that causes the perceived delay; the timeout is a backstop.
@@ -1217,32 +1260,50 @@ export default function AIHubScreen() {
   // request), score them via the cached server endpoint, and merge the % back in.
   // Each job is requested once (scoreRequestedRef); the server caches forever.
   const scoreRequestedRef = useRef<Set<string>>(new Set());
+  const scoringActiveRef = useRef(false);
   useEffect(() => {
     const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    const pending: string[] = [];
-    for (const emp of employers) {
-      for (const job of (emp.jobs || [])) {
-        if (job.matchScore == null && UUID.test(job.id) && !scoreRequestedRef.current.has(job.id)) {
-          pending.push(job.id);
+    // Re-collect EVERY job that still needs a score, reading the latest employers via the ref so
+    // jobs that streamed in while we were scoring are picked up too.
+    const collectPending = () => {
+      const ids: string[] = [];
+      for (const emp of (employersRef.current || [])) {
+        for (const job of (emp.jobs || [])) {
+          if (job.matchScore == null && UUID.test(job.id) && !scoreRequestedRef.current.has(job.id)) ids.push(job.id);
         }
       }
-    }
-    if (!pending.length) return;
-    const batch = pending.slice(0, 50); // cap per request; the merge re-triggers for the rest
-    const timer = setTimeout(async () => {
-      batch.forEach((id) => scoreRequestedRef.current.add(id));
-      const { scores } = await fetchJobMatchScores(batch);
-      setEmployers((prev) => prev.map((emp) => ({
-        ...emp,
-        jobs: (emp.jobs || []).map((job) => {
-          if (!batch.includes(job.id)) return job;
-          const sc = scores[job.id];
-          // scored → number; requested but unscorable (no résumé / AI down) → -1 → no badge
-          return { ...job, matchScore: typeof sc === 'number' ? sc : -1 };
-        }),
-      })));
-    }, 1200);
-    return () => clearTimeout(timer);
+      return ids;
+    };
+    // One continuous drainer. The OLD code re-armed a 1200ms debounce on every `employers` change
+    // and cancelled it each time — so during a long streaming search the timer never fired and
+    // scoring was STARVED (jobs stuck on "Evaluating", appearing as you scroll). This drains the
+    // whole queue in back-to-back batches and never cancels itself; concurrent runs are guarded.
+    if (scoringActiveRef.current || !collectPending().length) return;
+    scoringActiveRef.current = true;
+    (async () => {
+      try {
+        await new Promise((r) => setTimeout(r, 500)); // brief coalesce so an initial burst batches
+        let pending = collectPending();
+        while (pending.length) {
+          const batch = pending.slice(0, 40);
+          batch.forEach((id) => scoreRequestedRef.current.add(id));
+          let scores: Record<string, number> = {};
+          try { ({ scores } = await fetchJobMatchScores(batch)); } catch { scores = {}; }
+          setEmployers((prev) => prev.map((emp) => ({
+            ...emp,
+            jobs: (emp.jobs || []).map((job) =>
+              batch.includes(job.id)
+                // scored → number; requested but unscorable (no résumé / AI down) → -1 → no badge
+                ? { ...job, matchScore: typeof scores[job.id] === 'number' ? scores[job.id] : -1 }
+                : job
+            ),
+          })));
+          pending = collectPending(); // includes any jobs that arrived during the request
+        }
+      } finally {
+        scoringActiveRef.current = false;
+      }
+    })();
   }, [employers]);
 
   // Job cards always sort best-match-first (see the render). No sort toggle/prompt:
@@ -1828,29 +1889,34 @@ export default function AIHubScreen() {
                 }
                 return (
                 <View key={employer.id} style={styles.employerSection}>
-                  {/* Progress banner pinned at the TOP so it's always visible that the
-                      search is running: the "learning" tips for a brand-new employer, else
-                      "finding more" / "matching the best 200 for you" while streaming. */}
-                  {(employer as any).learning && jobs.length === 0
-                    ? <LearningBanner message={(employer as any).learningMessage} />
-                    : isProcessing
-                      ? <SearchProgressBanner employer={employer} />
-                      : null}
-                  {/* Filter row above the first job — selected company with >1 job */}
-                  {showFilterBtn && (
+                  {/* While the search is still running and nothing has come back yet, keep the
+                      user happy and engaged with personalized, résumé-aware encouragement instead
+                      of an empty screen. Hidden the moment jobs appear. (No "finding more" card.) */}
+                  {(isProcessing || (employer as any).learning) && jobs.length === 0 && (
+                    <MotivationProgress employerName={employer.name} personalized={motivationLines} />
+                  )}
+                  {/* Count row above the first job — ALWAYS visible when there are jobs. Shows the
+                      filter when a company is selected with >1 role, and a tiny loader beside the
+                      count while the search is still running. */}
+                  {jobs.length > 0 && (
                     <View style={styles.filterHeaderRow}>
-                      <Text style={styles.filterCountText}>
-                        {filteredJobs.length}{filterActive ? ` of ${jobs.length}` : ''} {jobs.length === 1 ? 'job' : 'jobs'}
-                      </Text>
-                      <TouchableOpacity
-                        style={[styles.filterChip, filterActive && styles.filterChipActive]}
-                        activeOpacity={0.85}
-                        onPress={() => setFilterOpen(true)}
-                      >
-                        <Ionicons name="options-outline" size={14} color={filterActive ? '#fff' : T.ink} />
-                        <Text style={[styles.filterChipText, filterActive && styles.filterChipTextActive]}>Filter</Text>
-                        {filterActive && <View style={styles.filterChipDot} />}
-                      </TouchableOpacity>
+                      <View style={styles.countWithLoader}>
+                        <Text style={styles.filterCountText}>
+                          {filteredJobs.length}{filterActive ? ` of ${jobs.length}` : ''} {jobs.length === 1 ? 'job' : 'jobs'}
+                        </Text>
+                        {isProcessing && <ActivityIndicator size="small" color={T.blue} style={styles.countLoader} />}
+                      </View>
+                      {showFilterBtn && (
+                        <TouchableOpacity
+                          style={[styles.filterChip, filterActive && styles.filterChipActive]}
+                          activeOpacity={0.85}
+                          onPress={() => setFilterOpen(true)}
+                        >
+                          <Ionicons name="options-outline" size={14} color={filterActive ? '#fff' : T.ink} />
+                          <Text style={[styles.filterChipText, filterActive && styles.filterChipTextActive]}>Filter</Text>
+                          {filterActive && <View style={styles.filterChipDot} />}
+                        </TouchableOpacity>
+                      )}
                     </View>
                   )}
                   {loadingEmployerId === employer.id ? (
@@ -1955,6 +2021,7 @@ export default function AIHubScreen() {
               autoCapitalize="none"
               autoCorrect={false}
             />
+            <AddCompanyTip />
             {/* Credit cost note */}
             <View style={styles.modalCreditRow}>
               <Ionicons name="flash-outline" size={13} color="#F59E0B" />
@@ -2475,6 +2542,11 @@ const styles = StyleSheet.create({
   // Inline filter header (above the first job of the selected company)
   filterHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: -16, marginBottom: 8, paddingHorizontal: 2 },
   filterCountText: { fontSize: 12, fontWeight: '700', color: T.textMuted },
+  tipNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: 'rgba(16,185,129,0.10)', borderWidth: 1, borderColor: 'rgba(16,185,129,0.32)', borderRadius: 12, paddingVertical: 10, paddingHorizontal: 12, marginTop: 12 },
+  tipNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: '#047857', fontWeight: '600' },
+  tipNoteBold: { fontWeight: '800', color: '#065F46' },
+  countWithLoader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  countLoader: { transform: [{ scale: 0.7 }] },
   filterChip: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: T.surface, borderWidth: 1, borderColor: T.borderHi, borderRadius: 20, paddingVertical: 7, paddingHorizontal: 12 },
   filterChipActive: { backgroundColor: T.blue, borderColor: T.blue },
   filterChipText: { fontSize: 12, fontWeight: '700', color: T.ink },

@@ -54,7 +54,10 @@ function cleanHtmlForLLM(html) {
   // preserve mailto/tel/linkedin AND job/apply links as inline "text [href]" so the LLM can
   // return a real "Job URL". Without this, every apply link was stripped to bare text and the
   // extractor returned 0 usable URLs. The href may be relative — toInternalJobs absolutizes it.
-  const jobHref = /jobs?|career|karriere|stelle|position|vacan|opening|apply|bewerb|gh_jid|gh_src|lever\.co|greenhouse|ashby|myworkday|smartrecruiters|recruitee|breezy|workable|join\.com|personio|teamtailor/i;
+  // NB: include "vacatur" — the Dutch/Belgian word is "vacature(s)", which does NOT contain
+  // "vacan", so /en/vacature/<slug> links were being stripped and the LLM fabricated title-slug
+  // URLs (collapsing distinct same-title roles on dedup, and 404ing Phase-2). Plus FR/ES/IT.
+  const jobHref = /jobs?|career|karriere|stelle|position|vacan|vacatur|offre|emploi|empleo|lavor|opening|apply|bewerb|gh_jid|gh_src|lever\.co|greenhouse|ashby|myworkday|smartrecruiters|recruitee|breezy|workable|join\.com|personio|teamtailor/i;
   $('a[href]').each((_, el) => {
     const href = $(el).attr('href') || '';
     const t = $(el).text().trim();
@@ -104,42 +107,90 @@ function parseJobsJson(raw) {
     }
     if (lastComplete < 0) return null;
     const em = t.match(/"Employer"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
-    return JSON.parse(`{"Employer":${JSON.stringify(em ? em[1] : '')},"Jobs":[${t.slice(arrStart + 1, lastComplete + 1)}]}`);
+    // The Extraction_Audit object is emitted FIRST (before the Jobs array), so even when the
+    // Jobs array truncates mid-object it is fully formed — recover it so the backend still gets
+    // the self-audit signal (Requires_Deep_Recrawl / Diagnostic_Notes).
+    let auditJson = 'null';
+    const auditAt = t.search(/"Extraction_Audit"\s*:\s*\{/i);
+    if (auditAt >= 0) {
+      const ob = t.indexOf('{', t.indexOf(':', auditAt));
+      let d = 0, end = -1;
+      for (let k = ob; k < arrStart && k < t.length; k++) { const c = t[k]; if (c === '{') d++; else if (c === '}') { d--; if (d === 0) { end = k; break; } } }
+      if (end > ob) auditJson = t.slice(ob, end + 1);
+    }
+    return JSON.parse(`{"Extraction_Audit":${auditJson},"Employer":${JSON.stringify(em ? em[1] : '')},"Jobs":[${t.slice(arrStart + 1, lastComplete + 1)}]}`);
   } catch { return null; }
+}
+
+// Normalize the model's self-audit block into a stable shape the backend can branch on.
+// Defensive: a missing/garbled audit must never crash the pipeline — default to "no recrawl".
+function normalizeAudit(raw, jobCount) {
+  const a = (raw && typeof raw === 'object') ? raw : {};
+  const density = String(a.Data_Density_Score || '').trim();
+  const notes = String(a.Diagnostic_Notes || '').trim();
+  return {
+    totalFound: Number.isFinite(+a.Total_Jobs_Found) ? +a.Total_Jobs_Found : jobCount,
+    density: /^(high|medium|low)/i.test(density) ? density : (jobCount ? 'Medium' : 'Low_or_Missing_Details'),
+    requiresDeepRecrawl: a.Requires_Deep_Recrawl === true || a.Requires_Deep_Recrawl === 'true',
+    notes: notes || (jobCount ? 'Passed' : 'No jobs parsed from text'),
+  };
+}
+// Merge per-chunk audits for a chunked large board: recrawl if ANY chunk flags it, keep the
+// LOWEST density, and concatenate distinct notes.
+function mergeAudits(audits, jobCount) {
+  const list = audits.filter(Boolean);
+  if (!list.length) return normalizeAudit(null, jobCount);
+  const rank = { high: 3, medium: 2, low: 1 };
+  let lowest = list[0];
+  for (const x of list) if ((rank[String(x.density).toLowerCase().slice(0, 6).replace(/_.*/, '')] || 2) < (rank[String(lowest.density).toLowerCase().slice(0, 6).replace(/_.*/, '')] || 2)) lowest = x;
+  const notes = [...new Set(list.map((x) => x.notes).filter((n) => n && n !== 'Passed'))].slice(0, 3).join(' | ') || 'Passed';
+  return { totalFound: jobCount, density: lowest.density, requiresDeepRecrawl: list.some((x) => x.requiresDeepRecrawl), notes };
 }
 
 // ONE LLM call over a single (already size-bounded) text slice → parsed {Employer, Jobs}.
 async function llmExtractOne(clipped, sourceUrl, employerHint) {
   const model = geminiModel();
   if (!model || !clipped) return null;
-  const prompt = `You are a context-optimized, multi-lingual job data extraction engine. Analyze the pre-cleaned page text below and map EVERY real job opening into the strict JSON schema.
+  const prompt = `You are a deterministic, zero-dropout, multi-lingual job data extraction and structural-translation engine. Your sole mandate is to exhaustively audit the pre-cleaned page text below, run a mandatory self-verification pass, and transcribe EVERY unique real job vacancy into the strict target JSON schema. Do not truncate, summarize, or stop until the entire text block is parsed.
 
-EMPLOYER (target): ${employerHint || '(infer from the page)'}
-SOURCE URL: ${sourceUrl}
+INPUT CONTEXT
+• Target Employer (hint): ${employerHint || '(infer from the text)'}
+• Source URL: ${sourceUrl}
 
-CRITICAL PRINCIPLES:
-1. ABSOLUTE ENGLISH: the entire output MUST be English. Translate all foreign-language titles, locations, skills, and responsibilities into professional English (e.g. "Systeembeheerder" → "System Administrator", "Thuiswerken" → Work Mode "Remote", "Vollzeit" → Employment Type "Full-time").
-2. ONLY REAL OPENINGS for THIS employer. IGNORE navigation, menus, cookie/consent text, section headings, "read more", and anything that is not an actual job posting. If the text clearly belongs to a DIFFERENT company/industry, return an empty Jobs array.
-3. NO FABRICATION. If a field is missing, use the fallback — never invent: missing strings/links → "N/A"; missing email → "Contact via portal".
-4. DEDUPLICATE: if the SAME role appears more than once (cloned cards, repeated sections, a carousel), include it ONLY ONCE.
-5. Keep skills & responsibilities as short bullet strings (not paragraphs). Keep "Contacts" as [] UNLESS a specific recruiter name/email/phone is shown for that job (saves space — most jobs have none).
-6. TWO SEPARATE fields — do not confuse them:
-   • "Employment Type" = the working-time contract: one of Full-time, Part-time, Contract, Internship, Temporary, N/A (Vollzeit→Full-time, Teilzeit→Part-time, Praktikum→Internship). Default to "Full-time" only if clearly a permanent role; else "N/A".
-   • "Work Mode" = the work LOCATION arrangement: one of Remote, Hybrid, Office, N/A (Thuiswerken/Remote→Remote, vor Ort→Office). Use "N/A" if not stated — never guess.
+MANDATORY PROCESSING PROTOCOLS
+1. ABSOLUTE ENGLISH OUTPUT: the entire output MUST be English. Translate every foreign-language title, location, skill, and responsibility into professional English (e.g. "Systeembeheerder" → "System Administrator", "Thuiswerken" → Work Mode "Remote", "Vollzeit" → Employment Type "Full-time", "Praktikum" → Internship).
+2. ONLY REAL OPENINGS FOR THIS EMPLOYER: ignore navigation, menus, filters, cookie/consent text, section headings, "read more", and anything that is not an actual job posting. If the text clearly belongs to a DIFFERENT company or industry than the target employer, return an empty Jobs array (and flag it in the audit).
+3. NO FABRICATION & DEDUPLICATION: never invent a field. If the SAME role appears more than once (cloned cards, carousels, repeated sections, pagination loops), include it ONLY ONCE.
+4. LISTING vs DETAIL DISCRIMINATION: if the text is a high-level LIST page, capture each role's title/location/type and its deep-link URL (skills/responsibilities/salary are often absent here — that is expected, flag it in the audit). If the text is a single DETAIL page, extract all operational metrics (Skills, Responsibilities, Salary) comprehensively.
+5. DEEP-LINK URL INTEGRITY: never guess, invent, or truncate a URL. Extract the exact absolute link that maps to that specific vacancy. Links are provided inline as "text [href]". If a link is a relative path (e.g. /careers/apply/102), combine it cleanly with the base domain of the Source URL. If no unique link exists for a role, use "N/A".
+6. TOKEN CONSERVATION: keep Skills and Responsibilities as short, impact-driven bullet strings — never wordy paragraphs.
+7. LOGICAL FIELD ISOLATION (two independent variables — do not confuse):
+   • "Employment Type" ∈ [Full-time, Part-time, Contract, Internship, Temporary, N/A] (Vollzeit→Full-time, Teilzeit→Part-time). Default "Full-time" ONLY if clearly a permanent role; else "N/A".
+   • "Work Mode" ∈ [Remote, Hybrid, Office, N/A] (Thuiswerken/Remote→Remote, "vor Ort"→Office). If not stated, "N/A" — never guess.
+8. FALLBACKS: missing strings/paths → "N/A"; missing/hidden recruiter email → "Contact via portal"; no contacts → [].
 
-OUTPUT: return ONLY valid JSON, starting with '{' and ending with '}', no markdown:
+SELF-AUDIT LAYER (run BEFORE emitting Jobs)
+Inspect the payload and populate "Extraction_Audit". Set "Requires_Deep_Recrawl": true if ANY of: (a) you found ZERO jobs; (b) the text looks blocked/empty/JS-shell (a Cloudflare/consent challenge, a cookie wall, or an SPA skeleton with no real postings); or (c) you found jobs but they are LISTING-only and lack Skills/Responsibilities/Salary. Set "Data_Density_Score" to "High" (rich detail on every job), "Medium" (some detail), or "Low_or_Missing_Details" (teasers only / blocked). In "Diagnostic_Notes" state concisely WHAT is missing or WHY (e.g. "Listing teasers only — no skills/responsibilities; detail pages must be crawled", "Page appears blocked by a consent/Cloudflare wall", "Only abstract section headers, no job links present"). Use "Passed" only when density is High and no recrawl is needed.
+
+STRICT OUTPUT: return ONLY one valid JSON object — no markdown, no \`\`\`json fences, no prose. Start with '{' and end with '}'.
 {
+  "Extraction_Audit": {
+    "Total_Jobs_Found": 0,
+    "Data_Density_Score": "High" | "Medium" | "Low_or_Missing_Details",
+    "Requires_Deep_Recrawl": true | false,
+    "Diagnostic_Notes": "Passed, or a concise reason"
+  },
   "Employer": "Exact Company Name",
   "Jobs": [
     {
       "Job Title": "English title",
       "Location": "City, Region or Country",
-      "Employment Type": "one of: Full-time, Part-time, Contract, Internship, Temporary, N/A",
-      "Work Mode": "one of: Remote, Hybrid, Office, N/A",
+      "Employment Type": "Full-time" | "Part-time" | "Contract" | "Internship" | "Temporary" | "N/A",
+      "Work Mode": "Remote" | "Hybrid" | "Office" | "N/A",
       "Salary": "salary text or N/A",
       "Skills": ["Skill 1", "Skill 2"],
       "Responsibilities": ["Task 1", "Task 2"],
-      "Job URL": "explicit job link if present else N/A",
+      "Job URL": "exact absolute job link or N/A",
       "Contacts": []
     }
   ]
@@ -182,14 +233,17 @@ async function llmExtract(cleanedText, sourceUrl, employerHint) {
 
   let employer = '';
   const merged = [];
+  const audits = [];
   for (const c of chunks) {
     const d = await llmExtractOne(c, sourceUrl, employerHint);
     if (!d) continue;
     if (!employer && d.Employer) employer = d.Employer;
     if (Array.isArray(d.Jobs)) merged.push(...d.Jobs);
+    audits.push(normalizeAudit(d.Extraction_Audit, (d.Jobs || []).length));
   }
   if (!merged.length) return null;
-  return { Employer: employer, Jobs: merged };
+  // Pre-merged, already-normalized audit for the chunked board (extractFrom prefers it).
+  return { Employer: employer, Jobs: merged, _mergedAudit: mergeAudits(audits, merged.length) };
 }
 
 // Map the unified schema → our internal job shape (used by processJobSearch).
@@ -250,15 +304,96 @@ function toInternalJobs(data, sourceUrl, origin) {
   return { employer: naClean(data.Employer), jobs };
 }
 
+// ── Tier 2: schema.org JobPosting JSON-LD — FREE structured extraction, ZERO LLM tokens ───────
+// Most career sites that want Google-for-Jobs indexing emit <script type="application/ld+json">
+// with @type "JobPosting" (on detail pages, and many on the listing too). We map the structured
+// fields EXACTLY — salary / employment type / location / url are AUTHORITATIVE here (the employer's
+// own data, more reliable than AI-parsing). Skills/responsibilities are left for Phase-2 detail
+// enrichment, so the FINAL output is identical-or-better while we skip the listing/pagination LLM.
+const _EMP_TYPE = { FULL_TIME: 'Full-time', PART_TIME: 'Part-time', CONTRACTOR: 'Contract', CONTRACT: 'Contract', TEMPORARY: 'Temporary', INTERN: 'Internship', INTERNSHIP: 'Internship', PER_DIEM: 'Contract', VOLUNTEER: 'N/A', OTHER: 'N/A' };
+function _mapEmpType(v) {
+  if (!v) return 'Full-time';
+  for (const x of (Array.isArray(v) ? v : [v])) { const k = String(x).toUpperCase().replace(/[\s-]+/g, '_'); if (_EMP_TYPE[k]) return _EMP_TYPE[k]; }
+  return 'Full-time';
+}
+function _ldSalary(bs) {
+  if (!bs || typeof bs !== 'object') return '';
+  const cur = bs.currency || (bs.value && bs.value.currency) || '';
+  const v = bs.value || {};
+  const u = String(v.unitText || '').toLowerCase();
+  const per = u ? `/${u === 'year' ? 'yr' : u === 'month' ? 'mo' : u === 'hour' ? 'hr' : u === 'day' ? 'day' : u === 'week' ? 'wk' : u}` : '';
+  const sym = ({ EUR: '€', USD: '$', GBP: '£', INR: '₹' })[cur] || (cur ? cur + ' ' : '');
+  const num = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  if (v.minValue != null && v.maxValue != null) return `${sym}${num(v.minValue)} – ${sym}${num(v.maxValue)}${per}`;
+  if (v.value != null) return `${sym}${num(v.value)}${per}`;
+  if (v.minValue != null) return `from ${sym}${num(v.minValue)}${per}`;
+  return '';
+}
+function jsonLdJobPostings(html) {
+  const out = [];
+  const collect = (node, depth = 0) => {
+    if (!node || typeof node !== 'object' || depth > 8) return;
+    if (Array.isArray(node)) { for (const n of node) collect(n, depth + 1); return; }
+    const t = node['@type']; const types = (Array.isArray(t) ? t : [t]).map((x) => String(x));
+    if (types.includes('JobPosting')) out.push(node);
+    for (const key of ['@graph', 'itemListElement', 'item', 'mainEntity']) if (node[key]) collect(node[key], depth + 1);
+  };
+  for (const m of String(html || '').matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    let raw = m[1].replace(/^\s*<!\[CDATA\[/, '').replace(/\]\]>\s*$/, '').trim();
+    let parsed = null;
+    try { parsed = JSON.parse(raw); } catch { try { parsed = JSON.parse(raw.replace(/,\s*([}\]])/g, '$1')); } catch {} }
+    if (parsed) collect(parsed);
+  }
+  return out;
+}
+// Returns mapped jobs (internal schema) from a page's JobPosting JSON-LD. Empty if none/invalid.
+function extractJsonLdJobs(html, baseUrl) {
+  const posts = jsonLdJobPostings(html);
+  const asName = (x) => (x && typeof x === 'object') ? (x.name || x['@id'] || '') : x;
+  const jobs = [];
+  for (const jp of posts) {
+    const title = naClean(jp.title || jp.name);
+    if (!title || title.length < 2 || /^\d+$/.test(title)) continue;
+    let loc = jp.jobLocation; if (Array.isArray(loc)) loc = loc[0];
+    const addr = (loc && loc.address) || {};
+    const location = [asName(addr.addressLocality), asName(addr.addressRegion), asName(addr.addressCountry)].filter(Boolean).join(', ') || 'Not specified';
+    const remote = /TELECOMMUTE/i.test(String(jp.jobLocationType || '')) || jp.applicantLocationRequirements != null && /remote/i.test(JSON.stringify(jp.jobLocationType || ''));
+    let url = jp.url || (jp.mainEntityOfPage && (jp.mainEntityOfPage['@id'] || jp.mainEntityOfPage)) || jp.sameAs || '';
+    if (Array.isArray(url)) url = url[0];
+    try { url = url ? new URL(url, baseUrl).href : ''; } catch { url = ''; }
+    jobs.push({
+      title,
+      location,
+      job_type: _mapEmpType(jp.employmentType),
+      work_mode: remote ? 'Remote' : null,
+      salary: _ldSalary(jp.baseSalary) || null,
+      experience: null,
+      skills: [],
+      responsibilities: [],
+      job_url: url || `${baseUrl}#role-${jobs.length + 1}`,
+      contacts: [],
+      employer_name: naClean(asName(jp.hiringOrganization)) || null,
+      // false → Phase-2 visits the detail page and AI-fills skills/responsibilities, so the final
+      // record is exactly as rich as the all-AI path (no compromise). JSON-LD just got us here free.
+      _atsApi: false,
+    });
+  }
+  const seen = new Set(); const dedup = [];
+  for (const j of jobs) { const k = (j.job_url && !/#role-/.test(j.job_url)) ? j.job_url.split('#')[0].replace(/\/$/, '') : _sig(j.title, j.location); if (seen.has(k)) continue; seen.add(k); dedup.push(j); }
+  return dedup;
+}
+
 // ── Find the real jobs page (static-first), then extract ──────────────────────
 function careersCandidates(inputUrl) {
   let origin, root;
   try { const u = new URL(inputUrl); origin = u.origin; root = rootDomain(u.hostname); } catch { return [inputUrl]; }
-  // High-value paths + careers SUBDOMAINS first, so the consumer's slice(0,18) never drops
-  // the subdomains (M2). Long-tail paths after.
-  const high = ['/careers', '/jobs', '/career', '/career/jobs', '/careers/jobs', '/karriere', '/open-positions'];
+  // High-value paths + careers SUBDOMAINS first, so the consumer's slice never drops the
+  // subdomains (M2). "vacancies"/"vacatures" are as common as "careers"/"jobs" across EU sites
+  // (esp. NL/BE), so they belong in the high tier — otherwise a sparse jobs.<root> subdomain can
+  // win the candidate race over the real /vacatures board (guidewell: 3 vs ~100). Long-tail after.
+  const high = ['/careers', '/jobs', '/career', '/vacancies', '/vacatures', '/open-positions', '/career/jobs', '/careers/jobs', '/en/vacancies', '/karriere'];
   const subs = [`https://careers.${root}`, `https://jobs.${root}`, `https://career.${root}`];
-  const rest = ['/karriere/jobs', '/en/careers', '/en/jobs', '/stellenangebote', '/stellen', '/join-us', '/work-with-us', '/about/careers', '/company/careers', '/vacancies'];
+  const rest = ['/karriere/jobs', '/en/careers', '/en/jobs', '/en/vacatures', '/stellenangebote', '/stellen', '/join-us', '/work-with-us', '/about/careers', '/company/careers'];
   return [inputUrl, ...high.map((p) => origin + p), ...subs, ...rest.map((p) => origin + p)].filter((v, i, a) => a.indexOf(v) === i);
 }
 
@@ -272,7 +407,7 @@ function careersLinks(html, baseUrl) {
   for (const m of String(html || '').matchAll(/<a[^>]+href=["']([^"'#]+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
     const text = m[2].replace(/<[^>]+>/g, ' ').trim().toLowerCase();
     let href = m[1];
-    if (!/jobs?|career|karriere|stellen|vacan|join|offene|positions?|openings?|jobangebot/i.test(href + ' ' + text)) continue;
+    if (!/jobs?|career|karriere|stellen|vacan|vacatur|offre|emploi|empleo|lavor|join|offene|positions?|openings?|jobangebot/i.test(href + ' ' + text)) continue;
     if (NON_LISTING_PATH.test(href)) continue;   // skip marketing/template pages that merely contain a job word
     try { href = new URL(href, baseUrl).href; } catch { continue; }
     out.push(href);
@@ -293,9 +428,12 @@ function deriveListings(links) {
   }
   return [...out];
 }
-const strongJobUrl = (u) => /\/(jobs?|careers?|karriere|stellen\w*|vacan\w*|open-positions?|positions?|openings?|offene-stellen|join-us)\b/i.test(u || '');
+// NB: include vacatur (NL/BE "vacature(s)") + FR/ES/IT — these are as common as "vacancies" and
+// do NOT contain "vacan", so without them a Dutch board's links are invisible and we land on a
+// single detail page (boldcompany: 1 of ~20). Kept consistent with cleanHtmlForLLM's jobHref.
+const strongJobUrl = (u) => /\/(jobs?|careers?|karriere|stellen\w*|vacan\w*|vacatur\w*|offre\w*|emploi|empleo\w*|lavor\w*|open-positions?|positions?|openings?|offene-stellen|join-us)\b/i.test(u || '');
 
-const detailUrlRe = (u) => /\/(jobs?|stelle\w*|position\w*|vacan\w*|job[-_]?detail)([\/?].*)?[\w%=-]{3,}/i.test(u || '') && /(\?|\/[\w%-]{6,})/.test(u || '');
+const detailUrlRe = (u) => /\/(jobs?|stelle\w*|position\w*|vacan\w*|vacatur\w*|offre\w*|emploi|empleo\w*|job[-_]?detail)([\/?].*)?[\w%=-]{3,}/i.test(u || '') && /(\?|\/[\w%-]{6,})/.test(u || '');
 // A FACET / filtered sub-listing (e.g. /career-types/student, /departments/engineering,
 // /locations/berlin) shows only a SLICE of the board. We must not mistake it for the full
 // listing — Adyen's /career-types/student exposes 5 of ~hundreds of roles. (M3)
@@ -312,8 +450,58 @@ function facetParents(url) {
     return [...new Set(out)].map((x) => x.replace(/\/$/, '')).filter((x) => x && x !== bare);
   } catch { return []; }
 }
+// From a job-DETAIL url (…/vacatures/vacature_x.html, …/jobs/123/title), derive its parent
+// LISTING url(s) by dropping the trailing detail segment(s). Self-heal hook for when extraction
+// lands on a single posting instead of the board (boldcompany: a detail page → the /vacatures board).
+function detailParents(url) {
+  try {
+    const u = new URL(url); u.search = ''; u.hash = '';
+    const segs = u.pathname.split('/').filter(Boolean);
+    const out = [];
+    if (segs.length >= 1) out.push(u.origin + '/' + segs.slice(0, -1).join('/'));
+    if (segs.length >= 2) out.push(u.origin + '/' + segs.slice(0, -2).join('/'));
+    return [...new Set(out)].map((x) => x.replace(/\/$/, '')).filter((x) => x && x !== u.origin);
+  } catch { return []; }
+}
+// Derive a rough English-ish title from a job-detail URL slug (Phase-2 replaces it with the real
+// title from the detail page). "csirt-analyst-8084" → "Csirt Analyst".
+function titleFromSlug(url) {
+  try {
+    const s = decodeURIComponent(new URL(url).pathname.split('/').filter(Boolean).pop() || '');
+    const t = s.replace(/[-_]\d+$/, '').replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).trim();
+    return t.length >= 2 ? t : 'Job';
+  } catch { return 'Job'; }
+}
+// Virtualized job widgets render only ~20 cards as visible TEXT but still emit EVERY job's <a href>.
+// The AI sees the 20; we recover the rest straight from the hrefs. Harvest direct-child links that
+// share the URL pattern of the jobs already extracted (same parent dir; and if the samples end in a
+// numeric id like "-8084", require that too) so we never pull in nav/facet links. (cegeka 21→~60)
+function harvestDetailLinks(html, sampleUrls) {
+  const samples = (sampleUrls || []).filter((u) => u && !/#role-/.test(u));
+  if (!samples.length) return [];
+  let origin = '', parentPath = '';
+  try { const u = new URL(samples[0]); origin = u.origin; parentPath = u.pathname.replace(/\/[^/]*$/, '/'); } catch { return []; }
+  if (!parentPath || parentPath.length < 4) return [];
+  // ONLY harvest when the job URLs carry a numeric id suffix (…-8084) — an unambiguous job-posting
+  // signal (ATS/widget job ids). Without it, scanning the DOM for "/careers/<slug>" would sweep up
+  // nav/facet links (about/contact/team) as fake jobs. Precision over coverage: safe for every site.
+  const idSuffix = samples.filter((u) => /[-_]\d{2,}\/?$/.test(u)).length >= Math.ceil(samples.length * 0.6);
+  if (!idSuffix) return [];
+  const esc = parentPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Virtualized widgets keep every job URL in a JS data blob, not as <a href> — so scan the whole
+  // rendered HTML for "<parentPath><slug>" occurrences (href, JSON, data-attrs alike).
+  const re = new RegExp(esc + '([A-Za-z0-9._-]{3,})', 'g');
+  const out = new Set();
+  for (const m of String(html || '').matchAll(re)) {
+    const tail = m[1].replace(/\/$/, '');
+    if (!tail || tail.length < 3) continue;
+    if (idSuffix && !/[-_]\d{2,}$/.test(tail)) continue;
+    out.add(`${origin}${parentPath}${tail}`);
+  }
+  return [...out];
+}
 const scorePage = (text, url, jobLinkCount) => jobLinkCount * 6 + Math.min(jobHits(text), 8)
-  + (/\/(jobs?|careers?|karriere|stellen(angebote)?|vacan\w*|offene-stellen|open-positions?|positions?|openings?)\/?$/i.test(url) ? 4 : 0)
+  + (/\/(jobs?|careers?|karriere|stellen(angebote)?|vacan\w*|vacatur\w*|offre\w*|empleo\w*|offene-stellen|open-positions?|positions?|openings?)\/?$/i.test(url) ? 4 : 0)
   - (detailUrlRe(url) ? 6 : 0)
   - (facetUrlRe(url) ? 5 : 0);
 
@@ -338,6 +526,67 @@ function rankPages(pages) {
 // A static page is "good enough" (server-rendered with real listings) → no need to render.
 const looksLikeListing = (p) => p && (p.jobLinkCount >= 3 || (jobHits(p.text) >= 4 && p.text.length > 1800));
 
+// Detect URL-BASED pagination on a listing page (WordPress …/page/N/, or ?page=N / ?paged=N /
+// ?pg=N) and synthesize the page-2..N URLs. Many boards render each page at its own URL, so a
+// single fetch only sees page 1 (guidewell: 11 pages × 10 jobs → we'd return 10 of ~110). We
+// read the REAL base from the pagination links themselves (the listing URL may be an alias of
+// the paginated path). Button/infinite-scroll pagination is handled separately in the browser
+// by smartScrape's load-more loop. (Limit 2 — URL-pagination companion)
+function buildPageUrls(listingUrl, html, cap = 25) {
+  const h = String(html || '');
+  try { new URL(listingUrl); } catch { return []; }
+  // Path style: href="…/<path>/page/N/" — keep the link's own base path.
+  const pathHits = [...h.matchAll(/href=["']([^"']*?\/)page\/(\d{1,3})\/?["']/gi)];
+  if (pathHits.length) {
+    let basePath; try { basePath = new URL(pathHits[0][1], listingUrl).href.replace(/\/$/, ''); } catch { return []; }
+    const max = Math.min(Math.max(...pathHits.map((m) => +m[2])), cap + 1);
+    const out = []; for (let n = 2; n <= max; n++) out.push(`${basePath}/page/${n}/`);
+    return [...new Set(out)].slice(0, cap);
+  }
+  // Query style: href="…?page=N" (also paged/pg). Reuse the link's own prefix up to the number.
+  const qHits = [...h.matchAll(/href=["']([^"']*?[?&](?:page|paged|pg)=)(\d{1,3})["']/gi)];
+  if (qHits.length) {
+    let prefix; try { prefix = new URL(qHits[0][1].replace(/&amp;/g, '&'), listingUrl).href; } catch { return []; }
+    const max = Math.min(Math.max(...qHits.map((m) => +m[2])), cap + 1);
+    const out = []; for (let n = 2; n <= max; n++) out.push(`${prefix}${n}`);
+    return [...new Set(out)].slice(0, cap);
+  }
+  return [];
+}
+
+// Fetch + extract the detected pagination pages, returning the EXTRA jobs. The page URLs are all
+// known upfront (synthesized from the pagination links), so process them in BOUNDED-CONCURRENCY
+// batches — sequential crawling of an 11-page board blows the time budget (~21s/page → only ~4
+// pages fit; parallel batches do all 11 in ~20s). Stops when a whole batch comes back empty (we
+// ran past the real last page) or the wall-clock deadline hits. (Limit 2 — URL pagination)
+async function crawlPaginated(listingUrl, firstHtml, employerHint, origin, deadlineAt) {
+  const urls = buildPageUrls(listingUrl, firstHtml);
+  if (!urls.length) return [];
+  // CONC kept modest: too many concurrent flash-lite calls hit the rate limit and whole pages
+  // fail. The page URLs are already bounded to the real last page by buildPageUrls, so we do NOT
+  // early-stop on an empty batch (a transient 429 would otherwise drop every later page) — we run
+  // every detected page, bounded only by the wall-clock deadline.
+  const CONC = 4;
+  const extra = [];
+  for (let i = 0; i < urls.length; i += CONC) {
+    if (Date.now() > deadlineAt) break;
+    const batch = urls.slice(i, i + CONC);
+    const results = await Promise.all(batch.map(async (pu) => {
+      try {
+        const html = await fetchStatic(pu);
+        // JSON-LD first — if this page carries JobPosting blocks, it's free (no LLM).
+        const ld = extractJsonLdJobs(html, pu);
+        if (ld.length >= 3) return ld;
+        const text = cleanHtmlForLLM(html);
+        if (text.length < 600) return [];
+        return toInternalJobs(await llmExtract(text, pu, employerHint || origin), pu, origin).jobs || [];
+      } catch { return []; }
+    }));
+    extra.push(...results.flat());
+  }
+  return extra;
+}
+
 // Returns { employer, jobs, sourceUrl } or { jobs: [] } if nothing found.
 async function findAndExtract(inputUrl, employerHint) {
   const t0 = Date.now();   // self-budget so facet→board exploration never blows the 120s cap (Limit 1)
@@ -358,9 +607,13 @@ async function findAndExtract(inputUrl, employerHint) {
   // Extract from a candidate (render once if its text is thin) → normalized jobs. Skip the
   // render when the candidate already looksLikeListing — it's server-rendered & good enough,
   // so re-rendering just wastes a browser. (M4)
-  const extractFrom = async (cand) => {
+  const extractFrom = async (cand, opts = {}) => {
     let text = cand.text;
-    if ((text.length < 1200 || jobHits(text) < 2) && !looksLikeListing(cand)) {
+    let rendered = false, renderApi = null, renderedHtml = null;
+    // Browser-render the candidate ONCE (idempotent). Captures an intercepted job API if the
+    // board paints from XHR/GraphQL, else upgrades `text` with the rendered DOM.
+    const renderOnce = async () => {
+      if (rendered) return; rendered = true;
       try {
         const r = await smartScrape(cand.url, { forceBrowser: true, minChars: 400 });
         // Hard SPA (e.g. Adyen): the full board paints from an intercepted XHR/GraphQL call
@@ -370,17 +623,114 @@ async function findAndExtract(inputUrl, employerHint) {
           const api = parseJobApiResponse(r.interceptedJson, cand.url, origin);
           if (api && api.jobs && api.jobs.length >= 10) {
             console.log(`[aiJobExtractor] SPA API: ${api.jobs.length} jobs from intercepted payload @ ${cand.url}`);
-            return { employer: api.employer || null, jobs: api.jobs, sourceUrl: cand.url };
+            renderApi = { employer: api.employer || null, jobs: api.jobs, sourceUrl: cand.url, audit: normalizeAudit({ Data_Density_Score: 'High', Requires_Deep_Recrawl: false }, api.jobs.length) };
+            return;
           }
         }
+        if (r.rawHtml) renderedHtml = r.rawHtml;   // keep the rendered DOM for href harvesting
         const t = cleanHtmlForLLM(r.rawHtml || ''); if (t.length > text.length) text = t;
       } catch {}
+    };
+    const runLLM = async () => {
+      const data = await llmExtract(text, cand.url, employerHint || origin);
+      const out = toInternalJobs(data, cand.url, origin);
+      const audit = (data && (data._mergedAudit || normalizeAudit(data.Extraction_Audit, out.jobs.length))) || normalizeAudit(null, out.jobs.length);
+      return { out, audit };
+    };
+    // Render upfront when the static text is too thin to extract from. (M4)
+    if (opts.forceRender || ((text.length < 1200 || jobHits(text) < 2) && !looksLikeListing(cand))) {
+      await renderOnce();
+      if (renderApi) return renderApi;
     }
-    const data = await llmExtract(text, cand.url, employerHint || origin);
-    const out = toInternalJobs(data, cand.url, origin);
+    let { out, audit } = await runLLM();
+    // SELF-CORRECTION via Extraction_Audit: the AI parsed the text but reports it was BLOCKED or
+    // a JS-shell and yielded ZERO jobs, yet our length heuristic didn't trip a render (e.g. a
+    // cookie/Cloudflare wall or an SPA skeleton padded with boilerplate). Escalate to one real
+    // browser render and re-extract. Only on the zero-jobs case — a thin-DETAIL listing (jobs>0,
+    // Low density) is filled downstream by Phase-2 detail enrichment, so re-rendering it is moot.
+    if (out.jobs.length === 0 && audit.requiresDeepRecrawl && !rendered) {
+      console.log(`[aiJobExtractor] Audit deep-recrawl @ ${cand.url}: "${audit.notes}" — forcing browser render`);
+      await renderOnce();
+      if (renderApi) return renderApi;
+      ({ out, audit } = await runLLM());
+    }
     // pageText = the actual text the jobs were extracted from, so the caller validates against
-    // the RIGHT page (the careers page), not the homepage it was searched from.
-    return { ...out, sourceUrl: cand.url, pageText: text };
+    // the RIGHT page (the careers page), not the homepage it was searched from. _renderedHtml lets
+    // finalize harvest href-only (virtualized) job cards the AI couldn't read.
+    return { ...out, sourceUrl: cand.url, pageText: text, audit, _renderedHtml: renderedHtml };
+  };
+
+  // Expand a successful listing result across URL-based pagination (…/page/2/, ?page=2). No-op
+  // when the board isn't paginated. Bounded so it never risks the controller's extractor cap.
+  const withPagination = async (result) => {
+    if (!result || !result.sourceUrl || !(result.jobs || []).length) return result;
+    const deadlineAt = t0 + 95000;
+    if (Date.now() > deadlineAt - 8000) return result;   // not enough budget for even one page
+    const pg = pages.find((p) => p.url === result.sourceUrl);
+    const firstHtml = (pg && pg.html) || (result.sourceUrl && await fetchStatic(result.sourceUrl));
+    if (!firstHtml) return result;
+    const extra = await crawlPaginated(result.sourceUrl, firstHtml, employerHint || origin, origin, deadlineAt);
+    if (!extra.length) return result;
+    // Merge + dedup by real job_url, else title|location signature.
+    const keyOf = (j) => (j.job_url && !/#role-/.test(j.job_url)) ? j.job_url.split('#')[0].replace(/\/$/, '') : _sig(j.title, j.location);
+    const seenK = new Set(); const all = [];
+    for (const j of [...result.jobs, ...extra]) { const k = keyOf(j); if (seenK.has(k)) continue; seenK.add(k); all.push(j); }
+    if (all.length > result.jobs.length) console.log(`[aiJobExtractor] Pagination @ ${result.sourceUrl}: ${result.jobs.length}→${all.length} jobs`);
+    return { ...result, jobs: all, audit: result.audit ? { ...result.audit, totalFound: all.length } : result.audit };
+  };
+
+  // Run before every successful return: SELF-HEAL a result that landed on a single job DETAIL
+  // page (few jobs) by extracting its parent LISTING and keeping the larger — then expand
+  // pagination. This is the automatic "that's only 1 job, the board has more, try harder" step,
+  // so a future blind spot still delivers the full board without anyone hand-fixing a regex.
+  const finalize = async (result) => {
+    let best = result;
+    if (best.jobs.length && best.jobs.length <= 4 && best.sourceUrl && detailUrlRe(best.sourceUrl) && (Date.now() - t0) < 75000) {
+      for (const pu of detailParents(best.sourceUrl).slice(0, 2)) {
+        if ((Date.now() - t0) > 80000) break;
+        const pg = await ensurePage(pu).catch(() => null);
+        if (pg && pg.html) {
+          const r = await extractFrom(candFor(pg));
+          if (r.jobs.length > best.jobs.length) { console.log(`[aiJobExtractor] self-heal: parent listing ${pu} beat detail page (${r.jobs.length} > ${best.jobs.length})`); best = r; }
+        }
+      }
+    }
+    // THIN result → the page we extracted may be a LANDING/teaser ("About careers", a few featured
+    // roles) that links to the real board via "View all jobs" / /all-jobs / /search / /openings.
+    // Follow the strongest such link and RENDER it (these boards are usually JS job-widgets that
+    // only show the full set after rendering), keeping the larger. (cegeka: about page 3 → 60.)
+    if (best.jobs.length && best.jobs.length < 12 && best.sourceUrl && (Date.now() - t0) < 60000) {
+      const bare = (u) => String(u).split('#')[0].replace(/\/$/, '');
+      const boardRe = /\/(all[-_]?jobs|all[-_]?vacatures|all[-_]?vacancies|all[-_]?positions|all[-_]?roles|open[-_]?positions|openings|job[-_]?search|search[-_]?jobs|browse[-_]?jobs|view[-_]?all)(\/|$|\?)/i;
+      const pg0 = pages.find((p) => p.url === best.sourceUrl);
+      const links = (pg0 && pg0.html) ? pageParsed(pg0)._links : [];
+      const cands = [...new Set(links.filter((l) => boardRe.test(l) && bare(l) !== bare(best.sourceUrl)))];
+      for (const u of cands.slice(0, 2)) {
+        if ((Date.now() - t0) > 65000) break;
+        const pg = await ensurePage(u).catch(() => null);
+        if (pg && pg.html) {
+          const r = await extractFrom(candFor(pg), { forceRender: true });
+          if (r.jobs.length > best.jobs.length) { console.log(`[aiJobExtractor] self-heal: broader board ${u} beat thin landing (${r.jobs.length} > ${best.jobs.length})`); best = r; }
+        }
+      }
+    }
+    // VIRTUALIZED-WIDGET recovery: a rendered board may emit every job's <a href> while only ~20
+    // cards have visible text the AI could read. Harvest the same-pattern detail links the AI
+    // missed and add them as stubs — Phase-2 fills their real title/salary/skills. (cegeka 21→~60.)
+    if (best.jobs.length && best.sourceUrl) {
+      const pg = pages.find((p) => p.url === best.sourceUrl);
+      const html = best._renderedHtml || (pg && pg.html);   // prefer the rendered DOM (has all hrefs)
+      if (html) {
+        const have = new Set(best.jobs.map((j) => String(j.job_url || '').split('#')[0].replace(/\/$/, '')));
+        const extra = harvestDetailLinks(html, best.jobs.map((j) => j.job_url)).filter((u) => !have.has(u));
+        if (extra.length) {
+          console.log(`[aiJobExtractor] harvested ${extra.length} extra job link(s) from ${best.sourceUrl} (virtualized cards)`);
+          const stubs = extra.map((u) => ({ title: titleFromSlug(u), location: 'Not specified', job_type: 'Full-time', work_mode: null, salary: null, experience: null, skills: [], responsibilities: [], job_url: u, contacts: [], employer_name: best.employer || null, _atsApi: false }));
+          best = { ...best, jobs: [...best.jobs, ...stubs] };
+        }
+      }
+    }
+    return await withPagination(best);
   };
 
   // 1) Static-fetch the standard candidates + careers/derived links found on them.
@@ -397,12 +747,37 @@ async function findAndExtract(inputUrl, employerHint) {
     if (r && r.jobs && r.jobs.length) return { employer: r.companyName, jobs: r.jobs, sourceUrl: p.url };
   }
 
+  // 1c) Tier 2 — schema.org JobPosting JSON-LD (FREE, no LLM). If a careers page embeds its board
+  //     as JobPosting blocks (common for Google-for-Jobs SEO), build the listing from them directly
+  //     and skip the listing/pagination LLM entirely. Phase-2 still AI-fills skills/responsibilities
+  //     downstream, so the final output is unchanged — we just got the job list for zero tokens.
+  //     Prefer a candidate that is itself a listing (strongJobUrl) so we don't lock onto a lone
+  //     detail page's single JobPosting; finalize()'s pagination is JSON-LD-aware so it stays free.
+  {
+    let ldBest = null;
+    for (const p of pages.filter((p) => p.html)) {
+      const ld = extractJsonLdJobs(p.html, p.url);
+      if (ld.length < 3) continue;
+      // COMPLETENESS GUARD (no-compromise): only trust JSON-LD as the FULL board if it covers the
+      // job-detail links visible on that page. If JSON-LD is a partial subset, fall through to AI —
+      // we fail toward "correct but costlier", never toward "cheap but incomplete". (Math.max(3,…)
+      // lets a JS-rendered page, where no plain links are detectable, still use a solid JSON-LD set.)
+      const detailLinks = pageParsed(p)._links.filter((l) => detailUrlRe(l)).length;
+      if (ld.length < Math.max(3, detailLinks)) continue;
+      if (!ldBest || ld.length > ldBest.jobs.length) ldBest = { jobs: ld, sourceUrl: p.url, employer: ld[0].employer_name || null };
+    }
+    if (ldBest) {
+      console.log(`[aiJobExtractor] JSON-LD: ${ldBest.jobs.length} JobPosting(s) @ ${ldBest.sourceUrl} (free, no LLM)`);
+      return await finalize({ ...ldBest, audit: normalizeAudit({ Data_Density_Score: 'Medium', Requires_Deep_Recrawl: true, Diagnostic_Notes: 'JSON-LD listing — detail pages enrich skills/responsibilities' }, ldBest.jobs.length) });
+    }
+  }
+
   // 2) FAST PATH — server-rendered listing already in static HTML (ebcont/lexon/sipgate).
   //    Verify by EXTRACTION; only trust it if it actually yields jobs. Skip short-circuiting
   //    on a FACET URL (a filtered slice) — fall through so the SPA path can render & compare
   //    the full board against it. (M3)
   const fast = rankPages(pages).find(looksLikeListing);
-  if (fast && !facetUrlRe(fast.url)) { const r = await extractFrom(fast); if (r.jobs.length) return r; }
+  if (fast && !facetUrlRe(fast.url)) { const r = await extractFrom(fast); if (r.jobs.length) return await finalize(r); }
 
   // 3) SPA PATH — render the job-ish candidates, re-derive subdomain listing URLs (celonis),
   //    render those, re-rank, and try the top few until one yields jobs.
@@ -424,8 +799,10 @@ async function findAndExtract(inputUrl, employerHint) {
   // top few and keep the broadest. Bounded to cap LLM cost. (M3)
   let best = { jobs: [] };
   let fruitful = 0;
+  let lastAudit = null;   // most-recent diagnostic — surfaced to the controller even on empty
   for (const cand of rankPages(pages).slice(0, 3)) {
     const r = await extractFrom(cand);
+    if (r.audit) lastAudit = r.audit;
     if (r.jobs.length > best.jobs.length) best = r;
     if (r.jobs.length && ++fruitful >= 2) break;
   }
@@ -446,8 +823,8 @@ async function findAndExtract(inputUrl, employerHint) {
       }
     }
   }
-  if (best.jobs.length) return best;
-  return { jobs: [] };
+  if (best.jobs.length) return await finalize(best);
+  return { jobs: [], audit: lastAudit || normalizeAudit(null, 0) };
 }
 
 // Quick, cheap check: does this employer run a known ATS on a /careers subpage? (The
@@ -469,4 +846,4 @@ async function detectAtsOnCareers(inputUrl) {
   return null;
 }
 
-module.exports = { findAndExtract, detectAtsOnCareers, cleanHtmlForLLM, llmExtract, toInternalJobs };
+module.exports = { findAndExtract, detectAtsOnCareers, cleanHtmlForLLM, llmExtract, toInternalJobs, extractJsonLdJobs };

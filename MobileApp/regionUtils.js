@@ -30,6 +30,45 @@ export function regionFromCountry(text) {
   return 'generic';
 }
 
+// ── Robust region resolution for the SEND flows ──────────────────────────────
+// The cover-letter object carries the employer's offices in `locations[]`, NOT a flat `address`,
+// so reading coverLetter.address alone yields '' → always 'generic'. Resolve the real address from
+// locations[], and fall back to the website / recruiter-email ccTLD (.nl→eu, .de→dach, .in→india…)
+// which is ALWAYS available even when the scraped address is a placeholder ("Address not available").
+const TLD_REGION = {
+  de: 'dach', at: 'dach', ch: 'dach',
+  nl: 'eu', be: 'eu', fr: 'eu', es: 'eu', it: 'eu', ie: 'eu', pt: 'eu', se: 'eu', pl: 'eu',
+  dk: 'eu', no: 'eu', fi: 'eu', eu: 'eu', lu: 'eu', cz: 'eu', gr: 'eu', ro: 'eu', hu: 'eu', sk: 'eu', is: 'eu',
+  in: 'india', uk: 'uk_au', au: 'uk_au', nz: 'uk_au', sg: 'sg', us: 'us_ca', ca: 'us_ca',
+};
+export function regionFromTld(urlOrEmail) {
+  let s = (urlOrEmail || '').toLowerCase().trim();
+  if (!s) return 'generic';
+  if (s.includes('@')) s = s.split('@').pop();                         // email → domain
+  s = s.replace(/^[a-z]+:\/\//, '').replace(/^www\./, '').split(/[\/:?#]/)[0];   // url → host
+  const tld = s.split('.').filter(Boolean).pop();
+  return TLD_REGION[tld] || 'generic';
+}
+// Pull the employer's real address out of the cover-letter object (locations[] preferred).
+export function employerAddress(coverLetter) {
+  if (!coverLetter) return '';
+  if (typeof coverLetter.address === 'string' && coverLetter.address.trim()) return coverLetter.address;
+  if (typeof coverLetter.companyAddress === 'string' && coverLetter.companyAddress.trim()) return coverLetter.companyAddress;
+  const locs = Array.isArray(coverLetter.locations) ? coverLetter.locations : [];
+  const hq = locs.find((l) => l && l.isHeadquarters) || locs[0];
+  if (!hq) return '';
+  if (typeof hq === 'string') return hq;
+  return [hq.address, hq.city, hq.country].filter((x) => x && !/not available|not specified/i.test(String(x))).join(', ');
+}
+// Auto-detected region for a send. Explicit user picks are honoured by the CALLER (saved override
+// || bestRegion). Address first, then the website / recruiter-email ccTLD as a last resort.
+export function bestRegion(coverLetter, recipient) {
+  const loc = [employerAddress(coverLetter), recipient && (recipient.location || recipient.country)].filter(Boolean).join(', ');
+  let r = regionFromCountry(loc);
+  if (r === 'generic') r = regionFromTld((recipient && recipient.website) || (recipient && recipient.email) || (coverLetter && (coverLetter.companyWebsite || coverLetter.website)) || '');
+  return r;
+}
+
 // Picker options (cover letter supports all eight; resume has no 'global' — it maps to generic server-side).
 export const REGION_OPTIONS = [
   { id: 'generic', label: 'Generic',           sub: 'Original · any country' },

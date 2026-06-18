@@ -776,6 +776,35 @@ function geminiModel(withSearch = false, modelName = 'gemini-2.5-flash') {
     return genAI.getGenerativeModel(cfg);
 }
 
+// Gemini occasionally returns a transient 503 "high demand" / 429 rate-limit, especially when a
+// big board fires many Phase-2 detail calls at once. A single failure used to leave a whole batch
+// of jobs un-enriched. Retry transient errors with exponential backoff so the result is reliable.
+async function aiGenerateWithRetry(model, prompt, tries = 4) {
+    for (let i = 0; i < tries; i++) {
+        try {
+            return await model.generateContent(prompt);
+        } catch (e) {
+            const msg = String((e && e.message) || '');
+            const transient = /\b429\b|\b50[03]\b|rate|quota|overload|unavailable|high demand|temporarily|timeout|deadline|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up/i.test(msg);
+            if (i < tries - 1 && transient) { await new Promise((r) => setTimeout(r, 1200 * Math.pow(2, i))); continue; }
+            throw e;
+        }
+    }
+}
+
+// Self-healing completeness gate. True when a result is so thin it almost certainly means we
+// extracted a single job-DETAIL page instead of the employer's board (e.g. boldcompany returning
+// 1 of ~200) — worth a deeper agent investigation. Deliberately PRECISE so legit small employers,
+// whose few jobs were extracted from their actual LISTING page, never trigger the (slow, paid)
+// agent: it requires both "≤2 jobs" AND "the source URL looks like one posting, not a board".
+function _agentWorthyThin(sourceUrl, n) {
+    if (n === 0 || n > 2) return false;
+    const u = String(sourceUrl || '');
+    const detailish = /\/(vacature|vacatur|stelle\w*|position\w*|job|offre|emploi|empleo|opening)\w*[-_/][\w%-]{5,}/i.test(u);
+    const boardish  = /\/(vacatures?|vacancies|jobs?|careers?|stellen\w*|positions?|openings?|offres?|empleos?)\/?$/i.test(u);
+    return detailish && !boardish;
+}
+
 function parseJsonObject(text) {
     const t = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     const start = t.indexOf('{'); const end = t.lastIndexOf('}');
@@ -1218,7 +1247,7 @@ async function fetchJobDetailsBatch(jobBatch, careersUrl, candidateProfile, list
         try {
             const prompt  = buildExtractionPrompt(hasContent);
             const model   = geminiModel(false, 'gemini-2.5-flash-lite');
-            const result  = await model.generateContent(prompt);
+            const result  = await aiGenerateWithRetry(model, prompt);
             const parsed  = parseJsonArray(result.response.text().trim());
 
             hasContent.forEach((s, i) => {
@@ -1238,7 +1267,7 @@ async function fetchJobDetailsBatch(jobBatch, careersUrl, candidateProfile, list
             console.log(`[aiHub] ${noContentPages.length} pages had no content — trying Google Search grounding`);
             const prompt  = buildExtractionPrompt(noContentPages);
             const model   = geminiModel(true); // enable Google Search
-            const result  = await model.generateContent(prompt);
+            const result  = await aiGenerateWithRetry(model, prompt);
             const parsed  = parseJsonArray(result.response.text().trim());
 
             noContentPages.forEach((s, i) => {
@@ -1483,7 +1512,14 @@ Return ONLY a JSON array, one object per job, reusing the SAME id values, no com
                 return parseJsonArray(r.response.text());
             };
             let arr = null;
-            try { arr = await callOnce(); } catch { try { arr = await callOnce(); } catch (e) { arr = null; } }
+            for (let i = 0; i < 3; i++) {
+                try { arr = await callOnce(); break; }
+                catch (e) {
+                    const transient = /\b429\b|\b50[03]\b|overload|unavailable|high demand|rate|quota|timeout|deadline/i.test(String((e && e.message) || ''));
+                    if (i < 2 && transient) { await new Promise((r) => setTimeout(r, 1000 * (i + 1))); continue; }
+                    arr = null; break;
+                }
+            }
             if (Array.isArray(arr)) {
                 for (const it of arr) {
                     if (!it || it.id == null) continue;
@@ -1867,10 +1903,24 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                     new Promise((_, rej) => setTimeout(() => rej(new Error('extractor timeout')), 140000)),
                 ]);
             } catch (e) { console.error('[aiHub] aiJobExtractor error:', e.message); }
+            // Self-audit signal from the extractor's LLM (Extraction_Audit). Surfaced for
+            // observability and to force deep per-job enrichment when the listing was teasers-only.
+            const exAudit = exResult && exResult.audit;
+            if (exAudit) console.log(`[aiHub] Extraction audit @ ${exResult.sourceUrl || scrapeUrl}: density=${exAudit.density} deepRecrawl=${exAudit.requiresDeepRecrawl} — "${exAudit.notes}"`);
             if (exResult && exResult.jobs && exResult.jobs.length) {
                 rawJobs = exResult.jobs;
                 listingData = { company_name: exResult.employer || domainName, careers_page_url: exResult.sourceUrl || scrapeUrl, sub_info: `${rawJobs.length} open role${rawJobs.length === 1 ? '' : 's'}`, jobs: rawJobs };
                 console.log(`[aiHub] AI extractor: ${rawJobs.length} jobs for "${listingData.company_name}" @ ${exResult.sourceUrl}`);
+                // When the AI flags the listing as Low-density / teasers-only, guarantee Phase-2
+                // detail enrichment visits every job's own page (don't let any thin job pass through).
+                if (exAudit && (exAudit.requiresDeepRecrawl || /^low/i.test(exAudit.density))) {
+                    let forced = 0;
+                    for (const j of rawJobs) {
+                        const realUrl = j.job_url && !/#role-/.test(j.job_url);
+                        if (realUrl && j._atsApi) { j._atsApi = false; forced++; }
+                    }
+                    if (forced) console.log(`[aiHub] Audit forced deep enrichment on ${forced} thin job(s)`);
+                }
                 resolved = true;
                 // Validate against the page the jobs were ACTUALLY found on (e.g. /careers), not
                 // the light homepage scrape — else real jobs get rejected as "no jobs on this page".
@@ -1952,7 +2002,8 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         // THIS same search — the user just sees an encouraging "learning" message and
         // then the jobs appear. Everything is logged for the admin dashboard. We skip
         // the (slow, paid) agent on domains it already failed to crack recently.
-        if (rawJobs.length === 0 && /\./.test(companyInput)) {
+        if ((rawJobs.length === 0 || _agentWorthyThin(careersUrl, rawJobs.length)) && /\./.test(companyInput)) {
+            if (rawJobs.length > 0) console.log(`[aiHub] Result for "${domain}" looks incomplete (${rawJobs.length} job(s) from a detail-looking page ${careersUrl}) — auto-escalating to the agent to find the full board.`);
             try {
                 const dead = await employerFix.recentDeadAttempt(domain).catch(() => null);
                 if (dead) {
@@ -1972,7 +2023,7 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                     const t0 = Date.now();
                     const result = await investigateEmployer(scrapeUrl).catch(e => { console.error('[aiHub] silent agent error:', e.message); return null; });
                     const took = ((Date.now() - t0) / 1000).toFixed(0);
-                    if (result && result.verified && result.fixConfig && result.jobs && result.jobs.length) {
+                    if (result && result.verified && result.fixConfig && result.jobs && result.jobs.length > rawJobs.length) {
                         await employerFix.saveOverride({
                             domain, requestId: reqId, fixConfig: result.fixConfig, verified: true,
                             verifyJobCount: result.jobCount, verifySample: result.sample, createdBy: 'agent',
@@ -3703,6 +3754,91 @@ async function smartFillData(req, res) {
     }
 }
 
+// ── Personalized motivation lines (résumé-aware) ──────────────────────────────
+// Shown while a search is processing, mixed with the bundled 500-line generic tip library on the
+// app side. Generated ONCE per user from their résumé (skills/titles/experience), cached in
+// user_motivation_lines, then reused forever — NO per-search AI. A templated fallback covers AI
+// outages / empty résumés (and is NOT cached, so AI is retried next time).
+function _motivationFallback(first, prof) {
+    const name = first || 'there';
+    const skills = (prof.skills || []).filter(Boolean);
+    const titles = (prof.job_titles || []).filter(Boolean);
+    const yrs = prof.experience_years || 0;
+    const s = (i) => skills[i % skills.length];
+    const out = [
+        `${name}, your skills are exactly what great teams are hunting for.`,
+        `Hang tight ${name} — we're lining up roles worthy of you.`,
+        `Your experience speaks for itself, ${name}. Employers will notice.`,
+        `Great matches take a moment — we're finding your best fits now.`,
+        `Every role we open up is a fresh chance, ${name}.`,
+    ];
+    if (skills.length) {
+        out.push(`${name}, your ${s(0)} skills are in serious demand right now.`);
+        if (skills.length > 1) out.push(`${s(0)} and ${s(1)}? That's a combination employers love.`);
+        if (skills.length > 2) out.push(`Few people pair ${s(2)} with ${s(0)} like you do, ${name}.`);
+        out.push(`We're matching roles that value your ${s(3)} expertise.`);
+    }
+    if (titles.length) out.push(`A ${titles[0]} with your range — companies would be lucky to find you.`);
+    if (yrs >= 2) out.push(`${yrs}+ years of real experience — that's hard-earned credibility, ${name}.`);
+    return out;
+}
+
+async function genPersonalizedMotivation(first, prof) {
+    const model = geminiModel(false, 'gemini-2.5-flash-lite');
+    if (!model) return null;
+    const skills = (prof.skills || []).slice(0, 18).join(', ') || 'a strong skill set';
+    const titles = (prof.job_titles || []).slice(0, 5).join(', ') || 'their field';
+    const yrs = prof.experience_years || 0;
+    const name = first || '';
+    const prompt = `Write 28 SHORT, warm, genuine one-liners to cheer up a job seeker while our app searches for jobs for them.
+${name ? `Their first name is ${name} — address them by name in roughly half the lines (natural, not every line).` : ''}
+Their background: titles = ${titles}; ${yrs} years of experience; skills = ${skills}.
+Several lines should praise SPECIFIC skills or their experience naturally (e.g. "Your React skills are exactly what teams want right now"). Mix in light encouragement and one or two playful lines.
+Rules: max 14 words each; warm and sincere; no emojis; no numbering; no surrounding quotes; plain English; each stands alone.
+Return ONLY JSON: {"lines":["...","..."]}`;
+    try {
+        const r = await model.generateContent(prompt);
+        const j = safeParseJSON(r.response.text(), null);
+        const lines = (j && Array.isArray(j.lines) ? j.lines : [])
+            .map((x) => String(x || '').trim().replace(/^["'\-•\s]+/, '').replace(/["']+$/, ''))
+            .filter((x) => x.length >= 6 && x.length <= 160);
+        return lines.length >= 8 ? [...new Set(lines)] : null;
+    } catch { return null; }
+}
+
+async function getMotivation(req, res) {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    try {
+        const cached = await dbConfig.get(`SELECT lines FROM user_motivation_lines WHERE user_id = $1`, [userId]);
+        if (cached && cached.lines) {
+            const lines = Array.isArray(cached.lines) ? cached.lines : safeParseJSON(cached.lines, []);
+            if (lines.length) return res.json({ lines });
+        }
+        const prof = await getUserProfile(userId).catch(() => ({ skills: [], job_titles: [], experience_years: 0 }));
+        const u = await dbConfig.get(`SELECT full_name FROM users WHERE id = $1`, [userId]).catch(() => null);
+        const first = String((u && u.full_name) || '').trim().split(/\s+/)[0] || '';
+
+        let lines = await genPersonalizedMotivation(first, prof);
+        let source = 'ai';
+        if (!lines || !lines.length) { lines = _motivationFallback(first, prof); source = 'fallback'; }
+
+        // Cache ONLY genuine AI output — a fallback should retry AI on the next call.
+        if (source === 'ai') {
+            await dbConfig.run(
+                `INSERT INTO user_motivation_lines (user_id, lines, source, generated_at)
+                 VALUES ($1, $2, $3, NOW())
+                 ON CONFLICT (user_id) DO UPDATE SET lines = EXCLUDED.lines, source = EXCLUDED.source, generated_at = NOW()`,
+                [userId, JSON.stringify(lines), source]
+            );
+        }
+        return res.json({ lines });
+    } catch (e) {
+        console.error('[aiHub] getMotivation error:', e.message);
+        return res.json({ lines: [] });   // app falls back to the bundled generic tip library
+    }
+}
+
 module.exports = {
     analyzeWishlist,
     getJobMatches,
@@ -3729,4 +3865,5 @@ module.exports = {
     getJobStatuses,
     generateEmailBodyHandler,
     getMatchScores,
+    getMotivation,
 };

@@ -28,4 +28,21 @@ function regionFromCountry(text) {
   return 'generic';
 }
 
-module.exports = { regionFromCountry };
+// ccTLD → region, from the employer website or recruiter email domain. An ALWAYS-available fallback
+// when the scraped address is empty/placeholder (mirror of MobileApp/regionUtils.js regionFromTld).
+const TLD_REGION = {
+  de: 'dach', at: 'dach', ch: 'dach',
+  nl: 'eu', be: 'eu', fr: 'eu', es: 'eu', it: 'eu', ie: 'eu', pt: 'eu', se: 'eu', pl: 'eu',
+  dk: 'eu', no: 'eu', fi: 'eu', eu: 'eu', lu: 'eu', cz: 'eu', gr: 'eu', ro: 'eu', hu: 'eu', sk: 'eu', is: 'eu',
+  in: 'india', uk: 'uk_au', au: 'uk_au', nz: 'uk_au', sg: 'sg', us: 'us_ca', ca: 'us_ca',
+};
+function regionFromTld(urlOrEmail) {
+  let s = (urlOrEmail || '').toLowerCase().trim();
+  if (!s) return 'generic';
+  if (s.includes('@')) s = s.split('@').pop();
+  s = s.replace(/^[a-z]+:\/\//, '').replace(/^www\./, '').split(/[\/:?#]/)[0];
+  const tld = s.split('.').filter(Boolean).pop();
+  return TLD_REGION[tld] || 'generic';
+}
+
+module.exports = { regionFromCountry, regionFromTld };

@@ -740,6 +740,20 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE users ADD COLUMN IF NOT EXISTS nationality VARCHAR(120) DEFAULT NULL`);
         console.log('✅ Migration 014: users.nationality done');
 
+        // ── Migration 015: user_motivation_lines ──────────────────────────────
+        // Personalized, résumé-aware encouragement shown while a search is processing. Generated
+        // ONCE per user (AI reads their skills/titles/experience), then cached here and reused —
+        // never re-generated per search. The generic 500-line tip library is bundled in the app.
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS user_motivation_lines (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                lines JSONB NOT NULL,
+                source TEXT,                  -- 'ai' (cacheable) vs 'fallback' (not cached)
+                generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        console.log('✅ Migration 015: user_motivation_lines done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

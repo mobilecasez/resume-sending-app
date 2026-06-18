@@ -275,6 +275,21 @@ export async function getSmartFillData(): Promise<SmartFillData> {
 }
 
 /**
+ * Personalized, résumé-aware motivation lines shown while a search is processing. Generated
+ * once per user on the backend and cached there — safe to call repeatedly. Returns [] on any
+ * failure (the UI then leans on the bundled generic tip library).
+ */
+export async function getMotivationLines(): Promise<string[]> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(`${API_BASE_URL}/ai-hub/motivation`, { headers, timeout: 20000 });
+    return Array.isArray(data?.lines) ? data.lines.filter((l: any) => typeof l === 'string' && l.trim()) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Self-learning autofill: remember the answers the user filled manually so the next form
  * with the same questions auto-fills. Best-effort — never throws to the caller.
  */

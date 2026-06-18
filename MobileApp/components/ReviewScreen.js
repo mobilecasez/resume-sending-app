@@ -10,7 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView as SafeAreaViewContext, useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { API_BASE } from '../config';
-import { regionFromCountry, REGION_OPTIONS, RESUME_REGION_OPTIONS, regionLabel } from '../regionUtils';
+import { regionFromCountry, bestRegion, employerAddress, REGION_OPTIONS, RESUME_REGION_OPTIONS, regionLabel } from '../regionUtils';
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
 const T = {
@@ -172,10 +172,13 @@ export default function ReviewScreen({
     return () => { cancelled = true; };
   }, [user?.token]);
 
-  // Current region values: in-edit choice → saved override → auto-detect from employer address.
-  const editAddr   = editedCoverLetterData.address || activeCL?.address || '';
-  const clRegionVal  = editedCoverLetterData.coverLetterRegion || activeCL?.coverLetterRegion || regionFromCountry(editAddr);
-  const resRegionVal = editedCoverLetterData.resumeRegion      || activeCL?.resumeRegion      || regionFromCountry(editAddr);
+  // Current region values: in-edit choice → saved override → auto-detect. The employer address is
+  // in activeCL.locations[] (not a flat .address), so use employerAddress()/bestRegion() — which
+  // also fall back to the recruiter website/email ccTLD — instead of the old empty .address read.
+  const editAddr     = editedCoverLetterData.address || employerAddress(activeCL) || '';
+  const autoRegion   = bestRegion(editedCoverLetterData.address ? { address: editedCoverLetterData.address } : activeCL, activeRecipient);
+  const clRegionVal  = editedCoverLetterData.coverLetterRegion || activeCL?.coverLetterRegion || autoRegion;
+  const resRegionVal = editedCoverLetterData.resumeRegion      || activeCL?.resumeRegion      || autoRegion;
 
   return (
     <SafeAreaViewContext style={rStyles.container}>

@@ -30,6 +30,7 @@ const {
     getJobStatuses,
     generateEmailBodyHandler,
     getMatchScores,
+    getMotivation,
 } = require('../controllers/aiHubController');
 
 router.get('/dashboard', authenticateToken, getDashboard);
@@ -38,6 +39,7 @@ router.post('/analyze-wishlist', authenticateToken, analyzeWishlist);
 router.get('/jobs', authenticateToken, getJobMatches);
 router.get('/job-status/:jobId', authenticateToken, getJobStatus);
 router.post('/match-scores', authenticateToken, getMatchScores);
+router.get('/motivation', authenticateToken, getMotivation);
 router.post('/verify-email', authenticateToken, verifyEmail);
 router.post('/jobs/:jobId/contacts', authenticateToken, addContactToJob);
 router.get('/jobs/:jobId/contacts', authenticateToken, getJobContacts);
