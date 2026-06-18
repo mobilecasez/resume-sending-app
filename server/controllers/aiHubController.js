@@ -1252,6 +1252,25 @@ async function fetchJobDetailsBatch(jobBatch, careersUrl, candidateProfile, list
         }
     }
 
+    // ── Step 3b: Per-job contact email from THIS job's own detail page ─────────
+    // Generic recruitment inboxes (e.g. recruiting.at@primetals.com) have no person name, so
+    // the AI contact extractor skips them. Harvest the employer-domain email straight from the
+    // scraped detail text and attach it — so the RIGHT address shows instead of a listing-level
+    // fallback that might be a stray third-party email.
+    for (let i = 0; i < scrapedPages.length; i++) {
+        const s = scrapedPages[i];
+        const job = resultsMap[i];
+        if (!job || !s || !s.text) continue;
+        const hasEmail = Array.isArray(job.contacts) && job.contacts.some((c) => c && c.email);
+        if (hasEmail) continue;
+        const host = (() => { try { return new URL(s.job.job_url).hostname; } catch { return ''; } })();
+        const email = pickEmployerContactEmail(s.text + ' ' + (s.interceptedJson || ''), host);
+        if (email) {
+            job.contacts = Array.isArray(job.contacts) ? job.contacts : [];
+            job.contacts.push({ name: 'Recruitment Team', role: 'Recruiter', email });
+        }
+    }
+
     // ── Step 4: Return results in original order ──────────────────────────────
     return scrapedPages.map((s, i) => {
         return resultsMap[i] || {
@@ -1349,6 +1368,9 @@ async function persistOneJob(raw, jobUrl, employerDbId, userId, hrEmails = [], m
             if (!contact?.name) continue;
             const nameLower = contact.name.toLowerCase().trim();
             if (/^(recruiter|hiring manager|contact|hr|location|contactperson|ansprechpartner|contactpersoon)$/.test(nameLower)) continue;
+            // Never save a third-party tracker/widget email (e.g. help@meltwater.com) as a contact.
+            const emDom = (contact.email || '').toLowerCase().split('@')[1] || '';
+            if (emDom && _TRACKER_DOM.test(emDom)) continue;
             const emailKey = (contact.email || '').toLowerCase().trim();
             if (emailKey && contactEmailsSaved.has(emailKey)) continue;
             if (emailKey) contactEmailsSaved.add(emailKey);
@@ -1552,32 +1574,64 @@ async function getMatchScores(req, res) {
     }
 }
 
-// ─── HR email extractor ───────────────────────────────────────────────────────
-// Scans the careers page HTML + plain text for generic recruitment email addresses
-// (e.g. careers@, jobs@, hr@, recruitment@, talent@, apply@, work@).
-// Returns a deduped array of matched email strings (lower-case).
-function extractHrEmails(rawHtml = '', pageText = '') {
-    const combined = (rawHtml + ' ' + pageText).toLowerCase();
+// ─── HR / contact email helpers ───────────────────────────────────────────────
+// Third-party domains that embed their OWN email on customer sites (analytics, consent,
+// chat, PR/monitoring widgets…). Their addresses are NEVER the employer's contact.
+const _TRACKER_DOM = /(meltwater|cookiebot|onetrust|usercentrics|trustarc|sentry|hotjar|segment|intercom|drift|zendesk|freshdesk|hubspot|marketo|pardot|sendgrid|mailchimp|mailgun|postmark|doubleclick|googletagmanager|google-analytics|googleapis|gstatic|wordpress|wix|squarespace|typeform|calendly|jsdelivr|cloudflare|datadog|newrelic|fontawesome|w3\.org|schema\.org|sentry\.io|example\.(com|org)|wixpress|shopify|hubspotusercontent)/i;
+// Mailbox local-parts that are never a usable recruiting contact.
+const _NOREPLY_LOCAL = /^(no[\-_.]?reply|donotreply|do[\-_.]?not[\-_.]?reply|postmaster|webmaster|abuse|privacy|legal|dpo|gdpr|datenschutz|admin|root|mailer[\-_.]?daemon|bounce|unsubscribe|notifications?)\b/i;
+// Local-parts that signal a generic recruitment inbox (multilingual).
+const _HR_LOCAL = /^(careers?|jobs?|hr|recruit(ing|ment|er)?|talent|apply|application|work|hiring|resumes?|cvs?|people|staffing|employ|bewerb\w*|personal|stellen|karriere|emploi|rrhh)/i;
+// Registrable core label of a host: jobs.primetals.com -> "primetals", acme.co.uk -> "acme".
+function coreLabel(host) {
+    const c = String(host || '').toLowerCase().replace(/^www\./, '').replace(/[^a-z0-9.\-].*/i, '').split('.');
+    if (c.length <= 1) return c[0] || '';
+    const twoPart = new Set(['co.uk', 'com.au', 'co.in', 'co.jp', 'com.br', 'co.nz', 'com.sg', 'co.za', 'com.tr', 'co.id', 'com.mx']);
+    return (c.length >= 3 && twoPart.has(c.slice(-2).join('.'))) ? c[c.length - 3] : c[c.length - 2];
+}
+function emailDomainCore(email) { const d = String(email || '').split('@')[1] || ''; return coreLabel(d); }
+
+// Pick the best EMPLOYER contact email from page text: must be on the employer's own domain
+// (so a stray third-party email like help@meltwater.com on a Primetals page is never chosen),
+// not a no-reply/legal mailbox; recruitment-style inboxes preferred. Returns null if none.
+function pickEmployerContactEmail(text, employerHost) {
+    const empCore = coreLabel(employerHost);
+    if (!text || !empCore) return null;
+    const emails = [...String(text).matchAll(/[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/gi)].map((mm) => mm[0].toLowerCase());
+    const cands = [...new Set(emails)].filter((e) => {
+        const local = e.split('@')[0];
+        return emailDomainCore(e) === empCore && !_NOREPLY_LOCAL.test(local) && !_TRACKER_DOM.test(e.split('@')[1]);
+    });
+    if (!cands.length) return null;
+    cands.sort((a, b) => (_HR_LOCAL.test(a.split('@')[0]) ? 0 : 1) - (_HR_LOCAL.test(b.split('@')[0]) ? 0 : 1));
+    return cands[0];
+}
+
+// Scans the careers page for generic recruitment inboxes to use as a FALLBACK contact when a
+// job has none. Only keeps addresses that are (a) the employer's own domain, OR (b) a generic
+// HR inbox (careers@/jobs@/recruiting@…) — and NEVER a third-party tracker or no-reply mailbox.
+// (This is what stops a Meltwater/consent-widget email from being shown as the recruiter.)
+function extractHrEmails(rawHtml = '', pageText = '', employerHost = '') {
+    const empCore = coreLabel(employerHost);
     const found = new Set();
-
-    // 1. mailto: links are most reliable
-    const mailtoRe = /mailto:([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})/gi;
+    const consider = (raw) => {
+        const email = String(raw).toLowerCase().split('?')[0].trim();
+        if (!/^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/.test(email)) return;
+        const [local, dom] = email.split('@');
+        if (_TRACKER_DOM.test(dom) || _NOREPLY_LOCAL.test(local)) return;
+        const sameEmployer = empCore && coreLabel(dom) === empCore;
+        if (sameEmployer || _HR_LOCAL.test(local)) found.add(email);
+    };
     let m;
-    while ((m = mailtoRe.exec(rawHtml)) !== null) {
-        found.add(m[1].toLowerCase().split('?')[0]);
-    }
-
-    // 2. Plain-text email pattern anywhere on the page
+    const mailtoRe = /mailto:([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})/gi;
+    while ((m = mailtoRe.exec(rawHtml)) !== null) consider(m[1]);
     const emailRe = /\b([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})\b/g;
-    while ((m = emailRe.exec(combined)) !== null) {
-        const email = m[1];
-        // Only keep addresses that look like generic HR/recruitment inboxes
-        if (/^(careers?|jobs?|hr|recruitment|talent|apply|work|hiring|resumes?|cvs?|people|staffing|employ)@/.test(email)) {
-            found.add(email);
-        }
-    }
-
-    return [...found].slice(0, 5); // cap at 5 to avoid noise
+    const combined = (rawHtml + ' ' + pageText).toLowerCase();
+    while ((m = emailRe.exec(combined)) !== null) consider(m[1]);
+    // Employer-domain addresses first (most trustworthy), then generic HR inboxes.
+    return [...found]
+        .sort((a, b) => ((empCore && emailDomainCore(a) === empCore) ? 0 : 1) - ((empCore && emailDomainCore(b) === empCore) ? 0 : 1))
+        .slice(0, 5);
 }
 
 // ─── Scrape audit logger ──────────────────────────────────────────────────────
@@ -1920,7 +1974,7 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         // ── Extract common HR/careers emails from the page ────────────────────
         // Scan mailto links + plain-text patterns for generic recruitment addresses.
         // These will be attached as a fallback contact on jobs that have no contacts.
-        const hrEmails = extractHrEmails(pageData.rawHtml, pageData.pageText);
+        const hrEmails = extractHrEmails(pageData.rawHtml, pageData.pageText, domain);
         if (hrEmails.length > 0) {
             console.log(`[aiHub] Found HR emails on careers page: ${hrEmails.join(', ')}`);
         }
