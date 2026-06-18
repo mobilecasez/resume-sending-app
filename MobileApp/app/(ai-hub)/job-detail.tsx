@@ -543,6 +543,35 @@ const TRANSLATE_OFF_JS = `(function(){
   } catch(e){}
 })(); true;`;
 
+// Detect whether the loaded page is NOT in English so we can auto-translate it. Uses the
+// <html lang> attribute first, then a non-ASCII-script ratio (Chinese/Cyrillic/Arabic/…), then
+// common non-English function words (German/Dutch/French/Spanish/Italian/Portuguese/…). Posts
+// PAGE_LANG so RN can decide. Runs after a short delay so SPA content has rendered.
+const AUTODETECT_JS = `(function(){
+  function post(o){ try{o.__cvf=true;window.ReactNativeWebView.postMessage(JSON.stringify(o));}catch(e){} }
+  function detect(){
+    try{
+      var lang=(document.documentElement.getAttribute('lang')||'').toLowerCase().trim();
+      if(!lang){ var ml=document.querySelector('meta[http-equiv="content-language"],meta[name="language"]'); if(ml) lang=(ml.getAttribute('content')||'').toLowerCase().trim(); }
+      var nonEn=false;
+      if(lang && /^[a-z]{2}/.test(lang)) nonEn = !/^en($|[-_])/.test(lang);
+      var t=((document.body&&document.body.innerText)||'').slice(0,4000);
+      if(!nonEn && t){
+        var nonAscii=(t.match(/[^\\x00-\\x7F]/g)||[]).length;
+        if(nonAscii>15 && nonAscii/Math.max(t.length,1)>0.10) nonEn=true;
+        if(!nonEn){
+          var lower=' '+t.toLowerCase().replace(/[^a-zà-ÿ\\s]/g,' ').replace(/\\s+/g,' ')+' ';
+          var sw=['und','oder','nicht','für','wir','auch','een','het','voor','niet','met','les','des','vous','nous','pour','avec','dans','para','con','los','las','que','não','você','com','che','sono','della','att','och','det','som','aux','être'];
+          var hits=0; for(var i=0;i<sw.length;i++){ if(lower.indexOf(' '+sw[i]+' ')>=0) hits++; }
+          if(hits>=4) nonEn=true;
+        }
+      }
+      post({type:'PAGE_LANG', lang:lang||'', nonEnglish:nonEn});
+    }catch(e){}
+  }
+  setTimeout(detect, 700);
+})(); true;`;
+
 // 1b) Detect a SUCCESSFUL application submission inside the apply WebView (multilingual,
 //     language-agnostic — see submitDetect.ts). SUBMIT_DETECT_JS posts SUBMIT_INTENT on a
 //     real apply-form submit and SUBMIT_SUCCESS when a confirmation is detected.
@@ -713,6 +742,7 @@ export default function JobDetailScreen() {
   const [webTranslated,  setWebTranslated]  = useState(false);   // page translated to English (Google in-page widget)
   const [webTranslating, setWebTranslating] = useState(false);
   const webTranslatedRef = useRef(false);                        // mirror for the load callback (no stale closure)
+  const autoXlateRef     = useRef(true);                         // auto-translate non-English pages until the user opts out
   const submitMarkedRef = useRef(false);                          // fire the "Applied" mark only once per session
   const submitIntentRef = useRef(0);                              // ts of last real apply-form submit (for the URL backstop)
   useEffect(() => {                                                // auto-dismiss the "submitted ✓" toast
@@ -782,7 +812,7 @@ export default function JobDetailScreen() {
     // Smart-copy: reset + prefetch the user's reusable details for the floating helper.
     setSmartOpen(false); setSmartExpanded(false); setCopiedKey(null);
     focusedFieldRef.current = null; smartValuesRef.current = {};
-    setWebTranslated(false); setWebTranslating(false); webTranslatedRef.current = false;
+    setWebTranslated(false); setWebTranslating(false); webTranslatedRef.current = false; autoXlateRef.current = true;
     loadLocalFill();
     if (!smartData) { getSmartFillData().then(setSmartData).catch(() => {}); }
     setApplyWebUrl(u);
@@ -794,12 +824,14 @@ export default function JobDetailScreen() {
     if (!webTranslated) {
       setWebTranslating(true);
       webTranslatedRef.current = true;            // stays on across page navigations
+      autoXlateRef.current = true;                // opt back into auto-translate
       applyWebRef.current.injectJavaScript(TRANSLATE_TO_EN_JS);
       setWebTranslated(true);
       // The widget swaps text asynchronously; clear the spinner shortly after.
       setTimeout(() => setWebTranslating(false), 2200);
     } else {
       webTranslatedRef.current = false;
+      autoXlateRef.current = false;               // user wants the original → stop auto-translating
       applyWebRef.current.injectJavaScript(TRANSLATE_OFF_JS);   // clears cookie + reloads to original
       setWebTranslated(false);
     }
@@ -1131,6 +1163,18 @@ export default function JobDetailScreen() {
       setFilePickBusy(null); setFilePick(null);
       if (msg.ok > 0) Alert.alert('Attached ✓', 'Your file was attached to the form.');
       else Alert.alert("Couldn't attach here", 'This upload field blocked the attachment. Tap “Choose from device” and pick the file yourself.');
+      return;
+    }
+
+    // Language auto-detect: if the page is non-English and the user hasn't opted out, translate.
+    if (msg.type === 'PAGE_LANG') {
+      if (msg.nonEnglish && autoXlateRef.current && !webTranslatedRef.current && applyWebRef.current) {
+        setWebTranslating(true);
+        webTranslatedRef.current = true;
+        applyWebRef.current.injectJavaScript(TRANSLATE_TO_EN_JS);
+        setWebTranslated(true);
+        setTimeout(() => setWebTranslating(false), 2200);
+      }
       return;
     }
 
@@ -2027,7 +2071,7 @@ export default function JobDetailScreen() {
               source={{ uri: applyWebUrl }}
               style={s.webView}
               originWhitelist={['*']}
-              injectedJavaScript={INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS}
+              injectedJavaScript={INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS}
               javaScriptEnabled
               domStorageEnabled
               thirdPartyCookiesEnabled
