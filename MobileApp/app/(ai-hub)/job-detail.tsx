@@ -500,6 +500,44 @@ const HARVEST_JS = `(function(){
   } catch(e){}
 })(); true;`;
 
+// Translate the apply page to English IN PLACE using Google's free website-translator widget
+// (no API key, no backend, NO our-AI). It rewrites the visible text on the page's OWN domain,
+// so the form, our autofill and smart-copy all keep working. The Google banner is hidden via CSS.
+const TRANSLATE_TO_EN_JS = `(function(){
+  try {
+    var h=location.hostname, root=h.split('.').slice(-2).join('.');
+    ['', ';domain='+h, ';domain=.'+root].forEach(function(suf){ document.cookie='googtrans=/auto/en;path=/'+suf; });
+    if(!document.getElementById('__cvfGtCss')){
+      var st=document.createElement('style'); st.id='__cvfGtCss';
+      st.textContent='.goog-te-banner-frame,.skiptranslate{display:none!important;visibility:hidden!important;height:0!important;}body{top:0!important;position:static!important;}#goog-gt-tt,.goog-te-balloon-frame,.VIpgJd-ZVi9od-aZ2wEe-wOHMyf{display:none!important;}';
+      document.head.appendChild(st);
+    }
+    if(window.__cvfGtLoaded){ location.reload(); return; }
+    window.__cvfGtLoaded=true;
+    window.googleTranslateElementInit=function(){
+      try { new google.translate.TranslateElement({pageLanguage:'auto', autoDisplay:false}, '__cvfGte'); } catch(e){}
+      var n=0, iv=setInterval(function(){
+        var c=document.querySelector('select.goog-te-combo');
+        if(c){ c.value='en'; c.dispatchEvent(new Event('change')); clearInterval(iv); }
+        if(++n>24) clearInterval(iv);
+      }, 250);
+    };
+    var box=document.createElement('div'); box.id='__cvfGte'; box.style.cssText='position:absolute;left:-9999px;top:-9999px'; document.body.appendChild(box);
+    var sc=document.createElement('script'); sc.src='https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit';
+    sc.onerror=function(){ try{ var o={type:'TRANSLATE_FAIL'}; o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} };
+    document.head.appendChild(sc);
+  } catch(e){}
+})(); true;`;
+
+const TRANSLATE_OFF_JS = `(function(){
+  try {
+    var h=location.hostname, root=h.split('.').slice(-2).join('.');
+    ['', ';domain='+h, ';domain=.'+root].forEach(function(suf){ document.cookie='googtrans=;path=/'+suf+';expires=Thu, 01 Jan 1970 00:00:00 GMT'; });
+    window.__cvfGtLoaded=false;
+    location.reload();
+  } catch(e){}
+})(); true;`;
+
 // 1b) Detect a SUCCESSFUL application submission inside the apply WebView (multilingual,
 //     language-agnostic — see submitDetect.ts). SUBMIT_DETECT_JS posts SUBMIT_INTENT on a
 //     real apply-form submit and SUBMIT_SUCCESS when a confirmation is detected.
@@ -667,6 +705,8 @@ export default function JobDetailScreen() {
   const [applyCanGoBack, setApplyCanGoBack] = useState(false);
   const [applyHost,      setApplyHost]      = useState('');
   const [appliedBanner,  setAppliedBanner]  = useState(false);   // green "submitted ✓" toast inside the web view
+  const [webTranslated,  setWebTranslated]  = useState(false);   // page translated to English (Google in-page widget)
+  const [webTranslating, setWebTranslating] = useState(false);
   const submitMarkedRef = useRef(false);                          // fire the "Applied" mark only once per session
   const submitIntentRef = useRef(0);                              // ts of last real apply-form submit (for the URL backstop)
   useEffect(() => {                                                // auto-dismiss the "submitted ✓" toast
@@ -736,9 +776,25 @@ export default function JobDetailScreen() {
     // Smart-copy: reset + prefetch the user's reusable details for the floating helper.
     setSmartOpen(false); setSmartExpanded(false); setCopiedKey(null);
     focusedFieldRef.current = null; smartValuesRef.current = {};
+    setWebTranslated(false); setWebTranslating(false);
     loadLocalFill();
     if (!smartData) { getSmartFillData().then(setSmartData).catch(() => {}); }
     setApplyWebUrl(u);
+  };
+
+  // Translate the apply page to English (or back) using Google's free in-page widget — no AI.
+  const toggleTranslate = () => {
+    if (!applyWebRef.current || webTranslating) return;
+    if (!webTranslated) {
+      setWebTranslating(true);
+      applyWebRef.current.injectJavaScript(TRANSLATE_TO_EN_JS);
+      setWebTranslated(true);
+      // The widget swaps text asynchronously; clear the spinner shortly after.
+      setTimeout(() => setWebTranslating(false), 2200);
+    } else {
+      applyWebRef.current.injectJavaScript(TRANSLATE_OFF_JS);   // clears cookie + reloads to original
+      setWebTranslated(false);
+    }
   };
 
   // Pull the user's reusable facts from local storage (session name/email + resume-builder
@@ -1067,6 +1123,13 @@ export default function JobDetailScreen() {
       setFilePickBusy(null); setFilePick(null);
       if (msg.ok > 0) Alert.alert('Attached ✓', 'Your file was attached to the form.');
       else Alert.alert("Couldn't attach here", 'This upload field blocked the attachment. Tap “Choose from device” and pick the file yourself.');
+      return;
+    }
+
+    // Page translation couldn't load (some portals block external scripts via CSP).
+    if (msg.type === 'TRANSLATE_FAIL') {
+      setWebTranslating(false); setWebTranslated(false);
+      Alert.alert('Translation unavailable', "This site blocks in-page translation. Tap the open-in-browser icon to read it in your phone's browser, which can translate it.");
       return;
     }
 
@@ -1932,7 +1995,12 @@ export default function JobDetailScreen() {
                 <Text style={s.webHeaderHost} numberOfLines={1}>{applyHost}</Text>
               </View>
             </View>
-            <TouchableOpacity onPress={() => applyWebUrl && Linking.openURL(applyWebUrl)} style={s.webHeaderBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} activeOpacity={0.7}>
+            <TouchableOpacity onPress={toggleTranslate} disabled={webTranslating} style={[s.webHeaderBtn, webTranslated && s.webHeaderBtnActive]} hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }} activeOpacity={0.7}>
+              {webTranslating
+                ? <ActivityIndicator size="small" color={T.blue} />
+                : <Ionicons name="language" size={18} color={webTranslated ? '#fff' : T.textMuted} />}
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => applyWebUrl && Linking.openURL(applyWebUrl)} style={s.webHeaderBtn} hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }} activeOpacity={0.7}>
               <Ionicons name="open-outline" size={19} color={T.blue} />
             </TouchableOpacity>
           </View>
@@ -2543,6 +2611,7 @@ const s = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: T.borderHi,
   },
   webHeaderBtn:    { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: T.bg },
+  webHeaderBtnActive: { backgroundColor: T.blue },
   webHeaderCenter: { flex: 1, alignItems: 'center' },
   webHeaderTitle:  { fontSize: 14, fontWeight: '700', color: T.ink, maxWidth: '92%' },
   webHostRow:      { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 1 },
