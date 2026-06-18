@@ -512,7 +512,12 @@ const TRANSLATE_TO_EN_JS = `(function(){
       st.textContent='.goog-te-banner-frame,.skiptranslate{display:none!important;visibility:hidden!important;height:0!important;}body{top:0!important;position:static!important;}#goog-gt-tt,.goog-te-balloon-frame,.VIpgJd-ZVi9od-aZ2wEe-wOHMyf{display:none!important;}';
       document.head.appendChild(st);
     }
-    if(window.__cvfGtLoaded){ location.reload(); return; }
+    if(window.__cvfGtLoaded){
+      // already injected on THIS page — just re-trigger the translation (no reload, no flicker)
+      var c0=document.querySelector('select.goog-te-combo');
+      if(c0){ c0.value='en'; c0.dispatchEvent(new Event('change')); }
+      return;
+    }
     window.__cvfGtLoaded=true;
     window.googleTranslateElementInit=function(){
       try { new google.translate.TranslateElement({pageLanguage:'auto', autoDisplay:false}, '__cvfGte'); } catch(e){}
@@ -707,6 +712,7 @@ export default function JobDetailScreen() {
   const [appliedBanner,  setAppliedBanner]  = useState(false);   // green "submitted ✓" toast inside the web view
   const [webTranslated,  setWebTranslated]  = useState(false);   // page translated to English (Google in-page widget)
   const [webTranslating, setWebTranslating] = useState(false);
+  const webTranslatedRef = useRef(false);                        // mirror for the load callback (no stale closure)
   const submitMarkedRef = useRef(false);                          // fire the "Applied" mark only once per session
   const submitIntentRef = useRef(0);                              // ts of last real apply-form submit (for the URL backstop)
   useEffect(() => {                                                // auto-dismiss the "submitted ✓" toast
@@ -776,7 +782,7 @@ export default function JobDetailScreen() {
     // Smart-copy: reset + prefetch the user's reusable details for the floating helper.
     setSmartOpen(false); setSmartExpanded(false); setCopiedKey(null);
     focusedFieldRef.current = null; smartValuesRef.current = {};
-    setWebTranslated(false); setWebTranslating(false);
+    setWebTranslated(false); setWebTranslating(false); webTranslatedRef.current = false;
     loadLocalFill();
     if (!smartData) { getSmartFillData().then(setSmartData).catch(() => {}); }
     setApplyWebUrl(u);
@@ -787,11 +793,13 @@ export default function JobDetailScreen() {
     if (!applyWebRef.current || webTranslating) return;
     if (!webTranslated) {
       setWebTranslating(true);
+      webTranslatedRef.current = true;            // stays on across page navigations
       applyWebRef.current.injectJavaScript(TRANSLATE_TO_EN_JS);
       setWebTranslated(true);
       // The widget swaps text asynchronously; clear the spinner shortly after.
       setTimeout(() => setWebTranslating(false), 2200);
     } else {
+      webTranslatedRef.current = false;
       applyWebRef.current.injectJavaScript(TRANSLATE_OFF_JS);   // clears cookie + reloads to original
       setWebTranslated(false);
     }
@@ -2031,7 +2039,16 @@ export default function JobDetailScreen() {
               pullToRefreshEnabled
               onMessage={onWebMessage}
               onLoadStart={() => setApplyLoading(true)}
-              onLoadEnd={() => setApplyLoading(false)}
+              onLoadEnd={() => {
+                setApplyLoading(false);
+                // If translation is toggled ON, auto-translate each newly-loaded page (the
+                // widget doesn't survive navigation, so re-inject it on every load).
+                if (webTranslatedRef.current && applyWebRef.current) {
+                  setWebTranslating(true);
+                  setTimeout(() => { try { applyWebRef.current?.injectJavaScript(TRANSLATE_TO_EN_JS); } catch {} }, 350);
+                  setTimeout(() => setWebTranslating(false), 2400);
+                }
+              }}
               onLoadProgress={({ nativeEvent }) => setApplyProgress(nativeEvent.progress)}
               onNavigationStateChange={(nav) => {
                 setApplyCanGoBack(nav.canGoBack);
