@@ -516,7 +516,7 @@ async function generatePDF(req, res) {
 
         const resume = row.resume_data;
         const pi     = resume.personal_info || {};
-        const strip  = (t) => (t || '').replace(/\*\*(.+?)\*\*/g, '$1').trim();
+        const strip  = (t) => String(t || '').replace(/<\/(p|div|li|h[1-6])>/gi, '\n').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&#39;/gi, "'").replace(/&quot;/gi, '"').replace(/\*\*(.+?)\*\*/g, '$1').replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
 
         // ── Preferred path: render one of the 3 HTML design templates to PDF ──
         // (Falls back to the PDFKit layout below if Playwright/chromium is unavailable.)
@@ -906,7 +906,7 @@ async function generateDocx(req, res) {
         const tplId = TEMPLATE_IDS.includes(template) ? template : TEMPLATE_IDS[0];
         const resume = row.resume_data;
         const pi = resume.personal_info || {};
-        const strip = (t) => (t || '').replace(/\*\*(.+?)\*\*/g, '$1').trim();
+        const strip = (t) => String(t || '').replace(/<\/(p|div|li|h[1-6])>/gi, '\n').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&#39;/gi, "'").replace(/&quot;/gi, '"').replace(/\*\*(.+?)\*\*/g, '$1').replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
 
         // Vary the Word layout/accent by the selected template, like the PDF.
         const docxBuffer = await buildResumeDocx(resume, { photo: photoDataUri, photoRect: photoRectUri, template: tplId });
@@ -967,7 +967,7 @@ async function buildResumePdfForRegion(userId, region, mode) {
     const pdfBuffer = await renderPdf(tplId, resume, { photo, photoRect, mode: mode || 'a4' });
 
     const pi = resume.personal_info || {};
-    const strip = (t) => (t || '').replace(/\*\*(.+?)\*\*/g, '$1').trim();
+    const strip = (t) => String(t || '').replace(/<\/(p|div|li|h[1-6])>/gi, '\n').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&#39;/gi, "'").replace(/&quot;/gi, '"').replace(/\*\*(.+?)\*\*/g, '$1').replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
     const tSafe = strip(pi.full_name || 'Resume').replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_');
     const fileName = `${tSafe}_Resume_${Date.now()}.pdf`;
     const tDir = path.join(__dirname, '../../temp');

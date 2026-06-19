@@ -88,6 +88,26 @@ async function getAuthHeader(): Promise<Record<string, string>> {
   } catch { return {}; }
 }
 
+// A ready-to-edit starter resume for the "Build Manually" path — realistic example values the
+// user simply taps and replaces (their real name/email/phone/location get merged in at seed time).
+const SAMPLE_RESUME = {
+  _buildMethod: 'manual',
+  personal_info: { full_name: 'Your Name', email: 'you@email.com', phone: '', location: 'City, Country', linkedin_url: '', portfolio_url: '' },
+  summary: 'Results-driven professional with a track record of delivering impactful work. Replace this with 2–3 lines on your strengths, focus areas, and what you bring to a team.',
+  experience: [
+    { role: 'Your Job Title', company: 'Company Name', location: 'City, Country', start_date: 'Jan 2022', end_date: 'Present',
+      highlights: ['Describe a key achievement — include a number or result where you can.', 'Add another responsibility or outcome from this role.'] },
+  ],
+  education: [
+    { degree: 'Your Degree', field_of_study: 'Field of Study', institution: 'University / College Name', end_date: '2021', grade: '' },
+  ],
+  projects: [
+    { title: 'Project Name', type: 'Web app', about: 'One line about what this project does and the problem it solves.', role: 'Your role',
+      role_highlights: ['What you built or achieved on this project.'] },
+  ],
+  skills: { technical: ['Skill 1', 'Skill 2', 'Skill 3'], soft: ['Communication', 'Teamwork', 'Problem Solving'] },
+};
+
 export default function ResumeBuilderIndex() {
   const router = useRouter();
   const { costs } = useEventCosts();
@@ -215,6 +235,26 @@ export default function ResumeBuilderIndex() {
     })();
   }, []));
 
+  // Build Manually → seed the sample resume (with the user's real contact details) and open the
+  // editable preview so they create their resume by tapping & replacing the example values.
+  const startManualBuild = async () => {
+    const dial = (country && (country as any).dial) ? `${(country as any).dial} ` : '';
+    const sample = {
+      ...SAMPLE_RESUME,
+      personal_info: {
+        ...SAMPLE_RESUME.personal_info,
+        full_name: name || SAMPLE_RESUME.personal_info.full_name,
+        email:     email || SAMPLE_RESUME.personal_info.email,
+        phone:     phone ? `${dial}${phone}`.trim() : SAMPLE_RESUME.personal_info.phone,
+        location:  location || SAMPLE_RESUME.personal_info.location,
+      },
+    };
+    await AsyncStorage.setItem('resumeBuilderData', JSON.stringify(sample)).catch(() => {});
+    await AsyncStorage.setItem('resumeBuilderMethod', 'manual').catch(() => {});
+    await AsyncStorage.setItem('resumeBuilderSeedSample', '1').catch(() => {});
+    router.push('/(resume-builder)/preview');
+  };
+
   // Loading animation
   const dotAnim = useRef(new Animated.Value(0)).current;
   const [loadingMsg, setLoadingMsg] = useState('Extracting your career story…');
@@ -338,7 +378,7 @@ export default function ResumeBuilderIndex() {
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={s.existingEditBtn}
-                  onPress={() => buildMethod === 'ai' ? setMode('ai') : router.push('/(resume-builder)/manual')}
+                  onPress={() => buildMethod === 'ai' ? setMode('ai') : router.push('/(resume-builder)/preview')}
                   activeOpacity={0.8}
                 >
                   <Text style={s.existingEditText}>Edit</Text>
@@ -360,13 +400,13 @@ export default function ResumeBuilderIndex() {
           </TouchableOpacity>
 
           {/* Manual Card */}
-          <TouchableOpacity style={s.modeCard} onPress={() => router.push('/(resume-builder)/manual')} activeOpacity={0.88}>
+          <TouchableOpacity style={s.modeCard} onPress={startManualBuild} activeOpacity={0.88}>
             <View style={[s.modeIconWrap, { backgroundColor: T.bgSoft }]}>
               <Ionicons name="create-outline" size={22} color={T.blue} />
             </View>
             <View style={s.modeTextWrap}>
               <Text style={s.modeTitle}>Build Manually</Text>
-              <Text style={s.modeSub}>Step-by-step form — fill in your details section by section at your own pace.</Text>
+              <Text style={s.modeSub}>Start from a sample resume and tap any section to replace it with your details.</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={T.faint} />
           </TouchableOpacity>

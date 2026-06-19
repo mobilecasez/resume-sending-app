@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView,
   Animated, Modal, ActivityIndicator, StatusBar, Alert, Image,
-  TouchableWithoutFeedback, Platform,
+  TouchableWithoutFeedback, Platform, KeyboardAvoidingView,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -1202,34 +1202,78 @@ function ShimmerOverlay() {
   );
 }
 
-// Inline rich text editor (mirrors the one in App.js)
+// Full-screen rich text editor — consistent with the Resume Builder editor. Shows a tappable
+// preview; tapping opens a full-screen Quill modal (heading/bold/italic/underline) with proper
+// top spacing and vertical-only scrolling (no horizontal scroll).
 function RichTextEditorWebViewLocal({ initialHtml, onContentChange }) {
+  const insets = useSafeAreaInsets();
+  const [open, setOpen] = React.useState(false);
+  const [seed, setSeed] = React.useState('');
+  const preview = String(initialHtml || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/\s+/g, ' ').trim();
   const editorHtml = `<!DOCTYPE html><html><head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
   <script src="https://cdn.quilljs.com/1.3.6/quill.min.js"></script>
   <style>
-    body { margin:0; font-family:-apple-system,sans-serif; }
-    #editor { min-height:400px; font-size:15px; }
-    .ql-toolbar { position:sticky; top:0; z-index:10; background:#fff; }
+    html { height:100%; }
+    /* Flex column so the toolbar stays pinned and only the editor scrolls. */
+    body { margin:0; padding:0; height:100%; width:100%; overflow:hidden; background:#fff; font-family:-apple-system,system-ui,sans-serif; -webkit-text-size-adjust:100%; display:flex; flex-direction:column; }
+    .ql-toolbar.ql-snow { flex:0 0 auto; background:#fff; border:0; border-bottom:1px solid #eef1f7; }
+    .ql-container.ql-snow { flex:1 1 auto; min-height:0; border:0; max-width:100%; font-size:16px; }
+    .ql-editor { padding:16px; line-height:1.7; color:#1A2046; word-break:break-word; overflow-wrap:break-word; overflow-y:auto; }
+    .ql-editor.ql-blank::before { color:#8A93B2; font-style:normal; left:16px; right:16px; }
   </style></head><body>
-  <div id="editor">${initialHtml || ''}</div>
+  <div id="editor">${seed}</div>
   <script>
-    var quill = new Quill('#editor', { theme:'snow', modules:{toolbar:[[{header:[1,2,false]}],['bold','italic','underline'],['clean']]} });
-    quill.on('text-change', function() {
-      window.ReactNativeWebView && window.ReactNativeWebView.postMessage(quill.root.innerHTML);
-    });
+    var quill = new Quill('#editor', { theme:'snow', placeholder:'Write your cover letter…',
+      modules:{ toolbar:[[{ header:[1,2,false] }],['bold','italic','underline'],['clean']] } });
+    quill.on('text-change', function(){ window.ReactNativeWebView && window.ReactNativeWebView.postMessage(quill.root.innerHTML); });
+    setTimeout(function(){ quill.focus(); }, 250);
   </script></body></html>`;
   return (
-    <WebView
-      source={{ html: editorHtml }}
-      style={{ height: 500, borderRadius: 12, overflow: 'hidden' }}
-      javaScriptEnabled
-      domStorageEnabled
-      onMessage={e => onContentChange && onContentChange(e.nativeEvent.data)}
-    />
+    <>
+      <TouchableOpacity onPress={() => { setSeed(initialHtml || ''); setOpen(true); }} activeOpacity={0.8} style={esRT.trigger}>
+        <Text numberOfLines={5} style={esRT.triggerText}>{preview || 'Tap to write your cover letter…'}</Text>
+        <View style={esRT.triggerBtn}><Ionicons name="create-outline" size={14} color="#4F8DFF" /><Text style={esRT.triggerBtnText}>Edit</Text></View>
+      </TouchableOpacity>
+      <Modal visible={open} animationType="slide" onRequestClose={() => setOpen(false)} statusBarTranslucent={false}>
+        <View style={{ flex: 1, backgroundColor: '#fff', paddingTop: Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 0) : 8) }}>
+          <StatusBar barStyle="dark-content" backgroundColor="#fff" />
+          <View style={esRT.bar}>
+            <TouchableOpacity onPress={() => setOpen(false)} hitSlop={8}><Text style={esRT.cancel}>Close</Text></TouchableOpacity>
+            <Text style={esRT.title} numberOfLines={1}>Cover Letter</Text>
+            <TouchableOpacity onPress={() => setOpen(false)} style={esRT.doneBtn} activeOpacity={0.85}>
+              <Ionicons name="checkmark" size={14} color="#fff" /><Text style={esRT.doneText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+          <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <WebView
+              key={open ? 'open' : 'closed'}
+              source={{ html: editorHtml }}
+              style={{ flex: 1 }}
+              originWhitelist={['*']}
+              javaScriptEnabled
+              domStorageEnabled
+              keyboardDisplayRequiresUserAction={false}
+              onMessage={e => onContentChange && onContentChange(e.nativeEvent.data)}
+            />
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+    </>
   );
 }
+const esRT = StyleSheet.create({
+  trigger:      { backgroundColor: '#F1F4FA', borderRadius: 12, borderWidth: 1, borderColor: 'rgba(11,15,34,0.08)', padding: 14, minHeight: 110 },
+  triggerText:  { fontSize: 13.5, color: '#1A2046', lineHeight: 21 },
+  triggerBtn:   { flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-end', marginTop: 10, backgroundColor: 'rgba(79,141,255,0.1)', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: 'rgba(79,141,255,0.2)' },
+  triggerBtnText:{ fontSize: 12, fontWeight: '700', color: '#4F8DFF' },
+  bar:          { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(11,15,34,0.07)' },
+  cancel:       { fontSize: 14, fontWeight: '600', color: '#5A6480' },
+  title:        { flex: 1, textAlign: 'center', fontSize: 14, fontWeight: '800', color: '#0B0F22', marginHorizontal: 10 },
+  doneBtn:      { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#10B981', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 7 },
+  doneText:     { fontSize: 13, fontWeight: '800', color: '#fff' },
+});
 
 // ─── FullCoverLetterView ────────────────────────────────────────────────────────
 // Separate component so useSafeAreaInsets works correctly inside a Modal

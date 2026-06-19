@@ -24,9 +24,22 @@ function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
+// The Resume-Builder editor now stores rich HTML for prose fields. Collapse it to the **markdown**
+// these templates already understand (bold preserved; heading→bold; italic/underline→plain) so the
+// rendered resume shows the emphasis instead of literal tags. Legacy **markdown** passes through.
+function demote(s) {
+  return String(s == null ? '' : s)
+    .replace(/<\/(strong|b)>/gi, '**').replace(/<(strong|b)\b[^>]*>/gi, '**')
+    .replace(/<h[1-6][^>]*>/gi, '**').replace(/<\/h[1-6]>/gi, '**\n')
+    .replace(/<(em|i|u)\b[^>]*>/gi, '').replace(/<\/(em|i|u)>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li)>/gi, '\n').replace(/<(p|div|li)[^>]*>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&#39;/gi, "'").replace(/&quot;/gi, '"');
+}
+
 // Escape, then turn **keyword** into <b>keyword</b>, dropping any stray asterisks.
 function fmt(s) {
-  return esc(s)
+  return esc(demote(s))
     .replace(/\*\*(.+?)\*\*/g, '\x01$1\x02')
     .replace(/\*/g, '')
     .replace(/\x01(.+?)\x02/g, '<b>$1</b>');
@@ -34,12 +47,12 @@ function fmt(s) {
 
 // Plain escaped text with all ** markers stripped (no bold).
 function plain(s) {
-  return esc(String(s == null ? '' : s).replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*/g, ''));
+  return esc(demote(s).replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*/g, ''));
 }
 
 // Raw (un-escaped) plain text — for splitting names, etc.
 function raw(s) {
-  return String(s == null ? '' : s).replace(/\*+/g, '').trim();
+  return demote(s).replace(/\*+/g, '').trim();
 }
 
 function nonEmpty(arr) {
@@ -48,7 +61,7 @@ function nonEmpty(arr) {
 
 // Split the AI summary ("paragraph\n• bullet\n• bullet") into { paras, bullets }.
 function splitSummary(summary) {
-  const lines = String(summary || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const lines = demote(summary).split('\n').map(l => l.trim()).filter(Boolean);
   return {
     paras:   lines.filter(l => !l.startsWith('•')),
     bullets: lines.filter(l => l.startsWith('•')).map(l => l.replace(/^•\s*/, '')),

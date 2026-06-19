@@ -44,6 +44,28 @@ import { useEventCosts } from '../../hooks/useEventCosts';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
+// Merge a streamed/refreshed employer into the list WITHOUT wiping the per-user match scores the
+// device computed (server-streamed jobs carry NO matchScore). Preserve each existing job's
+// matchScore by id — otherwise every poll update resets jobs to "Evaluating" and, because their
+// ids are already in scoreRequestedRef, they never get re-scored (the flicker + >80%-stuck bugs).
+function mergeEmployerKeepScores(prev: Employer[], incoming: Employer): Employer[] {
+  const idx = prev.findIndex((e) => e.id === incoming.id);
+  if (idx < 0) return [incoming, ...prev];
+  const prevScores = new Map<string, number>();
+  for (const j of (prev[idx].jobs || [])) {
+    const ms = (j as any).matchScore;
+    if (typeof ms === 'number') prevScores.set(j.id, ms);
+  }
+  const jobs = (incoming.jobs || []).map((j) => {
+    if (typeof (j as any).matchScore === 'number') return j;        // incoming already scored
+    const keep = prevScores.get(j.id);
+    return keep !== undefined ? ({ ...j, matchScore: keep } as Job) : j;  // restore prior score
+  });
+  const arr = [...prev];
+  arr[idx] = { ...incoming, jobs };
+  return arr;
+}
+
 // ─── Design tokens (identical to ReviewScreen / HomeScreen) ──────────────────
 const T = {
   bg:         '#E5EAF3',
@@ -1425,19 +1447,12 @@ export default function AIHubScreen() {
               setProcessingEmployerIds((prev) => new Set([...prev, partialEmployer.id]));
               setPills((prev) => prev.map((p) => p.id === entry.pillId ? { ...p, employerId: partialEmployer.id } : p));
             }
-            setEmployers((prev) => {
-              const idx = prev.findIndex((e) => e.id === partialEmployer.id);
-              if (idx >= 0) { const arr = [...prev]; arr[idx] = partialEmployer; return arr; }
-              return [partialEmployer, ...prev];
-            });
+            setEmployers((prev) => mergeEmployerKeepScores(prev, partialEmployer));
           };
           resumeJobPolling(entry.jobId, onPartialUpdate)
             .then((employer) => {
               setProcessingEmployerIds((prev) => { const n = new Set(prev); n.delete(employer.id); return n; });
-              setEmployers((prev) => {
-                const idx = prev.findIndex((e) => e.id === employer.id);
-                return idx >= 0 ? prev.map((e, i) => i === idx ? employer : e) : [employer, ...prev];
-              });
+              setEmployers((prev) => mergeEmployerKeepScores(prev, employer));
               setPills((prev) => prev.map((p) => p.id === entry.pillId ? { ...p, employerId: employer.id } : p));
               setSelectedEmployerId(employer.id);
               removeInflightSearch(entry.jobId);
@@ -1480,20 +1495,12 @@ export default function AIHubScreen() {
 
   const resumePolling = (jobId: string, companyName: string) => {
     const onPartialUpdate = (partialEmployer: Employer) => {
-      setEmployers((prev) => {
-        const idx = prev.findIndex((e) => e.id === partialEmployer.id);
-        if (idx >= 0) { const arr = [...prev]; arr[idx] = partialEmployer; return arr; }
-        return [partialEmployer, ...prev];
-      });
+      setEmployers((prev) => mergeEmployerKeepScores(prev, partialEmployer));
     };
     resumeJobPolling(jobId, onPartialUpdate)
       .then((finalEmployer) => {
         setProcessingEmployerIds((prev) => { const n = new Set(prev); n.delete(finalEmployer.id); return n; });
-        setEmployers((prev) => {
-          const idx = prev.findIndex((e) => e.id === finalEmployer.id);
-          if (idx >= 0) { const arr = [...prev]; arr[idx] = finalEmployer; return arr; }
-          return [finalEmployer, ...prev];
-        });
+        setEmployers((prev) => mergeEmployerKeepScores(prev, finalEmployer));
       })
       .catch(() => Alert.alert('Error', `Failed to resume tracking jobs for ${companyName}`));
   };
@@ -1554,11 +1561,7 @@ export default function AIHubScreen() {
         // "we're learning" message (not whichever card was selected before).
         setSelectedEmployerId(partialEmployer.id);
       }
-      setEmployers((prev) => {
-        const idx = prev.findIndex((e) => e.id === partialEmployer.id);
-        if (idx >= 0) { const arr = [...prev]; arr[idx] = partialEmployer; return arr; }
-        return [partialEmployer, ...prev];
-      });
+      setEmployers((prev) => mergeEmployerKeepScores(prev, partialEmployer));
     };
     const onJobIdKnown = (jobId: string) => {
       saveInflightSearch({ jobId, companyName: trimmed, pillId });
@@ -1567,11 +1570,7 @@ export default function AIHubScreen() {
     fetchJobMatches(trimmed, onPartialUpdate, onJobIdKnown)
       .then((employer) => {
         setProcessingEmployerIds((prev) => { const n = new Set(prev); n.delete(employer.id); return n; });
-        setEmployers((prev) => {
-          const idx = prev.findIndex((e) => e.id === employer.id);
-          // Keep newest at front; if already in list update in place, else prepend
-          return idx >= 0 ? prev.map((e, i) => i === idx ? employer : e) : [employer, ...prev];
-        });
+        setEmployers((prev) => mergeEmployerKeepScores(prev, employer));
         setPills((prev) => prev.map((p) => p.id === pillId ? { ...p, employerId: employer.id } : p));
         // Auto-select the newly added employer
         setSelectedEmployerId(employer.id);
