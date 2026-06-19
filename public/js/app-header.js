@@ -37,6 +37,14 @@
                 <a href="/dashboard" class="hdr-apps-item"><span>📝</span> Letters</a>
                 <a href="/job-hub" class="hdr-apps-item"><span>🧭</span> AI Job Hub</a>
                 <a href="/resume-builder" class="hdr-apps-item"><span>📄</span> Resume Builder</a>
+                <div id="appsAdminSection" style="display:none;">
+                    <div style="height:1px;background:rgba(255,255,255,0.12);margin:6px 8px;"></div>
+                    <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:rgba(255,255,255,0.4);padding:4px 12px 2px;">Admin</div>
+                    <a href="/admin-packages" class="hdr-apps-item"><span>🎁</span> Packages</a>
+                    <a href="/admin-ai-event-costs" class="hdr-apps-item"><span>💳</span> AI Event Costs</a>
+                    <a href="/admin-users" class="hdr-apps-item"><span>👤</span> User Credits</a>
+                    <a href="/admin-employer-requests" class="hdr-apps-item"><span>🛠️</span> Employer Fixes</a>
+                </div>
             `;
             const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2) : 'U';
             
@@ -115,6 +123,12 @@
                 <a href="/profile" class="mobile-nav-link">Profile</a>
                 <a href="/usage" class="mobile-nav-link">💳 Credits (<span id="mobileCredits">...</span>)</a>
                 <a href="/notifications" class="mobile-nav-link">🔔 Notifications</a>
+                <div id="mobileAdminSection" style="display:none;">
+                    <a href="/admin-packages" class="mobile-nav-link">🎁 Admin · Packages</a>
+                    <a href="/admin-ai-event-costs" class="mobile-nav-link">💳 Admin · AI Event Costs</a>
+                    <a href="/admin-users" class="mobile-nav-link">👤 Admin · User Credits</a>
+                    <a href="/admin-employer-requests" class="mobile-nav-link">🛠️ Admin · Employer Fixes</a>
+                </div>
                 <button class="mobile-auth-btn hdr-mobile-logout" onclick="window.appHeader.handleLogout()">Logout</button>
             `;
         } else {
@@ -411,6 +425,10 @@
                 if (data.isAdmin) {
                     const adminNavItem = document.getElementById('adminNavItem');
                     if (adminNavItem) adminNavItem.style.display = 'inline-flex';
+                    const appsAdminSection = document.getElementById('appsAdminSection');
+                    if (appsAdminSection) appsAdminSection.style.display = 'block';
+                    const mobileAdminSection = document.getElementById('mobileAdminSection');
+                    if (mobileAdminSection) mobileAdminSection.style.display = 'block';
                 }
             } catch (err) {
                 console.error('Error checking admin status', err);

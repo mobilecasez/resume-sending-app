@@ -265,6 +265,7 @@
         </button>
       </div>
       <p class="jh-hint" id="addHint">Tip: enter the company's own name or careers page — not a job board like LinkedIn or Indeed.</p>
+      <p class="jh-hint" id="jhMotivation" style="display:none;color:#7C6BFF;font-weight:600;"></p>
     </section>
 
     <!-- DASHBOARD -->
@@ -350,6 +351,62 @@
       // Per-job translation state: jobId -> { fields, showing, loading }
       const jobTr = {};
 
+      // ── Resume match scores: jobId(UUID) -> 0..100 ───────────────────────
+      const matchScores = {};
+      const matchRequested = {};
+      let noProfileForMatch = false;
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      function msColor(n) {
+        if (n >= 75) return { fg: '#047857', bg: 'rgba(16,185,129,0.12)', bd: 'rgba(16,185,129,0.35)' };
+        if (n >= 50) return { fg: '#B45309', bg: 'rgba(245,158,11,0.12)', bd: 'rgba(245,158,11,0.35)' };
+        return { fg: '#475569', bg: 'rgba(100,116,139,0.10)', bd: 'rgba(100,116,139,0.30)' };
+      }
+      // Best-effort: score the open employer's not-yet-scored jobs, then re-render.
+      async function ensureMatchScores(it) {
+        if (noProfileForMatch || !it || !it.employer || !Array.isArray(it.employer.jobs)) return;
+        const ids = it.employer.jobs
+          .map(function (j) { return String(j.id); })
+          .filter(function (id) { return UUID_RE.test(id) && !(id in matchScores) && !matchRequested[id]; });
+        if (!ids.length) return;
+        ids.forEach(function (id) { matchRequested[id] = true; });
+        try {
+          const res = await CVA.apiFetch('/api/ai-hub/match-scores', { method: 'POST', body: JSON.stringify({ jobIds: ids }) });
+          const data = await res.json().catch(function () { return {}; });
+          if (data && data.noProfile) { noProfileForMatch = true; return; }
+          const scores = (data && data.scores) || {};
+          let changed = false;
+          Object.keys(scores).forEach(function (id) {
+            if (typeof scores[id] === 'number') { matchScores[id] = scores[id]; changed = true; }
+          });
+          if (changed && selectedKey === keyOf(it)) renderJobsPanel(it, true);
+        } catch (e) { /* scores are a bonus — never block the panel */ }
+      }
+
+      // ── Motivation lines (resume-aware), shown while a search runs ────────
+      let motivationLines = [];
+      let motivationTimer = null;
+      async function loadMotivation() {
+        try {
+          const res = await CVA.apiFetch('/api/ai-hub/motivation', { method: 'GET' });
+          const d = await res.json().catch(function () { return {}; });
+          if (Array.isArray(d.lines) && d.lines.length) motivationLines = d.lines;
+        } catch (e) {}
+      }
+      function startMotivation() {
+        const el = document.getElementById('jhMotivation');
+        if (!el || !motivationLines.length) return;
+        let i = 0;
+        function show() { el.textContent = '💬 ' + motivationLines[i % motivationLines.length]; i += 1; }
+        el.style.display = '';
+        show();
+        motivationTimer = setInterval(show, 2600);
+      }
+      function stopMotivation() {
+        if (motivationTimer) { clearInterval(motivationTimer); motivationTimer = null; }
+        const el = document.getElementById('jhMotivation');
+        if (el) el.style.display = 'none';
+      }
+
       function keyOf(it) {
         if (it && it.employer && it.employer.id != null && it.employer.id !== '') return 'emp-' + it.employer.id;
         if (it && it.jobId != null && it.jobId !== '') return 'job-' + it.jobId;
@@ -374,6 +431,16 @@
         const extra = skills.length - shown.length;
         let skillsHTML = shown.map(function (s) { return '<span class="jh-skill">' + esc(s) + '</span>'; }).join('');
         if (extra > 0) skillsHTML += '<span class="jh-skill more">+' + extra + ' more</span>';
+
+        const ms = matchScores[job.id];
+        let matchHTML = '';
+        if (typeof ms === 'number') {
+          const c = msColor(ms);
+          matchHTML = '<div style="display:inline-flex;align-items:center;gap:4px;margin-top:6px;padding:2px 9px;' +
+            'border-radius:999px;font-size:11px;font-weight:800;color:' + c.fg + ';background:' + c.bg + ';' +
+            'border:1px solid ' + c.bd + ';"><span class="material-icons" style="font-size:13px;">insights</span>' +
+            ms + '% match</div>';
+        }
 
         const meta = [];
         if (v.location)   meta.push('<span><span class="material-icons">place</span>' + esc(v.location) + '</span>');
@@ -400,6 +467,7 @@
                 '<div class="jh-job-title">' + esc(v.title || 'Role') +
                   (job.urgent ? '<span class="jh-urgent">Urgent</span>' : '') +
                 '</div>' +
+                matchHTML +
                 (meta.length ? '<div class="jh-meta">' + meta.join('') + '</div>' : '') +
                 (skillsHTML ? '<div class="jh-skills">' + skillsHTML + '</div>' : '') +
               '</div>' +
@@ -473,6 +541,8 @@
             });
           });
         }
+
+        ensureMatchScores(it);   // best-effort resume-match badges (re-renders on arrival)
 
         if (!skipScroll) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
@@ -637,6 +707,7 @@
         const prog = CVA.progressButton(findBtn);
         prog.start('Searching…');
         prog.set(8, 'Researching…');
+        startMotivation();
 
         try {
           const res = await CVA.apiFetch('/api/ai-hub/jobs?company=' + encodeURIComponent(q), { method: 'GET' });
@@ -682,6 +753,8 @@
         } catch (e) {
           prog.reset();
           CVA.toast((e && e.message) || 'Search failed — please try again.');
+        } finally {
+          stopMotivation();
         }
       }
 
@@ -689,8 +762,9 @@
       findBtn.addEventListener('click', findJobs);
       input.addEventListener('keydown', function (e) { if (e.key === 'Enter') findJobs(); });
 
-      document.addEventListener('DOMContentLoaded', loadDashboard);
-      if (document.readyState !== 'loading') loadDashboard();
+      function init() { loadDashboard(); loadMotivation(); }
+      document.addEventListener('DOMContentLoaded', init);
+      if (document.readyState !== 'loading') init();
     })();
   </script>
 </body>

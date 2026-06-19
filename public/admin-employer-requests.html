@@ -1,0 +1,1056 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+
+    <title>Employer Fix Requests - Admin</title>
+
+    <!-- // CSS FILES // -->
+
+    <!-- Bootstrap CSS -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css" integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
+    <!-- ANIMATE CSS -->
+    <link rel="stylesheet" href="/css/animate.css">
+    <!-- PRELOADER -->
+    <link rel="stylesheet" href="/css/preloader.css">
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="/css/style.css">
+
+    <style>
+        :root {
+            --primary-color: #6366F1;
+            --primary-dark: #4F46E5;
+            --success-color: #10B981;
+            --danger-color: #EF4444;
+            --warning-color: #F59E0B;
+            --text-primary: #1F2937;
+            --text-secondary: #6B7280;
+            --bg-light: #F9FAFB;
+            --border-color: #E5E7EB;
+        }
+
+        /* Apply gradient to entire page */
+        body {
+            background: linear-gradient(135deg, #3449a7 0%, #2c3552 50%, #172b6d 100%) !important;
+            background-attachment: fixed !important;
+            min-height: 100vh;
+        }
+
+        /* Override navbar to make it transparent */
+        .navbar,
+        .navbar-light,
+        #home .navbar {
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+
+        /* Ensure navbar stays transparent on mobile */
+        @media (max-width: 991px) {
+            #home .navbar {
+                background: transparent !important;
+            }
+        }
+
+        /* Admin Section Styles */
+        .admin-section {
+            padding: 110px 0 80px 0;
+            min-height: calc(100vh - 70px);
+            background: transparent;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        .page-header {
+            background: white;
+            padding: 32px;
+            border-radius: 16px;
+            margin-bottom: 24px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .page-header h1 {
+            font-size: 1.75rem;
+            margin: 0;
+            font-weight: 700;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .header-actions select {
+            padding: 10px 14px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            background: white;
+            cursor: pointer;
+        }
+
+        .admin-section .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+
+        .admin-section .btn-primary {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .admin-section .btn-primary:hover {
+            background: var(--primary-dark);
+            color: white;
+            text-decoration: none;
+        }
+
+        .admin-section .btn-secondary {
+            background: white;
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .admin-section .btn-secondary:hover {
+            background: var(--bg-light);
+            text-decoration: none;
+        }
+
+        .admin-section .btn-success {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .admin-section .btn-success:hover {
+            background: #059669;
+        }
+
+        .admin-section .btn-warning {
+            background: var(--warning-color);
+            color: white;
+        }
+
+        .admin-section .btn-warning:hover {
+            background: #d97706;
+        }
+
+        .admin-section .btn-danger {
+            background: var(--danger-color);
+            color: white;
+        }
+
+        .admin-section .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .admin-section .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.875rem;
+        }
+
+        .admin-section .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .card {
+            background: transparent;
+            border-radius: 16px;
+            padding: 0;
+            margin-top: 40px;
+            margin-bottom: 24px;
+            border: none;
+        }
+
+        .card h2 {
+            margin-bottom: 32px;
+            color: white;
+            font-size: 2rem;
+            font-weight: 800;
+            text-align: center;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+            letter-spacing: 0.5px;
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .card h2::after {
+            content: '';
+            position: absolute;
+            bottom: -12px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80px;
+            height: 4px;
+            background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.8) 50%, rgba(255,255,255,0) 100%);
+            border-radius: 2px;
+        }
+
+        #requestsContainer {
+            width: 100%;
+        }
+
+        /* Request card */
+        .request-card {
+            background: linear-gradient(135deg, #F9FAFB 0%, #FFFFFF 100%);
+            border-radius: 16px;
+            padding: 24px;
+            border: none;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            transition: all 0.3s ease;
+        }
+
+        .request-card:hover {
+            box-shadow: 0 8px 20px rgba(99, 102, 241, 0.15);
+        }
+
+        .request-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .request-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+
+        .request-domain {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.9375rem;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+            word-break: break-all;
+        }
+
+        .request-meta {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+        }
+
+        .pill-ats {
+            background: #EEF2FF;
+            color: var(--primary-dark);
+        }
+
+        .pill-jobs {
+            background: #F3F4F6;
+            color: var(--text-primary);
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 5px 14px;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: capitalize;
+            color: white;
+        }
+
+        .request-email {
+            font-size: 0.8125rem;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+        }
+
+        .active-fix {
+            background: #ECFDF5;
+            border-left: 3px solid var(--success-color);
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin: 12px 0;
+            font-size: 0.875rem;
+            color: #065F46;
+            font-weight: 600;
+        }
+
+        .active-fix .active-fix-notes {
+            font-weight: 400;
+            color: var(--text-secondary);
+            margin-top: 4px;
+            font-size: 0.8125rem;
+        }
+
+        .request-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 16px;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(255, 255, 255, 0.4);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6);
+            z-index: 1000;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 16px;
+            max-width: 600px;
+            width: 100%;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .modal-header {
+            padding: 24px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 1.5rem;
+            color: var(--text-primary);
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 2rem;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 0;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+
+        .modal-close:hover {
+            background: var(--bg-light);
+            color: var(--text-primary);
+        }
+
+        .modal-body {
+            padding: 24px;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+
+        .modal-footer {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 0.875rem;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 0.875rem;
+            transition: all 0.2s;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .form-group-inline {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.875rem;
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+
+        .checkbox-label input[type="checkbox"] {
+            width: auto;
+            cursor: pointer;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        /* Override version rows inside history modal */
+        .override-row {
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 14px 16px;
+            margin-bottom: 12px;
+            background: var(--bg-light);
+        }
+
+        .override-row.active {
+            border-color: var(--success-color);
+            background: #ECFDF5;
+        }
+
+        .override-row-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .override-version {
+            font-weight: 700;
+            color: var(--text-primary);
+            font-size: 1rem;
+        }
+
+        .override-meta {
+            font-size: 0.8125rem;
+            color: var(--text-secondary);
+            margin-top: 6px;
+            line-height: 1.5;
+        }
+
+        .override-notes {
+            font-size: 0.8125rem;
+            color: var(--text-primary);
+            margin-top: 6px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        @media (max-width: 768px) {
+            .page-header {
+                flex-direction: column;
+                gap: 16px;
+                align-items: flex-start;
+            }
+
+            .header-actions {
+                width: 100%;
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .header-actions select,
+            .header-actions .btn {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .form-group-inline {
+                grid-template-columns: 1fr;
+            }
+
+            .request-actions {
+                flex-direction: column;
+            }
+
+            .request-actions .btn {
+                width: 100%;
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- PRELOADER -->
+    <div class="preloader-holder">
+        <div class="loading">
+            <div class="finger finger-1">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-2">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-3">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-4">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- HEADER -->
+    <div id="app-header"></div>
+
+    <!-- ADMIN SECTION -->
+    <section class="admin-section">
+        <div class="container">
+            <!-- Page Header -->
+            <div class="page-header wow fadeInUp" data-wow-duration="1s" data-wow-delay=".1s">
+                <h1>
+                    <span>🛠️</span>
+                    Employer Fix Requests
+                </h1>
+                <div class="header-actions">
+                    <select id="statusFilter" onchange="loadRequests()">
+                        <option value="">All</option>
+                        <option value="pending">pending</option>
+                        <option value="investigating">investigating</option>
+                        <option value="resolved">resolved</option>
+                        <option value="needs_review">needs_review</option>
+                        <option value="failed">failed</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="loadRequests()">
+                        ↻ Refresh
+                    </button>
+                    <a href="/dashboard" class="btn btn-secondary">
+                        ← Back to Dashboard
+                    </a>
+                </div>
+            </div>
+
+            <!-- Requests List -->
+            <div class="card wow fadeInUp" data-wow-duration="1s" data-wow-delay=".2s">
+                <h2>Fix Requests</h2>
+                <div id="requestsContainer" class="loading">
+                    Loading fix requests...
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FOOTER -->
+    <div id="app-footer"></div>
+
+    <!-- History Modal -->
+    <div id="historyModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="historyModalTitle">Override History</h2>
+                <button class="modal-close" onclick="closeHistoryModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <div id="historyBody">
+                    <div class="loading">Loading history...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeHistoryModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- jQuery from CDN -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <!-- Bootstrap JS -->
+    <script src="/bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
+    <!-- Wow Animation -->
+    <script src="/js/plugins/wow/wow.js"></script>
+    <script>
+        new WOW().init();
+
+        // Hide preloader when page loads
+        $(window).on('load', function() {
+            $('.preloader-holder').fadeOut('slow');
+        });
+    </script>
+
+    <!-- App Header Component -->
+    <script src="/js/app-header.js?v=5"></script>
+
+    <!-- App Footer Component -->
+    <script src="/js/app-footer.js"></script>
+
+    <script>
+        // Check authentication and admin access
+        const authToken = localStorage.getItem('authToken');
+        if (!authToken) {
+            window.location.href = '/login';
+        }
+
+        // API Base URL
+        const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? 'http://localhost:3000'
+            : 'https://cvapplyr.com';
+
+        let requests = [];
+        let currentHistoryRequestId = null;
+
+        // Escape strings injected into innerHTML
+        function esc(str) {
+            if (str === null || str === undefined) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // Build an authenticated request init
+        function authHeaders(json) {
+            const headers = { 'Authorization': `Bearer ${authToken}` };
+            if (json) headers['Content-Type'] = 'application/json';
+            return headers;
+        }
+
+        // Render the shared Access Denied block
+        function renderAccessDenied(container) {
+            container.classList.remove('loading');
+            container.innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #dc2626;">
+                    <p style="font-size: 1.2rem; font-weight: 600;">⛔ Access Denied</p>
+                    <p>You do not have permission to access this page.</p>
+                    <a href="/dashboard" class="btn btn-primary" style="margin-top: 16px;">Go to Dashboard</a>
+                </div>
+            `;
+        }
+
+        // Color for a status badge
+        function statusColor(status) {
+            switch ((status || '').toLowerCase()) {
+                case 'resolved':
+                    return 'var(--success-color)';
+                case 'failed':
+                    return 'var(--danger-color)';
+                case 'investigating':
+                case 'needs_review':
+                case 'pending':
+                    return 'var(--warning-color)';
+                default:
+                    return 'var(--text-secondary)';
+            }
+        }
+
+        // Load requests on page load
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadRequests();
+            // Hide preloader after data loads
+            setTimeout(() => {
+                $('.preloader-holder').fadeOut('slow');
+            }, 500);
+        });
+
+        // Load all fix requests (respecting the status filter)
+        async function loadRequests() {
+            const container = document.getElementById('requestsContainer');
+            container.classList.add('loading');
+            container.innerHTML = 'Loading fix requests...';
+
+            const status = document.getElementById('statusFilter').value;
+            const path = status
+                ? `/api/admin/employer-requests?status=${encodeURIComponent(status)}`
+                : `/api/admin/employer-requests`;
+
+            try {
+                const response = await fetch(`${API_BASE}${path}`, {
+                    headers: authHeaders(false)
+                });
+
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        renderAccessDenied(container);
+                        return;
+                    }
+                    throw new Error('Failed to load fix requests');
+                }
+
+                const data = await response.json();
+                requests = data.requests || [];
+
+                container.classList.remove('loading');
+
+                if (requests.length === 0) {
+                    container.innerHTML = `<div class="loading">No fix requests.</div>`;
+                } else {
+                    container.innerHTML = requests.map(renderRequestCard).join('');
+                }
+            } catch (error) {
+                console.error('Error loading fix requests:', error);
+                container.classList.remove('loading');
+                container.innerHTML = `
+                    <div class="loading" style="color: #dc2626;">
+                        Failed to load fix requests. Please try again.
+                    </div>
+                `;
+                $('.preloader-holder').fadeOut('slow');
+            }
+        }
+
+        // Render a single request card
+        function renderRequestCard(req) {
+            const ao = req.activeOverride;
+            let activeFixHtml = '';
+            if (ao) {
+                const verifiedTxt = ao.verified ? ' ✓ verified' : '';
+                const notesHtml = ao.notes
+                    ? `<div class="active-fix-notes">${esc(ao.notes)}</div>`
+                    : '';
+                activeFixHtml = `
+                    <div class="active-fix">
+                        Active fix v${esc(ao.version)}${verifiedTxt}
+                        ${notesHtml}
+                    </div>
+                `;
+            }
+
+            const atsPill = req.detectedAts
+                ? `<span class="pill pill-ats">${esc(req.detectedAts)}</span>`
+                : '';
+            const jobCount = (req.jobCount === null || req.jobCount === undefined) ? 0 : req.jobCount;
+
+            return `
+                <div class="request-card">
+                    <div class="request-top">
+                        <div style="flex: 1; min-width: 0;">
+                            <div class="request-title">${esc(req.employerInput) || 'Unknown employer'}</div>
+                            <div class="request-domain">${esc(req.domain)}</div>
+                            <div class="request-meta">
+                                ${atsPill}
+                                <span class="pill pill-jobs">${esc(jobCount)} jobs</span>
+                            </div>
+                            <div class="request-email">${esc(req.email)}</div>
+                            ${activeFixHtml}
+                        </div>
+                        <span class="status-badge" style="background: ${statusColor(req.status)};">
+                            ${esc(req.status) || 'unknown'}
+                        </span>
+                    </div>
+                    <div class="request-actions">
+                        <button class="btn btn-primary" id="investigate-btn-${esc(req.id)}" onclick="investigateRequest(${JSON.stringify(req.id)})">
+                            Investigate / Re-run
+                        </button>
+                        <button class="btn btn-secondary" onclick="openHistory(${JSON.stringify(req.id)}, ${JSON.stringify(req.domain || '')})">
+                            History
+                        </button>
+                        <button class="btn btn-danger" onclick="deactivateFix(${JSON.stringify(req.id)})">
+                            Turn Off Fix
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Run / re-run the diagnostic agent (slow)
+        async function investigateRequest(id) {
+            const btn = document.getElementById(`investigate-btn-${id}`);
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = `<span class="spinner"></span> Investigating…`;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/api/admin/employer-requests/${id}/investigate`, {
+                    method: 'POST',
+                    headers: authHeaders(true)
+                });
+
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        renderAccessDenied(document.getElementById('requestsContainer'));
+                        return;
+                    }
+                    let msg = 'Investigation failed.';
+                    try {
+                        const err = await response.json();
+                        if (err && err.error) msg = err.error;
+                    } catch (e) {}
+                    throw new Error(msg);
+                }
+
+                const data = await response.json();
+                let summary = 'Investigation complete.';
+                if (data && data.result) {
+                    if (typeof data.result === 'string') {
+                        summary = data.result;
+                    } else if (data.result.summary) {
+                        summary = data.result.summary;
+                    } else if (data.result.status) {
+                        summary = `Result: ${data.result.status}`;
+                    } else {
+                        summary = JSON.stringify(data.result).slice(0, 300);
+                    }
+                }
+                alert(summary);
+                await loadRequests();
+            } catch (error) {
+                console.error('Error investigating request:', error);
+                alert(error.message || 'Investigation failed.');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = 'Investigate / Re-run';
+                }
+            }
+        }
+
+        // Open the override history modal
+        async function openHistory(id, domain) {
+            currentHistoryRequestId = id;
+            document.getElementById('historyModalTitle').textContent =
+                domain ? `Override History — ${domain}` : 'Override History';
+            const body = document.getElementById('historyBody');
+            body.innerHTML = `<div class="loading">Loading history...</div>`;
+            document.getElementById('historyModal').classList.add('active');
+            await refreshHistory();
+        }
+
+        // Fetch + render the override versions for the current request
+        async function refreshHistory() {
+            if (currentHistoryRequestId === null) return;
+            const body = document.getElementById('historyBody');
+
+            try {
+                const response = await fetch(`${API_BASE}/api/admin/employer-requests/${currentHistoryRequestId}/overrides`, {
+                    headers: authHeaders(false)
+                });
+
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        body.innerHTML = `<div class="loading" style="color:#dc2626;">⛔ Access Denied</div>`;
+                        return;
+                    }
+                    throw new Error('Failed to load override history');
+                }
+
+                const data = await response.json();
+                const overrides = data.overrides || [];
+
+                if (data.domain) {
+                    document.getElementById('historyModalTitle').textContent = `Override History — ${data.domain}`;
+                }
+
+                if (overrides.length === 0) {
+                    body.innerHTML = `<div class="loading">No override versions yet.</div>`;
+                    return;
+                }
+
+                body.innerHTML = overrides.map(renderOverrideRow).join('');
+            } catch (error) {
+                console.error('Error loading override history:', error);
+                body.innerHTML = `<div class="loading" style="color:#dc2626;">Failed to load history. Please try again.</div>`;
+            }
+        }
+
+        // Render one override version row
+        function renderOverrideRow(ov) {
+            const isActive = !!ov.active;
+            const activeBadge = isActive
+                ? `<span class="status-badge" style="background: var(--success-color);">Active</span>`
+                : '';
+            const verifiedTxt = ov.verified ? '✓ verified' : 'not verified';
+            const notesHtml = ov.notes
+                ? `<div class="override-notes">${esc(ov.notes)}</div>`
+                : '';
+            const activateBtn = isActive
+                ? `<button class="btn btn-sm btn-secondary" disabled>Active</button>`
+                : `<button class="btn btn-sm btn-primary" onclick="activateOverride(${JSON.stringify(ov.id)})">Activate / Roll back</button>`;
+
+            return `
+                <div class="override-row ${isActive ? 'active' : ''}">
+                    <div class="override-row-top">
+                        <div>
+                            <span class="override-version">v${esc(ov.version)}</span>
+                            ${activeBadge}
+                        </div>
+                        ${activateBtn}
+                    </div>
+                    <div class="override-meta">
+                        ${esc(verifiedTxt)}
+                        ${ov.createdBy ? ' · by ' + esc(ov.createdBy) : ''}
+                        ${ov.createdAt ? ' · ' + esc(ov.createdAt) : ''}
+                    </div>
+                    ${notesHtml}
+                </div>
+            `;
+        }
+
+        // Activate (roll back / re-apply) an override version
+        async function activateOverride(overrideId) {
+            try {
+                const response = await fetch(`${API_BASE}/api/admin/employer-overrides/${overrideId}/activate`, {
+                    method: 'POST',
+                    headers: authHeaders(true)
+                });
+
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        alert('⛔ Access Denied');
+                        return;
+                    }
+                    throw new Error('Failed to activate version');
+                }
+
+                const data = await response.json();
+                if (data && data.ok) {
+                    await refreshHistory();
+                    await loadRequests();
+                } else {
+                    throw new Error('Activation did not succeed');
+                }
+            } catch (error) {
+                console.error('Error activating override:', error);
+                alert(error.message || 'Failed to activate version');
+            }
+        }
+
+        // Turn off the active fix for a request's domain
+        async function deactivateFix(id) {
+            if (!confirm('Turn off the active fix for this domain? Job extraction will fall back to the default behavior.')) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/admin/employer-requests/${id}/deactivate`, {
+                    method: 'POST',
+                    headers: authHeaders(true)
+                });
+
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        renderAccessDenied(document.getElementById('requestsContainer'));
+                        return;
+                    }
+                    throw new Error('Failed to turn off fix');
+                }
+
+                const data = await response.json();
+                if (data && data.ok) {
+                    await loadRequests();
+                } else {
+                    throw new Error('Deactivation did not succeed');
+                }
+            } catch (error) {
+                console.error('Error deactivating fix:', error);
+                alert(error.message || 'Failed to turn off fix');
+            }
+        }
+
+        // Close the history modal
+        function closeHistoryModal() {
+            document.getElementById('historyModal').classList.remove('active');
+            currentHistoryRequestId = null;
+        }
+
+        // Close modal when clicking outside
+        document.getElementById('historyModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeHistoryModal();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -672,6 +672,14 @@ app.get('/admin-packages.html', serveAdminPageOnly, (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'admin-packages.html'));
 });
 
+// Additional admin pages (AI event costs, user credits, employer fix requests)
+// are served by the clean-URL middleware + express.static below, exactly like
+// the /admin-packages clean URL. Access is enforced by (1) the admin-only menu
+// reveal, (2) each page's client-side Access-Denied handling, and (3) the
+// admin-gated APIs (authenticateAdmin) they call — the same model the existing
+// admin page relies on (no authToken cookie is set, so cookie-gating the HTML
+// would lock out the real admin too).
+
 // Middleware to handle clean URLs without .html extension
 app.use((req, res, next) => {
     // Skip if URL already has .html extension

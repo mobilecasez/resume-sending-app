@@ -1,0 +1,763 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+
+    <title>AI Event Credit Costs - Admin</title>
+
+    <!-- // CSS FILES // -->
+
+    <!-- Bootstrap CSS -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css" integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
+    <!-- ANIMATE CSS -->
+    <link rel="stylesheet" href="/css/animate.css">
+    <!-- PRELOADER -->
+    <link rel="stylesheet" href="/css/preloader.css">
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="/css/style.css">
+
+    <style>
+        :root {
+            --primary-color: #6366F1;
+            --primary-dark: #4F46E5;
+            --success-color: #10B981;
+            --danger-color: #EF4444;
+            --warning-color: #F59E0B;
+            --text-primary: #1F2937;
+            --text-secondary: #6B7280;
+            --bg-light: #F9FAFB;
+            --border-color: #E5E7EB;
+        }
+
+        /* Apply gradient to entire page */
+        body {
+            background: linear-gradient(135deg, #3449a7 0%, #2c3552 50%, #172b6d 100%) !important;
+            background-attachment: fixed !important;
+            min-height: 100vh;
+        }
+
+        /* Override navbar to make it transparent */
+        .navbar,
+        .navbar-light,
+        #home .navbar {
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+
+        /* Ensure navbar stays transparent on mobile */
+        @media (max-width: 991px) {
+            #home .navbar {
+                background: transparent !important;
+            }
+        }
+
+        /* Admin Section Styles */
+        .admin-section {
+            padding: 110px 0 80px 0;
+            min-height: calc(100vh - 70px);
+            background: transparent;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        .page-header {
+            background: white;
+            padding: 32px;
+            border-radius: 16px;
+            margin-bottom: 24px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .page-header h1 {
+            font-size: 1.75rem;
+            margin: 0;
+            font-weight: 700;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+        }
+
+        .admin-section .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+
+        .admin-section .btn-primary {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .admin-section .btn-primary:hover {
+            background: var(--primary-dark);
+            color: white;
+            text-decoration: none;
+        }
+
+        .admin-section .btn-secondary {
+            background: white;
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .admin-section .btn-secondary:hover {
+            background: var(--bg-light);
+            text-decoration: none;
+        }
+
+        .admin-section .btn-success {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .admin-section .btn-success:hover {
+            background: #059669;
+        }
+
+        .admin-section .btn-warning {
+            background: var(--warning-color);
+            color: white;
+        }
+
+        .admin-section .btn-warning:hover {
+            background: #d97706;
+        }
+
+        .admin-section .btn-danger {
+            background: var(--danger-color);
+            color: white;
+        }
+
+        .admin-section .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .admin-section .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.875rem;
+        }
+
+        .admin-section .btn[disabled] {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .card {
+            background: transparent;
+            border-radius: 16px;
+            padding: 0;
+            margin-top: 40px;
+            margin-bottom: 24px;
+            border: none;
+        }
+
+        .card h2 {
+            margin-bottom: 32px;
+            color: white;
+            font-size: 2rem;
+            font-weight: 800;
+            text-align: center;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+            letter-spacing: 0.5px;
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .card h2::after {
+            content: '';
+            position: absolute;
+            bottom: -12px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80px;
+            height: 4px;
+            background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.8) 50%, rgba(255,255,255,0) 100%);
+            border-radius: 2px;
+        }
+
+        #eventsContainer {
+            width: 100%;
+        }
+
+        /* Category section */
+        .category-section {
+            margin-bottom: 36px;
+        }
+
+        .category-heading {
+            color: white;
+            font-size: 1.25rem;
+            font-weight: 700;
+            margin: 0 0 16px 4px;
+            text-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .category-heading::before {
+            content: '';
+            width: 6px;
+            height: 22px;
+            background: linear-gradient(180deg, #8B5CF6 0%, #6366F1 100%);
+            border-radius: 3px;
+            display: inline-block;
+        }
+
+        /* Event card (white .card-like surface) */
+        .event-card {
+            background: linear-gradient(135deg, #F9FAFB 0%, #FFFFFF 100%);
+            border-radius: 14px;
+            padding: 18px 20px;
+            margin-bottom: 14px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+            transition: all 0.2s ease;
+        }
+
+        .event-card:hover {
+            box-shadow: 0 8px 20px rgba(99, 102, 241, 0.15);
+        }
+
+        .event-card.inactive {
+            opacity: 0.72;
+            background: linear-gradient(135deg, #F3F4F6 0%, #E5E7EB 100%);
+        }
+
+        .event-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .event-label {
+            font-size: 1.0625rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .event-description {
+            font-size: 0.8125rem;
+            color: var(--text-secondary);
+            line-height: 1.45;
+            margin-bottom: 8px;
+        }
+
+        .event-key-pill {
+            display: inline-block;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            background: #EEF2FF;
+            border: 1px solid var(--border-color);
+            padding: 3px 10px;
+            border-radius: 999px;
+            white-space: nowrap;
+        }
+
+        .event-controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-shrink: 0;
+        }
+
+        .event-credits-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .event-credits-field label {
+            font-size: 0.6875rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin: 0;
+        }
+
+        .event-credits-input {
+            width: 90px;
+            padding: 8px 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 0.9375rem;
+            font-weight: 600;
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+        .event-credits-input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.875rem;
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+
+        .checkbox-label input[type="checkbox"] {
+            width: auto;
+            cursor: pointer;
+        }
+
+        .event-save-status {
+            font-size: 0.8125rem;
+            font-weight: 700;
+            color: var(--success-color);
+            min-width: 56px;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .event-save-status.show {
+            opacity: 1;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 50px 20px;
+            background: white;
+            border-radius: 14px;
+            color: var(--text-secondary);
+            font-size: 1.0625rem;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        /* Toast */
+        .toast-notice {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%) translateY(20px);
+            background: var(--text-primary);
+            color: white;
+            padding: 14px 24px;
+            border-radius: 10px;
+            font-size: 0.9375rem;
+            font-weight: 600;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.25s ease;
+            z-index: 2000;
+        }
+
+        .toast-notice.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        .toast-notice.success {
+            background: var(--success-color);
+        }
+
+        @media (max-width: 768px) {
+            .page-header {
+                flex-direction: column;
+                gap: 16px;
+                align-items: flex-start;
+            }
+
+            .header-actions {
+                width: 100%;
+                flex-direction: column;
+            }
+
+            .event-card {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 16px;
+            }
+
+            .event-controls {
+                justify-content: space-between;
+                gap: 12px;
+            }
+
+            .event-credits-input {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- PRELOADER -->
+    <div class="preloader-holder">
+        <div class="loading">
+            <div class="finger finger-1">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-2">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-3">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+            <div class="finger finger-4">
+                <div class="finger-item"><span></span><i></i></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- HEADER -->
+    <div id="app-header"></div>
+
+    <!-- ADMIN SECTION -->
+    <section class="admin-section">
+        <div class="container">
+            <!-- Page Header -->
+            <div class="page-header wow fadeInUp" data-wow-duration="1s" data-wow-delay=".1s">
+                <h1>
+                    <span>💳</span>
+                    AI Event Credit Costs
+                </h1>
+                <div class="header-actions">
+                    <button class="btn btn-primary" onclick="window.location.reload()">
+                        <span>↻</span> Refresh
+                    </button>
+                    <a href="/dashboard" class="btn btn-secondary">
+                        ← Back to Dashboard
+                    </a>
+                </div>
+            </div>
+
+            <!-- Events List -->
+            <div class="card wow fadeInUp" data-wow-duration="1s" data-wow-delay=".2s">
+                <h2>AI Event Credit Costs</h2>
+                <div id="eventsContainer" class="loading">
+                    Loading AI events...
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FOOTER -->
+    <div id="app-footer"></div>
+
+    <!-- Toast notification -->
+    <div id="toast" class="toast-notice"></div>
+
+    <!-- jQuery from CDN -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <!-- Bootstrap JS -->
+    <script src="/bootstrap-4.1.1-dist/js/bootstrap.min.js"></script>
+    <!-- Wow Animation -->
+    <script src="/js/plugins/wow/wow.js"></script>
+    <script>
+        new WOW().init();
+
+        // Hide preloader when page loads
+        $(window).on('load', function() {
+            $('.preloader-holder').fadeOut('slow');
+        });
+    </script>
+
+    <!-- App Header Component -->
+    <script src="/js/app-header.js?v=5"></script>
+
+    <!-- App Footer Component -->
+    <script src="/js/app-footer.js"></script>
+
+    <script>
+        // Check authentication and admin access
+        const authToken = localStorage.getItem('authToken');
+        if (!authToken) {
+            window.location.href = '/login';
+        }
+
+        // API Base URL
+        const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? 'http://localhost:3000'
+            : 'https://cvapplyr.com';
+
+        let events = [];
+
+        // Small HTML-escape helper for any server-provided strings injected into innerHTML
+        function esc(value) {
+            if (value === null || value === undefined) return '';
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // Render the Access Denied block (same pattern as admin-packages)
+        function renderAccessDenied(container) {
+            container.classList.remove('loading');
+            container.innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #dc2626;">
+                    <p style="font-size: 1.2rem; font-weight: 600;">⛔ Access Denied</p>
+                    <p>You do not have permission to access this page.</p>
+                    <a href="/dashboard" class="btn btn-primary" style="margin-top: 16px;">Go to Dashboard</a>
+                </div>
+            `;
+        }
+
+        // Toast helper
+        let toastTimer = null;
+        function showToast(message, isSuccess = true) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast-notice show' + (isSuccess ? ' success' : '');
+            if (toastTimer) clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => {
+                toast.className = 'toast-notice' + (isSuccess ? ' success' : '');
+            }, 2500);
+        }
+
+        // Load events on page load
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadEvents();
+            // Hide preloader after data loads
+            setTimeout(() => {
+                $('.preloader-holder').fadeOut('slow');
+            }, 500);
+        });
+
+        // Load all AI event costs
+        async function loadEvents() {
+            const container = document.getElementById('eventsContainer');
+            container.classList.add('loading');
+            container.innerHTML = 'Loading AI events...';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/admin/ai-event-costs`, {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`
+                    }
+                });
+
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        renderAccessDenied(container);
+                        return;
+                    }
+                    throw new Error('Failed to load AI events');
+                }
+
+                const data = await response.json();
+                events = data.events || [];
+
+                console.log('💳 Loaded AI events:', events.length);
+
+                container.classList.remove('loading');
+                renderEvents();
+            } catch (error) {
+                console.error('Error loading AI events:', error);
+                container.classList.remove('loading');
+                container.innerHTML = `
+                    <div class="loading" style="color: #dc2626;">
+                        Failed to load AI events. Please try again.
+                    </div>
+                `;
+                $('.preloader-holder').fadeOut('slow');
+            }
+        }
+
+        // Render all events grouped by category
+        function renderEvents() {
+            const container = document.getElementById('eventsContainer');
+
+            if (!events.length) {
+                container.innerHTML = `<div class="empty-state">No AI events configured.</div>`;
+                return;
+            }
+
+            // Group by category
+            const groups = {};
+            const groupOrder = [];
+            events.forEach(ev => {
+                const cat = (ev.category && String(ev.category).trim()) || 'Uncategorized';
+                if (!groups[cat]) {
+                    groups[cat] = [];
+                    groupOrder.push(cat);
+                }
+                groups[cat].push(ev);
+            });
+
+            // Sort categories alphabetically for a stable layout
+            groupOrder.sort((a, b) => a.localeCompare(b));
+
+            const html = groupOrder.map(cat => {
+                const items = groups[cat].slice().sort((a, b) => {
+                    const soA = Number(a.sort_order) || 0;
+                    const soB = Number(b.sort_order) || 0;
+                    if (soA !== soB) return soA - soB;
+                    return String(a.label || '').localeCompare(String(b.label || ''));
+                });
+
+                return `
+                    <div class="category-section">
+                        <h3 class="category-heading">${esc(cat)}</h3>
+                        ${items.map(renderEventCard).join('')}
+                    </div>
+                `;
+            }).join('');
+
+            container.innerHTML = html;
+        }
+
+        // Render a single event card
+        function renderEventCard(ev) {
+            const isActive = ev.is_active === 1;
+            const key = ev.event_key;
+            const credits = (ev.credits === null || ev.credits === undefined) ? 0 : ev.credits;
+
+            return `
+                <div class="event-card ${isActive ? '' : 'inactive'}" data-key="${esc(key)}">
+                    <div class="event-info">
+                        <div class="event-label">${esc(ev.label || ev.event_key || 'Unnamed Event')}</div>
+                        ${ev.description ? `<div class="event-description">${esc(ev.description)}</div>` : ''}
+                        <span class="event-key-pill">${esc(ev.event_key)}</span>
+                    </div>
+                    <div class="event-controls">
+                        <div class="event-credits-field">
+                            <label for="credits-${esc(key)}">Credits</label>
+                            <input type="number" id="credits-${esc(key)}" class="event-credits-input"
+                                   min="0" max="1000" step="1" value="${esc(credits)}">
+                        </div>
+                        <label class="checkbox-label">
+                            <input type="checkbox" class="event-active-input" ${isActive ? 'checked' : ''}>
+                            Active
+                        </label>
+                        <span class="event-save-status" data-status-for="${esc(key)}"></span>
+                        <button class="btn btn-primary btn-sm" onclick="saveEvent(this, '${esc(key)}')">
+                            Save
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Save a single event
+        async function saveEvent(btn, eventKey) {
+            const card = btn.closest('.event-card');
+            if (!card) return;
+
+            const creditsInput = card.querySelector('.event-credits-input');
+            const activeInput = card.querySelector('.event-active-input');
+            const statusEl = card.querySelector('.event-save-status');
+
+            const credits = parseInt(creditsInput.value, 10);
+            if (isNaN(credits) || credits < 0 || credits > 1000) {
+                alert('Credits must be an integer between 0 and 1000.');
+                return;
+            }
+
+            const active = activeInput.checked ? 1 : 0;
+
+            const originalLabel = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Saving…';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/admin/ai-event-costs/${encodeURIComponent(eventKey)}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ credits: credits, active: active })
+                });
+
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        renderAccessDenied(document.getElementById('eventsContainer'));
+                        return;
+                    }
+                    let message = 'Failed to save AI event.';
+                    try {
+                        const errData = await response.json();
+                        if (errData && (errData.error || errData.message)) {
+                            message = errData.error || errData.message;
+                        }
+                    } catch (_) {}
+                    throw new Error(message);
+                }
+
+                // Update local state
+                const ev = events.find(e => e.event_key === eventKey);
+                if (ev) {
+                    ev.credits = credits;
+                    ev.is_active = active;
+                }
+
+                // Reflect active styling on the card
+                if (active === 1) {
+                    card.classList.remove('inactive');
+                } else {
+                    card.classList.add('inactive');
+                }
+
+                // Show "Saved ✓" briefly on the row
+                if (statusEl) {
+                    statusEl.textContent = 'Saved ✓';
+                    statusEl.classList.add('show');
+                    setTimeout(() => statusEl.classList.remove('show'), 2500);
+                }
+                showToast('Saved ✓', true);
+            } catch (error) {
+                console.error('Error saving AI event:', error);
+                alert(error.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalLabel;
+            }
+        }
+    </script>
+</body>
+</html>
