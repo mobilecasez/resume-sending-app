@@ -1,0 +1,25 @@
+User-agent: *
+Allow: /
+Allow: /og-image.png
+
+# Private / authenticated app + admin + API surfaces (no SEO value)
+Disallow: /dashboard
+Disallow: /profile
+Disallow: /usage
+Disallow: /review
+Disallow: /job
+Disallow: /resume-builder
+Disallow: /packages
+Disallow: /notifications
+Disallow: /admin-packages
+Disallow: /admin-ai-event-costs
+Disallow: /admin-users
+Disallow: /admin-employer-requests
+Disallow: /auth-success
+Disallow: /payment
+Disallow: /payment-success
+Disallow: /payment-failure
+Disallow: /mobile-payment-callback
+Disallow: /api/
+
+Sitemap: https://cvapplyr.com/sitemap.xml

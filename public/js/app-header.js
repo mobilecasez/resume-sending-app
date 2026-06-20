@@ -331,6 +331,10 @@
                         <a href="/index.html#features">Features</a>
                         <a href="/index.html#pricing">Pricing</a>
                         <a href="/index.html#contact">Contact</a>
+                        <a href="/index.html#download" class="nav-dl-link" title="Download the CVApplyr app" style="display:inline-flex;align-items:center;gap:6px;color:#fff;background:linear-gradient(135deg,#4F8DFF,#7C6BFF);padding:7px 16px;border-radius:9px;font-weight:700;box-shadow:0 4px 14px rgba(79,141,255,0.30);">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+                            Download
+                        </a>
                     </div>
                     <div class="nav-cta">
                         ${authLinksDesktop}
@@ -347,6 +351,7 @@
                 <a href="/index.html#features" class="mobile-nav-link">Features</a>
                 <a href="/index.html#pricing" class="mobile-nav-link">Pricing</a>
                 <a href="/index.html#contact" class="mobile-nav-link">Contact</a>
+                <a href="/index.html#download" class="mobile-nav-link" style="color:#fff;background:linear-gradient(135deg,#4F8DFF,#7C6BFF);font-weight:700;">⬇ Download the app</a>
                 ${authLinksMobile}
             </div>
         `;
