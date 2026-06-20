@@ -532,22 +532,41 @@ const looksLikeListing = (p) => p && (p.jobLinkCount >= 3 || (jobHits(p.text) >=
 // read the REAL base from the pagination links themselves (the listing URL may be an alias of
 // the paginated path). Button/infinite-scroll pagination is handled separately in the browser
 // by smartScrape's load-more loop. (Limit 2 — URL-pagination companion)
-function buildPageUrls(listingUrl, html, cap = 25) {
+// Parse the employer-reported total ("Displaying 1 to 20 of 536 matching jobs", "536 results",
+// "1-20 of 536") + the page size, so pagination can crawl to the REAL last page even when the
+// page-number links don't expose it (a "Next ›"-only pager would otherwise undershoot to page 2).
+function detectTotal(text) {
+  const s = String(text || '');
+  const m = s.match(/\bof\s+([\d,]{1,7})\s+(?:matching\s+)?(?:jobs|results|positions|openings|roles|vacanc\w*|vacatur\w*|offre\w*|stell\w*|empleos?)\b/i)
+        || s.match(/\b1\s*[-–]\s*\d+\s+of\s+([\d,]{1,7})\b/i)
+        || s.match(/\b([\d,]{2,7})\s+(?:jobs|results|positions|openings|roles|vacanc\w*|vacatur\w*)\b/i);
+  const total = m ? parseInt(m[1].replace(/[,\s]/g, ''), 10) : 0;
+  const pm = s.match(/\b1\s*(?:to|[-–])\s*(\d{1,3})\s+of\b/i);
+  const pageSize = pm ? parseInt(pm[1], 10) : 0;
+  return { total: Number.isFinite(total) ? total : 0, pageSize: Number.isFinite(pageSize) ? pageSize : 0 };
+}
+
+function buildPageUrls(listingUrl, html, cap = 25, pageHint = null) {
   const h = String(html || '');
   try { new URL(listingUrl); } catch { return []; }
-  // Path style: href="…/<path>/page/N/" — keep the link's own base path.
-  const pathHits = [...h.matchAll(/href=["']([^"']*?\/)page\/(\d{1,3})\/?["']/gi)];
+  // How many pages the reported total implies (extends the visible page-link max so a
+  // "Next ›"-only or truncated pager still reaches the real last page).
+  const needPages = (pageHint && pageHint.total && pageHint.pageSize) ? Math.ceil(pageHint.total / pageHint.pageSize) : 0;
+  // Path style: href="…/<path>/page/N/" — keep the link's own base path. The page number may be
+  // followed by a quote, a trailing slash, or a #fragment / ?query (…/page/2/#results).
+  const pathHits = [...h.matchAll(/href=["']([^"']*?\/)page\/(\d{1,3})\/?(?=["'#?]|$)/gi)];
   if (pathHits.length) {
     let basePath; try { basePath = new URL(pathHits[0][1], listingUrl).href.replace(/\/$/, ''); } catch { return []; }
-    const max = Math.min(Math.max(...pathHits.map((m) => +m[2])), cap + 1);
+    const max = Math.min(Math.max(Math.max(...pathHits.map((m) => +m[2])), needPages), cap + 1);
     const out = []; for (let n = 2; n <= max; n++) out.push(`${basePath}/page/${n}/`);
     return [...new Set(out)].slice(0, cap);
   }
-  // Query style: href="…?page=N" (also paged/pg). Reuse the link's own prefix up to the number.
-  const qHits = [...h.matchAll(/href=["']([^"']*?[?&](?:page|paged|pg)=)(\d{1,3})["']/gi)];
+  // Query style: href="…?page=N" (also paged/pg). The number may be followed by a quote, a
+  // #fragment (…?page=2#results — the Happydance/Phenom pager), or another &param.
+  const qHits = [...h.matchAll(/href=["']([^"']*?[?&](?:page|paged|pg)=)(\d{1,3})(?=["'#&]|$)/gi)];
   if (qHits.length) {
     let prefix; try { prefix = new URL(qHits[0][1].replace(/&amp;/g, '&'), listingUrl).href; } catch { return []; }
-    const max = Math.min(Math.max(...qHits.map((m) => +m[2])), cap + 1);
+    const max = Math.min(Math.max(Math.max(...qHits.map((m) => +m[2])), needPages), cap + 1);
     const out = []; for (let n = 2; n <= max; n++) out.push(`${prefix}${n}`);
     return [...new Set(out)].slice(0, cap);
   }
@@ -559,8 +578,8 @@ function buildPageUrls(listingUrl, html, cap = 25) {
 // batches — sequential crawling of an 11-page board blows the time budget (~21s/page → only ~4
 // pages fit; parallel batches do all 11 in ~20s). Stops when a whole batch comes back empty (we
 // ran past the real last page) or the wall-clock deadline hits. (Limit 2 — URL pagination)
-async function crawlPaginated(listingUrl, firstHtml, employerHint, origin, deadlineAt) {
-  const urls = buildPageUrls(listingUrl, firstHtml);
+async function crawlPaginated(listingUrl, firstHtml, employerHint, origin, deadlineAt, pageHint = null) {
+  const urls = buildPageUrls(listingUrl, firstHtml, 25, pageHint);
   if (!urls.length) return [];
   // CONC kept modest: too many concurrent flash-lite calls hit the rate limit and whole pages
   // fail. The page URLs are already bounded to the real last page by buildPageUrls, so we do NOT
@@ -573,7 +592,12 @@ async function crawlPaginated(listingUrl, firstHtml, employerHint, origin, deadl
     const batch = urls.slice(i, i + CONC);
     const results = await Promise.all(batch.map(async (pu) => {
       try {
-        const html = await fetchStatic(pu);
+        let html = await fetchStatic(pu).catch(() => '');
+        // Blocked (Cloudflare 403) or JS-shell page → render it so SPA / protected boards
+        // (Phenom/Happydance, Workday-style) still paginate. Bounded by the wall-clock deadline.
+        if (cleanHtmlForLLM(html).length < 600) {
+          try { const r = await smartScrape(pu, { forceBrowser: true, minChars: 400 }); if (r && r.rawHtml) html = r.rawHtml; } catch {}
+        }
         // JSON-LD first — if this page carries JobPosting blocks, it's free (no LLM).
         const ld = extractJsonLdJobs(html, pu);
         if (ld.length >= 3) return ld;
@@ -667,15 +691,19 @@ async function findAndExtract(inputUrl, employerHint) {
     const deadlineAt = t0 + 95000;
     if (Date.now() > deadlineAt - 8000) return result;   // not enough budget for even one page
     const pg = pages.find((p) => p.url === result.sourceUrl);
-    const firstHtml = (pg && pg.html) || (result.sourceUrl && await fetchStatic(result.sourceUrl));
+    // Prefer the RENDERED DOM: SPA boards (Phenom/Happydance, etc.) inject their ?page=N
+    // pagination links via JS, so the static shell exposes none — that's the 20-of-536 bug.
+    const firstHtml = result._renderedHtml || (pg && pg.html) || (result.sourceUrl && await fetchStatic(result.sourceUrl));
     if (!firstHtml) return result;
-    const extra = await crawlPaginated(result.sourceUrl, firstHtml, employerHint || origin, origin, deadlineAt);
+    // The AI/page reports the real total ("…of 536 jobs"); use it to crawl to the last page.
+    const pageHint = detectTotal(result.pageText || firstHtml);
+    const extra = await crawlPaginated(result.sourceUrl, firstHtml, employerHint || origin, origin, deadlineAt, pageHint);
     if (!extra.length) return result;
     // Merge + dedup by real job_url, else title|location signature.
     const keyOf = (j) => (j.job_url && !/#role-/.test(j.job_url)) ? j.job_url.split('#')[0].replace(/\/$/, '') : _sig(j.title, j.location);
     const seenK = new Set(); const all = [];
     for (const j of [...result.jobs, ...extra]) { const k = keyOf(j); if (seenK.has(k)) continue; seenK.add(k); all.push(j); }
-    if (all.length > result.jobs.length) console.log(`[aiJobExtractor] Pagination @ ${result.sourceUrl}: ${result.jobs.length}→${all.length} jobs`);
+    if (all.length > result.jobs.length) console.log(`[aiJobExtractor] Pagination @ ${result.sourceUrl}: ${result.jobs.length}→${all.length} jobs${pageHint.total ? ` (reported ${pageHint.total})` : ''}`);
     return { ...result, jobs: all, audit: result.audit ? { ...result.audit, totalFound: all.length } : result.audit };
   };
 
