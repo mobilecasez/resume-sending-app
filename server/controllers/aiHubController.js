@@ -1750,6 +1750,123 @@ function isPlausibleJobTitle(t) {
     return true;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AI QUALITY GATE — AI watches over EVERY extraction method.
+// No matter which path produced a job (ATS public API, sitemap, JSON-LD, or the AI
+// extractor), two safety nets run:
+//   1) repairIncompleteJobs() — a "watcher" that detects jobs missing the substantive
+//      fields (skills / responsibilities) and fills them from that job's own detail
+//      page: free JSON-LD/structured parse first, then one cheap AI pass. This is what
+//      guarantees full details even when a fast deterministic path returned bare cards
+//      (the careers.ingrammicro.com symptom). Fills empty fields only — never clobbers.
+//   2) randomQualityAudit() — a sampled, fire-and-forget AI spot-check that the
+//      deterministic methods are producing ACCURATE cards; logs/flags disagreements.
+// All of it is gated + cost-capped and can be disabled with QUALITY_GATE=off.
+// ─────────────────────────────────────────────────────────────────────────────
+const QUALITY_GATE  = process.env.QUALITY_GATE !== 'off';                 // default ON
+const QG_REPAIR_CAP = parseInt(process.env.QG_REPAIR_CAP || '80', 10);    // max repairs per search
+const QG_QA_RATE    = parseFloat(process.env.QG_QA_RATE || '0.15');       // P(random audit) per deterministic search
+
+const _qgEmptyArr = (a) => !Array.isArray(a) || a.length === 0;
+
+// Fill ONLY the fields that are still empty on `t` from `s`. Never overwrites good data.
+function _qgMergeJobFields(t, s) {
+    if (!t || !s) return false;
+    let filled = false;
+    if (_qgEmptyArr(t.responsibilities) && Array.isArray(s.responsibilities) && s.responsibilities.length) { t.responsibilities = s.responsibilities; filled = true; }
+    if (_qgEmptyArr(t.skills)           && Array.isArray(s.skills)           && s.skills.length)           { t.skills = s.skills;                     filled = true; }
+    if (!t.location    && s.location)    { t.location = s.location; filled = true; }
+    if (!t.salary      && s.salary)      { t.salary = s.salary; }
+    if (!t.experience  && s.experience)  { t.experience = s.experience; }
+    if (!t.job_type    && s.job_type)    { t.job_type = s.job_type; }
+    if (!t.work_mode   && s.work_mode)   { t.work_mode = s.work_mode; }
+    if (!t.description  && s.description) { t.description = s.description; }
+    return filled;
+}
+
+// A job "needs repair" when it has a real detail page to fetch but is missing the
+// substantive content (no responsibilities AND no skills) — a bare card.
+function _qgNeedsRepair(j) {
+    if (!j) return false;
+    const url = j.job_url;
+    if (!url || j.listing_page_only || /#role-\d+$/.test(url)) return false;
+    return _qgEmptyArr(j.responsibilities) && _qgEmptyArr(j.skills);
+}
+
+// WATCHER: repair bare jobs from their own detail page. `counter` ({used}) bounds the
+// total repairs across all batches of one search. Mutates jobs in place. Best-effort.
+async function repairIncompleteJobs(detailedJobs, counter) {
+    if (!QUALITY_GATE || !Array.isArray(detailedJobs)) return 0;
+    const deficient = [];
+    for (const j of detailedJobs) {
+        if (counter.used >= QG_REPAIR_CAP) break;
+        if (_qgNeedsRepair(j)) { deficient.push(j); counter.used++; }
+    }
+    if (!deficient.length) return 0;
+    console.log(`[aiHub] Quality gate: ${deficient.length} job(s) missing skills/responsibilities → repairing from detail page`);
+
+    // Step A — FREE: structured + JSON-LD JobPosting parse of each detail page.
+    await Promise.all(deficient.map(async (j) => {
+        try {
+            const html = await fetchJobPage(j.job_url);
+            _qgMergeJobFields(j, parseAtsJobPage(html, j.job_url));
+        } catch (_) { /* fall through to AI */ }
+    }));
+
+    // Step B — AI: anything JSON-LD couldn't fill, send the URL through the LLM extractor.
+    const stillThin = deficient.filter(_qgNeedsRepair);
+    if (stillThin.length) {
+        try {
+            const pages = [];
+            await Promise.all(stillThin.map(async (j) => {
+                try {
+                    const r = await smartScrape(j.job_url, { minChars: 400 });
+                    if ((r.text || '').length >= 200 || r.interceptedJson) pages.push({ job: j, text: r.text || '', interceptedJson: r.interceptedJson });
+                } catch (_) { /* skip */ }
+            }));
+            if (pages.length) {
+                const result = await aiGenerateWithRetry(geminiModel(false, 'gemini-2.5-flash-lite'), buildExtractionPrompt(pages));
+                const arr = parseJsonArray(result.response.text().trim());
+                pages.forEach((p, i) => _qgMergeJobFields(p.job, normalizeAiJob(arr[i] || {}, p.job)));
+                console.log(`[aiHub] Quality gate: AI-repaired ${pages.length} job(s) from their detail pages`);
+            }
+        } catch (e) { console.error('[aiHub] Quality gate AI repair failed:', e.message); }
+    }
+    const fixed = deficient.filter(j => !_qgNeedsRepair(j)).length;
+    console.log(`[aiHub] Quality gate: recovered details for ${fixed}/${deficient.length} job(s)`);
+    return fixed;
+}
+
+// AUDITOR: random AI spot-check that the NON-AI methods produced accurate cards.
+// Sampled + fire-and-forget — never blocks or mutates the user's results.
+async function randomQualityAudit(jobs, meta) {
+    try {
+        if (!QUALITY_GATE) return;
+        const method = (meta && meta.method) || 'unknown';
+        if (method === 'ai' || method === 'agent' || method === 'mixed') return;   // only audit purely-deterministic results
+        if (Math.random() > QG_QA_RATE) return;
+        const pool = (jobs || []).filter(j => j && j.job_url && !j.listing_page_only && !/#role-\d+$/.test(j.job_url));
+        if (!pool.length) return;
+        const picks = [...pool].sort(() => Math.random() - 0.5).slice(0, 2);
+        const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        for (const j of picks) {
+            try {
+                const r = await smartScrape(j.job_url, { minChars: 300 });
+                if (!(r.text || '').length) continue;
+                const result = await aiGenerateWithRetry(geminiModel(false, 'gemini-2.5-flash-lite'), buildExtractionPrompt([{ job: j, text: r.text, interceptedJson: r.interceptedJson }]), 2);
+                const truth = normalizeAiJob(parseJsonArray(result.response.text().trim())[0] || {}, j);
+                const a = norm(j.title), b = norm(truth.title);
+                const titleOk = !!b && (a.includes(b.slice(0, 12)) || b.includes(a.slice(0, 12)));
+                const la = norm(j.location), lb = norm(truth.location);
+                const locOk = !lb || !la || la.includes(lb.slice(0, 4)) || lb.includes(la.slice(0, 4));
+                const ok = titleOk && locOk;
+                console.log(`[aiHub] QA audit [${meta.domain}/${method}] "${j.title}" → ${ok ? 'OK' : 'MISMATCH'}${ok ? '' : ` (ai-title="${truth.title}" ai-loc="${truth.location}")`}`);
+                if (!ok) console.warn(`[aiHub] QA audit FLAG: "${method}" cards for ${meta.domain} may be inaccurate (sample "${j.title}" disagreed with AI).`);
+            } catch (_) { /* per-sample ignore */ }
+        }
+    } catch (_) { /* never throw */ }
+}
+
 async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
     console.log(`[aiHub] Starting job search for "${companyInput}" (jobId: ${asyncJobId})`);
     try {
@@ -2147,6 +2264,7 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         console.log(`[aiHub] Phase 2: ${phaseAJobs.length}/${totalOpen} jobs (${phaseAJobs.filter(j => j.listing_page_only).length} listing-page-only) → ${allBatches.length} batches (size=${DETAIL_BATCH_SIZE}, concurrency=${BATCH_CONCURRENCY})${overflowJobs.length ? ` — ${overflowJobs.length} overflow for best-200 ranking` : ''}`);
 
         // Process BATCH_CONCURRENCY batches in parallel, then save results in order
+        const repairCounter = { used: 0 };   // AI Quality Gate: bound total detail repairs across all batches
         for (let b = 0; b < allBatches.length; b += BATCH_CONCURRENCY) {
             const concurrentSlice = allBatches.slice(b, b + BATCH_CONCURRENCY);
 
@@ -2169,6 +2287,10 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                 if (settled.status === 'rejected') {
                     console.error(`[aiHub] Batch failed:`, settled.reason?.message);
                 }
+
+                // ── AI Quality Gate (watcher): fill any bare cards (missing skills/
+                // responsibilities) from their own detail page — JSON-LD first, then AI.
+                await repairIncompleteJobs(detailedJobs, repairCounter);
 
                 // ── Use employer name from first AI result to fix Phase-1 bad name ──
                 // Phase-1 HTML extraction often picks up nav labels like "Back ButtonSearch Icon".
@@ -2276,6 +2398,16 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         const finalEmployer = buildEmployerObject(employerDbId, asyncJobId, listingData, logoColor, streamedJobs, domain);
         await jobService.completeJob(asyncJobId, finalEmployer);
         console.log(`[aiHub] Completed "${name}": ${streamedJobs.length} jobs saved`);
+
+        // ── AI Quality Gate (auditor): random AI spot-check that the deterministic
+        // methods produced accurate cards. Fire-and-forget — results already delivered.
+        try {
+            const qaMethod = !validJobs.length ? 'none'
+                : validJobs.every(j => j._atsApi) ? 'ats-api'
+                : validJobs.every(j => j._ats)    ? 'sitemap'
+                : (validJobs.some(j => j._atsApi || j._ats) ? 'mixed' : 'ai');
+            randomQualityAudit(streamedJobs, { method: qaMethod, domain }).catch(() => {});
+        } catch (_) {}
 
         // ── Audit log — always write, critical context when jobs = 0 ─────────
         await logScrapeAudit({
