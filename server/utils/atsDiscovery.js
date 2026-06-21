@@ -599,4 +599,25 @@ function parseJobApiResponse(payload, sourceUrl, origin) {
   return { employer: employer || null, jobs };
 }
 
-module.exports = { detectAndFetchAts, parseJobApiResponse, extractSkills, fetchText, fetchJson, postJson, mapLimit, makeJob, bulletsFrom, strip, jobType, formatSalary, nameFromHtmlOrDomain };
+// SKIN → ATS: many "career sites" (Phenom/Happydance/Eightfold/custom) are a thin marketing
+// skin over a real ATS — their pages embed the ATS apply/board link. Spot it so we can go
+// straight to the ATS's clean public API (complete data + full descriptions + ~$0.001) instead
+// of fighting the skin's bot-blocked SPA. Returns a normalized ATS board URL, or null.
+function findEmbeddedAts(html) {
+  const s = String(html || '');
+  // Workday: {tenant}.wdN.myworkdayjobs.com/[lang/]{site}  — keep the site, drop lang / job / login.
+  let m = s.match(/https?:\/\/([a-z0-9-]+\.wd\d+\.myworkdayjobs\.com)\/(?:[a-z]{2}-[A-Z]{2}\/)?([A-Za-z0-9_-]+)/i);
+  if (m && !/^(job|login|introduceYourself|task|apply|search|home)$/i.test(m[2])) return `https://${m[1]}/${m[2]}`;
+  m = s.match(/boards\.greenhouse\.io\/(?:embed\/job_board\?for=)?([a-z0-9_]+)/i) || s.match(/greenhouse\.io\/embed\/job_board\?for=([a-z0-9_]+)/i);
+  if (m) return `https://boards.greenhouse.io/${m[1]}`;
+  m = s.match(/jobs\.lever\.co\/([a-z0-9-]+)/i); if (m) return `https://jobs.lever.co/${m[1]}`;
+  m = s.match(/jobs\.ashbyhq\.com\/([a-z0-9-]+)/i); if (m) return `https://jobs.ashbyhq.com/${m[1]}`;
+  m = s.match(/(?:careers|jobs)\.smartrecruiters\.com\/([A-Za-z0-9-]+)/i); if (m) return `https://careers.smartrecruiters.com/${m[1]}`;
+  m = s.match(/([a-z0-9-]+)\.recruitee\.com/i); if (m) return `https://${m[1]}.recruitee.com`;
+  m = s.match(/apply\.workable\.com\/([a-z0-9-]+)/i); if (m) return `https://apply.workable.com/${m[1]}`;
+  m = s.match(/([a-z0-9-]+)\.jobs\.personio\.(?:com|de)/i); if (m) return `https://${m[1]}.jobs.personio.com`;
+  m = s.match(/([a-z0-9-]+)\.breezy\.hr/i); if (m) return `https://${m[1]}.breezy.hr`;
+  return null;
+}
+
+module.exports = { detectAndFetchAts, findEmbeddedAts, parseJobApiResponse, extractSkills, fetchText, fetchJson, postJson, mapLimit, makeJob, bulletsFrom, strip, jobType, formatSalary, nameFromHtmlOrDomain };

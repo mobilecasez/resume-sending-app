@@ -13,7 +13,7 @@ const {
 } = require('../utils/domOptimizer');
 const { smartScrape, stripHtmlToText } = require('../utils/playwrightScraper');
 const { discoverSitemapJobUrls, parseAtsJobPage, fetchJobPage, assessDetailQuality } = require('../utils/atsSitemap');
-const { detectAndFetchAts } = require('../utils/atsDiscovery');
+const { detectAndFetchAts, findEmbeddedAts } = require('../utils/atsDiscovery');
 const employerFix = require('../services/employerFix');
 const detailRecipeStore = require('../services/detailRecipe');
 const aiJobExtractor = require('../services/aiJobExtractor');
@@ -1867,6 +1867,43 @@ async function randomQualityAudit(jobs, meta) {
     } catch (_) { /* never throw */ }
 }
 
+// ── Grounded fallback (tap Google's index) + freshness validation ────────────
+// Verify a posting's own URL is still LIVE so we never surface a job Google indexed but the
+// employer has since pulled. DROP only on positive proof it's gone (404/410 or a "no longer
+// available" page) — a transient error or a 403 (bot wall) is NOT proof, so we keep it.
+async function validateJobUrlLive(url) {
+    if (!url || !/^https?:\/\//i.test(url)) return false;
+    try {
+        const r = await fetch(url, { method: 'GET', redirect: 'follow',
+            headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36' },
+            signal: AbortSignal.timeout(9000) });
+        if (r.status === 404 || r.status === 410) return false;
+        if (!r.ok) return true;   // 403 / 5xx ≠ proof of gone — keep it
+        const t = (await r.text()).toLowerCase();
+        if (/no longer (available|accepting|open)|position (has been )?filled|posting (is |has )?closed|this (job|position|requisition) (is )?(no longer|has been)|job not found|requisition[^.]{0,40}closed|has expired/i.test(t)) return false;
+        return true;
+    } catch (_) { return true; }   // network / timeout ≠ proof of gone — keep it
+}
+
+// How the consumer Gemini app "reads" a hostile site: ask Gemini WITH Google Search to
+// enumerate the employer's current openings from Google's index, parse them, then keep only
+// the ones whose own URL is still live. Last-resort fallback (everything else blocked).
+async function groundedJobSearch(employerName, careersUrl) {
+    let jobs = [];
+    try {
+        const model = geminiModel(true, 'gemini-2.5-flash');   // Google Search grounding
+        const prompt = `Using Google Search, list the CURRENT open job postings at "${employerName}" (careers site: ${careersUrl}). Aim for completeness — include every distinct current opening you can find. Return ONLY a JSON array; each item exactly: {"title": string, "location": string, "job_url": the direct posting URL string, "responsibilities": array of 3-6 short bullet strings, "skills": array of strings}. Use real data from the search results only — do NOT invent postings. If you cannot find a direct posting URL for an item, omit that item.`;
+        const res = await aiGenerateWithRetry(model, prompt, 3);
+        const parsed = parseJsonArray(res.response.text().trim());
+        jobs = (Array.isArray(parsed) ? parsed : []).filter(j => j && j.title && j.job_url);
+    } catch (e) { console.error('[aiHub] groundedJobSearch:', e.message); return []; }
+    if (!jobs.length) return [];
+    const checked = await Promise.all(jobs.map(async (j) => ({ j, live: await validateJobUrlLive(j.job_url) })));
+    const live = checked.filter(c => c.live).map(c => c.j);
+    console.log(`[aiHub] Grounded: ${jobs.length} found → ${live.length} still live (dropped ${jobs.length - live.length} stale)`);
+    return live;
+}
+
 async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
     console.log(`[aiHub] Starting job search for "${companyInput}" (jobId: ${asyncJobId})`);
     try {
@@ -1993,7 +2030,44 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                 new Promise((_, rej) => setTimeout(() => rej(new Error('sitemap probe timeout')), 12000)),
             ]);
         } catch (e) { console.error('[aiHub] ATS sitemap probe:', e.message); sitemapJobs = []; }
-        if (sitemapJobs.length >= 10) {
+
+        // 1b) SKIN → ATS. A career-site skin (Phenom/Happydance/Eightfold/custom) over a real ATS
+        //     embeds its apply/board link on the job pages. Spot it and use the ATS's clean public
+        //     API directly — complete data, full descriptions, ~$0.001 — instead of fighting the
+        //     bot-blocked skin. (careers.ingrammicro.com → Workday: 1 junk result → 120 full jobs.)
+        try {
+            let atsUrl = findEmbeddedAts(pageData.rawHtml || '');
+            if (!atsUrl) {
+                // Read the embedded ATS link from ONE job-detail page. Source the sample URL from
+                // (in order) a sitemap job, a light-scrape job link, or a direct sitemap.xml peek —
+                // the careers listing itself is often bot-blocked, but detail pages usually aren't.
+                let sampleUrl = (sitemapJobs[0] && sitemapJobs[0].job_url)
+                    || (pageData.jobLinks || []).find(u => /\/(?:job|jobs|career|careers|vacanc|vacatur|offre|stelle)\b/i.test(u));
+                // Only pay for the extra sitemap.xml peek when the careers page itself came back
+                // blocked/thin (Cloudflare 403 / SPA shell) — i.e. exactly when we can't read the
+                // embed directly. Rich server-rendered pages are handled by the normal doors.
+                if (!sampleUrl && (pageData.rawHtml || '').length < 2500) {
+                    try {
+                        const sm = await fetchJobPage(`${new URL(scrapeUrl).origin}/sitemap.xml`).catch(() => '');
+                        sampleUrl = (String(sm).match(/<loc>([^<]+)<\/loc>/gi) || [])
+                            .map(l => l.replace(/<\/?loc>/gi, '').trim())
+                            .find(u => /\/(?:job|jobs|career|careers|vacanc|vacatur|offre|stelle)\/[^/]*\d/i.test(u)) || null;
+                    } catch (_) {}
+                }
+                if (sampleUrl) { const h = await fetchJobPage(sampleUrl).catch(() => ''); atsUrl = findEmbeddedAts(h); }
+            }
+            if (atsUrl) {
+                const atsRes = await detectAndFetchAts(atsUrl).catch(() => null);
+                if (atsRes && atsRes.jobs && atsRes.jobs.length >= 5) {
+                    rawJobs = atsRes.jobs.map(j => ({ ...j, _atsApi: true }));
+                    listingData = { company_name: atsRes.companyName || domainName, careers_page_url: scrapeUrl, sub_info: `${rawJobs.length} open role${rawJobs.length === 1 ? '' : 's'}`, jobs: rawJobs };
+                    console.log(`[aiHub] Skin→ATS: ${rawJobs.length} jobs via embedded ${atsUrl} (behind ${domain})`);
+                    resolved = true; alreadyValidated = true;
+                }
+            }
+        } catch (e) { console.error('[aiHub] skin→ATS step:', e.message); }
+
+        if (!resolved && sitemapJobs.length >= 10) {
             const sv = await validateExtraction({ employerName: domainName, domain, context: (pageData.pageText || '').slice(0, 700), jobs: sitemapJobs.slice(0, 40) }).catch(() => ({ ok: true }));
             if (sv.ok) {
                 rawJobs = sitemapJobs.map(j => ({ ...j, _ats: true }));
@@ -2063,6 +2137,19 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
             else listingData = await findJobListings(companyInput, pageData, userProfile);
             rawJobs = (listingData.jobs || []).filter(j => j.title);
             console.log(`[aiHub] Legacy scrape: ${rawJobs.length} jobs for "${listingData.company_name}"`);
+        }
+
+        // 4) GROUNDED fallback — the site beat every scrape AND exposed no usable ATS/sitemap.
+        //    Tap Google's index via Gemini's Google-Search grounding (how the consumer Gemini app
+        //    "reads" these sites), keeping only postings whose own URL is still live (freshness).
+        if (!resolved && rawJobs.filter(j => j && j.title).length === 0) {
+            const grounded = await groundedJobSearch(domainName || domain, scrapeUrl).catch(() => []);
+            if (grounded.length) {
+                rawJobs = grounded.map(j => ({ ...j, _atsApi: false, _grounded: true }));
+                listingData = { company_name: domainName, careers_page_url: scrapeUrl, sub_info: `${rawJobs.length} open role${rawJobs.length === 1 ? '' : 's'}`, jobs: rawJobs };
+                console.log(`[aiHub] Grounded (Google index): ${rawJobs.length} live jobs for "${domain}"`);
+                resolved = true; alreadyValidated = true;
+            }
         }
         }
 
