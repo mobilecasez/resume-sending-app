@@ -50,9 +50,13 @@ function titleFromUrl(url) {
       return slug.slice(0, 120) || 'Role';
     }
     m = url.match(/\/job\/([^/]+)\/\d+\/?$/i) || url.match(/\/job\/([^/?#]+)/i)
-      || url.match(/\/(?:jobs|careers|position|opening|vacancy)\/([^/?#]+)/i);
+      || url.match(/\/(?:jobs|careers|position|opening|vacancy|vacature|vacatures|offre|stelle|empleo)\/([^/?#]+)(?:\/([^/?#]+))?/i);
     if (!m) return 'Role';
-    const slug = decodeURIComponent(m[1]).replace(/[+_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+    // Phenom/Happydance & co. use /jobs/<req-id>/<human-slug>/ — when the FIRST segment is a bare
+    // id (r-116118, req-12345, 12345, a long hash), prefer the human slug that follows it.
+    const idLike = (s) => /^(?:r|req|job|jr|pos|id|ref|vac)?[-_]?\d{2,}$/i.test(s) || /^[a-f0-9]{16,}$/i.test(s);
+    const seg = (m[2] && idLike(m[1])) ? m[2] : m[1];
+    const slug = decodeURIComponent(seg).replace(/[+_-]+/g, ' ').replace(/\s+/g, ' ').trim();
     return slug.slice(0, 120) || 'Role';
   } catch { return 'Role'; }
 }
