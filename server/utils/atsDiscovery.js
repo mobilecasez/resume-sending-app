@@ -252,6 +252,61 @@ const adapters = [
     },
   },
 
+  // BAMBOOHR — {sub}.bamboohr.com/careers/list (JSON); description via /careers/{id}/detail.
+  {
+    name: 'bamboohr',
+    detect: (c) => {
+      const m = c.host.match(/^([a-z0-9-]+)\.bamboohr\.com$/i);
+      if (m) return m[1];
+      const h = String(c.html || '').match(/([a-z0-9-]+)\.bamboohr\.com/i);
+      return h ? h[1] : false;
+    },
+    async fetch(c) {
+      const sub = c.token;
+      const data = await fetchJson(`https://${sub}.bamboohr.com/careers/list`);
+      const list = (data && Array.isArray(data.result)) ? data.result : [];
+      if (!list.length) return [];
+      const company = (data.meta && data.meta.companyName) || nameFromHtmlOrDomain(c.html, c.origin) || sub;
+      const descById = {};
+      await mapLimit(list.slice(0, 120).map((j) => j.id), 10, async (id) => {
+        try { const d = await fetchJson(`https://${sub}.bamboohr.com/careers/${id}/detail`); const jo = (d && d.result && d.result.jobOpening) || (d && d.jobOpening) || {}; descById[id] = jo.description || ''; } catch (_) {}
+      });
+      return list.filter((j) => j.jobOpeningName).map((j) => {
+        const loc = j.atsLocation || j.location || {};
+        const locStr = [loc.city, loc.state, loc.addressCountry || loc.country].filter(Boolean).join(', ');
+        return makeJob({
+          title: j.jobOpeningName, location: locStr || 'Not specified',
+          job_url: j.jobOpeningShareUrl || `https://${sub}.bamboohr.com/careers/${j.id}`,
+          employer_name: company, employmentCode: j.employmentStatusLabel, descHtml: descById[j.id] || '',
+        });
+      });
+    },
+  },
+
+  // PINPOINT — {sub}.pinpointhq.com/postings.json (JSON, descriptions inline; no auth).
+  {
+    name: 'pinpoint',
+    detect: (c) => {
+      if (/^[a-z0-9-]+\.pinpointhq\.com$/i.test(c.host)) return c.origin;
+      const h = String(c.html || '').match(/([a-z0-9-]+\.pinpointhq\.com)/i);
+      return h ? `https://${h[1]}` : false;
+    },
+    async fetch(c) {
+      const origin = c.token;
+      const data = await fetchJson(`${origin}/postings.json`);
+      const list = (data && Array.isArray(data.data)) ? data.data : [];
+      if (!list.length) return [];
+      const company = nameFromHtmlOrDomain(c.html, c.origin) || new URL(origin).hostname.split('.')[0];
+      return list.filter((p) => p.title).map((p) => makeJob({
+        title: p.title,
+        location: (p.location && (p.location.name || (typeof p.location === 'string' ? p.location : ''))) || 'Not specified',
+        job_url: p.url || `${origin}/jobs/${p.id}`,
+        employer_name: company, employmentCode: p.employment_type_text || p.employment_type,
+        descHtml: [p.description, p.key_responsibilities, p.skills_knowledge_expertise].filter(Boolean).join(' '),
+      }));
+    },
+  },
+
   // ORACLE FUSION CLOUD RECRUITING (ORC) — *.fa.*.oraclecloud.com/hcmUI/CandidateExperience/.../sites/{site}.
   // Hard JS SPA that paints from a public REST API. List is paginated (limit 25 + offset); the full
   // jobDescription needs a per-req detail GET (like Workday). The `expand=requisitionList…` param is
