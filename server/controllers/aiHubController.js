@@ -18,6 +18,7 @@ const employerFix = require('../services/employerFix');
 const detailRecipeStore = require('../services/detailRecipe');
 const aiJobExtractor = require('../services/aiJobExtractor');
 const { applyOverride, investigate: investigateEmployer, learnDetailRecipe, validateExtraction } = require('../services/employerDiagnosticAgent');
+const { createFixRequest, recentDeadAttempt } = require('../services/employerFix');
 const { getEventCost, chargeCredits } = require('../services/eventCosts');
 
 // ─── Batch tuning ─────────────────────────────────────────────────────────────
@@ -2514,6 +2515,24 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                 : null,
             pageTextSnippet: (pageData.pageText || '').slice(0, 500),
         });
+
+        // ── Auto-queue failed employers for the self-improving fix loop ───────
+        // 0 jobs for a real employer (job-portals are rejected up-front)? Record it in the
+        // employer_fix_requests queue with status='pending' so a DAILY agent can later
+        // re-investigate, learn a per-domain override, and flip the status to resolved/failed —
+        // no app change, no user action needed. createFixRequest dedupes by domain; recentDeadAttempt
+        // skips a domain the agent already gave up on in the last 7 days so we don't churn.
+        if (streamedJobs.length === 0 && /\./.test(companyInput)) {
+            try {
+                const dead = await recentDeadAttempt(domain).catch(() => null);
+                if (!dead) {
+                    const fixId = await createFixRequest({ userId, employerInput: companyInput, domain, detectedAts: null, jobCount: 0 });
+                    if (fixId) console.log(`[aiHub] Auto-queued failed employer "${domain}" → fix loop (request #${fixId}, status=pending)`);
+                } else {
+                    console.log(`[aiHub] Skipped auto-queue for "${domain}" — agent already gave up recently (status=${dead.status})`);
+                }
+            } catch (e) { console.error('[aiHub] auto-queue fix request:', e.message); }
+        }
 
     } catch (err) {
         console.error('[aiHub] processJobSearch FATAL:', err.message, err.stack?.split('\n').slice(0, 5).join('\n'));
