@@ -252,6 +252,51 @@ const adapters = [
     },
   },
 
+  // ORACLE FUSION CLOUD RECRUITING (ORC) — *.fa.*.oraclecloud.com/hcmUI/CandidateExperience/.../sites/{site}.
+  // Hard JS SPA that paints from a public REST API. List is paginated (limit 25 + offset); the full
+  // jobDescription needs a per-req detail GET (like Workday). The `expand=requisitionList…` param is
+  // REQUIRED or the list comes back empty.
+  {
+    name: 'oraclecloud',
+    detect: (c) => {
+      if (!/\.oraclecloud\.com$/i.test(c.host)) return false;
+      const m = c.pathname.match(/\/CandidateExperience\/[^/]*\/sites\/([^/?#]+)/i) || c.pathname.match(/\/sites\/([^/?#]+)/i);
+      return m ? m[1] : false;
+    },
+    async fetch(c) {
+      const host = c.host, site = c.token;
+      const base = `https://${host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations,flexFieldsFacet.values&finder=findReqs;siteNumber=${site},facetsList=LOCATIONS%3BORGANIZATIONS%3BCATEGORIES,sortBy=POSTING_DATES_DESC`;
+      const PAGE = 25, CAP = 300, reqs = [];
+      let total = Infinity;
+      for (let off = 0; off < Math.min(total, CAP); off += PAGE) {
+        let data; try { data = await fetchJson(`${base},limit=${PAGE},offset=${off}`); } catch { break; }
+        const it = (data && data.items && data.items[0]) || {};
+        if (Number.isFinite(it.TotalJobsCount)) total = it.TotalJobsCount;
+        const list = it.requisitionList || [];
+        if (!list.length) break;
+        reqs.push(...list);
+        if (reqs.length >= total) break;
+      }
+      if (!reqs.length) return [];
+      const company = nameFromHtmlOrDomain(c.html, c.origin) || host.split('.')[0];
+      // Per-req descriptions (capped + concurrency-limited) — the list lacks the body.
+      const descById = {};
+      await mapLimit(reqs.slice(0, 120).map((r) => r.Id), 10, async (id) => {
+        try {
+          const d = await fetchJson(`https://${host}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails?expand=all&onlyData=true&finder=ById;Id=${id},siteNumber=${site}`);
+          const it = (d && d.items && d.items[0]) || {};
+          descById[id] = [it.ExternalDescriptionStr, it.ExternalQualificationsStr].filter(Boolean).join(' ');
+        } catch (_) {}
+      });
+      return reqs.filter((r) => r.Title).map((r) => makeJob({
+        title: r.Title,
+        location: r.PrimaryLocation || (r.secondaryLocations && r.secondaryLocations[0] && r.secondaryLocations[0].Name) || 'Not specified',
+        job_url: `https://${host}/hcmUI/CandidateExperience/en/sites/${site}/job/${r.Id}`,
+        employer_name: company, descHtml: descById[r.Id] || r.ShortDescriptionStr || '',
+      }));
+    },
+  },
+
   // GREENHOUSE — boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true
   {
     name: 'greenhouse',
