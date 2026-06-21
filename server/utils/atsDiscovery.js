@@ -217,6 +217,41 @@ const adapters = [
     },
   },
 
+  // PERSONIO — {sub}.jobs.personio.com/xml  (public XML positions feed; descriptions inline)
+  {
+    name: 'personio',
+    detect: (c) => {
+      const m = c.host.match(/^([a-z0-9-]+)\.jobs\.personio\.(?:com|de)$/i);
+      if (m) return m[1];
+      const h = String(c.html || '').match(/([a-z0-9-]+)\.jobs\.personio\.(?:com|de)/i);
+      return h ? h[1] : false;
+    },
+    async fetch(c) {
+      const sub = c.token;
+      let xml = await fetchText(`https://${sub}.jobs.personio.com/xml`).catch(() => '');
+      if (!/<position>/i.test(xml)) { const de = await fetchText(`https://${sub}.jobs.personio.de/xml`).catch(() => ''); if (/<position>/i.test(de)) xml = de; }
+      const blocks = String(xml).match(/<position>[\s\S]*?<\/position>/gi) || [];
+      const company = nameFromHtmlOrDomain(c.html, c.origin) || sub;
+      const tag = (b, t) => { const m = b.match(new RegExp('<' + t + '>([\\s\\S]*?)<\\/' + t + '>', 'i')); return m ? strip(m[1]) : ''; };
+      return blocks.map((b) => {
+        const id = tag(b, 'id');
+        // The POSITION name is the <name> that sits BEFORE <jobDescriptions> (the inner
+        // jobDescription blocks also have <name> section headers).
+        const head = b.split(/<jobDescriptions>/i)[0];
+        const nm = head.match(/<name>([\s\S]*?)<\/name>/i);
+        const descHtml = (b.match(/<value>([\s\S]*?)<\/value>/gi) || [])
+          .map((v) => v.replace(/<\/?value>/gi, '').replace(/<!\[CDATA\[/g, '').replace(/\]\]>/g, ' ')).join(' ');
+        return makeJob({
+          title: nm ? strip(nm[1]) : '',
+          location: tag(b, 'office') || tag(b, 'department') || 'Not specified',
+          job_url: `https://${sub}.jobs.personio.com/job/${id}`,
+          employer_name: company, employmentCode: tag(b, 'employmentType') || tag(b, 'schedule'),
+          descHtml,
+        });
+      }).filter((j) => j.title);
+    },
+  },
+
   // GREENHOUSE — boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true
   {
     name: 'greenhouse',
