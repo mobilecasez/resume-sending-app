@@ -14,4 +14,7 @@ router.get('/admin/employer-requests/:id/overrides', authenticateAdmin, ctrl.adm
 router.post('/admin/employer-requests/:id/deactivate', authenticateAdmin, ctrl.adminDeactivate);
 router.post('/admin/employer-overrides/:overrideId/activate', authenticateAdmin, ctrl.adminActivateOverride);
 
+// Admin — run the daily employer fix-queue agent on demand (drains pending → investigate → resolve)
+router.post('/admin/fix-queue/run', authenticateAdmin, ctrl.adminRunFixQueue);
+
 module.exports = router;

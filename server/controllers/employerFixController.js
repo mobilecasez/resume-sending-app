@@ -151,7 +151,20 @@ async function adminDeactivate(req, res) {
   }
 }
 
+// ── Admin: run the daily fix-queue agent NOW (on-demand) ─────────────────────
+async function adminRunFixQueue(req, res) {
+  try {
+    const { runFixQueue } = require('../services/fixQueueRunner'); // lazy-require avoids a cycle
+    const result = await runFixQueue({ force: true });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[employerFix] adminRunFixQueue:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+}
+
 module.exports = {
   runInvestigation, submitFixRequest, getRequestStatus,
   adminListRequests, adminInvestigate, adminOverrideHistory, adminActivateOverride, adminDeactivate,
+  adminRunFixQueue,
 };

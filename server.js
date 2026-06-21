@@ -3916,6 +3916,12 @@ const EmailForwardingService = require('./server/services/emailForwardingService
 const emailForwarder = new EmailForwardingService();
 emailForwarder.start();
 
+// Daily employer fix-queue agent — re-investigates employers that returned 0 jobs (auto-queued
+// in employer_fix_requests) and self-heals them with verified per-domain overrides. Persisted
+// last-run timestamp gates it to ~once/day across restarts. Disable with FIX_QUEUE_DISABLED=1.
+try { require('./server/services/fixQueueRunner').startFixQueueScheduler(); }
+catch (e) { console.error('[fixQueue] failed to start:', e.message); }
+
 // Start server
 const HOST = process.env.HOST || '0.0.0.0';
 app.listen(PORT, HOST, () => {

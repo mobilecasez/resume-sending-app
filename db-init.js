@@ -754,6 +754,19 @@ async function runPostgresMigrations(db) {
         `);
         console.log('✅ Migration 015: user_motivation_lines done');
 
+        // ── Migration 016: system_schedule ────────────────────────────────────
+        // Persisted last-run timestamps for background maintenance jobs (e.g. the daily
+        // employer fix-queue agent), so "run once a day" survives frequent server restarts /
+        // deploys instead of resetting a setInterval each boot.
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS system_schedule (
+                job_key TEXT PRIMARY KEY,
+                last_run_at TIMESTAMP,
+                last_summary TEXT
+            );
+        `);
+        console.log('✅ Migration 016: system_schedule done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);
