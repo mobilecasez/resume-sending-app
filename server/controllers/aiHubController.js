@@ -1886,25 +1886,6 @@ async function validateJobUrlLive(url) {
     } catch (_) { return true; }   // network / timeout ≠ proof of gone — keep it
 }
 
-// STRICTER than validateJobUrlLive: confirm a URL is a REAL, reachable posting (a genuine 200, not
-// a "gone" page). The deep crawl uses this to decide whether a grounded URL can be trusted as a
-// DIRECT apply-link. Grounding reconstructs plausible deep-links from a site's URL pattern + a
-// GUESSED id (verified: the same digitec job came back as …-29467 one run, …-54153 the next), and
-// on a bot-walled host a 403 can't disprove the guess — so anything that isn't a clean 200
-// (403 / 404 / error / blocked) is treated as "cannot confirm" and will fall back to the careers page.
-async function confirmDirectUrl(url) {
-    if (!url || !/^https?:\/\//i.test(url)) return false;
-    try {
-        const r = await fetch(url, { method: 'GET', redirect: 'follow',
-            headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36' },
-            signal: AbortSignal.timeout(9000) });
-        if (!r.ok) return false;   // 403/404/5xx → cannot confirm it's a real posting
-        const t = (await r.text()).toLowerCase();
-        if (/no longer (available|accepting|open)|position (has been )?filled|posting (is |has )?closed|job not found|has expired/i.test(t)) return false;
-        return true;               // genuine 200 live posting
-    } catch (_) { return false; }  // network / timeout → cannot confirm
-}
-
 // How the consumer Gemini app "reads" a hostile site: ask Gemini WITH Google Search to
 // enumerate the employer's current openings from Google's index, parse them, then keep only
 // the ones whose own URL is still live. Last-resort fallback (everything else blocked).
@@ -1962,15 +1943,18 @@ async function groundedDeepCrawl(employerName, careersUrl) {
         if (seen.has(key)) return false; seen.add(key); return true;
     });
 
-    // Resolve URLs SAFELY. Trust a grounded link as a DIRECT apply-URL ONLY when it returns a
-    // genuine 200 (confirmDirectUrl) — never on a 403/blocked/errored host, because grounding
-    // fabricates plausible deep-links there (same job, drifting ids) that we can't disprove.
-    // Anything unconfirmed → fall back to the real careers page (listing_page_only) so the click
-    // always lands somewhere real, while we still keep the rich title/skills/responsibilities.
+    // Resolve URLs. Grounding's deep-links are predominantly REAL — verified by hand against
+    // digitec: /joboffer/4246, /4225, /4176 all load the right posting. We CANNOT confirm them from
+    // our server because a bot-walled host returns the SAME 403 for a real id AND a fake one
+    // (verified: /joboffer/4246 and /joboffer/99999999 both 403), so requiring a 200 would wrongly
+    // DISCARD real working links. Rule: keep the grounded URL; drop ONLY on positive proof it's gone
+    // (404/410 / "no longer available"). A null URL (grounding found no link at all) falls back to
+    // the careers page so the click still lands somewhere real.
     const resolved = await Promise.all(deduped.map(async (j) => {
         let url = (typeof j.job_url === 'string' && /^https?:\/\//i.test(j.job_url)) ? j.job_url : null;
         let listingOnly = false;
-        if (!url || !(await confirmDirectUrl(url))) { url = careersFallback; listingOnly = true; }
+        if (!url) { url = careersFallback; listingOnly = true; }
+        else if (!(await validateJobUrlLive(url))) { url = careersFallback; listingOnly = true; }
         return {
             title: j.title, location: j.location || 'Not specified',
             job_url: url, listing_page_only: listingOnly,
