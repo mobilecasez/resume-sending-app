@@ -1982,11 +1982,11 @@ async function resolveJobUrlViaWeb(title, employerName, careersDomain, postingSe
     if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) {   // optional reliability upgrade
         return pick(await cseSearchLinks(`${title} ${employerName} site:${careersDomain}`)) || pick(await cseSearchLinks(`${title} ${employerName}`)) || null;
     }
-    // Gemini grounding citations (default, free). Two phrasings; resolve any redirect chunks, keep
-    // only an employer-domain posting (no fabricated ids — these are real cited URLs).
+    // Gemini grounding citations (default, free). ONE focused query (keeps the per-employer Gemini
+    // call volume low so we don't trip the rate limit); resolve any redirect chunks, keep only an
+    // employer-domain posting (no fabricated ids — these are real cited URLs).
     const queries = [
         `What is the exact direct posting URL on ${careersDomain} for the job "${title}" at "${employerName}"? Search Google (site:${careersDomain}) and return only the URL.`,
-        `"${title}" ${employerName} job site:${careersDomain}`,
     ];
     for (const q of queries) {
         const resolved = [];
@@ -2088,8 +2088,8 @@ async function groundedDeepCrawl(employerName, careersUrl) {
     const resolveUrls = async () => {
         const need = deduped.filter(j => !isSpecificPosting(j.job_url)).slice(0, ENRICH_CAP);
         if (!need.length || !careersDomain) return;
-        const deadline = Date.now() + ENRICH_MS; let i = 0, got = 0;
-        await Promise.all(Array.from({ length: 5 }, async () => {   // Gemini grounding handles parallelism
+        const deadline = Date.now() + parseInt(process.env.DEEP_CRAWL_URL_MS || '35000', 10); let i = 0, got = 0;
+        await Promise.all(Array.from({ length: 4 }, async () => {   // gentle concurrency so grounding isn't rate-limited
             while (i < need.length && Date.now() < deadline) {
                 const j = need[i++];
                 const u = await resolveJobUrlViaWeb(j.title, employerName, careersDomain, postingSeg);
