@@ -1162,11 +1162,14 @@ async function fetchJobDetailsBatch(jobBatch, careersUrl, candidateProfile, list
         }));
     }
 
-    // ── ATS API fast path ────────────────────────────────────────────────────
-    // Jobs from an ATS public API (atsDiscovery) are already fully structured —
-    // return them directly, NO fetch and NO AI. employer_name flows through so the
-    // company name is correct (fixes the "N/A" cards).
-    if (jobBatch.length && jobBatch.every(j => j._atsApi)) {
+    // ── ATS API / grounded fast path ─────────────────────────────────────────
+    // Jobs from an ATS public API (atsDiscovery) OR the grounded deep crawl are already fully
+    // structured (title/skills/responsibilities/work_mode from the API or per-job grounding) and
+    // their detail pages are unreachable (the deep crawl only fires on bot-walled sites that 403
+    // every fetch). Return them directly — NO Playwright, NO AI, NO 403-retry storm. This is what
+    // keeps the blocked-site path fast instead of scraping N dead pages. employer_name flows
+    // through so the company name is correct (fixes the "N/A" cards).
+    if (jobBatch.length && jobBatch.every(j => j._atsApi || j._grounded)) {
         return jobBatch.map((j) => ({
             title: j.title, location: j.location || '',
             experience: j.experience || null, salary: j.salary || null, job_type: j.job_type || 'Full-time',
@@ -1924,22 +1927,29 @@ function normWorkMode(s) {
 // proven-dead URL falls back to the real careers page — a click never dies on a guessed link.
 async function groundedDeepCrawl(employerName, careersUrl) {
     const prompt = `You are a precise job-extraction agent with Google Search. Find ALL current open job postings for "${employerName}" (careers site: ${careersUrl}). Enumerate every distinct current opening you can find in Google's index and extract full detail for each. Return ONLY JSON, no prose: {"audit":{"total_found":number,"confidence":"high|medium|low"},"jobs":[{"title":string,"location":string,"employment_type":string,"work_mode":"Onsite"|"Hybrid"|"Remote"|"Unknown","salary":string,"skills":[string],"responsibilities":[string],"job_url":string|null}]}. RULES: (1) job_url MUST be a real posting URL you actually found in the search results — NEVER fabricate or guess an id; if you don't have the exact URL, use null. (2) Strongly PREFER the employer's OWN careers domain for job_url over third-party job boards. (3) Fill skills + responsibilities (3-6 each) from the indexed posting content. (4) Real data only — never invent postings.`;
-    // PHASE 1 — enumerate. Grounding is non-deterministic: it returns a valid-but-EMPTY {jobs:[]}
-    // roughly half the time even for a site it CAN read (measured on digitec: 24 / 0 / 17 / 0 across
-    // 4 runs). aiGenerateWithRetry only retries on an EXCEPTION, not on an empty array — so retry the
-    // whole enumeration until we actually get jobs. ~50% hit rate → 4 tries ≈ 94% success.
+    // PHASE 1 — enumerate. Grounding returns a valid-but-EMPTY {jobs:[]} ~half the time even for a
+    // site it CAN read (measured on digitec: 24/0/17/0), and the count varies run-to-run. Fire TWO
+    // enumerations in PARALLEL and UNION them by title: halves the empty-draw chance per round AND
+    // improves completeness (distinct jobs from both draws). Up to 2 rounds (≤4 calls, only 2 in
+    // flight) ≈ 94% success WITHOUT the slow sequential-retry latency.
     let rawJobs = [];
-    for (let attempt = 1; attempt <= 4 && !rawJobs.length; attempt++) {
-        try {
-            const model = geminiModel(true, 'gemini-2.5-flash');   // Google Search grounding
-            const res = await aiGenerateWithRetry(model, prompt, 2);
-            const obj = parseJsonObject(res.response.text().trim()) || {};
-            rawJobs = (Array.isArray(obj.jobs) ? obj.jobs : []).filter(j => j && j.title);
-            if (obj.audit) console.log(`[aiHub] Deep-crawl audit "${employerName}" (try ${attempt}): ${JSON.stringify(obj.audit)} → ${rawJobs.length} jobs`);
-            if (!rawJobs.length) console.log(`[aiHub] Deep-crawl enumerate empty (try ${attempt}/4) — retrying`);
-        } catch (e) { console.error(`[aiHub] groundedDeepCrawl enumerate (try ${attempt}):`, e.message); }
+    for (let round = 1; round <= 2 && !rawJobs.length; round++) {
+        const batches = await Promise.all([0, 1].map(async () => {
+            try {
+                const model = geminiModel(true, 'gemini-2.5-flash');   // Google Search grounding
+                const res = await aiGenerateWithRetry(model, prompt, 1);
+                const obj = parseJsonObject(res.response.text().trim()) || {};
+                return (Array.isArray(obj.jobs) ? obj.jobs : []).filter(j => j && j.title);
+            } catch (e) { console.error('[aiHub] groundedDeepCrawl enumerate:', e.message); return []; }
+        }));
+        const seenT = new Set();
+        for (const arr of batches) for (const j of arr) {
+            const k = String(j.title).toLowerCase().replace(/\s+/g, ' ').trim();
+            if (!seenT.has(k)) { seenT.add(k); rawJobs.push(j); }
+        }
+        console.log(`[aiHub] Deep-crawl enumerate round ${round} for "${employerName}": ${batches.map(b => b.length).join('+')} → ${rawJobs.length} distinct`);
     }
-    if (!rawJobs.length) { console.log(`[aiHub] Deep-crawl: still empty after retries for "${employerName}"`); return []; }
+    if (!rawJobs.length) { console.log(`[aiHub] Deep-crawl: still empty after parallel rounds for "${employerName}"`); return []; }
 
     const careersFallback = careersUrl || '';
     // Dedup by normalized title — employers often surface under several brand domains (digitec/galaxus).
@@ -1957,26 +1967,32 @@ async function groundedDeepCrawl(employerName, careersUrl) {
     // there, useless as an apply URL); Phase-1's real posting URL is kept. Capped + concurrency-
     // limited; fires only on the rare hard-blocked employer, so cost stays bounded.
     const ENRICH_CAP = parseInt(process.env.DEEP_CRAWL_ENRICH_CAP || '30', 10);
+    const ENRICH_MS = parseInt(process.env.DEEP_CRAWL_ENRICH_MS || '22000', 10);   // hard time budget
     const isBare = (j) => !((Array.isArray(j.skills) && j.skills.length) || (Array.isArray(j.responsibilities) && j.responsibilities.length));
     const toEnrich = deduped.filter(isBare).slice(0, ENRICH_CAP);
     if (toEnrich.length) {
-        let i = 0, filled = 0;
-        await Promise.all(Array.from({ length: Math.min(6, toEnrich.length) }, async () => {
-            while (i < toEnrich.length) {
+        // TIME-BOXED: per-job grounded calls are ~5-15s each; left unbounded they hang a search for
+        // minutes. We enrich as many bare jobs as fit in ENRICH_MS (concurrency 8), then return —
+        // remaining jobs stay with their Phase-1 detail (often still usable) rather than blocking.
+        const deadline = Date.now() + ENRICH_MS;
+        let i = 0, filled = 0, done = 0;
+        await Promise.all(Array.from({ length: Math.min(8, toEnrich.length) }, async () => {
+            while (i < toEnrich.length && Date.now() < deadline) {
                 const j = toEnrich[i++];
                 try {
                     const em = geminiModel(true, 'gemini-2.5-flash');
                     const p = `Using Google Search, find the full job posting for "${j.title}" at "${employerName}"${j.location ? ` (${j.location})` : ''}. Return ONLY JSON: {"responsibilities":[3-6 short bullet strings],"skills":[strings],"work_mode":"Onsite"|"Hybrid"|"Remote"|"Unknown","employment_type":string}. Use real data from the search results only — do not invent. If you genuinely cannot find the posting, return empty arrays.`;
-                    const r = await aiGenerateWithRetry(em, p, 2);
+                    const r = await aiGenerateWithRetry(em, p, 1);
                     const d = parseJsonObject(r.response.text().trim()) || {};
                     if (Array.isArray(d.responsibilities) && d.responsibilities.length) { j.responsibilities = d.responsibilities; filled++; }
                     if (Array.isArray(d.skills) && d.skills.length) j.skills = d.skills;
                     if (d.work_mode && !j.work_mode) j.work_mode = d.work_mode;
                     if (d.employment_type && !j.employment_type) j.employment_type = d.employment_type;
                 } catch (_) { /* skip this one — leave it bare */ }
+                done++;
             }
         }));
-        console.log(`[aiHub] Deep-crawl enrichment: filled ${filled}/${toEnrich.length} bare jobs for "${employerName}"`);
+        console.log(`[aiHub] Deep-crawl enrichment: filled ${filled}, processed ${done}/${toEnrich.length} within ${ENRICH_MS}ms for "${employerName}"`);
     }
 
     // Resolve URLs. Grounding's deep-links are predominantly REAL — verified by hand against
@@ -2001,6 +2017,23 @@ async function groundedDeepCrawl(employerName, careersUrl) {
             responsibilities: Array.isArray(j.responsibilities) ? j.responsibilities.slice(0, 10) : [],
         };
     }));
+    // Guard the DOWNSTREAM url-dedup: grounding sometimes returns the careers/listing page (or one
+    // shared url) as job_url for several distinct roles. Those aren't per-job deep-links — if left
+    // as "direct" they'd dedup by url (shared → collapse many roles into ONE). Mark any careers-page
+    // or shared url as listing_page_only so dedup keys on the (distinct) title instead.
+    const careersNorm = (careersFallback || '').replace(/\/+$/, '').toLowerCase();
+    const urlFreq = {};
+    resolved.forEach(j => { if (!j.listing_page_only) urlFreq[j.job_url] = (urlFreq[j.job_url] || 0) + 1; });
+    resolved.forEach(j => {
+        const norm = (j.job_url || '').replace(/\/+$/, '').toLowerCase();
+        if (!j.listing_page_only && (norm === careersNorm || urlFreq[j.job_url] > 1)) { j.job_url = careersFallback; j.listing_page_only = true; }
+    });
+    // jobs.job_url is UNIQUE in the DB (upsertJob: ON CONFLICT job_url DO UPDATE), so every
+    // listing-page-only job sharing the careers URL would collapse into ONE row. Give each a unique
+    // #role-N fragment: all persist distinctly, dedup still keys on title (#role-N is treated as
+    // synthetic), and the apply link still opens the careers page (browsers drop the fragment).
+    let _roleN = 0;
+    resolved.forEach(j => { if (j.listing_page_only) j.job_url = `${careersFallback}#role-${++_roleN}`; });
     const direct = resolved.filter(j => !j.listing_page_only).length;
     console.log(`[aiHub] Deep-crawl: ${resolved.length} jobs for "${employerName}" (${direct} with direct URL, ${resolved.length - direct} → careers page)`);
     return resolved;
