@@ -1177,6 +1177,7 @@ async function fetchJobDetailsBatch(jobBatch, careersUrl, candidateProfile, list
             skills: Array.isArray(j.skills) ? j.skills : [],
             responsibilities: Array.isArray(j.responsibilities) ? j.responsibilities : [],
             job_url: j.job_url, employer_name: j.employer_name || null,
+            _grounded: j._grounded || false,                         // keep flag so the QG repair skips these (already enriched)
             contacts: Array.isArray(j.contacts) ? j.contacts : [],   // pass through AI-extracted recruiter contacts (M9)
         }));
     }
@@ -1793,7 +1794,7 @@ function _qgMergeJobFields(t, s) {
 function _qgNeedsRepair(j) {
     if (!j) return false;
     const url = j.job_url;
-    if (!url || j.listing_page_only || /#role-\d+$/.test(url)) return false;
+    if (!url || j.listing_page_only || j._grounded || /#role-\d+$/.test(url)) return false;  // grounded jobs are already deep-crawl-enriched + their pages 403
     return _qgEmptyArr(j.responsibilities) && _qgEmptyArr(j.skills);
 }
 
@@ -1995,47 +1996,44 @@ async function groundedDeepCrawl(employerName, careersUrl) {
         console.log(`[aiHub] Deep-crawl enrichment: filled ${filled}, processed ${done}/${toEnrich.length} within ${ENRICH_MS}ms for "${employerName}"`);
     }
 
-    // Resolve URLs. Grounding's deep-links are predominantly REAL — verified by hand against
-    // digitec: /joboffer/4246, /4225, /4176 all load the right posting. We CANNOT confirm them from
-    // our server because a bot-walled host returns the SAME 403 for a real id AND a fake one
-    // (verified: /joboffer/4246 and /joboffer/99999999 both 403), so requiring a 200 would wrongly
-    // DISCARD real working links. Rule: keep the grounded URL; drop ONLY on positive proof it's gone
-    // (404/410 / "no longer available"). A null URL (grounding found no link at all) falls back to
-    // the careers page so the click still lands somewhere real.
-    const resolved = await Promise.all(deduped.map(async (j) => {
-        let url = (typeof j.job_url === 'string' && /^https?:\/\//i.test(j.job_url)) ? j.job_url : null;
-        let listingOnly = false;
-        if (!url) { url = careersFallback; listingOnly = true; }
-        else if (!(await validateJobUrlLive(url))) { url = careersFallback; listingOnly = true; }
+    // URL strategy for a BOT-WALLED site. Grounding CANNOT give a reliable per-job apply URL here:
+    // it returns null ~half the time and otherwise FABRICATES the numeric id, which drifts every run
+    // (verified: the same job came back …-2105, …-45300, …-62921; enumeration often returns null).
+    // We also can't verify (the host 403s a real id and a fake id identically). So:
+    //   • if grounding returned a real-looking SPECIFIC posting URL (deeper path than the careers
+    //     page, not a vertexai redirect) keep it — some of these genuinely work;
+    //   • otherwise give each job a per-job GOOGLE deep-link (q = title + employer + site:host). It
+    //     reliably lands on the real posting (that's how grounding found the job), is UNIQUE per job
+    //     (so the UNIQUE job_url constraint never collapses them — no more #role-N hack), and never
+    //     404s. Flip USE_GROUNDED_URL=1 to instead trust grounding's raw deep-links.
+    const careersHost = (() => { try { return new URL(careersFallback).hostname; } catch { return ''; } })();
+    const careersPath = (() => { try { return new URL(careersFallback).pathname.replace(/\/+$/, ''); } catch { return ''; } })();
+    const siteFilter = careersHost.replace(/^www\./, '');   // site:digitec.ch matches www + any subdomain
+    const searchLink = (title) => `https://www.google.com/search?q=${encodeURIComponent(`${title} ${employerName}${siteFilter ? ` site:${siteFilter}` : ''}`)}`;
+    const isSpecificPosting = (u) => {
+        if (!u || !/^https?:\/\//i.test(u) || /vertexaisearch|grounding-api-redirect/i.test(u)) return false;
+        try { const r = new URL(u); return !(r.hostname === careersHost && r.pathname.replace(/\/+$/, '') === careersPath); }
+        catch { return false; }
+    };
+    // SEARCH_LINK_ONLY=1 forces every job to the reliable Google deep-link (ignores grounding's
+    // unverifiable raw urls). Default: keep a real specific posting when grounding gives one.
+    const forceSearch = process.env.DEEP_CRAWL_SEARCH_LINK_ONLY === '1';
+    const resolved = deduped.map((j) => {
+        const raw = (typeof j.job_url === 'string') ? j.job_url.trim() : '';
+        const useRaw = !forceSearch && isSpecificPosting(raw);
+        const url = useRaw ? raw : searchLink(j.title);
         return {
             title: j.title, location: j.location || 'Not specified',
-            job_url: url, listing_page_only: listingOnly,
+            job_url: url, listing_page_only: false, _searchLink: !useRaw,
             work_mode: normWorkMode(j.work_mode),
             job_type: j.employment_type || 'Full-time',
             salary: (j.salary && !/^n\/?a$|not\s/i.test(String(j.salary))) ? j.salary : null,
             skills: Array.isArray(j.skills) ? j.skills.slice(0, 12) : [],
             responsibilities: Array.isArray(j.responsibilities) ? j.responsibilities.slice(0, 10) : [],
         };
-    }));
-    // Guard the DOWNSTREAM url-dedup: grounding sometimes returns the careers/listing page (or one
-    // shared url) as job_url for several distinct roles. Those aren't per-job deep-links — if left
-    // as "direct" they'd dedup by url (shared → collapse many roles into ONE). Mark any careers-page
-    // or shared url as listing_page_only so dedup keys on the (distinct) title instead.
-    const careersNorm = (careersFallback || '').replace(/\/+$/, '').toLowerCase();
-    const urlFreq = {};
-    resolved.forEach(j => { if (!j.listing_page_only) urlFreq[j.job_url] = (urlFreq[j.job_url] || 0) + 1; });
-    resolved.forEach(j => {
-        const norm = (j.job_url || '').replace(/\/+$/, '').toLowerCase();
-        if (!j.listing_page_only && (norm === careersNorm || urlFreq[j.job_url] > 1)) { j.job_url = careersFallback; j.listing_page_only = true; }
     });
-    // jobs.job_url is UNIQUE in the DB (upsertJob: ON CONFLICT job_url DO UPDATE), so every
-    // listing-page-only job sharing the careers URL would collapse into ONE row. Give each a unique
-    // #role-N fragment: all persist distinctly, dedup still keys on title (#role-N is treated as
-    // synthetic), and the apply link still opens the careers page (browsers drop the fragment).
-    let _roleN = 0;
-    resolved.forEach(j => { if (j.listing_page_only) j.job_url = `${careersFallback}#role-${++_roleN}`; });
-    const direct = resolved.filter(j => !j.listing_page_only).length;
-    console.log(`[aiHub] Deep-crawl: ${resolved.length} jobs for "${employerName}" (${direct} with direct URL, ${resolved.length - direct} → careers page)`);
+    const directN = resolved.filter(j => !j._searchLink).length;
+    console.log(`[aiHub] Deep-crawl: ${resolved.length} jobs for "${employerName}" (${directN} kept grounding URL, ${resolved.length - directN} → per-job Google deep-link)`);
     return resolved;
 }
 
