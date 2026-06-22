@@ -767,6 +767,25 @@ async function runPostgresMigrations(db) {
         `);
         console.log('✅ Migration 016: system_schedule done');
 
+        // ── Migration 017: app_redirect_clicks ────────────────────────────────
+        // Tracks every hit on the smart app-store redirect (/download, /get, /app) — platform,
+        // UA, referrer, UTM params, IP — so we can measure ad clicks / install intent.
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS app_redirect_clicks (
+                id SERIAL PRIMARY KEY,
+                platform TEXT,                 -- ios | android | desktop
+                user_agent TEXT,
+                referer TEXT,
+                utm_source TEXT,
+                utm_medium TEXT,
+                utm_campaign TEXT,
+                ip TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        await db.query(`CREATE INDEX IF NOT EXISTS idx_app_redirect_clicks_created ON app_redirect_clicks (created_at);`);
+        console.log('✅ Migration 017: app_redirect_clicks done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

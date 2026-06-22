@@ -720,6 +720,48 @@ app.get('/favicon.ico', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'favicon.ico'));
 });
 
+// ── Smart app-store redirect (for ads / "Download" links) ────────────────────
+// cvapplyr.com/download (also /get and /app) → detects the device from the User-Agent and 302s to
+// the right store; desktop → website. Every hit is logged (platform, UA, referrer, UTM, IP) so we
+// can measure ad clicks. Server-side (not client JS) so it's instant, JS-free, and reliably tracked.
+const APP_LINKS = {
+    ios: 'https://apps.apple.com/in/app/cvapplyr/id6762126502',
+    android: 'https://play.google.com/store/apps/details?id=com.cvapplyr.mobile',
+    web: 'https://cvapplyr.com',
+};
+app.get(['/download', '/get', '/app'], async (req, res) => {
+    const ua = req.get('user-agent') || '';
+    const platform = (/iPad|iPhone|iPod/i.test(ua) && !/Windows Phone/i.test(ua)) ? 'ios'
+        : /Android/i.test(ua) ? 'android' : 'desktop';
+    let dest = platform === 'ios' ? APP_LINKS.ios : platform === 'android' ? APP_LINKS.android : APP_LINKS.web;
+    // Forward Play Store install-referrer for Google Play Console attribution.
+    if (platform === 'android') {
+        const ref = `utm_source=${req.query.utm_source || 'cvapplyr'}&utm_medium=${req.query.utm_medium || 'redirect'}&utm_campaign=${req.query.utm_campaign || 'app_redirect'}`;
+        dest += `&referrer=${encodeURIComponent(ref)}`;
+    }
+    try {
+        await dbConfig.run(
+            `INSERT INTO app_redirect_clicks (platform, user_agent, referer, utm_source, utm_medium, utm_campaign, ip)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [platform, ua.slice(0, 500), (req.get('referer') || '').slice(0, 500),
+             req.query.utm_source || null, req.query.utm_medium || null, req.query.utm_campaign || null,
+             String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim()]
+        );
+    } catch (e) { console.error('[app-redirect] log failed:', e.message); }
+    res.redirect(302, dest);
+});
+// Admin: redirect/click stats — total, by platform, recent windows, by-campaign.
+app.get('/api/admin/app-clicks', authenticateAdmin, async (req, res) => {
+    try {
+        const total = await dbConfig.get('SELECT count(*)::int AS n FROM app_redirect_clicks');
+        const byPlatform = await dbConfig.query('SELECT platform, count(*)::int AS n FROM app_redirect_clicks GROUP BY platform ORDER BY n DESC');
+        const last7 = await dbConfig.get("SELECT count(*)::int AS n FROM app_redirect_clicks WHERE created_at > NOW() - INTERVAL '7 days'");
+        const last30 = await dbConfig.get("SELECT count(*)::int AS n FROM app_redirect_clicks WHERE created_at > NOW() - INTERVAL '30 days'");
+        const byCampaign = await dbConfig.query("SELECT COALESCE(utm_campaign,'(none)') AS campaign, count(*)::int AS n FROM app_redirect_clicks GROUP BY 1 ORDER BY n DESC LIMIT 20");
+        res.json({ total: total?.n || 0, last7days: last7?.n || 0, last30days: last30?.n || 0, byPlatform: byPlatform || [], byCampaign: byCampaign || [] });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Root route - serve landing page
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
