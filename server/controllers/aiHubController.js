@@ -1893,7 +1893,7 @@ async function groundedJobSearch(employerName, careersUrl) {
     let jobs = [];
     try {
         const model = geminiModel(true, 'gemini-2.5-flash');   // Google Search grounding
-        const prompt = `Using Google Search, list the CURRENT open job postings at "${employerName}" (careers site: ${careersUrl}). Aim for completeness — include every distinct current opening you can find. Return ONLY a JSON array; each item exactly: {"title": string, "location": string, "job_url": the direct posting URL string, "responsibilities": array of 3-6 short bullet strings, "skills": array of strings}. Use real data from the search results only — do NOT invent postings. If you cannot find a direct posting URL for an item, omit that item.`;
+        const prompt = `Using Google Search, list the CURRENT open job postings at "${employerName}" (careers site: ${careersUrl}). Aim for completeness — include every distinct current opening you can find. Return ONLY a JSON array; each item exactly: {"title": string, "location": string, "job_url": the direct posting URL string, "responsibilities": array of 3-6 short bullet strings, "skills": array of strings}. STRONGLY PREFER the employer's OWN careers domain (e.g. ${careersUrl}) for job_url; use a third-party job-board URL only when no posting exists on their own site. Always fill responsibilities and skills from the posting's content. Use real data from the search results only — do NOT invent postings. If you cannot find a direct posting URL for an item, omit that item.`;
         const res = await aiGenerateWithRetry(model, prompt, 3);
         const parsed = parseJsonArray(res.response.text().trim());
         jobs = (Array.isArray(parsed) ? parsed : []).filter(j => j && j.title && j.job_url);
@@ -2143,13 +2143,28 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         // 4) GROUNDED fallback — the site beat every scrape AND exposed no usable ATS/sitemap.
         //    Tap Google's index via Gemini's Google-Search grounding (how the consumer Gemini app
         //    "reads" these sites), keeping only postings whose own URL is still live (freshness).
-        if (!resolved && rawJobs.filter(j => j && j.title).length === 0) {
+        //    Trigger on NO USABLE RESULT, not just zero titles: a hard-blocked careers page
+        //    (Akamai/Cloudflare that 403s our fetch AND kills our headless browser — e.g.
+        //    digitec.ch) renders no content, yet findJobListings can still hallucinate a few thin
+        //    title-only cards with no description/company. Those must NOT suppress the real
+        //    fallback. pageBlocked = essentially nothing came back from the page.
+        const titledJobs = rawJobs.filter(j => j && j.title);
+        const pageBlocked = (pageData.text || '').trim().length < 200 && (pageData.rawHtml || '').length < 1500;
+        if (!resolved && (titledJobs.length === 0 || pageBlocked)) {
             const grounded = await groundedJobSearch(domainName || domain, scrapeUrl).catch(() => []);
             if (grounded.length) {
-                rawJobs = grounded.map(j => ({ ...j, _atsApi: false, _grounded: true }));
+                // Stamp employer_name so the company title is never blank, and keep grounding's
+                // responsibilities/skills so cards aren't bare.
+                rawJobs = grounded.map(j => ({ ...j, _atsApi: false, _grounded: true, employer_name: j.employer_name || domainName }));
                 listingData = { company_name: domainName, careers_page_url: scrapeUrl, sub_info: `${rawJobs.length} open role${rawJobs.length === 1 ? '' : 's'}`, jobs: rawJobs };
-                console.log(`[aiHub] Grounded (Google index): ${rawJobs.length} live jobs for "${domain}"`);
+                console.log(`[aiHub] Grounded (Google index): ${rawJobs.length} live jobs for "${domain}"${pageBlocked && titledJobs.length ? ` (page blocked — dropped ${titledJobs.length} hallucinated card(s))` : ''}`);
                 resolved = true; alreadyValidated = true;
+            } else if (pageBlocked && titledJobs.length) {
+                // Blocked page + grounding found nothing real → the scrape "jobs" are hallucinated.
+                // Drop them: an honest "no jobs" (which auto-queues the fix loop) beats fake cards
+                // with no description or company.
+                console.log(`[aiHub] Page blocked + grounding empty for "${domain}" — dropped ${titledJobs.length} unreliable scrape job(s)`);
+                rawJobs = [];
             }
         }
         }
