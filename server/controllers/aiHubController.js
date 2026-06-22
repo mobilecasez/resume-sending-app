@@ -1923,17 +1923,23 @@ function normWorkMode(s) {
 // fetch to disprove them. So the prompt forbids fabricated URLs (null if unknown), and any null /
 // proven-dead URL falls back to the real careers page — a click never dies on a guessed link.
 async function groundedDeepCrawl(employerName, careersUrl) {
+    const prompt = `You are a precise job-extraction agent with Google Search. Find ALL current open job postings for "${employerName}" (careers site: ${careersUrl}). Enumerate every distinct current opening you can find in Google's index and extract full detail for each. Return ONLY JSON, no prose: {"audit":{"total_found":number,"confidence":"high|medium|low"},"jobs":[{"title":string,"location":string,"employment_type":string,"work_mode":"Onsite"|"Hybrid"|"Remote"|"Unknown","salary":string,"skills":[string],"responsibilities":[string],"job_url":string|null}]}. RULES: (1) job_url MUST be a real posting URL you actually found in the search results — NEVER fabricate or guess an id; if you don't have the exact URL, use null. (2) Strongly PREFER the employer's OWN careers domain for job_url over third-party job boards. (3) Fill skills + responsibilities (3-6 each) from the indexed posting content. (4) Real data only — never invent postings.`;
+    // PHASE 1 — enumerate. Grounding is non-deterministic: it returns a valid-but-EMPTY {jobs:[]}
+    // roughly half the time even for a site it CAN read (measured on digitec: 24 / 0 / 17 / 0 across
+    // 4 runs). aiGenerateWithRetry only retries on an EXCEPTION, not on an empty array — so retry the
+    // whole enumeration until we actually get jobs. ~50% hit rate → 4 tries ≈ 94% success.
     let rawJobs = [];
-    try {
-        const model = geminiModel(true, 'gemini-2.5-flash');   // Google Search grounding
-        const prompt = `You are a precise job-extraction agent with Google Search. Find ALL current open job postings for "${employerName}" (careers site: ${careersUrl}). Enumerate every distinct current opening you can find in Google's index and extract full detail for each. Return ONLY JSON, no prose: {"audit":{"total_found":number,"confidence":"high|medium|low"},"jobs":[{"title":string,"location":string,"employment_type":string,"work_mode":"Onsite"|"Hybrid"|"Remote"|"Unknown","salary":string,"skills":[string],"responsibilities":[string],"job_url":string|null}]}. RULES: (1) job_url MUST be a real posting URL you actually found in the search results — NEVER fabricate or guess an id; if you don't have the exact URL, use null. (2) Strongly PREFER the employer's OWN careers domain for job_url over third-party job boards. (3) Fill skills + responsibilities (3-6 each) from the indexed posting content. (4) Real data only — never invent postings.`;
-        const res = await aiGenerateWithRetry(model, prompt, 3);
-        const obj = parseJsonObject(res.response.text().trim()) || {};
-        rawJobs = Array.isArray(obj.jobs) ? obj.jobs : [];
-        if (obj.audit) console.log(`[aiHub] Deep-crawl audit for "${employerName}": ${JSON.stringify(obj.audit)}`);
-    } catch (e) { console.error('[aiHub] groundedDeepCrawl:', e.message); return []; }
-    rawJobs = rawJobs.filter(j => j && j.title);
-    if (!rawJobs.length) return [];
+    for (let attempt = 1; attempt <= 4 && !rawJobs.length; attempt++) {
+        try {
+            const model = geminiModel(true, 'gemini-2.5-flash');   // Google Search grounding
+            const res = await aiGenerateWithRetry(model, prompt, 2);
+            const obj = parseJsonObject(res.response.text().trim()) || {};
+            rawJobs = (Array.isArray(obj.jobs) ? obj.jobs : []).filter(j => j && j.title);
+            if (obj.audit) console.log(`[aiHub] Deep-crawl audit "${employerName}" (try ${attempt}): ${JSON.stringify(obj.audit)} → ${rawJobs.length} jobs`);
+            if (!rawJobs.length) console.log(`[aiHub] Deep-crawl enumerate empty (try ${attempt}/4) — retrying`);
+        } catch (e) { console.error(`[aiHub] groundedDeepCrawl enumerate (try ${attempt}):`, e.message); }
+    }
+    if (!rawJobs.length) { console.log(`[aiHub] Deep-crawl: still empty after retries for "${employerName}"`); return []; }
 
     const careersFallback = careersUrl || '';
     // Dedup by normalized title — employers often surface under several brand domains (digitec/galaxus).
