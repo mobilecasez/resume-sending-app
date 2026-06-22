@@ -1939,30 +1939,56 @@ async function cseSearchLinks(query) {
         return (j.items || []).map((it) => it.link).filter(Boolean);
     } catch (_) { return []; }
 }
-async function ddgSearchLinks(query) {
+// GEMINI-ONLY: pull the REAL source URLs Gemini CITED (groundingMetadata.groundingChunks). Google's
+// index bypasses a 403 IP-block, and the chunk URIs are the genuine indexed pages — NOT the id the
+// LLM fabricates in its JSON text. Works from our datacenter (the Gemini API isn't IP-blocked like
+// DDG), free, no key. Verified live on digitec: a chunk returned galaxus.ch/de/joboffer/4268 (real).
+async function geminiGroundChunks(prompt) {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) return [];
     try {
-        const r = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query), {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36', 'Accept': 'text/html' },
-            signal: AbortSignal.timeout(10000) });
-        const html = await r.text();
-        return [...html.matchAll(/<a[^>]+class="result__a"[^>]+href="([^"]+)"/g)].map((m) => {
-            try { let h = m[1]; if (h.startsWith('//')) h = 'https:' + h; const u = new URL(h); return u.searchParams.get('uddg') ? decodeURIComponent(u.searchParams.get('uddg')) : h; }
-            catch { return m[1]; }
+        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], tools: [{ google_search: {} }] }),
+            signal: AbortSignal.timeout(18000),
         });
+        const j = await r.json();
+        const gm = j.candidates && j.candidates[0] && j.candidates[0].groundingMetadata;
+        return ((gm && gm.groundingChunks) || []).map((c) => c.web && c.web.uri).filter(Boolean);
     } catch (_) { return []; }
 }
-// Find the employer's OWN posting URL for a title (prefers the careers domain + a posting path).
+// A grounding chunk may be a vertexaisearch redirect; follow it to the real page. Else pass through.
+async function followRedirect(u) {
+    if (!u || !/vertexaisearch|grounding-api-redirect/i.test(u)) return u;
+    try { const r = await fetch(u, { method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(8000) }); const loc = r.headers.get('location'); return loc && /^https?:/i.test(loc) ? loc : null; } catch { return null; }
+}
+// Find the employer's OWN posting URL for a title. Custom Search (if a key is set) → most reliable;
+// otherwise Gemini Search-Grounding citations (free, Gemini-only, datacenter-safe). STRICTLY filtered
+// to the employer's own domain so third-party/garbage chunks (usajobs.gov, datacareer.ch) are dropped.
 async function resolveJobUrlViaWeb(title, employerName, careersDomain, postingSeg) {
-    const onDom = (u) => { try { return new URL(u).hostname.replace(/^www\./, '').endsWith(careersDomain); } catch { return false; } };
-    const looksPosting = (u) => new RegExp(`/${postingSeg}|/job-?offers?/|/job/|/jobs/|/stelle|/vacanc|/vacatur`, 'i').test(u);
-    const pick = (links) => (links || []).find((u) => onDom(u) && looksPosting(u)) || (links || []).find((u) => onDom(u));
-    if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) {   // datacenter-reliable path
+    // Accept the employer's own domain OR a sibling that uses the SAME posting segment (digitec.ch
+    // and galaxus.ch both use /joboffer/<id>); always reject generic aggregators / off-topic noise.
+    const AGG = /indeed|glassdoor|linkedin|usajobs|datacareer|jobs\.ch|stepstone|monster|ziprecruiter|simplyhired|target\.com|airforce|\.gov(\/|$)/i;
+    const accept = (u) => {
+        if (!u || AGG.test(u)) return false;
+        try { const h = new URL(u).hostname.replace(/^www\./, ''); return h.endsWith(careersDomain) || new RegExp(`/${postingSeg}/`, 'i').test(u); }
+        catch { return false; }
+    };
+    const pick = (links) => (links || []).find(accept);
+    if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) {   // optional reliability upgrade
         return pick(await cseSearchLinks(`${title} ${employerName} site:${careersDomain}`)) || pick(await cseSearchLinks(`${title} ${employerName}`)) || null;
     }
-    for (let attempt = 0; attempt < 3; attempt++) {   // free DDG fallback (usually blocked from datacenters)
-        const hit = pick(await ddgSearchLinks(attempt === 0 ? `${title} ${employerName}` : `${title} ${employerName} job ${careersDomain}`));
+    // Gemini grounding citations (default, free). Two phrasings; resolve any redirect chunks, keep
+    // only an employer-domain posting (no fabricated ids — these are real cited URLs).
+    const queries = [
+        `What is the exact direct posting URL on ${careersDomain} for the job "${title}" at "${employerName}"? Search Google (site:${careersDomain}) and return only the URL.`,
+        `"${title}" ${employerName} job site:${careersDomain}`,
+    ];
+    for (const q of queries) {
+        const resolved = [];
+        for (const c of await geminiGroundChunks(q)) { const u = await followRedirect(c); if (u) resolved.push(u); }
+        const hit = pick(resolved);
         if (hit) return hit;
-        await new Promise((s) => setTimeout(s, 600 + attempt * 700));
     }
     return null;
 }
@@ -2059,14 +2085,14 @@ async function groundedDeepCrawl(employerName, careersUrl) {
         const need = deduped.filter(j => !isSpecificPosting(j.job_url)).slice(0, ENRICH_CAP);
         if (!need.length || !careersDomain) return;
         const deadline = Date.now() + ENRICH_MS; let i = 0, got = 0;
-        await Promise.all(Array.from({ length: 3 }, async () => {   // low concurrency — DDG rate-limits
+        await Promise.all(Array.from({ length: 5 }, async () => {   // Gemini grounding handles parallelism
             while (i < need.length && Date.now() < deadline) {
                 const j = need[i++];
                 const u = await resolveJobUrlViaWeb(j.title, employerName, careersDomain, postingSeg);
                 if (u && isSpecificPosting(u)) { j._realUrl = u; got++; }
             }
         }));
-        console.log(`[aiHub] Deep-crawl url-resolve (ddg): +${got}/${need.length} real URLs for "${employerName}"`);
+        console.log(`[aiHub] Deep-crawl url-resolve (grounding-chunks): +${got}/${need.length} real URLs for "${employerName}"`);
     };
     await Promise.all([enrichDetails(), resolveUrls()]);
 
