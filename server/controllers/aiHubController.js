@@ -1886,6 +1886,25 @@ async function validateJobUrlLive(url) {
     } catch (_) { return true; }   // network / timeout ≠ proof of gone — keep it
 }
 
+// STRICTER than validateJobUrlLive: confirm a URL is a REAL, reachable posting (a genuine 200, not
+// a "gone" page). The deep crawl uses this to decide whether a grounded URL can be trusted as a
+// DIRECT apply-link. Grounding reconstructs plausible deep-links from a site's URL pattern + a
+// GUESSED id (verified: the same digitec job came back as …-29467 one run, …-54153 the next), and
+// on a bot-walled host a 403 can't disprove the guess — so anything that isn't a clean 200
+// (403 / 404 / error / blocked) is treated as "cannot confirm" and will fall back to the careers page.
+async function confirmDirectUrl(url) {
+    if (!url || !/^https?:\/\//i.test(url)) return false;
+    try {
+        const r = await fetch(url, { method: 'GET', redirect: 'follow',
+            headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36' },
+            signal: AbortSignal.timeout(9000) });
+        if (!r.ok) return false;   // 403/404/5xx → cannot confirm it's a real posting
+        const t = (await r.text()).toLowerCase();
+        if (/no longer (available|accepting|open)|position (has been )?filled|posting (is |has )?closed|job not found|has expired/i.test(t)) return false;
+        return true;               // genuine 200 live posting
+    } catch (_) { return false; }  // network / timeout → cannot confirm
+}
+
 // How the consumer Gemini app "reads" a hostile site: ask Gemini WITH Google Search to
 // enumerate the employer's current openings from Google's index, parse them, then keep only
 // the ones whose own URL is still live. Last-resort fallback (everything else blocked).
@@ -1903,6 +1922,68 @@ async function groundedJobSearch(employerName, careersUrl) {
     const live = checked.filter(c => c.live).map(c => c.j);
     console.log(`[aiHub] Grounded: ${jobs.length} found → ${live.length} still live (dropped ${jobs.length - live.length} stale)`);
     return live;
+}
+
+// Normalize a free-form work-mode string to our canonical chip values (Remote / Hybrid / On-site).
+function normWorkMode(s) {
+    const v = String(s || '').toLowerCase();
+    if (/\bremote\b|home\s?-?office|telework|télétravail/.test(v)) return 'Remote';
+    if (/hybrid/.test(v)) return 'Hybrid';
+    if (/on\s?-?site|onsite|in\s?-?office|\boffice\b|vor ort|büro/.test(v)) return 'On-site';
+    return null;
+}
+
+// ── DEEP-CRAWL grounding — rich extraction via Gemini + Google Search ─────────
+// Google indexes employers' postings (they WANT to rank), so grounding reads a hard-blocked site's
+// jobs WITHOUT touching the bot wall. This upgrades the thin single-shot grounding into a full
+// "deep crawl": titles, location, work mode, employment type, skills, responsibilities + a self-
+// audit — the rich result the consumer Gemini app produces. The honesty the demo LACKS: grounding
+// reliably gets TITLES + DETAILS but can HALLUCINATE deep-link URLs, and on a blocked host we can't
+// fetch to disprove them. So the prompt forbids fabricated URLs (null if unknown), and any null /
+// proven-dead URL falls back to the real careers page — a click never dies on a guessed link.
+async function groundedDeepCrawl(employerName, careersUrl) {
+    let rawJobs = [];
+    try {
+        const model = geminiModel(true, 'gemini-2.5-flash');   // Google Search grounding
+        const prompt = `You are a precise job-extraction agent with Google Search. Find ALL current open job postings for "${employerName}" (careers site: ${careersUrl}). Enumerate every distinct current opening you can find in Google's index and extract full detail for each. Return ONLY JSON, no prose: {"audit":{"total_found":number,"confidence":"high|medium|low"},"jobs":[{"title":string,"location":string,"employment_type":string,"work_mode":"Onsite"|"Hybrid"|"Remote"|"Unknown","salary":string,"skills":[string],"responsibilities":[string],"job_url":string|null}]}. RULES: (1) job_url MUST be a real posting URL you actually found in the search results — NEVER fabricate or guess an id; if you don't have the exact URL, use null. (2) Strongly PREFER the employer's OWN careers domain for job_url over third-party job boards. (3) Fill skills + responsibilities (3-6 each) from the indexed posting content. (4) Real data only — never invent postings.`;
+        const res = await aiGenerateWithRetry(model, prompt, 3);
+        const obj = parseJsonObject(res.response.text().trim()) || {};
+        rawJobs = Array.isArray(obj.jobs) ? obj.jobs : [];
+        if (obj.audit) console.log(`[aiHub] Deep-crawl audit for "${employerName}": ${JSON.stringify(obj.audit)}`);
+    } catch (e) { console.error('[aiHub] groundedDeepCrawl:', e.message); return []; }
+    rawJobs = rawJobs.filter(j => j && j.title);
+    if (!rawJobs.length) return [];
+
+    const careersFallback = careersUrl || '';
+    // Dedup by normalized title — employers often surface under several brand domains (digitec/galaxus).
+    const seen = new Set();
+    const deduped = rawJobs.filter(j => {
+        const key = String(j.title).toLowerCase().replace(/\s+/g, ' ').trim();
+        if (seen.has(key)) return false; seen.add(key); return true;
+    });
+
+    // Resolve URLs SAFELY. Trust a grounded link as a DIRECT apply-URL ONLY when it returns a
+    // genuine 200 (confirmDirectUrl) — never on a 403/blocked/errored host, because grounding
+    // fabricates plausible deep-links there (same job, drifting ids) that we can't disprove.
+    // Anything unconfirmed → fall back to the real careers page (listing_page_only) so the click
+    // always lands somewhere real, while we still keep the rich title/skills/responsibilities.
+    const resolved = await Promise.all(deduped.map(async (j) => {
+        let url = (typeof j.job_url === 'string' && /^https?:\/\//i.test(j.job_url)) ? j.job_url : null;
+        let listingOnly = false;
+        if (!url || !(await confirmDirectUrl(url))) { url = careersFallback; listingOnly = true; }
+        return {
+            title: j.title, location: j.location || 'Not specified',
+            job_url: url, listing_page_only: listingOnly,
+            work_mode: normWorkMode(j.work_mode),
+            job_type: j.employment_type || 'Full-time',
+            salary: (j.salary && !/^n\/?a$|not\s/i.test(String(j.salary))) ? j.salary : null,
+            skills: Array.isArray(j.skills) ? j.skills.slice(0, 12) : [],
+            responsibilities: Array.isArray(j.responsibilities) ? j.responsibilities.slice(0, 10) : [],
+        };
+    }));
+    const direct = resolved.filter(j => !j.listing_page_only).length;
+    console.log(`[aiHub] Deep-crawl: ${resolved.length} jobs for "${employerName}" (${direct} with direct URL, ${resolved.length - direct} → careers page)`);
+    return resolved;
 }
 
 async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
@@ -2151,7 +2232,7 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         const titledJobs = rawJobs.filter(j => j && j.title);
         const pageBlocked = (pageData.text || '').trim().length < 200 && (pageData.rawHtml || '').length < 1500;
         if (!resolved && (titledJobs.length === 0 || pageBlocked)) {
-            const grounded = await groundedJobSearch(domainName || domain, scrapeUrl).catch(() => []);
+            const grounded = await groundedDeepCrawl(domainName || domain, scrapeUrl).catch(() => []);
             if (grounded.length) {
                 // Stamp employer_name so the company title is never blank, and keep grounding's
                 // responsibilities/skills so cards aren't bare.
