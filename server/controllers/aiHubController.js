@@ -1918,6 +1918,40 @@ function normWorkMode(s) {
     return null;
 }
 
+// Title key for deduping — strips gender markers ((w/m/d), f/m/d, m/w/d…) and punctuation so the
+// same role from two grounding draws collapses (e.g. "…Logistik (w/m/d)" == "…Logistik").
+function normTitleKey(t) {
+    return String(t || '').toLowerCase()
+        .replace(/\(?\s*[wmfdx](\s*[\/|]\s*[wmfdx]){1,3}\s*\)?/gi, ' ')
+        .replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+// Resolve REAL job-posting URLs via a real search INDEX (not grounding — grounding fabricates the
+// id). Google Custom Search JSON API is reliable (set GOOGLE_CSE_KEY + GOOGLE_CSE_CX; 100 free
+// queries/day, then $5/1k); DuckDuckGo HTML is a free best-effort fallback. Both return the actual
+// indexed URL of the posting (e.g. digitec.ch/en/joboffer/4007).
+async function cseSearchLinks(query) {
+    const key = process.env.GOOGLE_CSE_KEY, cx = process.env.GOOGLE_CSE_CX;
+    if (!key || !cx) return [];
+    try {
+        const r = await fetch(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&num=6&q=${encodeURIComponent(query)}`, { signal: AbortSignal.timeout(9000) });
+        const j = await r.json();
+        return (j.items || []).map((it) => it.link).filter(Boolean);
+    } catch (_) { return []; }
+}
+async function ddgSearchLinks(query) {
+    try {
+        const r = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query), {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36', 'Accept': 'text/html' },
+            signal: AbortSignal.timeout(10000) });
+        const html = await r.text();
+        return [...html.matchAll(/<a[^>]+class="result__a"[^>]+href="([^"]+)"/g)].map((m) => {
+            try { let h = m[1]; if (h.startsWith('//')) h = 'https:' + h; const u = new URL(h); return u.searchParams.get('uddg') ? decodeURIComponent(u.searchParams.get('uddg')) : h; }
+            catch { return m[1]; }
+        });
+    } catch (_) { return []; }
+}
+
 // ── DEEP-CRAWL grounding — rich extraction via Gemini + Google Search ─────────
 // Google indexes employers' postings (they WANT to rank), so grounding reads a hard-blocked site's
 // jobs WITHOUT touching the bot wall. This upgrades the thin single-shot grounding into a full
@@ -1945,7 +1979,7 @@ async function groundedDeepCrawl(employerName, careersUrl) {
         }));
         const seenT = new Set();
         for (const arr of batches) for (const j of arr) {
-            const k = String(j.title).toLowerCase().replace(/\s+/g, ' ').trim();
+            const k = normTitleKey(j.title);
             if (!seenT.has(k)) { seenT.add(k); rawJobs.push(j); }
         }
         console.log(`[aiHub] Deep-crawl enumerate round ${round} for "${employerName}": ${batches.map(b => b.length).join('+')} → ${rawJobs.length} distinct`);
@@ -1956,75 +1990,85 @@ async function groundedDeepCrawl(employerName, careersUrl) {
     // Dedup by normalized title — employers often surface under several brand domains (digitec/galaxus).
     const seen = new Set();
     const deduped = rawJobs.filter(j => {
-        const key = String(j.title).toLowerCase().replace(/\s+/g, ' ').trim();
+        const key = normTitleKey(j.title);
         if (seen.has(key)) return false; seen.add(key); return true;
     });
 
-    // PHASE 2 — per-job DEEP enrichment. The single enumeration call returns many titles but only
-    // deep-fills a few (the model spreads its effort thin). This is what the consumer Gemini "deep
-    // crawl" does differently: it searches EACH job individually. So for every job still missing
-    // details, run a targeted grounded search to fill responsibilities/skills/work-mode. We take
-    // ONLY the details — never the enrichment's job_url (grounding returns a vertexai redirect link
-    // there, useless as an apply URL); Phase-1's real posting URL is kept. Capped + concurrency-
-    // limited; fires only on the rare hard-blocked employer, so cost stays bounded.
-    const ENRICH_CAP = parseInt(process.env.DEEP_CRAWL_ENRICH_CAP || '30', 10);
-    const ENRICH_MS = parseInt(process.env.DEEP_CRAWL_ENRICH_MS || '22000', 10);   // hard time budget
+    // URL helpers.
+    const careersHost = (() => { try { return new URL(careersFallback).hostname; } catch { return ''; } })();
+    const careersPath = (() => { try { return new URL(careersFallback).pathname.replace(/\/+$/, ''); } catch { return ''; } })();
+    const careersDomain = careersHost.replace(/^www\./, '');
+    // A real per-job posting = http(s), on the employer's OWN registrable domain, DEEPER than the
+    // careers/listing path, and not a google/redirect link. Real search results pass this; grounding's
+    // fabricated wrong-format urls (/job-offers/, /de/job?jobId=) are simply never used (see below).
+    const isSpecificPosting = (u) => {
+        if (!u || !/^https?:\/\//i.test(u)) return false;
+        if (/vertexaisearch|grounding-api-redirect|google\.[a-z.]+\/(search|url)|\/url\?q=/i.test(u)) return false;
+        try {
+            const r = new URL(u); const rp = r.pathname.replace(/\/+$/, '');
+            return !!careersDomain && r.hostname.replace(/^www\./, '').endsWith(careersDomain) && rp !== careersPath && rp.length > careersPath.length;
+        } catch { return false; }
+    };
+
+    const ENRICH_CAP = parseInt(process.env.DEEP_CRAWL_ENRICH_CAP || '40', 10);
+    const ENRICH_MS = parseInt(process.env.DEEP_CRAWL_ENRICH_MS || '24000', 10);   // hard time budget
     const isBare = (j) => !((Array.isArray(j.skills) && j.skills.length) || (Array.isArray(j.responsibilities) && j.responsibilities.length));
-    const toEnrich = deduped.filter(isBare).slice(0, ENRICH_CAP);
-    if (toEnrich.length) {
-        // TIME-BOXED: per-job grounded calls are ~5-15s each; left unbounded they hang a search for
-        // minutes. We enrich as many bare jobs as fit in ENRICH_MS (concurrency 8), then return —
-        // remaining jobs stay with their Phase-1 detail (often still usable) rather than blocking.
-        const deadline = Date.now() + ENRICH_MS;
-        let i = 0, filled = 0, done = 0;
-        await Promise.all(Array.from({ length: Math.min(8, toEnrich.length) }, async () => {
-            while (i < toEnrich.length && Date.now() < deadline) {
-                const j = toEnrich[i++];
+
+    // Run DETAIL enrichment (grounding) and URL resolution (real search index) CONCURRENTLY — they're
+    // independent, so the blocked-site path stays bounded (~max, not sum). KEY: grounding fabricates
+    // digitec urls (proven: wrong formats + drifting ids), so URLs come from a REAL search index
+    // (Google Custom Search if GOOGLE_CSE_KEY+CX set, else DuckDuckGo best-effort) which returns the
+    // actual indexed posting URL. Whatever we can't resolve → careers page. We never ship a
+    // grounding-guessed or google-search-results URL.
+    const enrichDetails = async () => {
+        const bare = deduped.filter(isBare).slice(0, ENRICH_CAP);
+        if (!bare.length) return;
+        const deadline = Date.now() + ENRICH_MS; let i = 0, filled = 0;
+        await Promise.all(Array.from({ length: Math.min(8, bare.length) }, async () => {
+            while (i < bare.length && Date.now() < deadline) {
+                const j = bare[i++];
                 try {
                     const em = geminiModel(true, 'gemini-2.5-flash');
-                    const p = `Using Google Search, find the full job posting for "${j.title}" at "${employerName}"${j.location ? ` (${j.location})` : ''}. Return ONLY JSON: {"responsibilities":[3-6 short bullet strings],"skills":[strings],"work_mode":"Onsite"|"Hybrid"|"Remote"|"Unknown","employment_type":string}. Use real data from the search results only — do not invent. If you genuinely cannot find the posting, return empty arrays.`;
-                    const r = await aiGenerateWithRetry(em, p, 1);
-                    const d = parseJsonObject(r.response.text().trim()) || {};
+                    const p = `Using Google Search, find the full job posting for "${j.title}" at "${employerName}"${j.location ? ` (${j.location})` : ''}. Return ONLY JSON: {"responsibilities":[3-6 short bullet strings],"skills":[strings],"work_mode":"Onsite"|"Hybrid"|"Remote"|"Unknown","employment_type":string}. Use real data from the search results only; empty arrays if not found.`;
+                    const d = parseJsonObject((await aiGenerateWithRetry(em, p, 1)).response.text().trim()) || {};
                     if (Array.isArray(d.responsibilities) && d.responsibilities.length) { j.responsibilities = d.responsibilities; filled++; }
                     if (Array.isArray(d.skills) && d.skills.length) j.skills = d.skills;
                     if (d.work_mode && !j.work_mode) j.work_mode = d.work_mode;
                     if (d.employment_type && !j.employment_type) j.employment_type = d.employment_type;
-                } catch (_) { /* skip this one — leave it bare */ }
-                done++;
+                } catch (_) { /* leave bare */ }
             }
         }));
-        console.log(`[aiHub] Deep-crawl enrichment: filled ${filled}, processed ${done}/${toEnrich.length} within ${ENRICH_MS}ms for "${employerName}"`);
-    }
-
-    // URL strategy for a BOT-WALLED site. Grounding CANNOT give a reliable per-job apply URL here:
-    // it returns null ~half the time and otherwise FABRICATES the numeric id, which drifts every run
-    // (verified: the same job came back …-2105, …-45300, …-62921; enumeration often returns null).
-    // We also can't verify (the host 403s a real id and a fake id identically). So:
-    //   • if grounding returned a real-looking SPECIFIC posting URL (deeper path than the careers
-    //     page, not a vertexai redirect) keep it — some of these genuinely work;
-    //   • otherwise give each job a per-job GOOGLE deep-link (q = title + employer + site:host). It
-    //     reliably lands on the real posting (that's how grounding found the job), is UNIQUE per job
-    //     (so the UNIQUE job_url constraint never collapses them — no more #role-N hack), and never
-    //     404s. Flip USE_GROUNDED_URL=1 to instead trust grounding's raw deep-links.
-    const careersHost = (() => { try { return new URL(careersFallback).hostname; } catch { return ''; } })();
-    const careersPath = (() => { try { return new URL(careersFallback).pathname.replace(/\/+$/, ''); } catch { return ''; } })();
-    const siteFilter = careersHost.replace(/^www\./, '');   // site:digitec.ch matches www + any subdomain
-    const searchLink = (title) => `https://www.google.com/search?q=${encodeURIComponent(`${title} ${employerName}${siteFilter ? ` site:${siteFilter}` : ''}`)}`;
-    const isSpecificPosting = (u) => {
-        if (!u || !/^https?:\/\//i.test(u) || /vertexaisearch|grounding-api-redirect/i.test(u)) return false;
-        try { const r = new URL(u); return !(r.hostname === careersHost && r.pathname.replace(/\/+$/, '') === careersPath); }
-        catch { return false; }
+        console.log(`[aiHub] Deep-crawl detail-enrich: +${filled} for "${employerName}"`);
     };
-    // SEARCH_LINK_ONLY=1 forces every job to the reliable Google deep-link (ignores grounding's
-    // unverifiable raw urls). Default: keep a real specific posting when grounding gives one.
-    const forceSearch = process.env.DEEP_CRAWL_SEARCH_LINK_ONLY === '1';
+    const resolveUrls = async () => {
+        const need = deduped.filter(j => !isSpecificPosting(j.job_url)).slice(0, ENRICH_CAP);
+        if (!need.length) return;
+        const deadline = Date.now() + ENRICH_MS; let i = 0, got = 0;
+        const pick = (links) => (links || []).find((u) => isSpecificPosting(u));
+        await Promise.all(Array.from({ length: 4 }, async () => {   // low concurrency — DDG rate-limits
+            while (i < need.length && Date.now() < deadline) {
+                const j = need[i++];
+                let url = pick(await cseSearchLinks(`${j.title} site:${careersDomain}`)) || pick(await cseSearchLinks(`${j.title} ${employerName}`));
+                if (!url) url = pick(await ddgSearchLinks(`${j.title} ${employerName} jobs`));
+                if (url) { j._realUrl = url; got++; }
+            }
+        }));
+        console.log(`[aiHub] Deep-crawl url-resolve: +${got}/${need.length} real URLs for "${employerName}"`);
+    };
+    await Promise.all([enrichDetails(), resolveUrls()]);
+
+    // Build results. Use the resolved REAL posting URL; never trust grounding's raw url (fabricated)
+    // unless USE_GROUNDED_URL=1. No real URL → careers page with a unique #role-N fragment (the
+    // browser drops the fragment, so it opens the careers page; the fragment only keeps the UNIQUE
+    // job_url constraint from collapsing those rows). We never emit google.com/search apply URLs.
+    let roleN = 0;
     const resolved = deduped.map((j) => {
-        const raw = (typeof j.job_url === 'string') ? j.job_url.trim() : '';
-        const useRaw = !forceSearch && isSpecificPosting(raw);
-        const url = useRaw ? raw : searchLink(j.title);
+        const realUrl = isSpecificPosting(j._realUrl) ? j._realUrl
+            : (process.env.USE_GROUNDED_URL === '1' && isSpecificPosting(j.job_url) ? j.job_url : null);
+        const url = realUrl || `${careersFallback}#role-${++roleN}`;
         return {
             title: j.title, location: j.location || 'Not specified',
-            job_url: url, listing_page_only: false, _searchLink: !useRaw,
+            job_url: url, listing_page_only: !realUrl,
             work_mode: normWorkMode(j.work_mode),
             job_type: j.employment_type || 'Full-time',
             salary: (j.salary && !/^n\/?a$|not\s/i.test(String(j.salary))) ? j.salary : null,
@@ -2032,8 +2076,8 @@ async function groundedDeepCrawl(employerName, careersUrl) {
             responsibilities: Array.isArray(j.responsibilities) ? j.responsibilities.slice(0, 10) : [],
         };
     });
-    const directN = resolved.filter(j => !j._searchLink).length;
-    console.log(`[aiHub] Deep-crawl: ${resolved.length} jobs for "${employerName}" (${directN} kept grounding URL, ${resolved.length - directN} → per-job Google deep-link)`);
+    const directN = resolved.filter(j => !j.listing_page_only).length;
+    console.log(`[aiHub] Deep-crawl: ${resolved.length} jobs for "${employerName}" (${directN} real posting URL, ${resolved.length - directN} → careers page)`);
     return resolved;
 }
 
