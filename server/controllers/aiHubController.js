@@ -1926,9 +1926,19 @@ function normTitleKey(t) {
         .replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-// Resolve a job's REAL posting URL via a FREE web-search index (DuckDuckGo) — no API key, no cost.
-// Gemini fabricates the id on bot-walled sites; a real index has the actual indexed URL (verified:
-// digitec.ch/en/joboffer/4007). DDG rate-limits, so the caller retries with spacing.
+// Resolve a job's REAL posting URL via a web-search INDEX (the genuine indexed URL — Gemini
+// fabricates the id). Custom Search (GOOGLE_CSE_KEY + GOOGLE_CSE_CX) works from a server/datacenter
+// (reliable, 100 free/day, then $5/1k). DuckDuckGo is a free no-key fallback that works from a
+// residential IP but is usually BLOCKED from datacenter IPs (e.g. Railway) → it returns nothing there.
+async function cseSearchLinks(query) {
+    const key = process.env.GOOGLE_CSE_KEY, cx = process.env.GOOGLE_CSE_CX;
+    if (!key || !cx) return [];
+    try {
+        const r = await fetch(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&num=6&q=${encodeURIComponent(query)}`, { signal: AbortSignal.timeout(9000) });
+        const j = await r.json();
+        return (j.items || []).map((it) => it.link).filter(Boolean);
+    } catch (_) { return []; }
+}
 async function ddgSearchLinks(query) {
     try {
         const r = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query), {
@@ -1945,12 +1955,14 @@ async function ddgSearchLinks(query) {
 async function resolveJobUrlViaWeb(title, employerName, careersDomain, postingSeg) {
     const onDom = (u) => { try { return new URL(u).hostname.replace(/^www\./, '').endsWith(careersDomain); } catch { return false; } };
     const looksPosting = (u) => new RegExp(`/${postingSeg}|/job-?offers?/|/job/|/jobs/|/stelle|/vacanc|/vacatur`, 'i').test(u);
-    for (let attempt = 0; attempt < 3; attempt++) {
-        const q = attempt === 0 ? `${title} ${employerName}` : `${title} ${employerName} job ${careersDomain}`;
-        const links = await ddgSearchLinks(q);
-        const hit = links.find((u) => onDom(u) && looksPosting(u)) || links.find((u) => onDom(u));
+    const pick = (links) => (links || []).find((u) => onDom(u) && looksPosting(u)) || (links || []).find((u) => onDom(u));
+    if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) {   // datacenter-reliable path
+        return pick(await cseSearchLinks(`${title} ${employerName} site:${careersDomain}`)) || pick(await cseSearchLinks(`${title} ${employerName}`)) || null;
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {   // free DDG fallback (usually blocked from datacenters)
+        const hit = pick(await ddgSearchLinks(attempt === 0 ? `${title} ${employerName}` : `${title} ${employerName} job ${careersDomain}`));
         if (hit) return hit;
-        await new Promise((s) => setTimeout(s, 600 + attempt * 700));   // back off DDG rate-limit
+        await new Promise((s) => setTimeout(s, 600 + attempt * 700));
     }
     return null;
 }
@@ -2064,7 +2076,9 @@ async function groundedDeepCrawl(employerName, careersUrl) {
     // UNIQUE job_url constraint from collapsing those rows).
     let roleN = 0;
     const resolved = deduped.map((j) => {
-        const realUrl = isSpecificPosting(j._realUrl) ? j._realUrl : (isSpecificPosting(j.job_url) ? j.job_url : null);
+        // ONLY a web-index-resolved URL is trusted. NEVER grounding's own job_url — it fabricates the
+        // id (verified: 20 consecutive fake ids). No resolved URL → careers page (honest), never a guess.
+        const realUrl = isSpecificPosting(j._realUrl) ? j._realUrl : null;
         const url = realUrl || `${careersFallback}#role-${++roleN}`;
         return {
             title: j.title, location: j.location || 'Not specified',
