@@ -786,6 +786,23 @@ async function runPostgresMigrations(db) {
         await db.query(`CREATE INDEX IF NOT EXISTS idx_app_redirect_clicks_created ON app_redirect_clicks (created_at);`);
         console.log('✅ Migration 017: app_redirect_clicks done');
 
+        // ── Migration 018: user_job_url_overrides + users.expo_push_token ──────
+        // (a) Per-user manual correction of a job's apply URL (some AI/scraped URLs are wrong or
+        //     missing — the user can fix THEIR apply link without overwriting it for everyone).
+        // (b) Per-user Expo push token, so we can notify when a slow job search finishes.
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS user_job_url_overrides (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                job_id  UUID    NOT NULL REFERENCES jobs(id)  ON DELETE CASCADE,
+                url     TEXT    NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, job_id)
+            );
+        `);
+        await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS expo_push_token TEXT`);
+        console.log('✅ Migration 018: user_job_url_overrides + users.expo_push_token done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

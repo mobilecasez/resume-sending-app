@@ -19,6 +19,7 @@ const detailRecipeStore = require('../services/detailRecipe');
 const aiJobExtractor = require('../services/aiJobExtractor');
 const { applyOverride, investigate: investigateEmployer, learnDetailRecipe, validateExtraction } = require('../services/employerDiagnosticAgent');
 const { createFixRequest, recentDeadAttempt } = require('../services/employerFix');
+const expoPush = require('../services/expoPushService');
 const { getEventCost, chargeCredits } = require('../services/eventCosts');
 
 // ─── Batch tuning ─────────────────────────────────────────────────────────────
@@ -2726,6 +2727,22 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         await jobService.completeJob(asyncJobId, finalEmployer);
         console.log(`[aiHub] Completed "${name}": ${streamedJobs.length} jobs saved`);
 
+        // ── Push notification: a job search can take 30-90s, so tell the user when it's ready even
+        // if the app is backgrounded. Best-effort (never blocks/throws). Only the slow path pushes —
+        // a cache hit returns instantly while the user is still looking.
+        try {
+            const u = await dbConfig.get('SELECT expo_push_token FROM users WHERE id = $1', [userId]);
+            if (u && u.expo_push_token) {
+                const n = streamedJobs.length;
+                await expoPush.sendPushNotification(
+                    u.expo_push_token,
+                    n > 0 ? `${name}: ${n} job${n === 1 ? '' : 's'} ready 🎯` : `${name} — search finished`,
+                    n > 0 ? `Tap to view your matches.` : `We couldn't find live openings right now — tap to review or report it.`,
+                    { type: 'job_search_complete', employer: name, employerId: String(employerDbId), jobId: asyncJobId, jobCount: n }
+                );
+            }
+        } catch (e) { console.warn('[aiHub] push notify failed (non-blocking):', e.message); }
+
         // ── AI Quality Gate (auditor): random AI spot-check that the deterministic
         // methods produced accurate cards. Fire-and-forget — results already delivered.
         try {
@@ -3092,6 +3109,42 @@ async function getJobContacts(req, res) {
     } catch (error) {
         console.error('[aiHub] getJobContacts error:', error.message);
         return res.status(500).json({ error: 'Failed to load contacts', contacts: [] });
+    }
+}
+
+// ── Per-user manual apply-URL override ───────────────────────────────────────
+// Some AI/scraped job URLs are wrong or missing (esp. bot-walled sites). A user can set the correct
+// apply URL for THEIR view — it never overwrites the shared job_url for other users. The job-detail
+// screen reads this on load and uses it for the in-app Apply WebView.
+const _UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+async function getJobUrlOverride(req, res) {
+    try {
+        const { jobId } = req.params;
+        if (!_UUID_RE.test(jobId)) return res.json({ url: null });
+        const row = await dbConfig.get('SELECT url FROM user_job_url_overrides WHERE user_id = $1 AND job_id = $2', [req.user.id, jobId]);
+        return res.json({ url: row ? row.url : null });
+    } catch (error) {
+        console.error('[aiHub] getJobUrlOverride:', error.message);
+        return res.status(500).json({ error: 'Failed to load URL', url: null });
+    }
+}
+async function setJobUrlOverride(req, res) {
+    try {
+        const { jobId } = req.params;
+        if (!_UUID_RE.test(jobId)) return res.status(400).json({ error: 'This job can\'t be edited.' });
+        let url = String((req.body && req.body.url) || '').trim();
+        if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;          // tolerate "digitec.ch/..." input
+        if (!/^https?:\/\/[^\s.]+\.[^\s]{2,}/i.test(url)) return res.status(400).json({ error: 'Please enter a valid link (e.g. https://…).' });
+        if (url.length > 2000) return res.status(400).json({ error: 'That link is too long.' });
+        await dbConfig.run(
+            `INSERT INTO user_job_url_overrides (user_id, job_id, url) VALUES (?, ?, ?)
+             ON CONFLICT (user_id, job_id) DO UPDATE SET url = EXCLUDED.url, updated_at = CURRENT_TIMESTAMP`,
+            [req.user.id, jobId, url]
+        );
+        return res.json({ ok: true, url });
+    } catch (error) {
+        console.error('[aiHub] setJobUrlOverride:', error.message);
+        return res.status(500).json({ error: 'Couldn\'t save the link. Please try again.' });
     }
 }
 
@@ -4325,6 +4378,8 @@ module.exports = {
     verifyEmail,
     addContactToJob,
     getJobContacts,
+    getJobUrlOverride,
+    setJobUrlOverride,
     autofillMap,
     autofillFiles,
     recordAutofillMemory,
