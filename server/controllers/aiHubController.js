@@ -1946,16 +1946,20 @@ async function cseSearchLinks(query) {
 async function geminiGroundChunks(prompt) {
     const key = process.env.GEMINI_API_KEY;
     if (!key) return [];
-    try {
-        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], tools: [{ google_search: {} }] }),
-            signal: AbortSignal.timeout(18000),
-        });
-        const j = await r.json();
-        const gm = j.candidates && j.candidates[0] && j.candidates[0].groundingMetadata;
-        return ((gm && gm.groundingChunks) || []).map((c) => c.web && c.web.uri).filter(Boolean);
-    } catch (_) { return []; }
+    for (let t = 0; t < 3; t++) {
+        try {
+            const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], tools: [{ google_search: {} }] }),
+                signal: AbortSignal.timeout(18000),
+            });
+            if (r.status === 429 || r.status >= 500) { await new Promise((s) => setTimeout(s, 800 * (t + 1))); continue; }   // throttled → back off + retry
+            const j = await r.json();
+            const gm = j.candidates && j.candidates[0] && j.candidates[0].groundingMetadata;
+            return ((gm && gm.groundingChunks) || []).map((c) => c.web && c.web.uri).filter(Boolean);
+        } catch (_) { await new Promise((s) => setTimeout(s, 500)); }
+    }
+    return [];
 }
 // A grounding chunk may be a vertexaisearch redirect; follow it to the real page. Else pass through.
 async function followRedirect(u) {
@@ -2094,7 +2098,11 @@ async function groundedDeepCrawl(employerName, careersUrl) {
         }));
         console.log(`[aiHub] Deep-crawl url-resolve (grounding-chunks): +${got}/${need.length} real URLs for "${employerName}"`);
     };
-    await Promise.all([enrichDetails(), resolveUrls()]);
+    // Sequential (not concurrent): both stages hit Gemini grounding — running them at the same time
+    // spikes the request rate and the URL-resolve calls get throttled (verified: prod gave 0/9 real
+    // when concurrent). Detail-enrich first, then URL-resolve gets its own clean rate budget.
+    await enrichDetails();
+    await resolveUrls();
 
     // Build results. Use the DDG-resolved REAL posting URL (j._realUrl) — fall back to grounding's own
     // url only if it happens to already be a real posting; otherwise the careers page with a unique
