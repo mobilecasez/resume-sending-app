@@ -30,7 +30,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, translateJob, getSmartFillData, recordAutofillMemory, type TranslatedJob, type SmartFillData } from '../../services/aiHubService';
+import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, translateJob, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, type TranslatedJob, type SmartFillData } from '../../services/aiHubService';
 import { API_BASE } from '../../config';
 import { SUBMIT_DETECT_JS, CONFIRM_URL_RE } from './submitDetect';
 import CreditCostPill from '../../components/CreditCostPill';
@@ -991,6 +991,13 @@ export default function JobDetailScreen() {
   // newly-added contact (or any persisted research contact) appears. Merge by email/name so
   // the snapshot's research contacts are never lost.
   const [contacts, setContacts] = useState<Contact[]>(job.contacts ?? []);
+
+  // ── Editable / correctable apply-URL override (per-user). AI/scraped links can be
+  // wrong or missing; the user can paste the correct one and Apply opens it instead.
+  const [overrideUrl, setOverrideUrl] = useState<string | null>(null);
+  const [urlInput,    setUrlInput]    = useState('');
+  const [savingUrl,   setSavingUrl]   = useState(false);
+  const effectiveApplyUrl = overrideUrl || (job as any).applyUrl || '';
   useFocusEffect(useCallback(() => {
     if (!job?.id) return;
     getJobContacts(job.id).then(fetched => {
@@ -1028,6 +1035,34 @@ export default function JobDetailScreen() {
       }
     });
   }, [job?.id]);
+
+  // Load any saved apply-URL override the user previously set for this job.
+  useEffect(() => {
+    if (!jobId) return;
+    getJobUrlOverride(jobId).then(url => {
+      if (!url) return;
+      setOverrideUrl(url);
+      setUrlInput(url);
+    });
+  }, [jobId]);
+
+  // Save the corrected/added apply link. On success, Apply will open it from now on.
+  const handleSaveUrl = async () => {
+    if (!jobId) return;
+    const next = urlInput.trim();
+    if (!next || savingUrl) return;
+    setSavingUrl(true);
+    try {
+      const saved = await updateJobUrl(jobId, next);
+      setOverrideUrl(saved);
+      setUrlInput(saved);
+      Alert.alert('Saved ✓', 'Apply will now open this link.');
+    } catch (e: any) {
+      Alert.alert('Could not save link', e?.message || 'Please try again.');
+    } finally {
+      setSavingUrl(false);
+    }
+  };
 
   function animTo(anim: Animated.Value, val: number) {
     Animated.timing(anim, { toValue: val, duration: 350, useNativeDriver: false }).start();
@@ -1566,8 +1601,8 @@ export default function JobDetailScreen() {
           <Text style={s.wordmarkText}>cv<Text style={s.wordmarkBlue}>applyr</Text></Text>
         </View>
 
-        {!!(job as any).applyUrl ? (
-          <TouchableOpacity onPress={() => openApplyWebView((job as any).applyUrl)} style={s.viewBtn} activeOpacity={0.8}>
+        {!!effectiveApplyUrl ? (
+          <TouchableOpacity onPress={() => openApplyWebView(effectiveApplyUrl)} style={s.viewBtn} activeOpacity={0.8}>
             <Ionicons name="open-outline" size={14} color={T.blue} />
             <Text style={s.viewBtnText}>Open</Text>
           </TouchableOpacity>
@@ -1773,6 +1808,56 @@ export default function JobDetailScreen() {
           </View>
         )}
 
+        {/* ── Card 5: Editable apply link ── */}
+        <View style={s.card}>
+          <View style={s.cardHead}>
+            <View style={[s.cardHeadIcon, { backgroundColor: 'rgba(16,185,129,0.12)' }]}>
+              <Ionicons name="link-outline" size={17} color={T.emerald} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.cardHeadTitle}>Apply link</Text>
+              <Text style={s.cardHeadSub}>Opens when you tap Apply</Text>
+            </View>
+          </View>
+
+          <Text style={s.urlCurrent} numberOfLines={2}>
+            {effectiveApplyUrl || 'No apply link yet — add one below'}
+          </Text>
+
+          <View style={s.urlInputWrap}>
+            <TextInput
+              style={s.fieldInput}
+              value={urlInput}
+              onChangeText={setUrlInput}
+              placeholder="https://… paste the real job link"
+              placeholderTextColor={T.textFaint}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+            />
+          </View>
+
+          <TouchableOpacity
+            onPress={handleSaveUrl}
+            disabled={savingUrl || !urlInput.trim() || urlInput.trim() === (effectiveApplyUrl || '')}
+            style={[
+              s.saveUrlBtn,
+              (savingUrl || !urlInput.trim() || urlInput.trim() === (effectiveApplyUrl || '')) && s.saveUrlBtnDisabled,
+            ]}
+            activeOpacity={0.85}
+          >
+            {savingUrl
+              ? <ActivityIndicator size="small" color={T.blue} />
+              : <><Ionicons name="save-outline" size={14} color={T.blue} /><Text style={s.saveUrlBtnText}>Save link</Text></>}
+          </TouchableOpacity>
+
+          <Text style={s.urlExplainer}>
+            Some job links are auto-detected and can be wrong or missing. Since you can apply
+            right here in CVApplyr — with autofill, your résumé, and AI cover letters — just
+            paste the correct job link (or add one if it's missing) and we'll open the right page.
+          </Text>
+        </View>
+
 
       </ScrollView>
 
@@ -1781,7 +1866,7 @@ export default function JobDetailScreen() {
         <TouchableOpacity
           activeOpacity={0.85}
           style={[s.applyOuter, { flex: 1 }]}
-          onPress={() => openApplyWebView((job as any).applyUrl)}
+          onPress={() => openApplyWebView(effectiveApplyUrl)}
           disabled={mailPrep === 'loading'}
         >
           <View style={s.portalBtn}>
@@ -2540,6 +2625,21 @@ const s = StyleSheet.create({
     borderRadius: 10, paddingVertical: 8, paddingHorizontal: 13, gap: 6, marginTop: 8,
   },
   addContactBtnText: { fontSize: 12.5, color: T.blue, fontWeight: '700' },
+
+  // Editable apply link
+  urlCurrent: { fontSize: 11.5, color: T.textMuted, marginBottom: 10, lineHeight: 16 },
+  urlInputWrap: {
+    borderWidth: 1, borderColor: T.border, borderRadius: 12,
+    paddingHorizontal: 12, paddingVertical: 11, backgroundColor: T.bgSoft,
+  },
+  saveUrlBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', alignSelf: 'flex-start',
+    backgroundColor: 'rgba(79,141,255,0.08)', borderWidth: 1, borderColor: 'rgba(79,141,255,0.25)',
+    borderRadius: 10, paddingVertical: 9, paddingHorizontal: 14, gap: 6, marginTop: 10, minWidth: 110,
+  },
+  saveUrlBtnDisabled: { opacity: 0.45 },
+  saveUrlBtnText: { fontSize: 12.5, color: T.blue, fontWeight: '700' },
+  urlExplainer: { fontSize: 11, color: T.textFaint, lineHeight: 16, marginTop: 12 },
 
   // Footer
   footer: {

@@ -22,11 +22,13 @@ import * as SecureStore from 'expo-secure-store';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { API_BASE, PRODUCTION_API_URL } from './config';
 import { router as expoRouter } from 'expo-router'; // AI Hub navigation
+import { registerForPushNotificationsAsync } from './services/pushNotificationService'; // AI Hub — push notifications
 import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import HomeScreen, { clearHomeScreenCache } from './components/HomeScreen';
 import FloatingTabBar from './components/FloatingTabBar';
 import ReviewScreen from './components/ReviewScreen';
+import RateAppModal from './components/RateAppModal'; // AI Hub — dedicated "Rate this App" entry
 import { regionFromCountry, bestRegion, employerAddress } from './regionUtils';
 
 // Apple IAP Product IDs - must match App Store Connect products
@@ -433,6 +435,15 @@ function AppContent() {
     }
   }, [user]);
 
+  // AI Hub — push notifications. Once the user is logged in, register this
+  // device's Expo push token so the backend can notify them when their slow
+  // employer job search finishes. Best-effort: the helper swallows all errors.
+  useEffect(() => {
+    if (user?.token) {
+      registerForPushNotificationsAsync();
+    }
+  }, [user?.token]);
+
   // Restore saved session on app start
   useEffect(() => {
     const restoreSession = async () => {
@@ -697,6 +708,8 @@ function AppContent() {
     profilePublic: false,
   });
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
+  // AI Hub — dedicated "Rate this App" modal (opened from the Account Actions menu).
+  const [showRateApp, setShowRateApp] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [reviewCoverLetters, setReviewCoverLetters] = useState({});
   const [applicationHistory, setApplicationHistory] = useState([]);
@@ -6975,14 +6988,25 @@ function exportSig(){
               <Text style={styles.actionButtonText}>{isOAuthUser ? 'Set Password' : 'Change Password'}</Text>
               <Text style={styles.actionButtonIcon}>→</Text>
             </TouchableOpacity>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.actionButton}
               onPress={() => setShowPrivacySettings(true)}
             >
               <Text style={styles.actionButtonText}>Privacy Settings</Text>
               <Text style={styles.actionButtonIcon}>→</Text>
             </TouchableOpacity>
-            <TouchableOpacity 
+            {/* AI Hub — dedicated, always-available "Rate this App" entry. */}
+            <TouchableOpacity
+              style={styles.actionButton}
+              onPress={() => setShowRateApp(true)}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Ionicons name="star" size={16} color="#FBBF24" style={{ marginRight: 10 }} />
+                <Text style={styles.actionButtonText}>Rate this App</Text>
+              </View>
+              <Text style={styles.actionButtonIcon}>→</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
               style={styles.actionButton}
               onPress={() => setShowDeleteAccount(true)}
             >
@@ -7005,6 +7029,9 @@ function exportSig(){
 
           <View style={{ height: 30 }} />
         </ScrollView>
+
+        {/* AI Hub — dedicated "Rate this App" modal (compliant store-review routing). */}
+        <RateAppModal visible={showRateApp} onClose={() => setShowRateApp(false)} />
 
         {/* Change Password Modal */}
         <Modal

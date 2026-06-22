@@ -253,6 +253,45 @@ export async function getJobContacts(jobId: string): Promise<Contact[]> {
 }
 
 /**
+ * Fetches the user's saved per-user apply-URL override for a job, if any.
+ * Returns the override URL, or null when none is saved or on any error.
+ */
+export async function getJobUrlOverride(jobId: string): Promise<string | null> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(
+      `${API_BASE_URL}/ai-hub/jobs/${jobId}/url-override`,
+      { headers }
+    );
+    return data?.url ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Saves a corrected/added apply-URL override for a job (per-user).
+ * Returns the saved url on success; throws with the server's error message
+ * (or a friendly default) on failure.
+ */
+export async function updateJobUrl(jobId: string, url: string): Promise<string> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.post(
+      `${API_BASE_URL}/ai-hub/jobs/${jobId}/url-override`,
+      { url },
+      { headers }
+    );
+    return data.url;
+  } catch (error: unknown) {
+    const msg = axios.isAxiosError(error)
+      ? error.response?.data?.error ?? error.message
+      : `Couldn't save the apply link. Please try again.`;
+    throw new Error(msg);
+  }
+}
+
+/**
  * Smart-copy popup data: the user's reusable facts + a resume summary, shown inside the
  * apply WebView so the user can copy-paste any field the autofill couldn't reach.
  */

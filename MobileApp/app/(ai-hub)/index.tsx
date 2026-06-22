@@ -32,7 +32,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type { Contact, Job, Employer, WishlistPill } from '../../types/aiHub';
-import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, fetchJobMatchScores, getMotivationLines } from '../../services/aiHubService';
+import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, fetchJobMatchScores, getMotivationLines, submitEmployerFixRequest } from '../../services/aiHubService';
 import type { Recruiter } from '../../services/aiHubService';
 import { API_BASE } from '../../config';
 import axios from 'axios';
@@ -1204,6 +1204,78 @@ const rcStyles = StyleSheet.create({
 // MAIN SCREEN
 // ─────────────────────────────────────────────────────────────────
 
+// ── Always-visible "raise a concern" footer card ──
+// Shown at the bottom of every finished employer section — whether 0 jobs were
+// found or many. Lets the user flag an employer whose listings we're still
+// learning; submits via the existing fix-request service. Submitted state is
+// tracked by the parent (keyed by employer id) so it survives re-renders.
+function EmployerConcernCard({
+  employer,
+  submitted,
+  onSubmitted,
+}: {
+  employer: Employer;
+  submitted: boolean;
+  onSubmitted: (employerId: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  const handleReport = async () => {
+    if (busy || submitted) return;
+    setBusy(true);
+    try {
+      await submitEmployerFixRequest(employer.name || (employer as any).domain || employer.id);
+      onSubmitted(employer.id);
+      Alert.alert(
+        "Thanks — we're on it 🛠",
+        `We'll improve ${employer.name} and notify you, usually within 24 hours.`,
+      );
+    } catch (e) {
+      Alert.alert(
+        "Couldn't send that",
+        "Something went wrong reporting this employer. Please try again in a moment.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <View style={styles.concernCard}>
+      <View style={styles.concernIconWrap}>
+        <Ionicons name="construct-outline" size={18} color={T.amber} />
+      </View>
+      <Text style={styles.concernTitle}>Not seeing all the jobs?</Text>
+      <Text style={styles.concernBody}>
+        We're still learning {employer.name}'s careers site. If you know they have openings that aren't
+        showing up here, raise a concern and our team will fix it — usually within 24 hours. We'll let
+        you know once it's ready.
+      </Text>
+
+      {submitted ? (
+        <View style={styles.concernDoneRow}>
+          <Ionicons name="checkmark-circle" size={15} color={T.amber} />
+          <Text style={styles.concernDoneText}>Concern submitted ✓ — we'll notify you when it's ready</Text>
+        </View>
+      ) : (
+        <TouchableOpacity
+          style={styles.concernBtn}
+          activeOpacity={0.8}
+          disabled={busy}
+          onPress={handleReport}
+        >
+          {busy ? (
+            <ActivityIndicator size="small" color={T.amber} />
+          ) : (
+            <Ionicons name="flag-outline" size={14} color={T.amber} />
+          )}
+          <Text style={styles.concernBtnText}>Report missing jobs</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
+
 export default function AIHubScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -1216,6 +1288,10 @@ export default function AIHubScreen() {
   useEffect(() => { employersRef.current = employers; }, [employers]);
   const [loadingCompanies, setLoadingCompanies] = useState<string[]>([]);
   const [processingEmployerIds, setProcessingEmployerIds] = useState<Set<string>>(new Set());
+  // Employer ids whose "raise a concern" report has been submitted this session.
+  const [concernSubmittedIds, setConcernSubmittedIds] = useState<Set<string>>(new Set());
+  const markConcernSubmitted = (employerId: string) =>
+    setConcernSubmittedIds((prev) => new Set(prev).add(employerId));
   // Derived (no setState → no extra render pass on every employers change).
   const [initialLoading, setInitialLoading] = useState(true);
   const [selectedEmployerId, setSelectedEmployerId] = useState<string | null>(null);
@@ -1860,7 +1936,8 @@ export default function AIHubScreen() {
                 // No jobs and not processing — show a helpful empty-state card
                 if (jobs.length === 0 && !isProcessing) {
                   return (
-                  <View key={employer.id} style={styles.noJobsCard}>
+                  <View key={employer.id}>
+                  <View style={styles.noJobsCard}>
                     <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.noJobsLogo}>
                       <Text style={styles.noJobsLogoText}>{employer.logoInitial}</Text>
                     </LinearGradient>
@@ -1883,6 +1960,13 @@ export default function AIHubScreen() {
                       <Ionicons name="person-add-outline" size={14} color={T.blue} />
                       <Text style={styles.noJobsAddBtnText}>Add a Recruiter Contact</Text>
                     </TouchableOpacity>
+                  </View>
+                  {/* Always-visible "raise a concern" card — shown in the 0-jobs layout too. */}
+                  <EmployerConcernCard
+                    employer={employer}
+                    submitted={concernSubmittedIds.has(employer.id)}
+                    onSubmitted={markConcernSubmitted}
+                  />
                   </View>
                   );
                 }
@@ -1945,6 +2029,14 @@ export default function AIHubScreen() {
                     ))
                   )}
                   {/* (Progress indicator now lives at the TOP of the section, above.) */}
+                  {/* Always-visible "raise a concern" card — only once the search is done. */}
+                  {!isProcessing && (
+                    <EmployerConcernCard
+                      employer={employer}
+                      submitted={concernSubmittedIds.has(employer.id)}
+                      onSubmitted={markConcernSubmitted}
+                    />
+                  )}
                 </View>
                 );
               })}
@@ -2818,6 +2910,74 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: T.blue,
+  },
+  // ── "Raise a concern about this employer" footer card ──
+  concernCard: {
+    backgroundColor: T.surface,
+    borderRadius: 18,
+    marginBottom: 14,
+    padding: 18,
+    alignItems: 'center',
+    shadowColor: T.ink,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.07,
+    shadowRadius: 16,
+    elevation: 4,
+  },
+  concernIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(245,158,11,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.22)',
+    marginBottom: 12,
+  },
+  concernTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: T.ink,
+    textAlign: 'center',
+    letterSpacing: -0.3,
+    marginBottom: 8,
+  },
+  concernBody: {
+    fontSize: 13,
+    color: T.textMuted,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  concernBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(245,158,11,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.22)',
+    borderRadius: 14,
+    paddingVertical: 11,
+    paddingHorizontal: 18,
+  },
+  concernBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: T.amber,
+  },
+  concernDoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 4,
+  },
+  concernDoneText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: T.amber,
+    textAlign: 'center',
+    flexShrink: 1,
   },
   // ── Modal ──
   modalOverlay: {
