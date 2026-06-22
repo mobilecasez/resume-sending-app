@@ -1943,6 +1943,36 @@ async function groundedDeepCrawl(employerName, careersUrl) {
         if (seen.has(key)) return false; seen.add(key); return true;
     });
 
+    // PHASE 2 — per-job DEEP enrichment. The single enumeration call returns many titles but only
+    // deep-fills a few (the model spreads its effort thin). This is what the consumer Gemini "deep
+    // crawl" does differently: it searches EACH job individually. So for every job still missing
+    // details, run a targeted grounded search to fill responsibilities/skills/work-mode. We take
+    // ONLY the details — never the enrichment's job_url (grounding returns a vertexai redirect link
+    // there, useless as an apply URL); Phase-1's real posting URL is kept. Capped + concurrency-
+    // limited; fires only on the rare hard-blocked employer, so cost stays bounded.
+    const ENRICH_CAP = parseInt(process.env.DEEP_CRAWL_ENRICH_CAP || '30', 10);
+    const isBare = (j) => !((Array.isArray(j.skills) && j.skills.length) || (Array.isArray(j.responsibilities) && j.responsibilities.length));
+    const toEnrich = deduped.filter(isBare).slice(0, ENRICH_CAP);
+    if (toEnrich.length) {
+        let i = 0, filled = 0;
+        await Promise.all(Array.from({ length: Math.min(6, toEnrich.length) }, async () => {
+            while (i < toEnrich.length) {
+                const j = toEnrich[i++];
+                try {
+                    const em = geminiModel(true, 'gemini-2.5-flash');
+                    const p = `Using Google Search, find the full job posting for "${j.title}" at "${employerName}"${j.location ? ` (${j.location})` : ''}. Return ONLY JSON: {"responsibilities":[3-6 short bullet strings],"skills":[strings],"work_mode":"Onsite"|"Hybrid"|"Remote"|"Unknown","employment_type":string}. Use real data from the search results only — do not invent. If you genuinely cannot find the posting, return empty arrays.`;
+                    const r = await aiGenerateWithRetry(em, p, 2);
+                    const d = parseJsonObject(r.response.text().trim()) || {};
+                    if (Array.isArray(d.responsibilities) && d.responsibilities.length) { j.responsibilities = d.responsibilities; filled++; }
+                    if (Array.isArray(d.skills) && d.skills.length) j.skills = d.skills;
+                    if (d.work_mode && !j.work_mode) j.work_mode = d.work_mode;
+                    if (d.employment_type && !j.employment_type) j.employment_type = d.employment_type;
+                } catch (_) { /* skip this one — leave it bare */ }
+            }
+        }));
+        console.log(`[aiHub] Deep-crawl enrichment: filled ${filled}/${toEnrich.length} bare jobs for "${employerName}"`);
+    }
+
     // Resolve URLs. Grounding's deep-links are predominantly REAL — verified by hand against
     // digitec: /joboffer/4246, /4225, /4176 all load the right posting. We CANNOT confirm them from
     // our server because a bot-walled host returns the SAME 403 for a real id AND a fake one
