@@ -1926,24 +1926,33 @@ function normTitleKey(t) {
         .replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-// GEMINI-ONLY URL resolver. When Gemini grounds an answer it returns its source as a
-// vertexaisearch…/grounding-api-redirect/… link — that redirect resolves to the REAL page Gemini
-// actually found (verified: → jobs.ch / digitec posting). That's the one Gemini URL signal that is
-// NOT fabricated (unlike the direct urls it guesses). This follows the redirect to the real page
-// WITHOUT a separate search API. No-op for a normal (non-redirect) url.
-async function resolveGeminiRedirect(u) {
-    if (!u || !/^https?:\/\//i.test(u)) return null;
-    if (!/vertexaisearch|grounding-api-redirect/i.test(u)) return u;   // already a direct url
-    let cur = u;
-    for (let hop = 0; hop < 4; hop++) {
-        try {
-            const r = await fetch(cur, { method: 'GET', redirect: 'manual', headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124 Safari/537.36' }, signal: AbortSignal.timeout(8000) });
-            const loc = r.headers.get('location');
-            if (loc && /^https?:\/\//i.test(loc)) { cur = loc; if (!/vertexaisearch|google\.[a-z.]+\/url/i.test(cur)) return cur; }
-            else return /vertexaisearch/i.test(cur) ? null : cur;
-        } catch (_) { return null; }
+// Resolve a job's REAL posting URL via a FREE web-search index (DuckDuckGo) — no API key, no cost.
+// Gemini fabricates the id on bot-walled sites; a real index has the actual indexed URL (verified:
+// digitec.ch/en/joboffer/4007). DDG rate-limits, so the caller retries with spacing.
+async function ddgSearchLinks(query) {
+    try {
+        const r = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query), {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36', 'Accept': 'text/html' },
+            signal: AbortSignal.timeout(10000) });
+        const html = await r.text();
+        return [...html.matchAll(/<a[^>]+class="result__a"[^>]+href="([^"]+)"/g)].map((m) => {
+            try { let h = m[1]; if (h.startsWith('//')) h = 'https:' + h; const u = new URL(h); return u.searchParams.get('uddg') ? decodeURIComponent(u.searchParams.get('uddg')) : h; }
+            catch { return m[1]; }
+        });
+    } catch (_) { return []; }
+}
+// Find the employer's OWN posting URL for a title (prefers the careers domain + a posting path).
+async function resolveJobUrlViaWeb(title, employerName, careersDomain, postingSeg) {
+    const onDom = (u) => { try { return new URL(u).hostname.replace(/^www\./, '').endsWith(careersDomain); } catch { return false; } };
+    const looksPosting = (u) => new RegExp(`/${postingSeg}|/job-?offers?/|/job/|/jobs/|/stelle|/vacanc|/vacatur`, 'i').test(u);
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const q = attempt === 0 ? `${title} ${employerName}` : `${title} ${employerName} job ${careersDomain}`;
+        const links = await ddgSearchLinks(q);
+        const hit = links.find((u) => onDom(u) && looksPosting(u)) || links.find((u) => onDom(u));
+        if (hit) return hit;
+        await new Promise((s) => setTimeout(s, 600 + attempt * 700));   // back off DDG rate-limit
     }
-    return /vertexaisearch/i.test(cur) ? null : cur;
+    return null;
 }
 
 // ── DEEP-CRAWL grounding — rich extraction via Gemini + Google Search ─────────
@@ -2005,43 +2014,57 @@ async function groundedDeepCrawl(employerName, careersUrl) {
         } catch { return false; }
     };
 
-    // PHASE 2 — per-job grounded enrichment (GEMINI ONLY, efficient: ONE grounded call per job fills
-    // the details AND the posting URL). Gemini returns either a direct url or a grounding REDIRECT
-    // (its real cited source) — resolveGeminiRedirect follows the redirect to the real page (verified
-    // → jobs.ch / digitec posting). Time-boxed + concurrency-limited; only the rare blocked employer.
+    // PHASE 2 — concurrent: (a) DETAIL enrichment via Gemini grounding (fill bare jobs) and (b) URL
+    // resolution via a FREE web index (DuckDuckGo). Gemini does the job DATA; DDG returns the
+    // employer's REAL posting URL (digitec.ch/en/joboffer/<id>) — the id Gemini fabricates. Both
+    // time-boxed; runs concurrently so the blocked-site path stays bounded (~max, not sum).
     const ENRICH_CAP = parseInt(process.env.DEEP_CRAWL_ENRICH_CAP || '40', 10);
     const ENRICH_MS = parseInt(process.env.DEEP_CRAWL_ENRICH_MS || '26000', 10);
     const isBare = (j) => !((Array.isArray(j.skills) && j.skills.length) || (Array.isArray(j.responsibilities) && j.responsibilities.length));
-    const toEnrich = deduped.filter(j => isBare(j) || !isSpecificPosting(j.job_url)).slice(0, ENRICH_CAP);
-    if (toEnrich.length) {
-        const deadline = Date.now() + ENRICH_MS; let i = 0, filled = 0, urls = 0;
-        await Promise.all(Array.from({ length: Math.min(8, toEnrich.length) }, async () => {
-            while (i < toEnrich.length && Date.now() < deadline) {
-                const j = toEnrich[i++];
+    const postingSeg = careersPath.split('/').filter(Boolean).pop() || 'job';   // e.g. "joboffer"
+
+    const enrichDetails = async () => {
+        const bare = deduped.filter(isBare).slice(0, ENRICH_CAP);
+        if (!bare.length) return;
+        const deadline = Date.now() + ENRICH_MS; let i = 0, filled = 0;
+        await Promise.all(Array.from({ length: Math.min(8, bare.length) }, async () => {
+            while (i < bare.length && Date.now() < deadline) {
+                const j = bare[i++];
                 try {
                     const em = geminiModel(true, 'gemini-2.5-flash');
-                    const p = `Using Google Search, open the EXACT job posting for "${j.title}" at "${employerName}"${j.location ? ` (${j.location})` : ''}, then return ONLY JSON: {"job_url": the URL of the actual search result you opened for this posting, "responsibilities":[3-6 short bullet strings],"skills":[strings],"work_mode":"Onsite"|"Hybrid"|"Remote"|"Unknown","employment_type":string}. Use the REAL link from the search results — never invent or guess a URL/id; use null if you can't open the posting.`;
+                    const p = `Using Google Search, find the full job posting for "${j.title}" at "${employerName}"${j.location ? ` (${j.location})` : ''}. Return ONLY JSON: {"responsibilities":[3-6 short bullet strings],"skills":[strings],"work_mode":"Onsite"|"Hybrid"|"Remote"|"Unknown","employment_type":string}. Use real data from the search results only; empty arrays if not found.`;
                     const d = parseJsonObject((await aiGenerateWithRetry(em, p, 1)).response.text().trim()) || {};
                     if (Array.isArray(d.responsibilities) && d.responsibilities.length) { j.responsibilities = d.responsibilities; filled++; }
                     if (Array.isArray(d.skills) && d.skills.length) j.skills = d.skills;
                     if (d.work_mode && !j.work_mode) j.work_mode = d.work_mode;
                     if (d.employment_type && !j.employment_type) j.employment_type = d.employment_type;
-                    if (typeof d.job_url === 'string' && d.job_url.trim() && !isSpecificPosting(j.job_url)) {
-                        const u = await resolveGeminiRedirect(d.job_url.trim());   // follow grounding redirect → real page
-                        if (isSpecificPosting(u)) { j.job_url = u; urls++; }
-                    }
-                } catch (_) { /* leave as is */ }
+                } catch (_) { /* leave bare */ }
             }
         }));
-        console.log(`[aiHub] Deep-crawl enrich (gemini): details+${filled}, urls+${urls} for "${employerName}"`);
-    }
+        console.log(`[aiHub] Deep-crawl detail-enrich: +${filled} for "${employerName}"`);
+    };
+    const resolveUrls = async () => {
+        const need = deduped.filter(j => !isSpecificPosting(j.job_url)).slice(0, ENRICH_CAP);
+        if (!need.length || !careersDomain) return;
+        const deadline = Date.now() + ENRICH_MS; let i = 0, got = 0;
+        await Promise.all(Array.from({ length: 3 }, async () => {   // low concurrency — DDG rate-limits
+            while (i < need.length && Date.now() < deadline) {
+                const j = need[i++];
+                const u = await resolveJobUrlViaWeb(j.title, employerName, careersDomain, postingSeg);
+                if (u && isSpecificPosting(u)) { j._realUrl = u; got++; }
+            }
+        }));
+        console.log(`[aiHub] Deep-crawl url-resolve (ddg): +${got}/${need.length} real URLs for "${employerName}"`);
+    };
+    await Promise.all([enrichDetails(), resolveUrls()]);
 
-    // Build results. Use Gemini's (redirect-resolved) posting URL when it's a real page; otherwise the
-    // careers page with a unique #role-N fragment (browser drops the fragment → opens careers page;
-    // the fragment only keeps the UNIQUE job_url constraint from collapsing those rows).
+    // Build results. Use the DDG-resolved REAL posting URL (j._realUrl) — fall back to grounding's own
+    // url only if it happens to already be a real posting; otherwise the careers page with a unique
+    // #role-N fragment (browser drops the fragment → opens careers page; the fragment only keeps the
+    // UNIQUE job_url constraint from collapsing those rows).
     let roleN = 0;
     const resolved = deduped.map((j) => {
-        const realUrl = isSpecificPosting(j.job_url) ? j.job_url : null;
+        const realUrl = isSpecificPosting(j._realUrl) ? j._realUrl : (isSpecificPosting(j.job_url) ? j.job_url : null);
         const url = realUrl || `${careersFallback}#role-${++roleN}`;
         return {
             title: j.title, location: j.location || 'Not specified',
