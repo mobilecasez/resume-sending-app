@@ -762,6 +762,16 @@ app.get('/api/admin/app-clicks', authenticateAdmin, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Register a device's Expo push token (so we can notify when a slow job search finishes).
+app.post('/api/user/push-token', authenticateToken, async (req, res) => {
+    try {
+        const token = String((req.body && req.body.token) || '').trim();
+        if (!token || !/^Expo(nent)?PushToken\[/.test(token)) return res.status(400).json({ error: 'valid expo push token required' });
+        await dbConfig.run('UPDATE users SET expo_push_token = ? WHERE id = ?', [token.slice(0, 300), req.user.id]);
+        res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Root route - serve landing page
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
