@@ -1,23 +1,17 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 //
-// DEDICATED, always-available "Rate this App" experience (distinct from the auto-trigger
-// RatingPromptModal which only fires on a frequency cap). This one is opened on demand
-// from a menu item, so it ALWAYS shows the full UI: interactive 1–5 star selector, a
-// multiline review box, and a Submit button.
+// DEDICATED "Rate this App" experience, opened on demand from a menu item.
 //
-// Compliant "review routing" — reuses services/ratingService.ts:
-//   • 4–5★ → save the typed review privately (so it isn't lost) AND open the platform's
-//            NATIVE store review sheet (expo-store-review); falls back to the store listing
-//            deep-link if the native sheet isn't available.
-//   • 1–3★ → save the rating + review to our private feedback backend (app_feedback). Never
-//            sent to the store; user sees a "thanks for your feedback" confirmation.
+// Sentiment-gate routing (compliant — reuses services/ratingService.ts):
+//   • 👍 "Loving it"  → open the platform's NATIVE store review sheet (expo-store-review). The user
+//                       posts their rating ONCE, there. (Apple & Google forbid pre-filling or posting
+//                       a review programmatically, so this hand-off is the ONLY route to a public review.)
+//   • 👎 "Not really" → reveal a private feedback box → saved to our backend (app_feedback). NEVER
+//                       sent to the store; the user sees a "thanks for your feedback" confirmation.
 //
-// ⚠️ OS LIMITATION: Apple App Store and Google Play do NOT allow an app to pre-fill the
-// native review sheet's star value or text, nor to post a review through any API. The
-// native sheet alone controls what actually gets posted to the store. This custom UI only
-// COLLECTS the user's intent (stars + text) and routes accordingly — it cannot transfer the
-// stars/text the user typed here into the native sheet. The typed review is therefore also
-// saved to our own backend so it is never lost.
+// Why a gate instead of an in-app star + review form: the store sheet can't be pre-filled, so
+// collecting stars/text here for happy users would just make them enter it twice. The gate sends
+// happy users straight to the store (single entry) and keeps unhappy users' detail private.
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Modal, View, Text, TouchableOpacity, TextInput, StyleSheet, ActivityIndicator, Image, Animated, Easing, TouchableWithoutFeedback, Keyboard, Platform } from 'react-native';
@@ -30,7 +24,7 @@ const TRIGGER = 'menu_rate_this_app';
 export default function RateAppModal({
   visible, onClose,
 }: { visible: boolean; onClose: () => void }) {
-  const [stars, setStars] = useState(0);
+  const [mode, setMode] = useState<'ask' | 'feedback'>('ask');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const [thanks, setThanks] = useState<'store' | 'feedback' | null>(null);
@@ -41,7 +35,7 @@ export default function RateAppModal({
 
   // Reset to a clean state every time the modal is opened.
   useEffect(() => {
-    if (visible) { setStars(0); setMsg(''); setBusy(false); setThanks(null); translateY.setValue(0); }
+    if (visible) { setMode('ask'); setMsg(''); setBusy(false); setThanks(null); translateY.setValue(0); }
   }, [visible]);
 
   // Drive the card's shift from the keyboard's own show/hide animation (same duration → in sync).
@@ -50,48 +44,38 @@ export default function RateAppModal({
     const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
     const onShow = (e: any) => {
       const h = e?.endCoordinates?.height ?? 0;
-      Animated.timing(translateY, {
-        toValue: -Math.min(h / 2, 240),
-        duration: e?.duration || 250,
-        easing: Easing.out(Easing.ease),
-        useNativeDriver: true,
-      }).start();
+      Animated.timing(translateY, { toValue: -Math.min(h / 2, 240), duration: e?.duration || 250, easing: Easing.out(Easing.ease), useNativeDriver: true }).start();
     };
     const onHide = (e: any) => {
-      Animated.timing(translateY, {
-        toValue: 0,
-        duration: e?.duration || 250,
-        easing: Easing.out(Easing.ease),
-        useNativeDriver: true,
-      }).start();
+      Animated.timing(translateY, { toValue: 0, duration: e?.duration || 250, easing: Easing.out(Easing.ease), useNativeDriver: true }).start();
     };
     const subShow = Keyboard.addListener(showEvt, onShow);
     const subHide = Keyboard.addListener(hideEvt, onHide);
     return () => { subShow.remove(); subHide.remove(); };
   }, [translateY]);
 
-  const submit = async () => {
-    if (stars === 0 || busy) return;
+  // 👍 happy → straight to the native store review sheet (single entry, posted there).
+  const onLove = async () => {
+    if (busy) return;
     setBusy(true);
-    const review = msg.trim();
+    await submitFeedback(5, '', TRIGGER);   // record the positive sentiment (no text — they review on the store)
+    await markRated();
+    setBusy(false);
+    setThanks('store');
+    setTimeout(async () => { await openNativeReview(); onClose(); }, 800);
+  };
 
-    if (stars >= 4) {
-      // Happy user. Persist the typed review privately (the native store sheet cannot be
-      // pre-filled with it — OS limitation), mark as rated, then open the native review.
-      await submitFeedback(stars, review, TRIGGER);
-      await markRated();
-      setBusy(false);
-      setThanks('store');
-      // Give the confirmation a beat, then hand off to the native store review sheet.
-      setTimeout(async () => { await openNativeReview(); onClose(); }, 800);
-    } else {
-      // Unhappy user → private feedback only. Never routed to the store.
-      await submitFeedback(stars, review, TRIGGER);
-      await markHandled();
-      setBusy(false);
-      setThanks('feedback');
-      setTimeout(onClose, 1300);
-    }
+  // 👎 unhappy → private feedback only. Never routed to the store.
+  const sendFeedback = async () => {
+    const text = msg.trim();
+    if (!text || busy) return;
+    Keyboard.dismiss();
+    setBusy(true);
+    await submitFeedback(2, text, TRIGGER);
+    await markHandled();
+    setBusy(false);
+    setThanks('feedback');
+    setTimeout(onClose, 1300);
   };
 
   const showThanks = thanks !== null;
@@ -114,42 +98,43 @@ export default function RateAppModal({
               : <Image source={require('../assets/images/logo_img_white.png')} style={s.brandLogo} resizeMode="contain" />}
           </LinearGradient>
 
-          {!showThanks && (
+          {/* ── ASK: sentiment gate ── */}
+          {!showThanks && mode === 'ask' && (
             <>
-              <Text style={s.title}>Rate <Text style={s.brandCv}>cv</Text><Text style={s.brandApplyr}>applyr</Text></Text>
-              <Text style={s.subtitle}>How would you rate your experience? Your feedback helps us improve.</Text>
-
-              <View style={s.starsRow}>
-                {[1, 2, 3, 4, 5].map((n) => (
-                  <TouchableOpacity
-                    key={n}
-                    onPress={() => setStars(n)}
-                    activeOpacity={0.7}
-                    hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
-                  >
-                    <Ionicons
-                      name={n <= stars ? 'star' : 'star-outline'}
-                      size={38}
-                      color={n <= stars ? '#FBBF24' : '#475569'}
-                      style={s.star}
-                    />
-                  </TouchableOpacity>
-                ))}
+              <Text style={s.title}>Enjoying <Text style={s.brandCv}>cv</Text><Text style={s.brandApplyr}>applyr</Text>?</Text>
+              <Text style={s.subtitle}>Your feedback helps us make it better.</Text>
+              <View style={s.choiceRow}>
+                <TouchableOpacity onPress={() => setMode('feedback')} activeOpacity={0.85} style={[s.choiceBtn, s.choiceGhost]}>
+                  <Ionicons name="thumbs-down-outline" size={16} color="#94A3B8" />
+                  <Text style={s.choiceGhostText}>Not really</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={onLove} disabled={busy} activeOpacity={0.88} style={[s.choiceBtn, busy && s.btnDisabled]}>
+                  <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.choiceGrad}>
+                    {busy ? <ActivityIndicator size="small" color="#fff" /> : (<><Ionicons name="thumbs-up" size={16} color="#fff" /><Text style={s.choiceText}>Loving it!</Text></>)}
+                  </LinearGradient>
+                </TouchableOpacity>
               </View>
+            </>
+          )}
 
+          {/* ── FEEDBACK: private, never goes to the store ── */}
+          {!showThanks && mode === 'feedback' && (
+            <>
+              <Text style={s.title}>What can we improve?</Text>
+              <Text style={s.subtitle}>Sorry to hear that. Tell us what went wrong — this goes straight to our team, not the store.</Text>
               <TextInput
                 style={s.input}
                 value={msg}
                 onChangeText={setMsg}
-                placeholder="Write a review (optional)…"
+                placeholder="What's not working for you?…"
                 placeholderTextColor="#64748B"
                 multiline
                 maxLength={1000}
+                autoFocus
               />
-
-              <TouchableOpacity onPress={submit} disabled={busy || stars === 0} activeOpacity={0.88} style={[s.btnOuter, (busy || stars === 0) && s.btnDisabled]}>
+              <TouchableOpacity onPress={sendFeedback} disabled={busy || msg.trim() === ''} activeOpacity={0.88} style={[s.btnOuter, (busy || msg.trim() === '') && s.btnDisabled]}>
                 <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.btn}>
-                  {busy ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.btnText}>Submit</Text>}
+                  {busy ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.btnText}>Send feedback</Text>}
                 </LinearGradient>
               </TouchableOpacity>
             </>
@@ -158,7 +143,7 @@ export default function RateAppModal({
           {thanks === 'store' && (
             <>
               <Text style={s.title}>Thank you! 🙌</Text>
-              <Text style={s.subtitle}>Opening the store so you can post your rating…</Text>
+              <Text style={s.subtitle}>Opening the App Store so you can post your rating…</Text>
             </>
           )}
 
@@ -176,7 +161,6 @@ export default function RateAppModal({
 }
 
 const s = StyleSheet.create({
-  flex: { flex: 1 },
   backdrop: { flex: 1, backgroundColor: 'rgba(2,6,23,0.72)', alignItems: 'center', justifyContent: 'center', padding: 28 },
   card: { width: '100%', maxWidth: 380, backgroundColor: '#0F1B30', borderRadius: 24, paddingTop: 30, paddingBottom: 24, paddingHorizontal: 22, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
   closeBtn: { position: 'absolute', top: 14, right: 14, zIndex: 2, padding: 4 },
@@ -186,8 +170,12 @@ const s = StyleSheet.create({
   brandCv: { color: '#F8FAFC', letterSpacing: 0.3 },
   brandApplyr: { color: '#3B82F6', letterSpacing: 0.3 },
   subtitle: { fontSize: 13.5, color: '#94A3B8', textAlign: 'center', marginTop: 8, lineHeight: 19, paddingHorizontal: 4 },
-  starsRow: { flexDirection: 'row', gap: 6, marginTop: 20, marginBottom: 6 },
-  star: { marginHorizontal: 3 },
+  choiceRow: { flexDirection: 'row', gap: 12, marginTop: 22, width: '100%' },
+  choiceBtn: { flex: 1, borderRadius: 14, overflow: 'hidden' },
+  choiceGhost: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, height: 50, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', backgroundColor: 'rgba(255,255,255,0.04)' },
+  choiceGhostText: { color: '#CBD5E1', fontSize: 15, fontWeight: '700' },
+  choiceGrad: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, height: 50 },
+  choiceText: { color: '#fff', fontSize: 15, fontWeight: '800' },
   input: { width: '100%', minHeight: 96, maxHeight: 160, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)', color: '#F1F5F9', fontSize: 14, padding: 13, marginTop: 18, textAlignVertical: 'top' },
   btnOuter: { width: '100%', marginTop: 16, borderRadius: 14, overflow: 'hidden' },
   btnDisabled: { opacity: 0.5 },
