@@ -20,7 +20,7 @@
 // saved to our own backend so it is never lost.
 
 import React, { useEffect, useState } from 'react';
-import { Modal, View, Text, TouchableOpacity, TextInput, StyleSheet, ActivityIndicator } from 'react-native';
+import { Modal, View, Text, TouchableOpacity, TextInput, StyleSheet, ActivityIndicator, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { markRated, markHandled, openNativeReview, submitFeedback } from '../services/ratingService';
@@ -78,12 +78,14 @@ export default function RateAppModal({
           )}
 
           <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.iconWrap}>
-            <Ionicons name={showThanks ? 'checkmark' : 'star'} size={26} color="#fff" />
+            {showThanks
+              ? <Ionicons name="checkmark" size={26} color="#fff" />
+              : <Image source={require('../assets/images/logo_img_white.png')} style={s.brandLogo} resizeMode="contain" />}
           </LinearGradient>
 
           {!showThanks && (
             <>
-              <Text style={s.title}>Rate CVApplyr</Text>
+              <Text style={s.title}>Rate <Text style={s.brandCv}>cv</Text><Text style={s.brandApplyr}>applyr</Text></Text>
               <Text style={s.subtitle}>How would you rate your experience? Your feedback helps us improve.</Text>
 
               <View style={s.starsRow}>
@@ -147,6 +149,9 @@ const s = StyleSheet.create({
   closeBtn: { position: 'absolute', top: 14, right: 14, zIndex: 2, padding: 4 },
   iconWrap: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
   title: { fontSize: 20, fontWeight: '800', color: '#F8FAFC', textAlign: 'center' },
+  brandLogo: { width: 32, height: 32 },
+  brandCv: { color: '#F8FAFC', letterSpacing: 0.3 },
+  brandApplyr: { color: '#3B82F6', letterSpacing: 0.3 },
   subtitle: { fontSize: 13.5, color: '#94A3B8', textAlign: 'center', marginTop: 8, lineHeight: 19, paddingHorizontal: 4 },
   starsRow: { flexDirection: 'row', gap: 6, marginTop: 20, marginBottom: 6 },
   star: { marginHorizontal: 3 },
