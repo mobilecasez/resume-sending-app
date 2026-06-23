@@ -20,7 +20,7 @@
 // saved to our own backend so it is never lost.
 
 import React, { useEffect, useState } from 'react';
-import { Modal, View, Text, TouchableOpacity, TextInput, StyleSheet, ActivityIndicator, Image } from 'react-native';
+import { Modal, View, Text, TouchableOpacity, TextInput, StyleSheet, ActivityIndicator, Image, KeyboardAvoidingView, TouchableWithoutFeedback, Keyboard, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { markRated, markHandled, openNativeReview, submitFeedback } from '../services/ratingService';
@@ -68,6 +68,8 @@ export default function RateAppModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade" statusBarTranslucent onRequestClose={onClose}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={s.flex}>
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
       <View style={s.backdrop}>
         <View style={s.card}>
           {/* Close button (always-available entry, so allow dismissing without rating) */}
@@ -139,11 +141,14 @@ export default function RateAppModal({
           )}
         </View>
       </View>
+      </TouchableWithoutFeedback>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
 
 const s = StyleSheet.create({
+  flex: { flex: 1 },
   backdrop: { flex: 1, backgroundColor: 'rgba(2,6,23,0.72)', alignItems: 'center', justifyContent: 'center', padding: 28 },
   card: { width: '100%', maxWidth: 380, backgroundColor: '#0F1B30', borderRadius: 24, paddingTop: 30, paddingBottom: 24, paddingHorizontal: 22, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
   closeBtn: { position: 'absolute', top: 14, right: 14, zIndex: 2, padding: 4 },
