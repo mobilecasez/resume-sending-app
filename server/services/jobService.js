@@ -278,18 +278,36 @@ async function saveUserJobMatch(userId, jobId, matchScore = null) {
 // Hard-delete a job (cascades job_skills, job_contacts, user_job_matches via FK ON DELETE
 // CASCADE). Used by the best-200 ranking to evict a weak-match job for a stronger one
 // during a fresh scrape (where the searching user owns all the just-created jobs).
+// ⚠️ CONTACTS-LOSS GUARD: never hard-delete a job that has saved hiring contacts. job_contacts
+// has ON DELETE CASCADE, so deleting the job row silently wipes the user's manually-added
+// contacts. When a to-be-evicted job carries contacts we DEACTIVATE it instead (is_active=FALSE):
+// it drops out of the dashboard exactly like a delete, but the contacts survive and a later
+// re-search of the same job reactivates the same row.
+async function jobHasContacts(jobId) {
+    const r = await dbConfig.get(`SELECT 1 AS x FROM job_contacts WHERE job_id = ? LIMIT 1`, [jobId]);
+    return !!r;
+}
+
 async function deleteJob(jobId) {
+    if (await jobHasContacts(jobId)) {
+        await dbConfig.run(`UPDATE jobs SET is_active = FALSE WHERE id = ?`, [jobId]);
+        return;
+    }
     await dbConfig.run(`DELETE FROM jobs WHERE id = ?`, [jobId]);
 }
 
 // Per-user eviction for the best-200 ranking. Removes THIS user's match to the job, then
-// hard-deletes the shared job row ONLY if no other user still references it. This prevents
-// cross-user data loss: if user B is concurrently tracking the same employer, evicting a
-// job from user A's top-200 no longer wipes it out of B's dashboard. (H4/M22)
+// removes the shared job row ONLY if no other user still references it (cross-user safety,
+// H4/M22) AND it has no saved contacts (contacts-loss guard → soft-deactivate instead).
 async function evictUserJob(jobId, userId) {
     await dbConfig.run(`DELETE FROM user_job_matches WHERE job_id = ? AND user_id = ?`, [jobId, userId]);
     const other = await dbConfig.get(`SELECT 1 AS x FROM user_job_matches WHERE job_id = ? LIMIT 1`, [jobId]);
-    if (!other) await dbConfig.run(`DELETE FROM jobs WHERE id = ?`, [jobId]);
+    if (other) return;
+    if (await jobHasContacts(jobId)) {
+        await dbConfig.run(`UPDATE jobs SET is_active = FALSE WHERE id = ?`, [jobId]);
+        return;
+    }
+    await dbConfig.run(`DELETE FROM jobs WHERE id = ?`, [jobId]);
 }
 
 const AVATAR_COLORS_DB = [
@@ -351,18 +369,28 @@ async function getUserDashboard(userId) {
                 [emp.id, userId]
             );
 
-            for (const jRow of jobsRows) {
-                const skillsRows = await dbConfig.query(
-                    `SELECT s.name FROM skills s
+            // Batch skills + contacts for ALL of this employer's jobs in 2 queries (was 2 queries
+            // PER job → ~2000 sequential DB round-trips across the dashboard = the 6.6s slowness).
+            const _jobIds = jobsRows.map(r => r.id);
+            const _skillsByJob = {};
+            const _contactsByJob = {};
+            if (_jobIds.length) {
+                const _skillRows = await dbConfig.query(
+                    `SELECT js.job_id, s.name FROM skills s
                      JOIN job_skills js ON s.id = js.skill_id
-                     WHERE js.job_id = $1`,
-                    [jRow.id]
+                     WHERE js.job_id = ANY($1::uuid[])`,
+                    [_jobIds]
                 );
+                for (const r of _skillRows) (_skillsByJob[r.job_id] = _skillsByJob[r.job_id] || []).push(r.name);
+                const _cRows = await dbConfig.query(
+                    `SELECT * FROM job_contacts WHERE job_id = ANY($1::uuid[])`,
+                    [_jobIds]
+                );
+                for (const c of _cRows) (_contactsByJob[c.job_id] = _contactsByJob[c.job_id] || []).push(c);
+            }
 
-                const contactsRows = await dbConfig.query(
-                    `SELECT * FROM job_contacts WHERE job_id = $1`,
-                    [jRow.id]
-                );
+            for (const jRow of jobsRows) {
+                const contactsRows = _contactsByJob[jRow.id] || [];
 
                 const responsibilities = (() => {
                     try {
@@ -373,7 +401,7 @@ async function getUserDashboard(userId) {
                     } catch { return []; }
                 })();
 
-                const skillNames = skillsRows.map(s => s.name);
+                const skillNames = _skillsByJob[jRow.id] || [];
 
                 jobs.push({
                     id: String(jRow.id),

@@ -2114,7 +2114,12 @@ async function groundedDeepCrawl(employerName, careersUrl) {
         // ONLY a web-index-resolved URL is trusted. NEVER grounding's own job_url — it fabricates the
         // id (verified: 20 consecutive fake ids). No resolved URL → careers page (honest), never a guess.
         const realUrl = isSpecificPosting(j._realUrl) ? j._realUrl : null;
-        const url = realUrl || `${careersFallback}#role-${++roleN}`;
+        // STABLE synthetic URL: key the #fragment to the job's CONTENT (title+location), not to loop
+        // position. Re-searching the same employer then re-keys onto the SAME job_url → ON CONFLICT
+        // reuses the existing row/UUID → user-added contacts survive across searches. (Was
+        // `#role-${++roleN}`: positional, so every re-search minted fresh UUIDs and stranded contacts.)
+        const _slug = `${j.title || ''}-${j.location || ''}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90);
+        const url = realUrl || `${careersFallback}#job-${_slug || ('role-' + (++roleN))}`;
         return {
             title: j.title, location: j.location || 'Not specified',
             job_url: url, listing_page_only: !realUrl,
