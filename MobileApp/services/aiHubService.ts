@@ -39,15 +39,33 @@ function pollUntilDone<T>(
 
     const cleanup = () => subscription.remove();
 
+    const MAX_ACTIVE_MS = 10 * 60 * 1000;   // hard deadline (foreground time only) → stop polling
+    let lastTickAt = Date.now();
+    let activeMs = 0;
+    let notFoundStrikes = 0;                 // 2 consecutive 404s → give up (tolerates the brief
+                                             // window before the job row exists)
+
     const tick = async () => {
-      // Pause while backgrounded — retry in 1 s
+      // Pause while backgrounded — retry in 1 s (does NOT count toward the deadline)
       if (appState !== 'active') {
+        lastTickAt = Date.now();
         setTimeout(tick, 1000);
+        return;
+      }
+
+      activeMs += Date.now() - lastTickAt;
+      lastTickAt = Date.now();
+      if (activeMs > MAX_ACTIVE_MS) {
+        cleanup();
+        const e: any = new Error('Job polling timed out');
+        e.code = 'POLL_TIMEOUT';
+        reject(e);
         return;
       }
 
       try {
         const { data } = await axios.get(`${API_BASE_URL}/ai-hub/job-status/${jobId}`, { headers });
+        notFoundStrikes = 0;
 
         if (data.status === 'completed') {
           cleanup();
@@ -62,8 +80,19 @@ function pollUntilDone<T>(
           }
           setTimeout(tick, 2000);
         }
-      } catch {
-        // Network hiccup — keep retrying
+      } catch (err) {
+        // A 404 means the server never had / no longer has this job (e.g. a STALE persisted
+        // in-flight entry). Don't spin forever — give up after 2 consecutive 404s so the caller's
+        // .catch() can clear it. Transient errors (network / 5xx) keep retrying.
+        if (axios.isAxiosError(err) && err.response?.status === 404) {
+          if (++notFoundStrikes >= 2) {
+            cleanup();
+            const e: any = new Error('Job not found');
+            e.code = 'JOB_NOT_FOUND';
+            reject(e);
+            return;
+          }
+        }
         setTimeout(tick, 2000);
       }
     };
