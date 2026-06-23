@@ -1906,7 +1906,7 @@ export default function HomeScreen({
               { icon: 'shield-outline',          title: 'Privacy Policy',   sub: 'How we protect your data', onPress: () => { setShowSettings(false); setScreen('privacy'); } },
               { icon: 'card-outline',            title: 'Refund Policy',    sub: 'Credit refund information', onPress: () => { setShowSettings(false); setScreen('refund'); } },
               null,
-              { icon: 'star',                    title: 'Rate this App',     sub: 'Tell us how we’re doing',   onPress: () => { setShowSettings(false); onRateApp && onRateApp(); } },
+              { icon: 'star',                    title: 'Rate this App',     sub: 'Tell us how we’re doing',   onPress: () => { setShowSettings(false); setTimeout(() => { onRateApp && onRateApp(); }, 320); } },
               { icon: 'log-out-outline',         title: 'Sign Out',         sub: 'Logout from your account',  onPress: () => { setShowSettings(false); handleLogout(); } },
             ]).map((item, i) =>
               item === null

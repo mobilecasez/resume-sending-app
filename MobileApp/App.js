@@ -5791,6 +5791,7 @@ function exportSig(){
 
   if (screen === 'dashboard' || !screen || screen === '') {
     return (
+      <>
       <HomeScreen
         user={user}
         creditBalance={creditBalance}
@@ -5847,6 +5848,9 @@ function exportSig(){
         usageData={usageData}
         generateCoverLetterForReview={generateCoverLetterForReview}
       />
+      {/* AI Hub — Rate-this-App modal also mounted on the home screen so the hamburger-menu entry can open it. */}
+      <RateAppModal visible={showRateApp} onClose={() => setShowRateApp(false)} />
+      </>
     );
   }
 
