@@ -19,8 +19,8 @@
 // stars/text the user typed here into the native sheet. The typed review is therefore also
 // saved to our own backend so it is never lost.
 
-import React, { useEffect, useState } from 'react';
-import { Modal, View, Text, TouchableOpacity, TextInput, StyleSheet, ActivityIndicator, Image, KeyboardAvoidingView, TouchableWithoutFeedback, Keyboard, Platform } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Modal, View, Text, TouchableOpacity, TextInput, StyleSheet, ActivityIndicator, Image, Animated, Easing, TouchableWithoutFeedback, Keyboard, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { markRated, markHandled, openNativeReview, submitFeedback } from '../services/ratingService';
@@ -35,10 +35,40 @@ export default function RateAppModal({
   const [busy, setBusy] = useState(false);
   const [thanks, setThanks] = useState<'store' | 'feedback' | null>(null);
 
+  // Native-driven vertical shift so the card lifts SMOOTHLY above the keyboard. (KeyboardAvoidingView's
+  // padding reflow re-lays-out the centered card on the JS thread → jerky.)
+  const translateY = useRef(new Animated.Value(0)).current;
+
   // Reset to a clean state every time the modal is opened.
   useEffect(() => {
-    if (visible) { setStars(0); setMsg(''); setBusy(false); setThanks(null); }
+    if (visible) { setStars(0); setMsg(''); setBusy(false); setThanks(null); translateY.setValue(0); }
   }, [visible]);
+
+  // Drive the card's shift from the keyboard's own show/hide animation (same duration → in sync).
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const onShow = (e: any) => {
+      const h = e?.endCoordinates?.height ?? 0;
+      Animated.timing(translateY, {
+        toValue: -Math.min(h / 2, 240),
+        duration: e?.duration || 250,
+        easing: Easing.out(Easing.ease),
+        useNativeDriver: true,
+      }).start();
+    };
+    const onHide = (e: any) => {
+      Animated.timing(translateY, {
+        toValue: 0,
+        duration: e?.duration || 250,
+        easing: Easing.out(Easing.ease),
+        useNativeDriver: true,
+      }).start();
+    };
+    const subShow = Keyboard.addListener(showEvt, onShow);
+    const subHide = Keyboard.addListener(hideEvt, onHide);
+    return () => { subShow.remove(); subHide.remove(); };
+  }, [translateY]);
 
   const submit = async () => {
     if (stars === 0 || busy) return;
@@ -68,10 +98,9 @@ export default function RateAppModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade" statusBarTranslucent onRequestClose={onClose}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={s.flex}>
       <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
       <View style={s.backdrop}>
-        <View style={s.card}>
+        <Animated.View style={[s.card, { transform: [{ translateY }] }]}>
           {/* Close button (always-available entry, so allow dismissing without rating) */}
           {!showThanks && (
             <TouchableOpacity onPress={onClose} style={s.closeBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} activeOpacity={0.7}>
@@ -139,10 +168,9 @@ export default function RateAppModal({
               <Text style={s.subtitle}>We really appreciate it — our team reads every message and uses it to improve the app.</Text>
             </>
           )}
-        </View>
+        </Animated.View>
       </View>
       </TouchableWithoutFeedback>
-      </KeyboardAvoidingView>
     </Modal>
   );
 }
