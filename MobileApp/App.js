@@ -6995,7 +6995,14 @@ function exportSig(){
               <Text style={styles.actionButtonText}>Privacy Settings</Text>
               <Text style={styles.actionButtonIcon}>→</Text>
             </TouchableOpacity>
-            {/* AI Hub — dedicated, always-available "Rate this App" entry. */}
+            <TouchableOpacity
+              style={styles.actionButton}
+              onPress={() => setShowDeleteAccount(true)}
+            >
+              <Text style={[styles.actionButtonText, { color: '#ef4444' }]}>Delete Account Permanently</Text>
+              <Text style={styles.actionButtonIcon}>→</Text>
+            </TouchableOpacity>
+            {/* AI Hub — dedicated "Rate this App" entry, placed right above Sign Out. */}
             <TouchableOpacity
               style={styles.actionButton}
               onPress={() => setShowRateApp(true)}
@@ -7007,13 +7014,6 @@ function exportSig(){
               <Text style={styles.actionButtonIcon}>→</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.actionButton}
-              onPress={() => setShowDeleteAccount(true)}
-            >
-              <Text style={[styles.actionButtonText, { color: '#ef4444' }]}>Delete Account Permanently</Text>
-              <Text style={styles.actionButtonIcon}>→</Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
               style={[styles.actionButton, { borderBottomWidth: 0 }]}
               onPress={() => {
                 Alert.alert('Sign Out', 'Are you sure you want to sign out?', [

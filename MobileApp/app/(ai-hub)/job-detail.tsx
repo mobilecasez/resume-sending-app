@@ -1037,23 +1037,27 @@ export default function JobDetailScreen() {
   }, [job?.id]);
 
   // Load any saved apply-URL override the user previously set for this job.
+  // NOTE: use job.id (the real DB UUID, same id contacts/cover-letter use) — navigation passes the
+  // job as `jobStr`, NOT a separate `jobId` route param, so the route `jobId` is undefined here.
   useEffect(() => {
-    if (!jobId) return;
-    getJobUrlOverride(jobId).then(url => {
+    const jid = (job as any)?.id;
+    if (!jid) return;
+    getJobUrlOverride(jid).then(url => {
       if (!url) return;
       setOverrideUrl(url);
       setUrlInput(url);
     });
-  }, [jobId]);
+  }, [(job as any)?.id]);
 
   // Save the corrected/added apply link. On success, Apply will open it from now on.
   const handleSaveUrl = async () => {
-    if (!jobId) return;
+    const jid = (job as any)?.id;
     const next = urlInput.trim();
+    if (!jid) { Alert.alert('Can’t edit this job', 'This job can’t be edited right now.'); return; }
     if (!next || savingUrl) return;
     setSavingUrl(true);
     try {
-      const saved = await updateJobUrl(jobId, next);
+      const saved = await updateJobUrl(jid, next);
       setOverrideUrl(saved);
       setUrlInput(saved);
       Alert.alert('Saved ✓', 'Apply will now open this link.');
