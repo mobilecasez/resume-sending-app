@@ -1310,7 +1310,7 @@ export default function HomeScreen({
   // handlers
   handleReview, handleAutoStart, addRecipient, removeRecipient, updateRecipient,
   checkEmailReplies, loadNotifications, markNotificationAsRead,
-  showAllReplies, handleLogout, isValidEmail, getTimeAgo, setScreen,
+  showAllReplies, handleLogout, onRateApp, isValidEmail, getTimeAgo, setScreen,
   renderCompleteProfileModal,
   generateCoverLetterForReview,
   // API_BASE for inline reply confirm handler
@@ -1906,6 +1906,7 @@ export default function HomeScreen({
               { icon: 'shield-outline',          title: 'Privacy Policy',   sub: 'How we protect your data', onPress: () => { setShowSettings(false); setScreen('privacy'); } },
               { icon: 'card-outline',            title: 'Refund Policy',    sub: 'Credit refund information', onPress: () => { setShowSettings(false); setScreen('refund'); } },
               null,
+              { icon: 'star',                    title: 'Rate this App',     sub: 'Tell us how we’re doing',   onPress: () => { setShowSettings(false); onRateApp && onRateApp(); } },
               { icon: 'log-out-outline',         title: 'Sign Out',         sub: 'Logout from your account',  onPress: () => { setShowSettings(false); handleLogout(); } },
             ]).map((item, i) =>
               item === null

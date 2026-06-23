@@ -5835,6 +5835,7 @@ function exportSig(){
         markNotificationAsRead={markNotificationAsRead}
         showAllReplies={showAllReplies}
         handleLogout={handleLogout}
+        onRateApp={() => setShowRateApp(true)}
         isValidEmail={isValidEmail}
         getTimeAgo={getTimeAgo}
         setScreen={setScreen}
