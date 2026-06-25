@@ -13,15 +13,25 @@ a{color:var(--brand-deep);text-decoration:none}
 a:hover{text-decoration:underline}
 img{max-width:100%;height:auto}
 
-/* Keep the shared site header (/js/app-header.js, in <div id="app-header">) on every page, but on the
-   LIGHT article pages re-skin it to match the footer colour (#0f1426) with a touch of translucency +
-   blur — so it reads as a deliberate frosted dark bar instead of the default washed-out one. */
+/* On the LIGHT article pages the shared site header (/js/app-header.js, in <div id="app-header">) has
+   NO background — a clean transparent bar that lets the white page show through. We darken its text/icons
+   so they stay readable over white. This override lives in article.css, which ONLY loads on article
+   pages, so the header on every other page of the site is completely untouched. */
 #app-header .nav{
-  background:rgba(15,20,38,0.90) !important;   /* article footer colour + slight opacity */
-  -webkit-backdrop-filter:blur(14px) saturate(140%) !important;
-  backdrop-filter:blur(14px) saturate(140%) !important;
-  box-shadow:0 8px 28px rgba(15,23,42,.14);
+  background:transparent !important;
+  -webkit-backdrop-filter:none !important;
+  backdrop-filter:none !important;
+  border-bottom:none !important;
+  box-shadow:none !important;
 }
+#app-header .nav-links a{ color:#475569 !important; }
+#app-header .nav-links a:hover{ color:#0B1120 !important; background:rgba(2,6,23,.05) !important; }
+#app-header .brand-text .cv{ color:#0B1120 !important; }
+#app-header .brand-icon{ filter:none !important; }   /* real coloured logo, not the white knockout */
+#app-header .menu-btn{ background:rgba(2,6,23,.04) !important; border-color:rgba(2,6,23,.12) !important; }
+#app-header .menu-btn-icon,
+#app-header .menu-btn-icon::before,
+#app-header .menu-btn-icon::after{ background:#0B1120 !important; }
 
 /* article shell */
 .article{max-width:760px;margin:100px auto 0;padding:0 20px 80px}
@@ -44,6 +54,11 @@ figure{margin:30px 0}
 figure img{border-radius:16px;box-shadow:0 14px 40px rgba(15,23,42,.12);display:block;width:100%}
 figure svg{width:100%;height:auto;border-radius:16px;display:block;border:1px solid var(--line);background:var(--soft)}
 figcaption{color:var(--muted);font-size:14px;text-align:center;margin-top:10px}
+/* real in-app screenshots — portrait phone captures, constrained + centred */
+figure.shot img{max-width:330px;margin:0 auto;box-shadow:0 22px 60px rgba(15,23,42,.20)}
+.shotrow{display:flex;gap:20px;justify-content:center;flex-wrap:wrap;margin:32px 0}
+.shotrow figure{margin:0}
+.shotrow img{max-width:250px;border-radius:18px;box-shadow:0 22px 60px rgba(15,23,42,.20);display:block}
 
 /* callouts / stat cards / quote */
 .callout{background:var(--soft);border:1px solid var(--line);border-left:4px solid var(--brand);
