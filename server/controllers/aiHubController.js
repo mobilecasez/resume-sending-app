@@ -3792,6 +3792,62 @@ ${JSON.stringify(fields, null, 2)}`;
     }
 }
 
+// Translate a batch of short UI text snippets to English (used by the apply-WebView's "bridge"
+// translator when a site's CSP blocks Google's in-page widget). Stateless, no DB, free.
+// Body: { items: [{ i, t }], target? }  →  { translations: { "<i>": "<english>" } }
+async function translateBatch(req, res) {
+    try {
+        const raw = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+        const items = raw
+            .slice(0, 120)                                         // cap per call (the app chunks larger pages)
+            .map(it => ({ i: String(it && it.i), t: String(it && it.t == null ? '' : it.t).slice(0, 600) }))
+            .filter(it => it.i && it.t.trim().length);
+        if (!items.length) return res.json({ translations: {} });
+
+        const model = geminiModel(false, 'gemini-2.5-flash-lite');
+        const prompt = `You translate snippets of visible website text into natural English.
+Return ONLY a JSON object that maps each snippet's "i" (as a string key) to its English translation.
+
+Rules:
+- If a snippet is already English, return it unchanged.
+- Keep proper nouns as-is (people, companies, city/country names, brands, technologies like "Python", "SAP", "Berlin"), and keep numbers, emails, URLs unchanged.
+- Translate each snippet independently and concisely — do NOT merge snippets, add commentary, or change meaning.
+- Every input "i" MUST appear as a key in the output.
+- JSON only, no markdown.
+
+SNIPPETS (JSON array of {i,t}):
+${JSON.stringify(items)}`;
+
+        async function callOnce() {
+            const result = await model.generateContent({
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                generationConfig: { responseMimeType: 'application/json', temperature: 0.2, maxOutputTokens: 8192 },
+            });
+            return parseJsonObject(result.response.text());
+        }
+
+        let out = null;
+        try { out = await callOnce(); } catch (e1) {
+            try { out = await callOnce(); } catch (e2) {
+                console.error('[aiHub] translateBatch AI error:', e2.message);
+                return res.status(502).json({ error: 'Translation failed.' });
+            }
+        }
+        if (!out || typeof out !== 'object') return res.status(502).json({ error: 'Translation failed.' });
+
+        // Only return clean strings; fall back to the original snippet for any missing/blank value.
+        const translations = {};
+        for (const it of items) {
+            const v = out[it.i];
+            translations[it.i] = (typeof v === 'string' && v.trim()) ? v : it.t;
+        }
+        return res.json({ translations });
+    } catch (error) {
+        console.error('[aiHub] translateBatch error:', error.message);
+        return res.status(500).json({ error: 'Translation failed.' });
+    }
+}
+
 // ─── Job Cover Letter Persistence ────────────────────────────────────────────
 
 async function ensureCoverLetterTable() {
@@ -4396,6 +4452,7 @@ module.exports = {
     findRecruiterEmails,
     generateJobCoverLetter,
     translateJob,
+    translateBatch,
     saveJobCoverLetter,
     getJobCoverLetter,
     updateJobCoverLetterStatus,

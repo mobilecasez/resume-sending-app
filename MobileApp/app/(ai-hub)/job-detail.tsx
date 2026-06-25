@@ -30,7 +30,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, translateJob, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, type TranslatedJob, type SmartFillData } from '../../services/aiHubService';
+import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, translateJob, translateBatch, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, type TranslatedJob, type SmartFillData } from '../../services/aiHubService';
 import { API_BASE } from '../../config';
 import { SUBMIT_DETECT_JS, CONFIRM_URL_RE } from './submitDetect';
 import CreditCostPill from '../../components/CreditCostPill';
@@ -512,6 +512,19 @@ const TRANSLATE_TO_EN_JS = `(function(){
       st.textContent='.goog-te-banner-frame,.skiptranslate{display:none!important;visibility:hidden!important;height:0!important;}body{top:0!important;position:static!important;}#goog-gt-tt,.goog-te-balloon-frame,.VIpgJd-ZVi9od-aZ2wEe-wOHMyf{display:none!important;}';
       document.head.appendChild(st);
     }
+    // Watchdog: Google adds a "translated-ltr/rtl" class to <html> when it actually translates.
+    // If that never appears (the site's CSP blocks Google's translation engine, e.g. ilionx), post
+    // XLATE_WIDGET_DEAD so RN falls back to our backend "bridge" translator. One watchdog at a time.
+    try{ if(window.__cvfWdIv) clearInterval(window.__cvfWdIv); }catch(e){}
+    (function(){ var tries=0;
+      window.__cvfWdIv=setInterval(function(){ tries++;
+        var ok=/(^|\\s)translated-(ltr|rtl)(\\s|$)/.test(document.documentElement.className||'') || document.documentElement.getAttribute('data-cvf-xlated')==='1';
+        if(ok){ clearInterval(window.__cvfWdIv); window.__cvfWdIv=0; return; }
+        if(tries>=16){ clearInterval(window.__cvfWdIv); window.__cvfWdIv=0;
+          try{ var o={type:'XLATE_WIDGET_DEAD'}; o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){}
+        }
+      },300);
+    })();
     if(window.__cvfGtLoaded){
       // already injected on THIS page — just re-trigger the translation (no reload, no flicker)
       var c0=document.querySelector('select.goog-te-combo');
@@ -542,6 +555,40 @@ const TRANSLATE_OFF_JS = `(function(){
     location.reload();
   } catch(e){}
 })(); true;`;
+
+// ── Bridge translator (CSP-proof) ──────────────────────────────────────────────
+// When Google's in-page widget is blocked by a site's CSP, we translate via OUR backend instead:
+// collect the page's visible text nodes, hand them to RN over the message bridge (NOT a network
+// request, so the page's CSP can't block it), translate server-side, then write the English text
+// back into the SAME text nodes (also not a network request). Form fields/inputs are left untouched.
+const COLLECT_NODES_JS = `(function(){
+  function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
+  try{
+    if(window.__cvfTx && window.__cvfTx.length){ post({type:'XLATE_COLLECT',items:[],n:0,again:true}); return; }
+    var SKIP={SCRIPT:1,STYLE:1,NOSCRIPT:1,TEXTAREA:1,CODE:1,PRE:1,IFRAME:1,svg:1,SVG:1};
+    var nodes=[], items=[], idx=0;
+    var w=document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode:function(n){
+        try{
+          var p=n.parentNode; if(!p||SKIP[p.nodeName]) return NodeFilter.FILTER_REJECT;
+          if(p.closest && p.closest('input,textarea,[contenteditable="true"],[translate="no"],.notranslate')) return NodeFilter.FILTER_REJECT;
+          var s=(n.nodeValue||'').replace(/\\s+/g,' ').trim();
+          if(s.length<2) return NodeFilter.FILTER_REJECT;
+          if(!/[A-Za-z\\u00C0-\\u024F\\u0400-\\u04FF\\u0370-\\u03FF]/.test(s)) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }catch(e){ return NodeFilter.FILTER_REJECT; }
+      }
+    });
+    var n; while((n=w.nextNode())){ nodes.push(n); items.push({i:String(idx),t:(n.nodeValue||'').replace(/\\s+/g,' ').trim()}); idx++; if(idx>=600) break; }
+    window.__cvfTx=nodes;
+    post({type:'XLATE_COLLECT', items:items, n:items.length});
+  }catch(e){ post({type:'XLATE_COLLECT', items:[], n:0}); }
+})(); true;`;
+
+// Build the injection that writes translations back into the collected nodes (preserving each
+// node's original leading/trailing whitespace so inline words don't run together).
+const buildApplyNodesJS = (map: Record<string, string>) =>
+  `(function(){try{var M=${JSON.stringify(map)};var A=window.__cvfTx||[];for(var k in M){var n=A[+k];if(n&&n.nodeValue!=null){var o=n.nodeValue;var L=(o.match(/^\\s*/)||[''])[0];var T=(o.match(/\\s*$/)||[''])[0];n.nodeValue=L+M[k]+T;}}document.documentElement.setAttribute('data-cvf-xlated','1');}catch(e){}})(); true;`;
 
 // Detect whether the loaded page is NOT in English so we can auto-translate it. Uses the
 // <html lang> attribute first, then a non-ASCII-script ratio (Chinese/Cyrillic/Arabic/…), then
@@ -743,6 +790,7 @@ export default function JobDetailScreen() {
   const [webTranslating, setWebTranslating] = useState(false);
   const webTranslatedRef = useRef(false);                        // mirror for the load callback (no stale closure)
   const autoXlateRef     = useRef(true);                         // auto-translate non-English pages until the user opts out
+  const bridgeXlateRef   = useRef(false);                        // a backend "bridge" translation is in-flight/done for this page
   const submitMarkedRef = useRef(false);                          // fire the "Applied" mark only once per session
   const submitIntentRef = useRef(0);                              // ts of last real apply-form submit (for the URL backstop)
   useEffect(() => {                                                // auto-dismiss the "submitted ✓" toast
@@ -813,6 +861,7 @@ export default function JobDetailScreen() {
     setSmartOpen(false); setSmartExpanded(false); setCopiedKey(null);
     focusedFieldRef.current = null; smartValuesRef.current = {};
     setWebTranslated(false); setWebTranslating(false); webTranslatedRef.current = false; autoXlateRef.current = true;
+    bridgeXlateRef.current = false;
     loadLocalFill();
     if (!smartData) { getSmartFillData().then(setSmartData).catch(() => {}); }
     setApplyWebUrl(u);
@@ -832,6 +881,7 @@ export default function JobDetailScreen() {
     } else {
       webTranslatedRef.current = false;
       autoXlateRef.current = false;               // user wants the original → stop auto-translating
+      bridgeXlateRef.current = false;             // allow re-bridging if they translate again
       applyWebRef.current.injectJavaScript(TRANSLATE_OFF_JS);   // clears cookie + reloads to original
       setWebTranslated(false);
     }
@@ -1217,10 +1267,42 @@ export default function JobDetailScreen() {
       return;
     }
 
-    // Page translation couldn't load (some portals block external scripts via CSP).
-    if (msg.type === 'TRANSLATE_FAIL') {
-      setWebTranslating(false); setWebTranslated(false);
-      Alert.alert('Translation unavailable', "This site blocks in-page translation. Tap the open-in-browser icon to read it in your phone's browser, which can translate it.");
+    // The free Google in-page widget couldn't translate (its script was blocked, or — like ilionx —
+    // the site's CSP blocks Google's translation engine so the page never actually changes). Fall
+    // back to our backend "bridge" translator, which works regardless of the page's CSP.
+    if (msg.type === 'TRANSLATE_FAIL' || msg.type === 'XLATE_WIDGET_DEAD') {
+      if (bridgeXlateRef.current) return;                 // already bridging / bridged this page
+      bridgeXlateRef.current = true;
+      setWebTranslating(true);
+      webTranslatedRef.current = true;
+      try { applyWebRef.current?.injectJavaScript(COLLECT_NODES_JS); } catch {}
+      return;
+    }
+
+    // Bridge step 2: the page handed us its visible text nodes → translate them server-side (chunked),
+    // then write the English back into the same nodes. Inputs/forms are untouched, so Apply still works.
+    if (msg.type === 'XLATE_COLLECT') {
+      const items: { i: string; t: string }[] = Array.isArray(msg.items) ? msg.items : [];
+      if (!items.length) { setWebTranslating(false); return; }
+      (async () => {
+        const map: Record<string, string> = {};
+        try {
+          const CH = 60, chunks: { i: string; t: string }[][] = [];
+          for (let k = 0; k < items.length; k += CH) chunks.push(items.slice(k, k + CH));
+          // translate in small concurrent waves to stay friendly with the AI quota
+          for (let k = 0; k < chunks.length; k += 4) {
+            const part = await Promise.all(chunks.slice(k, k + 4).map(c => translateBatch(c)));
+            part.forEach(m => Object.assign(map, m));
+          }
+          if (Object.keys(map).length && applyWebRef.current) {
+            applyWebRef.current.injectJavaScript(buildApplyNodesJS(map));
+            setWebTranslated(true); webTranslatedRef.current = true;
+          } else {
+            Alert.alert('Translation unavailable', "We couldn't translate this page right now. You can open it in your phone's browser to translate it there.");
+          }
+        } catch {}
+        finally { setWebTranslating(false); }
+      })();
       return;
     }
 

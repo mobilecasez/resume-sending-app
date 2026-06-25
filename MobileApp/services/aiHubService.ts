@@ -264,6 +264,24 @@ export async function translateJob(jobId: string): Promise<TranslatedJob> {
   }
 }
 
+// Translate a batch of short visible-text snippets to English. Used by the apply-WebView's
+// "bridge" translator (via the RN message bridge) when a site's CSP blocks Google's in-page
+// widget. Returns a map of { "<i>": "<english>" }; resolves to {} on failure (caller no-ops).
+export async function translateBatch(items: { i: string; t: string }[]): Promise<Record<string, string>> {
+  try {
+    if (!items || !items.length) return {};
+    const headers = await getAuthHeader();
+    const response = await axios.post(
+      `${API_BASE_URL}/ai-hub/translate-batch`,
+      { items },
+      { headers }
+    );
+    return (response.data?.translations ?? {}) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Fetches the persisted contacts for a job (used to refresh after adding one).
  * Returns [] on any error so the caller can keep showing the snapshot.

@@ -26,6 +26,7 @@ const {
     findRecruiterEmails,
     generateJobCoverLetter,
     translateJob,
+    translateBatch,
     saveJobCoverLetter,
     getJobCoverLetter,
     updateJobCoverLetterStatus,
@@ -65,6 +66,7 @@ router.post('/generate-email-body', authenticateToken, asJob('email_body')(gener
 // ── Cover letter for job ──────────────────────────────────────────────────────
 router.post('/jobs/:jobId/generate-cover-letter',       authenticateToken, generateJobCoverLetter);
 router.post('/jobs/:jobId/translate',                   authenticateToken, translateJob);
+router.post('/translate-batch',                         authenticateToken, translateBatch);   // in-page (WebView) bridge translator
 router.post('/jobs/:jobId/cover-letter',                authenticateToken, saveJobCoverLetter);
 router.get( '/jobs/:jobId/cover-letter',                authenticateToken, getJobCoverLetter);
 router.patch('/jobs/:jobId/cover-letter/status',        authenticateToken, updateJobCoverLetterStatus);
