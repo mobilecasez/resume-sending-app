@@ -6,7 +6,7 @@
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{margin:0;padding-top:96px;background:var(--bg);color:var(--slate);
+body{margin:0;padding-top:100px;background:var(--bg);color:var(--slate);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Helvetica,Arial,sans-serif;
   font-size:18px;line-height:1.75;-webkit-font-smoothing:antialiased}
 a{color:var(--brand-deep);text-decoration:none}
