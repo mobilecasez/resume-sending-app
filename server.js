@@ -824,6 +824,18 @@ app.get('/refund-policy', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'refund-policy.html'));
 });
 
+// ── SEO article hub (clean URLs: /articles and /articles/<slug>) ──
+app.get('/articles', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'articles', 'index.html'));
+});
+app.get('/articles/:slug', (req, res) => {
+    const slug = String(req.params.slug || '').replace(/[^a-z0-9-]/gi, '');   // no path traversal
+    const file = path.join(__dirname, 'public', 'articles', slug + '.html');
+    res.sendFile(file, (err) => {
+        if (err) res.status(404).sendFile(path.join(__dirname, 'public', 'articles', 'index.html'));
+    });
+});
+
 // Static files for landing page resources
 const staticOptions = { maxAge: '7d', etag: true };
 app.use('/bootstrap-4.1.1-dist', express.static('bootstrap-4.1.1-dist', staticOptions));
