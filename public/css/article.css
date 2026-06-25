@@ -6,21 +6,21 @@
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{margin:0;padding-top:72px;background:var(--bg);color:var(--slate);
+body{margin:0;padding-top:96px;background:var(--bg);color:var(--slate);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Helvetica,Arial,sans-serif;
   font-size:18px;line-height:1.75;-webkit-font-smoothing:antialiased}
 a{color:var(--brand-deep);text-decoration:none}
 a:hover{text-decoration:underline}
 img{max-width:100%;height:auto}
 
-/* The shared site header (/js/app-header.js, mounted in <div id="app-header">) is built for the
-   DARK app pages — translucent + blurred. On the LIGHT article pages that reads washed-out and the
-   content bleeds through it, so make it solid + drop the blur (matches the brand navy, looks clean). */
+/* Keep the shared site header (/js/app-header.js, in <div id="app-header">) on every page, but on the
+   LIGHT article pages re-skin it to match the footer colour (#0f1426) with a touch of translucency +
+   blur — so it reads as a deliberate frosted dark bar instead of the default washed-out one. */
 #app-header .nav{
-  background:#161d33 !important;
-  -webkit-backdrop-filter:none !important;
-  backdrop-filter:none !important;
-  box-shadow:0 6px 24px rgba(15,23,42,.10);
+  background:rgba(15,20,38,0.90) !important;   /* article footer colour + slight opacity */
+  -webkit-backdrop-filter:blur(14px) saturate(140%) !important;
+  backdrop-filter:blur(14px) saturate(140%) !important;
+  box-shadow:0 8px 28px rgba(15,23,42,.14);
 }
 
 /* article shell */
