@@ -6,23 +6,14 @@
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{margin:0;background:var(--bg);color:var(--slate);
+body{margin:0;padding-top:58px;background:var(--bg);color:var(--slate);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Helvetica,Arial,sans-serif;
   font-size:18px;line-height:1.75;-webkit-font-smoothing:antialiased}
 a{color:var(--brand-deep);text-decoration:none}
 a:hover{text-decoration:underline}
 img{max-width:100%;height:auto}
 
-/* top bar */
-.abar{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.92);backdrop-filter:saturate(160%) blur(8px);
-  border-bottom:1px solid var(--line)}
-.abar .wrap{max-width:1080px;margin:0 auto;padding:12px 20px;display:flex;align-items:center;justify-content:space-between}
-.brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:20px;color:var(--ink);letter-spacing:-.3px}
-.brand img{width:28px;height:28px}
-.brand span{color:var(--brand)}
-.abar .cta{background:var(--grad);color:#fff;padding:9px 18px;border-radius:999px;font-weight:700;font-size:15px;
-  box-shadow:0 6px 18px rgba(59,130,246,.30)}
-.abar .cta:hover{text-decoration:none;filter:brightness(1.05)}
+/* top bar is the shared site header injected by /js/app-header.js into <div id="app-header">. */
 
 /* article shell */
 .article{max-width:760px;margin:0 auto;padding:0 20px 80px}
@@ -98,7 +89,7 @@ blockquote{margin:30px 0;padding:6px 0 6px 22px;border-left:4px solid var(--cyan
 .afoot .cr{max-width:1080px;margin:28px auto 0;border-top:1px solid #1e293b;padding-top:18px;font-size:13px;text-align:center}
 
 /* article index grid */
-.hub-hero{max-width:1080px;margin:0 auto;padding:48px 20px 8px;text-align:center}
+.hub-hero{max-width:1080px;margin:0 auto;padding:26px 20px 8px;text-align:center}
 .hub-hero h1{font-size:clamp(30px,5vw,48px)}
 .hub-hero p{font-size:20px;color:#475569;max-width:680px;margin:0 auto}
 .grid{max-width:1080px;margin:30px auto;padding:0 20px 70px;display:grid;
@@ -107,7 +98,8 @@ blockquote{margin:30px 0;padding:6px 0 6px 22px;border-left:4px solid var(--cyan
   box-shadow:0 10px 30px rgba(15,23,42,.06);transition:transform .15s,box-shadow .15s}
 .card:hover{transform:translateY(-3px);box-shadow:0 18px 44px rgba(15,23,42,.12)}
 .card a{color:inherit}.card a:hover{text-decoration:none}
-.card .thumb{height:170px;background:var(--grad);background-size:cover;background-position:center;display:flex;
+/* aspect-ratio matches the 1200x628 promo images so they fill without cropping */
+.card .thumb{aspect-ratio:1200/628;background:var(--grad);background-size:cover;background-position:center;display:flex;
   align-items:flex-end;padding:14px}
 .card .tag{background:rgba(255,255,255,.92);color:var(--brand-deep);font-weight:800;font-size:11px;
   padding:5px 10px;border-radius:999px;letter-spacing:.5px;text-transform:uppercase}
