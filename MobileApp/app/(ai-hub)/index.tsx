@@ -2701,8 +2701,10 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     paddingVertical: 4,
     paddingHorizontal: 9,
+    flexShrink: 1,          // let a long chip (e.g. location) shrink instead of overflowing the card
+    maxWidth: '100%',
   },
-  metaChipText: { fontSize: 11, fontWeight: '600', color: T.textMuted },
+  metaChipText: { fontSize: 11, fontWeight: '600', color: T.textMuted, flexShrink: 1, flexWrap: 'wrap' },
 
   // Card sections (Skills / Responsibilities / Contacts)
   cardSection: {

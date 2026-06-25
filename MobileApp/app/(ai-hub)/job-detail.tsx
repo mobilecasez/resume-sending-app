@@ -2650,8 +2650,9 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.12)',
     borderRadius: 20, paddingVertical: 4, paddingHorizontal: 9,
+    flexShrink: 1, maxWidth: '100%',   // long location wraps instead of overflowing the card's right edge
   },
-  metaChipText: { fontSize: 11, fontWeight: '600', color: 'rgba(255,255,255,0.75)' },
+  metaChipText: { fontSize: 11, fontWeight: '600', color: 'rgba(255,255,255,0.75)', flexShrink: 1, flexWrap: 'wrap' },
 
   // Divider inside merged card
   divider: { height: 1, backgroundColor: T.border, marginVertical: 16 },
