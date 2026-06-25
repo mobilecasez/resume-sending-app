@@ -3585,6 +3585,13 @@ app.get('/api/user/is-admin', authenticateToken, async (req, res) => {
 paymentRoutes.setDbConfig(dbConfig);
 app.use('/api/payment', paymentRoutes.router);
 
+// First-party article comments (for the /articles blog)
+const articleComments = require('./server/articleComments');
+articleComments.ensureTable()
+  .then(() => console.log('✅ article_comments table ready'))
+  .catch((e) => console.error('article_comments ensure failed:', e.message));
+app.use('/api/article-comments', articleComments.router);
+
 // Diagnostic endpoint to verify deployment version
 app.get('/api/relay-test', (req, res) => {
     res.json({ relay: 'v2', timestamp: new Date().toISOString() });
