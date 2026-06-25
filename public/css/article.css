@@ -59,6 +59,17 @@ figure.shot img{max-width:330px;margin:0 auto;box-shadow:0 22px 60px rgba(15,23,
 .shotrow{display:flex;gap:20px;justify-content:center;flex-wrap:wrap;margin:32px 0}
 .shotrow figure{margin:0}
 .shotrow img{max-width:250px;border-radius:18px;box-shadow:0 22px 60px rgba(15,23,42,.20);display:block}
+/* two-column row: body text beside a tall portrait screenshot (never stack two images) */
+.split{display:grid;grid-template-columns:1.1fr .9fr;gap:30px;align-items:center;margin:34px 0}
+.split .split-text{min-width:0}
+.split .split-text>:first-child{margin-top:0}
+.split .split-text>:last-child{margin-bottom:0}
+.split figure.shot{margin:0}
+.split figure.shot img{max-width:100%;max-height:430px;width:auto;margin:0 auto}
+@media(max-width:680px){
+  .split{grid-template-columns:1fr;gap:16px}
+  .split figure.shot img{max-width:300px;max-height:none}
+}
 
 /* callouts / stat cards / quote */
 .callout{background:var(--soft);border:1px solid var(--line);border-left:4px solid var(--brand);
