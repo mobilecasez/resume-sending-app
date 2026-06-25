@@ -22,9 +22,12 @@ Live exemplar to match in quality + structure: `public/articles/apply-to-100-job
      the `.fab` floating Download button (→ `/download`); and the footer — copy verbatim.
 3. **Body**: 1500–2000 words, problem → why it's hard → how CVApplyr solves it, step by step. Engaging,
    concrete, NOT boring or salesy. Include **2 graphics**: at least one custom inline `<svg>` (on-brand
-   gradient `#06B6D4`→`#3B82F6`, e.g. a chart/comparison) AND one promo image. Reuse an image from
-   `public/articles/img/` (already: apply-in-minutes, stop-manual-applying, reply-rate, before-after)
-   or copy a fitting one from `Claude/cvApplyr/ad_images*/` into `public/articles/img/`. One inline
+   gradient `#06B6D4`→`#3B82F6`, e.g. a chart/comparison) AND one promo image. Reuse a WIDE 1200×628
+   image from `public/articles/img/` (apply-in-minutes, stop-manual-applying, reply-rate) or copy a
+   fitting wide ad from `Claude/cvApplyr/ad_images_wide/` into `public/articles/img/`. ⚠️ NEVER use a
+   cropped image or one with text cut off at the edges — open/verify it first (the square
+   `before-after.jpg` is cropped — do NOT use it). When in doubt, build a custom inline SVG instead
+   (no crop, full control). One inline
    `.ctaband` mid-article + the FAQ + a "Keep reading" `.related` block linking 1–2 other articles.
 4. **Add an index card**: insert a `<article class="card">…</article>` (copy the existing card shape)
    immediately after `<!-- ARTICLE_CARDS_START -->` in `public/articles/index.html` (newest first).
