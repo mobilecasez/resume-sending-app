@@ -16,7 +16,7 @@ Live exemplar to match in quality + structure: `public/articles/apply-to-100-job
    - SEO `<title>` (≈55–60 chars, keyword-led), meta description (≈150 chars), `<link rel=canonical>`
      to `https://cvapplyr.com/articles/<slug>`, OG + Twitter tags, favicon set,
    - `Article` + `FAQPage` JSON-LD (4 real FAQs matching the on-page FAQ),
-   - **`<link rel="stylesheet" href="/css/article.css?v=2">`** — the `?v=N` cache-buster is REQUIRED
+   - **`<link rel="stylesheet" href="/css/article.css?v=5">`** — the `?v=N` cache-buster is REQUIRED
      (see Caching rule below); use the CURRENT version number,
    - the shared site header — `<div id="app-header"></div>` near the top of `<body>` PLUS
      `<script src="/js/app-header.js?v=5"></script>` just before `</body>` (this injects the common menu);
@@ -51,14 +51,39 @@ Live exemplar to match in quality + structure: `public/articles/apply-to-100-job
 `/css/article.css` is served with `cache-control: max-age=86400` (24h). The `<link>` therefore carries a
 version query `?v=N`. **Whenever you edit `article.css`, bump N** (e.g. `?v=2` → `?v=3`) in EVERY article
 HTML file (`public/articles/*.html`) in the same commit, so visitors fetch the new CSS instead of a stale
-cached copy. New articles must use the current `?v=N`. (Current version: **v=2**.)
+cached copy. New articles must use the current `?v=N`. (Current version: **v=5**.)
+
+## ⚠️ NEVER place two images back-to-back — text must separate them
+Do not stack a hero and a screenshot (or any two `<figure>`s) with only whitespace between. The hero is the
+only full-width image right after `.meta`. The portrait app screenshot goes in a **two-column split** beside
+text (the shopflixai pattern), e.g. pair it with the lead paragraph:
+`<figure class="hero">…</figure>` then
+`<div class="split"><div class="split-text"><p class="lead">…</p></div><figure class="shot"><img …></figure></div>`
+then the first `<h2>`. Any later screenshot must likewise sit next to a paragraph, never directly after
+another figure. (`.split` stacks to text-then-image on mobile.)
 
 ## Header + layout treatment (already in article.css — do NOT regress)
-- On article pages the shared header is **transparent** (`#app-header .nav{background:transparent}` with
-  dark nav text), so the white page shows through cleanly. This override lives in `article.css` only, so
-  every OTHER page of the site keeps its normal dark header. Do not re-add a background to the article header.
+- On article pages the shared header uses a **solid white background that matches the page**
+  (`#app-header .nav{background:var(--bg)}` with dark nav text + a faint bottom border), so it reads as a
+  clean integrated bar. This override lives in `article.css` only, so every OTHER page of the site keeps
+  its normal dark header. Do NOT change it back to transparent or dark.
 - Top spacing lives on the article element: **`.article{margin:100px auto 0}`** and `body{padding-top:0}`.
-  Keep the 100px on `.article` (not on body) so the title clears the floating transparent header.
+  Keep the 100px on `.article` (not on body) so the title clears the fixed header.
+
+## Hero image + comments (every article now has these — copy from the exemplar)
+- **Hero image:** generate ONE realistic AI hero with Imagen 4 (existing `GEMINI_API_KEY`): POST
+  `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-fast-generate-001:predict` with an
+  editorial-photo prompt relevant to the topic (suffix: "no text, no UI, no logos, soft natural light,
+  realistic"), `aspectRatio:"16:9"`; downscale to 1200px-wide JPG (~q82) and save as
+  `public/articles/img/hero-<slug>.jpg`. Embed it as the FIRST figure under the `.meta` line:
+  `<figure class="hero"><img src="/articles/img/hero-<slug>.jpg" alt="<descriptive keyword alt>" width="1200" height="675" loading="eager"></figure>`.
+  Point `og:image`, `twitter:image` and the Article JSON-LD `image` at this hero. (Imagen has a per-minute
+  quota — on HTTP 429 wait ~40s and retry; generate sequentially.)
+- **Comments:** include `<section id="article-comments" class="comments" data-slug="<slug>"></section>`
+  right after `</article>`, and `<script src="/js/article-comments.js?v=1"></script>` just before `</body>`
+  (after the app-header script). The widget + first-party API (`/api/article-comments`, table
+  `article_comments`) already exist — nothing else to wire.
+- **BreadcrumbList JSON-LD** (Home › Articles › Title) in `<head>`, alongside the Article + FAQPage JSON-LD.
 
 ## Real screenshots available (public/articles/img/) → map to topics
 These are REAL in-app captures (polished marketing frames). Pick the ones that fit the article:
