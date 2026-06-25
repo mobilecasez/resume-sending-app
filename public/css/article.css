@@ -18,11 +18,11 @@ img{max-width:100%;height:auto}
    so they stay readable over white. This override lives in article.css, which ONLY loads on article
    pages, so the header on every other page of the site is completely untouched. */
 #app-header .nav{
-  background:transparent !important;
+  background:var(--bg) !important;          /* match the article page background (white) */
   -webkit-backdrop-filter:none !important;
   backdrop-filter:none !important;
-  border-bottom:none !important;
-  box-shadow:none !important;
+  border-bottom:1px solid var(--line) !important;
+  box-shadow:0 1px 0 rgba(15,23,42,.04) !important;
 }
 #app-header .nav-links a{ color:#475569 !important; }
 #app-header .nav-links a:hover{ color:#0B1120 !important; background:rgba(2,6,23,.05) !important; }
