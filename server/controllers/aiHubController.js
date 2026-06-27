@@ -2159,8 +2159,8 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                     // Cheap string redirect — must happen before the cache key is computed.
                     console.log(`[aiHub] Override (careers_url) for ${extractDomain(scrapeUrl)} → ${fc.url}`);
                     scrapeUrl = fc.url;
-                } else if (fc.kind === 'api' || fc.kind === 'jsonld' || fc.kind === 'render_ai') {
-                    // Defer the expensive fetch (Playwright/API) until we know the cache missed.
+                } else if (fc.kind === 'api' || fc.kind === 'jsonld' || fc.kind === 'render_ai' || fc.kind === 'ai_grounded') {
+                    // Defer the expensive fetch (Playwright/API/grounded-search) until we know the cache missed.
                     pendingOverrideFc = fc;
                 }
             }
