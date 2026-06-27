@@ -447,13 +447,14 @@ function AppContent() {
   // Restore saved session on app start
   useEffect(() => {
     const restoreSession = async () => {
+      let savedUser = null;
       try {
         const stored = await SecureStore.getItemAsync('userSession');
         if (!stored) return;
-        
-        const savedUser = JSON.parse(stored);
+
+        savedUser = JSON.parse(stored);
         if (!savedUser?.token) return;
-        
+
         // Validate token with server
         const response = await fetch(`${API_BASE}/users/profile`, {
           headers: {
@@ -461,7 +462,7 @@ function AppContent() {
             'Content-Type': 'application/json',
           }
         });
-        
+
         if (response.ok) {
           const profileData = await safeResponseJson(response);
           if (profileData.error) throw new Error(profileData.error);
@@ -476,13 +477,27 @@ function AppContent() {
           sessionRestoredRef.current = true;
           setScreen('dashboard');
           console.log('✅ Session restored for:', restoredUser.email);
-        } else {
-          // Token expired or invalid — clear stored session
+        } else if (response.status === 401 || response.status === 403) {
+          // ONLY a genuine auth rejection (real expiry / invalid token) clears the session.
           await SecureStore.deleteItemAsync('userSession');
           console.log('🔑 Stored session expired, showing login');
+        } else {
+          // Transient server error (5xx, a 502 during a backend deploy, etc.) — keep the user
+          // logged in with the saved session instead of forcing a re-login over a momentary blip.
+          setUser(savedUser);
+          sessionRestoredRef.current = true;
+          setScreen('dashboard');
+          console.log('⚠️ Profile check returned', response.status, '— keeping saved session');
         }
       } catch (err) {
-        console.log('Session restore error:', err);
+        // Network error reaching the server (offline, timeout) — keep the saved session too,
+        // so a flaky connection at launch doesn't log the user out.
+        console.log('Session restore error (keeping saved session):', err?.message || err);
+        if (savedUser?.token) {
+          setUser(savedUser);
+          sessionRestoredRef.current = true;
+          setScreen('dashboard');
+        }
       }
     };
     restoreSession();

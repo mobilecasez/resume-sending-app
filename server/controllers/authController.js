@@ -153,7 +153,7 @@ const register = async (req, res) => {
         const token = jwt.sign(
             { id: userId, email: sanitizedEmail },
             JWT_SECRET,
-            { expiresIn: '24h' }
+            { expiresIn: '30d' }
         );
 
         res.json({
@@ -222,7 +222,7 @@ const login = async (req, res) => {
         const token = jwt.sign(
             { id: user.id, email: user.email },
             JWT_SECRET,
-            { expiresIn: '24h' }
+            { expiresIn: '30d' }
         );
 
         // Log successful login
@@ -272,7 +272,7 @@ const googleCallback = (req, res) => {
     const token = jwt.sign(
         { id: req.user.id, email: req.user.email },
         JWT_SECRET,
-        { expiresIn: '24h' }
+        { expiresIn: '30d' }
     );
 
     const userData = {
@@ -308,7 +308,7 @@ const googleMobileCallback = (req, res) => {
     const token = jwt.sign(
         { id: req.user.id, email: req.user.email },
         JWT_SECRET,
-        { expiresIn: '24h' }
+        { expiresIn: '30d' }
     );
     const userData = {
         id: req.user.id,
@@ -565,7 +565,7 @@ const googleAuth = async (req, res) => {
                 const token = jwt.sign(
                     { id: newUserId, email: googleUser.email },
                     JWT_SECRET,
-                    { expiresIn: '24h' }
+                    { expiresIn: '30d' }
                 );
 
                 return res.json({
@@ -640,7 +640,7 @@ const googleAuth = async (req, res) => {
                 const token = jwt.sign(
                     { id: user.id, email: user.email },
                     JWT_SECRET,
-                    { expiresIn: '24h' }
+                    { expiresIn: '30d' }
                 );
 
                 return res.json({
@@ -671,7 +671,7 @@ const microsoftCallback = (req, res) => {
     const token = jwt.sign(
         { id: req.user.id, email: req.user.email },
         JWT_SECRET,
-        { expiresIn: '24h' }
+        { expiresIn: '30d' }
     );
 
     const userData = {
@@ -871,7 +871,7 @@ const microsoftAuth = async (req, res) => {
             const token = jwt.sign(
                 { id: newUserId, email: msEmail },
                 JWT_SECRET,
-                { expiresIn: '24h' }
+                { expiresIn: '30d' }
             );
 
             return res.json({
@@ -924,7 +924,7 @@ const microsoftAuth = async (req, res) => {
             const token = jwt.sign(
                 { id: user.id, email: user.email },
                 JWT_SECRET,
-                { expiresIn: '24h' }
+                { expiresIn: '30d' }
             );
 
             return res.json({
@@ -951,7 +951,7 @@ const linkedinCallback = (req, res) => {
     const token = jwt.sign(
         { id: req.user.id, email: req.user.email },
         JWT_SECRET,
-        { expiresIn: '24h' }
+        { expiresIn: '30d' }
     );
 
     res.redirect(`/auth-success.html?token=${token}&user=${encodeURIComponent(JSON.stringify({
@@ -1169,7 +1169,7 @@ const appleAuth = async (req, res) => {
             const token = jwt.sign(
                 { id: newUserId, email },
                 JWT_SECRET,
-                { expiresIn: '24h' }
+                { expiresIn: '30d' }
             );
 
             return res.json({
@@ -1230,7 +1230,7 @@ const appleAuth = async (req, res) => {
             const token = jwt.sign(
                 { id: user.id, email: currentEmail },
                 JWT_SECRET,
-                { expiresIn: '24h' }
+                { expiresIn: '30d' }
             );
 
             return res.json({
@@ -1438,7 +1438,7 @@ const appleWebCallback = async (req, res) => {
         }
 
         // Generate JWT and redirect same as Google/Microsoft
-        const token = jwt.sign({ id: userId, email: userEmail }, JWT_SECRET, { expiresIn: '24h' });
+        const token = jwt.sign({ id: userId, email: userEmail }, JWT_SECRET, { expiresIn: '30d' });
 
         const userDataObj = {
             id: userId,
