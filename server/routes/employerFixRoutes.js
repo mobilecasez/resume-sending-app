@@ -10,6 +10,7 @@ router.get('/ai-hub/fix-requests/:id', authenticateToken, ctrl.getRequestStatus)
 // Admin — the diagnostic agent dashboard
 router.get('/admin/employer-requests', authenticateAdmin, ctrl.adminListRequests);
 router.post('/admin/employer-requests/:id/investigate', authenticateAdmin, ctrl.adminInvestigate);
+router.post('/admin/employer-requests/:id/apply-fix', authenticateAdmin, ctrl.adminApplyFix);   // self-heal routine: apply+verify a reasoned fix_config
 router.get('/admin/employer-requests/:id/overrides', authenticateAdmin, ctrl.adminOverrideHistory);
 router.post('/admin/employer-requests/:id/deactivate', authenticateAdmin, ctrl.adminDeactivate);
 router.post('/admin/employer-overrides/:overrideId/activate', authenticateAdmin, ctrl.adminActivateOverride);

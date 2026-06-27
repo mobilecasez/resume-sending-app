@@ -79,7 +79,7 @@ async function adminListRequests(req, res) {
     for (const r of rows) {
       const ov = await fix.getActiveOverride(r.domain);
       out.push({
-        id: r.id, email: r.email, employerInput: r.employer_input, domain: r.domain,
+        id: r.id, userId: r.user_id, email: r.email, employerInput: r.employer_input, domain: r.domain,
         detectedAts: r.detected_ats, jobCount: r.job_count, status: r.status,
         diagnosis: r.diagnosis, attempts: r.attempts,
         createdAt: r.created_at, updatedAt: r.updated_at, resolvedAt: r.resolved_at,
@@ -163,8 +163,44 @@ async function adminRunFixQueue(req, res) {
   }
 }
 
+// ── Admin: apply a fix_config reasoned by the hourly self-heal routine. VERIFY it yields real
+// jobs (with details) BEFORE persisting — never store an unverified override. Additive: reuses
+// applyOverride + saveOverride + updateRequest, exactly like the automated agent path.
+async function adminApplyFix(req, res) {
+  try {
+    const reqRow = await fix.getFixRequest(req.params.id);
+    if (!reqRow) return res.status(404).json({ error: 'request not found' });
+    const fixConfig = req.body && req.body.fixConfig;
+    if (!fixConfig || !fixConfig.kind) return res.status(400).json({ error: 'fixConfig with a kind is required' });
+
+    // Verify before save: the proposed fix must actually produce real jobs WITH details.
+    const out = await agent.applyOverride(fixConfig);
+    const jobs = (out && Array.isArray(out.jobs)) ? out.jobs : [];
+    const withDetails = jobs.filter(j => j && j.title && (j.job_url || j.url || (Array.isArray(j.responsibilities) && j.responsibilities.length))).length;
+    if (jobs.length < 1 || withDetails < 1) {
+      return res.json({ verified: false, jobCount: jobs.length, withDetails, message: 'Proposed fix did not yield verifiable jobs — NOT saved.' });
+    }
+
+    const dom = reqRow.domain || fix.normDomain(reqRow.employer_input);
+    const overrideId = await fix.saveOverride({
+      domain: dom, requestId: reqRow.id, fixConfig, verified: true,
+      verifyJobCount: jobs.length, verifySample: jobs.slice(0, 3).map(j => j.title),
+      createdBy: 'self-heal-routine', notes: (req.body && req.body.notes) || 'hourly Claude self-heal routine',
+    });
+    await fix.updateRequest(reqRow.id, {
+      status: 'resolved', jobCount: jobs.length,
+      detectedAts: (out && out.ats) || fixConfig.kind, resolved: true,
+      diagnosis: { method: 'self_heal_routine', fixConfig, verifyJobCount: jobs.length },
+    });
+    return res.json({ verified: true, jobCount: jobs.length, withDetails, ats: out.ats, domain: dom, overrideId, userId: reqRow.user_id, employerInput: reqRow.employer_input });
+  } catch (e) {
+    console.error('[employerFix] adminApplyFix:', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+}
+
 module.exports = {
   runInvestigation, submitFixRequest, getRequestStatus,
   adminListRequests, adminInvestigate, adminOverrideHistory, adminActivateOverride, adminDeactivate,
-  adminRunFixQueue,
+  adminRunFixQueue, adminApplyFix,
 };
