@@ -1,4 +1,5 @@
-Bug fixes and performance improvements.
-- Fixed password change/set for OAuth users (Google, Microsoft, Apple Sign-In)
-- Improved post-login navigation
-- General stability improvements
+This update makes CVApplyr smoother and more reliable:
+- In-app translation now works on job sites that previously blocked it
+- Long job locations display cleanly without overflowing
+- Stay signed in longer, with fewer unexpected logouts
+- Various fixes and improvements
