@@ -175,8 +175,54 @@ async function applyOverride(fixConfig) {
       const jobs = await aiExtractJobs(fixConfig.url);
       return jobs.length ? { jobs, companyName: '', ats: 'render_ai' } : null;
     }
+    if (fixConfig.kind === 'ai_grounded') {
+      // Google-Search-grounded retrieval — LAST RESORT for anti-bot / hard-redirect career sites that
+      // can't be fetched OR rendered (e.g. SuccessFactors behind redirects like jobs.uni.lu). Mirrors
+      // what Gemini does with Google Search: pulls the employer's current openings from the search index.
+      const jobs = await aiGroundedJobs(fixConfig.url, fixConfig.employer);
+      return jobs.length ? { jobs, companyName: fixConfig.employer || '', ats: 'ai_grounded' } : null;
+    }
   } catch (e) { return null; }
   return null;
+}
+
+// Google-Search-grounded job retrieval (no live fetch/render). For sites our fetch+render kinds can't
+// reach. Returns normalized jobs via makeJob; grounding keeps it factual (real titles + URLs from search).
+async function aiGroundedJobs(url, employer) {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) return [];
+  let model;
+  try { model = new GoogleGenerativeAI(key).getGenerativeModel({ model: 'gemini-2.5-flash', tools: [{ googleSearch: {} }] }); }
+  catch { return []; }
+  const who = employer ? `"${employer}"` : `the employer whose careers site is ${url}`;
+  const prompt = `Using Google Search, list the CURRENT open job postings at ${who} (careers site: ${url}).
+Return ONLY a JSON array (no prose, no markdown fences) of objects with keys:
+"title" (string), "location" (string), "employment_type" (string or ""), "job_url" (the direct posting URL from the search results; if unknown use ${url}).
+Rules: include ONLY real postings found via search — never invent a title or URL. Prefer postings on the employer's own careers domain. Aim for completeness (up to ~60 roles). If none are found, return [].`;
+  let text = '';
+  for (let i = 0; i < 3; i++) {
+    try { const res = await model.generateContent(prompt); text = (res && res.response && res.response.text()) || ''; break; }
+    catch (e) { if (i === 2) return []; await new Promise((r) => setTimeout(r, 1500 * (i + 1))); }
+  }
+  let arr = [];
+  try { const m = text.match(/\[[\s\S]*\]/); arr = m ? JSON.parse(m[0]) : []; } catch { return []; }
+  if (!Array.isArray(arr)) return [];
+  const seen = new Set(); const jobs = [];
+  for (const o of arr) {
+    if (!o) continue;
+    const title = String(o.title || o['Job Title'] || '').trim();
+    if (!title || !isPlausibleTitle(title)) continue;
+    const loc = String(o.location || o.Location || '').trim();
+    const k = (title + '|' + loc).toLowerCase();
+    if (seen.has(k)) continue; seen.add(k);
+    const et = String(o.employment_type || o['Employment Type'] || '').toLowerCase();
+    jobs.push(makeJob({
+      title, location: loc, job_url: String(o.job_url || o['Job URL'] || o.url || url).trim(),
+      employer_name: employer || null, employmentCode: et.includes('part') ? 'part_time' : (et.includes('full') ? 'full_time' : undefined),
+    }));
+    if (jobs.length >= 80) break;
+  }
+  return jobs;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
