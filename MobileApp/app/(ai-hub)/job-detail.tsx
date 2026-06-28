@@ -30,7 +30,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, translateJob, translateBatch, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, type TranslatedJob, type SmartFillData } from '../../services/aiHubService';
+import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, translateJob, translateBatch, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, isLinkedInJobUrl, type LinkedInJob, type TranslatedJob, type SmartFillData } from '../../services/aiHubService';
+import LinkedInJobLoader from '../../components/LinkedInJobLoader';
 import { API_BASE } from '../../config';
 import { SUBMIT_DETECT_JS, CONFIRM_URL_RE } from './submitDetect';
 import CreditCostPill from '../../components/CreditCostPill';
@@ -1004,9 +1005,26 @@ export default function JobDetailScreen() {
   const [translatedJob, setTranslatedJob] = useState<TranslatedJob | null>(null);
   const [showEnglish, setShowEnglish] = useState(false);
   const [translatingJob, setTranslatingJob] = useState(false);
+  // ── LinkedIn auto-route: when a job's apply link is a LinkedIn posting, the hidden on-device WebView
+  // extractor (defeats the HTTP-999 wall) fills liJob, which layers onto the display + feeds the cover letter.
+  const [liJob, setLiJob] = useState<LinkedInJob | null>(null);
+  const [liUrl, setLiUrl] = useState('');
+  const [liStage, setLiStage] = useState('');
+  const liTriedRef = useRef('');
+  const baseJob: any = liJob ? {
+    ...job,
+    title: liJob.title || job.title,
+    location: liJob.location || (job as any).location,
+    salary: liJob.salary || (job as any).salary,
+    jobType: liJob.employment_type || (job as any).jobType,
+    workMode: liJob.work_mode || (job as any).workMode,
+    experience: liJob.seniority || (job as any).experience,
+    skills: (liJob.skills && liJob.skills.length) ? liJob.skills : job.skills,
+    responsibilities: (liJob.responsibilities && liJob.responsibilities.length) ? liJob.responsibilities : (job as any).responsibilities,
+  } : job;
   const display: any = (showEnglish && translatedJob)
-    ? { ...job, ...Object.fromEntries(Object.entries(translatedJob).filter(([, v]) => v != null && (!Array.isArray(v) || v.length > 0))) }
-    : job;
+    ? { ...baseJob, ...Object.fromEntries(Object.entries(translatedJob).filter(([, v]) => v != null && (!Array.isArray(v) || v.length > 0))) }
+    : baseJob;
   const canTranslate = isLikelyNonEnglish(
     `${job.title || ''} ${Array.isArray((job as any).responsibilities) ? (job as any).responsibilities.join(' ') : ''} ${Array.isArray(job.skills) ? job.skills.join(' ') : ''}`
   );
@@ -1048,6 +1066,13 @@ export default function JobDetailScreen() {
   const [urlInput,    setUrlInput]    = useState('');
   const [savingUrl,   setSavingUrl]   = useState(false);
   const effectiveApplyUrl = overrideUrl || (job as any).applyUrl || '';
+  // Auto-route a LinkedIn job link to the hidden on-device extractor (once per link; backend caches by URL).
+  useEffect(() => {
+    if (!effectiveApplyUrl || !isLinkedInJobUrl(effectiveApplyUrl)) return;
+    if (liTriedRef.current === effectiveApplyUrl) return;
+    liTriedRef.current = effectiveApplyUrl;
+    setLiJob(null); setLiStage('Loading the job from LinkedIn…'); setLiUrl(effectiveApplyUrl);
+  }, [effectiveApplyUrl]);
   useFocusEffect(useCallback(() => {
     if (!job?.id) return;
     getJobContacts(job.id).then(fetched => {
@@ -1141,12 +1166,12 @@ export default function JobDetailScreen() {
 
     try {
       const websiteUrl = websiteUrlCL || employerWebsite;
-      const responsibilities = ((job as any).responsibilities as string[] | undefined) || [];
+      const responsibilities = ((display as any).responsibilities as string[] | undefined) || [];
       const jobId = await startJobCoverLetter(
         websiteUrl,
-        job.title,
+        display.title,
         responsibilities.length > 0 ? responsibilities : undefined,
-        job.location || undefined,
+        display.location || undefined,
       );
       const result = await pollJobCoverLetter(jobId, () => {
         if (fake < 75) { fake = Math.min(fake + 3, 75); setClProgress(Math.round(fake)); animTo(clAnim, fake / 100); }
@@ -1670,6 +1695,16 @@ export default function JobDetailScreen() {
 
   return (
     <SafeAreaView style={s.safeArea} edges={['top']}>
+      {/* Hidden LinkedIn extractor — loads the LinkedIn job in an off-screen WebView on the user's
+          device (real session/IP/fingerprint → bypasses the 999 wall) and enriches this job silently. */}
+      {liUrl ? (
+        <LinkedInJobLoader
+          url={liUrl}
+          onResult={(j) => { setLiJob(j); setLiUrl(''); setLiStage(''); }}
+          onError={() => { setLiUrl(''); setLiStage(''); }}
+          onStage={setLiStage}
+        />
+      ) : null}
       {/* Top bar — matches jobs dashboard exactly */}
       <View style={s.topBar}>
         <TouchableOpacity onPress={() => router.back()} style={s.backPill} activeOpacity={0.8}>
