@@ -282,6 +282,30 @@ export async function translateBatch(items: { i: string; t: string }[]): Promise
   }
 }
 
+// ── LinkedIn (separate pipeline: hidden on-device WebView → backend AI extract) ──
+export type LinkedInJob = {
+  title: string; company: string; location: string; employment_type: string;
+  work_mode: string; salary: string; seniority: string;
+  skills: string[]; responsibilities: string[]; description: string;
+  url: string; source: string;
+};
+
+// True for a LinkedIn job posting URL → route these to the hidden-WebView extractor, never the server scrape.
+export function isLinkedInJobUrl(url: string): boolean {
+  return /(^|\/\/|\.)linkedin\.com\/(jobs|job)\b/i.test(String(url || ''));
+}
+
+// Send the hidden WebView's page innerText to the backend → structured job (also stored for cover letters).
+export async function extractLinkedInJob(url: string, content: string): Promise<LinkedInJob> {
+  const headers = await getAuthHeader();
+  const response = await axios.post(
+    `${API_BASE_URL}/ai-hub/linkedin/extract`,
+    { url, content },
+    { headers }
+  );
+  return (response.data?.job ?? null) as LinkedInJob;
+}
+
 /**
  * Fetches the persisted contacts for a job (used to refresh after adding one).
  * Returns [] on any error so the caller can keep showing the snapshot.
