@@ -1,5 +1,5 @@
-This update makes CVApplyr smoother and more reliable:
-- In-app translation now works on job sites that previously blocked it
-- Long job locations display cleanly without overflowing
-- Stay signed in longer, with fewer unexpected logouts
+Bring LinkedIn jobs into CVApplyr:
+- Paste a LinkedIn job link to import it straight into your hub
+- Generate a tailored cover letter from any LinkedIn job
+- Smoother, more reliable job loading throughout
 - Various fixes and improvements
