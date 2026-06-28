@@ -306,6 +306,17 @@ export async function extractLinkedInJob(url: string, content: string): Promise<
   return (response.data?.job ?? null) as LinkedInJob;
 }
 
+// Extract AND add a pasted LinkedIn job URL to the user's Job Hub (employer + job + tracking) → shows on dashboard.
+export async function addLinkedInJob(url: string, content: string): Promise<LinkedInJob> {
+  const headers = await getAuthHeader();
+  const response = await axios.post(
+    `${API_BASE_URL}/ai-hub/linkedin/add`,
+    { url, content },
+    { headers }
+  );
+  return (response.data?.job ?? null) as LinkedInJob;
+}
+
 /**
  * Fetches the persisted contacts for a job (used to refresh after adding one).
  * Returns [] on any error so the caller can keep showing the snapshot.

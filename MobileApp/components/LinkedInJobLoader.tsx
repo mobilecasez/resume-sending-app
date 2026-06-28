@@ -11,7 +11,7 @@
 import React, { useEffect, useRef } from 'react';
 import { View } from 'react-native';
 import { WebView } from 'react-native-webview';
-import { extractLinkedInJob, type LinkedInJob } from '../services/aiHubService';
+import { extractLinkedInJob, addLinkedInJob, type LinkedInJob } from '../services/aiHubService';
 
 // A real mobile Safari UA so LinkedIn serves the normal job page (not a bot/stripped variant).
 const MOBILE_UA =
@@ -44,9 +44,10 @@ type Props = {
   onError: (message: string) => void;
   onStage?: (stage: string) => void;
   timeoutMs?: number;
+  add?: boolean; // true → also add the job to the user's Job Hub (dashboard); false → just extract/enrich
 };
 
-export default function LinkedInJobLoader({ url, onResult, onError, onStage, timeoutMs = 25000 }: Props) {
+export default function LinkedInJobLoader({ url, onResult, onError, onStage, timeoutMs = 25000, add = false }: Props) {
   const done = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -80,8 +81,10 @@ export default function LinkedInJobLoader({ url, onResult, onError, onStage, tim
 
     finish(async () => {
       try {
-        onStage?.('Reading the job details…');
-        const job = await extractLinkedInJob(msg.url || url, msg.content || '');
+        onStage?.(add ? 'Adding the job to your hub…' : 'Reading the job details…');
+        const job = add
+          ? await addLinkedInJob(msg.url || url, msg.content || '')
+          : await extractLinkedInJob(msg.url || url, msg.content || '');
         if (job && job.title) onResult(job);
         else onError('We couldn’t read this job. Please try another link.');
       } catch (err: any) {

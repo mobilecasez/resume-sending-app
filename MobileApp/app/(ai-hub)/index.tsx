@@ -32,7 +32,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type { Contact, Job, Employer, WishlistPill } from '../../types/aiHub';
-import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, fetchJobMatchScores, getMotivationLines, submitEmployerFixRequest } from '../../services/aiHubService';
+import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, fetchJobMatchScores, getMotivationLines, submitEmployerFixRequest, isLinkedInJobUrl } from '../../services/aiHubService';
 import type { Recruiter } from '../../services/aiHubService';
 import { API_BASE } from '../../config';
 import axios from 'axios';
@@ -40,6 +40,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LoadingTips } from './LoadingTips';
 import MotivationProgress from '../../components/MotivationProgress';
 import CreditCostPill from '../../components/CreditCostPill';
+import LinkedInJobLoader from '../../components/LinkedInJobLoader';
 import { useEventCosts } from '../../hooks/useEventCosts';
 
 const { width: SCREEN_W } = Dimensions.get('window');
@@ -1606,10 +1607,21 @@ export default function AIHubScreen() {
     if (pill?.employerId) removeEmployerCore(pill.employerId);
   }, [pills, removeEmployerCore]);
 
+  const [liAddUrl, setLiAddUrl] = useState('');
   const handleAddPill = useCallback(() => {
     let trimmed = inputValue.trim();
     if (!trimmed || trimmed === 'https://' || trimmed === 'http://') return;
     if (!/^https?:\/\//i.test(trimmed) && /\./.test(trimmed)) trimmed = `https://${trimmed}`;
+
+    // LinkedIn job URL → extract on-device via the hidden WebView (defeats the 999 wall) and add it to
+    // the hub. Routes AWAY from the server search (which blocks LinkedIn). No search credit is charged.
+    if (isLinkedInJobUrl(trimmed)) {
+      setInputValue('');
+      setModalVisible(false);
+      setLoadingCompanies((prev) => [...prev, trimmed]);
+      setLiAddUrl(trimmed);
+      return;
+    }
 
     const SEARCH_COST = costs['company_search'] ?? 3;
     if (creditBalance !== null && SEARCH_COST > 0 && creditBalance < SEARCH_COST) {
@@ -1718,6 +1730,33 @@ export default function AIHubScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
+      {/* Hidden LinkedIn extractor — when a LinkedIn job URL is added, it loads in an off-screen
+          on-device WebView (real session/IP → bypasses the 999 wall), extracts, and adds it to the hub. */}
+      {liAddUrl ? (
+        <LinkedInJobLoader
+          url={liAddUrl}
+          add
+          onResult={async (job) => {
+            const wasUrl = liAddUrl;
+            setLiAddUrl('');
+            try {
+              const dash: any[] = (await fetchDashboard()) as any;
+              const emps = (dash || []).map((e: any) => e.employer);
+              setEmployers(emps);
+              setPills(emps.map((emp: any, i: number) => ({ id: `pill-${emp.id}`, label: emp.name, colorVariant: COLOR_CYCLE[i % 3], employerId: emp.id })));
+              const added = emps.find((e: any) => (e.name || '').toLowerCase() === (job.company || '').toLowerCase());
+              if (added) setSelectedEmployerId(added.id);
+            } catch {}
+            setLoadingCompanies((prev) => prev.filter((c) => c !== wasUrl));
+          }}
+          onError={(m) => {
+            const wasUrl = liAddUrl;
+            setLiAddUrl('');
+            setLoadingCompanies((prev) => prev.filter((c) => c !== wasUrl));
+            Alert.alert('Could not add this LinkedIn job', m);
+          }}
+        />
+      ) : null}
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
