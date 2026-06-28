@@ -3967,6 +3967,14 @@ app.use('/api', aiEventCostsRoutes);
 app.use('/api', feedbackRoutes);
 app.use('/api', adminUsersRoutes);
 app.use('/api', employerFixRoutes);
+
+// LinkedIn job extraction — SEPARATE pipeline (hidden on-device WebView innerText → AI JSON + store).
+const linkedinRoutes = require('./server/routes/linkedinRoutes');
+require('./server/services/linkedinJobStore').ensureTable()
+  .then(() => console.log('✅ linkedin_jobs table ready'))
+  .catch((e) => console.error('linkedin_jobs ensure failed:', e.message));
+app.use('/api', linkedinRoutes);
+
 app.use('/api', coverLetterRoutes);
 app.use('/api', emailRoutes);
 app.use('/api', notificationsRoutes);
