@@ -66,6 +66,15 @@ const DISABLE_PASSKEY_JS = `(function(){try{
   }
 }catch(e){}})(); true;`;
 
+// Injected into the OAuth popup WebView. OAuth flows finish by calling window.close() (after
+// messaging window.opener). We can't share window.opener across two separate WebViews, so we
+// intercept window.close and tell RN to dismiss the popup + reload the main page — which then
+// picks up the freshly-set session cookie (cookies are shared between the WebViews).
+const POPUP_BRIDGE_JS = `(function(){try{
+  var notify=function(){try{window.ReactNativeWebView.postMessage('OAUTH_POPUP_CLOSE');}catch(e){}};
+  var _c=window.close; window.close=function(){notify();try{_c&&_c.call(window);}catch(e){}};
+}catch(e){}})(); true;`;
+
 // Lightweight CLIENT-SIDE check: should we offer "Translate to English" for this
 // job? Runs on the data already in the app — no network call, no backend/search
 // cost. Biased to SHOW the toggle for non-English jobs (German/French/Dutch/…)
@@ -816,6 +825,15 @@ export default function JobDetailScreen() {
   const [appliedBanner,  setAppliedBanner]  = useState(false);   // green "submitted ✓" toast inside the web view
   const [webTranslated,  setWebTranslated]  = useState(false);   // page translated to English (Google in-page widget)
   const [webTranslating, setWebTranslating] = useState(false);
+  const [oauthUrl,       setOauthUrl]       = useState<string | null>(null);   // OAuth (Google/Apple) sign-in popup — shown in a modal WebView so the login page underneath stays alive
+  // Dismiss the OAuth popup; if it was a sign-in flow, reload the page underneath so it picks up the new session cookie.
+  const finishOauthPopup = useCallback(() => {
+    setOauthUrl((cur) => {
+      const isAuth = cur ? /accounts\.google|appleid\.apple|login\.microsoftonline|facebook\.com|\/oauth|authorize|signin|sign-in|\/login|checkpoint/i.test(cur) : false;
+      if (isAuth) { try { applyWebRef.current?.reload(); } catch {} }
+      return null;
+    });
+  }, []);
   const webTranslatedRef = useRef(false);                        // mirror for the load callback (no stale closure)
   const autoXlateRef     = useRef(true);                         // auto-translate non-English pages until the user opts out
   const bridgeXlateRef   = useRef(false);                        // a backend "bridge" translation is in-flight/done for this page
@@ -2313,18 +2331,15 @@ export default function JobDetailScreen() {
               sharedCookiesEnabled
               allowFileAccess
               allowsInlineMediaPlayback
-              setSupportMultipleWindows={false}
+              setSupportMultipleWindows={true}
               javaScriptCanOpenWindowsAutomatically
               onOpenWindow={(e) => {
-                // OAuth (Google / Apple / Microsoft) opens its sign-in in a popup window. On iOS
-                // WKWebView the popup is dropped by default → "nothing happens". Load the target
-                // in THIS WebView so the redirect-based sign-in completes in the same session
-                // (cookies are shared). On Android, setSupportMultipleWindows={false} already
-                // loads it in-place, so this handler is effectively the iOS path.
+                // OAuth (Google/Apple/etc.) opens sign-in in a popup. Render it in a SEPARATE
+                // modal WebView (below) instead of navigating this frame — that keeps the login
+                // page (the popup's opener) alive and avoids the blank callback page you get when
+                // the popup's "postMessage opener + window.close" script runs in the main frame.
                 const url = (e as any)?.nativeEvent?.targetUrl;
-                if (url && applyWebRef.current) {
-                  applyWebRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(url)}; true;`);
-                }
+                if (url) setOauthUrl(url);
               }}
               startInLoadingState
               pullToRefreshEnabled
@@ -2358,6 +2373,49 @@ export default function JobDetailScreen() {
               )}
             />
           )}
+
+          {/* OAuth sign-in popup (Google/Apple). Rendered as a SEPARATE WebView so the login
+              page underneath stays alive and cookies are shared; on close we reload that page
+              to pick up the new session. Fixes the blank screen after "Sign in with Google". */}
+          <Modal
+            visible={!!oauthUrl}
+            animationType="slide"
+            presentationStyle="pageSheet"
+            onRequestClose={finishOauthPopup}
+          >
+            <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Ionicons name="lock-closed" size={15} color="#64748B" />
+                  <Text style={{ fontSize: 15, fontWeight: '700', color: '#0F172A', marginLeft: 8 }}>Sign in</Text>
+                </View>
+                <TouchableOpacity onPress={finishOauthPopup} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Ionicons name="close" size={24} color="#64748B" />
+                </TouchableOpacity>
+              </View>
+              {!!oauthUrl && (
+                <WebView
+                  source={{ uri: oauthUrl }}
+                  style={{ flex: 1 }}
+                  originWhitelist={['*']}
+                  userAgent={BROWSER_UA}
+                  injectedJavaScriptBeforeContentLoaded={DISABLE_PASSKEY_JS + '\n' + POPUP_BRIDGE_JS}
+                  javaScriptEnabled
+                  domStorageEnabled
+                  thirdPartyCookiesEnabled
+                  sharedCookiesEnabled
+                  setSupportMultipleWindows={false}
+                  startInLoadingState
+                  onMessage={(ev) => {
+                    if (ev?.nativeEvent?.data === 'OAUTH_POPUP_CLOSE') finishOauthPopup();
+                  }}
+                  renderLoading={() => (
+                    <View style={s.webLoading}><ActivityIndicator size="large" color={T.blue} /></View>
+                  )}
+                />
+              )}
+            </SafeAreaView>
+          </Modal>
 
           {/* Submission detected → confirmation toast (job is now "Applied" on the dashboard) */}
           {appliedBanner && (
