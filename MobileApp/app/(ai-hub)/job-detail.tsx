@@ -28,6 +28,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
+import * as WebBrowser from 'expo-web-browser';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, translateJob, translateBatch, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, isLinkedInJobUrl, type LinkedInJob, type TranslatedJob, type SmartFillData } from '../../services/aiHubService';
@@ -38,42 +39,6 @@ import CreditCostPill from '../../components/CreditCostPill';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import type { Contact, Job, Employer } from '../../types/aiHub';
-
-// A real-browser User-Agent for the in-app apply browser. Google (and Apple/Microsoft)
-// OAuth REJECTS embedded WebViews — Android's default UA carries the "; wv" token and Google
-// returns "disallowed_useragent", so "Sign in with Google" silently dies (nothing happens).
-// A clean Safari/Chrome UA makes the WebView look like a normal mobile browser, which Google
-// allows AND makes login pages serve their redirect-based (not popup-based) mobile flow that
-// works inside a single WebView. Purely additive — does not change any page behavior otherwise.
-const BROWSER_UA = Platform.OS === 'android'
-  ? 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36'
-  : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1';
-
-// Passkeys (WebAuthn) CANNOT work inside an app WebView for third-party sites like Google /
-// LinkedIn: the OS only exposes platform authenticators to apps that hold the associated-domains
-// entitlement for that domain, which we can't have for google.com. Google now DEFAULTS to a
-// passkey prompt, so the WebAuthn call silently fails and sign-in dies ("pass key didn't work").
-// Hiding the passkey capability (the feature-detection sites check) makes them fall back to
-// PASSWORD sign-in, which works in the WebView. This runs BEFORE the page's own scripts so the
-// detection sees no passkey support. Ordinary password autofill (credentials.get({password})) is
-// left intact; only WebAuthn (publicKey) requests are refused.
-const DISABLE_PASSKEY_JS = `(function(){try{
-  try{Object.defineProperty(window,'PublicKeyCredential',{value:undefined,configurable:true});}catch(e){try{delete window.PublicKeyCredential;}catch(_){}}
-  if(navigator.credentials){
-    var g=navigator.credentials.get&&navigator.credentials.get.bind(navigator.credentials);
-    navigator.credentials.get=function(o){ if(o&&o.publicKey){return Promise.reject(new DOMException('Passkeys are not available in the in-app browser','NotAllowedError'));} return g?g(o):Promise.reject(new DOMException('unsupported','NotSupportedError')); };
-    if(navigator.credentials.create){var c=navigator.credentials.create.bind(navigator.credentials);navigator.credentials.create=function(o){ if(o&&o.publicKey){return Promise.reject(new DOMException('Passkeys are not available in the in-app browser','NotAllowedError'));} return c(o); };}
-  }
-}catch(e){}})(); true;`;
-
-// Injected into the OAuth popup WebView. OAuth flows finish by calling window.close() (after
-// messaging window.opener). We can't share window.opener across two separate WebViews, so we
-// intercept window.close and tell RN to dismiss the popup + reload the main page — which then
-// picks up the freshly-set session cookie (cookies are shared between the WebViews).
-const POPUP_BRIDGE_JS = `(function(){try{
-  var notify=function(){try{window.ReactNativeWebView.postMessage('OAUTH_POPUP_CLOSE');}catch(e){}};
-  var _c=window.close; window.close=function(){notify();try{_c&&_c.call(window);}catch(e){}};
-}catch(e){}})(); true;`;
 
 // Lightweight CLIENT-SIDE check: should we offer "Translate to English" for this
 // job? Runs on the data already in the app — no network call, no backend/search
@@ -825,15 +790,6 @@ export default function JobDetailScreen() {
   const [appliedBanner,  setAppliedBanner]  = useState(false);   // green "submitted ✓" toast inside the web view
   const [webTranslated,  setWebTranslated]  = useState(false);   // page translated to English (Google in-page widget)
   const [webTranslating, setWebTranslating] = useState(false);
-  const [oauthUrl,       setOauthUrl]       = useState<string | null>(null);   // OAuth (Google/Apple) sign-in popup — shown in a modal WebView so the login page underneath stays alive
-  // Dismiss the OAuth popup; if it was a sign-in flow, reload the page underneath so it picks up the new session cookie.
-  const finishOauthPopup = useCallback(() => {
-    setOauthUrl((cur) => {
-      const isAuth = cur ? /accounts\.google|appleid\.apple|login\.microsoftonline|facebook\.com|\/oauth|authorize|signin|sign-in|\/login|checkpoint/i.test(cur) : false;
-      if (isAuth) { try { applyWebRef.current?.reload(); } catch {} }
-      return null;
-    });
-  }, []);
   const webTranslatedRef = useRef(false);                        // mirror for the load callback (no stale closure)
   const autoXlateRef     = useRef(true);                         // auto-translate non-English pages until the user opts out
   const bridgeXlateRef   = useRef(false);                        // a backend "bridge" translation is in-flight/done for this page
@@ -888,6 +844,16 @@ export default function JobDetailScreen() {
   const openApplyWebView = (url?: string) => {
     const u = (url || '').trim();
     if (!u) return;
+    // LinkedIn ADD-ON (LinkedIn URLs only — every other site is untouched and keeps the in-app
+    // WebView below). A raw WKWebView blocks Google sign-in (disallowed_useragent) and LinkedIn
+    // deep-links into its native app, so open LinkedIn in the OS secure in-app browser instead —
+    // SFSafariViewController on iOS / Chrome Custom Tabs on Android (expo-web-browser). It shares
+    // the system browser session, so Google sign-in + passkeys work. Falls back to the system
+    // browser if it can't present.
+    if (isLinkedInJobUrl(u)) {
+      WebBrowser.openBrowserAsync(u).catch(() => { Linking.openURL(u).catch(() => {}); });
+      return;
+    }
     setApplyCanGoBack(false);
     setApplyProgress(0);
     try { setApplyHost(new URL(u).hostname.replace(/^www\./, '')); } catch { setApplyHost(''); }
@@ -2322,8 +2288,6 @@ export default function JobDetailScreen() {
               source={{ uri: applyWebUrl }}
               style={s.webView}
               originWhitelist={['*']}
-              userAgent={BROWSER_UA}
-              injectedJavaScriptBeforeContentLoaded={DISABLE_PASSKEY_JS}
               injectedJavaScript={INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS}
               javaScriptEnabled
               domStorageEnabled
@@ -2331,16 +2295,7 @@ export default function JobDetailScreen() {
               sharedCookiesEnabled
               allowFileAccess
               allowsInlineMediaPlayback
-              setSupportMultipleWindows={true}
-              javaScriptCanOpenWindowsAutomatically
-              onOpenWindow={(e) => {
-                // OAuth (Google/Apple/etc.) opens sign-in in a popup. Render it in a SEPARATE
-                // modal WebView (below) instead of navigating this frame — that keeps the login
-                // page (the popup's opener) alive and avoids the blank callback page you get when
-                // the popup's "postMessage opener + window.close" script runs in the main frame.
-                const url = (e as any)?.nativeEvent?.targetUrl;
-                if (url) setOauthUrl(url);
-              }}
+              setSupportMultipleWindows={false}
               startInLoadingState
               pullToRefreshEnabled
               onMessage={onWebMessage}
@@ -2373,49 +2328,6 @@ export default function JobDetailScreen() {
               )}
             />
           )}
-
-          {/* OAuth sign-in popup (Google/Apple). Rendered as a SEPARATE WebView so the login
-              page underneath stays alive and cookies are shared; on close we reload that page
-              to pick up the new session. Fixes the blank screen after "Sign in with Google". */}
-          <Modal
-            visible={!!oauthUrl}
-            animationType="slide"
-            presentationStyle="pageSheet"
-            onRequestClose={finishOauthPopup}
-          >
-            <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Ionicons name="lock-closed" size={15} color="#64748B" />
-                  <Text style={{ fontSize: 15, fontWeight: '700', color: '#0F172A', marginLeft: 8 }}>Sign in</Text>
-                </View>
-                <TouchableOpacity onPress={finishOauthPopup} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                  <Ionicons name="close" size={24} color="#64748B" />
-                </TouchableOpacity>
-              </View>
-              {!!oauthUrl && (
-                <WebView
-                  source={{ uri: oauthUrl }}
-                  style={{ flex: 1 }}
-                  originWhitelist={['*']}
-                  userAgent={BROWSER_UA}
-                  injectedJavaScriptBeforeContentLoaded={DISABLE_PASSKEY_JS + '\n' + POPUP_BRIDGE_JS}
-                  javaScriptEnabled
-                  domStorageEnabled
-                  thirdPartyCookiesEnabled
-                  sharedCookiesEnabled
-                  setSupportMultipleWindows={false}
-                  startInLoadingState
-                  onMessage={(ev) => {
-                    if (ev?.nativeEvent?.data === 'OAUTH_POPUP_CLOSE') finishOauthPopup();
-                  }}
-                  renderLoading={() => (
-                    <View style={s.webLoading}><ActivityIndicator size="large" color={T.blue} /></View>
-                  )}
-                />
-              )}
-            </SafeAreaView>
-          </Modal>
 
           {/* Submission detected → confirmation toast (job is now "Applied" on the dashboard) */}
           {appliedBanner && (
