@@ -55,6 +55,7 @@ const aiEventCostsRoutes = require('./server/routes/aiEventCostsRoutes');
 const feedbackRoutes = require('./server/routes/feedbackRoutes');
 const adminUsersRoutes = require('./server/routes/adminUsersRoutes');
 const employerFixRoutes = require('./server/routes/employerFixRoutes');
+const adminStoreAnalyticsRoutes = require('./server/routes/adminStoreAnalyticsRoutes');
 const coverLetterRoutes = require('./server/routes/coverLetterRoutes');
 const emailRoutes = require('./server/routes/emailRoutes');
 const notificationsRoutes = require('./server/routes/notificationsRoutes');
@@ -3967,6 +3968,7 @@ app.use('/api', aiEventCostsRoutes);
 app.use('/api', feedbackRoutes);
 app.use('/api', adminUsersRoutes);
 app.use('/api', employerFixRoutes);
+app.use('/api', adminStoreAnalyticsRoutes);
 
 // LinkedIn job extraction — SEPARATE pipeline (hidden on-device WebView innerText → AI JSON + store).
 const linkedinRoutes = require('./server/routes/linkedinRoutes');
