@@ -8,6 +8,7 @@ export default function AdminLayout() {
     <Stack screenOptions={{ contentStyle: { backgroundColor: '#0B1120' } }}>
       <Stack.Screen name="ai-event-credits" options={{ headerShown: false }} />
       <Stack.Screen name="employer-requests" options={{ headerShown: false }} />
+      <Stack.Screen name="store-analytics" options={{ headerShown: false }} />
     </Stack>
   );
 }

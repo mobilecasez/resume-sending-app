@@ -722,6 +722,20 @@ export async function fetchAdminAiEvents(): Promise<AiEventCost[]> {
   return (data && data.events) || [];
 }
 
+// Admin Store Analytics (Apple App Store + Google Play downloads + recorded transactions).
+export type StoreAnalytics = {
+  generatedAt: string;
+  storeAsOf?: string;
+  apple: { configured: boolean; pending?: boolean; reason?: string; note?: string; report?: string; processingDate?: string; totalDownloads?: number; firstTime?: number; redownloads?: number; series?: { date: string; downloads: number }[] };
+  google: { configured: boolean; reason?: string; note?: string; month?: string; totalInstalls?: number; series?: { date: string; installs: number }[] };
+  local: { byPlatform?: { platform: string; currency: string; txns: number; paying_users: number; revenue: string }[]; completedTxns?: { last_24h: number; last_7d: number; last_30d: number; all_time: number }; recent?: any[]; credits?: { credits_sold: number; purchase_events: number }; error?: string };
+};
+export async function fetchStoreAnalytics(): Promise<StoreAnalytics> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/admin/store-analytics`, { headers });
+  return data;
+}
+
 /** Admin: change an event's credit cost and/or active flag. */
 export async function updateAiEventCost(eventKey: string, credits: number, isActive: boolean): Promise<void> {
   const headers = await getAuthHeader();
