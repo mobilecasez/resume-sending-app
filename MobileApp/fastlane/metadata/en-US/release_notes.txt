@@ -1,4 +1,4 @@
-Sign in faster:
-- Fixed "Sign in with Google" inside the in-app job browser (it now works when applying or logging in on job sites)
-- More reliable third-party sign-in (Google/Apple/Microsoft) without leaving the app
+Sign in without the hassle:
+- "Sign in with Google" now works inside the in-app job browser (sign in with your Google password)
+- More reliable third-party sign-in when applying or logging in on job sites
 - Various fixes and improvements
