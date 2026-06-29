@@ -551,6 +551,18 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE user_job_matches ADD COLUMN IF NOT EXISTS scored_at TIMESTAMP DEFAULT NULL`);
         console.log('✅ Migration 005e: user_job_matches.scored_at done');
 
+        // AI Job Hub — job_contacts: addJobContact() inserts linkedin_url + image_url and
+        // upserts ON CONFLICT (job_id, email), but the job_contacts CREATE only ever had the
+        // base columns (no linkedin_url / image_url / updated_at, no (job_id,email) unique index).
+        // So in production EVERY contact insert threw "column linkedin_url does not exist" → 0
+        // contacts ever persisted (they showed in the app's optimistic UI but vanished on reload).
+        // SAME class as 005c (jobs.responsibilities). Purely additive — never touches existing rows.
+        await col(`ALTER TABLE job_contacts ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(1000)`);
+        await col(`ALTER TABLE job_contacts ADD COLUMN IF NOT EXISTS image_url VARCHAR(1000)`);
+        await col(`ALTER TABLE job_contacts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
+        await col(`CREATE UNIQUE INDEX IF NOT EXISTS job_contacts_job_email_uniq ON job_contacts (job_id, email)`);
+        console.log('✅ Migration 005f: job_contacts linkedin_url/image_url/updated_at + (job_id,email) unique done');
+
         // AI Job Hub — per-job English translation cache (Translate-to-English
         // toggle on job cards). ATS jobs are parsed from HTML in their original
         // language; this caches the Gemini English translation once per job.
