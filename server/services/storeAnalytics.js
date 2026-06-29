@@ -276,13 +276,24 @@ async function localMonetization() {
   return out;
 }
 
+// Cache the SLOW store-API results (Apple = many sequential API calls, Google = GCS read) for 10
+// min so the dashboard loads instantly and we don't hammer the stores on every refresh. The local
+// DB rollup is cheap and always fetched fresh, so transactions stay live.
+const _storeCache = new Map();
+const STORE_TTL_MS = 10 * 60 * 1000;
 async function getAnalytics(opts = {}) {
-  const [apple, google, local] = await Promise.all([
-    appleAnalytics().catch((e) => ({ configured: false, reason: e.message })),
-    googleInstalls(opts.google || {}).catch((e) => ({ configured: false, reason: e.message })),
-    localMonetization(),
-  ]);
-  return { generatedAt: new Date().toISOString(), apple, google, local };
+  const key = JSON.stringify({ a: (opts.apple && opts.apple.reportDate) || '', g: (opts.google && opts.google.month) || '' });
+  let store = _storeCache.get(key);
+  if (!store || (Date.now() - store.t) >= STORE_TTL_MS) {
+    const [apple, google] = await Promise.all([
+      appleAnalytics().catch((e) => ({ configured: false, reason: e.message })),
+      googleInstalls(opts.google || {}).catch((e) => ({ configured: false, reason: e.message })),
+    ]);
+    store = { t: Date.now(), apple, google };
+    _storeCache.set(key, store);
+  }
+  const local = await localMonetization();
+  return { generatedAt: new Date().toISOString(), apple: store.apple, google: store.google, local, storeAsOf: new Date(store.t).toISOString() };
 }
 
 module.exports = { getAnalytics, appleAnalytics, appleSales, googleInstalls, localMonetization };
