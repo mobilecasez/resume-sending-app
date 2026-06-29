@@ -49,6 +49,23 @@ const BROWSER_UA = Platform.OS === 'android'
   ? 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36'
   : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1';
 
+// Passkeys (WebAuthn) CANNOT work inside an app WebView for third-party sites like Google /
+// LinkedIn: the OS only exposes platform authenticators to apps that hold the associated-domains
+// entitlement for that domain, which we can't have for google.com. Google now DEFAULTS to a
+// passkey prompt, so the WebAuthn call silently fails and sign-in dies ("pass key didn't work").
+// Hiding the passkey capability (the feature-detection sites check) makes them fall back to
+// PASSWORD sign-in, which works in the WebView. This runs BEFORE the page's own scripts so the
+// detection sees no passkey support. Ordinary password autofill (credentials.get({password})) is
+// left intact; only WebAuthn (publicKey) requests are refused.
+const DISABLE_PASSKEY_JS = `(function(){try{
+  try{Object.defineProperty(window,'PublicKeyCredential',{value:undefined,configurable:true});}catch(e){try{delete window.PublicKeyCredential;}catch(_){}}
+  if(navigator.credentials){
+    var g=navigator.credentials.get&&navigator.credentials.get.bind(navigator.credentials);
+    navigator.credentials.get=function(o){ if(o&&o.publicKey){return Promise.reject(new DOMException('Passkeys are not available in the in-app browser','NotAllowedError'));} return g?g(o):Promise.reject(new DOMException('unsupported','NotSupportedError')); };
+    if(navigator.credentials.create){var c=navigator.credentials.create.bind(navigator.credentials);navigator.credentials.create=function(o){ if(o&&o.publicKey){return Promise.reject(new DOMException('Passkeys are not available in the in-app browser','NotAllowedError'));} return c(o); };}
+  }
+}catch(e){}})(); true;`;
+
 // Lightweight CLIENT-SIDE check: should we offer "Translate to English" for this
 // job? Runs on the data already in the app — no network call, no backend/search
 // cost. Biased to SHOW the toggle for non-English jobs (German/French/Dutch/…)
@@ -2288,6 +2305,7 @@ export default function JobDetailScreen() {
               style={s.webView}
               originWhitelist={['*']}
               userAgent={BROWSER_UA}
+              injectedJavaScriptBeforeContentLoaded={DISABLE_PASSKEY_JS}
               injectedJavaScript={INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS}
               javaScriptEnabled
               domStorageEnabled
