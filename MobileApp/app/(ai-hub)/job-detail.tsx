@@ -39,6 +39,16 @@ import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import type { Contact, Job, Employer } from '../../types/aiHub';
 
+// A real-browser User-Agent for the in-app apply browser. Google (and Apple/Microsoft)
+// OAuth REJECTS embedded WebViews — Android's default UA carries the "; wv" token and Google
+// returns "disallowed_useragent", so "Sign in with Google" silently dies (nothing happens).
+// A clean Safari/Chrome UA makes the WebView look like a normal mobile browser, which Google
+// allows AND makes login pages serve their redirect-based (not popup-based) mobile flow that
+// works inside a single WebView. Purely additive — does not change any page behavior otherwise.
+const BROWSER_UA = Platform.OS === 'android'
+  ? 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36'
+  : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1';
+
 // Lightweight CLIENT-SIDE check: should we offer "Translate to English" for this
 // job? Runs on the data already in the app — no network call, no backend/search
 // cost. Biased to SHOW the toggle for non-English jobs (German/French/Dutch/…)
@@ -2277,6 +2287,7 @@ export default function JobDetailScreen() {
               source={{ uri: applyWebUrl }}
               style={s.webView}
               originWhitelist={['*']}
+              userAgent={BROWSER_UA}
               injectedJavaScript={INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS}
               javaScriptEnabled
               domStorageEnabled
@@ -2285,6 +2296,18 @@ export default function JobDetailScreen() {
               allowFileAccess
               allowsInlineMediaPlayback
               setSupportMultipleWindows={false}
+              javaScriptCanOpenWindowsAutomatically
+              onOpenWindow={(e) => {
+                // OAuth (Google / Apple / Microsoft) opens its sign-in in a popup window. On iOS
+                // WKWebView the popup is dropped by default → "nothing happens". Load the target
+                // in THIS WebView so the redirect-based sign-in completes in the same session
+                // (cookies are shared). On Android, setSupportMultipleWindows={false} already
+                // loads it in-place, so this handler is effectively the iOS path.
+                const url = (e as any)?.nativeEvent?.targetUrl;
+                if (url && applyWebRef.current) {
+                  applyWebRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(url)}; true;`);
+                }
+              }}
               startInLoadingState
               pullToRefreshEnabled
               onMessage={onWebMessage}
