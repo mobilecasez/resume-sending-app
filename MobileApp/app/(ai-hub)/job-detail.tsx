@@ -29,6 +29,7 @@ import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
+import { track } from '../../services/analytics';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, translateJob, translateBatch, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, isLinkedInJobUrl, type LinkedInJob, type TranslatedJob, type SmartFillData } from '../../services/aiHubService';
@@ -844,6 +845,7 @@ export default function JobDetailScreen() {
   const openApplyWebView = (url?: string) => {
     const u = (url || '').trim();
     if (!u) return;
+    track('apply_open', { linkedin: isLinkedInJobUrl(u) });
     // LinkedIn ADD-ON (LinkedIn URLs only — every other site is untouched and keeps the in-app
     // WebView below). A raw WKWebView blocks Google sign-in (disallowed_useragent) and LinkedIn
     // deep-links into its native app, so open LinkedIn in the OS secure in-app browser instead —
