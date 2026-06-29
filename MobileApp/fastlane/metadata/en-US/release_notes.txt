@@ -1,5 +1,4 @@
-Bring LinkedIn jobs into CVApplyr:
-- Paste a LinkedIn job link to import it straight into your hub
-- Generate a tailored cover letter from any LinkedIn job
-- Smoother, more reliable job loading throughout
+Sign in faster:
+- Fixed "Sign in with Google" inside the in-app job browser (it now works when applying or logging in on job sites)
+- More reliable third-party sign-in (Google/Apple/Microsoft) without leaving the app
 - Various fixes and improvements
