@@ -72,7 +72,11 @@
   </div>
 
   <script>
-    var authToken = localStorage.getItem('authToken');
+    // Accept a token via ?token= (so the mobile app can open this page authenticated), else use the
+    // web session's stored token.
+    var qToken = null; try { qToken = new URLSearchParams(location.search).get('token'); } catch (e) {}
+    if (qToken) { try { localStorage.setItem('authToken', qToken); } catch (e) {} }
+    var authToken = qToken || localStorage.getItem('authToken');
     if (!authToken) { window.location.href = '/login'; }
     var API_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1') ? 'http://localhost:3000' : 'https://cvapplyr.com';
 

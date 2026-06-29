@@ -1900,6 +1900,7 @@ export default function HomeScreen({
               { icon: 'star-outline', title: 'Admin Panel', sub: 'Manage credit packages', onPress: () => { setShowSettings(false); setScreen('admin'); } },
               { icon: 'pricetags-outline', title: 'AI Event Credits', sub: 'Set credits per AI action', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/ai-event-credits'); } },
               { icon: 'construct-outline', title: 'Employer Fix Agent', sub: 'Auto-fix employers we missed', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/employer-requests'); } },
+              { icon: 'bar-chart-outline', title: 'Store Analytics', sub: 'iOS + Android downloads & revenue', onPress: () => { setShowSettings(false); const t = user?.token || ''; const url = 'https://cvapplyr.com/admin-store-analytics' + (t ? ('?token=' + encodeURIComponent(t)) : ''); try { require('expo-web-browser').openBrowserAsync(url); } catch (e) { try { require('react-native').Linking.openURL(url); } catch (_) {} } } },
             ] : []).concat([
               null,
               { icon: 'document-text-outline', title: 'Terms & Conditions', sub: 'View terms of service',   onPress: () => { setShowSettings(false); setScreen('terms'); } },
