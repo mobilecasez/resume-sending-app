@@ -563,6 +563,37 @@ async function runPostgresMigrations(db) {
         await col(`CREATE UNIQUE INDEX IF NOT EXISTS job_contacts_job_email_uniq ON job_contacts (job_id, email)`);
         console.log('✅ Migration 005f: job_contacts linkedin_url/image_url/updated_at + (job_id,email) unique done');
 
+        // First-party real-time analytics — app_events captures opens/events the app reports live
+        // (active-users pulse), bypassing the 1–3 day store-report delay. Append-only, additive.
+        await col(`CREATE TABLE IF NOT EXISTS app_events (
+            id BIGSERIAL PRIMARY KEY,
+            user_id INTEGER,
+            anon_id TEXT,
+            platform TEXT,
+            event TEXT NOT NULL,
+            props JSONB,
+            app_version TEXT,
+            country TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_app_events_created ON app_events(created_at DESC)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_app_events_event ON app_events(event)`);
+        // Server-to-server purchase notifications (Apple App Store Server Notifications V2 + Google RTDN).
+        await col(`CREATE TABLE IF NOT EXISTS store_notifications (
+            id BIGSERIAL PRIMARY KEY,
+            store TEXT NOT NULL,
+            notification_type TEXT,
+            subtype TEXT,
+            transaction_id TEXT,
+            original_transaction_id TEXT,
+            product_id TEXT,
+            user_id INTEGER,
+            payload JSONB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_store_notifications_created ON store_notifications(created_at DESC)`);
+        console.log('✅ Migration 005g: app_events + store_notifications tables done');
+
         // AI Job Hub — per-job English translation cache (Translate-to-English
         // toggle on job cards). ATS jobs are parsed from HTML in their original
         // language; this caches the Gemini English translation once per job.
