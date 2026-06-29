@@ -6,11 +6,11 @@
 import React, { useCallback, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
-  SafeAreaView, RefreshControl,
+  SafeAreaView, RefreshControl, Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { fetchStoreAnalytics, type StoreAnalytics } from '../../services/aiHubService';
+import { fetchStoreAnalytics, runUninstallSweep, type StoreAnalytics } from '../../services/aiHubService';
 
 const C = {
   bg: '#0B1120', panel: '#111A2E', line: '#22304D', text: '#E2E8F0', muted: '#94A3B8',
@@ -57,6 +57,7 @@ export default function StoreAnalyticsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sweeping, setSweeping] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -70,6 +71,19 @@ export default function StoreAnalyticsScreen() {
   }, []);
 
   useFocusEffect(useCallback(() => { setLoading(true); load(); }, [load]));
+
+  const doSweep = useCallback(async () => {
+    setSweeping(true);
+    try {
+      const r = await runUninstallSweep();
+      Alert.alert('Uninstall sweep', `Checked ${r.checked} device${r.checked === 1 ? '' : 's'} · ${r.uninstalled} uninstall${r.uninstalled === 1 ? '' : 's'} detected.`);
+      await load();
+    } catch (e: any) {
+      Alert.alert('Uninstall sweep', e?.response?.status === 403 ? 'Admin access required.' : 'Sweep failed — try again.');
+    } finally {
+      setSweeping(false);
+    }
+  }, [load]);
 
   const apple = data?.apple, google = data?.google, local = data?.local;
   const ios = apple?.configured && !apple?.pending ? (apple.totalDownloads || 0) : null;
@@ -110,12 +124,15 @@ export default function StoreAnalyticsScreen() {
               </View>
               <View style={[s.kpis, { marginTop: 6 }]}>
                 <Kpi value={n(data.live.newInstalls?.last_24h)} label="New installs · 24h" accent={C.green} />
+                <Kpi value={n(data.live.uninstalls?.last_24h)} label="Uninstalls · 24h" accent={C.red} />
+                <Kpi value={n(data.live.netInstalls?.last_24h)} label="Net · 24h" accent={C.blue} />
                 <Kpi value={n(data.live.activeNow?.total)} label="Active now · 30m" accent={C.green} />
-                <Kpi value={n(data.live.newInstalls?.last_hour)} label="New installs · 1h" />
-                <Kpi value={n(data.live.opens?.last_24h)} label="Opens · 24h" />
               </View>
               {(data.live.newInstallsByPlatform || []).length > 0 ? (
-                <Text style={s.cap}>new installs (24h): {(data.live.newInstallsByPlatform || []).map((p) => `${p.platform} ${p.installs}`).join('   ·   ')}   ·   all-time {n(data.live.newInstalls?.all_time)}</Text>
+                <Text style={s.cap}>installs (24h): {(data.live.newInstallsByPlatform || []).map((p) => `${p.platform} ${p.installs}`).join('   ·   ')}   ·   all-time {n(data.live.newInstalls?.all_time)}</Text>
+              ) : null}
+              {(data.live.uninstallsByPlatform || []).length > 0 ? (
+                <Text style={s.cap}>uninstalls (24h): {(data.live.uninstallsByPlatform || []).map((p) => `${p.platform} ${p.uninstalls}`).join('   ·   ')}   ·   all-time {n(data.live.uninstalls?.all_time)}</Text>
               ) : null}
               {(data.live.activeNow?.byPlatform || []).length > 0 ? (
                 <Text style={s.cap}>active now: {(data.live.activeNow?.byPlatform || []).map((p) => `${p.platform} ${p.users}`).join('   ·   ')}</Text>
@@ -142,6 +159,49 @@ export default function StoreAnalyticsScreen() {
                 </>
               ) : data.live.totalEvents === 0 ? (
                 <Text style={s.info}>No app activity recorded yet — opens/foregrounds appear here the instant the app (with this build) is used. Reopen the app to see yourself appear live.</Text>
+              ) : null}
+            </View>
+          ) : null}
+
+          {/* LIFECYCLE & REVENUE — uninstalls + subscriptions/refunds/purchases from store webhooks */}
+          {data?.live ? (
+            <View style={s.card}>
+              <View style={s.cardHead}>
+                <Text style={s.cardTitle}>🔁  Lifecycle & Revenue</Text>
+                <TouchableOpacity onPress={doSweep} disabled={sweeping} style={[s.pill, s.pillSetup]}>
+                  {sweeping ? <ActivityIndicator size="small" color={C.amber} /> : <Text style={[s.pillT, { color: C.amber }]}>run uninstall sweep</Text>}
+                </TouchableOpacity>
+              </View>
+              <View style={[s.kpis, { marginTop: 6 }]}>
+                <Kpi value={n(data.live.uninstalls?.all_time)} label="Uninstalls · all" accent={C.red} />
+                <Kpi value={n(data.live.netInstalls?.all_time)} label="Net installs · all" accent={C.blue} />
+                <Kpi value={n(data.live.lifecycle?.subsNetEst)} label="Net subs (est)" />
+                <Kpi value={n(data.live.lifecycle?.refunds?.d7)} label="Refunds · 7d" accent={C.amber} />
+              </View>
+              {(data.live.lifecycle?.events || []).length > 0 ? (
+                <>
+                  <Text style={[s.cap, { marginTop: 12 }]}>Store events (24h · 7d · all)</Text>
+                  {(data.live.lifecycle?.events || []).slice(0, 10).map((e, i) => (
+                    <View key={i} style={s.txRow}>
+                      <Text style={[s.txCell, { flex: 2 }]}>{e.store === 'apple' ? '🍏' : '🤖'} {e.event}</Text>
+                      <Text style={[s.txCell, { textAlign: 'right' }]}>{n(e.d1)} · {n(e.d7)} · {n(e.all_time)}</Text>
+                    </View>
+                  ))}
+                </>
+              ) : (
+                <Text style={s.info}>No subscription/refund events yet. They appear in real time once Apple & Google's server notifications point at the webhook URLs (App Store Server Notifications V2 + Play RTDN). You sell one-time credits today, so subscription rows stay empty until you add subscriptions — the logging is ready either way.</Text>
+              )}
+              {(data.live.storeNotifications || []).length > 0 ? (
+                <>
+                  <Text style={[s.cap, { marginTop: 12 }]}>Recent store notifications</Text>
+                  {(data.live.storeNotifications || []).slice(0, 8).map((r, i) => (
+                    <View key={i} style={s.txRow}>
+                      <Text style={[s.txCell, { flex: 2 }]}>{r.store === 'apple' ? '🍏' : '🤖'} {r.event || r.notification_type}</Text>
+                      <Text style={s.txCell}>{r.price ? `${r.currency || ''} ${r.price}` : (r.product_id || '').slice(0, 14)}</Text>
+                      <Text style={[s.txCell, { textAlign: 'right', color: C.muted }]}>{String(r.created_at || '').slice(5, 16).replace('T', ' ')}</Text>
+                    </View>
+                  ))}
+                </>
               ) : null}
             </View>
           ) : null}
@@ -191,10 +251,10 @@ export default function StoreAnalyticsScreen() {
               <>
                 <View style={s.subRow}>
                   <View style={s.subStat}><Text style={[s.subV, { color: C.green }]}>{n(google.totalInstalls)}</Text><Text style={s.subL}>Installs ({google.month || ''})</Text></View>
-                  {google.series && google.series.length ? (
-                    <View style={s.subStat}><Text style={s.subV}>{n(google.series[google.series.length - 1].installs)}</Text><Text style={s.subL}>Latest day</Text></View>
-                  ) : null}
+                  <View style={s.subStat}><Text style={[s.subV, { color: C.red }]}>{n(google.totalUninstalls)}</Text><Text style={s.subL}>Uninstalls</Text></View>
+                  <View style={s.subStat}><Text style={[s.subV, { color: C.blue }]}>{n(google.netInstalls != null ? google.netInstalls : (google.totalInstalls || 0))}</Text><Text style={s.subL}>Net</Text></View>
                 </View>
+                {google.activeInstalls != null ? <Text style={s.cap}>active install base: {n(google.activeInstalls)}</Text> : null}
                 <Bars data={google.series} k="installs" color={C.green} />
                 {google.note ? <Text style={s.info}>{google.note}</Text> : null}
               </>

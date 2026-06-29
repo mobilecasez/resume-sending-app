@@ -727,7 +727,7 @@ export type StoreAnalytics = {
   generatedAt: string;
   storeAsOf?: string;
   apple: { configured: boolean; pending?: boolean; reason?: string; note?: string; report?: string; processingDate?: string; totalDownloads?: number; firstTime?: number; redownloads?: number; series?: { date: string; downloads: number }[] };
-  google: { configured: boolean; reason?: string; note?: string; month?: string; totalInstalls?: number; series?: { date: string; installs: number }[] };
+  google: { configured: boolean; reason?: string; note?: string; month?: string; totalInstalls?: number; totalUninstalls?: number; totalUserUninstalls?: number; activeInstalls?: number; netInstalls?: number; series?: { date: string; installs: number; uninstalls?: number }[] };
   local: { byPlatform?: { platform: string; currency: string; txns: number; paying_users: number; revenue: string }[]; completedTxns?: { last_24h: number; last_7d: number; last_30d: number; all_time: number }; recent?: any[]; credits?: { credits_sold: number; purchase_events: number }; error?: string };
   live?: {
     activeNow?: { total: number; byPlatform?: { platform: string; users: number }[] };
@@ -735,12 +735,16 @@ export type StoreAnalytics = {
     opens?: { last_hour: number; last_24h: number; unique_24h: number };
     newInstalls?: { last_hour: number; last_24h: number; last_7d: number; all_time: number };
     newInstallsByPlatform?: { platform: string; installs: number }[];
+    uninstalls?: { last_hour: number; last_24h: number; last_7d: number; all_time: number };
+    uninstallsByPlatform?: { platform: string; uninstalls: number }[];
+    netInstalls?: { last_24h: number; last_7d: number; all_time: number };
+    lifecycle?: { events?: { store: string; event: string; d1: number; d7: number; all_time: number }[]; refunds?: { d1: number; d7: number; all_time: number }; subsNetEst?: number };
     topEvents?: { event: string; n: number }[];
     hourly?: { hour: string; users: number }[];
     byCountry?: { country: string; users: number }[];
     recent?: { event: string; platform: string; user_id: number; created_at: string }[];
     purchasesToday?: { platform: string; currency: string; n: number; revenue: string }[];
-    storeNotifications?: { store: string; notification_type: string; product_id: string; created_at: string }[];
+    storeNotifications?: { store: string; notification_type: string; subtype?: string; event?: string; product_id: string; price?: number; currency?: string; environment?: string; created_at: string }[];
     totalEvents?: number;
     error?: string;
   };
@@ -748,6 +752,13 @@ export type StoreAnalytics = {
 export async function fetchStoreAnalytics(): Promise<StoreAnalytics> {
   const headers = await getAuthHeader();
   const { data } = await axios.get(`${API_BASE_URL}/admin/store-analytics`, { headers });
+  return data;
+}
+
+/** Admin: run an uninstall-detection sweep (silent push + receipts → DeviceNotRegistered). */
+export async function runUninstallSweep(): Promise<{ checked: number; uninstalled: number; pendingReceipts: number }> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.post(`${API_BASE_URL}/admin/uninstall-sweep`, {}, { headers, timeout: 30000 });
   return data;
 }
 
