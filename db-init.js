@@ -594,6 +594,20 @@ async function runPostgresMigrations(db) {
         await col(`CREATE INDEX IF NOT EXISTS idx_store_notifications_created ON store_notifications(created_at DESC)`);
         console.log('✅ Migration 005g: app_events + store_notifications tables done');
 
+        // Migration 005h — store-lifecycle logging. Rich columns on store_notifications so Apple V2 /
+        // Google RTDN events carry a clean lifecycle `event` (subscription_started/renewed/canceled/
+        // expired/refund/purchase/...), price/currency, and environment (Sandbox vs Production).
+        await col(`ALTER TABLE store_notifications ADD COLUMN IF NOT EXISTS event TEXT`);
+        await col(`ALTER TABLE store_notifications ADD COLUMN IF NOT EXISTS price NUMERIC`);
+        await col(`ALTER TABLE store_notifications ADD COLUMN IF NOT EXISTS currency TEXT`);
+        await col(`ALTER TABLE store_notifications ADD COLUMN IF NOT EXISTS environment TEXT`);
+        await col(`ALTER TABLE store_notifications ADD COLUMN IF NOT EXISTS dedupe_key TEXT`);
+        await col(`CREATE UNIQUE INDEX IF NOT EXISTS uq_store_notifications_dedupe ON store_notifications(dedupe_key) WHERE dedupe_key IS NOT NULL`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_store_notifications_store_event ON store_notifications(store, event, created_at DESC)`);
+        // Uninstall events are logged into app_events (event='uninstall') by the push-receipt detector,
+        // so installs vs uninstalls vs net all derive from one table. Index already covers (event).
+        console.log('✅ Migration 005h: store_notifications lifecycle columns done');
+
         // AI Job Hub — per-job English translation cache (Translate-to-English
         // toggle on job cards). ATS jobs are parsed from HTML in their original
         // language; this caches the Gemini English translation once per job.

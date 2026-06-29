@@ -214,15 +214,28 @@ async function googleInstalls({ month } = {}) {
     const iDate = header.indexOf('Date');
     let iInstalls = header.findIndex((h) => /Daily Device Installs/i.test(h));
     if (iInstalls < 0) iInstalls = header.findIndex((h) => /Install events|Installs/i.test(h));
+    // Uninstalls (official, delayed): the overview report carries daily uninstall columns.
+    const iUninstalls = header.findIndex((h) => /Daily Device Uninstalls/i.test(h));
+    const iUserUninstalls = header.findIndex((h) => /Daily User Uninstalls/i.test(h));
+    const iActive = header.findIndex((h) => /Current Device Installs/i.test(h));
+    const num = (v) => parseInt((v || '0').replace(/[^0-9-]/g, ''), 10) || 0;
     const series = [];
-    let total = 0;
+    let total = 0, totalUninstalls = 0, totalUserUninstalls = 0, activeInstalls = null;
     for (let i = 1; i < rows.length; i++) {
       const c = rows[i].split(',');
-      const n = parseInt((c[iInstalls] || '0').replace(/[^0-9-]/g, ''), 10) || 0;
-      total += n;
-      series.push({ date: (c[iDate] || '').replace(/^"|"$/g, ''), installs: n });
+      const inst = iInstalls >= 0 ? num(c[iInstalls]) : 0;
+      const uninst = iUninstalls >= 0 ? num(c[iUninstalls]) : 0;
+      total += inst;
+      totalUninstalls += uninst;
+      if (iUserUninstalls >= 0) totalUserUninstalls += num(c[iUserUninstalls]);
+      if (iActive >= 0) { const a = num(c[iActive]); if (a) activeInstalls = a; }
+      series.push({ date: (c[iDate] || '').replace(/^"|"$/g, ''), installs: inst, uninstalls: uninst });
     }
-    return { configured: true, month: ym, totalInstalls: total, series: series.slice(-30) };
+    return {
+      configured: true, month: ym, totalInstalls: total,
+      totalUninstalls, totalUserUninstalls, activeInstalls, netInstalls: total - totalUninstalls,
+      series: series.slice(-30),
+    };
   } catch (e) {
     const msg = String(e && e.message || e);
     if (/403|forbidden|permission/i.test(msg)) return { configured: false, reason: 'Google denied access to the report bucket — grant the service account (eas-submit@…) "Storage Object Viewer" on the pubsite_prod_rev_… bucket.' };

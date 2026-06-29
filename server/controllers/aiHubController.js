@@ -2739,12 +2739,15 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
             const u = await dbConfig.get('SELECT expo_push_token FROM users WHERE id = $1', [userId]);
             if (u && u.expo_push_token) {
                 const n = streamedJobs.length;
-                await expoPush.sendPushNotification(
+                const r = await expoPush.sendPushNotification(
                     u.expo_push_token,
                     n > 0 ? `${name}: ${n} job${n === 1 ? '' : 's'} ready 🎯` : `${name} — search finished`,
                     n > 0 ? `Tap to view your matches.` : `We couldn't find live openings right now — tap to review or report it.`,
                     { type: 'job_search_complete', employer: name, employerId: String(employerDbId), jobId: asyncJobId, jobCount: n }
                 );
+                // Passive uninstall detection: a stale token = the app was uninstalled (or notifications
+                // disabled). Clear it and log the uninstall for the live dashboard. Best-effort.
+                if (r === 'stale') { try { await require('../services/uninstallDetection').handleStaleToken(userId); } catch (_) {} }
             }
         } catch (e) { console.warn('[aiHub] push notify failed (non-blocking):', e.message); }
 

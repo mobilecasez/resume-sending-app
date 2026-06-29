@@ -2,6 +2,7 @@
 // plus our recorded transactions. Admin-only (mounted behind authenticateAdmin).
 const storeAnalytics = require('../services/storeAnalytics');
 const liveAnalytics = require('../services/liveAnalytics');
+const uninstallDetection = require('../services/uninstallDetection');
 
 async function getStoreAnalytics(req, res) {
   try {
@@ -21,4 +22,16 @@ async function getStoreAnalytics(req, res) {
   }
 }
 
-module.exports = { getStoreAnalytics };
+// Admin-triggered uninstall sweep — sends a silent push to every stored token and logs an uninstall
+// for each DeviceNotRegistered receipt. Runs synchronously (~8s for the receipt round-trip).
+async function runUninstallSweep(req, res) {
+  try {
+    const result = await uninstallDetection.sweepUninstalls({ limit: 5000 });
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error('[uninstallSweep] error:', error.message);
+    return res.status(500).json({ error: 'Uninstall sweep failed' });
+  }
+}
+
+module.exports = { getStoreAnalytics, runUninstallSweep };
