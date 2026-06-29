@@ -109,13 +109,16 @@ export default function StoreAnalyticsScreen() {
                 <View style={[s.pill, s.pillLive]}><Text style={[s.pillT, { color: C.green }]}>real-time</Text></View>
               </View>
               <View style={[s.kpis, { marginTop: 6 }]}>
+                <Kpi value={n(data.live.newInstalls?.last_24h)} label="New installs · 24h" accent={C.green} />
                 <Kpi value={n(data.live.activeNow?.total)} label="Active now · 30m" accent={C.green} />
-                <Kpi value={n(data.live.activeToday?.total)} label="Active · 24h" />
+                <Kpi value={n(data.live.newInstalls?.last_hour)} label="New installs · 1h" />
                 <Kpi value={n(data.live.opens?.last_24h)} label="Opens · 24h" />
-                <Kpi value={n(data.live.opens?.last_hour)} label="Opens · 1h" />
               </View>
+              {(data.live.newInstallsByPlatform || []).length > 0 ? (
+                <Text style={s.cap}>new installs (24h): {(data.live.newInstallsByPlatform || []).map((p) => `${p.platform} ${p.installs}`).join('   ·   ')}   ·   all-time {n(data.live.newInstalls?.all_time)}</Text>
+              ) : null}
               {(data.live.activeNow?.byPlatform || []).length > 0 ? (
-                <Text style={s.cap}>now: {(data.live.activeNow?.byPlatform || []).map((p) => `${p.platform} ${p.users}`).join('   ·   ')}</Text>
+                <Text style={s.cap}>active now: {(data.live.activeNow?.byPlatform || []).map((p) => `${p.platform} ${p.users}`).join('   ·   ')}</Text>
               ) : null}
               <Bars data={data.live.hourly} k="users" color={C.violet} />
               {(data.live.topEvents || []).length > 0 ? (

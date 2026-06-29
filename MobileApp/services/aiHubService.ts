@@ -733,6 +733,8 @@ export type StoreAnalytics = {
     activeNow?: { total: number; byPlatform?: { platform: string; users: number }[] };
     activeToday?: { total: number; byPlatform?: { platform: string; users: number }[] };
     opens?: { last_hour: number; last_24h: number; unique_24h: number };
+    newInstalls?: { last_hour: number; last_24h: number; last_7d: number; all_time: number };
+    newInstallsByPlatform?: { platform: string; installs: number }[];
     topEvents?: { event: string; n: number }[];
     hourly?: { hour: string; users: number }[];
     byCountry?: { country: string; users: number }[];

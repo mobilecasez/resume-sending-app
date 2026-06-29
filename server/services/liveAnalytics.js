@@ -41,6 +41,22 @@ async function getLivePulse() {
               COUNT(DISTINCT ${UID})::int AS unique_24h
          FROM app_events WHERE created_at > NOW()-INTERVAL '24 hours'`).catch(() => ({}));
 
+    // LIVE installs — a device's first-ever event = a fresh install / first run (Firebase's
+    // "first_open" equivalent). This is the real-time download signal Apple/Google never expose.
+    out.newInstalls = await dbConfig.get(
+      `SELECT COUNT(*) FILTER (WHERE first_seen > NOW()-INTERVAL '1 hour')::int  AS last_hour,
+              COUNT(*) FILTER (WHERE first_seen > NOW()-INTERVAL '24 hours')::int AS last_24h,
+              COUNT(*) FILTER (WHERE first_seen > NOW()-INTERVAL '7 days')::int   AS last_7d,
+              COUNT(*)::int AS all_time
+         FROM (SELECT COALESCE(anon_id, user_id::text) AS dev, MIN(created_at) AS first_seen
+                 FROM app_events WHERE anon_id IS NOT NULL OR user_id IS NOT NULL GROUP BY 1) t`).catch(() => ({}));
+    out.newInstallsByPlatform = await dbConfig.query(
+      `SELECT platform, COUNT(*)::int AS installs FROM (
+         SELECT COALESCE(anon_id, user_id::text) AS dev, MIN(created_at) AS first_seen,
+                (ARRAY_AGG(platform ORDER BY created_at))[1] AS platform
+           FROM app_events WHERE anon_id IS NOT NULL OR user_id IS NOT NULL GROUP BY 1
+       ) t WHERE first_seen > NOW()-INTERVAL '24 hours' GROUP BY platform ORDER BY installs DESC`).catch(() => []);
+
     out.topEvents = await dbConfig.query(
       `SELECT event, COUNT(*)::int AS n FROM app_events WHERE created_at > NOW()-INTERVAL '24 hours'
         GROUP BY event ORDER BY n DESC LIMIT 14`).catch(() => []);

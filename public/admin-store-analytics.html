@@ -150,15 +150,16 @@
     function renderLive(live){
       if(!live) return '<div class="muted">No live data.</div>';
       if(live.error) return '<div class="note">Live error: '+esc(live.error)+'</div>';
-      var an=live.activeNow||{}, at=live.activeToday||{}, op=live.opens||{};
+      var an=live.activeNow||{}, at=live.activeToday||{}, op=live.opens||{}, ni=live.newInstalls||{};
       var sub='text-transform:uppercase;font-size:11px;letter-spacing:1px;margin-top:14px;color:var(--muted);';
       var html='<div class="kpis" style="margin-bottom:0;">'
+        + kpi('<span style="color:var(--green)">'+num(ni.last_24h)+'</span>','New installs · 24h')
         + kpi('<span style="color:var(--green)">'+num(an.total)+'</span>','Active now · 30m')
-        + kpi(num(at.total),'Active · 24h')
+        + kpi(num(ni.last_hour),'New installs · 1h')
         + kpi(num(op.last_24h),'Opens · 24h')
-        + kpi(num(op.last_hour),'Opens · 1h')
         + '</div>';
-      if((an.byPlatform||[]).length) html+='<div class="muted" style="font-size:12px;margin-top:10px;">now: '+an.byPlatform.map(function(p){return esc(p.platform)+' '+num(p.users);}).join('   ·   ')+'</div>';
+      if((live.newInstallsByPlatform||[]).length) html+='<div class="muted" style="font-size:12px;margin-top:10px;">new installs (24h): '+live.newInstallsByPlatform.map(function(p){return esc(p.platform)+' '+num(p.installs);}).join('   ·   ')+'   ·   all-time '+num(ni.all_time)+'</div>';
+      if((an.byPlatform||[]).length) html+='<div class="muted" style="font-size:12px;margin-top:6px;">active now: '+an.byPlatform.map(function(p){return esc(p.platform)+' '+num(p.users);}).join('   ·   ')+'</div>';
       html+=barChart(live.hourly,'users','var(--violet)');
       if((live.topEvents||[]).length){ html+='<div style="'+sub+'">Top events · 24h</div><table>'; live.topEvents.slice(0,8).forEach(function(e){ html+='<tr><td>'+esc(e.event)+'</td><td style="text-align:right;">'+num(e.n)+'</td></tr>'; }); html+='</table>'; }
       if((live.recent||[]).length){ html+='<div style="'+sub+'">Recent activity</div><table>'; live.recent.slice(0,12).forEach(function(r){ html+='<tr><td>'+esc(r.event)+'</td><td>'+esc(r.platform)+'</td><td style="text-align:right;color:var(--muted);">'+esc(String(r.created_at||'').slice(11,16))+'</td></tr>'; }); html+='</table>'; }
