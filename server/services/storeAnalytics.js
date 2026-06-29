@@ -18,7 +18,7 @@ const jwt = require('jsonwebtoken');
 const dbConfig = require('../../db-config');
 
 const ANDROID_PACKAGE = process.env.ANDROID_PACKAGE || 'com.cvapplyr.mobile';
-const ASC_KID = process.env.ASC_KEY_ID || '33Y3J5248R';
+const ASC_KID = process.env.ASC_KEY_ID || '8B7UN3VG74';   // Admin-role key for Analytics Reports (the build key 33Y3J5248R is App-Manager only)
 const ASC_ISS = process.env.ASC_ISSUER_ID || 'bc162399-5ecc-4cdd-baf4-a143d5b1eb65';
 const APPLE_VENDOR = (process.env.APPLE_VENDOR_NUMBER || '').trim();
 const APPLE_APP_ID = process.env.APPLE_ASC_APP_ID || '6762126502';
@@ -30,7 +30,7 @@ function readKeyFile(rel) {
 function asclPrivateKey() {
   if (process.env.ASC_KEY_P8_B64) { try { return Buffer.from(process.env.ASC_KEY_P8_B64, 'base64').toString('utf8'); } catch {} }
   if (process.env.ASC_KEY_P8) return process.env.ASC_KEY_P8.replace(/\\n/g, '\n');
-  return readKeyFile('AuthKey_33Y3J5248R.p8');
+  return readKeyFile('AuthKey_8B7UN3VG74.p8') || readKeyFile('AuthKey_33Y3J5248R.p8');
 }
 function googleSA() {
   if (process.env.GOOGLE_PLAY_SA_B64) { try { return JSON.parse(Buffer.from(process.env.GOOGLE_PLAY_SA_B64, 'base64').toString('utf8')); } catch {} }
@@ -137,26 +137,36 @@ async function appleAnalytics() {
   let list = await ascApiJson('GET', `/v1/apps/${APPLE_APP_ID}/analyticsReportRequests?limit=20`);
   if (list.status === 401 || list.status === 403) return { configured: false, reason: ELEVATE };
   if (list.status === 0) return { configured: false, reason: 'Apple API request failed (network).' };
-  let req = ((list.json && list.json.data) || []).find((r) => r.attributes && r.attributes.accessType === 'ONGOING' && !r.attributes.stoppedDueToInactivity);
-  if (!req) {
+  let requests = ((list.json && list.json.data) || []).filter((r) => r.attributes && !r.attributes.stoppedDueToInactivity);
+  if (!requests.length) {
     const created = await ascApiJson('POST', '/v1/analyticsReportRequests', { data: { type: 'analyticsReportRequests', attributes: { accessType: 'ONGOING' }, relationships: { app: { data: { type: 'apps', id: APPLE_APP_ID } } } } });
     if (created.status === 401 || created.status === 403) return { configured: false, reason: ELEVATE };
-    if (created.json && created.json.data) req = created.json.data;
+    if (created.json && created.json.data) requests.push(created.json.data);
     else return { configured: false, reason: `Could not create the Apple analytics report request (status ${created.status}).` };
   }
-  const reportsResp = await ascApiJson('GET', `/v1/analyticsReportRequests/${req.id}/reports?limit=200`);
-  const reports = (reportsResp.json && reportsResp.json.data) || [];
-  if (!reports.length) return { configured: true, pending: true, note: 'Analytics enabled — Apple is generating your first report (up to ~24–48h after enabling). Check back.' };
-  const dl = reports.find((r) => /download/i.test((r.attributes || {}).name || '')) || reports.find((r) => /install/i.test((r.attributes || {}).name || ''));
-  if (!dl) return { configured: true, pending: true, note: `No downloads report found yet among ${reports.length} reports.`, reportNames: reports.map((r) => (r.attributes || {}).name).slice(0, 40) };
-  const inst = await ascApiJson('GET', `/v1/analyticsReports/${dl.id}/instances?filter[granularity]=DAILY&limit=30`);
-  const instances = (inst.json && inst.json.data) || [];
-  if (!instances.length) return { configured: true, pending: true, note: 'Downloads report found, daily data not generated yet (~1 day).', report: (dl.attributes || {}).name };
-  instances.sort((a, b) => String((b.attributes || {}).processingDate || '').localeCompare(String((a.attributes || {}).processingDate || '')));
-  const latest = instances[0];
-  const segResp = await ascApiJson('GET', `/v1/analyticsReportInstances/${latest.id}/segments`);
-  const segments = (segResp.json && segResp.json.data) || [];
-  if (!segments.length) return { configured: true, pending: true, note: 'Report instance has no data segments yet.', report: (dl.attributes || {}).name };
+  // Prefer the one-time snapshot (carries history) over the ongoing feed.
+  requests.sort((a, b) => ((b.attributes || {}).accessType === 'ONE_TIME_SNAPSHOT' ? 1 : 0) - ((a.attributes || {}).accessType === 'ONE_TIME_SNAPSHOT' ? 1 : 0));
+  const pickDownloads = (reps) =>
+    reps.find((r) => /^app downloads standard$/i.test((r.attributes || {}).name || '')) ||
+    reps.find((r) => /app downloads/i.test((r.attributes || {}).name || '')) ||
+    reps.find((r) => /^app store installation and deletion standard$/i.test((r.attributes || {}).name || ''));
+  let dl = null, latest = null, segments = [];
+  for (const r of requests) {
+    const rr = await ascApiJson('GET', `/v1/analyticsReportRequests/${r.id}/reports?limit=200`);
+    const cand = pickDownloads((rr.json && rr.json.data) || []);
+    if (!cand) continue;
+    if (!dl) dl = cand;
+    const inst = await ascApiJson('GET', `/v1/analyticsReports/${cand.id}/instances?filter[granularity]=DAILY&limit=60`);
+    const instances = ((inst.json && inst.json.data) || []).sort((a, b) => String((b.attributes || {}).processingDate || '').localeCompare(String((a.attributes || {}).processingDate || '')));
+    for (const i2 of instances) {
+      const segResp = await ascApiJson('GET', `/v1/analyticsReportInstances/${i2.id}/segments`);
+      const segs = (segResp.json && segResp.json.data) || [];
+      if (segs.length) { dl = cand; latest = i2; segments = segs; break; }
+    }
+    if (segments.length) break;
+  }
+  if (!dl) return { configured: true, pending: true, note: 'Analytics enabled — Apple is generating the downloads report (typically within ~24–48h of enabling). Check back.' };
+  if (!segments.length || !latest) return { configured: true, pending: true, report: (dl.attributes || {}).name, note: 'Downloads report requested — Apple has not generated the data yet (usually within ~1 day).' };
   let total = 0, firstTime = 0, redownloads = 0; const series = {};
   for (const seg of segments) {
     const url = (seg.attributes || {}).url; if (!url) continue;
