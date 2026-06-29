@@ -837,6 +837,13 @@ app.get('/articles/:slug', (req, res) => {
     });
 });
 
+// Always serve the shared header JS fresh so menu changes (e.g. new admin links like
+// Store Analytics) show up immediately instead of being stuck behind the 1-day static cache.
+app.get('/js/app-header.js', (req, res) => {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.sendFile(path.join(__dirname, 'public', 'js', 'app-header.js'));
+});
+
 // Static files for landing page resources
 const staticOptions = { maxAge: '7d', etag: true };
 app.use('/bootstrap-4.1.1-dist', express.static('bootstrap-4.1.1-dist', staticOptions));
