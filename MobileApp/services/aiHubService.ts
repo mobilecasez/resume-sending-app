@@ -729,6 +729,19 @@ export type StoreAnalytics = {
   apple: { configured: boolean; pending?: boolean; reason?: string; note?: string; report?: string; processingDate?: string; totalDownloads?: number; firstTime?: number; redownloads?: number; series?: { date: string; downloads: number }[] };
   google: { configured: boolean; reason?: string; note?: string; month?: string; totalInstalls?: number; series?: { date: string; installs: number }[] };
   local: { byPlatform?: { platform: string; currency: string; txns: number; paying_users: number; revenue: string }[]; completedTxns?: { last_24h: number; last_7d: number; last_30d: number; all_time: number }; recent?: any[]; credits?: { credits_sold: number; purchase_events: number }; error?: string };
+  live?: {
+    activeNow?: { total: number; byPlatform?: { platform: string; users: number }[] };
+    activeToday?: { total: number; byPlatform?: { platform: string; users: number }[] };
+    opens?: { last_hour: number; last_24h: number; unique_24h: number };
+    topEvents?: { event: string; n: number }[];
+    hourly?: { hour: string; users: number }[];
+    byCountry?: { country: string; users: number }[];
+    recent?: { event: string; platform: string; user_id: number; created_at: string }[];
+    purchasesToday?: { platform: string; currency: string; n: number; revenue: string }[];
+    storeNotifications?: { store: string; notification_type: string; product_id: string; created_at: string }[];
+    totalEvents?: number;
+    error?: string;
+  };
 };
 export async function fetchStoreAnalytics(): Promise<StoreAnalytics> {
   const headers = await getAuthHeader();

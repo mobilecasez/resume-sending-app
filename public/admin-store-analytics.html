@@ -56,6 +56,10 @@
 
     <div id="accessDenied"></div>
     <div id="content" style="display:none;">
+      <div class="section-title" style="margin-top:0;">🔴 Live Pulse <span style="font-size:10px;color:var(--green);font-weight:800;letter-spacing:0.5px;">REAL-TIME</span></div>
+      <div class="card" id="liveCard"></div>
+
+      <div class="section-title">Store downloads</div>
       <div class="kpis" id="kpis"></div>
 
       <div class="section-title">Downloads by platform</div>
@@ -143,6 +147,24 @@
       return html;
     }
 
+    function renderLive(live){
+      if(!live) return '<div class="muted">No live data.</div>';
+      if(live.error) return '<div class="note">Live error: '+esc(live.error)+'</div>';
+      var an=live.activeNow||{}, at=live.activeToday||{}, op=live.opens||{};
+      var sub='text-transform:uppercase;font-size:11px;letter-spacing:1px;margin-top:14px;color:var(--muted);';
+      var html='<div class="kpis" style="margin-bottom:0;">'
+        + kpi('<span style="color:var(--green)">'+num(an.total)+'</span>','Active now · 30m')
+        + kpi(num(at.total),'Active · 24h')
+        + kpi(num(op.last_24h),'Opens · 24h')
+        + kpi(num(op.last_hour),'Opens · 1h')
+        + '</div>';
+      if((an.byPlatform||[]).length) html+='<div class="muted" style="font-size:12px;margin-top:10px;">now: '+an.byPlatform.map(function(p){return esc(p.platform)+' '+num(p.users);}).join('   ·   ')+'</div>';
+      html+=barChart(live.hourly,'users','var(--violet)');
+      if((live.topEvents||[]).length){ html+='<div style="'+sub+'">Top events · 24h</div><table>'; live.topEvents.slice(0,8).forEach(function(e){ html+='<tr><td>'+esc(e.event)+'</td><td style="text-align:right;">'+num(e.n)+'</td></tr>'; }); html+='</table>'; }
+      if((live.recent||[]).length){ html+='<div style="'+sub+'">Recent activity</div><table>'; live.recent.slice(0,12).forEach(function(r){ html+='<tr><td>'+esc(r.event)+'</td><td>'+esc(r.platform)+'</td><td style="text-align:right;color:var(--muted);">'+esc(String(r.created_at||'').slice(11,16))+'</td></tr>'; }); html+='</table>'; }
+      else if(live.totalEvents===0){ html+='<div class="note">No app activity yet — opens/foregrounds appear here the instant the app (with the new build) is used.</div>'; }
+      return html;
+    }
     function renderKpis(data){
       var a=data.apple||{}, g=data.google||{}, l=data.local||{};
       var ios = (a.configured && !a.pending) ? (a.totalDownloads||0) : null;
@@ -167,6 +189,7 @@
         if(!resp.ok) throw new Error('HTTP '+resp.status);
         var data=await resp.json();
         renderKpis(data);
+        document.getElementById('liveCard').innerHTML=renderLive(data.live);
         document.getElementById('appleCard').innerHTML=renderApple(data.apple);
         document.getElementById('googleCard').innerHTML=renderGoogle(data.google);
         document.getElementById('localCard').innerHTML=renderLocal(data.local);

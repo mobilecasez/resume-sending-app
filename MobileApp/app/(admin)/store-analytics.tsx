@@ -99,7 +99,49 @@ export default function StoreAnalyticsScreen() {
           contentContainerStyle={{ padding: 16, paddingBottom: 48 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={C.cyan} />}
         >
-          <Text style={s.note2}>App Store + Google Play downloads and recorded transactions. Store figures lag ~1 day.</Text>
+          <Text style={s.note2}>Real-time activity from the app + store downloads. Store figures lag ~1 day; the Live Pulse is instant.</Text>
+
+          {/* LIVE PULSE — real-time, from first-party app telemetry (no store delay) */}
+          {data?.live ? (
+            <View style={s.card}>
+              <View style={s.cardHead}>
+                <Text style={s.cardTitle}>🔴  Live Pulse</Text>
+                <View style={[s.pill, s.pillLive]}><Text style={[s.pillT, { color: C.green }]}>real-time</Text></View>
+              </View>
+              <View style={[s.kpis, { marginTop: 6 }]}>
+                <Kpi value={n(data.live.activeNow?.total)} label="Active now · 30m" accent={C.green} />
+                <Kpi value={n(data.live.activeToday?.total)} label="Active · 24h" />
+                <Kpi value={n(data.live.opens?.last_24h)} label="Opens · 24h" />
+                <Kpi value={n(data.live.opens?.last_hour)} label="Opens · 1h" />
+              </View>
+              {(data.live.activeNow?.byPlatform || []).length > 0 ? (
+                <Text style={s.cap}>now: {(data.live.activeNow?.byPlatform || []).map((p) => `${p.platform} ${p.users}`).join('   ·   ')}</Text>
+              ) : null}
+              <Bars data={data.live.hourly} k="users" color={C.violet} />
+              {(data.live.topEvents || []).length > 0 ? (
+                <>
+                  <Text style={[s.cap, { marginTop: 12 }]}>Top events · 24h</Text>
+                  {(data.live.topEvents || []).slice(0, 6).map((e, i) => (
+                    <View key={i} style={s.txRow}><Text style={[s.txCell, { flex: 2 }]}>{e.event}</Text><Text style={[s.txCell, { textAlign: 'right' }]}>{n(e.n)}</Text></View>
+                  ))}
+                </>
+              ) : null}
+              {(data.live.recent || []).length > 0 ? (
+                <>
+                  <Text style={[s.cap, { marginTop: 12 }]}>Recent activity</Text>
+                  {(data.live.recent || []).slice(0, 8).map((r, i) => (
+                    <View key={i} style={s.txRow}>
+                      <Text style={[s.txCell, { flex: 2 }]}>{r.event}</Text>
+                      <Text style={s.txCell}>{r.platform}</Text>
+                      <Text style={[s.txCell, { textAlign: 'right', color: C.muted }]}>{String(r.created_at || '').slice(11, 16)}</Text>
+                    </View>
+                  ))}
+                </>
+              ) : data.live.totalEvents === 0 ? (
+                <Text style={s.info}>No app activity recorded yet — opens/foregrounds appear here the instant the app (with this build) is used. Reopen the app to see yourself appear live.</Text>
+              ) : null}
+            </View>
+          ) : null}
 
           {/* KPIs */}
           <View style={s.kpis}>
