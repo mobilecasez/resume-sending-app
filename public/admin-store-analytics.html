@@ -5,69 +5,70 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Store Analytics — CVApplyr Admin</title>
   <style>
-    :root { --bg:#0B1120; --panel:#111a2e; --line:#22304d; --txt:#E2E8F0; --muted:#94A3B8; --cyan:#06B6D4; --blue:#3B82F6; --green:#34D399; --amber:#FB923C; --red:#F87171; }
+    :root { --bg:#0B1120; --panel:#111a2e; --panel2:#0f1830; --line:#22304d; --txt:#E2E8F0; --muted:#94A3B8; --cyan:#06B6D4; --blue:#3B82F6; --green:#34D399; --amber:#FB923C; --violet:#A78BFA; --red:#F87171; }
     * { box-sizing:border-box; }
-    body { margin:0; background:var(--bg); color:var(--txt); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
-    .wrap { max-width:1000px; margin:0 auto; padding:24px 16px 64px; }
-    h1 { font-size:22px; font-weight:800; letter-spacing:-0.5px; margin:0 0 4px; }
-    .sub { color:var(--muted); font-size:13px; margin-bottom:20px; }
-    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
-    .card { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:16px; }
-    .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:0 0 12px; }
-    .stat { font-size:26px; font-weight:800; }
-    .stat-lbl { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-top:2px; }
-    .section { margin-top:20px; }
-    .note { background:rgba(251,146,60,0.12); border:1px solid rgba(251,146,60,0.35); color:#FCD9B6; border-radius:12px; padding:12px 14px; font-size:13px; line-height:1.5; }
-    .ok-pill { display:inline-block; font-size:10px; font-weight:700; color:var(--green); background:rgba(52,211,153,0.12); border:1px solid rgba(52,211,153,0.3); padding:2px 8px; border-radius:999px; vertical-align:middle; margin-left:8px; }
-    .warn-pill { color:var(--amber); background:rgba(251,146,60,0.12); border-color:rgba(251,146,60,0.3); }
-    table { width:100%; border-collapse:collapse; font-size:13px; }
+    body { margin:0; background:radial-gradient(1200px 600px at 50% -10%, #15213c 0%, var(--bg) 60%); color:var(--txt); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; -webkit-font-smoothing:antialiased; }
+    .wrap { max-width:1060px; margin:0 auto; padding:22px 16px 72px; }
+    a.back { color:var(--cyan); text-decoration:none; font-size:13px; }
+    h1 { font-size:24px; font-weight:800; letter-spacing:-0.6px; margin:12px 0 2px; }
+    .sub { color:var(--muted); font-size:13px; margin-bottom:18px; }
+    .controls { display:flex; gap:8px; align-items:center; margin-bottom:18px; flex-wrap:wrap; }
+    .controls input, .controls button { background:var(--panel); border:1px solid var(--line); color:var(--txt); border-radius:10px; padding:8px 12px; font-size:13px; }
+    .controls button { cursor:pointer; background:linear-gradient(90deg,var(--cyan),var(--blue)); border:none; font-weight:700; color:#fff; }
+    .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:8px; }
+    .kpi { background:linear-gradient(160deg,var(--panel),var(--panel2)); border:1px solid var(--line); border-radius:16px; padding:16px; }
+    .kpi .v { font-size:28px; font-weight:800; letter-spacing:-0.5px; }
+    .kpi .l { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.6px; margin-top:3px; }
+    .kpi .d { font-size:11px; color:var(--muted); margin-top:6px; }
+    .cols { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px; }
+    @media (max-width:720px){ .cols { grid-template-columns:1fr; } }
+    .card { background:linear-gradient(160deg,var(--panel),var(--panel2)); border:1px solid var(--line); border-radius:18px; padding:18px; }
+    .card h2 { font-size:13px; font-weight:700; margin:0; display:flex; align-items:center; gap:8px; }
+    .card .cap { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin:0 0 12px; }
+    .pill { font-size:10px; font-weight:800; padding:2px 9px; border-radius:999px; letter-spacing:0.4px; }
+    .pill.live { color:var(--green); background:rgba(52,211,153,0.12); border:1px solid rgba(52,211,153,0.35); }
+    .pill.pending { color:var(--violet); background:rgba(167,139,250,0.12); border:1px solid rgba(167,139,250,0.35); }
+    .pill.setup { color:var(--amber); background:rgba(251,146,60,0.12); border:1px solid rgba(251,146,60,0.35); }
+    .subgrid { display:flex; gap:18px; flex-wrap:wrap; margin-top:6px; }
+    .sub-stat .v { font-size:22px; font-weight:800; }
+    .sub-stat .l { font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; }
+    .note { background:rgba(251,146,60,0.10); border:1px solid rgba(251,146,60,0.30); color:#FCD9B6; border-radius:12px; padding:12px 14px; font-size:13px; line-height:1.55; margin-top:10px; }
+    .note.info { background:rgba(167,139,250,0.10); border-color:rgba(167,139,250,0.30); color:#D8CCFF; }
+    table { width:100%; border-collapse:collapse; font-size:13px; margin-top:6px; }
     th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
     th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; }
-    .row-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
-    .controls { display:flex; gap:8px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }
-    .controls input, .controls button { background:var(--panel); border:1px solid var(--line); color:var(--txt); border-radius:10px; padding:8px 12px; font-size:13px; }
-    .controls button { cursor:pointer; background:linear-gradient(90deg,var(--cyan),var(--blue)); border:none; font-weight:700; }
     .muted { color:var(--muted); }
     .err { color:var(--red); }
-    a.back { color:var(--cyan); text-decoration:none; font-size:13px; }
+    .section-title { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:26px 0 10px; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <a class="back" href="/dashboard">← Dashboard</a>
-    <h1 style="margin-top:10px;">📊 Store Analytics</h1>
-    <div class="sub">Downloads &amp; sales from the App Store + Google Play, and our recorded transactions. Store download/sales figures lag ~1 day.</div>
+    <h1>📊 Store Analytics</h1>
+    <div class="sub">App Store + Google Play downloads, and recorded transactions. Store download figures are reported by Apple/Google with a ~1-day lag.</div>
 
     <div class="controls">
-      <label class="muted" style="font-size:12px;">Apple date <input type="date" id="appleDate" /></label>
       <label class="muted" style="font-size:12px;">Google month <input type="month" id="googleMonth" /></label>
-      <button id="refreshBtn">Refresh</button>
+      <button id="refreshBtn">↻ Refresh</button>
       <span id="asOf" class="muted" style="font-size:12px;"></span>
     </div>
 
     <div id="accessDenied"></div>
     <div id="content" style="display:none;">
+      <div class="kpis" id="kpis"></div>
 
-      <!-- Apple -->
-      <div class="section">
-        <div class="row-head"><h2 style="margin:0;">🍏 Apple App Store <span id="appleStatus"></span></h2></div>
-        <div id="appleBody"></div>
+      <div class="section-title">Downloads by platform</div>
+      <div class="cols">
+        <div class="card" id="appleCard"></div>
+        <div class="card" id="googleCard"></div>
       </div>
 
-      <!-- Google -->
-      <div class="section">
-        <div class="row-head"><h2 style="margin:0;">🤖 Google Play <span id="googleStatus"></span></h2></div>
-        <div id="googleBody"></div>
-      </div>
-
-      <!-- Recorded transactions -->
-      <div class="section">
-        <div class="row-head"><h2 style="margin:0;">💳 Recorded transactions (our DB)</h2></div>
-        <div id="localBody"></div>
-      </div>
+      <div class="section-title">Recorded transactions (our database)</div>
+      <div class="card" id="localCard"></div>
     </div>
 
-    <div id="loading" class="muted" style="padding:30px 0;">Loading…</div>
+    <div id="loading" class="muted" style="padding:30px 0;">Loading analytics…</div>
   </div>
 
   <script>
@@ -75,87 +76,107 @@
     if (!authToken) { window.location.href = '/login'; }
     var API_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1') ? 'http://localhost:3000' : 'https://cvapplyr.com';
 
-    function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
-    function num(n){ return (n==null?0:n).toLocaleString(); }
-    function money(n,c){ return (c||'') + ' ' + (Math.round((n||0)*100)/100).toLocaleString(); }
+    function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+    function num(n){ return (n==null||isNaN(n))?'0':Number(n).toLocaleString(); }
+    function money(n,c){ return (c?c+' ':'') + (Math.round((n||0)*100)/100).toLocaleString(); }
+    function kpi(v,l,d){ return '<div class="kpi"><div class="v">'+v+'</div><div class="l">'+esc(l)+'</div>'+(d?'<div class="d">'+esc(d)+'</div>':'')+'</div>'; }
+    function subStat(v,l){ return '<div class="sub-stat"><div class="v">'+v+'</div><div class="l">'+esc(l)+'</div></div>'; }
 
-    function statCard(value, label){ return '<div class="card"><div class="stat">'+value+'</div><div class="stat-lbl">'+esc(label)+'</div></div>'; }
-
-    function renderStore(target, statusEl, d, kind){
-      if (!d || d.configured === false) {
-        statusEl.innerHTML = '<span class="ok-pill warn-pill">needs setup</span>';
-        document.getElementById(target).innerHTML = '<div class="note">'+esc((d&&d.reason)||'Not configured.')+'</div>';
-        return;
-      }
-      statusEl.innerHTML = '<span class="ok-pill">live</span>';
-      var html = '<div class="grid">';
-      if (kind === 'apple') {
-        html += statCard(num(d.downloads), 'App units ('+esc(d.date||'')+')');
-        html += statCard(num(d.inAppUnits), 'In-app units');
-        html += statCard(money(d.proceeds,'$'), 'Proceeds');
-      } else {
-        html += statCard(num(d.totalInstalls), 'Installs ('+esc(d.month||'')+')');
-        if (d.series && d.series.length) html += statCard(num(d.series[d.series.length-1].installs), 'Latest day');
-      }
-      html += '</div>';
-      if (d.note) html += '<div class="note" style="margin-top:12px;">'+esc(d.note)+'</div>';
-      document.getElementById(target).innerHTML = html;
+    function barChart(series, key, color){
+      if(!series||!series.length) return '<div class="muted" style="font-size:12px;margin-top:10px;">No daily data yet.</div>';
+      var max=1; series.forEach(function(p){ if((p[key]||0)>max) max=p[key]; });
+      var n=series.length, bw=100/n, bars='';
+      for(var i=0;i<n;i++){ var h=Math.max(1.5,(series[i][key]||0)/max*58); bars+='<rect x="'+(i*bw+bw*0.15).toFixed(2)+'" y="'+(64-h).toFixed(2)+'" width="'+(bw*0.7).toFixed(2)+'" height="'+h.toFixed(2)+'" rx="0.4" fill="'+color+'"><title>'+esc(series[i].date)+': '+num(series[i][key])+'</title></rect>'; }
+      return '<svg viewBox="0 0 100 66" preserveAspectRatio="none" style="width:100%;height:82px;margin-top:12px;">'+bars+'</svg>'
+        + '<div class="muted" style="font-size:10.5px;display:flex;justify-content:space-between;margin-top:2px;"><span>'+esc(series[0].date)+'</span><span>'+esc(series[n-1].date)+'</span></div>';
     }
 
-    function renderLocal(d){
-      var el = document.getElementById('localBody');
-      if (!d) { el.innerHTML = '<div class="muted">No data.</div>'; return; }
-      var html = '';
-      var w = d.completedTxns || {};
-      html += '<div class="grid">'
-        + statCard(num(w.last_24h), 'Txns · 24h')
-        + statCard(num(w.last_7d), 'Txns · 7d')
-        + statCard(num(w.last_30d), 'Txns · 30d')
-        + statCard(num(w.all_time), 'Txns · all time')
-        + statCard(num((d.credits||{}).credits_sold), 'Credits sold')
+    function statusPill(d){
+      if(!d||d.configured===false) return '<span class="pill setup">needs setup</span>';
+      if(d.pending) return '<span class="pill pending">warming up</span>';
+      return '<span class="pill live">live</span>';
+    }
+
+    function renderApple(d){
+      var html = '<h2>🍏 Apple App Store '+statusPill(d)+'</h2><div class="cap">iOS downloads</div>';
+      if(!d||d.configured===false){ html += '<div class="note">'+esc((d&&d.reason)||'Not configured.')+'</div>'; return html; }
+      if(d.pending){ html += '<div class="note info">'+esc(d.note||'Apple is preparing your analytics report (~1 day).')+'</div>'; return html; }
+      html += '<div class="subgrid">'
+        + subStat('<span style="color:var(--cyan)">'+num(d.totalDownloads)+'</span>','Total downloads')
+        + subStat(num(d.firstTime),'First-time')
+        + subStat(num(d.redownloads),'Redownloads')
         + '</div>';
-      var bp = d.byPlatform || [];
-      if (bp.length) {
-        html += '<div class="card" style="margin-top:12px;"><h2>Revenue by platform</h2><table><tr><th>Platform</th><th>Txns</th><th>Paying users</th><th>Revenue</th></tr>';
-        bp.forEach(function(r){ html += '<tr><td>'+esc(r.platform)+'</td><td>'+num(r.txns)+'</td><td>'+num(r.paying_users)+'</td><td>'+money(r.revenue, r.currency||'')+'</td></tr>'; });
-        html += '</table></div>';
-      }
-      var rec = d.recent || [];
-      if (rec.length) {
-        html += '<div class="card" style="margin-top:12px;"><h2>Recent transactions</h2><table><tr><th>When</th><th>Platform</th><th>User</th><th>Plan</th><th>Amount</th></tr>';
-        rec.forEach(function(r){ html += '<tr><td>'+esc((r.created_at||'').toString().slice(0,16).replace('T',' '))+'</td><td>'+esc(r.platform)+'</td><td>'+esc(r.user_id)+'</td><td>'+esc(r.plan_id)+'</td><td>'+money(r.amount, r.currency||'')+'</td></tr>'; });
-        html += '</table></div>';
-      }
-      if (d.error) html += '<div class="note" style="margin-top:12px;">DB note: '+esc(d.error)+'</div>';
-      el.innerHTML = html;
+      html += barChart(d.series,'downloads','var(--cyan)');
+      if(d.report) html += '<div class="muted" style="font-size:10.5px;margin-top:8px;">source: '+esc(d.report)+(d.processingDate?(' · '+esc(d.processingDate)):'')+'</div>';
+      return html;
+    }
+    function renderGoogle(d){
+      var html = '<h2>🤖 Google Play '+statusPill(d)+'</h2><div class="cap">Android installs</div>';
+      if(!d||d.configured===false){ html += '<div class="note">'+esc((d&&d.reason)||'Not configured.')+'</div>'; return html; }
+      if(d.pending){ html += '<div class="note info">'+esc(d.note||'Preparing…')+'</div>'; return html; }
+      html += '<div class="subgrid">'
+        + subStat('<span style="color:var(--green)">'+num(d.totalInstalls)+'</span>','Installs ('+esc(d.month||'')+')')
+        + (d.series&&d.series.length?subStat(num(d.series[d.series.length-1].installs),'Latest day'):'')
+        + '</div>';
+      html += barChart(d.series,'installs','var(--green)');
+      if(d.note) html += '<div class="note info">'+esc(d.note)+'</div>';
+      return html;
+    }
+    function renderLocal(d){
+      if(!d) return '<div class="muted">No data.</div>';
+      var w=d.completedTxns||{}, html='';
+      html += '<div class="kpis" style="margin-bottom:0;">'
+        + kpi(num(w.last_24h),'Txns · 24h') + kpi(num(w.last_7d),'Txns · 7d')
+        + kpi(num(w.last_30d),'Txns · 30d') + kpi(num(w.all_time),'Txns · all time')
+        + kpi(num((d.credits||{}).credits_sold),'Credits sold') + '</div>';
+      var bp=d.byPlatform||[];
+      if(bp.length){ html+='<div class="cap" style="margin-top:16px;">Revenue by platform</div><table><tr><th>Platform</th><th>Txns</th><th>Paying users</th><th>Revenue</th></tr>';
+        bp.forEach(function(r){ html+='<tr><td>'+esc(r.platform)+'</td><td>'+num(r.txns)+'</td><td>'+num(r.paying_users)+'</td><td>'+money(r.revenue,r.currency||'')+'</td></tr>'; }); html+='</table>'; }
+      var rec=d.recent||[];
+      if(rec.length){ html+='<div class="cap" style="margin-top:16px;">Recent transactions</div><table><tr><th>When</th><th>Platform</th><th>User</th><th>Plan</th><th>Amount</th></tr>';
+        rec.forEach(function(r){ html+='<tr><td>'+esc(String(r.created_at||'').slice(0,16).replace('T',' '))+'</td><td>'+esc(r.platform)+'</td><td>'+esc(r.user_id)+'</td><td>'+esc(r.plan_id)+'</td><td>'+money(r.amount,r.currency||'')+'</td></tr>'; }); html+='</table>'; }
+      if(d.error) html+='<div class="note">DB note: '+esc(d.error)+'</div>';
+      return html;
+    }
+
+    function renderKpis(data){
+      var a=data.apple||{}, g=data.google||{}, l=data.local||{};
+      var ios = (a.configured && !a.pending) ? (a.totalDownloads||0) : null;
+      var and = (g.configured && !g.pending) ? (g.totalInstalls||0) : null;
+      var total = (ios||0)+(and||0);
+      var payers=0, rev=[];
+      (l.byPlatform||[]).forEach(function(r){ payers+=(r.paying_users||0); rev.push(money(r.revenue,r.currency||'')); });
+      document.getElementById('kpis').innerHTML =
+        kpi('<span style="color:var(--blue)">'+(ios===null&&and===null?'—':num(total))+'</span>','Total downloads','iOS + Android')
+        + kpi(ios===null?'<span class="muted" style="font-size:16px;">setup</span>':num(ios),'iOS downloads')
+        + kpi(and===null?'<span class="muted" style="font-size:16px;">setup</span>':num(and),'Android installs')
+        + kpi(num(payers),'Paying users')
+        + kpi(rev.length?rev.join(' · '):'—','Revenue');
     }
 
     async function load(){
-      document.getElementById('loading').style.display = 'block';
-      var qs = [];
-      var ad = document.getElementById('appleDate').value; if (ad) qs.push('date='+ad);
-      var gm = document.getElementById('googleMonth').value; if (gm) qs.push('month='+gm.replace('-',''));
-      try {
-        var resp = await fetch(API_BASE + '/api/admin/store-analytics' + (qs.length?('?'+qs.join('&')):''), { headers: { 'Authorization': 'Bearer ' + authToken } });
-        if (resp.status === 403) { showDenied(); return; }
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        var data = await resp.json();
-        renderStore('appleBody', document.getElementById('appleStatus'), data.apple, 'apple');
-        renderStore('googleBody', document.getElementById('googleStatus'), data.google, 'google');
-        renderLocal(data.local);
-        document.getElementById('asOf').textContent = 'as of ' + (data.generatedAt||'').toString().slice(0,19).replace('T',' ') + ' UTC';
-        document.getElementById('content').style.display = 'block';
-      } catch (e) {
-        document.getElementById('content').style.display = 'block';
-        document.getElementById('localBody').innerHTML = '<div class="err">Failed to load: '+esc(e.message)+'</div>';
-      } finally {
-        document.getElementById('loading').style.display = 'none';
-      }
+      document.getElementById('loading').style.display='block';
+      var qs=[]; var gm=document.getElementById('googleMonth').value; if(gm) qs.push('month='+gm.replace('-',''));
+      try{
+        var resp=await fetch(API_BASE+'/api/admin/store-analytics'+(qs.length?('?'+qs.join('&')):''),{headers:{'Authorization':'Bearer '+authToken}});
+        if(resp.status===403){ showDenied(); return; }
+        if(!resp.ok) throw new Error('HTTP '+resp.status);
+        var data=await resp.json();
+        renderKpis(data);
+        document.getElementById('appleCard').innerHTML=renderApple(data.apple);
+        document.getElementById('googleCard').innerHTML=renderGoogle(data.google);
+        document.getElementById('localCard').innerHTML=renderLocal(data.local);
+        document.getElementById('asOf').textContent='as of '+String(data.generatedAt||'').slice(0,19).replace('T',' ')+' UTC';
+        document.getElementById('content').style.display='block';
+      }catch(e){
+        document.getElementById('content').style.display='block';
+        document.getElementById('localCard').innerHTML='<div class="err">Failed to load: '+esc(e.message)+'</div>';
+      }finally{ document.getElementById('loading').style.display='none'; }
     }
     function showDenied(){
       document.getElementById('loading').style.display='none';
       document.getElementById('content').style.display='none';
-      document.getElementById('accessDenied').innerHTML = '<div class="note">⛔ Access denied — admin only. <a class="back" href="/dashboard">Go to dashboard</a></div>';
+      document.getElementById('accessDenied').innerHTML='<div class="note">⛔ Access denied — admin only. <a class="back" href="/dashboard">Go to dashboard</a></div>';
     }
     document.getElementById('refreshBtn').addEventListener('click', load);
     load();

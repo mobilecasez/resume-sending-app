@@ -21,6 +21,7 @@ const ANDROID_PACKAGE = process.env.ANDROID_PACKAGE || 'com.cvapplyr.mobile';
 const ASC_KID = process.env.ASC_KEY_ID || '33Y3J5248R';
 const ASC_ISS = process.env.ASC_ISSUER_ID || 'bc162399-5ecc-4cdd-baf4-a143d5b1eb65';
 const APPLE_VENDOR = (process.env.APPLE_VENDOR_NUMBER || '').trim();
+const APPLE_APP_ID = process.env.APPLE_ASC_APP_ID || '6762126502';
 
 // ─── credential loaders (env first, Keys/ fallback) ──────────────────────────
 function readKeyFile(rel) {
@@ -109,6 +110,78 @@ async function appleSales({ reportDate, frequency = 'DAILY' } = {}) {
   return { configured: false, reason: `Apple API returned ${res.status}.`, raw: res.body.toString('utf8').slice(0, 300) };
 }
 
+// ─── Apple App Store: DOWNLOADS via the Analytics Reports API (no vendor number) ──────────────
+// Needs the App Store Connect API key to have the ADMIN role. Async: ensure an ONGOING report
+// request exists → list its reports → latest DAILY instance → download segments → parse downloads.
+function ascApiJson(method, pathname, body) {
+  const token = ascToken();
+  if (!token) return Promise.resolve({ status: 0, json: null });
+  const data = body ? JSON.stringify(body) : null;
+  return new Promise((resolve) => {
+    const req = https.request({ hostname: 'api.appstoreconnect.apple.com', path: pathname, method,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}) } },
+      (res) => { let b = ''; res.on('data', (d) => b += d); res.on('end', () => { let j = null; try { j = JSON.parse(b); } catch {} resolve({ status: res.statusCode, json: j }); }); });
+    req.on('error', () => resolve({ status: 0, json: null }));
+    if (data) req.write(data);
+    req.end();
+  });
+}
+function fetchUrlText(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => { const ch = []; res.on('data', (d) => ch.push(d)); res.on('end', () => { const buf = Buffer.concat(ch); try { resolve(zlib.gunzipSync(buf).toString('utf8')); } catch { resolve(buf.toString('utf8')); } }); }).on('error', reject);
+  });
+}
+async function appleAnalytics() {
+  if (!asclPrivateKey()) return { configured: false, reason: 'Apple API key not loaded. On prod set ASC_KEY_P8_B64 (base64 of the .p8).' };
+  const ELEVATE = `Apple App Store Connect API key ${ASC_KID} needs the ADMIN role to read Analytics Reports. Elevate it (or create a new Admin key) — App Store Connect → Users and Access → Integrations → App Store Connect API.`;
+  let list = await ascApiJson('GET', `/v1/apps/${APPLE_APP_ID}/analyticsReportRequests?limit=20`);
+  if (list.status === 401 || list.status === 403) return { configured: false, reason: ELEVATE };
+  if (list.status === 0) return { configured: false, reason: 'Apple API request failed (network).' };
+  let req = ((list.json && list.json.data) || []).find((r) => r.attributes && r.attributes.accessType === 'ONGOING' && !r.attributes.stoppedDueToInactivity);
+  if (!req) {
+    const created = await ascApiJson('POST', '/v1/analyticsReportRequests', { data: { type: 'analyticsReportRequests', attributes: { accessType: 'ONGOING' }, relationships: { app: { data: { type: 'apps', id: APPLE_APP_ID } } } } });
+    if (created.status === 401 || created.status === 403) return { configured: false, reason: ELEVATE };
+    if (created.json && created.json.data) req = created.json.data;
+    else return { configured: false, reason: `Could not create the Apple analytics report request (status ${created.status}).` };
+  }
+  const reportsResp = await ascApiJson('GET', `/v1/analyticsReportRequests/${req.id}/reports?limit=200`);
+  const reports = (reportsResp.json && reportsResp.json.data) || [];
+  if (!reports.length) return { configured: true, pending: true, note: 'Analytics enabled — Apple is generating your first report (up to ~24–48h after enabling). Check back.' };
+  const dl = reports.find((r) => /download/i.test((r.attributes || {}).name || '')) || reports.find((r) => /install/i.test((r.attributes || {}).name || ''));
+  if (!dl) return { configured: true, pending: true, note: `No downloads report found yet among ${reports.length} reports.`, reportNames: reports.map((r) => (r.attributes || {}).name).slice(0, 40) };
+  const inst = await ascApiJson('GET', `/v1/analyticsReports/${dl.id}/instances?filter[granularity]=DAILY&limit=30`);
+  const instances = (inst.json && inst.json.data) || [];
+  if (!instances.length) return { configured: true, pending: true, note: 'Downloads report found, daily data not generated yet (~1 day).', report: (dl.attributes || {}).name };
+  instances.sort((a, b) => String((b.attributes || {}).processingDate || '').localeCompare(String((a.attributes || {}).processingDate || '')));
+  const latest = instances[0];
+  const segResp = await ascApiJson('GET', `/v1/analyticsReportInstances/${latest.id}/segments`);
+  const segments = (segResp.json && segResp.json.data) || [];
+  if (!segments.length) return { configured: true, pending: true, note: 'Report instance has no data segments yet.', report: (dl.attributes || {}).name };
+  let total = 0, firstTime = 0, redownloads = 0; const series = {};
+  for (const seg of segments) {
+    const url = (seg.attributes || {}).url; if (!url) continue;
+    let csv; try { csv = await fetchUrlText(url); } catch { continue; }
+    const lines = csv.split('\n').filter((l) => l.trim()); if (!lines.length) continue;
+    const sep = lines[0].indexOf('\t') >= 0 ? '\t' : ',';
+    const header = lines[0].split(sep).map((h) => h.replace(/^"|"$/g, '').trim());
+    const iDate = header.findIndex((h) => /^date/i.test(h));
+    const iCounts = header.findIndex((h) => /counts|quantity|units|downloads/i.test(h));
+    const iType = header.findIndex((h) => /download type|type/i.test(h));
+    if (iCounts < 0) continue;
+    for (let i = 1; i < lines.length; i++) {
+      const c = lines[i].split(sep);
+      const n = parseInt(String(c[iCounts] || '0').replace(/[^0-9-]/g, ''), 10) || 0;
+      total += n;
+      const t = (iType >= 0 ? c[iType] : '').toLowerCase();
+      if (/first/.test(t)) firstTime += n; else if (/re-?download/.test(t)) redownloads += n;
+      const day = (iDate >= 0 ? (c[iDate] || '') : ((latest.attributes || {}).processingDate || '')).slice(0, 10);
+      if (day) series[day] = (series[day] || 0) + n;
+    }
+  }
+  const seriesArr = Object.keys(series).sort().map((d) => ({ date: d, downloads: series[d] })).slice(-30);
+  return { configured: true, processingDate: (latest.attributes || {}).processingDate, report: (dl.attributes || {}).name, totalDownloads: total, firstTime, redownloads, series: seriesArr };
+}
+
 // ─── Google Play: install report from the Cloud Storage "Download reports" bucket ─────────────
 async function googleInstalls({ month } = {}) {
   const sa = googleSA();
@@ -195,11 +268,11 @@ async function localMonetization() {
 
 async function getAnalytics(opts = {}) {
   const [apple, google, local] = await Promise.all([
-    appleSales(opts.apple || {}).catch((e) => ({ configured: false, reason: e.message })),
+    appleAnalytics().catch((e) => ({ configured: false, reason: e.message })),
     googleInstalls(opts.google || {}).catch((e) => ({ configured: false, reason: e.message })),
     localMonetization(),
   ]);
   return { generatedAt: new Date().toISOString(), apple, google, local };
 }
 
-module.exports = { getAnalytics, appleSales, googleInstalls, localMonetization };
+module.exports = { getAnalytics, appleAnalytics, appleSales, googleInstalls, localMonetization };
