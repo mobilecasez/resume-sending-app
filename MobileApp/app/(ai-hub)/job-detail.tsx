@@ -22,7 +22,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
-import { RESUME_REGION_OPTIONS, REGION_OPTIONS, regionFromCountry, regionLabel } from '../../regionUtils';
+import { RESUME_REGION_OPTIONS, REGION_OPTIONS, regionFromCountry, regionLabel, fmtLocation, employerAddress } from '../../regionUtils';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
@@ -760,6 +760,7 @@ export default function JobDetailScreen() {
   const [companyAddressCL, setCompanyAddressCL] = useState('');
   type CLLocation = { address: string; city: string; country: string; isHeadquarters: boolean; matchesJobLocation?: boolean };
   const [companyLocations, setCompanyLocations] = useState<CLLocation[]>([]);
+  const [showOfficePicker, setShowOfficePicker] = useState(false);
 
   // Download states
   const [dlState,    setDlState]    = useState<'idle'|'loading'|'done'>('idle');
@@ -1110,11 +1111,16 @@ export default function JobDetailScreen() {
       setCoverLetterHtml(record.cover_letter_html);
       setCompanyNameCL(record.company_name || '');
       setWebsiteUrlCL(record.website_url || '');
-      setCompanyAddressCL(record.company_address || '');
-      try {
-        const locs = record.company_locations ? JSON.parse(record.company_locations) : [];
-        if (Array.isArray(locs)) setCompanyLocations(locs);
-      } catch {};
+      let locs: CLLocation[] = [];
+      try { locs = record.company_locations ? JSON.parse(record.company_locations) : []; } catch {}
+      if (Array.isArray(locs)) setCompanyLocations(locs);
+      // Auto-clean a placeholder ("Location TBD") address to a real office (skip/dedupe placeholders).
+      const cleanAddr = employerAddress({ address: record.company_address, locations: Array.isArray(locs) ? locs : [] });
+      setCompanyAddressCL(cleanAddr);
+      // If the stored address was junk and we recovered a real one, persist it so the PDF/email use it.
+      if (cleanAddr && cleanAddr !== (record.company_address || '')) {
+        saveJobCoverLetter(job.id, { coverLetterHtml: record.cover_letter_html, companyName: record.company_name || '', websiteUrl: record.website_url || '', position: record.position || job.title, companyAddress: cleanAddr, companyLocations: Array.isArray(locs) ? locs : [] });
+      }
       setClState('done');
       clAnim.setValue(1);
       if (record.status === 'downloaded') {
@@ -1206,7 +1212,8 @@ export default function JobDetailScreen() {
         const loc = `${l.address} ${l.city} ${l.country}`.toLowerCase();
         return jobLocLower && (loc.includes(jobLocLower) || jobLocLower.split(/[,\s]+/).some(w => w.length > 2 && loc.includes(w)));
       }) || locs.find(l => l.isHeadquarters) || locs[0];
-      const addr = bestLoc ? [bestLoc.address, bestLoc.city, bestLoc.country].filter(Boolean).join(', ') : '';
+      // Clean join (dedupe + drop placeholder 'Location TBD' parts); fall back to first real office.
+      const addr = (bestLoc && fmtLocation(bestLoc)) || employerAddress({ locations: locs }) || '';
 
       setCoverLetterHtml(html);
       setCompanyNameCL(cName);
@@ -1224,6 +1231,16 @@ export default function JobDetailScreen() {
       Alert.alert('Error', msg);
       return null;
     }
+  };
+
+  // Change which office address goes on the cover letter (PDF + email). Persists to job_cover_letters
+  // — the SAME store the Jobs page reads — so the choice sticks on reload.
+  const pickOffice = (loc: CLLocation) => {
+    const addr = fmtLocation(loc);
+    setShowOfficePicker(false);
+    if (!addr) return;
+    setCompanyAddressCL(addr);
+    saveJobCoverLetter(job.id, { coverLetterHtml: coverLetterHtml || '', companyName: companyNameCL || employer.name, websiteUrl: websiteUrlCL, position: job.title, companyAddress: addr, companyLocations });
   };
 
   const handleDownloadPdf = async () => {
@@ -1885,7 +1902,8 @@ export default function JobDetailScreen() {
               onPress={handleGenerateCoverLetter}
             />
           ) : (
-            // All three actions on one line: Generated (big) + Download (icon) + Edit (icon).
+            <>
+            {/* All three actions on one line: Generated (big) + Download (icon) + Edit (icon). */}
             <View style={s.clActionRow}>
               <View style={{ flex: 1 }}>
                 <GenerateCLButton
@@ -1901,7 +1919,45 @@ export default function JobDetailScreen() {
                 <Ionicons name="create-outline" size={18} color={T.blue} />
               </TouchableOpacity>
             </View>
+            {/* Office address used on the letter (PDF + email). Tap to change it — persists here. */}
+            {(companyAddressCL || companyLocations.length > 0) ? (
+              <TouchableOpacity
+                style={s.officeRow}
+                activeOpacity={0.8}
+                disabled={companyLocations.length <= 1}
+                onPress={() => companyLocations.length > 1 && setShowOfficePicker(true)}
+              >
+                <Ionicons name="business-outline" size={15} color={T.textMuted} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.officeLabel}>OFFICE ON THE LETTER</Text>
+                  <Text style={s.officeValue} numberOfLines={2}>{companyAddressCL || 'Not set'}</Text>
+                </View>
+                {companyLocations.length > 1 ? <Ionicons name="chevron-down" size={16} color={T.textMuted} /> : null}
+              </TouchableOpacity>
+            ) : null}
+            </>
           )}
+
+          <Modal visible={showOfficePicker} transparent animationType="fade" onRequestClose={() => setShowOfficePicker(false)}>
+            <TouchableOpacity style={s.officeOverlay} activeOpacity={1} onPress={() => setShowOfficePicker(false)}>
+              <View style={s.officeMenu}>
+                <Text style={s.officeMenuTitle}>Choose the office address</Text>
+                <ScrollView>
+                  {companyLocations.map((loc, idx) => {
+                    const label = fmtLocation(loc);
+                    if (!label) return null;
+                    const active = label === companyAddressCL;
+                    return (
+                      <TouchableOpacity key={idx} style={[s.officeItem, active ? s.officeItemActive : null]} activeOpacity={0.8} onPress={() => pickOffice(loc)}>
+                        <Text style={s.officeItemText} numberOfLines={2}>{label}{loc.isHeadquarters ? '  (HQ)' : ''}</Text>
+                        {active ? <Ionicons name="checkmark" size={16} color={T.blue} /> : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            </TouchableOpacity>
+          </Modal>
         </View>
 
         {/* ── Card 3: Skills ── */}
@@ -2709,6 +2765,15 @@ const s = StyleSheet.create({
   // Cover letter row after generation
   clDoneRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
   clActionRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  officeRow: { flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 10, paddingVertical: 9, paddingHorizontal: 11, backgroundColor: 'rgba(11,15,34,0.03)', borderWidth: 1, borderColor: T.border, borderRadius: 12 },
+  officeLabel: { fontSize: 9.5, fontWeight: '800', color: T.textMuted, letterSpacing: 0.6 },
+  officeValue: { fontSize: 12.5, fontWeight: '700', color: T.ink, marginTop: 2 },
+  officeOverlay: { flex: 1, backgroundColor: 'rgba(11,15,34,0.42)', alignItems: 'center', justifyContent: 'center', padding: 28 },
+  officeMenu: { width: '100%', maxHeight: '70%', backgroundColor: '#fff', borderRadius: 18, padding: 14 },
+  officeMenuTitle: { fontSize: 14, fontWeight: '800', color: T.ink, marginBottom: 8, paddingHorizontal: 2 },
+  officeItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingVertical: 12, paddingHorizontal: 12, borderRadius: 12 },
+  officeItemActive: { backgroundColor: 'rgba(79,141,255,0.10)' },
+  officeItemText: { flex: 1, fontSize: 13, fontWeight: '600', color: T.ink },
   editBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingVertical: 10, paddingHorizontal: 14,
