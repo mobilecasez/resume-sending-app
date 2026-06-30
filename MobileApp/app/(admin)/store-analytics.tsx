@@ -198,6 +198,14 @@ function DetailSheet({ payload, onClose, onAction }: { payload: any; onClose: ()
                 </View>
               ) : null}
 
+              {p.stats && p.stats.length ? (
+                <View style={dl.statsGrid}>
+                  {p.stats.map((st: any, i: number) => (
+                    <View key={i} style={dl.statCell}><Text style={dl.statL}>{st[0]}</Text><Text style={dl.statV}>{st[1]}</Text></View>
+                  ))}
+                </View>
+              ) : null}
+
               <View style={dl.block}>
                 <Text style={dl.blockLbl}>Trend</Text>
                 <MiniBars data={p.trend} color={p.color} height={64} />
@@ -230,6 +238,22 @@ function DetailSheet({ payload, onClose, onAction }: { payload: any; onClose: ()
                       </View>
                     );
                   })}
+                </View>
+              ) : null}
+
+              {p.txns && p.txns.length ? (
+                <View style={{ marginTop: 14 }}>
+                  <Text style={[dl.blockLbl, { marginBottom: 9 }]}>Recent transactions</Text>
+                  {p.txns.map((t: any, i: number) => (
+                    <View key={i} style={dl.bRow}>
+                      <View style={[dl.bCode, { backgroundColor: C.purple + '18' }]}><Ionicons name="cart" size={13} color={C.purple} /></View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={dl.bLbl}>{t.platform === 'apple' ? 'Apple' : (t.platform || 'order')}</Text>
+                        <Text style={{ fontSize: 11, color: C.textMuted, fontWeight: '600' }}>{String(t.created_at || '').slice(0, 10)}</Text>
+                      </View>
+                      <Text style={dl.bVal}>{t.currency || ''} {fmt(Number(t.amount) || 0)}</Text>
+                    </View>
+                  ))}
                 </View>
               ) : null}
             </>
@@ -282,6 +306,9 @@ export default function StoreAnalyticsScreen() {
   }, [load]);
 
   const L: any = data?.live || {};
+  const A2: any = data?.apple || {};   // Apple store downloads (delayed, lifetime)
+  const G: any = data?.google || {};   // Google installs/uninstalls (delayed, monthly)
+  const LM: any = data?.local || {};   // real transactions/revenue from payment_orders
   const purch = L.purchasesToday || [];
   const purTotalN = purch.reduce((s: number, p: any) => s + (p.n || 0), 0);
   const purTotalRev = purch.reduce((s: number, p: any) => s + (Number(p.revenue) || 0), 0);
@@ -303,50 +330,77 @@ export default function StoreAnalyticsScreen() {
   ]), [data, platform]);
 
   const openMetric = (m: any) => {
-    const trendField = m.key === 'subs' || m.key === 'refunds' ? 'opens' : (m.key === 'purchases' ? 'purchases' : m.key);
-    const cb = countries.slice(0, 5).map((c: any) => ({ label: c.country, code: c.country, value: c.users }));
-    setDetail({
+    const base: any = {
       icon: m.icon, color: m.tone, title: m.label, subtitle: `${m.sub} · ${platLabel(platform)}`,
       value: m.value, money: m.money, delta: m.delta, invert: m.invert,
       split: platform === 'all' && m.split && (m.split.ios || m.split.android) ? m.split : null,
-      trend: seriesTrend(L.series, platform, trendField),
-      breakdownTitle: 'By country (active)', breakdown: cb,
-      action: m.key === 'uninstalls' ? { label: 'Run uninstall sweep', icon: 'scan', run: doSweep, busy: sweeping } : null,
-    });
+      trend: seriesTrend(L.series, platform, m.key === 'purchases' ? 'revenue' : (m.key === 'subs' || m.key === 'refunds' ? 'opens' : m.key)),
+    };
+    if (m.key === 'installs') {
+      base.stats = [['Today', fmt(L.newInstalls?.last_24h)], ['7 days', fmt(L.newInstalls?.last_7d)], ['All-time', fmt(L.newInstalls?.all_time)], ['Net', fmt(L.netInstalls?.all_time)]];
+      base.breakdownTitle = 'By app version'; base.breakdown = versions.slice(0, 4).map((v: any) => ({ label: `v${v.version}`, value: platform === 'all' ? v.total : platform === 'ios' ? v.ios : v.android }));
+      const sd = (A2.totalDownloads || 0) + (G.totalInstalls || 0);
+      base.note = sd ? `Store lifetime downloads: ${fmt(A2.totalDownloads || 0)} iOS · ${fmt(G.totalInstalls || 0)} Android` : 'Live first-party installs (fills out as v2.8 rolls out)';
+    } else if (m.key === 'uninstalls') {
+      base.stats = [['Today', fmt(L.uninstalls?.last_24h)], ['7 days', fmt(L.uninstalls?.last_7d)], ['All-time', fmt(L.uninstalls?.all_time)], ['Net inst.', fmt(L.netInstalls?.all_time)]];
+      base.note = G.totalUninstalls != null ? `Google official (this month): ${fmt(G.totalUninstalls)} uninstalls` : 'Detected live via push receipts';
+      base.action = { label: 'Run uninstall sweep', icon: 'scan', run: doSweep, busy: sweeping };
+    } else if (m.key === 'opens') {
+      base.stats = [['Last hour', fmt(L.opens?.last_hour)], ['24 hours', fmt(L.opens?.last_24h)], ['Unique 24h', fmt(L.opens?.unique_24h)]];
+    } else if (m.key === 'purchases') {
+      const tw = LM.txnWindows || {};
+      base.money = true; base.value = Math.round(tw.all?.revenue || 0); base.valueLabel = 'revenue · all-time';
+      base.stats = [['24h', fmt(tw['24h']?.txns)], ['7 days', fmt(tw['7d']?.txns)], ['30 days', fmt(tw['30d']?.txns)], ['All txns', fmt(tw.all?.txns)]];
+      base.breakdownTitle = 'Revenue by platform (lifetime)';
+      base.breakdown = (LM.byPlatform || []).map((b: any) => ({ label: `${b.platform === 'apple' ? 'Apple' : b.platform} · ${b.currency || ''}`, value: Math.round(Number(b.revenue) || 0) }));
+      base.txns = (LM.recent || []).slice(0, 6);
+      base.note = LM.credits?.credits_sold ? `${fmt(LM.credits.credits_sold)} credits sold · ${fmt(LM.credits.purchase_events)} purchase events` : null;
+    } else if (m.key === 'subs' || m.key === 'refunds') {
+      const evs = (L.lifecycle?.events || []).filter((e: any) => (m.key === 'subs' ? /sub/.test(e.event) : /refund/.test(e.event)));
+      base.stats = [['24h', fmt(evs.reduce((sx: number, e: any) => sx + e.d1, 0))], ['7 days', fmt(evs.reduce((sx: number, e: any) => sx + e.d7, 0))], ['All-time', fmt(evs.reduce((sx: number, e: any) => sx + e.all_time, 0))]];
+      base.breakdownTitle = 'By store'; base.breakdown = evs.map((e: any) => ({ label: `${e.store === 'apple' ? 'Apple' : 'Google'} · ${e.event}`, value: e.all_time }));
+      base.note = 'Real-time from Apple App Store Server Notifications + Google RTDN';
+    }
+    setDetail(base);
   };
   const openActive = () => setDetail({
     icon: 'people', color: C.blue, title: 'Active users', subtitle: `Live · last 30 min · ${platLabel(platform)}`,
     value: activeNow, delta: L.deltas?.active,
+    stats: [['Now · 30m', fmt(activeNow)], ['Active · 24h', fmt(L.activeToday?.total)], ['Opens · 24h', fmt(L.opens?.last_24h)]],
     split: platform === 'all' ? { ios: pick(L.activeNow?.byPlatform, 'ios', 'users'), android: pick(L.activeNow?.byPlatform, 'android', 'users') } : null,
-    trend: (L.hourly || []).map((h: any) => h.users), breakdownTitle: 'Active by country',
+    trend: (L.hourly || []).map((h: any) => h.users),
+    breakdownTitle: countries.length ? 'Active by country' : undefined,
     breakdown: countries.slice(0, 6).map((c: any) => ({ label: c.country, code: c.country, value: c.users })),
-    note: `${fmt(L.opens?.last_24h)} opens in the last 24h`,
+    note: 'Unique users seen in the last 30 minutes',
   });
   const openCountry = (c: any, max: number) => setDetail({
     icon: 'location', color: C.blue, title: c.country, subtitle: `${Math.round((c.users / (max || 1)) * 100)}% of the top region · ${platLabel(platform)}`,
-    value: c.users, trend: seriesTrend(L.series, platform, 'opens'), breakdownTitle: 'Recent activity',
-    breakdown: [{ label: 'Active users', value: c.users }],
+    value: c.users, valueLabel: 'active users', trend: seriesTrend(L.series, platform, 'opens'),
   });
   const openVersion = (v: any) => setDetail({
-    icon: 'layers', color: C.purple, title: `Version ${v.version}`, subtitle: platLabel(platform),
+    icon: 'layers', color: C.purple, title: `Version ${v.version}`, subtitle: `Devices (last 30 days) · ${platLabel(platform)}`,
     value: platform === 'all' ? v.total : (platform === 'ios' ? v.ios : v.android), valueLabel: 'devices',
-    split: platform === 'all' ? { ios: v.ios, android: v.android } : null,
+    stats: [['Total', fmt(v.total)], ['iOS', fmt(v.ios)], ['Android', fmt(v.android)]],
+    split: platform === 'all' && (v.ios || v.android) ? { ios: v.ios, android: v.android } : null,
     trend: seriesTrend(L.series, platform, 'opens'),
-    breakdown: [{ label: 'iOS devices', value: v.ios }, { label: 'Android devices', value: v.android }],
-    breakdownTitle: 'Devices on this version (30d)',
   });
   const openTotals = () => {
     const r = RANGES.find((x) => x.key === range)!;
     const s = sumRange(L.series, platform, r.days);
+    const tw = (LM.txnWindows || {})[range] || { txns: 0, revenue: 0 };
+    const win = r.label === 'All' ? 'all time' : 'last ' + r.label;
     setDetail({
       icon: 'stats-chart', color: C.blue, title: 'Total activity', subtitle: `${r.label === 'All' ? 'All time' : 'Last ' + r.label} · ${platLabel(platform)}`,
-      value: Math.round(s.revenue), money: true, valueLabel: 'revenue', trend: seriesTrend(L.series, platform, 'revenue', 20),
-      breakdownTitle: `Totals · ${r.label === 'All' ? 'all time' : 'last ' + r.label}`,
+      value: Math.round(tw.revenue), money: true, valueLabel: 'revenue · ' + win, trend: seriesTrend(L.series, platform, 'revenue', 20),
+      stats: [['Transactions', fmt(tw.txns)], ['New installs', fmt(s.installs)], ['App opens', fmt(s.opens)], ['Uninstalls', fmt(s.uninstalls)]],
+      breakdownTitle: `Totals · ${win}`,
       breakdown: [
-        { label: 'New installs', value: fmt(s.installs), raw: true }, { label: 'Uninstalls', value: fmt(s.uninstalls), raw: true },
-        { label: 'Net installs', value: fmt(s.installs - s.uninstalls), raw: true }, { label: 'App opens', value: fmt(s.opens), raw: true },
-        { label: 'Purchases', value: fmt(s.purchases), raw: true }, { label: 'Revenue', value: '$' + fmt(s.revenue), raw: true },
+        { label: 'Revenue', value: '$' + fmt(tw.revenue), raw: true }, { label: 'Transactions', value: fmt(tw.txns), raw: true },
+        { label: 'New installs', value: fmt(s.installs), raw: true }, { label: 'Net installs', value: fmt(s.installs - s.uninstalls), raw: true },
+        { label: 'App opens', value: fmt(s.opens), raw: true }, { label: 'Uninstalls', value: fmt(s.uninstalls), raw: true },
+        { label: 'Store downloads · iOS', value: fmt(A2.totalDownloads || 0), raw: true }, { label: 'Store installs · Android', value: fmt(G.totalInstalls || 0), raw: true },
       ],
+      note: r.label === 'All' ? 'Lifetime — payments are exact; first-party installs/opens cover the telemetry window' : `Compared with the previous ${r.label}`,
     });
   };
 
@@ -362,6 +416,10 @@ export default function StoreAnalyticsScreen() {
 
   const countryMax = Math.max(1, ...countries.map((c: any) => c.users));
   const rangeSum = sumRange(L.series, platform, (RANGES.find((x) => x.key === range) || RANGES[1]).days);
+  // Revenue + transactions = the EXACT figures from payment_orders (all platforms, all-time capable);
+  // per-platform falls back to the 90-day series. Installs/opens/uninstalls come from first-party series.
+  const tw = platform === 'all' ? ((LM.txnWindows || {})[range] || { txns: rangeSum.purchases, revenue: rangeSum.revenue }) : { txns: rangeSum.purchases, revenue: rangeSum.revenue };
+  const storeDownloads = (A2.totalDownloads || 0) + (G.totalInstalls || 0);
 
   return (
     <SafeAreaView style={s.safe}>
@@ -567,11 +625,12 @@ export default function StoreAnalyticsScreen() {
                 <View style={s.totalChip}><Ionicons name={platIcon(platform) as any} size={12} color={platform === 'all' ? C.ink : platform === 'ios' ? IOS : ANDROID} /><Text style={s.totalChipT}>{platLabel(platform)}</Text></View>
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 3, marginTop: 8 }}>
-                <Text style={s.totalCur}>$</Text><CountUp value={Math.round(rangeSum.revenue)} style={s.totalNum} />
+                <Text style={s.totalCur}>$</Text><CountUp value={Math.round(tw.revenue)} style={s.totalNum} />
+                <Text style={{ marginLeft: 8, marginBottom: 6, fontSize: 11.5, fontWeight: '700', color: C.textFaint }}>{fmt(tw.txns)} txns</Text>
               </View>
               <View style={{ marginTop: 8 }}><MiniBars data={seriesTrend(L.series, platform, 'revenue', 20)} color={C.blue} height={48} /></View>
               <View style={s.totGrid}>
-                {[['New installs', C.emerald, rangeSum.installs], ['Uninstalls', C.amber, rangeSum.uninstalls], ['Net', C.blue, rangeSum.installs - rangeSum.uninstalls], ['App opens', C.teal, rangeSum.opens], ['Purchases', C.purple, rangeSum.purchases], ['Revenue', C.blueDeep, Math.round(rangeSum.revenue)]].map(([l, col, val]) => (
+                {[['Transactions', C.purple, tw.txns], ['Revenue', C.blueDeep, Math.round(tw.revenue)], ['New installs', C.emerald, rangeSum.installs], ['App opens', C.teal, rangeSum.opens], ['Uninstalls', C.amber, rangeSum.uninstalls], ['Store downloads', C.blue, storeDownloads]].map(([l, col, val]) => (
                   <View key={l as string} style={s.totCell}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 5 }}><View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: col as string }} /><Text style={s.totCellL} numberOfLines={1}>{l as string}</Text></View>
                     <Text style={s.totCellV}>{l === 'Revenue' ? '$' : ''}{fmt(val as number)}</Text>
@@ -677,6 +736,10 @@ const dl = StyleSheet.create({
   bLbl: { fontSize: 12.5, fontWeight: '700', color: C.ink, flex: 1 },
   bVal: { fontSize: 12.5, fontWeight: '800', color: C.ink },
   bTrack: { marginTop: 6, height: 5, borderRadius: 100, backgroundColor: C.bgSoft, overflow: 'hidden' },
+  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
+  statCell: { width: '23%', flexGrow: 1, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border, borderRadius: 13, paddingVertical: 10, paddingHorizontal: 11 },
+  statL: { fontSize: 9.5, fontWeight: '700', color: C.textMuted, letterSpacing: 0.2 },
+  statV: { fontSize: 17, fontWeight: '800', color: C.ink, letterSpacing: -0.5, marginTop: 3 },
   cta: { marginTop: 18, height: 50, borderRadius: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   ctaT: { color: '#fff', fontSize: 13.5, fontWeight: '800' },
 });
