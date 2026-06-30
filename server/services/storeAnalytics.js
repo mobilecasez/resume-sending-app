@@ -261,27 +261,31 @@ async function localMonetization() {
     ).catch(() => []);
     out.byPlatform = byPlat || [];
 
+    // Revenue split by currency (apple_% = USD, the rest = INR via Razorpay) — never sum across
+    // currencies. `revenue` = USD (the primary store currency); `inr` is surfaced separately.
+    const usd = `order_id LIKE 'apple_%'`, inr = `order_id NOT LIKE 'apple_%'`;
+    const W = (cond) => `COALESCE(SUM(amount) FILTER (WHERE ${cond}),0)::float`;
+    const since = (h) => `created_at > NOW()-INTERVAL '${h}'`;
     const windows = await dbConfig.get(
       `SELECT
-         COUNT(*) FILTER (WHERE created_at > NOW()-INTERVAL '24 hours')::int AS t24,
-         COUNT(*) FILTER (WHERE created_at > NOW()-INTERVAL '7 days')::int  AS t7,
-         COUNT(*) FILTER (WHERE created_at > NOW()-INTERVAL '30 days')::int AS t30,
-         COUNT(*) FILTER (WHERE created_at > NOW()-INTERVAL '90 days')::int AS t90,
+         COUNT(*) FILTER (WHERE ${since('24 hours')})::int AS t24,
+         COUNT(*) FILTER (WHERE ${since('7 days')})::int  AS t7,
+         COUNT(*) FILTER (WHERE ${since('30 days')})::int AS t30,
+         COUNT(*) FILTER (WHERE ${since('90 days')})::int AS t90,
          COUNT(*)::int AS tall,
-         COALESCE(SUM(amount) FILTER (WHERE created_at > NOW()-INTERVAL '24 hours'),0)::float AS r24,
-         COALESCE(SUM(amount) FILTER (WHERE created_at > NOW()-INTERVAL '7 days'),0)::float  AS r7,
-         COALESCE(SUM(amount) FILTER (WHERE created_at > NOW()-INTERVAL '30 days'),0)::float AS r30,
-         COALESCE(SUM(amount) FILTER (WHERE created_at > NOW()-INTERVAL '90 days'),0)::float AS r90,
-         COALESCE(SUM(amount),0)::float AS rall
+         ${W(`${usd} AND ${since('24 hours')}`)} AS u24, ${W(`${usd} AND ${since('7 days')}`)} AS u7,
+         ${W(`${usd} AND ${since('30 days')}`)} AS u30, ${W(`${usd} AND ${since('90 days')}`)} AS u90, ${W(usd)} AS uall,
+         ${W(`${inr} AND ${since('24 hours')}`)} AS i24, ${W(`${inr} AND ${since('7 days')}`)} AS i7,
+         ${W(`${inr} AND ${since('30 days')}`)} AS i30, ${W(`${inr} AND ${since('90 days')}`)} AS i90, ${W(inr)} AS iall
        FROM payment_orders WHERE status='completed' AND (deleted_at IS NULL)`
     ).catch(() => null);
     const w = windows || {};
     out.completedTxns = { last_24h: w.t24 || 0, last_7d: w.t7 || 0, last_30d: w.t30 || 0, all_time: w.tall || 0 };
     // Real transactions + revenue per window — the long-period totals the dashboard's range card uses.
     out.txnWindows = {
-      '24h': { txns: w.t24 || 0, revenue: w.r24 || 0 }, '7d': { txns: w.t7 || 0, revenue: w.r7 || 0 },
-      '30d': { txns: w.t30 || 0, revenue: w.r30 || 0 }, '90d': { txns: w.t90 || 0, revenue: w.r90 || 0 },
-      all: { txns: w.tall || 0, revenue: w.rall || 0 },
+      '24h': { txns: w.t24 || 0, revenue: w.u24 || 0, inr: w.i24 || 0 }, '7d': { txns: w.t7 || 0, revenue: w.u7 || 0, inr: w.i7 || 0 },
+      '30d': { txns: w.t30 || 0, revenue: w.u30 || 0, inr: w.i30 || 0 }, '90d': { txns: w.t90 || 0, revenue: w.u90 || 0, inr: w.i90 || 0 },
+      all: { txns: w.tall || 0, revenue: w.uall || 0, inr: w.iall || 0 },
     };
 
     out.recent = await dbConfig.query(
