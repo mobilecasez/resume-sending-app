@@ -744,6 +744,10 @@ export type StoreAnalytics = {
     byCountry?: { country: string; users: number }[];
     recent?: { event: string; platform: string; user_id: number; created_at: string }[];
     purchasesToday?: { platform: string; currency: string; n: number; revenue: string }[];
+    opensByPlatform?: { platform: string; opens: number }[];
+    deltas?: { installs: number; uninstalls: number; opens: number; active: number };
+    byVersion?: { version: string; total: number; ios: number; android: number }[];
+    series?: { day: string; platform: string; installs: number; uninstalls: number; opens: number; purchases: number; revenue: number }[];
     storeNotifications?: { store: string; notification_type: string; subtype?: string; event?: string; product_id: string; price?: number; currency?: string; environment?: string; created_at: string }[];
     totalEvents?: number;
     error?: string;
