@@ -140,6 +140,42 @@ async function getLivePulse() {
              - COUNT(*) FILTER (WHERE event IN ('subscription_expired','subscription_revoked')))::int AS n
          FROM store_notifications`).catch(() => ({ n: 0 }))).n;
 
+    // App opens by platform (today) — platform-aware metric card.
+    out.opensByPlatform = await dbConfig.query(
+      `SELECT COALESCE(platform,'unknown') AS platform, COUNT(*)::int AS opens
+         FROM app_events WHERE event='app_open' AND created_at > NOW()-INTERVAL '24 hours' GROUP BY 1 ORDER BY opens DESC`).catch(() => []);
+
+    // Day-over-day deltas (last 24h vs the prior 24h) for the metric cards.
+    const prevInstalls = (await dbConfig.get(
+      `SELECT COUNT(*)::int n FROM (SELECT ${DEVICE} dev, MIN(created_at) fs FROM app_events
+         WHERE ${LIVE} AND (anon_id IS NOT NULL OR user_id IS NOT NULL) GROUP BY 1) t
+        WHERE fs BETWEEN NOW()-INTERVAL '48 hours' AND NOW()-INTERVAL '24 hours'`).catch(() => ({ n: 0 }))).n;
+    const prevUninstalls = (await dbConfig.get(
+      `SELECT COUNT(*)::int n FROM app_events WHERE event='uninstall' AND created_at BETWEEN NOW()-INTERVAL '48 hours' AND NOW()-INTERVAL '24 hours'`).catch(() => ({ n: 0 }))).n;
+    const prevOpens = (await dbConfig.get(
+      `SELECT COUNT(*)::int n FROM app_events WHERE event='app_open' AND created_at BETWEEN NOW()-INTERVAL '48 hours' AND NOW()-INTERVAL '24 hours'`).catch(() => ({ n: 0 }))).n;
+    const prevActive = (await dbConfig.get(
+      `SELECT COUNT(DISTINCT ${UID})::int n FROM app_events WHERE ${LIVE} AND created_at BETWEEN NOW()-INTERVAL '48 hours' AND NOW()-INTERVAL '24 hours'`).catch(() => ({ n: 0 }))).n;
+    const pct = (now, prev) => (prev > 0 ? Math.round(((now - prev) / prev) * 1000) / 10 : (now > 0 ? 100 : 0));
+    out.deltas = {
+      installs: pct(out.newInstalls && out.newInstalls.last_24h || 0, prevInstalls),
+      uninstalls: pct(out.uninstalls && out.uninstalls.last_24h || 0, prevUninstalls),
+      opens: pct(out.opens && out.opens.last_24h || 0, prevOpens),
+      active: pct(out.activeToday && out.activeToday.total || 0, prevActive),
+    };
+
+    // Top app versions (last 30 days, distinct devices), split by platform.
+    out.byVersion = await dbConfig.query(
+      `SELECT COALESCE(app_version,'unknown') AS version,
+              COUNT(DISTINCT ${DEVICE})::int AS total,
+              COUNT(DISTINCT ${DEVICE}) FILTER (WHERE platform='ios')::int AS ios,
+              COUNT(DISTINCT ${DEVICE}) FILTER (WHERE platform='android')::int AS android
+         FROM app_events WHERE created_at > NOW()-INTERVAL '30 days' AND ${LIVE}
+        GROUP BY 1 ORDER BY total DESC LIMIT 6`).catch(() => []);
+
+    // Daily series (90d) for the range selector — summable metrics per platform.
+    out.series = await buildSeries();
+
     out.storeNotifications = await dbConfig.query(
       `SELECT store, notification_type, subtype, event, product_id, price, currency, environment, created_at
          FROM store_notifications ORDER BY id DESC LIMIT 20`).catch(() => []);
@@ -147,6 +183,36 @@ async function getLivePulse() {
     out.totalEvents = (await dbConfig.get(`SELECT COUNT(*)::int c FROM app_events`).catch(() => ({ c: 0 }))).c;
   } catch (e) { out.error = e.message; }
   return out;
+}
+
+// Daily series for the last 90 days — installs/uninstalls/opens/purchases/revenue per platform.
+// The client sums the tail for each range (24h/7d/30d/90d/all). Returned as a flat array.
+async function buildSeries() {
+  const map = new Map();
+  const bump = (d, p, f, v) => {
+    const k = d + '|' + p;
+    if (!map.has(k)) map.set(k, { day: d, platform: p, installs: 0, uninstalls: 0, opens: 0, purchases: 0, revenue: 0 });
+    map.get(k)[f] += v;
+  };
+  const ev = await dbConfig.query(
+    `SELECT to_char(date_trunc('day',created_at),'YYYY-MM-DD') d, COALESCE(platform,'unknown') p,
+            COUNT(*) FILTER (WHERE event='app_open')::int opens,
+            COUNT(*) FILTER (WHERE event='uninstall')::int uninstalls
+       FROM app_events WHERE created_at > NOW()-INTERVAL '90 days' GROUP BY 1,2`).catch(() => []);
+  ev.forEach((r) => { bump(r.d, r.p, 'opens', r.opens || 0); bump(r.d, r.p, 'uninstalls', r.uninstalls || 0); });
+  const ins = await dbConfig.query(
+    `SELECT to_char(fs::date,'YYYY-MM-DD') d, COALESCE(p,'unknown') p, COUNT(*)::int installs FROM (
+       SELECT ${DEVICE} dev, MIN(created_at) fs, (ARRAY_AGG(platform ORDER BY created_at))[1] p
+         FROM app_events WHERE ${LIVE} AND (anon_id IS NOT NULL OR user_id IS NOT NULL) GROUP BY 1
+     ) t WHERE fs > NOW()-INTERVAL '90 days' GROUP BY 1,2`).catch(() => []);
+  ins.forEach((r) => bump(r.d, r.p, 'installs', r.installs || 0));
+  const pay = await dbConfig.query(
+    `SELECT to_char(date_trunc('day',created_at),'YYYY-MM-DD') d,
+            CASE WHEN order_id LIKE 'apple_%' THEN 'ios' ELSE 'android' END p,
+            COUNT(*)::int purchases, COALESCE(SUM(amount),0)::float revenue
+       FROM payment_orders WHERE status='completed' AND (deleted_at IS NULL) AND created_at > NOW()-INTERVAL '90 days' GROUP BY 1,2`).catch(() => []);
+  pay.forEach((r) => { bump(r.d, r.p, 'purchases', r.purchases || 0); bump(r.d, r.p, 'revenue', Number(r.revenue) || 0); });
+  return Array.from(map.values());
 }
 
 async function recordStoreNotification(d) {
