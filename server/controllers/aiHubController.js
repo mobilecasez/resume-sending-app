@@ -110,6 +110,78 @@ function decodeCfEmail(encoded) {
  * without flooding the prompt with the full page.
  * Returns a string of up to 3000 chars of relevant raw HTML.
  */
+// ── Plain-text contact extraction ────────────────────────────────────────────
+// Many sites (Dutch/government SuccessFactors, etc.) list the recruiter as PLAIN TEXT with no
+// mailto:/tel: links — "Contactpersonen … Daisy Bax, IT Manager HR  DS.Bax@mindef.nl  06 83016525".
+// These deterministic helpers survive the 6000-char clip + the missing-anchor case: extractContactRegion
+// feeds the block to the AI, extractContactsFromText pulls contacts straight from the stripped text.
+const CONTACT_KW = /contactpersoon|contactpersonen|ansprechpartner|contact ?person|persona de contacto|personne de contact|voor (?:meer |nadere )?informatie|for (?:more|further) information|vragen over (?:deze )?(?:vacature|functie)|questions? about|recruit(?:er|ment)|hiring manager|neem (?:dan )?contact/i;
+const BAD_CONTACT_EMAIL = /noreply|no-reply|donotreply|do-not-reply|postmaster|mailer-daemon|example\.(?:com|org)|sentry|wixpress|@email\b|your.?email|naam@|@example/i;
+const NAME_LABEL_RE = /^(?:recruit(?:er|ment)|contact(?:persoon|personen|person)?|hr|human resources|location|informatie|sollicitatie|team|afdeling|vragen|questions|hiring|the|voor|for|meer|over|deze|more|please|neem)\b/i;
+
+function extractContactRegion(text) {
+    if (!text) return '';
+    const m = CONTACT_KW.exec(String(text));
+    if (!m) return '';
+    const start = Math.max(0, m.index - 30);
+    return String(text).slice(start, start + 900).replace(/\s{3,}/g, '  ').trim();
+}
+
+function extractContactsFromText(text) {
+    if (!text) return [];
+    const t = String(text).replace(/[\r ]/g, ' ');
+    const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+    const PHONE_AFTER = /^[\s:·|,]*((?:\+?\d[\d\s().\-]{7,16}\d)|(?:0\d[\d\s\-]{7,12}))/;
+    const NAME_ROLE = /([A-ZÀ-Þ][A-Za-zÀ-ÿ'’.\-]+(?:\s+[A-ZÀ-Þ][A-Za-zÀ-ÿ'’.\-]+){1,2})\s*[,–-]?\s*([A-Za-zÀ-ÿ&/ .\-]{0,45}?)\s*$/;
+    const out = [], seen = new Set();
+    let m;
+    while ((m = EMAIL.exec(t)) && out.length < 6) {
+        const email = m[0];
+        if (BAD_CONTACT_EMAIL.test(email) || email.length > 100) continue;
+        const key = email.toLowerCase();
+        if (seen.has(key)) continue;
+        const at = m.index;
+        const pre = t.slice(Math.max(0, at - 90), at).trim();
+        const post = t.slice(at + email.length, at + email.length + 30);
+        let name = null, role = null;
+        const nm = pre.match(NAME_ROLE);
+        if (nm) {
+            const cand = nm[1].trim().replace(/[.,;:]+$/, '');
+            const r = (nm[2] || '').trim().replace(/[•·|]+$/, '').trim();
+            if (cand.split(/\s+/).length >= 2 && cand.length <= 48 && !NAME_LABEL_RE.test(cand)) {
+                name = cand;
+                role = r.length >= 2 && !/^\d/.test(r) ? r : null;
+            }
+        }
+        const local = email.split('@')[0];
+        const looksPersonal = /^[a-z]+([._-][a-z]+)+$/i.test(local) || /^[a-z]\.[a-z]{2,}/i.test(local);
+        if (!name && !looksPersonal) {
+            const ctx = t.slice(Math.max(0, at - 170), at).toLowerCase();
+            if (!CONTACT_KW.test(ctx)) continue; // only keep generic emails inside a contact context
+        }
+        let phone = null;
+        const pm = post.match(PHONE_AFTER);
+        if (pm) phone = pm[1].replace(/\s{2,}/g, ' ').trim();
+        else { const pp = pre.match(/\b(?:0\d[\d\s\-]{7,12}|\+\d[\d\s().\-]{7,16})\b/); if (pp) phone = pp[0].trim(); }
+        seen.add(key);
+        out.push({ name: name || null, role: role || 'Recruiter', email, phone });
+    }
+    return out;
+}
+
+// Repair path: fetch a job's live page once and pull plain-text contacts the original extraction
+// missed. Cached per job (6h) so a genuinely contact-less page isn't refetched on every open.
+const _contactRepairTried = new Map();
+async function fetchContactsForUrl(url) {
+    try {
+        const r = await smartScrape(url, { minChars: 300 });
+        const txt = (r && r.text) || '';
+        if (!txt) return [];
+        const region = extractContactRegion(txt);
+        return extractContactsFromText(region || txt);
+    } catch { return []; }
+}
+
 function extractContactHtmlSnippet(html) {
     if (!html) return '';
     const $ = cheerio.load(html);
@@ -1027,8 +1099,15 @@ function buildExtractionPrompt(pages) {
         // Prefer intercepted API JSON (cleanest signal), then stripped text
         const source = s.interceptedJson
             ? `INTERCEPTED API PAYLOAD (clean JSON — preferred):\n${s.interceptedJson.slice(0, 6000)}`
-            : `CLEANED PAGE TEXT:\n${s.text.slice(0, 6000)}`;
-        return `--- JOB ${i + 1} ---\nOriginal Title: "${s.job.title}"\nURL: ${s.job.job_url}\n${source}`;
+            : `CLEANED PAGE TEXT:\n${(s.text || '').slice(0, 6000)}`;
+        // Contact blocks often sit at the BOTTOM of long pages (past the 6000-char clip) and as PLAIN
+        // TEXT (no mailto/tel links) — e.g. Dutch "Contactpersonen". Always append the detected contact
+        // region so it reaches the AI even when the description is long.
+        const region = extractContactRegion(s.text || '');
+        const contactTail = region && !source.includes(region.slice(0, 40))
+            ? `\n\nCONTACT SECTION (verbatim from page — also extract any names / roles / emails / phones here):\n${region}`
+            : '';
+        return `--- JOB ${i + 1} ---\nOriginal Title: "${s.job.title}"\nURL: ${s.job.job_url}\n${source}${contactTail}`;
     }).join('\n\n');
 
     return `You are a context-optimized, multi-lingual data extraction pipeline. Extract structured job data from the pre-cleaned source below.
@@ -3101,7 +3180,33 @@ async function addContactToJob(req, res) {
 async function getJobContacts(req, res) {
     try {
         const { jobId } = req.params;
-        const rows = await dbConfig.query('SELECT * FROM job_contacts WHERE job_id = $1 ORDER BY id', [jobId]);
+        let rows = await dbConfig.query('SELECT * FROM job_contacts WHERE job_id = $1 ORDER BY id', [jobId]);
+
+        // Repair-on-open: if a job has NO saved contacts, fetch its live page once and pull any
+        // plain-text "Contactpersonen"-style contacts the original extraction missed. Cached per job
+        // (6h) so a genuinely contact-less page isn't refetched every open. Best-effort, time-boxed.
+        const lastTried = _contactRepairTried.get(jobId);
+        if ((!rows || rows.length === 0) && (!lastTried || Date.now() - lastTried > 6 * 3600 * 1000)) {
+            _contactRepairTried.set(jobId, Date.now());
+            try {
+                const job = await dbConfig.get('SELECT job_url FROM jobs WHERE id = $1', [jobId]);
+                if (job && job.job_url) {
+                    const found = await Promise.race([
+                        fetchContactsForUrl(job.job_url),
+                        new Promise((resolve) => setTimeout(() => resolve([]), 13000)),
+                    ]);
+                    for (const c of (found || [])) {
+                        if (!c.email && !c.name) continue;
+                        await jobService.addJobContact(jobId, c.name || 'Contact', c.role || 'Recruiter', c.email || null, c.phone || null, null, null, null);
+                    }
+                    if (found && found.length) {
+                        rows = await dbConfig.query('SELECT * FROM job_contacts WHERE job_id = $1 ORDER BY id', [jobId]);
+                        console.log(`[aiHub] contact-repair: recovered ${found.length} contact(s) for job ${jobId}`);
+                    }
+                }
+            } catch (e) { console.warn('[aiHub] contact-repair failed:', e.message); }
+        }
+
         const contacts = (rows || []).map((c, ci) => ({
             id: String(c.id),
             name: c.name,
