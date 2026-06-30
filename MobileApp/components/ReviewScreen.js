@@ -10,7 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView as SafeAreaViewContext, useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { API_BASE } from '../config';
-import { regionFromCountry, bestRegion, employerAddress, REGION_OPTIONS, RESUME_REGION_OPTIONS, regionLabel } from '../regionUtils';
+import { regionFromCountry, bestRegion, employerAddress, fmtLocation, REGION_OPTIONS, RESUME_REGION_OPTIONS, regionLabel } from '../regionUtils';
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
 const T = {
@@ -467,13 +467,13 @@ export default function ReviewScreen({
                               onPress={() => {
                                 setEditedCoverLetterData({
                                   ...editedCoverLetterData,
-                                  address: `${loc.address}, ${loc.city}, ${loc.country}`,
+                                  address: fmtLocation(loc),
                                 });
                                 setShowAddressDropdown(false);
                               }}
                             >
                               <Text style={rStyles.dropdownItemText}>
-                                {`${loc.address}, ${loc.city}, ${loc.country}${loc.isHeadquarters ? ' (HQ)' : ''}`}
+                                {`${fmtLocation(loc)}${loc.isHeadquarters ? ' (HQ)' : ''}`}
                               </Text>
                             </TouchableOpacity>
                           ))}

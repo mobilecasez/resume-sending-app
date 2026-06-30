@@ -49,16 +49,41 @@ export function regionFromTld(urlOrEmail) {
   const tld = s.split('.').filter(Boolean).pop();
   return TLD_REGION[tld] || 'generic';
 }
-// Pull the employer's real address out of the cover-letter object (locations[] preferred).
+// Placeholder/junk location values that must NEVER be shown (extraction couldn't resolve a real one).
+const PLACEHOLDER_LOC = /^(location\s*tbd|tbd\s*location|tbd|n\.?\/?a\.?|none|null|unknown|not\s*(available|specified|provided)|address not available|various|multiple\s*locations?|remote|hybrid|on[\s-]?site|—|–|-)$/i;
+// Join address parts, dropping empties + placeholders + case-insensitive duplicates (so a single
+// "Location TBD"/empty city/country never produces "Location TBD, Location TBD, Location TBD").
+function cleanJoinParts(parts) {
+  const seen = new Set(), out = [];
+  for (const raw of parts) {
+    const v = String(raw == null ? '' : raw).trim();
+    if (!v || PLACEHOLDER_LOC.test(v)) continue;
+    const k = v.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k); out.push(v);
+  }
+  return out.join(', ');
+}
+// Format a single location object/string into a clean display string.
+export function fmtLocation(loc) {
+  if (!loc) return '';
+  if (typeof loc === 'string') return cleanJoinParts(loc.split(','));
+  return cleanJoinParts([loc.address, loc.city, loc.country]);
+}
+// Pull the employer's real address out of the cover-letter object (locations[] preferred). Skips any
+// placeholder ("Location TBD") address/location and returns the first location that yields a real one.
 export function employerAddress(coverLetter) {
   if (!coverLetter) return '';
-  if (typeof coverLetter.address === 'string' && coverLetter.address.trim()) return coverLetter.address;
-  if (typeof coverLetter.companyAddress === 'string' && coverLetter.companyAddress.trim()) return coverLetter.companyAddress;
+  const flat = (s) => (typeof s === 'string' ? cleanJoinParts(s.split(',')) : '');
+  if (flat(coverLetter.address)) return flat(coverLetter.address);
+  if (flat(coverLetter.companyAddress)) return flat(coverLetter.companyAddress);
   const locs = Array.isArray(coverLetter.locations) ? coverLetter.locations : [];
-  const hq = locs.find((l) => l && l.isHeadquarters) || locs[0];
-  if (!hq) return '';
-  if (typeof hq === 'string') return hq;
-  return [hq.address, hq.city, hq.country].filter((x) => x && !/not available|not specified/i.test(String(x))).join(', ');
+  const ordered = [locs.find((l) => l && l.isHeadquarters), ...locs].filter(Boolean);
+  for (const cand of ordered) {
+    const c = fmtLocation(cand);
+    if (c) return c;
+  }
+  return '';
 }
 // Auto-detected region for a send. Explicit user picks are honoured by the CALLER (saved override
 // || bestRegion). Address first, then the website / recruiter-email ccTLD as a last resort.
