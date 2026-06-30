@@ -728,7 +728,7 @@ export type StoreAnalytics = {
   storeAsOf?: string;
   apple: { configured: boolean; pending?: boolean; reason?: string; note?: string; report?: string; processingDate?: string; totalDownloads?: number; firstTime?: number; redownloads?: number; series?: { date: string; downloads: number }[] };
   google: { configured: boolean; reason?: string; note?: string; month?: string; totalInstalls?: number; totalUninstalls?: number; totalUserUninstalls?: number; activeInstalls?: number; netInstalls?: number; series?: { date: string; installs: number; uninstalls?: number }[] };
-  local: { byPlatform?: { platform: string; currency: string; txns: number; paying_users: number; revenue: string }[]; completedTxns?: { last_24h: number; last_7d: number; last_30d: number; all_time: number }; txnWindows?: { [k: string]: { txns: number; revenue: number } }; recent?: any[]; credits?: { credits_sold: number; purchase_events: number }; error?: string };
+  local: { byPlatform?: { platform: string; currency: string; txns: number; paying_users: number; revenue: string }[]; completedTxns?: { last_24h: number; last_7d: number; last_30d: number; all_time: number }; txnWindows?: { [k: string]: { txns: number; revenue: number; inr?: number } }; recent?: any[]; credits?: { credits_sold: number; purchase_events: number }; error?: string };
   live?: {
     activeNow?: { total: number; byPlatform?: { platform: string; users: number }[] };
     activeToday?: { total: number; byPlatform?: { platform: string; users: number }[] };

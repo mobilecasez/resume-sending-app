@@ -395,7 +395,9 @@ export default function StoreAnalyticsScreen() {
       stats: [['Transactions', fmt(tw.txns)], ['New installs', fmt(s.installs)], ['App opens', fmt(s.opens)], ['Uninstalls', fmt(s.uninstalls)]],
       breakdownTitle: `Totals · ${win}`,
       breakdown: [
-        { label: 'Revenue', value: '$' + fmt(tw.revenue), raw: true }, { label: 'Transactions', value: fmt(tw.txns), raw: true },
+        { label: 'Revenue (USD)', value: '$' + fmt(tw.revenue), raw: true },
+        ...((tw as any).inr ? [{ label: 'Revenue (INR)', value: '₹' + fmt((tw as any).inr), raw: true }] : []),
+        { label: 'Transactions', value: fmt(tw.txns), raw: true },
         { label: 'New installs', value: fmt(s.installs), raw: true }, { label: 'Net installs', value: fmt(s.installs - s.uninstalls), raw: true },
         { label: 'App opens', value: fmt(s.opens), raw: true }, { label: 'Uninstalls', value: fmt(s.uninstalls), raw: true },
         { label: 'Store downloads · iOS', value: fmt(A2.totalDownloads || 0), raw: true }, { label: 'Store installs · Android', value: fmt(G.totalInstalls || 0), raw: true },
@@ -626,7 +628,7 @@ export default function StoreAnalyticsScreen() {
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 3, marginTop: 8 }}>
                 <Text style={s.totalCur}>$</Text><CountUp value={Math.round(tw.revenue)} style={s.totalNum} />
-                <Text style={{ marginLeft: 8, marginBottom: 6, fontSize: 11.5, fontWeight: '700', color: C.textFaint }}>{fmt(tw.txns)} txns</Text>
+                <Text style={{ marginLeft: 8, marginBottom: 6, fontSize: 11.5, fontWeight: '700', color: C.textFaint }}>{(tw as any).inr ? `· ₹${fmt((tw as any).inr)}  ` : ''}{fmt(tw.txns)} txns</Text>
               </View>
               <View style={{ marginTop: 8 }}><MiniBars data={seriesTrend(L.series, platform, 'revenue', 20)} color={C.blue} height={48} /></View>
               <View style={s.totGrid}>
