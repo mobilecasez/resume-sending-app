@@ -201,8 +201,12 @@ function buildPrompt(userMetadata, targetPosition, employerUrlOrText, responsibi
     // Inject responsibilities as extra context when provided (Job Hub flow only).
     // This is additive — the prompt works identically without it.
     // Inject job location when provided — keeps prompt identical when omitted.
-    if (jobLocation && jobLocation.trim()) {
-        const block = `\n\n---\n\nJOB LOCATION: ${jobLocation.trim()}\n\nThis role is based in **${jobLocation.trim()}**. Use this to:\n- Address the specific office location in the cover letter (use the matching address for that city/country, NOT the HQ if different)\n- CRITICAL: Search the company's Contact/Locations page for the office in **${jobLocation.trim()}**. In the "addresses" output array, put THAT office's full address FIRST. Only fall back to the HQ address if no office exists in that city/country.\n- In Paragraph 4 (closing), mention relocation or on-site commitment for **${jobLocation.trim()}** if it differs from the user's current location\n- Bold the job location city/country as per the bold rules\n\n---`;
+    // GUARD: a placeholder ("Location TBD", "TBD", "N/A", "Remote", …) must NEVER be injected, or the
+    // AI writes "Location TBD" into the address line, the relocation sentence AND the closing.
+    const isPlaceholderLoc = (v) => !v || /^(location\s*tbd|tbd\s*location|tbd|n\.?\/?a\.?|none|null|unknown|not\s*(specified|available|provided)|various|multiple\s*locations?|remote|hybrid|on[\s-]?site|—|–|-)$/i.test(String(v).trim());
+    if (jobLocation && jobLocation.trim() && !isPlaceholderLoc(jobLocation)) {
+        const loc = jobLocation.trim();
+        const block = `\n\n---\n\nJOB LOCATION: ${loc}\n\nThis role is based in **${loc}**. Use this to:\n- Address the specific office location in the cover letter (use the matching address for that city/country, NOT the HQ if different)\n- CRITICAL: Search the company's Contact/Locations page for the office in **${loc}**. In the "addresses" output array, put THAT office's full address FIRST. Only fall back to the HQ address if no office exists in that city/country.\n- In Paragraph 4 (closing), mention relocation or on-site commitment for **${loc}** if it differs from the user's current location\n- Bold the job location city/country as per the bold rules\n\n---`;
         prompt += block;
     }
 

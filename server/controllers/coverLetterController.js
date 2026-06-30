@@ -871,9 +871,13 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
     // not the HQ. If jobLocation was provided, surface the matching office first (flagged
     // matchesJobLocation); if none of the scraped addresses match, synthesize an entry from
     // the job location so it is always present AND first. The mobile picker defaults to it.
-    if (jobLocation && jobLocation.trim()) {
+    // A placeholder job location (extraction couldn't resolve it) must NEVER be surfaced — otherwise
+    // the letter shows "Location TBD, Location TBD, Location TBD". Treat these as "no job location"
+    // and fall back to the real researched offices (HQ first).
+    const isPlaceholderLoc = (v) => !v || /^(location\s*tbd|tbd\s*location|tbd|n\.?\/?a\.?|none|null|unknown|not\s*(specified|available|provided)|various|multiple\s*locations?|remote|hybrid|on[\s-]?site|—|–|-)$/i.test(String(v).trim());
+    if (jobLocation && jobLocation.trim() && !isPlaceholderLoc(jobLocation)) {
         const jl = jobLocation.toLowerCase().trim();
-        const tokens = jl.split(/[,\s]+/).map(t => t.trim()).filter(t => t.length >= 3);
+        const tokens = jl.split(/[,\s]+/).map(t => t.trim()).filter(t => t.length >= 3 && !isPlaceholderLoc(t));
         const matchIdx = locations.findIndex(l => {
             const hay = `${l.address} ${l.city} ${l.country}`.toLowerCase();
             return (jl.length >= 4 && hay.includes(jl)) || tokens.some(t => hay.includes(t));
@@ -887,12 +891,18 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
             locations.unshift({
                 address: jobLocation.trim(),
                 city: parts[0] || '',
-                country: parts[parts.length - 1] || '',
+                // Only set country from a distinct 2nd part — never duplicate the city as the country.
+                country: parts.length > 1 ? parts[parts.length - 1] : '',
                 isHeadquarters: false,
                 matchesJobLocation: true,
             });
         }
     }
+    // Drop any placeholder/junk locations that slipped through (e.g. a synthesized 'Location TBD').
+    let cleaned = locations.filter((l) => !(isPlaceholderLoc(l.address) && isPlaceholderLoc(l.city) && isPlaceholderLoc(l.country)));
+    if (cleaned.length === 0) cleaned = [{ address: 'Address not available', city: '', country: '', isHeadquarters: true }];
+    locations.length = 0;
+    locations.push(...cleaned);
 
     // Format markdown cover letter body as HTML. This single region-neutral
     // letter is used for every region — the picker only changes PDF formatting.
