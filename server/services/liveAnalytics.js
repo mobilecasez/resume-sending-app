@@ -102,12 +102,15 @@ async function getLivePulse() {
          FROM app_events WHERE created_at > NOW()-INTERVAL '24 hours' AND ${LIVE}
         GROUP BY date_trunc('hour', created_at) ORDER BY date_trunc('hour', created_at)`).catch(() => []);
 
+    // NOTE: db-config rewrites every '?' into a $N placeholder, so SQL string literals must NOT
+    // contain '?'. Use 'Unknown'/'unknown' (not '??'/'?') or the literal becomes '$1$2'/'$1'.
     out.byCountry = await dbConfig.query(
-      `SELECT COALESCE(NULLIF(country,''),'??') AS country, COUNT(DISTINCT ${UID})::int AS users
-         FROM app_events WHERE created_at > NOW()-INTERVAL '24 hours' AND ${LIVE} GROUP BY 1 ORDER BY users DESC LIMIT 10`).catch(() => []);
+      `SELECT NULLIF(country,'') AS country, COUNT(DISTINCT ${UID})::int AS users
+         FROM app_events WHERE created_at > NOW()-INTERVAL '24 hours' AND ${LIVE} AND NULLIF(country,'') IS NOT NULL
+        GROUP BY 1 ORDER BY users DESC LIMIT 10`).catch(() => []);
 
     out.recent = await dbConfig.query(
-      `SELECT event, COALESCE(platform,'?') AS platform, user_id, created_at
+      `SELECT event, COALESCE(platform,'unknown') AS platform, user_id, created_at
          FROM app_events ORDER BY id DESC LIMIT 25`).catch(() => []);
 
     // Live purchases today — payment_orders is written the instant a purchase is verified (truly live).

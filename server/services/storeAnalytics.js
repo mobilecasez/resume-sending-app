@@ -263,13 +263,26 @@ async function localMonetization() {
 
     const windows = await dbConfig.get(
       `SELECT
-         COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')::int AS last_24h,
-         COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days')::int  AS last_7d,
-         COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days')::int AS last_30d,
-         COUNT(*)::int AS all_time
-       FROM payment_orders WHERE status = 'completed' AND (deleted_at IS NULL)`
+         COUNT(*) FILTER (WHERE created_at > NOW()-INTERVAL '24 hours')::int AS t24,
+         COUNT(*) FILTER (WHERE created_at > NOW()-INTERVAL '7 days')::int  AS t7,
+         COUNT(*) FILTER (WHERE created_at > NOW()-INTERVAL '30 days')::int AS t30,
+         COUNT(*) FILTER (WHERE created_at > NOW()-INTERVAL '90 days')::int AS t90,
+         COUNT(*)::int AS tall,
+         COALESCE(SUM(amount) FILTER (WHERE created_at > NOW()-INTERVAL '24 hours'),0)::float AS r24,
+         COALESCE(SUM(amount) FILTER (WHERE created_at > NOW()-INTERVAL '7 days'),0)::float  AS r7,
+         COALESCE(SUM(amount) FILTER (WHERE created_at > NOW()-INTERVAL '30 days'),0)::float AS r30,
+         COALESCE(SUM(amount) FILTER (WHERE created_at > NOW()-INTERVAL '90 days'),0)::float AS r90,
+         COALESCE(SUM(amount),0)::float AS rall
+       FROM payment_orders WHERE status='completed' AND (deleted_at IS NULL)`
     ).catch(() => null);
-    out.completedTxns = windows || {};
+    const w = windows || {};
+    out.completedTxns = { last_24h: w.t24 || 0, last_7d: w.t7 || 0, last_30d: w.t30 || 0, all_time: w.tall || 0 };
+    // Real transactions + revenue per window — the long-period totals the dashboard's range card uses.
+    out.txnWindows = {
+      '24h': { txns: w.t24 || 0, revenue: w.r24 || 0 }, '7d': { txns: w.t7 || 0, revenue: w.r7 || 0 },
+      '30d': { txns: w.t30 || 0, revenue: w.r30 || 0 }, '90d': { txns: w.t90 || 0, revenue: w.r90 || 0 },
+      all: { txns: w.tall || 0, revenue: w.rall || 0 },
+    };
 
     out.recent = await dbConfig.query(
       `SELECT id, ${platformCase} AS platform, user_id, plan_id, amount, currency, status, created_at

@@ -21,17 +21,24 @@ function softUserId(req) {
   } catch { return null; }
 }
 
+function geoCountry(req) {
+  const c = req.headers['cf-ipcountry'] || req.headers['x-vercel-ip-country'] || req.headers['x-appengine-country'] || req.headers['fastly-geo-country'] || null;
+  if (!c || /^(XX|T1|ZZ)$/i.test(String(c))) return null; // CDN "unknown" sentinels
+  return String(c).toUpperCase().slice(0, 2);
+}
+
 async function track(req, res) {
   try {
     const b = req.body || {};
     const userId = softUserId(req);
+    const geo = geoCountry(req);
     const events = Array.isArray(b.events) ? b.events : [b];
     for (const e of events.slice(0, 40)) {
       if (!e || !e.event) continue;
       await live.trackEvent({
         event: e.event, props: e.props,
         platform: e.platform || b.platform, appVersion: e.appVersion || b.appVersion,
-        anonId: e.anonId || b.anonId, country: e.country || b.country, userId,
+        anonId: e.anonId || b.anonId, country: e.country || b.country || geo, userId,
       });
     }
   } catch (_) { /* analytics must never break the client */ }
