@@ -323,6 +323,43 @@ const AVATAR_COLORS_DB = [
  * - For in-progress jobs: returns partial data from async_jobs.result
  * - For completed jobs: loads from normalized tables (jobs, skills, contacts)
  */
+// Shared job-row → API job object mapper (dashboard list, employer-jobs pager, /jobs/:id/full).
+// slimResponsibilities: the LIST view renders only 3 bullets, so ship 3 + respTotal (the full
+// array comes from /jobs/:id/full when the job is opened) — responsibilities are ~38% of the
+// dashboard's raw bytes, this is the single biggest payload lever.
+function buildJobObject(jRow, skills, contactRows, { slimResponsibilities = false } = {}) {
+    const respFull = (() => {
+        try { return jRow.responsibilities ? (typeof jRow.responsibilities === 'string' ? JSON.parse(jRow.responsibilities) : jRow.responsibilities) : []; } catch { return []; }
+    })();
+    return {
+        id: String(jRow.id),
+        title: jRow.title,
+        location: jRow.location_text || 'Not specified',
+        experience: jRow.experience || 'Not specified',
+        salary: jRow.salary || 'Not listed',
+        jobType: jRow.job_type || 'Full-time',
+        workMode: jRow.work_mode || null,
+        urgent: !!jRow.urgent,
+        matchScore: jRow.scored_at ? (jRow.match_score ?? 0) : null,
+        createdAt: jRow.created_at,
+        applyUrl: jRow.job_url,
+        skills: skills || [],
+        responsibilities: slimResponsibilities ? respFull.slice(0, 3) : respFull,
+        respTotal: respFull.length,
+        contacts: (contactRows || []).map((c, ci) => ({
+            id: String(c.id),
+            name: c.name,
+            role: c.role || 'Recruiter',
+            email: c.email || '',
+            phone: c.phone || null,
+            linkedin: c.linkedin_url || null,
+            imageUrl: c.image_url || null,
+            verified: false,
+            avatarColor: AVATAR_COLORS_DB[ci % AVATAR_COLORS_DB.length],
+        })),
+    };
+}
+
 async function getUserDashboard(userId) {
     // 1. Get tracked employers with async job status
     const trackedEmployers = await dbConfig.query(
@@ -336,28 +373,32 @@ async function getUserDashboard(userId) {
         [userId]
     );
 
-    // PERF: batch ALL completed employers' jobs+skills+contacts into 4 total queries (was 3 queries
-    // PER employer → ~700 sequential round-trips → 14s for a heavy user). Cap to the top MAX_PER_EMP
-    // jobs per employer (by match, then recency) and carry emp_total so the app shows "50 of 344".
-    const MAX_PER_EMP = 60;
+    // PERF: batch ALL completed employers' jobs+skills+contacts into 5 total queries (was 3 queries
+    // PER employer → ~700 sequential round-trips → 14s for a heavy user). Cap to the top
+    // DASH_JOBS_PER_EMP jobs per employer (by match, then recency); the LIST payload also trims
+    // responsibilities to the 3 bullets the card shows (respTotal keeps the true count) — the full
+    // record ships from GET /jobs/:id/full when a job is opened, and more jobs page in via
+    // GET /dashboard/employer/:id/jobs. emp_total/totalContacts carry the REAL counts so the
+    // clients' stats don't shrink to the page size. This keeps the payload bounded as data grows.
+    const DASH_JOBS_PER_EMP = 20;
     const completedIds = trackedEmployers
         .filter((e) => !['pending', 'processing'].includes(e.job_status))
         .map((e) => e.id);
-    const jobsByEmp = {}, skillsByJob = {}, contactsByJob = {}, totalByEmp = {};
+    const jobsByEmp = {}, skillsByJob = {}, contactsByJob = {}, totalByEmp = {}, contactsCountByEmp = {};
     if (completedIds.length) {
         const jobRows = await dbConfig.query(
             `SELECT * FROM (
                SELECT j.id, j.employer_id, j.title, j.experience, j.salary, j.job_type, j.work_mode,
                       j.urgent, j.created_at, j.job_url, j.responsibilities,
                       ujm.match_score, ujm.scored_at, l.raw_text AS location_text,
-                      row_number() OVER (PARTITION BY j.employer_id ORDER BY ujm.match_score DESC NULLS LAST, j.created_at DESC) AS rn,
+                      row_number() OVER (PARTITION BY j.employer_id ORDER BY ujm.match_score DESC NULLS LAST, j.created_at DESC, j.id) AS rn,
                       COUNT(*) OVER (PARTITION BY j.employer_id)::int AS emp_total
                FROM jobs j
                JOIN user_job_matches ujm ON j.id = ujm.job_id
                LEFT JOIN locations l ON j.location_id = l.id
                WHERE ujm.user_id = $1 AND j.is_active = TRUE AND j.employer_id = ANY($2::uuid[])
              ) t WHERE rn <= $3 ORDER BY employer_id, rn`,
-            [userId, completedIds, MAX_PER_EMP]
+            [userId, completedIds, DASH_JOBS_PER_EMP]
         );
         const jobIds = [];
         for (const r of jobRows) { (jobsByEmp[r.employer_id] = jobsByEmp[r.employer_id] || []).push(r); totalByEmp[r.employer_id] = r.emp_total; jobIds.push(r.id); }
@@ -368,39 +409,21 @@ async function getUserDashboard(userId) {
             const cRows = await dbConfig.query(`SELECT * FROM job_contacts WHERE job_id = ANY($1::uuid[])`, [jobIds]);
             for (const c of cRows) (contactsByJob[c.job_id] = contactsByJob[c.job_id] || []).push(c);
         }
+        // True per-employer contact counts over ALL the user's matched jobs (not just the page) —
+        // the clients derive their "Contacts" stats client-side, so give them the real number.
+        const ccRows = await dbConfig.query(
+            `SELECT j.employer_id, COUNT(*)::int AS n
+             FROM job_contacts jc
+             JOIN jobs j ON jc.job_id = j.id
+             JOIN user_job_matches ujm ON ujm.job_id = j.id
+             WHERE ujm.user_id = $1 AND j.is_active = TRUE AND j.employer_id = ANY($2::uuid[])
+             GROUP BY j.employer_id`,
+            [userId, completedIds]
+        );
+        for (const r of ccRows) contactsCountByEmp[r.employer_id] = r.n;
     }
 
-    const buildJob = (jRow) => {
-        const responsibilities = (() => {
-            try { return jRow.responsibilities ? (typeof jRow.responsibilities === 'string' ? JSON.parse(jRow.responsibilities) : jRow.responsibilities) : []; } catch { return []; }
-        })();
-        return {
-            id: String(jRow.id),
-            title: jRow.title,
-            location: jRow.location_text || 'Not specified',
-            experience: jRow.experience || 'Not specified',
-            salary: jRow.salary || 'Not listed',
-            jobType: jRow.job_type || 'Full-time',
-            workMode: jRow.work_mode || null,
-            urgent: !!jRow.urgent,
-            matchScore: jRow.scored_at ? (jRow.match_score ?? 0) : null,
-            createdAt: jRow.created_at,
-            applyUrl: jRow.job_url,
-            skills: skillsByJob[jRow.id] || [],
-            responsibilities,
-            contacts: (contactsByJob[jRow.id] || []).map((c, ci) => ({
-                id: String(c.id),
-                name: c.name,
-                role: c.role || 'Recruiter',
-                email: c.email || '',
-                phone: c.phone || null,
-                linkedin: c.linkedin_url || null,
-                imageUrl: c.image_url || null,
-                verified: false,
-                avatarColor: AVATAR_COLORS_DB[ci % AVATAR_COLORS_DB.length],
-            })),
-        };
-    };
+    const buildJob = (jRow) => buildJobObject(jRow, skillsByJob[jRow.id] || [], contactsByJob[jRow.id] || [], { slimResponsibilities: true });
 
     const dashboard = [];
 
@@ -447,12 +470,93 @@ async function getUserDashboard(userId) {
                 status: jobs.length > 0 ? 'active' : 'watching',
                 jobs,
                 totalJobs,
+                totalContacts: contactsCountByEmp[emp.id] || 0,
             },
             updatedAt: emp.updated_at,
         });
     }
 
     return dashboard;
+}
+
+/**
+ * Paged jobs for one employer (same job shape as the dashboard list). Lets the clients keep the
+ * initial dashboard payload small while every job stays reachable via "Show more".
+ */
+async function getEmployerJobsPage(userId, employerId, offset = 0, limit = 40) {
+    limit = Math.min(Math.max(parseInt(limit, 10) || 40, 1), 100);
+    offset = Math.max(parseInt(offset, 10) || 0, 0);
+    const jobRows = await dbConfig.query(
+        `SELECT j.id, j.employer_id, j.title, j.experience, j.salary, j.job_type, j.work_mode,
+                j.urgent, j.created_at, j.job_url, j.responsibilities,
+                ujm.match_score, ujm.scored_at, l.raw_text AS location_text,
+                COUNT(*) OVER ()::int AS emp_total
+         FROM jobs j
+         JOIN user_job_matches ujm ON j.id = ujm.job_id
+         LEFT JOIN locations l ON j.location_id = l.id
+         WHERE ujm.user_id = $1 AND j.is_active = TRUE AND j.employer_id = $2
+         ORDER BY ujm.match_score DESC NULLS LAST, j.created_at DESC, j.id
+         OFFSET $3 LIMIT $4`,
+        [userId, employerId, offset, limit]
+    );
+    const jobIds = jobRows.map((r) => r.id);
+    const skillsByJob = {}, contactsByJob = {};
+    if (jobIds.length) {
+        const skRows = await dbConfig.query(
+            `SELECT js.job_id, s.name FROM skills s JOIN job_skills js ON s.id = js.skill_id WHERE js.job_id = ANY($1::uuid[])`, [jobIds]);
+        for (const r of skRows) (skillsByJob[r.job_id] = skillsByJob[r.job_id] || []).push(r.name);
+        const cRows = await dbConfig.query(`SELECT * FROM job_contacts WHERE job_id = ANY($1::uuid[])`, [jobIds]);
+        for (const c of cRows) (contactsByJob[c.job_id] = contactsByJob[c.job_id] || []).push(c);
+    }
+    return {
+        jobs: jobRows.map((r) => buildJobObject(r, skillsByJob[r.id] || [], contactsByJob[r.id] || [], { slimResponsibilities: true })),
+        total: jobRows[0] ? jobRows[0].emp_total : 0,
+        offset,
+    };
+}
+
+/**
+ * Full-fidelity single job (ALL responsibilities/skills/contacts + employer summary) for the
+ * detail views — the dashboard LIST ships a slimmed record; opening a job hydrates from here.
+ * Also serves web deep-links (?id=) directly instead of scanning the whole dashboard.
+ */
+async function getJobFull(userId, jobId) {
+    const jRow = await dbConfig.get(
+        `SELECT j.id, j.employer_id, j.title, j.experience, j.salary, j.job_type, j.work_mode,
+                j.urgent, j.created_at, j.job_url, j.responsibilities,
+                ujm.match_score, ujm.scored_at, l.raw_text AS location_text,
+                e.name AS emp_name, e.sub_info AS emp_sub_info, e.logo_color AS emp_logo_color, e.domain AS emp_domain
+         FROM jobs j
+         JOIN user_job_matches ujm ON j.id = ujm.job_id AND ujm.user_id = $2
+         LEFT JOIN locations l ON j.location_id = l.id
+         LEFT JOIN employers e ON j.employer_id = e.id
+         WHERE j.id = $1 AND j.is_active = TRUE`,
+        [jobId, userId]
+    );
+    if (!jRow) return null;
+    const skRows = await dbConfig.query(
+        `SELECT s.name FROM skills s JOIN job_skills js ON s.id = js.skill_id WHERE js.job_id = $1`, [jobId]);
+    const cRows = await dbConfig.query(`SELECT * FROM job_contacts WHERE job_id = $1`, [jobId]);
+    const logoColor = (() => {
+        try {
+            const v = jRow.emp_logo_color;
+            if (Array.isArray(v)) return v;
+            if (typeof v === 'string') return JSON.parse(v);
+            return ['#555555', '#1C1C1E'];
+        } catch { return ['#555555', '#1C1C1E']; }
+    })();
+    const job = buildJobObject(jRow, skRows.map((r) => r.name), cRows, { slimResponsibilities: false });
+    return {
+        job,
+        employer: jRow.emp_name ? {
+            id: String(jRow.employer_id),
+            name: jRow.emp_name,
+            subInfo: jRow.emp_sub_info || '',
+            domain: jRow.emp_domain || null,
+            logoColor,
+            logoInitial: (jRow.emp_name[0] || '?').toUpperCase(),
+        } : null,
+    };
 }
 
 /**
@@ -634,6 +738,8 @@ module.exports = {
     deleteJob,
     evictUserJob,
     getUserDashboard,
+    getEmployerJobsPage,
+    getJobFull,
     archiveUserEmployer,
     getRecentEmployerData,
     buildCachedEmployerObject

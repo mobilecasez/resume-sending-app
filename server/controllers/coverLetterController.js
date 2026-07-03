@@ -703,7 +703,22 @@ const generateCoverLetterDetails = async (req, res) => {
     
     try {
         const userId = req.user.id;
-        const { recipientEmail, websiteUrl, position, responsibilities, jobLocation } = req.body;
+        let { recipientEmail, websiteUrl, position, responsibilities, jobLocation, jobId: sourceJobId } = req.body;
+
+        // Job-aware augmentation: the dashboard LIST payload trims responsibilities to 3 for
+        // speed — when the client says which job this is, prefer the FULL stored list so the
+        // letter's tailoring never depends on what the client happened to hold.
+        if (sourceJobId) {
+            try {
+                const row = await dbConfig.get('SELECT responsibilities FROM jobs WHERE id = ?', [sourceJobId]);
+                const full = row && row.responsibilities
+                    ? (typeof row.responsibilities === 'string' ? JSON.parse(row.responsibilities) : row.responsibilities)
+                    : [];
+                if (Array.isArray(full) && full.length > (Array.isArray(responsibilities) ? responsibilities.length : 0)) {
+                    responsibilities = full;
+                }
+            } catch { /* augmentation is best-effort — the client-sent list still works */ }
+        }
 
         console.log(`\n📨 [${requestId}] Generate Cover Letter Details Request (${useAsync ? 'ASYNC' : 'SYNC'})`);
         console.log(`   User: ${userId}, Position: ${position}`);

@@ -3034,10 +3034,54 @@ async function getDashboard(req, res) {
 
     try {
         const dashboard = await jobService.getUserDashboard(userId);
-        return res.json({ dashboard });
+        // ETag/304: the dashboard rarely changes between opens — when the client presents the
+        // ETag it already has, skip the (compressed ~200KB) body entirely. The client keeps its
+        // cached copy, so a background refresh costs one header round-trip.
+        const body = JSON.stringify({ dashboard });
+        const etag = '"' + require('crypto').createHash('md5').update(body).digest('hex') + '"';
+        res.set('ETag', etag);
+        res.set('Cache-Control', 'private, no-cache');
+        if (req.headers['if-none-match'] === etag) return res.status(304).end();
+        return res.type('application/json').send(body);
     } catch (err) {
         console.error('[aiHub] getDashboard error:', err);
         return res.status(500).json({ error: 'Failed to load dashboard' });
+    }
+}
+
+/**
+ * GET /api/ai-hub/dashboard/employer/:employerId/jobs?offset=&limit=
+ * Paged jobs for one employer (same job shape as the dashboard list) — "Show more jobs".
+ */
+async function getEmployerJobs(req, res) {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    try {
+        const { employerId } = req.params;
+        const page = await jobService.getEmployerJobsPage(userId, employerId, req.query.offset, req.query.limit);
+        return res.json(page);
+    } catch (err) {
+        console.error('[aiHub] getEmployerJobs error:', err);
+        return res.status(500).json({ error: 'Failed to load jobs' });
+    }
+}
+
+/**
+ * GET /api/ai-hub/jobs/:jobId/full
+ * Full-fidelity job record (ALL responsibilities/skills/contacts + employer summary). The
+ * dashboard list is slimmed for speed; detail views hydrate from here — also serves web
+ * deep-links (?id=) without scanning the whole dashboard.
+ */
+async function getJobFullHandler(req, res) {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    try {
+        const full = await jobService.getJobFull(userId, req.params.jobId);
+        if (!full) return res.status(404).json({ error: 'Job not found' });
+        return res.json(full);
+    } catch (err) {
+        console.error('[aiHub] getJobFull error:', err);
+        return res.status(500).json({ error: 'Failed to load job' });
     }
 }
 
@@ -4543,6 +4587,8 @@ module.exports = {
     getJobMatches,
     getJobStatus,
     getDashboard,
+    getEmployerJobs,
+    getJobFullHandler,
     removeDashboardItem,
     verifyEmail,
     addContactToJob,

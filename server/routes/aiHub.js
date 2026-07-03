@@ -9,6 +9,8 @@ const {
     getJobMatches,
     getJobStatus,
     getDashboard,
+    getEmployerJobs,
+    getJobFullHandler,
     removeDashboardItem,
     verifyEmail,
     addContactToJob,
@@ -37,7 +39,9 @@ const {
 } = require('../controllers/aiHubController');
 
 router.get('/dashboard', authenticateToken, getDashboard);
+router.get('/dashboard/employer/:employerId/jobs', authenticateToken, getEmployerJobs);   // "Show more jobs" pager
 router.delete('/dashboard/:jobId', authenticateToken, removeDashboardItem);
+router.get('/jobs/:jobId/full', authenticateToken, getJobFullHandler);                    // full-fidelity hydration for detail views
 router.post('/analyze-wishlist', authenticateToken, analyzeWishlist);
 router.get('/jobs', authenticateToken, getJobMatches);
 router.get('/job-status/:jobId', authenticateToken, getJobStatus);
