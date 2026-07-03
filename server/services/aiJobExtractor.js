@@ -280,17 +280,24 @@ function buildAnchorIndex(rawHtml, base) {
   });
   return idx;
 }
-// Best anchor whose text covers ~all of the job-title tokens. High threshold → no mismaps.
+// Best anchor for a job title. Bidirectional: matches when the title covers the anchor OR the
+// anchor covers the title (handles the LLM rewording a card's text, e.g. "…(TSS)" vs "TSS
+// Officer - 5 Positions"). High threshold + clear-winner guard → no mismaps.
 function recoverJobUrl(title, index) {
   const tt = _toks(title).filter((w) => !_STOP.has(w));
   if (tt.length < 2 || !index.length) return '';
-  let best = '', bestCov = 0;
+  let best = '', bestScore = 0, second = 0;
   for (const a of index) {
+    if (!a.toks.size) continue;
     let hit = 0; for (const w of tt) if (a.toks.has(w)) hit++;
-    const cov = hit / tt.length;
-    if (cov > bestCov) { bestCov = cov; best = a.href; }
+    const covT = hit / tt.length;                 // fraction of title tokens found in the anchor
+    const covA = hit / a.toks.size;               // fraction of anchor tokens found in the title
+    const score = Math.max(covT, covA >= 0.85 ? (covT * 0.5 + covA * 0.5) : 0);
+    if (score > bestScore) { second = bestScore; bestScore = score; best = a.href; }
+    else if (score > second) second = score;
   }
-  return bestCov >= 0.8 ? best : '';
+  // Accept a strong match only when it's a clear winner (avoids attaching to a near-tie sibling).
+  return (bestScore >= 0.8 && (bestScore - second) >= 0.15) ? best : '';
 }
 
 function toInternalJobs(data, sourceUrl, origin, rawHtml) {
