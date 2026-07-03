@@ -57,7 +57,7 @@ function cleanHtmlForLLM(html) {
   // NB: include "vacatur" — the Dutch/Belgian word is "vacature(s)", which does NOT contain
   // "vacan", so /en/vacature/<slug> links were being stripped and the LLM fabricated title-slug
   // URLs (collapsing distinct same-title roles on dedup, and 404ing Phase-2). Plus FR/ES/IT.
-  const jobHref = /jobs?|career|karriere|stelle|position|vacan|vacatur|offre|emploi|empleo|lavor|opening|apply|bewerb|gh_jid|gh_src|lever\.co|greenhouse|ashby|myworkday|smartrecruiters|recruitee|breezy|workable|join\.com|personio|teamtailor/i;
+  const jobHref = /jobs?|career|karriere|stelle|position|vacan|vacatur|offre|emploi|empleo|emprego|lavor|opening|apply|bewerb|listing|joboffer|job-offer|praca|oferta|ofertas|ilan|is-ilanlari|puesto|trabajo|anuncio|gh_jid|gh_src|lever\.co|greenhouse|ashby|myworkday|smartrecruiters|recruitee|breezy|workable|join\.com|personio|teamtailor/i;
   $('a[href]').each((_, el) => {
     const href = $(el).attr('href') || '';
     const t = $(el).text().trim();
@@ -250,12 +250,58 @@ async function llmExtract(cleanedText, sourceUrl, employerHint) {
 const naClean = (v) => { const s = String(v == null ? '' : v).trim(); return (!s || /^n\/?a$/i.test(s)) ? '' : s; };
 const arrClean = (a) => (Array.isArray(a) ? a.map((x) => naClean(x)).filter(Boolean) : []);
 const _sig = (t, l) => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, '') + '|' + String(l || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-function toInternalJobs(data, sourceUrl, origin) {
+
+// ── Deterministic per-job URL recovery ────────────────────────────────────────
+// The LLM sometimes drops a job's link (the site's href doesn't match the job-word allowlist,
+// so cleanHtmlForLLM strips it → the job got a synthetic "#role-N"). We recover the REAL link
+// straight from the DOM: index every <a href> by its anchor text, then match each job to the
+// anchor whose text ≈ the job title. Language-agnostic (works for cvbankas numeric ids,
+// brightermonday /listings/, pracuj /praca/, vietnamworks slugs, computrabajo, …). No LLM.
+const _dia = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '');
+const _toks = (s) => _dia(s).replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter((w) => w.length >= 2);
+const _STOP = new Set(['and', 'the', 'for', 'with', 'job', 'jobs', 'career', 'careers', 'full', 'time', 'part', 'de', 'la', 'el', 'en', 'di', 'et', 'un', 'une', 'im', 'zur', 'zum']);
+function buildAnchorIndex(rawHtml, base) {
+  const idx = [];
+  if (!rawHtml) return idx;
+  let $; try { $ = cheerio.load(rawHtml); } catch { return idx; }
+  let listingKey = ''; try { listingKey = new URL(base).href.split('#')[0].replace(/\/$/, ''); } catch {}
+  const seen = new Set();
+  $('a[href]').each((_, el) => {
+    let href = ($(el).attr('href') || '').trim();
+    const text = $(el).text().replace(/\s+/g, ' ').trim();
+    if (!href || text.length < 4 || /^(#|javascript:|mailto:|tel:)/i.test(href)) return;
+    try { href = new URL(href, base).href; } catch { return; }
+    let path = ''; try { path = new URL(href).pathname; } catch { return; }
+    if (path === '' || path === '/') return;                                  // homepage / bare root
+    if (href.split('#')[0].replace(/\/$/, '') === listingKey) return;          // the listing page itself
+    if (seen.has(href + '|' + text)) return; seen.add(href + '|' + text);
+    const toks = _toks(text).filter((w) => !_STOP.has(w));
+    if (toks.length) idx.push({ href, toks: new Set(toks) });
+  });
+  return idx;
+}
+// Best anchor whose text covers ~all of the job-title tokens. High threshold → no mismaps.
+function recoverJobUrl(title, index) {
+  const tt = _toks(title).filter((w) => !_STOP.has(w));
+  if (tt.length < 2 || !index.length) return '';
+  let best = '', bestCov = 0;
+  for (const a of index) {
+    let hit = 0; for (const w of tt) if (a.toks.has(w)) hit++;
+    const cov = hit / tt.length;
+    if (cov > bestCov) { bestCov = cov; best = a.href; }
+  }
+  return bestCov >= 0.8 ? best : '';
+}
+
+function toInternalJobs(data, sourceUrl, origin, rawHtml) {
   if (!data || !Array.isArray(data.Jobs)) return { employer: naClean(data && data.Employer), jobs: [] };
-  // Resolve each role's URL first so dedup can use it as a discriminator.
+  // Resolve each role's URL first so dedup can use it as a discriminator. When the LLM returned
+  // no link, recover the real one from the DOM by matching the job title to an <a href>.
+  const anchorIndex = buildAnchorIndex(rawHtml, origin || sourceUrl);
   const resolved = data.Jobs.filter((j) => j && naClean(j['Job Title'])).map((j) => {
     let url = naClean(j['Job URL']);
     if (url && !/^https?:/i.test(url)) { try { url = new URL(url, origin || sourceUrl).href; } catch { url = ''; } }
+    if (!url) url = recoverJobUrl(naClean(j['Job Title']), anchorIndex);   // DOM fallback (no LLM)
     return { j, url };
   });
   // Dedup CLONES (a card/carousel rendered twice): same title+location AND the same — or a
@@ -603,7 +649,7 @@ async function crawlPaginated(listingUrl, firstHtml, employerHint, origin, deadl
         if (ld.length >= 3) return ld;
         const text = cleanHtmlForLLM(html);
         if (text.length < 600) return [];
-        return toInternalJobs(await llmExtract(text, pu, employerHint || origin), pu, origin).jobs || [];
+        return toInternalJobs(await llmExtract(text, pu, employerHint || origin), pu, origin, html).jobs || [];
       } catch { return []; }
     }));
     extra.push(...results.flat());
@@ -657,7 +703,9 @@ async function findAndExtract(inputUrl, employerHint) {
     };
     const runLLM = async () => {
       const data = await llmExtract(text, cand.url, employerHint || origin);
-      const out = toInternalJobs(data, cand.url, origin);
+      // Prefer the rendered DOM (all hrefs present) else the static page HTML for URL recovery.
+      const rawForAnchors = renderedHtml || (pages.find((p) => p.url === cand.url) || {}).html || '';
+      const out = toInternalJobs(data, cand.url, origin, rawForAnchors);
       const audit = (data && (data._mergedAudit || normalizeAudit(data.Extraction_Audit, out.jobs.length))) || normalizeAudit(null, out.jobs.length);
       return { out, audit };
     };
