@@ -1291,6 +1291,9 @@ export default function AIHubScreen() {
   useEffect(() => { employersRef.current = employers; }, [employers]);
   const [loadingCompanies, setLoadingCompanies] = useState<string[]>([]);
   const [processingEmployerIds, setProcessingEmployerIds] = useState<Set<string>>(new Set());
+  // Live mirror of processingEmployerIds for async callbacks (same pattern as employersRef).
+  const processingIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => { processingIdsRef.current = processingEmployerIds; }, [processingEmployerIds]);
   // Employer ids whose "raise a concern" report has been submitted this session.
   const [concernSubmittedIds, setConcernSubmittedIds] = useState<Set<string>>(new Set());
   const markConcernSubmitted = (employerId: string) =>
@@ -1454,13 +1457,16 @@ export default function AIHubScreen() {
       const current = employersRef.current.find((e) => e.id === empId);
       const offset = current?.jobs?.length || 0;
       const page = await fetchEmployerJobs(empId, offset, 40);
-      if (page.jobs.length) {
-        setEmployers((prev) => prev.map((e) => {
-          if (e.id !== empId) return e;
-          const have = new Set((e.jobs || []).map((j) => j.id));
-          return { ...e, jobs: [...(e.jobs || []), ...page.jobs.filter((j) => !have.has(j.id))], totalJobs: page.total || (e as any).totalJobs } as Employer;
-        }));
-      }
+      setEmployers((prev) => prev.map((e) => {
+        if (e.id !== empId) return e;
+        const have = new Set((e.jobs || []).map((j) => j.id));
+        const fresh = page.jobs.filter((j) => !have.has(j.id));
+        const jobs = fresh.length ? [...(e.jobs || []), ...fresh] : (e.jobs || []);
+        // A page with zero NEW jobs can't advance offset-paging (end of list, or the server
+        // reordered under us) — clamp totalJobs so the button stops offering more.
+        const totalJobs = fresh.length ? (page.total || (e as any).totalJobs) : jobs.length;
+        return { ...e, jobs, totalJobs } as Employer;
+      }));
     } finally {
       setLoadingMoreIds((prev) => { const n = new Set(prev); n.delete(empId); return n; });
     }
@@ -1487,23 +1493,44 @@ export default function AIHubScreen() {
     let freshApplied = false;   // guards the instant cached paint from overwriting fresh data
 
     // Map a dashboard payload (cached OR fresh) into screen state. Keeps the user's current
-    // selection when it still exists; otherwise selects the newest employer.
+    // selection when it still exists; otherwise selects the newest employer. The SWR instant
+    // paint means the user can interact (remove a company, start a search) WHILE the fresh
+    // fetch is in flight — so the apply must (a) drop anything removed this session and
+    // (b) keep locally-streaming employers the server doesn't know about yet.
     const applyDashboard = (dashboard: DashboardEntry[]) => {
       const loadedEmployers: Employer[] = [];
       const loadedPills: WishlistPill[] = [];
       const currentlyProcessing = new Set<string>();
       // Server already returns employers newest-first (ute.updated_at DESC) — keep that
       // order so the most recently added company is first (leftmost) in the company strip.
-      const sorted = [...dashboard];
+      const sorted = dashboard.filter((entry) => entry?.employer && !removedIdsRef.current.has(entry.employer.id));
       sorted.forEach((entry, i) => {
         const emp = entry.employer;
         loadedEmployers.push(emp);
         loadedPills.push({ id: `pill-${emp.id}`, label: emp.name, colorVariant: COLOR_CYCLE[i % 3], employerId: emp.id });
         if (entry.status === 'processing' || entry.status === 'pending') currentlyProcessing.add(emp.id);
       });
-      setEmployers(loadedEmployers);
-      setPills(loadedPills);
-      setSelectedEmployerId((prev) => (prev && loadedEmployers.some((e) => e.id === prev)) ? prev : (loadedEmployers[0]?.id ?? null));
+      const inPayload = new Set(loadedEmployers.map((e) => e.id));
+      setEmployers((prev) => {
+        // Keep employers that only exist locally because their search is still streaming
+        // (the server creates the employer row only after Phase 1).
+        const streaming = prev.filter((e) => !inPayload.has(e.id) && processingIdsRef.current.has(e.id));
+        return [...streaming, ...loadedEmployers];
+      });
+      setPills((prev) => {
+        const keep = prev.filter((p) => !p.employerId
+          ? true                                                              // still-loading pill (no employer yet)
+          : (!inPayload.has(p.employerId) && processingIdsRef.current.has(p.employerId)));
+        const keepIds = new Set(keep.map((p) => p.id));
+        return [...keep, ...loadedPills.filter((p) => !keepIds.has(p.id))];
+      });
+      setProcessingEmployerIds((prev) => {
+        // Server statuses win for employers it knows; locally-streaming ones stay processing.
+        const next = new Set(currentlyProcessing);
+        for (const id of prev) if (!inPayload.has(id)) next.add(id);
+        return next;
+      });
+      setSelectedEmployerId((prev) => (prev && (loadedEmployers.some((e) => e.id === prev) || processingIdsRef.current.has(prev))) ? prev : (loadedEmployers[0]?.id ?? null));
       return { loadedEmployers, currentlyProcessing, sorted };
     };
 
@@ -1528,15 +1555,18 @@ export default function AIHubScreen() {
         if (!dashboard || dashboard.length === 0) {
           setEmployers([]); setPills([]); setInitialLoading(false); return;
         }
-        const { currentlyProcessing, sorted } = applyDashboard(dashboard);
-        setProcessingEmployerIds(currentlyProcessing);
+        const { sorted } = applyDashboard(dashboard);
         sorted.forEach((entry) => {
           if (entry.status === 'processing' || entry.status === 'pending') resumePolling(entry.jobId, entry.employer.name);
         });
+        // fetchDashboard cached the raw server payload — re-drop anything removed this session
+        // so the NEXT open's instant paint can't resurrect it.
+        for (const id of removedIdsRef.current) evictEmployerFromDashboardCache(id).catch(() => {});
         // Applied / CL-status badges for ALL jobs in ONE call (was one request per employer —
-        // hundreds of parallel calls for heavy accounts).
+        // hundreds of parallel calls for heavy accounts). Non-empty guard: a transient failure
+        // returns {} and must not wipe badges the cached paint already showed.
         const allStatuses = await loadAllJobStatuses();
-        if (!cancelled) setJobStatuses(allStatuses);
+        if (!cancelled && Object.keys(allStatuses).length) setJobStatuses(allStatuses);
 
         // Reconnect any in-flight searches that the DB doesn't know about yet
         // (employer record not created until Phase 1 completes — can take 30-60s)
@@ -1778,8 +1808,15 @@ export default function AIHubScreen() {
             setLiAddUrl('');
             try {
               const dash: any[] = (await fetchDashboard()) as any;
-              const emps = (dash || []).map((e: any) => e.employer);
-              setEmployers(emps);
+              const emps = (dash || []).map((e: any) => e.employer).filter((e: any) => e && !removedIdsRef.current.has(e.id));
+              // Union-merge per employer: the fresh payload carries the top-matched page only —
+              // keep any jobs the user paged in via "Show more" (dedup by id, fresh first).
+              setEmployers((prev) => emps.map((emp: any) => {
+                const old = prev.find((p) => p.id === emp.id);
+                if (!old || !(old.jobs || []).length) return emp;
+                const have = new Set((emp.jobs || []).map((j: any) => j.id));
+                return { ...emp, jobs: [...(emp.jobs || []), ...(old.jobs || []).filter((j: any) => !have.has(j.id))] };
+              }));
               setPills(emps.map((emp: any, i: number) => ({ id: `pill-${emp.id}`, label: emp.name, colorVariant: COLOR_CYCLE[i % 3], employerId: emp.id })));
               const added = emps.find((e: any) => (e.name || '').toLowerCase() === (job.company || '').toLowerCase());
               if (added) setSelectedEmployerId(added.id);

@@ -710,7 +710,11 @@ const generateCoverLetterDetails = async (req, res) => {
         // letter's tailoring never depends on what the client happened to hold.
         if (sourceJobId) {
             try {
-                const row = await dbConfig.get('SELECT responsibilities FROM jobs WHERE id = ?', [sourceJobId]);
+                // Scoped to the caller's own matched jobs (same ownership rule as /jobs/:id/full).
+                const row = await dbConfig.get(
+                    'SELECT j.responsibilities FROM jobs j JOIN user_job_matches ujm ON ujm.job_id = j.id WHERE j.id = ? AND ujm.user_id = ?',
+                    [sourceJobId, userId]
+                );
                 const full = row && row.responsibilities
                     ? (typeof row.responsibilities === 'string' ? JSON.parse(row.responsibilities) : row.responsibilities)
                     : [];

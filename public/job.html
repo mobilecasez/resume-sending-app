@@ -396,7 +396,13 @@
             JOB = obj.job; EMPLOYER = obj.employer;
             JOB_ID = JOB_ID || obj.jobId || JOB.id;
             if (!JOB_ID || JOB.id === JOB_ID || !qp('id')) {
-              await hydrateFullJob(JOB.id || JOB_ID);   // upgrade the slimmed handoff to the full record
+              // Paint from the handoff immediately (no blocking round-trip); upgrade the slimmed
+              // record (responsibilities trimmed to 3) in the background and re-render — the
+              // render functions are idempotent.
+              hydrateFullJob(JOB.id || JOB_ID).then(function (ok) {
+                if (!ok) return;
+                try { renderHero(); renderSkills(); renderResponsibilities(); } catch (e) {}
+              });
               return true;
             }
           }

@@ -3041,7 +3041,10 @@ async function getDashboard(req, res) {
         const etag = '"' + require('crypto').createHash('md5').update(body).digest('hex') + '"';
         res.set('ETag', etag);
         res.set('Cache-Control', 'private, no-cache');
-        if (req.headers['if-none-match'] === etag) return res.status(304).end();
+        // Tolerant match: proxies may weaken the validator (W/"…") and clients may send a list.
+        const inm = String(req.headers['if-none-match'] || '');
+        const match = inm.split(',').some((t) => t.trim().replace(/^W\//, '') === etag);
+        if (match) return res.status(304).end();
         return res.type('application/json').send(body);
     } catch (err) {
         console.error('[aiHub] getDashboard error:', err);
