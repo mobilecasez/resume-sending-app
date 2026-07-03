@@ -336,6 +336,72 @@ async function getUserDashboard(userId) {
         [userId]
     );
 
+    // PERF: batch ALL completed employers' jobs+skills+contacts into 4 total queries (was 3 queries
+    // PER employer → ~700 sequential round-trips → 14s for a heavy user). Cap to the top MAX_PER_EMP
+    // jobs per employer (by match, then recency) and carry emp_total so the app shows "50 of 344".
+    const MAX_PER_EMP = 60;
+    const completedIds = trackedEmployers
+        .filter((e) => !['pending', 'processing'].includes(e.job_status))
+        .map((e) => e.id);
+    const jobsByEmp = {}, skillsByJob = {}, contactsByJob = {}, totalByEmp = {};
+    if (completedIds.length) {
+        const jobRows = await dbConfig.query(
+            `SELECT * FROM (
+               SELECT j.id, j.employer_id, j.title, j.experience, j.salary, j.job_type, j.work_mode,
+                      j.urgent, j.created_at, j.job_url, j.responsibilities,
+                      ujm.match_score, ujm.scored_at, l.raw_text AS location_text,
+                      row_number() OVER (PARTITION BY j.employer_id ORDER BY ujm.match_score DESC NULLS LAST, j.created_at DESC) AS rn,
+                      COUNT(*) OVER (PARTITION BY j.employer_id)::int AS emp_total
+               FROM jobs j
+               JOIN user_job_matches ujm ON j.id = ujm.job_id
+               LEFT JOIN locations l ON j.location_id = l.id
+               WHERE ujm.user_id = $1 AND j.is_active = TRUE AND j.employer_id = ANY($2::uuid[])
+             ) t WHERE rn <= $3 ORDER BY employer_id, rn`,
+            [userId, completedIds, MAX_PER_EMP]
+        );
+        const jobIds = [];
+        for (const r of jobRows) { (jobsByEmp[r.employer_id] = jobsByEmp[r.employer_id] || []).push(r); totalByEmp[r.employer_id] = r.emp_total; jobIds.push(r.id); }
+        if (jobIds.length) {
+            const skRows = await dbConfig.query(
+                `SELECT js.job_id, s.name FROM skills s JOIN job_skills js ON s.id = js.skill_id WHERE js.job_id = ANY($1::uuid[])`, [jobIds]);
+            for (const r of skRows) (skillsByJob[r.job_id] = skillsByJob[r.job_id] || []).push(r.name);
+            const cRows = await dbConfig.query(`SELECT * FROM job_contacts WHERE job_id = ANY($1::uuid[])`, [jobIds]);
+            for (const c of cRows) (contactsByJob[c.job_id] = contactsByJob[c.job_id] || []).push(c);
+        }
+    }
+
+    const buildJob = (jRow) => {
+        const responsibilities = (() => {
+            try { return jRow.responsibilities ? (typeof jRow.responsibilities === 'string' ? JSON.parse(jRow.responsibilities) : jRow.responsibilities) : []; } catch { return []; }
+        })();
+        return {
+            id: String(jRow.id),
+            title: jRow.title,
+            location: jRow.location_text || 'Not specified',
+            experience: jRow.experience || 'Not specified',
+            salary: jRow.salary || 'Not listed',
+            jobType: jRow.job_type || 'Full-time',
+            workMode: jRow.work_mode || null,
+            urgent: !!jRow.urgent,
+            matchScore: jRow.scored_at ? (jRow.match_score ?? 0) : null,
+            createdAt: jRow.created_at,
+            applyUrl: jRow.job_url,
+            skills: skillsByJob[jRow.id] || [],
+            responsibilities,
+            contacts: (contactsByJob[jRow.id] || []).map((c, ci) => ({
+                id: String(c.id),
+                name: c.name,
+                role: c.role || 'Recruiter',
+                email: c.email || '',
+                phone: c.phone || null,
+                linkedin: c.linkedin_url || null,
+                imageUrl: c.image_url || null,
+                verified: false,
+                avatarColor: AVATAR_COLORS_DB[ci % AVATAR_COLORS_DB.length],
+            })),
+        };
+    };
+
     const dashboard = [];
 
     for (const emp of trackedEmployers) {
@@ -349,87 +415,16 @@ async function getUserDashboard(userId) {
             } catch { return ['#555555', '#1C1C1E']; }
         })();
 
-        let jobs = [];
-
+        let jobs = [], totalJobs = 0;
         if (isProcessing && emp.job_result) {
-            // Use the partial result streamed so far
             try {
                 const partial = typeof emp.job_result === 'string' ? JSON.parse(emp.job_result) : emp.job_result;
                 jobs = partial?.jobs || [];
+                totalJobs = jobs.length;
             } catch {}
         } else {
-            // Load from normalized tables
-            const jobsRows = await dbConfig.query(
-                `SELECT j.*, ujm.match_score, ujm.scored_at, l.raw_text as location_text
-                 FROM jobs j
-                 JOIN user_job_matches ujm ON j.id = ujm.job_id
-                 LEFT JOIN locations l ON j.location_id = l.id
-                 WHERE j.employer_id = $1 AND ujm.user_id = $2 AND j.is_active = TRUE
-                 ORDER BY j.created_at DESC`,
-                [emp.id, userId]
-            );
-
-            // Batch skills + contacts for ALL of this employer's jobs in 2 queries (was 2 queries
-            // PER job → ~2000 sequential DB round-trips across the dashboard = the 6.6s slowness).
-            const _jobIds = jobsRows.map(r => r.id);
-            const _skillsByJob = {};
-            const _contactsByJob = {};
-            if (_jobIds.length) {
-                const _skillRows = await dbConfig.query(
-                    `SELECT js.job_id, s.name FROM skills s
-                     JOIN job_skills js ON s.id = js.skill_id
-                     WHERE js.job_id = ANY($1::uuid[])`,
-                    [_jobIds]
-                );
-                for (const r of _skillRows) (_skillsByJob[r.job_id] = _skillsByJob[r.job_id] || []).push(r.name);
-                const _cRows = await dbConfig.query(
-                    `SELECT * FROM job_contacts WHERE job_id = ANY($1::uuid[])`,
-                    [_jobIds]
-                );
-                for (const c of _cRows) (_contactsByJob[c.job_id] = _contactsByJob[c.job_id] || []).push(c);
-            }
-
-            for (const jRow of jobsRows) {
-                const contactsRows = _contactsByJob[jRow.id] || [];
-
-                const responsibilities = (() => {
-                    try {
-                        if (!jRow.responsibilities) return [];
-                        return typeof jRow.responsibilities === 'string'
-                            ? JSON.parse(jRow.responsibilities)
-                            : jRow.responsibilities;
-                    } catch { return []; }
-                })();
-
-                const skillNames = _skillsByJob[jRow.id] || [];
-
-                jobs.push({
-                    id: String(jRow.id),
-                    title: jRow.title,
-                    location: jRow.location_text || 'Not specified',
-                    experience: jRow.experience || 'Not specified',
-                    salary: jRow.salary || 'Not listed',
-                    jobType: jRow.job_type || 'Full-time',
-                    workMode: jRow.work_mode || null,
-                    urgent: !!jRow.urgent,
-                    matchScore: jRow.scored_at ? (jRow.match_score ?? 0) : null,
-                    createdAt: jRow.created_at,
-                    applyUrl: jRow.job_url,
-                    skills: skillNames,
-                    responsibilities,
-                    contacts: contactsRows.map((c, ci) => ({
-                        id: String(c.id),
-                        name: c.name,
-                        role: c.role || 'Recruiter',
-                        email: c.email || '',
-                        phone: c.phone || null,
-                        linkedin: c.linkedin_url || null,
-                        imageUrl: c.image_url || null,
-                        verified: false,
-                        avatarColor: AVATAR_COLORS_DB[ci % AVATAR_COLORS_DB.length],
-                    })),
-                });
-            }
+            jobs = (jobsByEmp[emp.id] || []).map(buildJob);
+            totalJobs = totalByEmp[emp.id] || jobs.length;
         }
 
         dashboard.push({
@@ -451,6 +446,7 @@ async function getUserDashboard(userId) {
                 logoInitial: (emp.name[0] || '?').toUpperCase(),
                 status: jobs.length > 0 ? 'active' : 'watching',
                 jobs,
+                totalJobs,
             },
             updatedAt: emp.updated_at,
         });
