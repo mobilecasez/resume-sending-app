@@ -3,8 +3,9 @@
 import axios from 'axios';
 import { AppState, AppStateStatus } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE } from '../config';
-import type { Contact, Employer } from '../types/aiHub';
+import type { Contact, Employer, Job } from '../types/aiHub';
 
 const API_BASE_URL = `${API_BASE}`;
 
@@ -424,27 +425,105 @@ export async function recordAutofillMemory(
   } catch { /* learning is best-effort */ }
 }
 
-/**
- * Fetches the user's tracked employers / search history.
- */
-export async function fetchDashboard(): Promise<{
+export type DashboardEntry = {
   jobId: string;
   status: string;
   progress: number;
   employer: Employer;
   updatedAt: string;
-}[]> {
+};
+
+// Stale-while-revalidate cache for the dashboard: the screen paints the cached copy INSTANTLY
+// on open, then fetchDashboard() revalidates in the background. The server supports ETag/304,
+// so an unchanged dashboard costs one header round-trip (0 bytes of body).
+const DASH_CACHE_KEY = 'aiHub_dashboard_cache_v1';
+const DASH_ETAG_KEY = 'aiHub_dashboard_etag_v1';
+
+/** Instant read of the last-known dashboard (null if never fetched). */
+export async function getCachedDashboard(): Promise<DashboardEntry[] | null> {
   try {
-    const headers = await getAuthHeader();
+    const raw = await AsyncStorage.getItem(DASH_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length ? parsed : null;
+  } catch { return null; }
+}
+
+/** Drop one employer from the cached copy (called on remove, so a reopen can't resurrect it). */
+export async function evictEmployerFromDashboardCache(employerId: string): Promise<void> {
+  try {
+    const cached = await getCachedDashboard();
+    if (!cached) return;
+    const next = cached.filter((e) => e?.employer?.id !== employerId);
+    await AsyncStorage.setItem(DASH_CACHE_KEY, JSON.stringify(next));
+    // The server copy differs now — clear the etag so the next fetch gets a fresh 200.
+    await AsyncStorage.removeItem(DASH_ETAG_KEY);
+  } catch { /* cache maintenance is best-effort */ }
+}
+
+/**
+ * Fetches the user's tracked employers / search history.
+ * Sends If-None-Match; on 304 returns the cached copy (0-byte revalidation).
+ */
+export async function fetchDashboard(): Promise<DashboardEntry[]> {
+  try {
+    const auth = await getAuthHeader();
+    const etag = await AsyncStorage.getItem(DASH_ETAG_KEY);
+    const cached = etag ? await getCachedDashboard() : null;
+    const headers: Record<string, string> = { ...auth };
+    if (etag && cached) headers['If-None-Match'] = etag;   // only revalidate when we can serve the cache
     const response = await axios.get(`${API_BASE_URL}/ai-hub/dashboard`, {
       headers,
+      validateStatus: (s) => (s >= 200 && s < 300) || s === 304,
     });
-    return response.data.dashboard;
+    if (response.status === 304 && cached) return cached;
+    const dashboard: DashboardEntry[] = response.data?.dashboard || [];
+    try {
+      await AsyncStorage.setItem(DASH_CACHE_KEY, JSON.stringify(dashboard));
+      const newTag = response.headers?.etag;
+      if (newTag) await AsyncStorage.setItem(DASH_ETAG_KEY, String(newTag));
+      else await AsyncStorage.removeItem(DASH_ETAG_KEY);
+    } catch { /* cache write is best-effort (payload can exceed the store's limits) */ }
+    return dashboard;
   } catch (error: unknown) {
     const msg = axios.isAxiosError(error)
       ? error.response?.data?.error ?? error.message
       : 'Failed to fetch AI Hub dashboard';
     throw new Error(msg);
+  }
+}
+
+/**
+ * Paged jobs for one employer ("Show more jobs") — same job shape as the dashboard list.
+ * Never throws into the UI.
+ */
+export async function fetchEmployerJobs(
+  employerId: string,
+  offset: number,
+  limit = 40,
+): Promise<{ jobs: Job[]; total: number; offset: number }> {
+  try {
+    const headers = await getAuthHeader();
+    const r = await axios.get(`${API_BASE_URL}/ai-hub/dashboard/employer/${employerId}/jobs`, {
+      headers, params: { offset, limit }, timeout: 30000,
+    });
+    return { jobs: r.data?.jobs || [], total: r.data?.total || 0, offset: r.data?.offset ?? offset };
+  } catch {
+    return { jobs: [], total: 0, offset };
+  }
+}
+
+/**
+ * Full-fidelity job record (ALL responsibilities/skills/contacts). The dashboard list ships a
+ * slimmed copy for speed; the detail screen hydrates from here. Never throws into the UI.
+ */
+export async function fetchJobFull(jobId: string): Promise<{ job: Job; employer?: Employer } | null> {
+  try {
+    const headers = await getAuthHeader();
+    const r = await axios.get(`${API_BASE_URL}/ai-hub/jobs/${jobId}/full`, { headers, timeout: 20000 });
+    return r.data && r.data.job ? r.data : null;
+  } catch {
+    return null;
   }
 }
 
@@ -638,6 +717,15 @@ export async function loadJobStatuses(employerId: string): Promise<Record<string
   } catch { return {}; }
 }
 
+/** Applied/CL statuses for ALL jobs in ONE call (was one request per tracked employer). */
+export async function loadAllJobStatuses(): Promise<Record<string, string>> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(`${API_BASE_URL}/ai-hub/job-statuses`, { headers, timeout: 20000 });
+    return data.statuses ?? {};
+  } catch { return {}; }
+}
+
 /**
  * Generate a cover letter for a specific job using the existing cover letter pipeline.
  * Uses /api/generate-cover-letter-details (same as Letters page) — returns jobId for polling.
@@ -646,12 +734,16 @@ export async function startJobCoverLetter(
   websiteUrl: string,
   position: string,
   responsibilities?: string[],
-  jobLocation?: string
+  jobLocation?: string,
+  jobId?: string
 ): Promise<string> {
   const headers = await getAuthHeader();
   const body: Record<string, any> = { websiteUrl, position, recipientEmail: '' };
   if (responsibilities && responsibilities.length > 0) body.responsibilities = responsibilities;
   if (jobLocation && jobLocation.trim()) body.jobLocation = jobLocation.trim();
+  // The dashboard list ships a slimmed job (3 responsibilities) — sending the jobId lets the
+  // server swap in the FULL stored list, so letter quality never depends on client hydration.
+  if (jobId) body.jobId = jobId;
   const response = await axios.post(
     `${API_BASE_URL}/generate-cover-letter-details`,
     body,

@@ -4149,6 +4149,27 @@ async function getJobStatuses(req, res) {
     }
 }
 
+/**
+ * GET /api/ai-hub/job-statuses — Applied/CL-status map for ALL the user's jobs in ONE call.
+ * (The dashboard screen previously fired the per-employer endpoint once per tracked employer —
+ * hundreds of parallel requests for heavy accounts.)
+ */
+async function getAllJobStatuses(req, res) {
+    const userId = req.user.id;
+    try {
+        await ensureCoverLetterTable();
+        const rows = await dbConfig.query(
+            `SELECT job_id, status FROM job_cover_letters WHERE user_id=$1`,
+            [userId]
+        );
+        const map = {};
+        (rows?.rows || rows || []).forEach(r => { map[r.job_id] = r.status; });
+        return res.json({ statuses: map });
+    } catch (e) {
+        return res.status(500).json({ error: 'Failed to load statuses' });
+    }
+}
+
 /** POST /api/ai-hub/generate-email-body — AI-written email body for compose modal */
 async function generateEmailBodyHandler(req, res) {
     const { position, companyName } = req.body;
@@ -4589,6 +4610,7 @@ module.exports = {
     getDashboard,
     getEmployerJobs,
     getJobFullHandler,
+    getAllJobStatuses,
     removeDashboardItem,
     verifyEmail,
     addContactToJob,

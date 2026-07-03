@@ -370,7 +370,23 @@
       } catch (e) {}
     }
 
-    // 1) sessionStorage first, then dashboard lookup by ?id=
+    // Full-fidelity hydration: the dashboard LIST ships a slimmed job (responsibilities trimmed
+    // to 3) for speed — /jobs/:id/full has the complete record. Also resolves deep-links (?id=)
+    // for ANY job, including ones beyond the dashboard's per-employer page.
+    async function hydrateFullJob(id) {
+      try {
+        const r = await CVA.apiFetch('/api/ai-hub/jobs/' + encodeURIComponent(id) + '/full', { method: 'GET' });
+        if (!r.ok) return false;
+        const d = await r.json();
+        if (!d || !d.job) return false;
+        JOB = Object.assign({}, JOB || {}, d.job);
+        if (d.employer) EMPLOYER = Object.assign({}, EMPLOYER || {}, d.employer);
+        return !!(JOB && EMPLOYER);
+      } catch (e) { return false; }
+    }
+
+    // 1) sessionStorage first (hydrated to full), then direct /full lookup by ?id=,
+    //    then the legacy dashboard scan as a last resort.
     async function locateJob() {
       try {
         const raw = sessionStorage.getItem('cva_active_job');
@@ -379,11 +395,15 @@
           if (obj && obj.job && obj.employer) {
             JOB = obj.job; EMPLOYER = obj.employer;
             JOB_ID = JOB_ID || obj.jobId || JOB.id;
-            if (!JOB_ID || JOB.id === JOB_ID || !qp('id')) return true;
+            if (!JOB_ID || JOB.id === JOB_ID || !qp('id')) {
+              await hydrateFullJob(JOB.id || JOB_ID);   // upgrade the slimmed handoff to the full record
+              return true;
+            }
           }
         }
       } catch (e) {}
       if (!JOB_ID) return false;
+      if (await hydrateFullJob(JOB_ID)) return true;
       try {
         const r = await CVA.apiFetch('/api/ai-hub/dashboard', { method: 'GET' });
         if (!r.ok) return false;
@@ -575,7 +595,8 @@
             websiteUrl: websiteUrl,
             position: JOB.title,
             responsibilities: JOB.responsibilities || [],
-            jobLocation: JOB.location || ''
+            jobLocation: JOB.location || '',
+            jobId: JOB.id || undefined   // server swaps in the FULL stored responsibilities
           })
         });
         const startData = await startRes.json().catch(function () { return {}; });

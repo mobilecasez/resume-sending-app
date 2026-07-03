@@ -11,6 +11,7 @@ const {
     getDashboard,
     getEmployerJobs,
     getJobFullHandler,
+    getAllJobStatuses,
     removeDashboardItem,
     verifyEmail,
     addContactToJob,
@@ -75,5 +76,6 @@ router.post('/jobs/:jobId/cover-letter',                authenticateToken, saveJ
 router.get( '/jobs/:jobId/cover-letter',                authenticateToken, getJobCoverLetter);
 router.patch('/jobs/:jobId/cover-letter/status',        authenticateToken, updateJobCoverLetterStatus);
 router.get( '/employers/:employerId/job-statuses',      authenticateToken, getJobStatuses);
+router.get( '/job-statuses',                            authenticateToken, getAllJobStatuses);   // ALL employers in one call
 
 module.exports = router;

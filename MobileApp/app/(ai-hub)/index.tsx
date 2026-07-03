@@ -32,7 +32,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type { Contact, Job, Employer, WishlistPill } from '../../types/aiHub';
-import { fetchJobMatches, fetchDashboard, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, fetchJobMatchScores, getMotivationLines, submitEmployerFixRequest, isLinkedInJobUrl } from '../../services/aiHubService';
+import { fetchJobMatches, fetchDashboard, getCachedDashboard, evictEmployerFromDashboardCache, fetchEmployerJobs, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, loadAllJobStatuses, fetchJobMatchScores, getMotivationLines, submitEmployerFixRequest, isLinkedInJobUrl, type DashboardEntry } from '../../services/aiHubService';
 import type { Recruiter } from '../../services/aiHubService';
 import { API_BASE } from '../../config';
 import axios from 'axios';
@@ -452,10 +452,10 @@ type CompanyCardProps = {
 };
 
 const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, loading, processing, onPress, onRemove }) => {
-  // Backend caps the dashboard payload at the top-matched jobs per employer for speed; totalJobs
-  // is the true count so a big employer still shows e.g. "120" not the capped "60".
+  // Backend caps the dashboard payload at the top-matched jobs per employer for speed; totalJobs/
+  // totalContacts are the TRUE counts so a big employer still shows e.g. "120" not the page size.
   const jobCount     = (employer as any).totalJobs ?? (employer.jobs || []).length;
-  const contactCount = (employer.jobs || []).reduce((s, j) => s + (j.contacts || []).length, 0);
+  const contactCount = (employer as any).totalContacts ?? (employer.jobs || []).reduce((s, j) => s + (j.contacts || []).length, 0);
 
   // Heartbeat animation while processing (double-thump + pause, like a pulse).
   const beat = !!processing && !loading;
@@ -1422,21 +1422,13 @@ export default function AIHubScreen() {
     }, [router])
   );
 
-  // Reload statuses whenever this screen comes into focus (e.g. returning from job-detail)
+  // Reload statuses whenever this screen comes into focus (e.g. returning from job-detail).
+  // ONE batched call for all employers (was one request per employer).
   const employersRef = useRef<Employer[]>([]);
   useFocusEffect(
     useCallback(() => {
-      const current = employersRef.current;
-      if (current.length === 0) return;
-      const load = async () => {
-        const allStatuses: Record<string, string> = {};
-        await Promise.all(current.map(async (emp) => {
-          const s = await loadJobStatuses(emp.id);
-          Object.assign(allStatuses, s);
-        }));
-        setJobStatuses(allStatuses);
-      };
-      load();
+      if (employersRef.current.length === 0) return;
+      loadAllJobStatuses().then((s) => { if (Object.keys(s).length) setJobStatuses(s); });
     }, [])
   );
 
@@ -1452,11 +1444,34 @@ export default function AIHubScreen() {
     return () => loop.stop();
   }, [pulseAnim]);
 
+  // "Show more jobs": append the next server page for one employer (the dashboard payload ships
+  // only the top-matched page for speed). Appended jobs auto-score via the drainer effect.
+  const [loadingMoreIds, setLoadingMoreIds] = useState<Set<string>>(new Set());
+  const handleShowMoreJobs = useCallback(async (empId: string) => {
+    if (loadingMoreIds.has(empId)) return;
+    setLoadingMoreIds((prev) => new Set(prev).add(empId));
+    try {
+      const current = employersRef.current.find((e) => e.id === empId);
+      const offset = current?.jobs?.length || 0;
+      const page = await fetchEmployerJobs(empId, offset, 40);
+      if (page.jobs.length) {
+        setEmployers((prev) => prev.map((e) => {
+          if (e.id !== empId) return e;
+          const have = new Set((e.jobs || []).map((j) => j.id));
+          return { ...e, jobs: [...(e.jobs || []), ...page.jobs.filter((j) => !have.has(j.id))], totalJobs: page.total || (e as any).totalJobs } as Employer;
+        }));
+      }
+    } finally {
+      setLoadingMoreIds((prev) => { const n = new Set(prev); n.delete(empId); return n; });
+    }
+  }, [loadingMoreIds]);
+
   const stats = useMemo(() => {
     let m = 0, c = 0;
     employers.forEach((emp) => {
-      m += (emp.jobs || []).length;
-      c += (emp.jobs || []).reduce((s, j) => s + (j.contacts || []).length, 0);
+      // Server sends TRUE totals (the jobs array is just the top-matched page).
+      m += (emp as any).totalJobs ?? (emp.jobs || []).length;
+      c += (emp as any).totalContacts ?? (emp.jobs || []).reduce((s, j) => s + (j.contacts || []).length, 0);
     });
     return { sources: employers.length, matches: m, contacts: c, verifiedPct: 94 };
   }, [employers]);
@@ -1468,42 +1483,60 @@ export default function AIHubScreen() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    let freshApplied = false;   // guards the instant cached paint from overwriting fresh data
+
+    // Map a dashboard payload (cached OR fresh) into screen state. Keeps the user's current
+    // selection when it still exists; otherwise selects the newest employer.
+    const applyDashboard = (dashboard: DashboardEntry[]) => {
+      const loadedEmployers: Employer[] = [];
+      const loadedPills: WishlistPill[] = [];
+      const currentlyProcessing = new Set<string>();
+      // Server already returns employers newest-first (ute.updated_at DESC) — keep that
+      // order so the most recently added company is first (leftmost) in the company strip.
+      const sorted = [...dashboard];
+      sorted.forEach((entry, i) => {
+        const emp = entry.employer;
+        loadedEmployers.push(emp);
+        loadedPills.push({ id: `pill-${emp.id}`, label: emp.name, colorVariant: COLOR_CYCLE[i % 3], employerId: emp.id });
+        if (entry.status === 'processing' || entry.status === 'pending') currentlyProcessing.add(emp.id);
+      });
+      setEmployers(loadedEmployers);
+      setPills(loadedPills);
+      setSelectedEmployerId((prev) => (prev && loadedEmployers.some((e) => e.id === prev)) ? prev : (loadedEmployers[0]?.id ?? null));
+      return { loadedEmployers, currentlyProcessing, sorted };
+    };
+
+    // INSTANT PAINT (stale-while-revalidate): render the last-known dashboard from the on-device
+    // cache in ~0ms while the network refresh runs in the background. Polling/processing state is
+    // NOT resumed from cache (could be stale) — the fresh fetch below handles that.
+    (async () => {
+      try {
+        const cached = await getCachedDashboard();
+        if (cancelled || freshApplied || !cached || !cached.length) return;
+        applyDashboard(cached);
+        setInitialLoading(false);
+        loadAllJobStatuses().then((s) => { if (!cancelled && !freshApplied && Object.keys(s).length) setJobStatuses(s); });
+      } catch { /* cache read is best-effort */ }
+    })();
+
     async function loadDashboard() {
       try {
         const dashboard = await fetchDashboard();
+        if (cancelled) return;
+        freshApplied = true;
         if (!dashboard || dashboard.length === 0) {
           setEmployers([]); setPills([]); setInitialLoading(false); return;
         }
-        const loadedEmployers: Employer[] = [];
-        const loadedPills: WishlistPill[] = [];
-        const currentlyProcessing = new Set<string>();
-        // Server already returns employers newest-first (ute.updated_at DESC) — keep that
-        // order so the most recently added company is first (leftmost) in the company strip.
-        // (The previous .reverse() flipped it to oldest-first.)
-        const sorted = [...dashboard];
-        sorted.forEach((entry, i) => {
-          const emp = entry.employer;
-          loadedEmployers.push(emp);
-          loadedPills.push({ id: `pill-${emp.id}`, label: emp.name, colorVariant: COLOR_CYCLE[i % 3], employerId: emp.id });
-          if (entry.status === 'processing' || entry.status === 'pending') {
-            currentlyProcessing.add(emp.id);
-            resumePolling(entry.jobId, emp.name);
-          }
-        });
-        setEmployers(loadedEmployers);
-        setPills(loadedPills);
+        const { currentlyProcessing, sorted } = applyDashboard(dashboard);
         setProcessingEmployerIds(currentlyProcessing);
-        // Auto-select the most recently added employer
-        if (loadedEmployers.length > 0) {
-          setSelectedEmployerId(loadedEmployers[0].id);
-        }
-        // Load cover letter / apply statuses for all employers
-        const allStatuses: Record<string, string> = {};
-        await Promise.all(loadedEmployers.map(async (emp) => {
-          const s = await loadJobStatuses(emp.id);
-          Object.assign(allStatuses, s);
-        }));
-        setJobStatuses(allStatuses);
+        sorted.forEach((entry) => {
+          if (entry.status === 'processing' || entry.status === 'pending') resumePolling(entry.jobId, entry.employer.name);
+        });
+        // Applied / CL-status badges for ALL jobs in ONE call (was one request per employer —
+        // hundreds of parallel calls for heavy accounts).
+        const allStatuses = await loadAllJobStatuses();
+        if (!cancelled) setJobStatuses(allStatuses);
 
         // Reconnect any in-flight searches that the DB doesn't know about yet
         // (employer record not created until Phase 1 completes — can take 30-60s)
@@ -1544,10 +1577,11 @@ export default function AIHubScreen() {
       } catch (e) {
         console.error('Failed to load dashboard', e);
       } finally {
-        setInitialLoading(false);
+        if (!cancelled) setInitialLoading(false);
       }
     }
     loadDashboard();
+    return () => { cancelled = true; };
   }, []);
 
   // Safety net for the "comes back empty until restart" case: if we end up with NO
@@ -1590,6 +1624,7 @@ export default function AIHubScreen() {
   // which froze the app) and show a loader on it while its job list mounts.
   const removeEmployerCore = useCallback((empId: string) => {
     removedIdsRef.current.add(empId);  // so a racing refetch can't resurrect it
+    evictEmployerFromDashboardCache(empId).catch(() => {});  // so a reopen's instant paint can't either
     const target = employers.find((e) => e.id === empId);
     const removeKey = target?.jobId || target?.id || empId;
     if (removeKey) removeDashboardItem(removeKey).catch(console.error);  // fire-and-forget
@@ -1973,6 +2008,11 @@ export default function AIHubScreen() {
                         (minMatch === 0 || (typeof j.matchScore === 'number' && j.matchScore >= minMatch));
                     })
                   : jobs;
+                // All-companies view renders EVERY employer in one ScrollView pass — window each
+                // to a short preview so it can't freeze; "See all" selects that company.
+                const allView = !selectedEmployerId;
+                const shownJobs = allView ? filteredJobs.slice(0, 5) : filteredJobs;
+                const empTotal = (employer as any).totalJobs ?? jobs.length;
                 const isProcessing = processingEmployerIds.has(employer.id);
                 // No jobs and not processing — show a helpful empty-state card
                 if (jobs.length === 0 && !isProcessing) {
@@ -2026,7 +2066,7 @@ export default function AIHubScreen() {
                     <View style={styles.filterHeaderRow}>
                       <View style={styles.countWithLoader}>
                         <Text style={styles.filterCountText}>
-                          {filteredJobs.length}{filterActive ? ` of ${jobs.length}` : ''} {jobs.length === 1 ? 'job' : 'jobs'}
+                          {filterActive ? `${filteredJobs.length} of ${jobs.length}` : `${empTotal}`} {(filterActive ? jobs.length : empTotal) === 1 ? 'job' : 'jobs'}
                         </Text>
                         {isProcessing && <ActivityIndicator size="small" color={T.blue} style={styles.countLoader} />}
                       </View>
@@ -2057,7 +2097,7 @@ export default function AIHubScreen() {
                       </TouchableOpacity>
                     </View>
                   ) : (
-                    filteredJobs.map((job) => (
+                    shownJobs.map((job) => (
                       <JobCard
                         key={job.id}
                         job={job}
@@ -2068,6 +2108,31 @@ export default function AIHubScreen() {
                         onVisitJob={handleVisitJob}
                       />
                     ))
+                  )}
+                  {/* All-companies view: preview only — "See all" jumps into the company. */}
+                  {!isProcessing && allView && filteredJobs.length > shownJobs.length && (
+                    <TouchableOpacity style={styles.showMoreBtn} activeOpacity={0.85} onPress={() => setSelectedEmployerId(employer.id)}>
+                      <Ionicons name="chevron-down" size={14} color={T.blue} />
+                      <Text style={styles.showMoreBtnText}>See all {empTotal} jobs at {employer.name}</Text>
+                    </TouchableOpacity>
+                  )}
+                  {/* Server has more pages: append the next top-matched page. */}
+                  {!isProcessing && !allView && !filterActive && empTotal > jobs.length && (
+                    <TouchableOpacity
+                      style={styles.showMoreBtn}
+                      activeOpacity={0.85}
+                      disabled={loadingMoreIds.has(employer.id)}
+                      onPress={() => handleShowMoreJobs(employer.id)}
+                    >
+                      {loadingMoreIds.has(employer.id) ? (
+                        <ActivityIndicator size="small" color={T.blue} />
+                      ) : (
+                        <>
+                          <Ionicons name="chevron-down" size={14} color={T.blue} />
+                          <Text style={styles.showMoreBtnText}>Show more jobs ({jobs.length} of {empTotal})</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
                   )}
                   {/* (Progress indicator now lives at the TOP of the section, above.) */}
                   {/* Always-visible "raise a concern" card — only once the search is done. */}
@@ -2950,6 +3015,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
   },
   noJobsAddBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: T.blue,
+  },
+  // ── "Show more jobs" / "See all" pager button under a company's job list ──
+  showMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    paddingVertical: 12,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  showMoreBtnText: {
     fontSize: 13,
     fontWeight: '700',
     color: T.blue,

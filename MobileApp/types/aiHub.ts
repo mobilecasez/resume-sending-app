@@ -34,6 +34,7 @@ export type Job = {
   createdAt?: string;    // ISO timestamp from the server, used to sort newest-first
   applyUrl?: string | null;
   lang?: string;         // detected language ('en' or e.g. 'de'); non-'en' shows the Translate toggle
+  respTotal?: number;    // true responsibilities count — the dashboard LIST ships only the 3 the card shows; /jobs/:id/full has all
 };
 
 /**
@@ -49,6 +50,8 @@ export type Employer = {
   status: 'active' | 'watching';
   domain?: string; // full registrable domain WITH TLD (e.g. vertigis.com) — for the company-card website
   jobs: Job[];
+  totalJobs?: number;     // TRUE job count — the dashboard list ships only the top-matched page
+  totalContacts?: number; // TRUE contact count across ALL the employer's matched jobs
 };
 
 /**

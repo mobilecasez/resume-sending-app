@@ -340,8 +340,14 @@
         const n = (emp && emp.name) || '?';
         return n.slice(0, 1).toUpperCase();
       }
-      function jobCount(emp) { return (emp && Array.isArray(emp.jobs)) ? emp.jobs.length : 0; }
+      // Prefer the server's TRUE totals — the dashboard payload ships only the top-matched
+      // page of jobs per employer (fast, bounded); totalJobs/totalContacts carry real counts.
+      function jobCount(emp) {
+        if (emp && typeof emp.totalJobs === 'number') return emp.totalJobs;
+        return (emp && Array.isArray(emp.jobs)) ? emp.jobs.length : 0;
+      }
       function contactCount(emp) {
+        if (emp && typeof emp.totalContacts === 'number') return emp.totalContacts;
         if (!emp || !Array.isArray(emp.jobs)) return 0;
         return emp.jobs.reduce(function (sum, j) {
           return sum + ((j && Array.isArray(j.contacts)) ? j.contacts.length : 0);
@@ -548,7 +554,13 @@
         if (!emp || !Array.isArray(emp.jobs) || !emp.jobs.length) {
           listEl.innerHTML = '<div class="jh-empty"><span class="material-icons">work_off</span>No open roles surfaced yet.</div>';
         } else {
-          listEl.innerHTML = emp.jobs.map(function (j) { return jobRowHTML(emp, j, key); }).join('');
+          // The dashboard ships the top-matched page only — offer "Show more" when the server
+          // holds more (totalJobs), appending pages from the per-employer pager endpoint.
+          const total = (typeof emp.totalJobs === 'number') ? emp.totalJobs : emp.jobs.length;
+          const moreBtn = (total > emp.jobs.length)
+            ? '<button type="button" class="jh-more-btn" style="display:block;width:100%;margin:10px 0 4px;padding:12px;border:1px solid #E2E8F0;border-radius:12px;background:#fff;color:#3B82F6;font-weight:700;cursor:pointer;">Show more jobs (' + emp.jobs.length + ' of ' + total + ')</button>'
+            : '';
+          listEl.innerHTML = emp.jobs.map(function (j) { return jobRowHTML(emp, j, key); }).join('') + moreBtn;
           Array.prototype.forEach.call(listEl.querySelectorAll('.jh-view-btn'), function (btn) {
             btn.addEventListener('click', function () {
               openJob(btn.getAttribute('data-key'), btn.getAttribute('data-job'));
@@ -558,6 +570,21 @@
             btn.addEventListener('click', function () {
               toggleTranslate(it, btn.getAttribute('data-job'));
             });
+          });
+          const mb = listEl.querySelector('.jh-more-btn');
+          if (mb) mb.addEventListener('click', async function () {
+            mb.disabled = true; mb.textContent = 'Loading…';
+            try {
+              const r = await CVA.apiFetch('/api/ai-hub/dashboard/employer/' + encodeURIComponent(emp.id) + '/jobs?offset=' + emp.jobs.length + '&limit=40', { method: 'GET' });
+              const d = await r.json();
+              if (d && Array.isArray(d.jobs) && d.jobs.length) {
+                const have = {};
+                emp.jobs.forEach(function (j) { have[j.id] = 1; });
+                d.jobs.forEach(function (j) { if (!have[j.id]) emp.jobs.push(j); });
+                if (typeof d.total === 'number') emp.totalJobs = d.total;
+                renderJobsPanel(it, true);
+              } else { mb.textContent = 'No more jobs'; }
+            } catch (e) { mb.disabled = false; mb.textContent = 'Show more jobs'; }
           });
         }
 

@@ -32,7 +32,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { track } from '../../services/analytics';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, translateJob, translateBatch, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, isLinkedInJobUrl, type LinkedInJob, type TranslatedJob, type SmartFillData } from '../../services/aiHubService';
+import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, fetchJobFull, translateJob, translateBatch, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, isLinkedInJobUrl, type LinkedInJob, type TranslatedJob, type SmartFillData } from '../../services/aiHubService';
 import LinkedInJobLoader from '../../components/LinkedInJobLoader';
 import { API_BASE } from '../../config';
 import { SUBMIT_DETECT_JS, CONFIRM_URL_RE } from './submitDetect';
@@ -1025,17 +1025,33 @@ export default function JobDetailScreen() {
   const [liUrl, setLiUrl] = useState('');
   const [liStage, setLiStage] = useState('');
   const liTriedRef = useRef('');
+  // ── Full-record hydration: the dashboard LIST ships a slimmed job (responsibilities trimmed
+  // to the 3 the card shows) for speed — fetch the complete record once and layer it in, so the
+  // detail view + cover letters always see ALL responsibilities/skills.
+  const [fullJob, setFullJob] = useState<Job | null>(null);
+  useEffect(() => {
+    let cancel = false;
+    const id = job?.id;
+    if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return;
+    const slim = (job as any).respTotal != null && ((job as any).respTotal > (job.responsibilities || []).length);
+    // Hydrate whenever the record might be slimmed (respTotal missing on old payloads → fetch anyway).
+    if ((job as any).respTotal != null && !slim) return;
+    fetchJobFull(id).then((full) => { if (!cancel && full?.job) setFullJob(full.job); });
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.id]);
+  const hydratedJob: any = fullJob ? { ...job, ...fullJob } : job;
   const baseJob: any = liJob ? {
-    ...job,
-    title: liJob.title || job.title,
-    location: liJob.location || (job as any).location,
-    salary: liJob.salary || (job as any).salary,
-    jobType: liJob.employment_type || (job as any).jobType,
-    workMode: liJob.work_mode || (job as any).workMode,
-    experience: liJob.seniority || (job as any).experience,
-    skills: (liJob.skills && liJob.skills.length) ? liJob.skills : job.skills,
-    responsibilities: (liJob.responsibilities && liJob.responsibilities.length) ? liJob.responsibilities : (job as any).responsibilities,
-  } : job;
+    ...hydratedJob,
+    title: liJob.title || hydratedJob.title,
+    location: liJob.location || hydratedJob.location,
+    salary: liJob.salary || hydratedJob.salary,
+    jobType: liJob.employment_type || hydratedJob.jobType,
+    workMode: liJob.work_mode || hydratedJob.workMode,
+    experience: liJob.seniority || hydratedJob.experience,
+    skills: (liJob.skills && liJob.skills.length) ? liJob.skills : hydratedJob.skills,
+    responsibilities: (liJob.responsibilities && liJob.responsibilities.length) ? liJob.responsibilities : hydratedJob.responsibilities,
+  } : hydratedJob;
   const display: any = (showEnglish && translatedJob)
     ? { ...baseJob, ...Object.fromEntries(Object.entries(translatedJob).filter(([, v]) => v != null && (!Array.isArray(v) || v.length > 0))) }
     : baseJob;
@@ -1191,6 +1207,7 @@ export default function JobDetailScreen() {
         display.title,
         responsibilities.length > 0 ? responsibilities : undefined,
         display.location || undefined,
+        job.id,   // lets the server swap in the FULL stored responsibilities (list payload is slimmed)
       );
       const result = await pollJobCoverLetter(jobId, () => {
         if (fake < 75) { fake = Math.min(fake + 3, 75); setClProgress(Math.round(fake)); animTo(clAnim, fake / 100); }
