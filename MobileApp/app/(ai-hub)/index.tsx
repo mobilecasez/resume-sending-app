@@ -452,7 +452,9 @@ type CompanyCardProps = {
 };
 
 const CompanyCard: React.FC<CompanyCardProps> = ({ employer, selected, loading, processing, onPress, onRemove }) => {
-  const jobCount     = (employer.jobs || []).length;
+  // Backend caps the dashboard payload at the top-matched jobs per employer for speed; totalJobs
+  // is the true count so a big employer still shows e.g. "120" not the capped "60".
+  const jobCount     = (employer as any).totalJobs ?? (employer.jobs || []).length;
   const contactCount = (employer.jobs || []).reduce((s, j) => s + (j.contacts || []).length, 0);
 
   // Heartbeat animation while processing (double-thump + pause, like a pulse).
