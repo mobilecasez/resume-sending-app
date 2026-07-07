@@ -1,5 +1,7 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import ReplyComposeModal from './ReplyComposeModal';
+import OnboardingChecklist from './OnboardingChecklist';
+import { track } from '../services/analytics';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView,
   Animated, Modal, ActivityIndicator, SafeAreaView, StatusBar, Alert,
@@ -1320,6 +1322,48 @@ export default function HomeScreen({
 }) {
   const firstName = user?.fullName?.split(' ')[0] || user?.name?.split(' ')[0] || 'User';
 
+  // ── First-run onboarding checklist (profile / resume / photo / signature) ──────
+  // setup completeness comes from GET /users/profile; refreshed on every Home focus so the
+  // checklist updates as the user finishes steps. Dismiss is persisted per-user.
+  const [setup, setSetup] = useState(null);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(true); // hidden until we know
+  const dismissKey = user?.email ? `onboarding_dismissed_${user.email}` : null;
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (dismissKey) {
+          const v = await AsyncStorage.getItem(dismissKey);
+          if (alive) setOnboardingDismissed(v === '1');
+        } else if (alive) setOnboardingDismissed(false);
+      } catch { if (alive) setOnboardingDismissed(false); }
+    })();
+    return () => { alive = false; };
+  }, [dismissKey]);
+  const fetchSetup = useCallback(async () => {
+    try {
+      if (!user?.token || !API_BASE) return;
+      if (onboardingDismissed || setup?.complete) return; // nothing to show → skip the recurring call
+      const res = await fetch(`${API_BASE}/users/profile`, { headers: { Authorization: `Bearer ${user.token}` } });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.setup) setSetup(data.setup);
+    } catch { /* offline — skip */ }
+  }, [user?.token, API_BASE, onboardingDismissed, setup?.complete]);
+  useFocusEffect(useCallback(() => { fetchSetup(); }, [fetchSetup]));
+  const dismissOnboarding = useCallback(async () => {
+    setOnboardingDismissed(true);
+    try { track('onboarding_dismiss'); } catch {}
+    try { if (dismissKey) await AsyncStorage.setItem(dismissKey, '1'); } catch {}
+  }, [dismissKey]);
+  const handleOnboardingStep = useCallback((target) => {
+    try { track('onboarding_step', { step: target }); } catch {}
+    // Every step lives on the Account Settings (profile) screen — open it. The user completes
+    // the specific action there; returning to Home refreshes the checklist via focus.
+    if (setScreen) setScreen('profile');
+  }, [setScreen]);
+  const showOnboarding = !onboardingDismissed && setup && !setup.complete;
+
   // Refresh "Recent applications" whenever the Home tab regains focus — e.g. after the
   // user applies to a job via the Job Hub portal (which records server-side but doesn't
   // touch this screen's state). Pulls the merged history straight from the backend.
@@ -1682,6 +1726,16 @@ export default function HomeScreen({
             </View>
           </View>
         </View>
+
+        {/* ── FIRST-RUN SETUP CHECKLIST (hides once complete or dismissed) ──── */}
+        {showOnboarding && (
+          <OnboardingChecklist
+            setup={setup}
+            firstName={firstName}
+            onStep={handleOnboardingStep}
+            onDismiss={dismissOnboarding}
+          />
+        )}
 
         {/* ── THIS WEEK ────────────────────────────────────── */}
         <View style={styles.sectionCard}>
