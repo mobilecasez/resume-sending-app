@@ -1,6 +1,7 @@
 const dbConfig = require('../../db-config');
 const { notifyProfileUpdated } = require('./notificationsController');
 const { triggerResumeParsingBackground } = require('../../services/resumeParserService');
+const { emit } = require('../services/track');   // first-party analytics
 
 // Get user profile data
 const getProfile = async (req, res) => {
@@ -24,6 +25,16 @@ const getProfile = async (req, res) => {
         const protocol = req.get('x-forwarded-proto') || req.protocol;
         const baseUrl = `${protocol}://${req.get('host')}`;
         
+        // First-run setup completeness — drives the onboarding "Getting Started" checklist.
+        // profile = the basics filled beyond signup defaults (phone/address/DOB).
+        const setup = {
+            profile: !!(user.phoneNumber && user.address && formattedDOB),
+            resume: !!user.resumePath,
+            photo: !!user.photoPath,
+            signature: !!user.signaturePath,
+        };
+        setup.complete = setup.profile && setup.resume && setup.photo && setup.signature;
+
         res.json({
             fullName: user.fullName,
             email: user.email,
@@ -35,7 +46,8 @@ const getProfile = async (req, res) => {
             resume: user.resumePath ? `${baseUrl}/${user.resumePath}` : null,
             signature: user.signaturePath ? `${baseUrl}/${user.signaturePath}` : null,
             createdAt: user.createdAt,
-            oauth_provider: user.oauthProvider || null
+            oauth_provider: user.oauthProvider || null,
+            setup
         });
     } catch (err) {
         return res.status(500).json({ error: err.message });
@@ -54,7 +66,8 @@ const uploadProfileImage = async (req, res) => {
         const filePath = req.file.path.replace(process.cwd() + '/', '');
         
         await dbConfig.run('UPDATE users SET photo_path = ? WHERE id = ?', [filePath, userId]);
-        
+        emit(req, 'photo_uploaded');
+
         const protocol = req.get('x-forwarded-proto') || req.protocol;
         const baseUrl = `${protocol}://${req.get('host')}`;
         res.json({
@@ -80,6 +93,7 @@ const uploadResume = async (req, res) => {
         const filePath = req.file.path.replace(process.cwd() + '/', '');
         
         await dbConfig.run('UPDATE users SET resume_path = ? WHERE id = ?', [filePath, userId]);
+        emit(req, 'resume_uploaded');
 
         // Run resume metadata extraction in the background without delaying the upload response.
         triggerResumeParsingBackground(userId, filePath);
@@ -109,7 +123,8 @@ const uploadSignature = async (req, res) => {
         const filePath = req.file.path.replace(process.cwd() + '/', '');
         
         await dbConfig.run('UPDATE users SET signature_path = ? WHERE id = ?', [filePath, userId]);
-        
+        emit(req, 'signature_uploaded');
+
         const protocol = req.get('x-forwarded-proto') || req.protocol;
         const baseUrl = `${protocol}://${req.get('host')}`;
         res.json({
@@ -202,6 +217,8 @@ const updateProfile = async (req, res) => {
         } catch (notifError) {
             console.error('Failed to create notification:', notifError);
         }
+
+        emit(req, 'profile_updated', { fields: updates.length });
 
         res.json({
             success: true,

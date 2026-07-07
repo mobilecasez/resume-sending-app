@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const passport = require('passport');
 const dbConfig = require('../../db-config');
+const live = require('../services/liveAnalytics');   // first-party analytics (app_events)
 const CryptoJS = require('crypto-js');
 const validator = require('validator');
 const jwksRsa = require('jwks-rsa');
@@ -26,19 +27,51 @@ function encryptOAuthToken(token) {
     }
 }
 
+// Mirror the relevant auth audit events into the first-party analytics stream (app_events) so
+// the Live dashboard shows signup / login / provider funnels. security_audit_log stays the
+// authoritative security record; this is an ADDITIVE, best-effort copy for product analytics.
+const ANALYTICS_AUTH_EVENTS = {
+    USER_REGISTERED: 'signup',
+    LOGIN_SUCCESS: 'login',
+    LOGIN_FAILED: 'login_failed',
+    OAUTH_TOKEN_GRANTED: 'login',   // the login signal for OAuth (email uses LOGIN_SUCCESS)
+    OAUTH_ACCOUNT_LINKED: 'oauth_account_linked',
+};
+function mirrorAuthAnalytics(userId, eventType, details, req, success) {
+    const name = ANALYTICS_AUTH_EVENTS[eventType];
+    if (!name) return;
+    const d = details || {};
+    // A brand-new OAuth account fires USER_REGISTERED (→signup) AND OAUTH_TOKEN_GRANTED; the grant
+    // is tagged isSignup at those sites, so we skip it → new accounts count as signup only.
+    if (eventType === 'OAUTH_TOKEN_GRANTED' && d.isSignup) return;
+    // Normalise the auth method across providers: OAuth carries details.provider, email carries details.method.
+    const provider = d.provider || (d.method === 'email_password' ? 'email' : d.method) || 'email';
+    const platform = (req && (req.headers['x-client-platform'] || (req.body && req.body.platform))) || null;
+    live.trackEvent({
+        event: success === false ? 'login_failed' : name,
+        userId: userId || null,
+        platform: platform ? String(platform).toLowerCase() : null,
+        appVersion: (req && (req.headers['x-app-version'] || (req.body && req.body.appVersion))) || null,
+        country: (req && (req.headers['cf-ipcountry'] || req.headers['x-vercel-ip-country'])) || null,
+        props: { provider, flow: d.flow || null, reactivated: !!d.reactivated },
+    }).catch(() => {});
+}
+
 // SECURITY: Security audit logging function
 async function logSecurityEvent(userId, eventType, eventCategory, details = {}, req = null, success = true, errorMessage = null) {
+    // Product analytics mirror (never blocks / never throws into auth).
+    try { mirrorAuthAnalytics(userId, eventType, details, req, success); } catch (_) {}
     try {
         const ipAddress = req ? (req.ip || req.headers['x-forwarded-for'] || req.connection?.remoteAddress) : null;
         const userAgent = req ? req.headers['user-agent'] : null;
-        
+
         await dbConfig.run(
-            `INSERT INTO security_audit_log 
-            (user_id, event_type, event_category, ip_address, user_agent, details, success, error_message) 
+            `INSERT INTO security_audit_log
+            (user_id, event_type, event_category, ip_address, user_agent, details, success, error_message)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [userId, eventType, eventCategory, ipAddress, userAgent, JSON.stringify(details), success, errorMessage]
         );
-        
+
         console.log(`🔒 Security Event: [${eventCategory}] ${eventType} - User: ${userId || 'N/A'} - Success: ${success}`);
     } catch (error) {
         // Don't fail the main operation if logging fails
@@ -557,6 +590,7 @@ const googleAuth = async (req, res) => {
                 await logSecurityEvent(newUserId, 'OAUTH_TOKEN_GRANTED', 'oauth', {
                     provider: 'google',
                     flow: 'mobile_api',
+                    isSignup: true,   // new account → analytics counts this as signup, not login
                     has_refresh_token: !!finalRefreshToken,
                     expires_at: expiresAt.toISOString()
                 }, req);
@@ -864,6 +898,7 @@ const microsoftAuth = async (req, res) => {
             await logSecurityEvent(newUserId, 'OAUTH_TOKEN_GRANTED', 'oauth', {
                 provider: 'microsoft',
                 flow: 'mobile_api',
+                isSignup: true,   // new account → analytics counts this as signup, not login
                 expires_at: expiresAt.toISOString()
             }, req);
 
@@ -1163,6 +1198,7 @@ const appleAuth = async (req, res) => {
             await logSecurityEvent(newUserId, 'OAUTH_TOKEN_GRANTED', 'oauth', {
                 provider: 'apple',
                 flow: 'mobile_native',
+                isSignup: true,   // new account → analytics counts this as signup, not login
                 expires_at: expiresAt.toISOString()
             }, req);
 

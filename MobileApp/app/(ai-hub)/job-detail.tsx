@@ -1029,6 +1029,7 @@ export default function JobDetailScreen() {
   // to the 3 the card shows) for speed — fetch the complete record once and layer it in, so the
   // detail view + cover letters always see ALL responsibilities/skills.
   const [fullJob, setFullJob] = useState<Job | null>(null);
+  useEffect(() => { track('screen_view', { screen: 'job_detail' }); }, []);
   useEffect(() => {
     let cancel = false;
     const id = job?.id;

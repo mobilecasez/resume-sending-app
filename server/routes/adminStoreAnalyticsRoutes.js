@@ -9,4 +9,8 @@ router.get('/admin/store-analytics', authenticateAdmin, ctrl.getStoreAnalytics);
 // Admin-only: run an uninstall-detection sweep (silent push + receipts → DeviceNotRegistered).
 router.post('/admin/uninstall-sweep', authenticateAdmin, ctrl.runUninstallSweep);
 
+// Admin-only: per-user behavior — recent users list + one user's full event timeline.
+router.get('/admin/user-journeys', authenticateAdmin, ctrl.getUserJourneys);
+router.get('/admin/user-timeline', authenticateAdmin, ctrl.getUserTimeline);
+
 module.exports = router;

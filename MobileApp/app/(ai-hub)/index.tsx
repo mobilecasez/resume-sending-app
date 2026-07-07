@@ -42,6 +42,7 @@ import MotivationProgress from '../../components/MotivationProgress';
 import CreditCostPill from '../../components/CreditCostPill';
 import LinkedInJobLoader from '../../components/LinkedInJobLoader';
 import { useEventCosts } from '../../hooks/useEventCosts';
+import { track } from '../../services/analytics';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
@@ -1487,6 +1488,8 @@ export default function AIHubScreen() {
       .then(({ data }) => setFeatureFlag(data))
       .catch(() => setFeatureFlag({ status: 'active', title: null, message: null }));
   }, []);
+
+  useEffect(() => { track('screen_view', { screen: 'job_hub' }); }, []);
 
   useEffect(() => {
     let cancelled = false;

@@ -235,4 +235,59 @@ async function recordStoreNotification(d) {
   ).catch(() => {});
 }
 
-module.exports = { trackEvent, recordUninstall, getLivePulse, recordStoreNotification };
+// ── Per-user behavior drill-down (admin) ───────────────────────────────────────────────────────
+// List recent users with an activity summary, so the admin can pick one to inspect. Search by
+// email/name. Anonymous (pre-login) devices are grouped under their anon_id.
+async function getUserJourneys({ search = '', limit = 60 } = {}) {
+  limit = Math.min(Math.max(parseInt(limit, 10) || 60, 1), 200);
+  const term = String(search || '').trim().toLowerCase().slice(0, 80);
+  const rows = await dbConfig.query(
+    `SELECT ${UID} AS uid,
+            MAX(ae.user_id) AS user_id,
+            MIN(ae.created_at) AS first_seen,
+            MAX(ae.created_at) AS last_seen,
+            COUNT(*)::int AS events,
+            COUNT(*) FILTER (WHERE ae.event='signup')::int AS signups,
+            (ARRAY_AGG(ae.platform) FILTER (WHERE ae.platform IS NOT NULL))[1] AS platform,
+            (ARRAY_AGG(ae.country)  FILTER (WHERE ae.country IS NOT NULL))[1]  AS country,
+            (ARRAY_AGG(ae.props->>'provider' ORDER BY ae.id) FILTER (WHERE ae.event IN ('signup','login')))[1] AS provider,
+            u.email, u.full_name
+       FROM app_events ae
+       LEFT JOIN users u ON u.id = ae.user_id
+      WHERE ($1 = '' OR LOWER(u.email) LIKE '%'||$1||'%' OR LOWER(u.full_name) LIKE '%'||$1||'%')
+      GROUP BY ${UID}, u.email, u.full_name
+      ORDER BY MAX(ae.created_at) DESC
+      LIMIT ${limit}`,
+    [term]
+  ).catch((e) => { console.error('[analytics] getUserJourneys:', e.message); return []; });
+  return { users: rows };
+}
+
+// Full event stream for one user (by numeric user_id) OR one anonymous device (by anon_id),
+// newest last, plus a compact per-event-type rollup and any store lifecycle events.
+async function getUserTimeline({ userId = null, anonId = null, limit = 500 } = {}) {
+  limit = Math.min(Math.max(parseInt(limit, 10) || 500, 1), 2000);
+  const isUser = userId != null && String(userId).trim() !== '';
+  const key = isUser ? (parseInt(userId, 10) || 0) : String(anonId || '').slice(0, 80);
+  const where = isUser ? 'user_id = $1' : 'anon_id = $1';
+  const profile = isUser
+    ? await dbConfig.get(`SELECT id, full_name, email, created_at, oauth_provider,
+           (resume_path IS NOT NULL) AS has_resume, (photo_path IS NOT NULL) AS has_photo,
+           (signature_path IS NOT NULL) AS has_signature FROM users WHERE id = ?`, [key]).catch(() => null)
+    : null;
+  const events = await dbConfig.query(
+    `SELECT id, event, props, platform, app_version, country, created_at
+       FROM app_events WHERE ${where} ORDER BY id DESC LIMIT ${limit}`, [key]
+  ).catch(() => []);
+  const rollup = await dbConfig.query(
+    `SELECT event, COUNT(*)::int n, MAX(created_at) last FROM app_events WHERE ${where} GROUP BY event ORDER BY n DESC`, [key]
+  ).catch(() => []);
+  const purchases = isUser
+    ? await dbConfig.query(
+        `SELECT store, event, product_id, price, currency, created_at FROM store_notifications
+          WHERE user_id = ? ORDER BY id DESC LIMIT 40`, [key]).catch(() => [])
+    : [];
+  return { profile, events: events.reverse(), rollup, purchases };
+}
+
+module.exports = { trackEvent, recordUninstall, getLivePulse, recordStoreNotification, getUserJourneys, getUserTimeline };

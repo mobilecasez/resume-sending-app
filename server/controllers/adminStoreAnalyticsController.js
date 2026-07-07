@@ -34,4 +34,26 @@ async function runUninstallSweep(req, res) {
   }
 }
 
-module.exports = { getStoreAnalytics, runUninstallSweep };
+// Admin-only: recent users/devices with an activity summary (for the per-user drill-down page).
+async function getUserJourneys(req, res) {
+  try {
+    const data = await liveAnalytics.getUserJourneys({ search: req.query.q || '', limit: req.query.limit });
+    return res.json(data);
+  } catch (error) {
+    console.error('[userJourneys] error:', error.message);
+    return res.status(500).json({ error: 'Failed to load user journeys' });
+  }
+}
+
+// Admin-only: full event timeline for one user (?userId=) or anonymous device (?anonId=).
+async function getUserTimeline(req, res) {
+  try {
+    const data = await liveAnalytics.getUserTimeline({ userId: req.query.userId || null, anonId: req.query.anonId || null, limit: req.query.limit });
+    return res.json(data);
+  } catch (error) {
+    console.error('[userTimeline] error:', error.message);
+    return res.status(500).json({ error: 'Failed to load user timeline' });
+  }
+}
+
+module.exports = { getStoreAnalytics, runUninstallSweep, getUserJourneys, getUserTimeline };

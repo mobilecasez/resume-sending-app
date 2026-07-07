@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>User Analytics · CVApplyr Admin</title>
+  <style>
+    :root { --bg:#0b1120; --card:#131c31; --line:#22304d; --ink:#e8eefb; --mut:#8ea2c4; --cyan:#06b6d4; --blue:#3b82f6; --grn:#34d399; --amb:#fbbf24; --red:#fb7185; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { max-width:1200px; margin:0 auto; padding:20px 16px 60px; }
+    h1 { font-size:22px; font-weight:800; letter-spacing:-.4px; margin:0 0 2px; }
+    .sub { color:var(--mut); font-size:13px; margin-bottom:18px; }
+    a.back { color:var(--cyan); text-decoration:none; font-size:13px; }
+    .muted { color:var(--mut); }
+    .grid { display:grid; grid-template-columns: 340px 1fr; gap:16px; }
+    @media (max-width:820px){ .grid { grid-template-columns:1fr; } }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; }
+    .search { width:100%; padding:11px 13px; border-radius:11px; border:1px solid var(--line); background:#0e1729; color:var(--ink); font-size:14px; outline:none; }
+    .search:focus { border-color:var(--cyan); }
+    .ulist { margin-top:10px; max-height:70vh; overflow:auto; }
+    .urow { display:flex; align-items:center; gap:10px; padding:10px; border-radius:11px; cursor:pointer; border:1px solid transparent; }
+    .urow:hover { background:#0e1729; }
+    .urow.active { background:#0e1729; border-color:var(--cyan); }
+    .av { width:34px; height:34px; border-radius:10px; flex:none; display:flex; align-items:center; justify-content:center; font-weight:800; color:#fff; font-size:14px; }
+    .uname { font-weight:700; font-size:13.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .umeta { color:var(--mut); font-size:11.5px; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; }
+    .pill.g{ background:rgba(52,211,153,.14); color:var(--grn);} .pill.b{ background:rgba(59,130,246,.16); color:#9cc0ff;}
+    .pill.a{ background:rgba(251,191,36,.15); color:var(--amb);} .pill.r{ background:rgba(251,113,133,.15); color:var(--red);}
+    .prof { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+    .prof .nm { font-size:17px; font-weight:800; }
+    .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+    .chip { background:#0e1729; border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-size:11.5px; color:var(--mut); }
+    .chip b { color:var(--ink); }
+    .rollup { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
+    .rc { background:#0e1729; border:1px solid var(--line); border-radius:12px; padding:8px 12px; min-width:96px; }
+    .rc .n { font-size:18px; font-weight:800; } .rc .l { font-size:11px; color:var(--mut); text-transform:capitalize; }
+    .tl { position:relative; margin-top:8px; padding-left:16px; border-left:2px solid var(--line); }
+    .ev { position:relative; padding:8px 0 8px 12px; }
+    .ev::before { content:''; position:absolute; left:-9px; top:13px; width:10px; height:10px; border-radius:50%; background:var(--cyan); border:2px solid var(--bg); }
+    .ev .en { font-weight:700; font-size:13.5px; }
+    .ev .et { color:var(--mut); font-size:11.5px; }
+    .ev .ep { color:#9cc0ff; font-size:11.5px; font-family:ui-monospace,Menlo,monospace; margin-top:2px; word-break:break-word; }
+    .daysep { color:var(--mut); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; margin:14px 0 2px; }
+    .empty { color:var(--mut); text-align:center; padding:40px 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="/admin-store-analytics">← Store Analytics</a>
+    <h1>User Analytics</h1>
+    <div class="sub">Every user's journey — signup, login method, and each action, newest first. Server-recorded, live.</div>
+    <div class="grid">
+      <div class="card">
+        <input id="q" class="search" placeholder="Search by name or email…" autocomplete="off">
+        <div id="ulist" class="ulist"><div class="muted" style="padding:16px;">Loading users…</div></div>
+      </div>
+      <div class="card" id="detail"><div class="empty">Select a user to see their full activity timeline.</div></div>
+    </div>
+  </div>
+
+  <script>
+    var qToken=null; try{ qToken=new URLSearchParams(location.search).get('token'); }catch(e){}
+    if (qToken){ try{ localStorage.setItem('authToken', qToken); }catch(e){} }
+    var authToken = qToken || localStorage.getItem('authToken');
+    if (!authToken){ window.location.href='/login'; }
+    var API_BASE = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://localhost:3000' : 'https://cvapplyr.com';
+    function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+    async function api(path){ var r=await fetch(API_BASE+path,{headers:{'Authorization':'Bearer '+authToken}}); if(r.status===401||r.status===403){ document.getElementById('ulist').innerHTML='<div class="empty">Admin access required.</div>'; return null; } return r.json(); }
+    function initials(n,e){ n=(n||'').trim(); if(n) return n.split(/\s+/).map(function(x){return x[0];}).slice(0,2).join('').toUpperCase(); return (e||'?').slice(0,2).toUpperCase(); }
+    var COLORS=['#06b6d4','#3b82f6','#8b5cf6','#34d399','#fbbf24','#fb7185','#f472b6','#22d3ee'];
+    function color(k){ var h=0,s=String(k||'x'); for(var i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return COLORS[h%COLORS.length]; }
+    function ago(ts){ if(!ts) return ''; var d=(Date.now()-new Date(ts).getTime())/1000; if(d<60) return Math.floor(d)+'s ago'; if(d<3600) return Math.floor(d/60)+'m ago'; if(d<86400) return Math.floor(d/3600)+'h ago'; return Math.floor(d/86400)+'d ago'; }
+    function fmtTime(ts){ try{ return new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }catch(e){ return ''; } }
+    function fmtDay(ts){ try{ return new Date(ts).toLocaleDateString([], {weekday:'short',month:'short',day:'numeric'}); }catch(e){ return ''; } }
+    var EVENT_LABEL={ signup:'✨ Signed up', login:'🔑 Logged in', login_failed:'⚠️ Login failed', app_open:'📱 Opened app', foreground:'👀 Returned to app', screen_view:'📄 Viewed screen', job_search:'🔎 Searched a company', apply_open:'📤 Opened application', apply_complete:'✅ Applied to a job', cover_letter_generate:'📝 Generated cover letter', resume_uploaded:'📄 Uploaded resume', photo_uploaded:'🖼️ Uploaded photo', signature_uploaded:'✍️ Uploaded signature', profile_updated:'👤 Updated profile', purchase:'💳 Purchase', uninstall:'❌ Uninstalled' };
+    function labelFor(e){ return EVENT_LABEL[e] || ('• ' + e); }
+
+    var selected=null;
+    async function loadUsers(q){
+      var d=await api('/api/admin/user-journeys?limit=100'+(q?('&q='+encodeURIComponent(q)):''));
+      if(!d) return;
+      var el=document.getElementById('ulist');
+      if(!d.users||!d.users.length){ el.innerHTML='<div class="empty">No users found.</div>'; return; }
+      el.innerHTML=d.users.map(function(u){
+        var name=u.full_name||u.email||('Anon '+String(u.uid).slice(0,10));
+        var prov=u.provider?('<span class="pill b">'+esc(u.provider)+'</span> '):'';
+        var plat=u.platform?('· '+esc(u.platform)):'';
+        return '<div class="urow" data-uid="'+esc(u.user_id||'')+'" data-anon="'+esc(u.user_id?'':u.uid)+'">'
+          +'<div class="av" style="background:'+color(u.uid)+'">'+esc(initials(u.full_name,u.email))+'</div>'
+          +'<div style="min-width:0;flex:1;"><div class="uname">'+esc(name)+'</div>'
+          +'<div class="umeta">'+prov+num(u.events)+' events · '+ago(u.last_seen)+' '+plat+'</div></div></div>';
+      }).join('');
+      Array.prototype.forEach.call(el.querySelectorAll('.urow'), function(row){
+        row.addEventListener('click', function(){
+          Array.prototype.forEach.call(el.querySelectorAll('.urow'), function(r){ r.classList.remove('active'); });
+          row.classList.add('active');
+          loadTimeline(row.getAttribute('data-uid'), row.getAttribute('data-anon'));
+        });
+      });
+    }
+    function num(n){ return (n==null||isNaN(n))?'0':Number(n).toLocaleString(); }
+
+    async function loadTimeline(uid, anon){
+      var det=document.getElementById('detail');
+      det.innerHTML='<div class="empty">Loading timeline…</div>';
+      var qp = uid ? ('userId='+encodeURIComponent(uid)) : ('anonId='+encodeURIComponent(anon));
+      var d=await api('/api/admin/user-timeline?'+qp+'&limit=1000');
+      if(!d) return;
+      var p=d.profile;
+      var head='';
+      if(p){
+        var chips='<div class="chips">'
+          +'<span class="chip">Joined <b>'+esc(fmtDay(p.created_at))+'</b></span>'
+          +'<span class="chip">'+(p.oauth_provider?('Provider <b>'+esc(p.oauth_provider)+'</b>'):'Email signup')+'</span>'
+          +'<span class="chip">Resume '+(p.has_resume?'<b>✓</b>':'✗')+'</span>'
+          +'<span class="chip">Photo '+(p.has_photo?'<b>✓</b>':'✗')+'</span>'
+          +'<span class="chip">Signature '+(p.has_signature?'<b>✓</b>':'✗')+'</span></div>';
+        head='<div class="prof"><div class="av" style="width:44px;height:44px;font-size:17px;background:'+color(uid)+'">'+esc(initials(p.full_name,p.email))+'</div>'
+          +'<div><div class="nm">'+esc(p.full_name||p.email||('User '+uid))+'</div>'
+          +'<div class="muted" style="font-size:12.5px;">'+esc(p.email||'')+' · id '+esc(String(p.id))+'</div></div></div>'+chips;
+      } else {
+        head='<div class="prof"><div class="av" style="width:44px;height:44px;font-size:17px;background:'+color(anon)+'">?</div>'
+          +'<div><div class="nm">Anonymous device</div><div class="muted" style="font-size:12.5px;">'+esc(anon||'')+' (not signed in)</div></div></div>';
+      }
+      var roll=(d.rollup||[]).slice(0,8).map(function(r){ return '<div class="rc"><div class="n">'+num(r.n)+'</div><div class="l">'+esc(r.event.replace(/_/g,' '))+'</div></div>'; }).join('');
+      // Timeline newest-first (reverse the ascending array from the API).
+      var evs=(d.events||[]).slice().reverse();
+      var body='', lastDay='';
+      evs.forEach(function(e){
+        var day=fmtDay(e.created_at);
+        if(day!==lastDay){ body+='<div class="daysep">'+esc(day)+'</div>'; lastDay=day; }
+        var props=''; try{ var pj=(typeof e.props==='string')?JSON.parse(e.props):e.props; if(pj&&Object.keys(pj).length) props='<div class="ep">'+esc(JSON.stringify(pj))+'</div>'; }catch(_){}
+        body+='<div class="ev"><div class="en">'+esc(labelFor(e.event))+'</div>'
+          +'<div class="et">'+esc(fmtTime(e.created_at))+(e.platform?(' · '+esc(e.platform)):'')+(e.app_version?(' · v'+esc(e.app_version)):'')+(e.country?(' · '+esc(e.country)):'')+'</div>'+props+'</div>';
+      });
+      if(!evs.length) body='<div class="empty">No events recorded yet.</div>';
+      var pur=(d.purchases&&d.purchases.length)?('<div class="daysep">Purchases</div>'+d.purchases.map(function(x){ return '<div class="ev"><div class="en">💳 '+esc(x.event||'purchase')+'</div><div class="et">'+esc(x.store)+' · '+esc(x.product_id||'')+(x.price?(' · '+x.price+' '+esc(x.currency||'')):'')+' · '+esc(fmtDay(x.created_at))+'</div></div>'; }).join('')):'';
+      det.innerHTML=head+'<div class="rollup">'+roll+'</div>'+pur+'<div class="tl">'+body+'</div>';
+    }
+
+    var t=null;
+    document.getElementById('q').addEventListener('input', function(e){ clearTimeout(t); var v=e.target.value; t=setTimeout(function(){ loadUsers(v); }, 250); });
+    loadUsers('');
+  </script>
+</body>
+</html>

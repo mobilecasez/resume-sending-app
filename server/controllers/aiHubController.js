@@ -21,6 +21,7 @@ const { applyOverride, investigate: investigateEmployer, learnDetailRecipe, vali
 const { createFixRequest, recentDeadAttempt } = require('../services/employerFix');
 const expoPush = require('../services/expoPushService');
 const { getEventCost, chargeCredits } = require('../services/eventCosts');
+const { emit } = require('../services/track');   // first-party analytics
 
 // ─── Batch tuning ─────────────────────────────────────────────────────────────
 // How many job-detail pages to scrape + process per Gemini call
@@ -2988,6 +2989,7 @@ async function getJobMatches(req, res) {
     try {
         const userProfile = await getUserProfile(userId);
         const asyncJobId = await jobService.createJob(userId, 'ai_hub_job_search', { company: companyInput });
+        emit(req, 'job_search', { company: companyInput.slice(0, 120) });
 
         // Non-blocking background processing
         setImmediate(() => processJobSearch(asyncJobId, userId, companyInput, userProfile));
@@ -4097,6 +4099,7 @@ async function updateJobCoverLetterStatus(req, res) {
         if (status === 'applied' && !alreadyApplied) {
             recordJobHubApplication(userId, jobId).catch(
                 (err) => console.error('[aiHub] application_history record failed:', err.message));
+            emit(req, 'apply_complete', { jobId });
         }
         return res.json({ success: true });
     } catch (e) {

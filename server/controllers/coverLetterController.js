@@ -10,6 +10,7 @@ const { generateCoverLetterPDF: generateRichCoverLetterPDF } = require('./emailC
 const clTemplates = require('../utils/coverLetterTemplates');
 const clRenderer  = require('../utils/coverLetterRenderer');
 const { getEventCost } = require('../services/eventCosts');
+const { emit } = require('../services/track');   // first-party analytics
 
 const CL_DOWNLOAD_CREDIT_COST = 2; // fallback; live cost via getEventCost('cover_letter_download')
 
@@ -726,6 +727,7 @@ const generateCoverLetterDetails = async (req, res) => {
 
         console.log(`\n📨 [${requestId}] Generate Cover Letter Details Request (${useAsync ? 'ASYNC' : 'SYNC'})`);
         console.log(`   User: ${userId}, Position: ${position}`);
+        emit(req, 'cover_letter_generate', { forJob: !!sourceJobId });
 
         // CHECK CREDITS (always synchronous — fast DB check)
         try {
