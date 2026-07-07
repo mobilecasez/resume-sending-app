@@ -1,16 +1,16 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 // First-run "Finish setting up" card on Home. Matches HomeScreen's card language exactly
-// (white, marginHorizontal 16, borderRadius 24, soft shadow). Each row deep-links into Account
-// Settings via the parent's setScreen. Purely additive — App.js untouched.
+// (white, marginHorizontal 16, borderRadius 24, soft shadow). A 4-node segmented progress
+// stepper up top fills as steps complete; each row deep-links into Account Settings (edit mode,
+// scrolled + focused on the field) via the parent's onStep. Purely additive.
 import React, { useRef, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Animated } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 
-// HomeScreen design tokens (kept in sync so the card feels native to the screen).
 const T = {
   ink: '#0B0F22', muted: '#5B6B8A', faint: '#8896B0',
-  surface: '#FFFFFF', border: 'rgba(11,15,34,0.06)', track: '#EEF2F9',
+  surface: '#FFFFFF', border: 'rgba(11,15,34,0.06)', track: '#E7ECF4',
   blue: '#4F8DFF', purple: '#7C6BFF', emerald: '#10B981', emeraldLite: '#34D399',
 };
 const GRAD_ACCENT = [T.blue, T.purple];
@@ -30,12 +30,7 @@ export default function OnboardingChecklist({ setup, firstName, onStep, onDismis
   const total = STEPS.length;
   const pct = Math.round((completed / total) * 100);
 
-  // Animate progress + a gentle entrance.
-  const progress = useRef(new Animated.Value(0)).current;
   const enter = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    Animated.timing(progress, { toValue: completed / total, duration: 650, useNativeDriver: false }).start();
-  }, [completed, total, progress]);
   useEffect(() => {
     Animated.timing(enter, { toValue: 1, duration: 380, useNativeDriver: true }).start();
   }, [enter]);
@@ -51,28 +46,40 @@ export default function OnboardingChecklist({ setup, firstName, onStep, onDismis
         </LinearGradient>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Finish setting up{firstName ? `, ${firstName}` : ''}</Text>
-          <Text style={styles.subtitle}>{completed} of {total} done · a minute to go</Text>
+          <Text style={styles.subtitle}>Just a few quick steps to get going</Text>
         </View>
         <TouchableOpacity onPress={onDismiss} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} style={styles.close}>
           <Ionicons name="close" size={17} color={T.faint} />
         </TouchableOpacity>
       </View>
 
-      {/* Progress */}
-      <View style={styles.progressRow}>
-        <View style={styles.track}>
-          <Animated.View style={[styles.fill, { width: progress.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }]}>
-            <LinearGradient colors={GRAD_ACCENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFillObject} />
-          </Animated.View>
-        </View>
-        <Text style={styles.pct}>{pct}%</Text>
-      </View>
-
-      {/* Steps — vertical stepper */}
-      <View style={styles.steps}>
+      {/* 4-node segmented progress — circles carry each step's symbol and fill as it's done */}
+      <View style={styles.dotsRow}>
         {STEPS.map((s, i) => {
           const isDone = !!done[s.key];
-          const last = i === STEPS.length - 1;
+          const prevDone = i > 0 && !!done[STEPS[i - 1].key];
+          return (
+            <React.Fragment key={s.key}>
+              {i > 0 && <View style={[styles.connector, prevDone && styles.connectorDone]} />}
+              {isDone ? (
+                <LinearGradient colors={GRAD_DONE} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.dot}>
+                  <Ionicons name="checkmark" size={16} color="#fff" />
+                </LinearGradient>
+              ) : (
+                <View style={styles.dotPending}>
+                  <Ionicons name={s.icon} size={15} color={T.blue} />
+                </View>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </View>
+      <Text style={styles.dotsCaption}>{completed} of {total} complete · {pct}%</Text>
+
+      {/* Steps — tappable list (deep-links into Account Settings) */}
+      <View style={styles.steps}>
+        {STEPS.map((s) => {
+          const isDone = !!done[s.key];
           return (
             <TouchableOpacity
               key={s.key}
@@ -81,27 +88,15 @@ export default function OnboardingChecklist({ setup, firstName, onStep, onDismis
               onPress={() => onStep && onStep(s.target)}
               style={styles.step}
             >
-              {/* Indicator + connector */}
-              <View style={styles.indicatorCol}>
-                {isDone ? (
-                  <LinearGradient colors={GRAD_DONE} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.circle}>
-                    <Ionicons name="checkmark" size={17} color="#fff" />
-                  </LinearGradient>
-                ) : (
-                  <View style={styles.circlePending}>
-                    <Ionicons name={s.icon} size={16} color={T.blue} />
-                  </View>
-                )}
-                {!last && <View style={[styles.connector, isDone && styles.connectorDone]} />}
+              <View style={[styles.stepIcon, isDone && styles.stepIconDone]}>
+                {isDone
+                  ? <Ionicons name="checkmark" size={16} color="#fff" />
+                  : <Ionicons name={s.icon} size={16} color={T.blue} />}
               </View>
-
-              {/* Text */}
               <View style={styles.stepText}>
                 <Text style={[styles.stepLabel, isDone && styles.stepLabelDone]}>{s.label}</Text>
                 {!isDone && <Text style={styles.stepHint}>{s.hint}</Text>}
               </View>
-
-              {/* Right affordance */}
               {isDone ? (
                 <Text style={styles.doneTag}>Done</Text>
               ) : (
@@ -141,37 +136,39 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: 12.5, color: T.muted, marginTop: 2, fontWeight: '500' },
   close: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F2F5FA' },
 
-  progressRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 16, marginBottom: 4 },
-  track: { flex: 1, height: 7, borderRadius: 4, backgroundColor: T.track, overflow: 'hidden' },
-  fill: { height: '100%', borderRadius: 4, overflow: 'hidden' },
-  pct: { fontSize: 12.5, fontWeight: '800', color: T.blue, minWidth: 34, textAlign: 'right' },
+  dotsRow: { flexDirection: 'row', alignItems: 'center', marginTop: 18, marginBottom: 8, paddingHorizontal: 2 },
+  dot: {
+    width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center',
+    shadowColor: T.emerald, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.22, shadowRadius: 5, elevation: 2,
+  },
+  dotPending: {
+    width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(79,141,255,0.10)', borderWidth: 1.5, borderColor: 'rgba(79,141,255,0.30)',
+  },
+  connector: { flex: 1, height: 3, backgroundColor: T.track, marginHorizontal: 5, borderRadius: 2 },
+  connectorDone: { backgroundColor: T.blue },
+  dotsCaption: { fontSize: 12, fontWeight: '700', color: T.muted, textAlign: 'center', marginBottom: 2 },
 
   steps: { marginTop: 12 },
-  step: { flexDirection: 'row', alignItems: 'flex-start' },
-  indicatorCol: { alignItems: 'center', width: 36 },
-  circle: {
-    width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center',
-    shadowColor: T.emerald, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 2,
+  step: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, borderTopWidth: 1, borderTopColor: T.border },
+  stepIcon: {
+    width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(79,141,255,0.10)',
   },
-  circlePending: {
-    width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: 'rgba(79,141,255,0.10)', borderWidth: 1.5, borderColor: 'rgba(79,141,255,0.22)',
-  },
-  connector: { width: 2, flex: 1, minHeight: 18, backgroundColor: T.track, marginVertical: 2, borderRadius: 1 },
-  connectorDone: { backgroundColor: 'rgba(16,185,129,0.35)' },
-  stepText: { flex: 1, paddingLeft: 12, paddingTop: 7, paddingBottom: 14 },
+  stepIconDone: { backgroundColor: T.emerald },
+  stepText: { flex: 1, paddingLeft: 12 },
   stepLabel: { fontSize: 14.5, fontWeight: '700', color: T.ink },
   stepLabelDone: { color: T.faint, textDecorationLine: 'line-through' },
   stepHint: { fontSize: 12.5, color: T.faint, marginTop: 2 },
-  doneTag: { fontSize: 12.5, fontWeight: '800', color: T.emerald, marginTop: 9 },
+  doneTag: { fontSize: 12.5, fontWeight: '800', color: T.emerald },
   goBtn: {
-    width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center', marginTop: 3,
+    width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center',
     shadowColor: T.blue, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.28, shadowRadius: 6, elevation: 2,
   },
 
   footer: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    marginTop: 4, paddingTop: 14, borderTopWidth: 1, borderTopColor: T.border,
+    marginTop: 6, paddingTop: 14, borderTopWidth: 1, borderTopColor: T.border,
   },
   footerText: { fontSize: 13, fontWeight: '700', color: T.muted },
 });

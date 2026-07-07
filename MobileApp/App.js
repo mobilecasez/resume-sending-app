@@ -704,6 +704,11 @@ function AppContent() {
     createdAt: new Date(),
   });
   const [isEditingProfile, setIsEditingProfile] = useState(false);
+  // Onboarding deep-link: scroll Account Settings to a specific section + focus its field.
+  const profileScrollRef = useRef(null);
+  const profileSectionY = useRef({});
+  const profileNameRef = useRef(null);
+  const profilePhoneRef = useRef(null);
   const [showSignatureGenerator, setShowSignatureGenerator] = useState(false);
   const [signatureGenerating, setSignatureGenerating] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -2015,6 +2020,39 @@ function exportSig(){
       fetchProfileData();
     }
   }, [screen, user?.token]);
+
+  // Onboarding deep-link: when the Home setup checklist sends the user here with a target
+  // (AsyncStorage 'onboarding_focus_target'), open in edit mode, scroll to that section, and
+  // focus its field. Cleared once consumed so it only fires for the intended tap.
+  useEffect(() => {
+    if (screen !== 'profile') return;
+    let cancelled = false;
+    (async () => {
+      let target = null;
+      try { target = await AsyncStorage.getItem('onboarding_focus_target'); } catch {}
+      if (!target || cancelled) return;
+      try { await AsyncStorage.removeItem('onboarding_focus_target'); } catch {}
+      if (target !== 'account') setIsEditingProfile(true);   // edit mode so fields are editable
+      // Wait for the edit-mode sections to render + measure their layout, then scroll.
+      setTimeout(() => {
+        if (cancelled) return;
+        const y = profileSectionY.current[target];
+        if (typeof y === 'number' && profileScrollRef.current) {
+          profileScrollRef.current.scrollTo({ y: Math.max(0, y - 14), animated: true });
+        }
+        if (target === 'profile') {
+          // Focus the first field that still needs input (name → phone).
+          setTimeout(() => {
+            if (cancelled) return;
+            const nameEmpty = !(profileData?.fullName || user?.fullName || '').trim();
+            const ref = nameEmpty ? profileNameRef : profilePhoneRef;
+            try { ref.current && ref.current.focus && ref.current.focus(); } catch {}
+          }, 480);
+        }
+      }, 560);
+    })();
+    return () => { cancelled = true; };
+  }, [screen]);
 
   // Handle password change
   const isOAuthUser = user?.oauth_provider === 'google' || user?.oauth_provider === 'microsoft' || user?.oauth_provider === 'apple';
@@ -6557,10 +6595,10 @@ function exportSig(){
       <SafeAreaViewContext style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" translucent={false} />
         
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <ScrollView ref={profileScrollRef} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           {/* Header with Back Button */}
           <View style={styles.profileHeader}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.backButton}
               onPress={() => {
                 setShowSettings(false);
@@ -6570,7 +6608,7 @@ function exportSig(){
               <Text style={styles.backButtonText}>← Back</Text>
             </TouchableOpacity>
             <Text style={styles.profileHeaderTitle}>Account Settings</Text>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.editButton}
               onPress={() => setIsEditingProfile(!isEditingProfile)}
             >
@@ -6611,7 +6649,7 @@ function exportSig(){
 
           {/* Profile Photo Upload */}
           {isEditingProfile && (
-            <View style={styles.profileDetailCard}>
+            <View style={styles.profileDetailCard} onLayout={(e) => { profileSectionY.current.photo = e.nativeEvent.layout.y; }}>
               <Text style={styles.cardTitleProfile}>📷 Profile Photo</Text>
               <TouchableOpacity 
                 style={[styles.uploadZone, styles.uploadZoneActive]}
@@ -6680,7 +6718,7 @@ function exportSig(){
           </View>
 
           {/* Personal Information */}
-          <View style={styles.profileDetailCard}>
+          <View style={styles.profileDetailCard} onLayout={(e) => { profileSectionY.current.profile = e.nativeEvent.layout.y; }}>
             <Text style={styles.cardTitleProfile}>👤 Personal Information</Text>
             
             {isEditingProfile ? (
@@ -6699,7 +6737,8 @@ function exportSig(){
                 </View>
                 <View style={styles.editFormGroup}>
                   <Text style={styles.formLabel}>Full Name</Text>
-                  <TextInput 
+                  <TextInput
+                    ref={profileNameRef}
                     style={styles.formInput}
                     value={profileData?.fullName || ''}
                     onChangeText={(text) => setProfileData({ ...profileData, fullName: text })}
@@ -6707,7 +6746,8 @@ function exportSig(){
                 </View>
                 <View style={styles.editFormGroup}>
                   <Text style={styles.formLabel}>Phone Number</Text>
-                  <TextInput 
+                  <TextInput
+                    ref={profilePhoneRef}
                     style={styles.formInput}
                     placeholder="Enter phone number"
                     placeholderTextColor="#9CA3AF"
@@ -6840,7 +6880,7 @@ function exportSig(){
           </View>
 
           {/* Resume Upload */}
-          <View style={styles.profileDetailCard}>
+          <View style={styles.profileDetailCard} onLayout={(e) => { profileSectionY.current.resume = e.nativeEvent.layout.y; }}>
             <Text style={styles.cardTitleProfile}>📄 Resume</Text>
             <TouchableOpacity 
               style={[
@@ -6867,7 +6907,7 @@ function exportSig(){
           </View>
 
           {/* Signature Upload */}
-          <View style={styles.profileDetailCard}>
+          <View style={styles.profileDetailCard} onLayout={(e) => { profileSectionY.current.signature = e.nativeEvent.layout.y; }}>
             <Text style={styles.cardTitleProfile}>✍️ Signature</Text>
 
             {/* Preview zone — always shown */}

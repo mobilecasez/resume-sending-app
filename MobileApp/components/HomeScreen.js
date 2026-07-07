@@ -1356,8 +1356,11 @@ export default function HomeScreen({
     try { track('onboarding_dismiss'); } catch {}
     try { if (dismissKey) await AsyncStorage.setItem(dismissKey, '1'); } catch {}
   }, [dismissKey]);
-  const handleOnboardingStep = useCallback((target) => {
+  const handleOnboardingStep = useCallback(async (target) => {
     try { track('onboarding_step', { step: target }); } catch {}
+    // Tell the Account Settings screen which section to open in edit mode + scroll/focus to.
+    // (App.js reads this key on entering the profile screen — see the onboarding deep-link effect.)
+    try { await AsyncStorage.setItem('onboarding_focus_target', target); } catch {}
     // Every step lives on the Account Settings (profile) screen — open it. The user completes
     // the specific action there; returning to Home refreshes the checklist via focus.
     if (setScreen) setScreen('profile');
