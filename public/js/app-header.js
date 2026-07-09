@@ -46,6 +46,7 @@
                     <a href="/admin-employer-requests" class="hdr-apps-item"><span>🛠️</span> Employer Fixes</a>
                     <a href="/admin-store-analytics" class="hdr-apps-item"><span>📊</span> Store Analytics</a>
                     <a href="/admin-user-analytics" class="hdr-apps-item"><span>🧭</span> User Analytics</a>
+                    <a href="/admin-registered-users" class="hdr-apps-item"><span>🧑‍💻</span> Registered Users</a>
                 </div>
             `;
             const initials = userData.fullName ? userData.fullName.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2) : 'U';
@@ -132,6 +133,7 @@
                     <a href="/admin-employer-requests" class="mobile-nav-link">🛠️ Admin · Employer Fixes</a>
                     <a href="/admin-store-analytics" class="mobile-nav-link">📊 Admin · Store Analytics</a>
                     <a href="/admin-user-analytics" class="mobile-nav-link">🧭 Admin · User Analytics</a>
+                    <a href="/admin-registered-users" class="mobile-nav-link">🧑‍💻 Admin · Registered Users</a>
                 </div>
                 <button class="mobile-auth-btn hdr-mobile-logout" onclick="window.appHeader.handleLogout()">Logout</button>
             `;

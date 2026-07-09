@@ -13,4 +13,7 @@ router.post('/admin/uninstall-sweep', authenticateAdmin, ctrl.runUninstallSweep)
 router.get('/admin/user-journeys', authenticateAdmin, ctrl.getUserJourneys);
 router.get('/admin/user-timeline', authenticateAdmin, ctrl.getUserTimeline);
 
+// Admin-only: analytics over a custom date range (?from=&to=).
+router.get('/admin/range-analytics', authenticateAdmin, ctrl.getRangeAnalytics);
+
 module.exports = router;

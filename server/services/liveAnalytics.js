@@ -290,4 +290,70 @@ async function getUserTimeline({ userId = null, anonId = null, limit = 500 } = {
   return { profile, events: events.reverse(), rollup, purchases };
 }
 
-module.exports = { trackEvent, recordUninstall, getLivePulse, recordStoreNotification, getUserJourneys, getUserTimeline };
+// ── Date-range analytics (admin) ─────────────────────────────────────────────────────────────
+// Re-aggregates the app_events metrics over an ARBITRARY [from, to] window (inclusive of both
+// days) — the Live Pulse windows are all fixed to NOW()-24h, so this powers the date-range picker.
+// from/to are 'YYYY-MM-DD' strings. Installs use per-device first_seen so a device counts once.
+async function getRangeAnalytics(fromDate, toDate) {
+  const norm = (s) => (String(s || '').match(/^\d{4}-\d{2}-\d{2}/) || [])[0] || null;
+  let from = norm(fromDate), to = norm(toDate);
+  if (!from || !to) { const t = new Date(); const d = (x) => x.toISOString().slice(0, 10);
+    to = d(t); from = d(new Date(t.getTime() - 6 * 864e5)); }             // default: last 7 days
+  if (from > to) { const t = from; from = to; to = t; }
+  const fromTs = `${from} 00:00:00`, toTs = `${to} 23:59:59.999`;
+  const P = [fromTs, toTs];
+  const out = { range: { from, to } };
+  try {
+    const q1 = await dbConfig.get(
+      `SELECT COUNT(*) FILTER (WHERE event='app_open')::int opens,
+              COUNT(DISTINCT ${UID}) FILTER (WHERE event='app_open')::int open_users,
+              COUNT(DISTINCT ${UID}) FILTER (WHERE ${LIVE})::int active_users,
+              COUNT(DISTINCT ${DEVICE})::int devices,
+              COUNT(*) FILTER (WHERE event='signup')::int signups,
+              COUNT(*) FILTER (WHERE event='login')::int logins,
+              COUNT(*) FILTER (WHERE event='uninstall')::int uninstalls,
+              COUNT(*)::int total_events
+         FROM app_events WHERE created_at >= ? AND created_at <= ?`, P).catch(() => ({}));
+    out.opens = { total: q1.opens || 0, unique: q1.open_users || 0 };
+    out.activeUsers = q1.active_users || 0;
+    out.devices = q1.devices || 0;
+    out.signups = q1.signups || 0;
+    out.logins = q1.logins || 0;
+    out.uninstalls = q1.uninstalls || 0;
+    out.totalEvents = q1.total_events || 0;
+
+    // Installs: a device counts as installed in-window only if its FIRST-EVER event lands in range.
+    out.installs = (await dbConfig.get(
+      `SELECT COUNT(*)::int n FROM (
+         SELECT ${DEVICE} dev, MIN(created_at) fs FROM app_events
+          WHERE ${LIVE} AND (anon_id IS NOT NULL OR user_id IS NOT NULL) GROUP BY 1
+       ) t WHERE fs >= ? AND fs <= ?`, P).catch(() => ({ n: 0 }))).n || 0;
+
+    out.activeByPlatform = await dbConfig.query(
+      `SELECT COALESCE(platform,'unknown') platform, COUNT(DISTINCT ${UID})::int users
+         FROM app_events WHERE created_at >= ? AND created_at <= ? AND ${LIVE}
+        GROUP BY 1 ORDER BY users DESC`, P).catch(() => []);
+    out.eventBreakdown = await dbConfig.query(
+      `SELECT event, COUNT(*)::int n FROM app_events
+         WHERE created_at >= ? AND created_at <= ? GROUP BY event ORDER BY n DESC LIMIT 30`, P).catch(() => []);
+    out.byCountry = await dbConfig.query(
+      `SELECT COALESCE(country,'—') country, COUNT(DISTINCT ${UID})::int users
+         FROM app_events WHERE created_at >= ? AND created_at <= ? AND ${LIVE}
+        GROUP BY 1 ORDER BY users DESC LIMIT 12`, P).catch(() => []);
+    out.series = await dbConfig.query(
+      `SELECT to_char(date_trunc('day',created_at),'YYYY-MM-DD') day,
+              COUNT(DISTINCT ${UID})::int users,
+              COUNT(*) FILTER (WHERE event='app_open')::int opens,
+              COUNT(*) FILTER (WHERE event='signup')::int signups
+         FROM app_events WHERE created_at >= ? AND created_at <= ?
+        GROUP BY 1 ORDER BY 1`, P).catch(() => []);
+    const pay = await dbConfig.get(
+      `SELECT COUNT(*)::int n, COALESCE(SUM(amount),0)::float revenue
+         FROM payment_orders WHERE status='completed' AND deleted_at IS NULL
+           AND created_at >= ? AND created_at <= ?`, P).catch(() => ({ n: 0, revenue: 0 }));
+    out.purchases = { count: pay.n || 0, revenue: Number(pay.revenue) || 0 };
+  } catch (e) { out.error = e.message; }
+  return out;
+}
+
+module.exports = { trackEvent, recordUninstall, getLivePulse, recordStoreNotification, getUserJourneys, getUserTimeline, getRangeAnalytics };

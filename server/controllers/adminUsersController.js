@@ -81,4 +81,49 @@ async function setUserCredits(req, res) {
   }
 }
 
-module.exports = { searchUsers, getUserCredits, setUserCredits };
+// GET /api/admin/users-list?q=&limit=&offset= — registered users with auth type, signup date, and
+// usage (profile completion, cover letters, job searches, applications, replies). Paginated + search.
+async function getUsersList(req, res) {
+  const search = String(req.query.q || req.query.search || '').trim().toLowerCase().slice(0, 80);
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const AUTH = `CASE WHEN u.oauth_provider='google' THEN 'Gmail' WHEN u.oauth_provider='microsoft' THEN 'Microsoft' WHEN u.oauth_provider='apple' THEN 'Apple' ELSE 'Email' END`;
+  const has = (c) => `(u.${c} IS NOT NULL AND u.${c} <> '')`;
+  try {
+    const rows = await dbConfig.query(
+      `SELECT u.id, u.email, u.full_name, u.oauth_provider,
+              ${AUTH} AS auth_type,
+              u.created_at AS registered_at,
+              (${has('resume_path')}::int + ${has('photo_path')}::int + ${has('signature_path')}::int
+               + ${has('phone_number')}::int + ${has('address')}::int + (u.date_of_birth IS NOT NULL)::int) AS profile_complete,
+              ${has('resume_path')} AS has_resume, ${has('photo_path')} AS has_photo, ${has('signature_path')} AS has_signature,
+              ((SELECT COUNT(*) FROM credit_usage_history c WHERE c.user_id=u.id AND c.action_type='cover_letter_generation')
+               + (SELECT COUNT(*) FROM job_cover_letters j WHERE j.user_id=u.id))::int AS cover_letters,
+              (SELECT COUNT(*) FROM async_jobs aj WHERE aj.user_id=u.id AND aj.type='ai_hub_job_search')::int AS job_searches,
+              (SELECT COUNT(*) FROM application_history ah WHERE ah.user_id=u.id AND ah.deleted_at IS NULL)::int AS applications,
+              (SELECT COUNT(*) FROM application_history ah WHERE ah.user_id=u.id AND ah.deleted_at IS NULL AND ah.reply_received=1)::int AS replies,
+              COALESCE(uc.credits_remaining,0)::int AS credits
+         FROM users u
+         LEFT JOIN user_credits uc ON uc.user_id=u.id
+        WHERE u.deleted_at IS NULL
+          AND (? = '' OR LOWER(u.email) LIKE '%'||?||'%' OR LOWER(u.full_name) LIKE '%'||?||'%')
+        ORDER BY u.created_at DESC LIMIT ? OFFSET ?`,
+      [search, search, search, limit, offset]).catch((e) => { throw e; });
+
+    const totalRow = await dbConfig.get(
+      `SELECT COUNT(*)::int n FROM users u WHERE u.deleted_at IS NULL
+         AND (? = '' OR LOWER(u.email) LIKE '%'||?||'%' OR LOWER(u.full_name) LIKE '%'||?||'%')`,
+      [search, search, search]).catch(() => ({ n: (rows || []).length }));
+
+    const byProvider = await dbConfig.query(
+      `SELECT ${AUTH} AS auth_type, COUNT(*)::int n
+         FROM users u WHERE u.deleted_at IS NULL GROUP BY 1 ORDER BY n DESC`).catch(() => []);
+
+    res.json({ success: true, users: rows || [], total: totalRow ? totalRow.n : (rows || []).length, offset, limit, byProvider });
+  } catch (e) {
+    console.error('getUsersList error:', e.message);
+    res.status(500).json({ error: 'Failed to load users' });
+  }
+}
+
+module.exports = { searchUsers, getUserCredits, setUserCredits, getUsersList };

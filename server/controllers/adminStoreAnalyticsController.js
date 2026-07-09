@@ -56,4 +56,15 @@ async function getUserTimeline(req, res) {
   }
 }
 
-module.exports = { getStoreAnalytics, runUninstallSweep, getUserJourneys, getUserTimeline };
+// Admin-only: analytics re-aggregated over a custom [from, to] date range (?from=&to= YYYY-MM-DD).
+async function getRangeAnalytics(req, res) {
+  try {
+    const data = await liveAnalytics.getRangeAnalytics(req.query.from, req.query.to);
+    return res.json(data);
+  } catch (error) {
+    console.error('[rangeAnalytics] error:', error.message);
+    return res.status(500).json({ error: 'Failed to load range analytics' });
+  }
+}
+
+module.exports = { getStoreAnalytics, runUninstallSweep, getUserJourneys, getUserTimeline, getRangeAnalytics };

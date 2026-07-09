@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Registered Users · CVApplyr Admin</title>
+  <style>
+    :root { --bg:#0b1120; --card:#131c31; --line:#22304d; --ink:#e8eefb; --mut:#8ea2c4; --cyan:#06b6d4; --blue:#3b82f6; --grn:#34d399; --amb:#fbbf24; --red:#fb7185; --vio:#a78bfa; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { max-width:1280px; margin:0 auto; padding:20px 16px 60px; }
+    a.back { color:var(--cyan); text-decoration:none; font-size:13px; }
+    h1 { font-size:22px; font-weight:800; letter-spacing:-.4px; margin:2px 0; }
+    .sub { color:var(--mut); font-size:13px; margin-bottom:16px; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+    .search { flex:1; min-width:220px; padding:11px 13px; border-radius:11px; border:1px solid var(--line); background:#0e1729; color:var(--ink); font-size:14px; outline:none; }
+    .search:focus { border-color:var(--cyan); }
+    .stats { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+    .stat { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:9px 14px; }
+    .stat .n { font-size:19px; font-weight:800; } .stat .l { font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.4px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:16px; overflow:hidden; }
+    .scroll { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; font-size:13px; min-width:920px; }
+    th { text-align:left; padding:11px 12px; color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.5px; border-bottom:1px solid var(--line); white-space:nowrap; cursor:default; }
+    th.num, td.num { text-align:right; }
+    td { padding:11px 12px; border-bottom:1px solid rgba(34,48,77,.5); vertical-align:middle; }
+    tr:hover td { background:#0e1729; }
+    .u { display:flex; align-items:center; gap:10px; }
+    .av { width:32px; height:32px; border-radius:9px; flex:none; display:flex; align-items:center; justify-content:center; font-weight:800; color:#fff; font-size:13px; }
+    .nm { font-weight:700; white-space:nowrap; } .em { color:var(--mut); font-size:11.5px; white-space:nowrap; }
+    .pill { display:inline-block; padding:3px 9px; border-radius:999px; font-size:11px; font-weight:700; white-space:nowrap; }
+    .p-Gmail{ background:rgba(234,67,53,.16); color:#ff8a80;} .p-Microsoft{ background:rgba(0,164,239,.16); color:#7cd3ff;}
+    .p-Apple{ background:rgba(255,255,255,.12); color:#e8eefb;} .p-Email{ background:rgba(52,211,153,.14); color:var(--grn);}
+    .prog { display:flex; align-items:center; gap:7px; }
+    .track { width:56px; height:6px; border-radius:3px; background:#0e1729; overflow:hidden; }
+    .fill { height:100%; border-radius:3px; background:linear-gradient(90deg,var(--cyan),var(--blue)); }
+    .pf { font-size:11.5px; color:var(--mut); min-width:26px; }
+    .big { font-weight:800; } .zero { color:#54608a; }
+    .more { display:block; width:100%; padding:13px; text-align:center; background:transparent; border:none; border-top:1px solid var(--line); color:var(--cyan); font-weight:700; cursor:pointer; font-size:13px; }
+    .empty { text-align:center; color:var(--mut); padding:40px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="/admin-store-analytics">← Store Analytics</a>
+    <h1>Registered Users</h1>
+    <div class="sub">Everyone who signed up — sign-in method, registration date, and how much they've used the app.</div>
+
+    <div class="stats" id="stats"></div>
+    <div class="row">
+      <input id="q" class="search" placeholder="Search by name or email…" autocomplete="off">
+    </div>
+
+    <div class="card">
+      <div class="scroll">
+        <table>
+          <thead><tr>
+            <th>User</th><th>Sign-in</th><th>Registered</th><th>Profile</th>
+            <th class="num">Searches</th><th class="num">Cover letters</th><th class="num">Applied</th><th class="num">Replies</th><th class="num">Credits</th>
+          </tr></thead>
+          <tbody id="rows"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <button id="more" class="more" style="display:none;">Load more</button>
+    </div>
+  </div>
+
+  <script>
+    var qToken=null; try{ qToken=new URLSearchParams(location.search).get('token'); }catch(e){}
+    if (qToken){ try{ localStorage.setItem('authToken', qToken); }catch(e){} }
+    var authToken = qToken || localStorage.getItem('authToken');
+    if (!authToken){ window.location.href='/login'; }
+    var API_BASE = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://localhost:3000' : 'https://cvapplyr.com';
+    var LIMIT=50, offset=0, term='', total=0, loading=false;
+
+    function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+    function num(n){ return (n==null||isNaN(n))?'0':Number(n).toLocaleString(); }
+    function initials(n,e){ n=(n||'').trim(); if(n) return n.split(/\s+/).map(function(x){return x[0];}).slice(0,2).join('').toUpperCase(); return (e||'?').slice(0,2).toUpperCase(); }
+    var COLORS=['#06b6d4','#3b82f6','#8b5cf6','#34d399','#fbbf24','#fb7185','#f472b6','#22d3ee'];
+    function color(k){ var h=0,s=String(k||'x'); for(var i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return COLORS[h%COLORS.length]; }
+    function fmtDate(ts){ try{ return new Date(ts).toLocaleDateString([], {year:'numeric',month:'short',day:'numeric'}); }catch(e){ return ''; } }
+    function cell(n){ return n>0 ? '<span class="big">'+num(n)+'</span>' : '<span class="zero">0</span>'; }
+
+    async function api(path){ var r=await fetch(API_BASE+path,{headers:{'Authorization':'Bearer '+authToken}}); if(r.status===401||r.status===403){ document.getElementById('rows').innerHTML='<tr><td colspan="9" class="empty">Admin access required.</td></tr>'; return null; } return r.json(); }
+
+    function rowHtml(u){
+      var pct=Math.round((u.profile_complete||0)/6*100);
+      return '<tr>'
+        +'<td><div class="u"><div class="av" style="background:'+color(u.email)+'">'+esc(initials(u.full_name,u.email))+'</div>'
+          +'<div style="min-width:0"><div class="nm">'+esc(u.full_name||'—')+'</div><div class="em">'+esc(u.email||'')+'</div></div></div></td>'
+        +'<td><span class="pill p-'+esc(u.auth_type)+'">'+esc(u.auth_type)+'</span></td>'
+        +'<td style="white-space:nowrap;color:var(--mut)">'+esc(fmtDate(u.registered_at))+'</td>'
+        +'<td><div class="prog"><div class="track"><div class="fill" style="width:'+pct+'%"></div></div><span class="pf">'+(u.profile_complete||0)+'/6</span></div></td>'
+        +'<td class="num">'+cell(u.job_searches)+'</td>'
+        +'<td class="num">'+cell(u.cover_letters)+'</td>'
+        +'<td class="num">'+cell(u.applications)+'</td>'
+        +'<td class="num">'+(u.replies>0?'<span class="big" style="color:var(--grn)">'+num(u.replies)+'</span>':'<span class="zero">0</span>')+'</td>'
+        +'<td class="num" style="color:var(--mut)">'+num(u.credits)+'</td>'
+      +'</tr>';
+    }
+
+    async function load(reset){
+      if(loading) return; loading=true;
+      if(reset){ offset=0; document.getElementById('rows').innerHTML='<tr><td colspan="9" class="empty">Loading…</td></tr>'; }
+      var d=await api('/api/admin/users-list?limit='+LIMIT+'&offset='+offset+(term?('&q='+encodeURIComponent(term)):''));
+      loading=false;
+      if(!d) return;
+      total=d.total||0;
+      if(reset){
+        var by=(d.byProvider||[]).map(function(p){ return '<div class="stat"><div class="n">'+num(p.n)+'</div><div class="l">'+esc(p.auth_type)+'</div></div>'; }).join('');
+        document.getElementById('stats').innerHTML='<div class="stat"><div class="n">'+num(total)+'</div><div class="l">Total users</div></div>'+by;
+      }
+      var rowsEl=document.getElementById('rows');
+      var html=(d.users||[]).map(rowHtml).join('');
+      if(reset) rowsEl.innerHTML = html || '<tr><td colspan="9" class="empty">No users found.</td></tr>';
+      else rowsEl.insertAdjacentHTML('beforeend', html);
+      offset += (d.users||[]).length;
+      document.getElementById('more').style.display = (offset < total) ? 'block' : 'none';
+    }
+
+    var t=null;
+    document.getElementById('q').addEventListener('input', function(e){ clearTimeout(t); term=e.target.value.trim(); t=setTimeout(function(){ load(true); }, 250); });
+    document.getElementById('more').addEventListener('click', function(){ load(false); });
+    load(true);
+  </script>
+</body>
+</html>
