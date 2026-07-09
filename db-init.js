@@ -879,6 +879,11 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE user_credits ADD COLUMN IF NOT EXISTS expiry_warned_at TIMESTAMP`);
         console.log('✅ Migration 019: notification_preferences + follow_up/expiry dedup columns done');
 
+        // ── Migration 020: app_events.ip_hash — hashed client IP for install dedup (same person
+        //    reinstalling on the same network counts as ONE install). Never stores the raw IP.
+        await col(`ALTER TABLE app_events ADD COLUMN IF NOT EXISTS ip_hash TEXT`);
+        console.log('✅ Migration 020: app_events.ip_hash done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

@@ -1958,6 +1958,9 @@ export default function HomeScreen({
               { icon: 'pricetags-outline', title: 'AI Event Credits', sub: 'Set credits per AI action', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/ai-event-credits'); } },
               { icon: 'construct-outline', title: 'Employer Fix Agent', sub: 'Auto-fix employers we missed', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/employer-requests'); } },
               { icon: 'bar-chart-outline', title: 'Store Analytics', sub: 'iOS + Android downloads & revenue', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/store-analytics'); } },
+              { icon: 'calendar-outline', title: 'Analytics · Date Range', sub: 'Pick any date range', onPress: () => { setShowSettings(false); const tk = encodeURIComponent(user?.token || ''); Linking.openURL(`https://cvapplyr.com/admin-store-analytics?token=${tk}`); } },
+              { icon: 'people-outline', title: 'Registered Users', sub: 'Signups, sign-in type & usage', onPress: () => { setShowSettings(false); const tk = encodeURIComponent(user?.token || ''); Linking.openURL(`https://cvapplyr.com/admin-registered-users?token=${tk}`); } },
+              { icon: 'compass-outline', title: 'User Analytics', sub: 'Per-user journey timelines', onPress: () => { setShowSettings(false); const tk = encodeURIComponent(user?.token || ''); Linking.openURL(`https://cvapplyr.com/admin-user-analytics?token=${tk}`); } },
             ] : []).concat([
               null,
               { icon: 'document-text-outline', title: 'Terms & Conditions', sub: 'View terms of service',   onPress: () => { setShowSettings(false); setScreen('terms'); } },

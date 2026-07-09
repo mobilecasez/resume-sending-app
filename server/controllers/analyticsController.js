@@ -7,7 +7,21 @@
 // nothing of value is granted here, we DECODE (not full x5c-chain-verify) the self-signed payloads —
 // the worst case of a forged payload is a polluted analytics number, never a fraudulent credit.
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const live = require('../services/liveAnalytics');
+
+// Hash the client IP (never store it raw) so we can dedup a person's repeat installs by network
+// without holding PII. Salted so hashes aren't reversible/rainbow-tableable.
+const IP_SALT = process.env.IP_HASH_SALT || process.env.JWT_SECRET || 'cvapplyr-ip-salt';
+function clientIpHash(req) {
+  try {
+    const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    const ip = req.headers['cf-connecting-ip'] || req.headers['x-real-ip'] || xff || req.ip
+      || (req.connection && req.connection.remoteAddress) || '';
+    if (!ip) return null;
+    return crypto.createHash('sha256').update(IP_SALT + '|' + ip).digest('hex').slice(0, 32);
+  } catch { return null; }
+}
 
 const APPLE_BUNDLE_ID = process.env.APPLE_BUNDLE_ID || 'com.cvapplyr.mobile';
 
@@ -32,13 +46,14 @@ async function track(req, res) {
     const b = req.body || {};
     const userId = softUserId(req);
     const geo = geoCountry(req);
+    const ipHash = clientIpHash(req);
     const events = Array.isArray(b.events) ? b.events : [b];
     for (const e of events.slice(0, 40)) {
       if (!e || !e.event) continue;
       await live.trackEvent({
         event: e.event, props: e.props,
         platform: e.platform || b.platform, appVersion: e.appVersion || b.appVersion,
-        anonId: e.anonId || b.anonId, country: e.country || b.country || geo, userId,
+        anonId: e.anonId || b.anonId, country: e.country || b.country || geo, userId, ipHash,
       });
     }
   } catch (_) { /* analytics must never break the client */ }

@@ -14,11 +14,12 @@ async function trackEvent(e) {
   const anonId = e.anonId ? String(e.anonId).slice(0, 80) : null;
   const country = e.country ? String(e.country).slice(0, 4) : null;
   const userId = Number.isInteger(e.userId) ? e.userId : (parseInt(e.userId, 10) || null);
+  const ipHash = e.ipHash ? String(e.ipHash).slice(0, 64) : null;   // hashed client IP (privacy) — for install dedup
   let props = null;
   try { props = e.props ? JSON.stringify(e.props).slice(0, 2000) : null; } catch {}
   await dbConfig.run(
-    `INSERT INTO app_events (user_id, anon_id, platform, event, props, app_version, country) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [userId, anonId, platform, event, props, appVersion, country]
+    `INSERT INTO app_events (user_id, anon_id, platform, event, props, app_version, country, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [userId, anonId, platform, event, props, appVersion, country, ipHash]
   ).catch(() => {});
 }
 
@@ -41,6 +42,20 @@ async function recordUninstall({ userId = null, anonId = null, platform = null }
 const UID = `COALESCE(user_id::text, anon_id, 'anon')`;
 const DEVICE = `COALESCE(anon_id, user_id::text)`;
 const LIVE = `event <> 'uninstall'`; // exclude server-side uninstall rows from "activity"/"install" metrics
+
+// Install identity — DEDUPES a person's multiple installs/reinstalls. Each device is reduced to a
+// REPRESENTATIVE ip_hash (its first-seen IP); devices sharing that IP collapse into ONE install (so
+// a reinstall on the same network counts once). Devices with no ip_hash (pre-IP-capture history)
+// fall back to the device id (unchanged). Returns one row per person: {person, first_seen, platform}.
+const PERSON_INSTALLS = `
+  SELECT person, MIN(dev_first) AS first_seen, (ARRAY_AGG(plat ORDER BY dev_first))[1] AS platform
+    FROM (
+      SELECT ${DEVICE} AS dev, MIN(created_at) AS dev_first,
+             COALESCE((ARRAY_AGG(ip_hash ORDER BY created_at) FILTER (WHERE ip_hash IS NOT NULL))[1], ${DEVICE}) AS person,
+             (ARRAY_AGG(platform ORDER BY created_at))[1] AS plat
+        FROM app_events WHERE (anon_id IS NOT NULL OR user_id IS NOT NULL) AND ${LIVE}
+        GROUP BY ${DEVICE}
+    ) d GROUP BY person`;
 
 async function getLivePulse() {
   const out = {};
@@ -67,14 +82,10 @@ async function getLivePulse() {
               COUNT(*) FILTER (WHERE first_seen > NOW()-INTERVAL '24 hours')::int AS last_24h,
               COUNT(*) FILTER (WHERE first_seen > NOW()-INTERVAL '7 days')::int   AS last_7d,
               COUNT(*)::int AS all_time
-         FROM (SELECT ${DEVICE} AS dev, MIN(created_at) AS first_seen
-                 FROM app_events WHERE (anon_id IS NOT NULL OR user_id IS NOT NULL) AND ${LIVE} GROUP BY 1) t`).catch(() => ({}));
+         FROM (${PERSON_INSTALLS}) t`).catch(() => ({}));
     out.newInstallsByPlatform = await dbConfig.query(
-      `SELECT platform, COUNT(*)::int AS installs FROM (
-         SELECT ${DEVICE} AS dev, MIN(created_at) AS first_seen,
-                (ARRAY_AGG(platform ORDER BY created_at))[1] AS platform
-           FROM app_events WHERE (anon_id IS NOT NULL OR user_id IS NOT NULL) AND ${LIVE} GROUP BY 1
-       ) t WHERE first_seen > NOW()-INTERVAL '24 hours' GROUP BY platform ORDER BY installs DESC`).catch(() => []);
+      `SELECT platform, COUNT(*)::int AS installs FROM (${PERSON_INSTALLS}) t
+        WHERE first_seen > NOW()-INTERVAL '24 hours' GROUP BY platform ORDER BY installs DESC`).catch(() => []);
 
     // LIVE uninstalls — event='uninstall' rows (push-receipt DeviceNotRegistered).
     out.uninstalls = await dbConfig.get(
@@ -204,10 +215,8 @@ async function buildSeries() {
        FROM app_events WHERE created_at > NOW()-INTERVAL '90 days' GROUP BY 1,2`).catch(() => []);
   ev.forEach((r) => { bump(r.d, r.p, 'opens', r.opens || 0); bump(r.d, r.p, 'uninstalls', r.uninstalls || 0); });
   const ins = await dbConfig.query(
-    `SELECT to_char(fs::date,'YYYY-MM-DD') d, COALESCE(p,'unknown') p, COUNT(*)::int installs FROM (
-       SELECT ${DEVICE} dev, MIN(created_at) fs, (ARRAY_AGG(platform ORDER BY created_at))[1] p
-         FROM app_events WHERE ${LIVE} AND (anon_id IS NOT NULL OR user_id IS NOT NULL) GROUP BY 1
-     ) t WHERE fs > NOW()-INTERVAL '90 days' GROUP BY 1,2`).catch(() => []);
+    `SELECT to_char(first_seen::date,'YYYY-MM-DD') d, COALESCE(platform,'unknown') p, COUNT(*)::int installs
+       FROM (${PERSON_INSTALLS}) t WHERE first_seen > NOW()-INTERVAL '90 days' GROUP BY 1,2`).catch(() => []);
   ins.forEach((r) => bump(r.d, r.p, 'installs', r.installs || 0));
   const pay = await dbConfig.query(
     `SELECT to_char(date_trunc('day',created_at),'YYYY-MM-DD') d,
@@ -322,12 +331,11 @@ async function getRangeAnalytics(fromDate, toDate) {
     out.uninstalls = q1.uninstalls || 0;
     out.totalEvents = q1.total_events || 0;
 
-    // Installs: a device counts as installed in-window only if its FIRST-EVER event lands in range.
+    // Installs: a person counts as installed in-window only if their FIRST event lands in range
+    // (deduped by representative IP — reinstalls on the same network count once).
     out.installs = (await dbConfig.get(
-      `SELECT COUNT(*)::int n FROM (
-         SELECT ${DEVICE} dev, MIN(created_at) fs FROM app_events
-          WHERE ${LIVE} AND (anon_id IS NOT NULL OR user_id IS NOT NULL) GROUP BY 1
-       ) t WHERE fs >= ? AND fs <= ?`, P).catch(() => ({ n: 0 }))).n || 0;
+      `SELECT COUNT(*)::int n FROM (${PERSON_INSTALLS}) t WHERE first_seen >= ? AND first_seen <= ?`, P)
+      .catch(() => ({ n: 0 }))).n || 0;
 
     out.activeByPlatform = await dbConfig.query(
       `SELECT COALESCE(platform,'unknown') platform, COUNT(DISTINCT ${UID})::int users
