@@ -341,12 +341,12 @@ async function getRangeAnalytics(fromDate, toDate) {
          FROM app_events WHERE created_at >= ? AND created_at <= ? AND ${LIVE}
         GROUP BY 1 ORDER BY users DESC LIMIT 12`, P).catch(() => []);
     out.series = await dbConfig.query(
-      `SELECT to_char(date_trunc('day',created_at),'YYYY-MM-DD') day,
+      `SELECT to_char(date_trunc('day',created_at),'YYYY-MM-DD') AS date,
               COUNT(DISTINCT ${UID})::int users,
               COUNT(*) FILTER (WHERE event='app_open')::int opens,
               COUNT(*) FILTER (WHERE event='signup')::int signups
          FROM app_events WHERE created_at >= ? AND created_at <= ?
-        GROUP BY 1 ORDER BY 1`, P).catch(() => []);
+        GROUP BY 1 ORDER BY 1`, P).catch((e) => { console.error('[rangeAnalytics] series:', e.message); return []; });
     const pay = await dbConfig.get(
       `SELECT COUNT(*)::int n, COALESCE(SUM(amount),0)::float revenue
          FROM payment_orders WHERE status='completed' AND deleted_at IS NULL
