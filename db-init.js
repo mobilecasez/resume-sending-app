@@ -860,6 +860,25 @@ async function runPostgresMigrations(db) {
         await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS expo_push_token TEXT`);
         console.log('✅ Migration 018: user_job_url_overrides + users.expo_push_token done');
 
+        // ── Migration 019: notifications v2 — per-category prefs + reminder/expiry dedup ──────
+        // (a) notification_preferences: per-user opt-out per category (default all ON) — gates PUSH.
+        // (b) application_history.follow_up_reminded_at: so the daily follow-up reminder fires once.
+        // (c) user_credits.expiry_warned_at: so the credit-expiry warning fires once per expiry.
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS notification_preferences (
+                user_id INTEGER PRIMARY KEY,
+                replies BOOLEAN DEFAULT TRUE,
+                application_updates BOOLEAN DEFAULT TRUE,
+                reminders BOOLEAN DEFAULT TRUE,
+                digest BOOLEAN DEFAULT TRUE,
+                marketing BOOLEAN DEFAULT TRUE,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        await col(`ALTER TABLE application_history ADD COLUMN IF NOT EXISTS follow_up_reminded_at TIMESTAMP`);
+        await col(`ALTER TABLE user_credits ADD COLUMN IF NOT EXISTS expiry_warned_at TIMESTAMP`);
+        console.log('✅ Migration 019: notification_preferences + follow_up/expiry dedup columns done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

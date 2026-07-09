@@ -2831,6 +2831,21 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
             }
         } catch (e) { console.warn('[aiHub] push notify failed (non-blocking):', e.message); }
 
+        // In-app bell entry so a completed search also shows in the notification list (push above
+        // already handled device delivery — don't double-push).
+        try {
+            if (streamedJobs.length > 0) {
+                await require('./notificationsController').createNotification(
+                    userId, 'jobs',
+                    `${streamedJobs.length} job${streamedJobs.length === 1 ? '' : 's'} at ${name}`,
+                    `Your search of ${name} found ${streamedJobs.length} resume-matched opening${streamedJobs.length === 1 ? '' : 's'}.`,
+                    null,
+                    { employerId: String(employerDbId), employerName: name, count: streamedJobs.length, action: 'job_search_complete' },
+                    { push: false }
+                );
+            }
+        } catch (_) {}
+
         // ── AI Quality Gate (auditor): random AI spot-check that the deterministic
         // methods produced accurate cards. Fire-and-forget — results already delivered.
         try {

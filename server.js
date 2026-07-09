@@ -1310,7 +1310,17 @@ async function deductCredits(userId, creditsToDeduct = 1, actionType = 'cover_le
         
         // Get updated balance
         const result = await dbConfig.get('SELECT credits_remaining as "creditsRemaining" FROM user_credits WHERE user_id = ?', [userId]);
-        
+
+        // Nudge once when the balance CROSSES into "low" territory (or hits zero) — not on every spend.
+        try {
+            const newBal = result ? result.creditsRemaining : 0;
+            const prevBal = newBal + creditsToDeduct;
+            const LOW = 2;
+            if ((prevBal > LOW && newBal <= LOW) || (prevBal > 0 && newBal <= 0)) {
+                require('./server/controllers/notificationsController').notifyLowCredits(userId, Math.max(0, newBal)).catch(() => {});
+            }
+        } catch (_) {}
+
         return {
             success: true,
             remainingCredits: result ? result.creditsRemaining : 0
@@ -4011,6 +4021,17 @@ emailForwarder.start();
 // last-run timestamp gates it to ~once/day across restarts. Disable with FIX_QUEUE_DISABLED=1.
 try { require('./server/services/fixQueueRunner').startFixQueueScheduler(); }
 catch (e) { console.error('[fixQueue] failed to start:', e.message); }
+
+// Background reply poller — detects replies to sent applications for Microsoft/Outlook users even
+// when the app is closed (the on-demand /check-replies only runs while the app is open), then fires
+// an in-app notification + device push. Every ~20 min. Disable with REPLY_POLL_DISABLED=1.
+try { require('./server/services/replyPoller').startReplyPoller(); }
+catch (e) { console.error('[replyPoll] failed to start:', e.message); }
+
+// Engagement notifications — daily follow-up reminders + credit-expiry warnings, weekly activity
+// digest. Preference-gated (notification_preferences). Disable with ENGAGEMENT_DISABLED=1.
+try { require('./server/services/engagementScheduler').startEngagementScheduler(); }
+catch (e) { console.error('[engagement] failed to start:', e.message); }
 
 // Start server
 const HOST = process.env.HOST || '0.0.0.0';

@@ -1,21 +1,48 @@
 const dbConfig = require('../../db-config');
 const auditUtils = require('../utils/auditUtils');
+const expoPush = require('../services/expoPushService');
+const notifPrefs = require('../services/notificationPrefs');
 
-// Helper function to create notification
-const createNotification = async (userId, type, title, message, details = null, metadata = null) => {
+// Send a device push for a notification, gated by the user's per-category preference. Best-effort:
+// never throws, never blocks the in-app notification. A stale Expo token → passive uninstall log.
+const pushForNotification = async (userId, { pushTitle, pushBody, category, type, metadata }) => {
+    try {
+        if (category && !(await notifPrefs.isEnabled(userId, category))) return;   // user opted out of this category
+        const u = await dbConfig.get('SELECT expo_push_token FROM users WHERE id = ?', [userId]);
+        if (!u || !u.expo_push_token) return;
+        const r = await expoPush.sendPushNotification(
+            u.expo_push_token, pushTitle, pushBody, { type, ...(metadata || {}) }
+        );
+        if (r === 'stale') { try { await require('../services/uninstallDetection').handleStaleToken(userId); } catch (_) {} }
+    } catch (e) { console.warn('[notif] push failed (non-blocking):', e.message); }
+};
+
+// Helper function to create notification.
+// opts: { push: bool, category: string, pushTitle?, pushBody? } — when push is true, also fire an
+// Expo push (gated by the user's notification_preferences category).
+const createNotification = async (userId, type, title, message, details = null, metadata = null, opts = {}) => {
     console.log(`📢 createNotification called - User: ${userId}, Type: ${type}, Title: ${title}`);
     try {
         const metadataJson = metadata ? JSON.stringify(metadata) : null;
         const detailsText = details ? (typeof details === 'string' ? details : JSON.stringify(details)) : null;
-        
+
         console.log(`📝 Inserting notification into database...`);
         const result = await dbConfig.run(
-            `INSERT INTO notifications (user_id, type, title, message, details, metadata, created_at) 
+            `INSERT INTO notifications (user_id, type, title, message, details, metadata, created_at)
              VALUES (?, ?, ?, ?, ?, ?, NOW())`,
             [userId, type, title, message, detailsText, metadataJson]
         );
-        
+
         console.log(`✅ Notification created for user ${userId}: ${type} (ID: ${result.lastID})`);
+
+        if (opts && opts.push) {
+            await pushForNotification(userId, {
+                pushTitle: opts.pushTitle || title,
+                pushBody: opts.pushBody || message,
+                category: opts.category,
+                type, metadata,
+            });
+        }
     } catch (error) {
         console.error(`❌ Error creating notification for user ${userId}:`, error);
         console.error('Error details:', error.message);
@@ -173,8 +200,11 @@ const notifyCoverLetterGenerated = async (userId, employerName, position, compan
         companyWebsite,
         action: 'cover_letter_generated'
     };
-    
-    await createNotification(userId, 'cover_letter', title, message, details, metadata);
+
+    await createNotification(userId, 'cover_letter', title, message, details, metadata, {
+        push: true, category: 'application_updates',
+        pushTitle: 'Cover letter ready 📝', pushBody: `Your ${position} letter for ${employerName} is ready.`,
+    });
 };
 
 // Email Sent
@@ -189,8 +219,11 @@ const notifyEmailSent = async (userId, employerName, employerEmail, position, su
         subject,
         action: 'email_sent'
     };
-    
-    await createNotification(userId, 'email', title, message, details, metadata);
+
+    await createNotification(userId, 'email', title, message, details, metadata, {
+        push: true, category: 'application_updates',
+        pushTitle: 'Application sent ✅', pushBody: `Your application to ${employerName} is on its way.`,
+    });
 };
 
 // Credits Added
@@ -205,8 +238,73 @@ const notifyCreditsAdded = async (userId, creditsAdded, previousBalance, newBala
         source,
         action: 'credits_added'
     };
-    
-    await createNotification(userId, 'credits', title, message, details, metadata);
+
+    await createNotification(userId, 'credits', title, message, details, metadata, {
+        push: true, category: 'application_updates',
+        pushTitle: 'Credits added 💳', pushBody: `${creditsAdded} credit${creditsAdded > 1 ? 's' : ''} added — you now have ${newBalance}.`,
+    });
+};
+
+// Low credits — nudge when the balance drops to a small number after spending.
+const notifyLowCredits = async (userId, newBalance) => {
+    const title = newBalance <= 0 ? 'Out of credits' : 'Low on credits';
+    const message = newBalance <= 0
+        ? 'You have no credits left. Top up to keep generating cover letters and applying.'
+        : `You have ${newBalance} credit${newBalance === 1 ? '' : 's'} left. Top up so you never miss a match.`;
+    await createNotification(userId, 'credits', title, message, null, { newBalance, action: 'low_credits' }, {
+        push: true, category: 'application_updates',
+        pushTitle: newBalance <= 0 ? 'Out of credits' : 'Running low on credits',
+        pushBody: message,
+    });
+};
+
+// New jobs found for a company the user is tracking (on a re-search / refresh).
+const notifyNewJobs = async (userId, employerName, count, employerId) => {
+    const title = `${count} new job${count === 1 ? '' : 's'} at ${employerName}`;
+    const message = `We found ${count} new opening${count === 1 ? '' : 's'} at ${employerName} that match your resume.`;
+    await createNotification(userId, 'jobs', title, message, null,
+        { employerName, employerId: String(employerId || ''), count, action: 'new_jobs' }, {
+        push: true, category: 'application_updates',
+        pushTitle: `${count} new job${count === 1 ? '' : 's'} at ${employerName} 🎯`, pushBody: 'Tap to view your new matches.',
+    });
+};
+
+// Follow-up reminder — an application sent a while ago with no reply.
+const notifyFollowUp = async (userId, companyName, daysAgo) => {
+    const title = 'Time for a follow-up?';
+    const message = `It's been ${daysAgo} days since you applied to ${companyName} with no reply. A short follow-up can help.`;
+    await createNotification(userId, 'reminder', title, message, null,
+        { companyName, daysAgo, action: 'follow_up_reminder' }, {
+        push: true, category: 'reminders',
+        pushTitle: 'Time for a follow-up?', pushBody: `No reply from ${companyName} yet — a quick nudge can help.`,
+    });
+};
+
+// Weekly digest of activity.
+const notifyWeeklyDigest = async (userId, { sent, replies, generated }) => {
+    const parts = [];
+    if (sent) parts.push(`${sent} application${sent === 1 ? '' : 's'} sent`);
+    if (replies) parts.push(`${replies} repl${replies === 1 ? 'y' : 'ies'}`);
+    if (generated) parts.push(`${generated} cover letter${generated === 1 ? '' : 's'}`);
+    const summary = parts.length ? parts.join(' · ') : 'a quiet week';
+    const title = 'Your week on CVApplyr';
+    const message = `Last 7 days: ${summary}. Keep the momentum going!`;
+    await createNotification(userId, 'digest', title, message, null,
+        { sent, replies, generated, action: 'weekly_digest' }, {
+        push: true, category: 'digest',
+        pushTitle: 'Your week on CVApplyr 📊', pushBody: `Last 7 days: ${summary}.`,
+    });
+};
+
+// Credit-expiry warning.
+const notifyCreditExpiry = async (userId, credits, daysLeft) => {
+    const title = 'Credits expiring soon';
+    const message = `${credits} credit${credits === 1 ? '' : 's'} expire in ${daysLeft} day${daysLeft === 1 ? '' : 's'}. Use them before they're gone.`;
+    await createNotification(userId, 'credits', title, message, null,
+        { credits, daysLeft, action: 'credit_expiry' }, {
+        push: true, category: 'reminders',
+        pushTitle: 'Credits expiring soon ⏳', pushBody: message,
+    });
 };
 
 // Credits Used
@@ -263,7 +361,30 @@ const notifyEmailReply = async (userId, companyName, replySubject) => {
         action: 'email_reply_received'
     };
 
-    await createNotification(userId, 'email', title, message, details, metadata);
+    await createNotification(userId, 'email', title, message, details, metadata, {
+        push: true, category: 'replies',
+        pushTitle: `Reply from ${companyName} 📬`, pushBody: replySubject || 'Tap to read the reply.',
+    });
+};
+
+// GET /api/notifications/preferences — the user's per-category toggles (default all ON).
+const getPreferences = async (req, res) => {
+    try {
+        const prefs = await notifPrefs.getPrefs(req.user.id);
+        res.json({ success: true, preferences: prefs });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to load notification preferences' });
+    }
+};
+
+// PUT /api/notifications/preferences — body: { replies?, application_updates?, reminders?, digest?, marketing? }
+const updatePreferences = async (req, res) => {
+    try {
+        const prefs = await notifPrefs.setPrefs(req.user.id, req.body || {});
+        res.json({ success: true, preferences: prefs });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to update notification preferences' });
+    }
 };
 
 module.exports = {
@@ -272,6 +393,8 @@ module.exports = {
     markAllAsRead,
     deleteNotification,
     deleteAllRead,
+    getPreferences,
+    updatePreferences,
     // Notification creators
     notifyCoverLetterGenerated,
     notifyEmailSent,
@@ -280,5 +403,10 @@ module.exports = {
     notifyProfileUpdated,
     notifyError,
     notifyEmailReply,
+    notifyLowCredits,
+    notifyNewJobs,
+    notifyFollowUp,
+    notifyWeeklyDigest,
+    notifyCreditExpiry,
     createNotification
 };

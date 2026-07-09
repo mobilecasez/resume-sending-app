@@ -1,5 +1,6 @@
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
+const { notifyCreditsAdded } = require('./notificationsController');
 
 // Initialize Razorpay instance
 let razorpayInstance = null;
@@ -321,6 +322,7 @@ async function verifyPayment(req, res, dbConfig) {
         );
         
         console.log('✅ Credits added successfully! New balance:', userData?.credits);
+        try { await notifyCreditsAdded(userId, orderData.credits, (userData.credits - orderData.credits), userData.credits, 'purchase'); } catch (_) {}
 
         res.json({
             success: true,
@@ -739,6 +741,7 @@ async function verifyApplePurchase(req, res, dbConfig) {
         );
 
         console.log('🍎 Credits added successfully! New balance:', userData?.credits);
+        try { await notifyCreditsAdded(userId, plan.credits, ((userData?.credits || 0) - plan.credits), (userData?.credits || 0), 'purchase'); } catch (_) {}
 
         res.json({
             success: true,

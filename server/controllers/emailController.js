@@ -2813,5 +2813,6 @@ module.exports = {
     executeSendWork,
     createCoverLetterPDFFromHTML,
     generateCoverLetterPDF,
-    sendReply
+    sendReply,
+    getValidMicrosoftAccessToken   // reused by the background reply poller
 };
