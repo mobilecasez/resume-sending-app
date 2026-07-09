@@ -1949,6 +1949,7 @@ export default function HomeScreen({
             <TouchableOpacity style={menuStyles.closeBtn} onPress={() => setShowSettings(false)}>
               <Ionicons name="close" size={18} color={T.ink} />
             </TouchableOpacity>
+            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 28 }}>
             {[
               { icon: 'settings-outline',   title: 'Account Settings',   sub: 'View your profile',          onPress: () => { setShowSettings(false); setScreen('profile'); } },
               { icon: 'briefcase-outline',   title: 'Jobs Dashboard',     sub: 'AI-powered job search hub',  onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(ai-hub)'); } },
@@ -1957,10 +1958,9 @@ export default function HomeScreen({
               { icon: 'star-outline', title: 'Admin Panel', sub: 'Manage credit packages', onPress: () => { setShowSettings(false); setScreen('admin'); } },
               { icon: 'pricetags-outline', title: 'AI Event Credits', sub: 'Set credits per AI action', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/ai-event-credits'); } },
               { icon: 'construct-outline', title: 'Employer Fix Agent', sub: 'Auto-fix employers we missed', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/employer-requests'); } },
-              { icon: 'bar-chart-outline', title: 'Store Analytics', sub: 'iOS + Android downloads & revenue', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/store-analytics'); } },
-              { icon: 'calendar-outline', title: 'Analytics · Date Range', sub: 'Pick any date range', onPress: () => { setShowSettings(false); const tk = encodeURIComponent(user?.token || ''); Linking.openURL(`https://cvapplyr.com/admin-store-analytics?token=${tk}`); } },
-              { icon: 'people-outline', title: 'Registered Users', sub: 'Signups, sign-in type & usage', onPress: () => { setShowSettings(false); const tk = encodeURIComponent(user?.token || ''); Linking.openURL(`https://cvapplyr.com/admin-registered-users?token=${tk}`); } },
-              { icon: 'compass-outline', title: 'User Analytics', sub: 'Per-user journey timelines', onPress: () => { setShowSettings(false); const tk = encodeURIComponent(user?.token || ''); Linking.openURL(`https://cvapplyr.com/admin-user-analytics?token=${tk}`); } },
+              { icon: 'bar-chart-outline', title: 'Store Analytics', sub: 'Downloads, revenue & date range', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/store-analytics'); } },
+              { icon: 'people-outline', title: 'Registered Users', sub: 'Signups, sign-in type & usage', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/registered-users'); } },
+              { icon: 'compass-outline', title: 'User Analytics', sub: 'Per-user journey timelines', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/user-analytics'); } },
             ] : []).concat([
               null,
               { icon: 'document-text-outline', title: 'Terms & Conditions', sub: 'View terms of service',   onPress: () => { setShowSettings(false); setScreen('terms'); } },
@@ -1982,6 +1982,7 @@ export default function HomeScreen({
                   </TouchableOpacity>
                 )
             )}
+            </ScrollView>
           </View>
         </View>
       </Modal>

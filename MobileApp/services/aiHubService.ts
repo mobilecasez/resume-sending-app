@@ -858,6 +858,105 @@ export async function runUninstallSweep(): Promise<{ checked: number; uninstalle
   return data;
 }
 
+// ── Admin: Registered Users ─────────────────────────────────────────────────────
+export type RegisteredUser = {
+  id: number;
+  email: string;
+  full_name: string | null;
+  oauth_provider: string | null;
+  auth_type: 'Gmail' | 'Microsoft' | 'Apple' | 'Email';
+  registered_at: string;
+  profile_complete: number;   // 0..6
+  has_resume: boolean;
+  has_photo: boolean;
+  has_signature: boolean;
+  cover_letters: number;
+  job_searches: number;
+  applications: number;
+  replies: number;
+  credits: number;
+};
+export type UsersListResponse = {
+  success: boolean;
+  users: RegisteredUser[];
+  total: number;
+  offset: number;
+  limit: number;
+  byProvider: { auth_type: string; n: number }[];
+};
+
+/** Admin: paginated registered-users list with sign-in type + per-user usage. */
+export async function fetchUsersList(
+  opts: { q?: string; limit?: number; offset?: number } = {},
+): Promise<UsersListResponse> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/admin/users-list`, {
+    headers,
+    params: { q: opts.q || '', limit: opts.limit ?? 50, offset: opts.offset ?? 0 },
+    timeout: 30000,
+  });
+  return data;
+}
+
+// ── Admin: Per-user journeys + timeline ─────────────────────────────────────────
+export type UserJourney = {
+  uid: string;
+  user_id: number | null;
+  first_seen: string;
+  last_seen: string;
+  events: number;
+  signups: number;
+  platform: string | null;
+  country: string | null;
+  provider: string | null;
+  email: string | null;
+  full_name: string | null;
+};
+export type TimelineEvent = {
+  id: number;
+  event: string;
+  props: any;
+  platform: string | null;
+  app_version: string | null;
+  country: string | null;
+  created_at: string;
+};
+export type UserTimeline = {
+  profile: {
+    id: number; full_name: string | null; email: string; created_at: string;
+    oauth_provider: string | null; has_resume?: boolean; has_photo?: boolean; has_signature?: boolean;
+  } | null;
+  events: TimelineEvent[];   // oldest → newest
+  rollup: { event: string; n: number; last: string }[];
+  purchases: { store: string; event: string; product_id: string | null; price: number | null; currency: string | null; created_at: string }[];
+};
+
+/** Admin: recent user/device journeys (searchable). */
+export async function fetchUserJourneys(
+  opts: { q?: string; limit?: number } = {},
+): Promise<{ users: UserJourney[] }> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/admin/user-journeys`, {
+    headers,
+    params: { q: opts.q || '', limit: opts.limit ?? 60 },
+    timeout: 30000,
+  });
+  return data;
+}
+
+/** Admin: full event timeline for one user (by userId) or anonymous device (by anonId). */
+export async function fetchUserTimeline(
+  opts: { userId?: number | string | null; anonId?: string | null; limit?: number } = {},
+): Promise<UserTimeline> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/admin/user-timeline`, {
+    headers,
+    params: { userId: opts.userId ?? '', anonId: opts.anonId ?? '', limit: opts.limit ?? 300 },
+    timeout: 30000,
+  });
+  return data;
+}
+
 /** Admin: change an event's credit cost and/or active flag. */
 export async function updateAiEventCost(eventKey: string, credits: number, isActive: boolean): Promise<void> {
   const headers = await getAuthHeader();

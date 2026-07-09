@@ -9,6 +9,8 @@ export default function AdminLayout() {
       <Stack.Screen name="ai-event-credits" options={{ headerShown: false }} />
       <Stack.Screen name="employer-requests" options={{ headerShown: false }} />
       <Stack.Screen name="store-analytics" options={{ headerShown: false }} />
+      <Stack.Screen name="registered-users" options={{ headerShown: false }} />
+      <Stack.Screen name="user-analytics" options={{ headerShown: false }} />
     </Stack>
   );
 }
