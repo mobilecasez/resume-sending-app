@@ -11,6 +11,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { fetchUsersList, type RegisteredUser } from '../../services/aiHubService';
 
@@ -72,9 +74,30 @@ function Stat({ icon, label, value, color }: { icon: any; label: string; value: 
 }
 
 // ─── one user card ───
+function CopiedTag() {
+  return (
+    <View style={styles.copiedTag}>
+      <Ionicons name="checkmark" size={10} color="#fff" />
+      <Text style={styles.copiedTagText}>Copied</Text>
+    </View>
+  );
+}
+
 function UserCard({ u }: { u: RegisteredUser }) {
   const pm = provMeta(u.auth_type);
   const pct = Math.round((Math.min(u.profile_complete, 6) / 6) * 100);
+  const [copied, setCopied] = useState<'name' | 'email' | null>(null);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (copyTimer.current) clearTimeout(copyTimer.current); }, []);
+  const copy = useCallback(async (field: 'name' | 'email', value: string) => {
+    if (!value) return;
+    try { await Clipboard.setStringAsync(value); } catch { /* clipboard unavailable */ }
+    try { Haptics.selectionAsync(); } catch { /* haptics optional */ }
+    setCopied(field);
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopied(null), 1400);
+  }, []);
+  const displayName = u.full_name || 'Unnamed user';
   return (
     <View style={styles.card}>
       <View style={styles.cardTop}>
@@ -82,8 +105,14 @@ function UserCard({ u }: { u: RegisteredUser }) {
           <Text style={styles.avatarText}>{initials(u.full_name, u.email)}</Text>
         </LinearGradient>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={styles.name} numberOfLines={1}>{u.full_name || 'Unnamed user'}</Text>
-          <Text style={styles.email} numberOfLines={1}>{u.email}</Text>
+          <TouchableOpacity activeOpacity={0.6} onPress={() => copy('name', u.full_name || u.email)} style={styles.copyRow}>
+            <Text style={[styles.name, { flexShrink: 1 }]} numberOfLines={1}>{displayName}</Text>
+            {copied === 'name' ? <CopiedTag /> : <Ionicons name="copy-outline" size={12} color={C.textFaint} />}
+          </TouchableOpacity>
+          <TouchableOpacity activeOpacity={0.6} onPress={() => copy('email', u.email)} style={styles.copyRow}>
+            <Text style={[styles.email, { flexShrink: 1 }]} numberOfLines={1}>{u.email}</Text>
+            {copied === 'email' ? <CopiedTag /> : <Ionicons name="copy-outline" size={11} color={C.textFaint} />}
+          </TouchableOpacity>
         </View>
         <View style={[styles.provBadge, { backgroundColor: pm.color + '15' }]}>
           <Ionicons name={pm.icon} size={12} color={pm.color} />
@@ -304,7 +333,10 @@ const styles = StyleSheet.create({
   avatar: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
   avatarText: { color: '#fff', fontWeight: '800', fontSize: 14 },
   name: { fontSize: 15, fontWeight: '700', color: C.ink },
-  email: { fontSize: 12, color: C.textMuted, marginTop: 1 },
+  email: { fontSize: 12, color: C.textMuted },
+  copyRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 2 },
+  copiedTag: { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: C.emerald, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 100 },
+  copiedTagText: { color: '#fff', fontSize: 9.5, fontWeight: '800' },
   provBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 100 },
   provBadgeText: { fontSize: 11, fontWeight: '800' },
 
