@@ -17,8 +17,12 @@ const { smartScrape, stripHtmlToText } = require('../utils/playwrightScraper');
 const { applyDetailRecipe } = require('../utils/atsSitemap');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+// Env-driven model ids (same env names as aiHubController) so a Google model retirement is one env edit.
+const GEMINI_FLASH_MODEL = process.env.GEMINI_FLASH_MODEL || 'gemini-2.5-flash';
+const GEMINI_LITE_MODEL  = process.env.GEMINI_LITE_MODEL  || 'gemini-2.5-flash-lite';
+
 // Gemini JSON model — the agent's "brain" for reasoning about unknown sites.
-function geminiJson(modelName = 'gemini-2.5-flash') {
+function geminiJson(modelName = GEMINI_FLASH_MODEL) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return null;
   try {
@@ -192,7 +196,7 @@ async function aiGroundedJobs(url, employer) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return [];
   let model;
-  try { model = new GoogleGenerativeAI(key).getGenerativeModel({ model: 'gemini-2.5-flash', tools: [{ googleSearch: {} }] }); }
+  try { model = new GoogleGenerativeAI(key).getGenerativeModel({ model: GEMINI_FLASH_MODEL, tools: [{ googleSearch: {} }] }); }
   catch { return []; }
   const who = employer ? `"${employer}"` : `the employer whose careers site is ${url}`;
   const prompt = `Using Google Search, list the CURRENT open job postings at ${who} (careers site: ${url}).
@@ -277,7 +281,7 @@ async function validateExtraction({ employerName, domain, context, jobs }) {
   const list = (jobs || []).filter((j) => j && j.title);
   if (!list.length) return { ok: false, realCount: 0, reason: 'no jobs', junkIndexes: [] };
   if (!GEMINI_AVAILABLE) return { ok: true, realCount: list.length, reason: 'validator unavailable (fail-open)', junkIndexes: [] };
-  const model = geminiJson('gemini-2.5-flash-lite');
+  const model = geminiJson(GEMINI_LITE_MODEL);
   if (!model) return { ok: true, realCount: list.length, reason: 'validator unavailable (fail-open)', junkIndexes: [] };
   const titles = list.slice(0, 40).map((j, i) => `${i + 1}. ${strip(j.title)}${j.location ? ` — ${strip(j.location)}` : ''}`).join('\n');
   const prompt = `These were extracted as CURRENT JOB OPENINGS for one employer. Judge whether the TITLES are REAL, specific job roles that plausibly belong to THIS employer.
@@ -299,7 +303,7 @@ RULES:
 // LEVEL 1 — Gemini reads the LISTING page and returns each opening + its detail link.
 // Grounded so it can't invent jobs (every title must appear in the listing text).
 async function geminiExtractJobList(text, sourceUrl, links) {
-  const model = geminiJson('gemini-2.5-flash');
+  const model = geminiJson(GEMINI_FLASH_MODEL);
   if (!model || !text) return [];
   const clipped = text.replace(/\s+/g, ' ').slice(0, 16000);
   const linkList = (links || []).slice(0, 40).map((l) => `${l.text || '(no text)'} => ${l.href}`).join('\n');
@@ -343,7 +347,7 @@ PAGE TEXT:
 // (salary band, weekly hours, experience, responsibilities, skills) that the
 // listing rarely shows. This is the "iterate into each job" step.
 async function geminiExtractJobDetail(text, title) {
-  const model = geminiJson('gemini-2.5-flash-lite');
+  const model = geminiJson(GEMINI_LITE_MODEL);
   if (!model || !text) return null;
   const prompt = `Extract the full details for the job "${title}" from its job detail page.
 Return strict JSON: {"salary":"","hours":"","experience":"","job_type":"","location":"","responsibilities":[],"skills":[]}
@@ -480,7 +484,7 @@ async function buildEvidence(input, fetched) {
 // The LLM diagnosis: given evidence, reason about WHY jobs weren't found and WHERE
 // they are, and pick a strategy to extract them.
 async function llmDiagnose(input, evidence) {
-  const model = geminiJson('gemini-2.5-flash');
+  const model = geminiJson(GEMINI_FLASH_MODEL);
   if (!model) return null;
   const prompt = `You are a job-extraction diagnostic agent. We tried to list job openings for an employer and FAILED (got nothing or garbage). Below is real evidence gathered from their site (pages were rendered with a headless browser). Figure out, like a human investigator would, WHERE the actual job openings live and HOW to extract them.
 
@@ -664,7 +668,7 @@ function trimHtmlForRecipe(html) {
 }
 
 async function learnDetailRecipe(samples, missingFields) {
-  const model = geminiJson('gemini-2.5-flash');
+  const model = geminiJson(GEMINI_FLASH_MODEL);
   if (!model || !samples || !samples.length || !missingFields || !missingFields.length) return null;
   const trimmed = trimHtmlForRecipe(samples[0].html);
   const prompt = `You are building a REUSABLE extraction recipe for a company's job DETAIL pages (every job uses the same template). Below is the HTML of ONE sample page. For each MISSING field, say how to deterministically extract it from pages like this.

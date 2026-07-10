@@ -835,13 +835,22 @@ async function fetchCareersPageData(url, { light = false } = {}) {
     }
 }
 
+// ─── Gemini model ids (env-driven so a Google model retirement is an env edit, not a code hunt) ──
+// Defaults preserve today's behavior EXACTLY. GEMINI_ENRICH_MODEL gates the ONE high-volume grounded
+// per-job detail-enrichment call — defaults to full flash; flip to lite (or set the env) ONLY after
+// the A/B parity check passes (see _ab_enrich_model.js). The low-volume, recall-critical enumerate +
+// groundedJobSearch calls stay on full flash regardless.
+const GEMINI_FLASH_MODEL  = process.env.GEMINI_FLASH_MODEL  || 'gemini-2.5-flash';
+const GEMINI_LITE_MODEL   = process.env.GEMINI_LITE_MODEL   || 'gemini-2.5-flash-lite';
+const GEMINI_ENRICH_MODEL = process.env.GEMINI_ENRICH_MODEL || GEMINI_FLASH_MODEL;
+
 // ─── Gemini helpers ───────────────────────────────────────────────────────────
 
 /**
  * @param {boolean} withSearch   Enable Google Search grounding
- * @param {string}  modelName    Override model (default: gemini-2.5-flash)
+ * @param {string}  modelName    Override model (default: GEMINI_FLASH_MODEL)
  */
-function geminiModel(withSearch = false, modelName = 'gemini-2.5-flash') {
+function geminiModel(withSearch = false, modelName = GEMINI_FLASH_MODEL) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error('GEMINI_API_KEY not set');
     const genAI = new GoogleGenerativeAI(apiKey);
@@ -865,6 +874,35 @@ async function aiGenerateWithRetry(model, prompt, tries = 4) {
             throw e;
         }
     }
+}
+
+// ── Grounding result cache ─────────────────────────────────────────────────────
+// Persistent cache for the PAID Google-Search-grounded Gemini calls (enumerate + per-job detail
+// enrichment + per-job URL resolution). A cache HIT returns the EXACT payload a prior grounded call
+// produced, so a retry / duplicate run / re-search of the same employer reuses it instead of
+// re-paying the $35/1k grounding surcharge. ZERO result impact by construction: keyed on the same
+// logical inputs + TTL'd, only NON-EMPTY results are stored, and any DB error is swallowed (the cache
+// is a pure optimization — a miss simply falls through to the live grounded call). Kill-switch:
+// GROUNDING_CACHE=0.
+const GROUNDING_CACHE_ON = process.env.GROUNDING_CACHE !== '0';
+function normLocKey(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+async function groundingCacheGet(key) {
+    if (!GROUNDING_CACHE_ON) return null;
+    try {
+        const row = await dbConfig.get(`SELECT payload FROM ai_grounding_cache WHERE cache_key = ? AND expires_at > NOW()`, [key]);
+        return row ? row.payload : null;
+    } catch (_) { return null; }
+}
+async function groundingCacheSet(key, kind, payload, ttlSeconds) {
+    if (!GROUNDING_CACHE_ON) return;
+    try {
+        await dbConfig.run(
+            `INSERT INTO ai_grounding_cache (cache_key, kind, payload, created_at, expires_at)
+             VALUES (?, ?, ?::jsonb, NOW(), NOW() + (? * interval '1 second'))
+             ON CONFLICT (cache_key) DO UPDATE SET payload = EXCLUDED.payload, kind = EXCLUDED.kind,
+                 created_at = NOW(), expires_at = EXCLUDED.expires_at`,
+            [key, kind, JSON.stringify(payload), ttlSeconds]);
+    } catch (_) { /* best-effort — never breaks extraction */ }
 }
 
 // Self-healing completeness gate. True when a result is so thin it almost certainly means we
@@ -1332,7 +1370,7 @@ async function fetchJobDetailsBatch(jobBatch, careersUrl, candidateProfile, list
     if (hasContent.length > 0) {
         try {
             const prompt  = buildExtractionPrompt(hasContent);
-            const model   = geminiModel(false, 'gemini-2.5-flash-lite');
+            const model   = geminiModel(false, GEMINI_LITE_MODEL);
             const result  = await aiGenerateWithRetry(model, prompt);
             const parsed  = parseJsonArray(result.response.text().trim());
 
@@ -1566,7 +1604,7 @@ async function scoreJobsForUser(userProfile, jobs) {
 
     const CHUNK = 25;
     let model = null;
-    try { model = geminiModel(false, 'gemini-2.5-flash-lite'); } catch { model = null; }
+    try { model = geminiModel(false, GEMINI_LITE_MODEL); } catch { model = null; }
 
     for (let i = 0; i < jobs.length; i += CHUNK) {
         const batch = jobs.slice(i, i + CHUNK).map((j) => ({
@@ -1911,7 +1949,7 @@ async function repairIncompleteJobs(detailedJobs, counter) {
                 } catch (_) { /* skip */ }
             }));
             if (pages.length) {
-                const result = await aiGenerateWithRetry(geminiModel(false, 'gemini-2.5-flash-lite'), buildExtractionPrompt(pages));
+                const result = await aiGenerateWithRetry(geminiModel(false, GEMINI_LITE_MODEL), buildExtractionPrompt(pages));
                 const arr = parseJsonArray(result.response.text().trim());
                 pages.forEach((p, i) => _qgMergeJobFields(p.job, normalizeAiJob(arr[i] || {}, p.job)));
                 console.log(`[aiHub] Quality gate: AI-repaired ${pages.length} job(s) from their detail pages`);
@@ -1939,7 +1977,7 @@ async function randomQualityAudit(jobs, meta) {
             try {
                 const r = await smartScrape(j.job_url, { minChars: 300 });
                 if (!(r.text || '').length) continue;
-                const result = await aiGenerateWithRetry(geminiModel(false, 'gemini-2.5-flash-lite'), buildExtractionPrompt([{ job: j, text: r.text, interceptedJson: r.interceptedJson }]), 2);
+                const result = await aiGenerateWithRetry(geminiModel(false, GEMINI_LITE_MODEL), buildExtractionPrompt([{ job: j, text: r.text, interceptedJson: r.interceptedJson }]), 2);
                 const truth = normalizeAiJob(parseJsonArray(result.response.text().trim())[0] || {}, j);
                 const a = norm(j.title), b = norm(truth.title);
                 const titleOk = !!b && (a.includes(b.slice(0, 12)) || b.includes(a.slice(0, 12)));
@@ -1977,7 +2015,7 @@ async function validateJobUrlLive(url) {
 async function groundedJobSearch(employerName, careersUrl) {
     let jobs = [];
     try {
-        const model = geminiModel(true, 'gemini-2.5-flash');   // Google Search grounding
+        const model = geminiModel(true, GEMINI_FLASH_MODEL);   // Google Search grounding
         const prompt = `Using Google Search, list the CURRENT open job postings at "${employerName}" (careers site: ${careersUrl}). Aim for completeness — include every distinct current opening you can find. Return ONLY a JSON array; each item exactly: {"title": string, "location": string, "job_url": the direct posting URL string, "responsibilities": array of 3-6 short bullet strings, "skills": array of strings}. STRONGLY PREFER the employer's OWN careers domain (e.g. ${careersUrl}) for job_url; use a third-party job-board URL only when no posting exists on their own site. Always fill responsibilities and skills from the posting's content. Use real data from the search results only — do NOT invent postings. If you cannot find a direct posting URL for an item, omit that item.`;
         const res = await aiGenerateWithRetry(model, prompt, 3);
         const parsed = parseJsonArray(res.response.text().trim());
@@ -2029,7 +2067,7 @@ async function geminiGroundChunks(prompt) {
     if (!key) return [];
     for (let t = 0; t < 3; t++) {
         try {
-            const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+            const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_FLASH_MODEL}:generateContent?key=${key}`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], tools: [{ google_search: {} }] }),
                 signal: AbortSignal.timeout(18000),
@@ -2093,22 +2131,35 @@ async function groundedDeepCrawl(employerName, careersUrl) {
     // enumerations in PARALLEL and UNION them by title: halves the empty-draw chance per round AND
     // improves completeness (distinct jobs from both draws). Up to 2 rounds (≤4 calls, only 2 in
     // flight) ≈ 94% success WITHOUT the slow sequential-retry latency.
+    // Collision-free per-employer cache key: full careers host+path, so shared ATS hosts
+    // (jobs.lever.co/<companyA> vs /<companyB>) never share a cache entry; employer-name fallback.
+    const empCacheId = (() => { try { const u = new URL(careersUrl); return (u.hostname.replace(/^www\./, '') + u.pathname).replace(/\/+$/, ''); } catch { return ''; } })();
+    const empKey = empCacheId || normTitleKey(employerName);
+
     let rawJobs = [];
-    for (let round = 1; round <= 2 && !rawJobs.length; round++) {
-        const batches = await Promise.all([0, 1].map(async () => {
-            try {
-                const model = geminiModel(true, 'gemini-2.5-flash');   // Google Search grounding
-                const res = await aiGenerateWithRetry(model, prompt, 1);
-                const obj = parseJsonObject(res.response.text().trim()) || {};
-                return (Array.isArray(obj.jobs) ? obj.jobs : []).filter(j => j && j.title);
-            } catch (e) { console.error('[aiHub] groundedDeepCrawl enumerate:', e.message); return []; }
-        }));
-        const seenT = new Set();
-        for (const arr of batches) for (const j of arr) {
-            const k = normTitleKey(j.title);
-            if (!seenT.has(k)) { seenT.add(k); rawJobs.push(j); }
+    const enumKey = `enum:v1:${empKey}`;
+    const cachedEnum = await groundingCacheGet(enumKey);
+    if (Array.isArray(cachedEnum) && cachedEnum.length) {
+        rawJobs = cachedEnum;
+        console.log(`[aiHub] Deep-crawl enumerate CACHE HIT for "${employerName}": ${rawJobs.length} jobs (0 grounded calls)`);
+    } else {
+        for (let round = 1; round <= 2 && !rawJobs.length; round++) {
+            const batches = await Promise.all([0, 1].map(async () => {
+                try {
+                    const model = geminiModel(true, GEMINI_FLASH_MODEL);   // Google Search grounding
+                    const res = await aiGenerateWithRetry(model, prompt, 1);
+                    const obj = parseJsonObject(res.response.text().trim()) || {};
+                    return (Array.isArray(obj.jobs) ? obj.jobs : []).filter(j => j && j.title);
+                } catch (e) { console.error('[aiHub] groundedDeepCrawl enumerate:', e.message); return []; }
+            }));
+            const seenT = new Set();
+            for (const arr of batches) for (const j of arr) {
+                const k = normTitleKey(j.title);
+                if (!seenT.has(k)) { seenT.add(k); rawJobs.push(j); }
+            }
+            console.log(`[aiHub] Deep-crawl enumerate round ${round} for "${employerName}": ${batches.map(b => b.length).join('+')} → ${rawJobs.length} distinct`);
         }
-        console.log(`[aiHub] Deep-crawl enumerate round ${round} for "${employerName}": ${batches.map(b => b.length).join('+')} → ${rawJobs.length} distinct`);
+        if (rawJobs.length) await groundingCacheSet(enumKey, 'enumerate', rawJobs, 86400);   // 24h TTL — protects retries/dupes
     }
     if (!rawJobs.length) { console.log(`[aiHub] Deep-crawl: still empty after parallel rounds for "${employerName}"`); return []; }
 
@@ -2149,35 +2200,48 @@ async function groundedDeepCrawl(employerName, careersUrl) {
     const enrichDetails = async () => {
         const bare = deduped.filter(isBare).slice(0, ENRICH_CAP);
         if (!bare.length) return;
-        const deadline = Date.now() + ENRICH_MS; let i = 0, filled = 0;
+        const deadline = Date.now() + ENRICH_MS; let i = 0, filled = 0, cacheHits = 0;
         await Promise.all(Array.from({ length: Math.min(8, bare.length) }, async () => {
             while (i < bare.length && Date.now() < deadline) {
                 const j = bare[i++];
-                try {
-                    const em = geminiModel(true, 'gemini-2.5-flash');
-                    const p = `Using Google Search, find the full job posting for "${j.title}" at "${employerName}"${j.location ? ` (${j.location})` : ''}. Return ONLY JSON: {"responsibilities":[3-6 short bullet strings],"skills":[strings],"work_mode":"Onsite"|"Hybrid"|"Remote"|"Unknown","employment_type":string}. Use real data from the search results only; empty arrays if not found.`;
-                    const d = parseJsonObject((await aiGenerateWithRetry(em, p, 1)).response.text().trim()) || {};
-                    if (Array.isArray(d.responsibilities) && d.responsibilities.length) { j.responsibilities = d.responsibilities; filled++; }
-                    if (Array.isArray(d.skills) && d.skills.length) j.skills = d.skills;
-                    if (d.work_mode && !j.work_mode) j.work_mode = d.work_mode;
-                    if (d.employment_type && !j.employment_type) j.employment_type = d.employment_type;
-                } catch (_) { /* leave bare */ }
+                // Cache is keyed on (model, employer, title, location) — same inputs → identical payload.
+                const ck = `enrich:v1:${GEMINI_ENRICH_MODEL}:${empKey}:${normTitleKey(j.title)}:${normLocKey(j.location)}`;
+                let d = await groundingCacheGet(ck);
+                if (d) { cacheHits++; }
+                else {
+                    try {
+                        const em = geminiModel(true, GEMINI_ENRICH_MODEL);
+                        const p = `Using Google Search, find the full job posting for "${j.title}" at "${employerName}"${j.location ? ` (${j.location})` : ''}. Return ONLY JSON: {"responsibilities":[3-6 short bullet strings],"skills":[strings],"work_mode":"Onsite"|"Hybrid"|"Remote"|"Unknown","employment_type":string}. Use real data from the search results only; empty arrays if not found.`;
+                        d = parseJsonObject((await aiGenerateWithRetry(em, p, 1)).response.text().trim()) || {};
+                        // Cache ONLY a successful (non-empty) enrichment so a failed/empty draw is re-tried, not frozen.
+                        if ((Array.isArray(d.responsibilities) && d.responsibilities.length) || (Array.isArray(d.skills) && d.skills.length)) {
+                            await groundingCacheSet(ck, 'enrich', d, 604800);   // 7d TTL
+                        }
+                    } catch (_) { d = {}; /* leave bare */ }
+                }
+                if (Array.isArray(d.responsibilities) && d.responsibilities.length) { j.responsibilities = d.responsibilities; filled++; }
+                if (Array.isArray(d.skills) && d.skills.length) j.skills = d.skills;
+                if (d.work_mode && !j.work_mode) j.work_mode = d.work_mode;
+                if (d.employment_type && !j.employment_type) j.employment_type = d.employment_type;
             }
         }));
-        console.log(`[aiHub] Deep-crawl detail-enrich: +${filled} for "${employerName}"`);
+        console.log(`[aiHub] Deep-crawl detail-enrich: +${filled} for "${employerName}" (${cacheHits} from cache)`);
     };
     const resolveUrls = async () => {
         const need = deduped.filter(j => !isSpecificPosting(j.job_url)).slice(0, ENRICH_CAP);
         if (!need.length || !careersDomain) return;
-        const deadline = Date.now() + parseInt(process.env.DEEP_CRAWL_URL_MS || '35000', 10); let i = 0, got = 0;
+        const deadline = Date.now() + parseInt(process.env.DEEP_CRAWL_URL_MS || '35000', 10); let i = 0, got = 0, cacheHits = 0;
         await Promise.all(Array.from({ length: 4 }, async () => {   // gentle concurrency so grounding isn't rate-limited
             while (i < need.length && Date.now() < deadline) {
                 const j = need[i++];
+                const uk = `url:v1:${empKey}:${normTitleKey(j.title)}`;
+                const hit = await groundingCacheGet(uk);
+                if (hit && typeof hit.url === 'string' && isSpecificPosting(hit.url)) { j._realUrl = hit.url; got++; cacheHits++; continue; }
                 const u = await resolveJobUrlViaWeb(j.title, employerName, careersDomain, postingSeg);
-                if (u && isSpecificPosting(u)) { j._realUrl = u; got++; }
+                if (u && isSpecificPosting(u)) { j._realUrl = u; got++; await groundingCacheSet(uk, 'url', { url: u }, 604800); }   // 7d TTL, successes only
             }
         }));
-        console.log(`[aiHub] Deep-crawl url-resolve (grounding-chunks): +${got}/${need.length} real URLs for "${employerName}"`);
+        console.log(`[aiHub] Deep-crawl url-resolve (grounding-chunks): +${got}/${need.length} real URLs for "${employerName}" (${cacheHits} from cache)`);
     };
     // Sequential (not concurrent): both stages hit Gemini grounding — running them at the same time
     // spikes the request rate and the URL-resolve calls get throttled (verified: prod gave 0/9 real
@@ -3774,7 +3838,7 @@ async function generateJobCoverLetter(req, res) {
 
         // Build Gemini prompt
         const resumeText = resumeMeta.parsed_text || resumeMeta.raw_text || '';
-        const model = geminiModel(false, 'gemini-2.5-flash');
+        const model = geminiModel(false, GEMINI_FLASH_MODEL);
 
         const prompt = `You are an expert cover letter writer. Write a tailored, professional cover letter for this job application.
 
@@ -3897,7 +3961,7 @@ async function translateJob(req, res) {
         };
 
         // 3. Translate with Gemini (flash-lite, JSON out). One retry on bad JSON.
-        const model = geminiModel(false, 'gemini-2.5-flash-lite');
+        const model = geminiModel(false, GEMINI_LITE_MODEL);
         const prompt = `Translate the following job-posting fields into natural, professional English.
 
 Return ONLY a JSON object with EXACTLY these keys:
@@ -3976,7 +4040,7 @@ async function translateBatch(req, res) {
             .filter(it => it.i && it.t.trim().length);
         if (!items.length) return res.json({ translations: {} });
 
-        const model = geminiModel(false, 'gemini-2.5-flash-lite');
+        const model = geminiModel(false, GEMINI_LITE_MODEL);
         const prompt = `You translate snippets of visible website text into natural English.
 Return ONLY a JSON object that maps each snippet's "i" (as a string key) to its English translation.
 
@@ -4209,7 +4273,7 @@ async function generateEmailBodyHandler(req, res) {
             try {
                 const { GoogleGenerativeAI } = require('@google/generative-ai');
                 const genAI = new GoogleGenerativeAI(geminiKey);
-                const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+                const model = genAI.getGenerativeModel({ model: GEMINI_FLASH_MODEL });
                 const prompt = `Write a short, professional email body for a job application. The applicant's name is "${fullName}", applying for the "${position}" position at "${companyName}".
 
 Rules:
@@ -4569,7 +4633,7 @@ function _motivationFallback(first, prof) {
 }
 
 async function genPersonalizedMotivation(first, prof) {
-    const model = geminiModel(false, 'gemini-2.5-flash-lite');
+    const model = geminiModel(false, GEMINI_LITE_MODEL);
     if (!model) return null;
     const skills = (prof.skills || []).slice(0, 18).join(', ') || 'a strong skill set';
     const titles = (prof.job_titles || []).slice(0, 5).join(', ') || 'their field';

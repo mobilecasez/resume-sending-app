@@ -884,6 +884,24 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE app_events ADD COLUMN IF NOT EXISTS ip_hash TEXT`);
         console.log('✅ Migration 020: app_events.ip_hash done');
 
+        // ── Migration 021: ai_grounding_cache — persistent cache for the PAID Google-Search-grounded
+        //    Gemini calls (enumerate + per-job detail enrichment + per-job URL resolution). A cache
+        //    HIT returns the EXACT payload a prior grounded call produced, so retries / duplicate runs /
+        //    re-searches of the same employer reuse it instead of re-paying the grounding surcharge.
+        //    Zero result impact: keyed on the same inputs, TTL'd; a miss just falls through to the live
+        //    call. This is what protects the budget from a repeat of the July-2 bulk-load spend.
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS ai_grounding_cache (
+                cache_key TEXT PRIMARY KEY,
+                kind TEXT,
+                payload JSONB NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL
+            );
+        `);
+        await col(`CREATE INDEX IF NOT EXISTS idx_grounding_cache_expires ON ai_grounding_cache(expires_at)`);
+        console.log('✅ Migration 021: ai_grounding_cache done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);
