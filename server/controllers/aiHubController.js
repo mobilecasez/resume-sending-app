@@ -2131,9 +2131,11 @@ async function groundedDeepCrawl(employerName, careersUrl) {
     // enumerations in PARALLEL and UNION them by title: halves the empty-draw chance per round AND
     // improves completeness (distinct jobs from both draws). Up to 2 rounds (≤4 calls, only 2 in
     // flight) ≈ 94% success WITHOUT the slow sequential-retry latency.
-    // Collision-free per-employer cache key: full careers host+path, so shared ATS hosts
-    // (jobs.lever.co/<companyA> vs /<companyB>) never share a cache entry; employer-name fallback.
-    const empCacheId = (() => { try { const u = new URL(careersUrl); return (u.hostname.replace(/^www\./, '') + u.pathname).replace(/\/+$/, ''); } catch { return ''; } })();
+    // Collision-free per-employer cache key: the FULL careers URL identity (host + path + query +
+    // fragment), so multi-tenant ATS portals never share a cache entry — whether the tenant is in the
+    // path (jobs.lever.co/<A> vs /<B>), the query (…/board?c=A vs ?c=B), or the hash of a SPA portal
+    // (…#/jobs/A vs #/jobs/B). Employer-name fallback when there's no usable URL.
+    const empCacheId = (() => { try { const u = new URL(careersUrl); return (u.hostname.replace(/^www\./, '') + u.pathname + u.search + u.hash).replace(/\/+$/, ''); } catch { return ''; } })();
     const empKey = empCacheId || normTitleKey(employerName);
 
     let rawJobs = [];
