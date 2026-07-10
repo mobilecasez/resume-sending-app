@@ -7,14 +7,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
-  SafeAreaView, RefreshControl, TextInput, Modal, Pressable, Platform,
+  SafeAreaView, RefreshControl, TextInput, Modal, Pressable, Platform, Switch,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import {
   fetchUserJourneys, fetchUserTimeline,
-  type UserJourney, type UserTimeline, type TimelineEvent,
+  fetchAdminNotifySettings, updateAdminNotifySettings, sendAdminTestNotification,
+  type UserJourney, type UserTimeline, type TimelineEvent, type AdminNotifySettings,
 } from '../../services/aiHubService';
 
 // ─── tokens (shared with store-analytics.tsx) ───
@@ -306,6 +307,25 @@ export default function UserAnalyticsScreen() {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<UserJourney | null>(null);
   const searchSeq = useRef(0);
+  const [notify, setNotify] = useState<AdminNotifySettings | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState<string | null>(null);
+
+  useEffect(() => { fetchAdminNotifySettings().then(setNotify).catch(() => {}); }, []);
+  const toggleNotify = useCallback((k: keyof AdminNotifySettings) => {
+    setNotify((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, [k]: !prev[k] };
+      updateAdminNotifySettings({ [k]: next[k] }).catch(() => setNotify(prev));   // revert on failure
+      return next;
+    });
+  }, []);
+  const sendTest = useCallback(async () => {
+    setTesting(true); setTestMsg(null);
+    try { const r = await sendAdminTestNotification(); setTestMsg(`Sent to ${r.sent} device${r.sent === 1 ? '' : 's'}`); }
+    catch { setTestMsg('Failed'); }
+    finally { setTesting(false); setTimeout(() => setTestMsg(null), 2600); }
+  }, []);
 
   const load = useCallback(async (q: string) => {
     const seq = ++searchSeq.current;
@@ -374,6 +394,28 @@ export default function UserAnalyticsScreen() {
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.blue} />}
         >
+          {notify && (
+            <View style={styles.notifyCard}>
+              <View style={styles.notifyHead}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.notifyTitle}>🔔 Admin push alerts</Text>
+                  <Text style={styles.notifySub}>Push to your device on these events</Text>
+                </View>
+                <TouchableOpacity style={[styles.testBtn, testing && { opacity: 0.6 }]} onPress={sendTest} disabled={testing} activeOpacity={0.8}>
+                  {testing ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.testBtnText}>{testMsg || 'Test'}</Text>}
+                </TouchableOpacity>
+              </View>
+              {([['installs', 'New installs', 'iOS / Android — a new user installed'], ['registrations', 'New sign-ups', 'someone registered (with provider)'], ['purchases', 'New purchases', 'a subscription / credit purchase']] as [keyof AdminNotifySettings, string, string][]).map(([k, n, d]) => (
+                <View key={k} style={styles.notifyRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.notifyRowName}>{n}</Text>
+                    <Text style={styles.notifyRowDesc}>{d}</Text>
+                  </View>
+                  <Switch value={!!notify[k]} onValueChange={() => toggleNotify(k)} trackColor={{ true: C.emerald, false: '#CBD5E1' }} thumbColor="#fff" ios_backgroundColor="#CBD5E1" />
+                </View>
+              ))}
+            </View>
+          )}
           {error && (
             <View style={styles.errorBox}>
               <Ionicons name="warning-outline" size={16} color={C.rose} />
@@ -422,6 +464,16 @@ const styles = StyleSheet.create({
 
   errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: 'rgba(239,68,68,0.08)', borderRadius: 12, padding: 12, marginBottom: 12 },
   errorText: { fontSize: 12.5, color: C.rose, fontWeight: '600', flex: 1 },
+
+  notifyCard: { backgroundColor: C.surface, borderRadius: 18, borderWidth: 1, borderColor: C.border, padding: 14, marginBottom: 14, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 14, elevation: 2 },
+  notifyHead: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 },
+  notifyTitle: { fontSize: 15, fontWeight: '800', color: C.ink },
+  notifySub: { fontSize: 11.5, color: C.textMuted, marginTop: 1 },
+  testBtn: { backgroundColor: C.blue, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 9, minWidth: 64, alignItems: 'center', justifyContent: 'center' },
+  testBtnText: { color: '#fff', fontWeight: '700', fontSize: 12.5 },
+  notifyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: C.border },
+  notifyRowName: { fontSize: 13.5, fontWeight: '700', color: C.ink },
+  notifyRowDesc: { fontSize: 11.5, color: C.textMuted, marginTop: 1 },
   empty: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60, gap: 12 },
   emptyText: { fontSize: 13.5, color: C.textMuted, fontWeight: '600', textAlign: 'center', paddingHorizontal: 30 },
 

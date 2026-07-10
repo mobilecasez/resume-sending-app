@@ -957,6 +957,30 @@ export async function fetchUserTimeline(
   return data;
 }
 
+// ── Admin: push-alert settings (new install / registration / purchase) ──────────
+export type AdminNotifySettings = { installs: boolean; registrations: boolean; purchases: boolean };
+
+/** Admin: current push-alert toggles. */
+export async function fetchAdminNotifySettings(): Promise<AdminNotifySettings> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/admin/notification-settings`, { headers, timeout: 20000 });
+  return data.settings || { installs: true, registrations: true, purchases: true };
+}
+
+/** Admin: update one or more push-alert toggles. Returns the saved settings. */
+export async function updateAdminNotifySettings(patch: Partial<AdminNotifySettings>): Promise<AdminNotifySettings> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.put(`${API_BASE_URL}/admin/notification-settings`, patch, { headers, timeout: 20000 });
+  return data.settings || { installs: true, registrations: true, purchases: true };
+}
+
+/** Admin: fire a test push to all admin devices. */
+export async function sendAdminTestNotification(): Promise<{ sent: number; admins?: number }> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.post(`${API_BASE_URL}/admin/notification-test`, {}, { headers, timeout: 20000 });
+  return (data && data.result) || { sent: 0 };
+}
+
 /** Admin: change an event's credit cost and/or active flag. */
 export async function updateAiEventCost(eventKey: string, credits: number, isActive: boolean): Promise<void> {
   const headers = await getAuthHeader();
