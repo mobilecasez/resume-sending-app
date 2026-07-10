@@ -21,6 +21,8 @@ async function trackEvent(e) {
     `INSERT INTO app_events (user_id, anon_id, platform, event, props, app_version, country, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [userId, anonId, platform, event, props, appVersion, country, ipHash]
   ).catch(() => {});
+  // Admin alert: a brand-new device's first-ever event = a new install (best-effort; gated + deduped inside).
+  try { require('./adminNotifier').maybeNewInstall({ anonId, platform }).catch(() => {}); } catch {}
 }
 
 // Log an uninstall (detected server-side via a stale push token). Keyed by user so it doesn't

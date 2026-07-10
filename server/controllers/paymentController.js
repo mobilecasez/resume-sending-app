@@ -323,6 +323,7 @@ async function verifyPayment(req, res, dbConfig) {
         
         console.log('✅ Credits added successfully! New balance:', userData?.credits);
         try { await notifyCreditsAdded(userId, orderData.credits, (userData.credits - orderData.credits), userData.credits, 'purchase'); } catch (_) {}
+        try { require('../services/adminNotifier').notifyNewPurchase(userId, { credits: orderData.credits, amount: (orderData.amount != null ? orderData.amount / 100 : null), currency: orderData.currency || 'INR', source: 'Razorpay' }).catch(() => {}); } catch (_) {}
 
         res.json({
             success: true,
@@ -742,6 +743,7 @@ async function verifyApplePurchase(req, res, dbConfig) {
 
         console.log('🍎 Credits added successfully! New balance:', userData?.credits);
         try { await notifyCreditsAdded(userId, plan.credits, ((userData?.credits || 0) - plan.credits), (userData?.credits || 0), 'purchase'); } catch (_) {}
+        try { require('../services/adminNotifier').notifyNewPurchase(userId, { credits: plan.credits, amount: plan.price, currency: plan.currency || 'USD', plan: plan.name, source: 'Apple IAP' }).catch(() => {}); } catch (_) {}
 
         res.json({
             success: true,

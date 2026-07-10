@@ -44,6 +44,15 @@
     .ev .ep { color:#9cc0ff; font-size:11.5px; font-family:ui-monospace,Menlo,monospace; margin-top:2px; word-break:break-word; }
     .daysep { color:var(--mut); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; margin:14px 0 2px; }
     .empty { color:var(--mut); text-align:center; padding:40px 0; }
+    .toggles { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
+    .tog { display:flex; align-items:center; gap:10px; background:#0e1729; border:1px solid var(--line); border-radius:12px; padding:10px 14px; flex:1; min-width:210px; }
+    .tog .tl2 { flex:1; } .tog .tn { font-weight:700; font-size:13.5px; } .tog .td { color:var(--mut); font-size:11.5px; margin-top:1px; }
+    .sw { position:relative; width:44px; height:26px; border-radius:999px; background:#26324d; cursor:pointer; transition:background .15s; flex:none; }
+    .sw.on { background:var(--grn); }
+    .sw::after { content:''; position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; transition:left .15s; }
+    .sw.on::after { left:21px; }
+    .tbtn { background:var(--blue); color:#fff; border:none; border-radius:10px; padding:9px 14px; font-size:13px; font-weight:700; cursor:pointer; }
+    .tbtn:disabled { opacity:.6; cursor:default; }
   </style>
 </head>
 <body>
@@ -51,6 +60,16 @@
     <a class="back" href="/admin-store-analytics">← Store Analytics</a>
     <h1>User Analytics</h1>
     <div class="sub">Every user's journey — signup, login method, and each action, newest first. Server-recorded, live.</div>
+    <div class="card" id="alertsCard" style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <div>
+          <div style="font-weight:800;font-size:15px;">🔔 Admin push alerts</div>
+          <div class="muted" style="font-size:12px;margin-top:2px;">Get a push on your phone when these happen. Sent to admin devices only.</div>
+        </div>
+        <button id="alertTest" class="tbtn">Send test push</button>
+      </div>
+      <div id="alertToggles" class="toggles"><div class="muted" style="font-size:12.5px;padding:8px 0;">Loading…</div></div>
+    </div>
     <div class="grid">
       <div class="card">
         <input id="q" class="search" placeholder="Search by name or email…" autocomplete="off">
@@ -143,6 +162,19 @@
     var t=null;
     document.getElementById('q').addEventListener('input', function(e){ clearTimeout(t); var v=e.target.value; t=setTimeout(function(){ loadUsers(v); }, 250); });
     loadUsers('');
+
+    // ── Admin push-alert toggles ──────────────────────────────────────────────
+    async function putApi(path, body){ var r=await fetch(API_BASE+path,{method:'PUT',headers:{'Authorization':'Bearer '+authToken,'Content-Type':'application/json'},body:JSON.stringify(body)}); return r.json(); }
+    async function postApi(path, body){ var r=await fetch(API_BASE+path,{method:'POST',headers:{'Authorization':'Bearer '+authToken,'Content-Type':'application/json'},body:JSON.stringify(body||{})}); return r.json(); }
+    var ALERTS=[{k:'installs',n:'New installs',d:'a new iOS / Android user installed'},{k:'registrations',n:'New sign-ups',d:'someone registered (with provider)'},{k:'purchases',n:'New purchases',d:'a subscription / credit purchase'}];
+    async function loadAlerts(){
+      var el=document.getElementById('alertToggles');
+      var res=await api('/api/admin/notification-settings'); var s=(res&&res.settings)||{};
+      el.innerHTML=ALERTS.map(function(a){ var on=s[a.k]!==false; return '<div class="tog"><div class="tl2"><div class="tn">'+a.n+'</div><div class="td">'+a.d+'</div></div><div class="sw'+(on?' on':'')+'" data-k="'+a.k+'"></div></div>'; }).join('');
+      Array.prototype.forEach.call(el.querySelectorAll('.sw'), function(sw){ sw.onclick=async function(){ var k=sw.getAttribute('data-k'); var on=!sw.classList.contains('on'); sw.classList.toggle('on',on); var body={}; body[k]=on; try{ await putApi('/api/admin/notification-settings',body); }catch(e){ sw.classList.toggle('on',!on); } }; });
+    }
+    document.getElementById('alertTest').onclick=async function(){ var b=this,old=b.textContent; b.disabled=true; b.textContent='Sending…'; try{ var r=await postApi('/api/admin/notification-test'); b.textContent=(r&&r.success)?('Sent to '+((r.result&&r.result.sent)||0)+' device(s)'):'Failed'; }catch(e){ b.textContent='Failed'; } setTimeout(function(){ b.textContent=old; b.disabled=false; },2600); };
+    loadAlerts();
   </script>
 </body>
 </html>

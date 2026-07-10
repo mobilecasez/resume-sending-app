@@ -902,6 +902,20 @@ async function runPostgresMigrations(db) {
         await col(`CREATE INDEX IF NOT EXISTS idx_grounding_cache_expires ON ai_grounding_cache(expires_at)`);
         console.log('✅ Migration 021: ai_grounding_cache done');
 
+        // ── Migration 022: admin_notification_settings — admin-only push alerts (new install /
+        //    new registration / new purchase), each independently toggleable. Single-row config (id=1).
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS admin_notification_settings (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                installs BOOLEAN DEFAULT TRUE,
+                registrations BOOLEAN DEFAULT TRUE,
+                purchases BOOLEAN DEFAULT TRUE,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        `);
+        await db.query(`INSERT INTO admin_notification_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+        console.log('✅ Migration 022: admin_notification_settings done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

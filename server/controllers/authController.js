@@ -55,6 +55,10 @@ function mirrorAuthAnalytics(userId, eventType, details, req, success) {
         country: (req && (req.headers['cf-ipcountry'] || req.headers['x-vercel-ip-country'])) || null,
         props: { provider, flow: d.flow || null, reactivated: !!d.reactivated },
     }).catch(() => {});
+    // Admin alert: a brand-new registration → push the admins (best-effort; category-gated inside).
+    if (eventType === 'USER_REGISTERED') {
+        try { require('../services/adminNotifier').notifyNewRegistration(userId, { provider }).catch(() => {}); } catch (_) {}
+    }
 }
 
 // SECURITY: Security audit logging function
