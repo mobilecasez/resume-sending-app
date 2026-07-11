@@ -981,6 +981,40 @@ export async function sendAdminTestNotification(): Promise<{ sent: number; admin
   return (data && data.result) || { sent: 0 };
 }
 
+// ── Discover: value-first global job feed (browse real jobs before any setup) ────
+export type DiscoverJob = {
+  id: string; title: string; company: string | null; employer_name: string | null; employer_domain: string | null;
+  location: string | null; work_mode: string | null; job_type: string | null; salary: string | null; experience: string | null;
+  responsibilities: string[]; skills: string[]; job_url: string; source: string | null; country: string | null;
+};
+export type DiscoverResponse = { success: boolean; jobs: DiscoverJob[]; total: number; offset: number; limit: number; hasMore: boolean };
+export type DiscoverFacets = {
+  total: number;
+  employers: { employer_name: string; n: number }[];
+  countries: { country: string; n: number }[];
+  workModes: { work_mode: string; n: number }[];
+};
+
+/** The browse feed of world jobs (from the ATS firehose). */
+export async function fetchDiscoverJobs(
+  opts: { offset?: number; limit?: number; q?: string; country?: string; work_mode?: string; employer?: string } = {},
+): Promise<DiscoverResponse> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/discover/jobs`, {
+    headers,
+    params: { offset: opts.offset ?? 0, limit: opts.limit ?? 20, q: opts.q || '', country: opts.country || '', work_mode: opts.work_mode || '', employer: opts.employer || '' },
+    timeout: 20000,
+  });
+  return data;
+}
+
+/** Filter chips for the feed (top employers, countries, work modes, total). */
+export async function fetchDiscoverFacets(): Promise<DiscoverFacets> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/discover/facets`, { headers, timeout: 20000 });
+  return data;
+}
+
 /** Admin: change an event's credit cost and/or active flag. */
 export async function updateAiEventCost(eventKey: string, credits: number, isActive: boolean): Promise<void> {
   const headers = await getAuthHeader();

@@ -1740,6 +1740,24 @@ export default function HomeScreen({
           />
         )}
 
+        {/* ── EXPLORE LIVE JOBS (value-first feed) ──────────── */}
+        <TouchableOpacity
+          activeOpacity={0.9}
+          onPress={() => require('expo-router').router?.push?.('/(discover)')}
+          style={{ marginHorizontal: 16, marginBottom: 16, borderRadius: 20, overflow: 'hidden', shadowColor: '#06B6D4', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.28, shadowRadius: 18, elevation: 6 }}
+        >
+          <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ flexDirection: 'row', alignItems: 'center', gap: 14, padding: 18 }}>
+            <View style={{ width: 48, height: 48, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name="briefcase" size={24} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: '#fff', fontSize: 16.5, fontWeight: '800', letterSpacing: -0.3 }}>Explore live jobs</Text>
+              <Text style={{ color: 'rgba(255,255,255,0.88)', fontSize: 12.5, marginTop: 2, fontWeight: '500' }}>Thousands of openings from top companies — apply in one tap</Text>
+            </View>
+            <Ionicons name="arrow-forward" size={22} color="#fff" />
+          </LinearGradient>
+        </TouchableOpacity>
+
         {/* ── THIS WEEK ────────────────────────────────────── */}
         <View style={styles.sectionCard}>
           <View style={styles.sectionHeader}>
@@ -1953,6 +1971,7 @@ export default function HomeScreen({
             {[
               { icon: 'settings-outline',   title: 'Account Settings',   sub: 'View your profile',          onPress: () => { setShowSettings(false); setScreen('profile'); } },
               { icon: 'briefcase-outline',   title: 'Jobs Dashboard',     sub: 'AI-powered job search hub',  onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(ai-hub)'); } },
+              { icon: 'compass-outline',     title: 'Explore Jobs',       sub: 'Browse live openings worldwide', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(discover)'); } },
               { icon: 'document-text-outline', title: 'Resume Builder',   sub: 'Build your AI-powered resume', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(resume-builder)'); } },
             ].concat(isAdmin ? [
               { icon: 'star-outline', title: 'Admin Panel', sub: 'Manage credit packages', onPress: () => { setShowSettings(false); setScreen('admin'); } },
