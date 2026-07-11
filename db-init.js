@@ -916,6 +916,37 @@ async function runPostgresMigrations(db) {
         await db.query(`INSERT INTO admin_notification_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
         console.log('✅ Migration 022: admin_notification_settings done');
 
+        // ── Migration 023: global_jobs — a WORLD job feed populated by a background firehose from public
+        //    company ATS boards (Greenhouse/Lever/Ashby/…). ISOLATED from the per-user `jobs` table so it
+        //    can NEVER leak into a user's personalized Job Hub; a later phase surfaces it as a browse feed.
+        //    Same rich shape as a native CVApplyr job. Upsert on job_url (last_seen refreshes on re-crawl).
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS global_jobs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                job_url VARCHAR(2000) UNIQUE NOT NULL,
+                title VARCHAR(500) NOT NULL,
+                employer_name VARCHAR(300),
+                employer_domain VARCHAR(255),
+                location VARCHAR(500),
+                work_mode VARCHAR(50),
+                job_type VARCHAR(120),
+                salary VARCHAR(255),
+                experience VARCHAR(255),
+                responsibilities JSONB,
+                skills JSONB,
+                source VARCHAR(60),
+                country VARCHAR(80),
+                is_active BOOLEAN DEFAULT TRUE,
+                first_seen TIMESTAMPTZ DEFAULT NOW(),
+                last_seen TIMESTAMPTZ DEFAULT NOW(),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        `);
+        await col(`CREATE INDEX IF NOT EXISTS idx_global_jobs_last_seen ON global_jobs(last_seen DESC)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_global_jobs_employer ON global_jobs(employer_name)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_global_jobs_active ON global_jobs(is_active)`);
+        console.log('✅ Migration 023: global_jobs done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

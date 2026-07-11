@@ -57,6 +57,7 @@ const adminUsersRoutes = require('./server/routes/adminUsersRoutes');
 const employerFixRoutes = require('./server/routes/employerFixRoutes');
 const adminStoreAnalyticsRoutes = require('./server/routes/adminStoreAnalyticsRoutes');
 const adminNotifyRoutes = require('./server/routes/adminNotifyRoutes');
+const adminGlobalJobsRoutes = require('./server/routes/adminGlobalJobsRoutes');
 const analyticsRoutes = require('./server/routes/analyticsRoutes');
 const coverLetterRoutes = require('./server/routes/coverLetterRoutes');
 const emailRoutes = require('./server/routes/emailRoutes');
@@ -3989,6 +3990,7 @@ app.use('/api', adminUsersRoutes);
 app.use('/api', employerFixRoutes);
 app.use('/api', adminStoreAnalyticsRoutes);
 app.use('/api', adminNotifyRoutes);
+app.use('/api', adminGlobalJobsRoutes);
 app.use('/api', analyticsRoutes);
 
 // LinkedIn job extraction — SEPARATE pipeline (hidden on-device WebView innerText → AI JSON + store).
@@ -4034,6 +4036,11 @@ catch (e) { console.error('[replyPoll] failed to start:', e.message); }
 // digest. Preference-gated (notification_preferences). Disable with ENGAGEMENT_DISABLED=1.
 try { require('./server/services/engagementScheduler').startEngagementScheduler(); }
 catch (e) { console.error('[engagement] failed to start:', e.message); }
+
+// Global job firehose — populate the isolated global_jobs feed from public company ATS boards every
+// few hours (no AI, no keys). Disable with GLOBAL_JOB_FIREHOSE_ENABLED=0.
+try { require('./server/services/globalJobFirehose').startGlobalJobFirehose(); }
+catch (e) { console.error('[firehose] failed to start:', e.message); }
 
 // Start server
 const HOST = process.env.HOST || '0.0.0.0';
