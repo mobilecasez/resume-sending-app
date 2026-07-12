@@ -107,7 +107,8 @@
         {
           "ios": { "useFrameworks": "static" }
         }
-      ]
+      ],
+      "./plugins/withRNFirebaseStaticFramework"
     ],
     "experiments": {
       "typedRoutes": true,
