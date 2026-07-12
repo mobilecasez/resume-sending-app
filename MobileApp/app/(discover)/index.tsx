@@ -15,6 +15,7 @@ import {
   fetchDiscoverJobs, fetchDiscoverFacets,
   type DiscoverJob, type DiscoverFacets,
 } from '../../services/aiHubService';
+import { logEvent } from '../../services/firebaseAnalytics';
 
 const C = {
   navy: '#0B1120', feed: '#F0F4FA', card: '#FFFFFF', ink: '#0B1120', muted: '#5B6B8A', faint: '#8896B0',
@@ -101,7 +102,7 @@ export default function DiscoverScreen() {
     }
   }, []);
 
-  useEffect(() => { fetchDiscoverFacets().then(setFacets).catch(() => {}); }, []);
+  useEffect(() => { fetchDiscoverFacets().then(setFacets).catch(() => {}); logEvent('feed_opened'); }, []);
   useEffect(() => {
     (async () => { setLoading(true); await load({ q: '', mode: null, offset: 0, append: false }); setLoading(false); })();
   }, [load]);

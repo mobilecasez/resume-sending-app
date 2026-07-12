@@ -1383,6 +1383,21 @@ export default function HomeScreen({
     try { if (explainerKey) await AsyncStorage.setItem(explainerKey, '1'); } catch {}
   }, [explainerKey]);
 
+  // Google-Ads conversion signal — fire ONCE per install when a logged-in user reaches Home. That
+  // means a REAL activated user (registered + opened), not a dead install → what the ad campaign
+  // should bid for. Best-effort via Firebase Analytics (no-op if Firebase isn't linked).
+  useEffect(() => {
+    (async () => {
+      try {
+        const done = await AsyncStorage.getItem('fb_activated_v1');
+        if (done !== '1') {
+          require('../services/firebaseAnalytics').logEvent('app_activated', { source: 'home' });
+          await AsyncStorage.setItem('fb_activated_v1', '1');
+        }
+      } catch {}
+    })();
+  }, []);
+
   // Refresh "Recent applications" whenever the Home tab regains focus — e.g. after the
   // user applies to a job via the Job Hub portal (which records server-side but doesn't
   // touch this screen's state). Pulls the merged history straight from the backend.

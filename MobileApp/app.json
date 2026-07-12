@@ -2,7 +2,7 @@
   "expo": {
     "name": "CVApplyr",
     "slug": "cvapplyr",
-    "version": "3.0",
+    "version": "3.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "cvapplyr",
@@ -10,6 +10,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.cvapplyr.mobile",
+      "googleServicesFile": "./GoogleService-Info.plist",
       "buildNumber": "57",
       "usesAppleSignIn": true,
       "infoPlist": {
@@ -31,6 +32,7 @@
     },
     "android": {
       "package": "com.cvapplyr.mobile",
+      "googleServicesFile": "./google-services.json",
       "versionCode": 20,
       "intentFilters": [
         {
@@ -96,6 +98,14 @@
         {
           "photosPermission": "CVApplyr uses your photo library to set a profile picture and attach images to emails.",
           "cameraPermission": "CVApplyr uses your camera to take a profile photo."
+        }
+      ],
+      "@react-native-firebase/app",
+      "@react-native-firebase/analytics",
+      [
+        "expo-build-properties",
+        {
+          "ios": { "useFrameworks": "static" }
         }
       ]
     ],
