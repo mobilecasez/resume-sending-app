@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import ReplyComposeModal from './ReplyComposeModal';
 import OnboardingChecklist from './OnboardingChecklist';
+import WelcomeExplainer from './WelcomeExplainer';
 import { track } from '../services/analytics';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView,
@@ -1367,6 +1368,21 @@ export default function HomeScreen({
   }, [setScreen]);
   const showOnboarding = !onboardingDismissed && setup && !setup.complete;
 
+  // First-run explainer — shown ONCE per user (before any setup), tells them what the app does.
+  const [showExplainer, setShowExplainer] = useState(false);
+  const explainerKey = user?.email ? `explainer_seen_v1_${user.email}` : null;
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try { if (explainerKey) { const v = await AsyncStorage.getItem(explainerKey); if (alive && v !== '1') setShowExplainer(true); } } catch {}
+    })();
+    return () => { alive = false; };
+  }, [explainerKey]);
+  const dismissExplainer = useCallback(async () => {
+    setShowExplainer(false);
+    try { if (explainerKey) await AsyncStorage.setItem(explainerKey, '1'); } catch {}
+  }, [explainerKey]);
+
   // Refresh "Recent applications" whenever the Home tab regains focus — e.g. after the
   // user applies to a job via the Job Hub portal (which records server-side but doesn't
   // touch this screen's state). Pulls the merged history straight from the backend.
@@ -1958,6 +1974,13 @@ export default function HomeScreen({
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* ── FIRST-RUN EXPLAINER (what CVApplyr does) ─────── */}
+      <WelcomeExplainer
+        visible={showExplainer}
+        onClose={dismissExplainer}
+        onExplore={() => { dismissExplainer(); require('expo-router').router?.push?.('/(discover)'); }}
+      />
 
       {/* ── SIDE MENU MODAL ──────────────────────────────── */}
       <Modal visible={showSettings} transparent animationType="none" onRequestClose={() => setShowSettings(false)}>
