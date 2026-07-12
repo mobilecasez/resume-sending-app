@@ -42,6 +42,3 @@ app-example
 /ios
 /android
 
-# Firebase config (API keys) — kept local, present for EAS builds
-google-services.json
-GoogleService-Info.plist

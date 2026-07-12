@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "443611167599",
+    "project_id": "cvapplyr-in",
+    "storage_bucket": "cvapplyr-in.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:443611167599:android:5c44dcd81845a35906069a",
+        "android_client_info": {
+          "package_name": "com.cvapplyr.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDdafNUNGFUPjwmh27VoNo6Fhe5RKZNy-k"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
