@@ -986,37 +986,50 @@ export type DiscoverJob = {
   id: string; title: string; company: string | null; employer_name: string | null; employer_domain: string | null;
   location: string | null; work_mode: string | null; job_type: string | null; salary: string | null; experience: string | null;
   responsibilities: string[]; skills: string[]; job_url: string; source: string | null; country: string | null;
+  field?: string | null; role_category?: string | null; seniority?: string | null;
   match?: number | null;   // résumé skill-match 0..100 (null = job lists no skills / no résumé)
 };
-export type DiscoverResponse = { success: boolean; jobs: DiscoverJob[]; total: number; offset: number; limit: number; hasMore: boolean; noProfile?: boolean; sort?: string };
+export type DiscoverResponse = {
+  success: boolean; jobs: DiscoverJob[]; total: number; offset: number; limit: number; hasMore: boolean;
+  noProfile?: boolean; sort?: string; userField?: string | null; userRoleCategory?: string | null;
+  appliedField?: string | null; minMatch?: number;
+};
 export type DiscoverFacets = {
   total: number;
+  fields: { field: string; n: number }[];
+  roleCategories: { role_category: string; n: number }[];
   skills: { skill: string; n: number }[];
   employers: { employer_name: string; n: number }[];
   countries: { country: string; n: number }[];
   workModes: { work_mode: string; n: number }[];
+  userField?: string | null;
+  userRoleCategory?: string | null;
 };
 
 /** The browse feed of world jobs (from the ATS firehose). sort='match' ranks by résumé fit. */
 export async function fetchDiscoverJobs(
-  opts: { offset?: number; limit?: number; q?: string; country?: string; work_mode?: string; employer?: string; skill?: string; sort?: 'match' | 'recent' } = {},
+  opts: {
+    offset?: number; limit?: number; q?: string; country?: string; work_mode?: string; employer?: string;
+    skill?: string; field?: string; role_category?: string; sort?: 'match' | 'recent'; min_match?: number;
+  } = {},
 ): Promise<DiscoverResponse> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/discover/jobs`, {
-    headers,
-    params: {
-      offset: opts.offset ?? 0, limit: opts.limit ?? 20, q: opts.q || '', country: opts.country || '',
-      work_mode: opts.work_mode || '', employer: opts.employer || '', skill: opts.skill || '', sort: opts.sort || 'recent',
-    },
-    timeout: 25000,
-  });
+  const params: Record<string, string | number> = {
+    offset: opts.offset ?? 0, limit: opts.limit ?? 20, q: opts.q || '', country: opts.country || '',
+    work_mode: opts.work_mode || '', employer: opts.employer || '', skill: opts.skill || '',
+    field: opts.field || '', role_category: opts.role_category || '', sort: opts.sort || 'match',
+  };
+  if (opts.min_match != null) params.min_match = opts.min_match;
+  const { data } = await axios.get(`${API_BASE_URL}/discover/jobs`, { headers, params, timeout: 25000 });
   return data;
 }
 
-/** Filter chips for the feed (top employers, countries, work modes, total). */
-export async function fetchDiscoverFacets(): Promise<DiscoverFacets> {
+/** Filter chips for the feed. Pass `field` to get the role categories within that field. */
+export async function fetchDiscoverFacets(field?: string): Promise<DiscoverFacets> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/discover/facets`, { headers, timeout: 20000 });
+  const { data } = await axios.get(`${API_BASE_URL}/discover/facets`, {
+    headers, params: { field: field || '' }, timeout: 20000,
+  });
   return data;
 }
 

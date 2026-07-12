@@ -6,6 +6,7 @@
 'use strict';
 const ats = require('../utils/atsDiscovery');
 const dbConfig = require('../../db-config');
+const { classifyTitle } = require('../utils/jobTaxonomy');
 
 let SOURCES = [];
 try { SOURCES = require('../data/global_job_sources.json'); } catch (e) { console.warn('[firehose] no sources file:', e.message); }
@@ -26,19 +27,22 @@ const clip = (s, n) => (s == null ? null : String(s).slice(0, n));
 async function saveJob(j, source, region) {
   if (!j || !j.job_url || !j.title) return false;
   try {
+    const tax = classifyTitle(j.title);   // deterministic field / role / seniority — no AI
     await dbConfig.run(
       `INSERT INTO global_jobs
-         (job_url, title, employer_name, employer_domain, location, work_mode, job_type, salary, experience, responsibilities, skills, source, country, is_active, first_seen, last_seen)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, TRUE, NOW(), NOW())
+         (job_url, title, employer_name, employer_domain, location, work_mode, job_type, salary, experience, responsibilities, skills, source, country, field, role_category, seniority, is_active, first_seen, last_seen)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, TRUE, NOW(), NOW())
        ON CONFLICT (job_url) DO UPDATE SET
          title=EXCLUDED.title, employer_name=EXCLUDED.employer_name, employer_domain=EXCLUDED.employer_domain,
          location=EXCLUDED.location, work_mode=EXCLUDED.work_mode, job_type=EXCLUDED.job_type, salary=EXCLUDED.salary,
          experience=EXCLUDED.experience, responsibilities=EXCLUDED.responsibilities, skills=EXCLUDED.skills,
-         source=EXCLUDED.source, is_active=TRUE, last_seen=NOW()`,
+         source=EXCLUDED.source, field=EXCLUDED.field, role_category=EXCLUDED.role_category, seniority=EXCLUDED.seniority,
+         is_active=TRUE, last_seen=NOW()`,
       [clip(j.job_url, 1990), clip(j.title, 490), clip(j.employer_name, 290), domainOf(j.job_url),
        clip(j.location, 490), workModeOf(j.location), clip(j.job_type, 110), clip(j.salary, 250),
        clip(j.experience, 250), JSON.stringify(Array.isArray(j.responsibilities) ? j.responsibilities : []),
-       JSON.stringify(Array.isArray(j.skills) ? j.skills : []), clip(source, 55), clip(region, 78)]);
+       JSON.stringify(Array.isArray(j.skills) ? j.skills : []), clip(source, 55), clip(region, 78),
+       clip(tax.field, 58), clip(tax.roleCategory, 88), clip(tax.seniority, 28)]);
     return true;
   } catch { return false; }
 }

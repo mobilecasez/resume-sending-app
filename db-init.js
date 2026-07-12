@@ -947,6 +947,15 @@ async function runPostgresMigrations(db) {
         await col(`CREATE INDEX IF NOT EXISTS idx_global_jobs_active ON global_jobs(is_active)`);
         console.log('✅ Migration 023: global_jobs done');
 
+        // ── Migration 024: job taxonomy on global_jobs (deterministic field / role / seniority) ──
+        // Lets the Explore feed scope to a user's field, filter by role category, and stay diverse.
+        await col(`ALTER TABLE global_jobs ADD COLUMN IF NOT EXISTS field VARCHAR(60)`);
+        await col(`ALTER TABLE global_jobs ADD COLUMN IF NOT EXISTS role_category VARCHAR(90)`);
+        await col(`ALTER TABLE global_jobs ADD COLUMN IF NOT EXISTS seniority VARCHAR(30)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_global_jobs_field ON global_jobs(field)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_global_jobs_role_cat ON global_jobs(role_category)`);
+        console.log('✅ Migration 024: global_jobs taxonomy done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

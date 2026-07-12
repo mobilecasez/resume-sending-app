@@ -2,8 +2,10 @@
 //
 // "Explore Jobs" — value-first feed over the global_jobs firehose. Job-Hub-style hero summary card,
 // rich job cards (meta + skills + responsibilities + résumé MATCH badge), sort by Best-match / Recent,
-// and a Filters sheet (Technology / Location / Work mode / Employer). Each job opens the EXISTING Job
-// Hub detail (full details + inline-browser Apply + AI cover letter) via jobStr/employerStr.
+// a FIELD scope (defaults to the user's own field, e.g. IT / Sales / Finance, best matches first), and
+// a Filters sheet (Field / Role / Technology / Location / Work mode / Employer). The feed round-robins
+// employers server-side so no single company walls the list. Each job opens the EXISTING Job Hub detail
+// (full details + inline-browser Apply + AI cover letter) via jobStr/employerStr.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, ActivityIndicator,
@@ -35,6 +37,8 @@ const gradFor = (s?: string): [string, string] => { let h = 0; const k = s || 'x
 const cap = (s?: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const matchColor = (m: number) => (m >= 70 ? T.emerald : m >= 40 ? T.amber : '#94A3B8');
 const hashId = (s: string) => { let h = 0; const k = s || 'x'; for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0; return 'gj_' + h.toString(36); };
+// shorten long field labels for compact chips ("Mechanical / Electrical / Civil Engineering" → "Mechanical / …")
+const shortField = (f?: string | null) => { if (!f) return ''; return f.length > 22 ? f.split('/')[0].trim() + ' …' : f; };
 
 function toJobHubParams(dj: DiscoverJob) {
   const job = {
@@ -79,9 +83,9 @@ function MatchBadge({ score }: { score: number }) {
 function HeroCard({ facets, total }: { facets: DiscoverFacets | null; total: number }) {
   const remote = facets?.workModes?.find((w) => /remote/i.test(w.work_mode))?.n || 0;
   const stats = [
-    { value: fmt(total || facets?.total || 0), label: 'Live jobs', color: '#22D3EE' },
+    { value: fmt(facets?.total || total || 0), label: 'Live jobs', color: '#22D3EE' },
     { value: fmt(remote), label: 'Remote', color: '#A78BFA' },
-    { value: fmt(facets?.employers?.length || 0) + (facets && facets.employers.length >= 40 ? '+' : ''), label: 'Employers', color: '#34D399' },
+    { value: fmt(facets?.fields?.length || 0), label: 'Fields', color: '#34D399' },
     { value: fmt(facets?.countries?.length || 0), label: 'Regions', color: '#FB923C' },
   ];
   return (
@@ -94,7 +98,7 @@ function HeroCard({ facets, total }: { facets: DiscoverFacets | null; total: num
         <View style={styles.livePill}><LiveDot /><Text style={styles.livePillText}>Live</Text></View>
       </View>
       <Text style={styles.heroTitle}>Explore Jobs</Text>
-      <Text style={styles.heroSub}>{fmt(total || facets?.total || 0)} openings from top companies — updated every few hours</Text>
+      <Text style={styles.heroSub}>{fmt(facets?.total || total || 0)} openings across every field — updated every few hours</Text>
       <View style={styles.statsRow}>
         {stats.map((s, i) => (
           <React.Fragment key={s.label}>
@@ -123,6 +127,7 @@ function JobCard({ job, onOpen }: { job: DiscoverJob; onOpen: (j: DiscoverJob) =
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={styles.jobTitle} numberOfLines={2}>{job.title}</Text>
           <Text style={styles.jobCompany} numberOfLines={1}>{job.employer_name || 'Company'}</Text>
+          {!!job.role_category && <Text style={styles.roleTag} numberOfLines={1}>{job.role_category}</Text>}
         </View>
         {typeof job.match === 'number' && <MatchBadge score={job.match} />}
       </View>
@@ -171,41 +176,63 @@ export default function DiscoverScreen() {
   const [error, setError] = useState<string | null>(null);
   const [noProfile, setNoProfile] = useState(false);
   const [query, setQuery] = useState('');
-  const [sort, setSort] = useState<'match' | 'recent'>('recent');
-  const [mode, setMode] = useState('');       // work_mode
+  const [sort, setSort] = useState<'match' | 'recent'>('match');
+  const [mode, setMode] = useState('');          // work_mode
   const [skill, setSkill] = useState('');
   const [country, setCountry] = useState('');
   const [employer, setEmployer] = useState('');
+  const [field, setField] = useState('');        // department scope ('' = all fields)
+  const [roleCat, setRoleCat] = useState('');
+  const [userField, setUserField] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [facets, setFacets] = useState<DiscoverFacets | null>(null);
   const seq = useRef(0);
+  const fieldInit = useRef(false);
 
-  const activeCount = [mode, skill, country, employer].filter(Boolean).length;
+  const activeCount = [mode, skill, country, employer, roleCat].filter(Boolean).length;
+  // A ≥10% match floor only makes sense inside the user's OWN field (where match is meaningful).
+  const minMatch = !noProfile && field && field === userField ? 10 : 0;
 
   const load = useCallback(async (opts: { offset: number; append: boolean }) => {
     const my = ++seq.current;
     try {
-      const data = await fetchDiscoverJobs({ q: query.trim(), work_mode: mode, skill, country, employer, sort, offset: opts.offset, limit: PAGE });
+      const data = await fetchDiscoverJobs({ q: query.trim(), work_mode: mode, skill, country, employer, field, role_category: roleCat, sort, min_match: minMatch, offset: opts.offset, limit: PAGE });
       if (my !== seq.current) return;
       setError(null); setTotal(data.total || 0); setNoProfile(!!data.noProfile);
+      if (data.userField && userField == null) setUserField(data.userField);
       setJobs((prev) => (opts.append ? [...prev, ...(data.jobs || [])] : (data.jobs || [])));
     } catch {
       if (my !== seq.current) return;
       setError('Could not load jobs. Pull to retry.');
       if (!opts.append) setJobs([]);
     }
-  }, [query, mode, skill, country, employer, sort]);
+  }, [query, mode, skill, country, employer, field, roleCat, sort, minMatch, userField]);
 
-  useEffect(() => { fetchDiscoverFacets().then(setFacets).catch(() => {}); logEvent('feed_opened'); }, []);
+  // Mount: load facets, capture the user's own field, and default the scope to it.
+  useEffect(() => {
+    fetchDiscoverFacets('').then((f) => {
+      setFacets(f);
+      setUserField(f.userField || null);
+      if (!fieldInit.current) { fieldInit.current = true; if (f.userField) setField(f.userField); }
+    }).catch(() => {});
+    logEvent('feed_opened');
+  }, []);
+  // When the scope field changes, refresh facets so the Role list matches the field.
+  useEffect(() => { if (field) fetchDiscoverFacets(field).then(setFacets).catch(() => {}); }, [field]);
+
   useEffect(() => {
     const t = setTimeout(async () => { setLoading(true); await load({ offset: 0, append: false }); setLoading(false); }, 300);
     return () => clearTimeout(t);
   }, [load]);
 
-  const onRefresh = useCallback(async () => { setRefreshing(true); await Promise.all([load({ offset: 0, append: false }), fetchDiscoverFacets().then(setFacets).catch(() => {})]); setRefreshing(false); }, [load]);
+  const onRefresh = useCallback(async () => { setRefreshing(true); await Promise.all([load({ offset: 0, append: false }), fetchDiscoverFacets(field).then(setFacets).catch(() => {})]); setRefreshing(false); }, [load, field]);
   const onEnd = useCallback(async () => { if (loadingMore || jobs.length >= total || loading) return; setLoadingMore(true); await load({ offset: jobs.length, append: true }); setLoadingMore(false); }, [loadingMore, jobs.length, total, loading, load]);
   const openJob = useCallback((dj: DiscoverJob) => { router.push({ pathname: '/(ai-hub)/job-detail', params: toJobHubParams(dj) }); }, [router]);
-  const clearFilters = () => { setMode(''); setSkill(''); setCountry(''); setEmployer(''); };
+  const clearFilters = () => { setMode(''); setSkill(''); setCountry(''); setEmployer(''); setRoleCat(''); };
+  const pickField = (f: string) => { const nf = f === field ? '' : f; setField(nf); setRoleCat(''); };
+
+  const scopeLabel = field ? shortField(field) : 'All fields';
+  const isOwnField = !!field && field === userField;
 
   const header = useMemo(() => (
     <View>
@@ -215,6 +242,22 @@ export default function DiscoverScreen() {
         <TextInput value={query} onChangeText={setQuery} placeholder="Search role, company or city" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" />
         {query.length > 0 && <TouchableOpacity onPress={() => setQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Ionicons name="close-circle" size={17} color={T.textFaint} /></TouchableOpacity>}
       </View>
+
+      {/* Field scope pill: defaults to the user's field, tap to change, clear to browse all */}
+      <View style={styles.scopeRow}>
+        <TouchableOpacity onPress={() => setShowFilters(true)} style={styles.scopePill} activeOpacity={0.85}>
+          <Ionicons name="layers-outline" size={14} color={T.blueDeep} />
+          <Text style={styles.scopePillText} numberOfLines={1}>{scopeLabel}</Text>
+          {isOwnField && <View style={styles.ownTag}><Text style={styles.ownTagText}>your field</Text></View>}
+          <Ionicons name="chevron-down" size={14} color={T.textMuted} />
+        </TouchableOpacity>
+        {!!field && (
+          <TouchableOpacity onPress={() => { setField(''); setRoleCat(''); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.showAllBtn}>
+            <Text style={styles.showAllText}>All fields</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
       <View style={styles.controlsRow}>
         <View style={styles.sortToggle}>
           {(['match', 'recent'] as const).map((s) => (
@@ -229,12 +272,16 @@ export default function DiscoverScreen() {
           <Text style={[styles.filterBtnText, activeCount > 0 && { color: '#fff' }]}>{activeCount > 0 ? `Filters · ${activeCount}` : 'Filters'}</Text>
         </TouchableOpacity>
       </View>
+
       {sort === 'match' && noProfile && (
-        <View style={styles.hintBox}><Ionicons name="information-circle-outline" size={15} color={T.blueDeep} /><Text style={styles.hintText}>Upload your résumé in Account Settings to see match scores.</Text></View>
+        <View style={styles.hintBox}><Ionicons name="information-circle-outline" size={15} color={T.blueDeep} /><Text style={styles.hintText}>Upload your résumé in Account Settings to see match scores and your-field jobs.</Text></View>
       )}
-      <Text style={styles.countLine}>{fmt(total)} {total === 1 ? 'job' : 'jobs'}{activeCount > 0 ? ' · filtered' : ''}</Text>
+      <Text style={styles.countLine}>
+        {fmt(total)} {total === 1 ? 'job' : 'jobs'}
+        {isOwnField && !noProfile ? ' · your field, best matches' : (field ? ` · ${shortField(field)}` : '')}
+      </Text>
     </View>
-  ), [facets, total, query, sort, activeCount, noProfile]);
+  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -256,7 +303,7 @@ export default function DiscoverScreen() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
           onEndReached={onEnd} onEndReachedThreshold={0.5}
           removeClippedSubviews initialNumToRender={6} windowSize={9}
-          ListEmptyComponent={<View style={styles.empty}><Ionicons name={error ? 'cloud-offline-outline' : 'briefcase-outline'} size={40} color={T.textFaint} /><Text style={styles.emptyText}>{error || (query || activeCount ? 'No jobs match — try clearing filters.' : 'No jobs yet — check back soon.')}</Text></View>}
+          ListEmptyComponent={<View style={styles.empty}><Ionicons name={error ? 'cloud-offline-outline' : 'briefcase-outline'} size={40} color={T.textFaint} /><Text style={styles.emptyText}>{error || (query || activeCount || field ? 'No jobs match — try “All fields” or clear filters.' : 'No jobs yet — check back soon.')}</Text></View>}
           ListFooterComponent={loadingMore ? <ActivityIndicator color={T.blue} style={{ marginVertical: 18 }} /> : <View style={{ height: 8 }} />}
         />
       )}
@@ -271,7 +318,16 @@ export default function DiscoverScreen() {
               <Text style={styles.sheetTitle}>Filters</Text>
               <TouchableOpacity onPress={clearFilters}><Text style={styles.clearText}>Clear all</Text></TouchableOpacity>
             </View>
-            <ScrollView style={{ maxHeight: 440 }} showsVerticalScrollIndicator={false}>
+            <ScrollView style={{ maxHeight: 460 }} showsVerticalScrollIndicator={false}>
+              <FilterSection
+                title="Field" allLabel="All fields"
+                items={(facets?.fields || []).map((f) => f.field)} value={field}
+                onPick={(v) => pickField(v)} onAll={() => { setField(''); setRoleCat(''); }}
+                labelFor={shortField} highlight={userField || undefined}
+              />
+              {!!field && (facets?.roleCategories || []).length > 0 && (
+                <FilterSection title="Role" items={(facets?.roleCategories || []).map((r) => r.role_category)} value={roleCat} onPick={(v) => setRoleCat(v === roleCat ? '' : v)} />
+              )}
               <FilterSection title="Technology" items={(facets?.skills || []).slice(0, 24).map((s) => s.skill)} value={skill} onPick={(v) => setSkill(v === skill ? '' : v)} />
               <FilterSection title="Location" items={(facets?.countries || []).map((c) => c.country)} value={country} onPick={(v) => setCountry(v === country ? '' : v)} />
               <FilterSection title="Work mode" items={MODES} value={cap(mode) || ''} onPick={(v) => setMode(v.toLowerCase() === mode ? '' : v.toLowerCase())} />
@@ -290,13 +346,15 @@ export default function DiscoverScreen() {
   );
 }
 
-function FilterSection({ title, items, value, onPick }: { title: string; items: string[]; value: string; onPick: (v: string) => void }) {
-  if (!items.length) return null;
+function FilterSection({ title, items, value, onPick, allLabel, onAll, labelFor, highlight }:
+  { title: string; items: string[]; value: string; onPick: (v: string) => void; allLabel?: string; onAll?: () => void; labelFor?: (v: string) => string; highlight?: string }) {
+  if (!items.length && !allLabel) return null;
   return (
     <View style={styles.fSection}>
       <Text style={styles.fSectionTitle}>{title}</Text>
       <View style={styles.fChipWrap}>
-        {items.map((it) => <FChip key={it} label={it} on={value === it} onPress={() => onPick(it)} />)}
+        {allLabel && <FChip label={allLabel} on={!value} onPress={() => (onAll ? onAll() : onPick(''))} />}
+        {items.map((it) => <FChip key={it} label={(labelFor ? labelFor(it) : it) + (highlight && it === highlight ? '  ★' : '')} on={value === it} onPress={() => onPick(it)} />)}
       </View>
     </View>
   );
@@ -325,6 +383,15 @@ const styles = StyleSheet.create({
 
   searchWrap: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: T.surface, borderRadius: 14, borderWidth: 1, borderColor: T.border, paddingHorizontal: 12, height: 46, marginBottom: 10 },
   searchInput: { flex: 1, fontSize: 14, color: T.ink, padding: 0 },
+
+  scopeRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
+  scopePill: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: T.surface, borderRadius: 12, borderWidth: 1, borderColor: T.border, paddingHorizontal: 12, height: 42 },
+  scopePillText: { flex: 1, fontSize: 13.5, fontWeight: '800', color: T.ink },
+  ownTag: { backgroundColor: 'rgba(16,185,129,0.12)', borderRadius: 100, paddingHorizontal: 8, paddingVertical: 3 },
+  ownTagText: { fontSize: 10, fontWeight: '800', color: T.emerald },
+  showAllBtn: { paddingHorizontal: 10, height: 42, justifyContent: 'center' },
+  showAllText: { fontSize: 12.5, fontWeight: '700', color: T.blueDeep },
+
   controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
   sortToggle: { flexDirection: 'row', backgroundColor: T.surface, borderRadius: 12, borderWidth: 1, borderColor: T.border, padding: 3, flex: 1 },
   sortBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 34, borderRadius: 9 },
@@ -344,6 +411,7 @@ const styles = StyleSheet.create({
   logoText: { color: '#fff', fontWeight: '800', fontSize: 19 },
   jobTitle: { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.2 },
   jobCompany: { fontSize: 12.5, color: T.textMuted, marginTop: 3, fontWeight: '600' },
+  roleTag: { fontSize: 11, color: T.purple, marginTop: 3, fontWeight: '700' },
   matchBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 100, borderWidth: 1 },
   matchText: { fontSize: 11.5, fontWeight: '800' },
   metaRow: { flexDirection: 'row', gap: 6, marginTop: 13, flexWrap: 'wrap' },
@@ -377,7 +445,7 @@ const styles = StyleSheet.create({
   fSection: { marginTop: 14 },
   fSectionTitle: { fontSize: 12, fontWeight: '800', color: T.textFaint, letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 9 },
   fChipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  fChip: { paddingHorizontal: 13, paddingVertical: 8, borderRadius: 100, backgroundColor: T.surface, borderWidth: 1, borderColor: T.border, maxWidth: 260 },
+  fChip: { paddingHorizontal: 13, paddingVertical: 8, borderRadius: 100, backgroundColor: T.surface, borderWidth: 1, borderColor: T.border, maxWidth: 300 },
   fChipOn: { backgroundColor: T.blue, borderColor: T.blue },
   fChipText: { fontSize: 12.5, fontWeight: '700', color: T.textMuted },
   fChipTextOn: { color: '#fff' },
