@@ -986,24 +986,29 @@ export type DiscoverJob = {
   id: string; title: string; company: string | null; employer_name: string | null; employer_domain: string | null;
   location: string | null; work_mode: string | null; job_type: string | null; salary: string | null; experience: string | null;
   responsibilities: string[]; skills: string[]; job_url: string; source: string | null; country: string | null;
+  match?: number | null;   // résumé skill-match 0..100 (null = job lists no skills / no résumé)
 };
-export type DiscoverResponse = { success: boolean; jobs: DiscoverJob[]; total: number; offset: number; limit: number; hasMore: boolean };
+export type DiscoverResponse = { success: boolean; jobs: DiscoverJob[]; total: number; offset: number; limit: number; hasMore: boolean; noProfile?: boolean; sort?: string };
 export type DiscoverFacets = {
   total: number;
+  skills: { skill: string; n: number }[];
   employers: { employer_name: string; n: number }[];
   countries: { country: string; n: number }[];
   workModes: { work_mode: string; n: number }[];
 };
 
-/** The browse feed of world jobs (from the ATS firehose). */
+/** The browse feed of world jobs (from the ATS firehose). sort='match' ranks by résumé fit. */
 export async function fetchDiscoverJobs(
-  opts: { offset?: number; limit?: number; q?: string; country?: string; work_mode?: string; employer?: string } = {},
+  opts: { offset?: number; limit?: number; q?: string; country?: string; work_mode?: string; employer?: string; skill?: string; sort?: 'match' | 'recent' } = {},
 ): Promise<DiscoverResponse> {
   const headers = await getAuthHeader();
   const { data } = await axios.get(`${API_BASE_URL}/discover/jobs`, {
     headers,
-    params: { offset: opts.offset ?? 0, limit: opts.limit ?? 20, q: opts.q || '', country: opts.country || '', work_mode: opts.work_mode || '', employer: opts.employer || '' },
-    timeout: 20000,
+    params: {
+      offset: opts.offset ?? 0, limit: opts.limit ?? 20, q: opts.q || '', country: opts.country || '',
+      work_mode: opts.work_mode || '', employer: opts.employer || '', skill: opts.skill || '', sort: opts.sort || 'recent',
+    },
+    timeout: 25000,
   });
   return data;
 }

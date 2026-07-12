@@ -1,13 +1,13 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 //
-// "Explore Jobs" — value-first feed over the global_jobs firehose. A Job-Hub-style hero summary card
-// on top, rich job cards (meta chips + skills + responsibilities) like the dashboard, and each job
-// opens the EXISTING Job Hub detail screen (full details + inline-browser Apply + AI cover letter +
-// autofill) by passing a mapped Job/Employer via jobStr/employerStr — no résumé/profile needed first.
+// "Explore Jobs" — value-first feed over the global_jobs firehose. Job-Hub-style hero summary card,
+// rich job cards (meta + skills + responsibilities + résumé MATCH badge), sort by Best-match / Recent,
+// and a Filters sheet (Technology / Location / Work mode / Employer). Each job opens the EXISTING Job
+// Hub detail (full details + inline-browser Apply + AI cover letter) via jobStr/employerStr.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, ActivityIndicator,
-  SafeAreaView, RefreshControl, Platform, Animated, Easing,
+  SafeAreaView, RefreshControl, Platform, Animated, Easing, Modal, Pressable, ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -18,7 +18,6 @@ import {
 } from '../../services/aiHubService';
 import { logEvent } from '../../services/firebaseAnalytics';
 
-// Shared design tokens (match the Job Hub's `T`).
 const T = {
   bg: '#E5EAF3', surface: '#FFFFFF', ink: '#0B0F22', textMuted: '#5B6B8A', textFaint: '#8896B0',
   border: 'rgba(11,15,34,0.06)', blue: '#4F8DFF', blueDeep: '#2563EB', purple: '#7C6BFF',
@@ -33,37 +32,30 @@ const MODES = ['Remote', 'Hybrid', 'Onsite'];
 const fmt = (n?: number | null) => (n == null || isNaN(n) ? '0' : Math.round(n).toLocaleString('en-US'));
 const initial = (s?: string | null) => (s || '?').trim().charAt(0).toUpperCase();
 const gradFor = (s?: string): [string, string] => { let h = 0; const k = s || 'x'; for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0; return AV[h % AV.length]; };
-
+const cap = (s?: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+const matchColor = (m: number) => (m >= 70 ? T.emerald : m >= 40 ? T.amber : '#94A3B8');
 const hashId = (s: string) => { let h = 0; const k = s || 'x'; for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0; return 'gj_' + h.toString(36); };
 
-// DiscoverJob → the Job Hub's Job/Employer shape (so the existing detail screen renders it).
-// id is a URL-safe synthetic (not the job_url) so the detail screen's /ai-hub/jobs/:id/* calls stay
-// well-formed (they 404 harmlessly for global jobs — persistence just doesn't stick, everything else works).
 function toJobHubParams(dj: DiscoverJob) {
   const job = {
     id: hashId(dj.job_url || dj.id), title: dj.title, location: dj.location || 'Not specified',
     experience: dj.experience || '', salary: dj.salary || '', jobType: dj.job_type || '',
     workMode: dj.work_mode || null, urgent: false, skills: Array.isArray(dj.skills) ? dj.skills : [],
     responsibilities: Array.isArray(dj.responsibilities) ? dj.responsibilities : [], contacts: [],
-    applyUrl: dj.job_url,
+    applyUrl: dj.job_url, matchScore: dj.match ?? null,
   };
   const c = gradFor(dj.employer_name || dj.title);
   const employer = {
     id: 'g_' + (dj.employer_name || 'co').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-    name: dj.employer_name || 'Company',
-    subInfo: [dj.location, dj.country].filter(Boolean).join(' · ') || 'Live opening',
+    name: dj.employer_name || 'Company', subInfo: [dj.location, dj.country].filter(Boolean).join(' · ') || 'Live opening',
     logoColor: c, logoInitial: initial(dj.employer_name), domain: dj.employer_domain || '',
   };
   return { jobStr: JSON.stringify(job), employerStr: JSON.stringify(employer) };
 }
 
-// ── pulsing "Live" dot ───
 function LiveDot() {
   const a = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    const loop = Animated.loop(Animated.timing(a, { toValue: 1, duration: 1800, easing: Easing.out(Easing.ease), useNativeDriver: true }));
-    loop.start(); return () => loop.stop();
-  }, []);
+  useEffect(() => { const loop = Animated.loop(Animated.timing(a, { toValue: 1, duration: 1800, easing: Easing.out(Easing.ease), useNativeDriver: true })); loop.start(); return () => loop.stop(); }, []);
   const scale = a.interpolate({ inputRange: [0, 1], outputRange: [1, 2.6] });
   const opacity = a.interpolate({ inputRange: [0, 1], outputRange: [0.5, 0] });
   return (
@@ -74,13 +66,22 @@ function LiveDot() {
   );
 }
 
-// ── hero summary card (clones the Job Hub header) ───
+function MatchBadge({ score }: { score: number }) {
+  const c = matchColor(score);
+  return (
+    <View style={[styles.matchBadge, { backgroundColor: c + '18', borderColor: c + '44' }]}>
+      <Ionicons name="sparkles" size={10} color={c} />
+      <Text style={[styles.matchText, { color: c }]}>{score}%</Text>
+    </View>
+  );
+}
+
 function HeroCard({ facets, total }: { facets: DiscoverFacets | null; total: number }) {
   const remote = facets?.workModes?.find((w) => /remote/i.test(w.work_mode))?.n || 0;
   const stats = [
     { value: fmt(total || facets?.total || 0), label: 'Live jobs', color: '#22D3EE' },
     { value: fmt(remote), label: 'Remote', color: '#A78BFA' },
-    { value: fmt(facets?.employers?.length || 0) + (facets && facets.employers.length >= 30 ? '+' : ''), label: 'Employers', color: '#34D399' },
+    { value: fmt(facets?.employers?.length || 0) + (facets && facets.employers.length >= 40 ? '+' : ''), label: 'Employers', color: '#34D399' },
     { value: fmt(facets?.countries?.length || 0), label: 'Regions', color: '#FB923C' },
   ];
   return (
@@ -98,10 +99,7 @@ function HeroCard({ facets, total }: { facets: DiscoverFacets | null; total: num
         {stats.map((s, i) => (
           <React.Fragment key={s.label}>
             {i > 0 && <View style={styles.statDivider} />}
-            <View style={styles.statItem}>
-              <Text style={[styles.statValue, { color: s.color }]}>{s.value}</Text>
-              <Text style={styles.statLabel}>{s.label}</Text>
-            </View>
+            <View style={styles.statItem}><Text style={[styles.statValue, { color: s.color }]}>{s.value}</Text><Text style={styles.statLabel}>{s.label}</Text></View>
           </React.Fragment>
         ))}
       </View>
@@ -109,18 +107,11 @@ function HeroCard({ facets, total }: { facets: DiscoverFacets | null; total: num
   );
 }
 
-// ── meta chip ───
 function Meta({ icon, color, text }: { icon: any; color: string; text?: string | null }) {
   if (!text || /^not (specified|listed)$/i.test(text)) return null;
-  return (
-    <View style={styles.metaChip}>
-      <Ionicons name={icon} size={12} color={color} />
-      <Text style={styles.metaText} numberOfLines={1}>{text}</Text>
-    </View>
-  );
+  return <View style={styles.metaChip}><Ionicons name={icon} size={12} color={color} /><Text style={styles.metaText} numberOfLines={1}>{text}</Text></View>;
 }
 
-// ── rich job card (clones the dashboard JobCard essence) ───
 function JobCard({ job, onOpen }: { job: DiscoverJob; onOpen: (j: DiscoverJob) => void }) {
   const c = gradFor(job.employer_name || job.title);
   const skills = Array.isArray(job.skills) ? job.skills : [];
@@ -128,15 +119,13 @@ function JobCard({ job, onOpen }: { job: DiscoverJob; onOpen: (j: DiscoverJob) =
   return (
     <TouchableOpacity style={styles.card} activeOpacity={0.85} onPress={() => onOpen(job)}>
       <View style={styles.cardHead}>
-        <LinearGradient colors={c} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.logo}>
-          <Text style={styles.logoText}>{initial(job.employer_name)}</Text>
-        </LinearGradient>
+        <LinearGradient colors={c} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.logo}><Text style={styles.logoText}>{initial(job.employer_name)}</Text></LinearGradient>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={styles.jobTitle} numberOfLines={2}>{job.title}</Text>
           <Text style={styles.jobCompany} numberOfLines={1}>{job.employer_name || 'Company'}</Text>
         </View>
+        {typeof job.match === 'number' && <MatchBadge score={job.match} />}
       </View>
-
       <View style={styles.metaRow}>
         <Meta icon="location-outline" color={META.location} text={job.location} />
         <Meta icon="cash-outline" color={META.salary} text={job.salary} />
@@ -144,40 +133,32 @@ function JobCard({ job, onOpen }: { job: DiscoverJob; onOpen: (j: DiscoverJob) =
         <Meta icon="briefcase-outline" color={META.jobType} text={job.job_type} />
         <Meta icon="time-outline" color={META.experience} text={job.experience} />
       </View>
-
       {skills.length > 0 && (
         <View style={styles.skillsWrap}>
           <Text style={styles.sectionLabel}>SKILLS</Text>
           <View style={styles.skillRow}>
-            {skills.slice(0, 5).map((s, i) => (
-              <View key={i} style={styles.skillChip}><Text style={styles.skillText} numberOfLines={1}>{s}</Text></View>
-            ))}
+            {skills.slice(0, 5).map((s, i) => <View key={i} style={styles.skillChip}><Text style={styles.skillText} numberOfLines={1}>{s}</Text></View>)}
             {skills.length > 5 && <View style={styles.skillChip}><Text style={styles.skillText}>+{skills.length - 5} more</Text></View>}
           </View>
         </View>
       )}
-
       {resp.length > 0 && (
         <View style={styles.respWrap}>
           <Text style={styles.sectionLabel}>RESPONSIBILITIES</Text>
-          {resp.slice(0, 3).map((r, i) => (
-            <View key={i} style={styles.respRow}>
-              <View style={styles.respDot} />
-              <Text style={styles.respText} numberOfLines={2}>{r}</Text>
-            </View>
-          ))}
+          {resp.slice(0, 3).map((r, i) => <View key={i} style={styles.respRow}><View style={styles.respDot} /><Text style={styles.respText} numberOfLines={2}>{r}</Text></View>)}
         </View>
       )}
-
       <View style={styles.cardFooter}>
         <View style={styles.viewBtn}><Ionicons name="reader-outline" size={15} color={T.blueDeep} /><Text style={styles.viewBtnText}>View details</Text></View>
-        <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.applyBtn}>
-          <Ionicons name="paper-plane-outline" size={14} color="#fff" />
-          <Text style={styles.applyText}>View & Apply</Text>
-        </LinearGradient>
+        <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.applyBtn}><Ionicons name="paper-plane-outline" size={14} color="#fff" /><Text style={styles.applyText}>View & Apply</Text></LinearGradient>
       </View>
     </TouchableOpacity>
   );
+}
+
+// ── filter chip (single-select toggle) ───
+function FChip({ label, on, onPress }: { label: string; on: boolean; onPress: () => void }) {
+  return <TouchableOpacity onPress={onPress} style={[styles.fChip, on && styles.fChipOn]} activeOpacity={0.8}><Text style={[styles.fChipText, on && styles.fChipTextOn]} numberOfLines={1}>{label}</Text></TouchableOpacity>;
 }
 
 export default function DiscoverScreen() {
@@ -188,41 +169,43 @@ export default function DiscoverScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [noProfile, setNoProfile] = useState(false);
   const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<string | null>(null);
+  const [sort, setSort] = useState<'match' | 'recent'>('recent');
+  const [mode, setMode] = useState('');       // work_mode
+  const [skill, setSkill] = useState('');
+  const [country, setCountry] = useState('');
+  const [employer, setEmployer] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
   const [facets, setFacets] = useState<DiscoverFacets | null>(null);
   const seq = useRef(0);
 
-  const load = useCallback(async (opts: { q: string; mode: string | null; offset: number; append: boolean }) => {
+  const activeCount = [mode, skill, country, employer].filter(Boolean).length;
+
+  const load = useCallback(async (opts: { offset: number; append: boolean }) => {
     const my = ++seq.current;
     try {
-      const data = await fetchDiscoverJobs({ q: opts.q, work_mode: opts.mode || '', offset: opts.offset, limit: PAGE });
+      const data = await fetchDiscoverJobs({ q: query.trim(), work_mode: mode, skill, country, employer, sort, offset: opts.offset, limit: PAGE });
       if (my !== seq.current) return;
-      setError(null); setTotal(data.total || 0);
+      setError(null); setTotal(data.total || 0); setNoProfile(!!data.noProfile);
       setJobs((prev) => (opts.append ? [...prev, ...(data.jobs || [])] : (data.jobs || [])));
     } catch {
       if (my !== seq.current) return;
       setError('Could not load jobs. Pull to retry.');
       if (!opts.append) setJobs([]);
     }
-  }, []);
+  }, [query, mode, skill, country, employer, sort]);
 
   useEffect(() => { fetchDiscoverFacets().then(setFacets).catch(() => {}); logEvent('feed_opened'); }, []);
-  useEffect(() => { (async () => { setLoading(true); await load({ q: '', mode: null, offset: 0, append: false }); setLoading(false); })(); }, [load]);
   useEffect(() => {
-    const t = setTimeout(async () => { setLoading(true); await load({ q: query.trim(), mode, offset: 0, append: false }); setLoading(false); }, 350);
+    const t = setTimeout(async () => { setLoading(true); await load({ offset: 0, append: false }); setLoading(false); }, 300);
     return () => clearTimeout(t);
-  }, [query, mode, load]);
+  }, [load]);
 
-  const onRefresh = useCallback(async () => { setRefreshing(true); await Promise.all([load({ q: query.trim(), mode, offset: 0, append: false }), fetchDiscoverFacets().then(setFacets).catch(() => {})]); setRefreshing(false); }, [query, mode, load]);
-  const onEnd = useCallback(async () => {
-    if (loadingMore || jobs.length >= total || loading) return;
-    setLoadingMore(true); await load({ q: query.trim(), mode, offset: jobs.length, append: true }); setLoadingMore(false);
-  }, [loadingMore, jobs.length, total, loading, query, mode, load]);
-
-  const openJob = useCallback((dj: DiscoverJob) => {
-    router.push({ pathname: '/(ai-hub)/job-detail', params: toJobHubParams(dj) });
-  }, [router]);
+  const onRefresh = useCallback(async () => { setRefreshing(true); await Promise.all([load({ offset: 0, append: false }), fetchDiscoverFacets().then(setFacets).catch(() => {})]); setRefreshing(false); }, [load]);
+  const onEnd = useCallback(async () => { if (loadingMore || jobs.length >= total || loading) return; setLoadingMore(true); await load({ offset: jobs.length, append: true }); setLoadingMore(false); }, [loadingMore, jobs.length, total, loading, load]);
+  const openJob = useCallback((dj: DiscoverJob) => { router.push({ pathname: '/(ai-hub)/job-detail', params: toJobHubParams(dj) }); }, [router]);
+  const clearFilters = () => { setMode(''); setSkill(''); setCountry(''); setEmployer(''); };
 
   const header = useMemo(() => (
     <View>
@@ -232,22 +215,31 @@ export default function DiscoverScreen() {
         <TextInput value={query} onChangeText={setQuery} placeholder="Search role, company or city" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" />
         {query.length > 0 && <TouchableOpacity onPress={() => setQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Ionicons name="close-circle" size={17} color={T.textFaint} /></TouchableOpacity>}
       </View>
-      <View style={styles.chipsRow}>
-        {MODES.map((m) => {
-          const on = mode === m;
-          return <TouchableOpacity key={m} onPress={() => setMode(on ? null : m)} style={[styles.filterChip, on && styles.filterChipOn]} activeOpacity={0.8}><Text style={[styles.filterChipText, on && styles.filterChipTextOn]}>{m}</Text></TouchableOpacity>;
-        })}
-        <Text style={styles.countLine}>{fmt(total)} {total === 1 ? 'result' : 'results'}</Text>
+      <View style={styles.controlsRow}>
+        <View style={styles.sortToggle}>
+          {(['match', 'recent'] as const).map((s) => (
+            <TouchableOpacity key={s} onPress={() => setSort(s)} style={[styles.sortBtn, sort === s && styles.sortBtnOn]} activeOpacity={0.8}>
+              <Ionicons name={s === 'match' ? 'sparkles' : 'time-outline'} size={13} color={sort === s ? '#fff' : T.textMuted} />
+              <Text style={[styles.sortText, sort === s && styles.sortTextOn]}>{s === 'match' ? 'Best match' : 'Recent'}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <TouchableOpacity onPress={() => setShowFilters(true)} style={[styles.filterBtn, activeCount > 0 && styles.filterBtnOn]} activeOpacity={0.8}>
+          <Ionicons name="options-outline" size={16} color={activeCount > 0 ? '#fff' : T.blueDeep} />
+          <Text style={[styles.filterBtnText, activeCount > 0 && { color: '#fff' }]}>{activeCount > 0 ? `Filters · ${activeCount}` : 'Filters'}</Text>
+        </TouchableOpacity>
       </View>
+      {sort === 'match' && noProfile && (
+        <View style={styles.hintBox}><Ionicons name="information-circle-outline" size={15} color={T.blueDeep} /><Text style={styles.hintText}>Upload your résumé in Account Settings to see match scores.</Text></View>
+      )}
+      <Text style={styles.countLine}>{fmt(total)} {total === 1 ? 'job' : 'jobs'}{activeCount > 0 ? ' · filtered' : ''}</Text>
     </View>
-  ), [facets, total, query, mode]);
+  ), [facets, total, query, sort, activeCount, noProfile]);
 
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.topBar}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-          <Ionicons name="chevron-back" size={20} color={T.ink} />
-        </TouchableOpacity>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}><Ionicons name="chevron-back" size={20} color={T.ink} /></TouchableOpacity>
         <Text style={styles.topTitle}>Explore Jobs</Text>
         <View style={{ width: 38 }} />
       </View>
@@ -256,8 +248,7 @@ export default function DiscoverScreen() {
         <View style={styles.center}><ActivityIndicator color={T.blue} size="large" /></View>
       ) : (
         <FlatList
-          data={jobs}
-          keyExtractor={(j, i) => j.id + ':' + i}
+          data={jobs} keyExtractor={(j, i) => j.id + ':' + i}
           renderItem={({ item }) => <JobCard job={item} onOpen={openJob} />}
           ListHeaderComponent={header}
           contentContainerStyle={{ padding: 12, paddingBottom: 40 }}
@@ -265,11 +256,49 @@ export default function DiscoverScreen() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
           onEndReached={onEnd} onEndReachedThreshold={0.5}
           removeClippedSubviews initialNumToRender={6} windowSize={9}
-          ListEmptyComponent={<View style={styles.empty}><Ionicons name={error ? 'cloud-offline-outline' : 'briefcase-outline'} size={40} color={T.textFaint} /><Text style={styles.emptyText}>{error || (query ? 'No jobs match your search.' : 'No jobs yet — check back soon.')}</Text></View>}
+          ListEmptyComponent={<View style={styles.empty}><Ionicons name={error ? 'cloud-offline-outline' : 'briefcase-outline'} size={40} color={T.textFaint} /><Text style={styles.emptyText}>{error || (query || activeCount ? 'No jobs match — try clearing filters.' : 'No jobs yet — check back soon.')}</Text></View>}
           ListFooterComponent={loadingMore ? <ActivityIndicator color={T.blue} style={{ marginVertical: 18 }} /> : <View style={{ height: 8 }} />}
         />
       )}
+
+      {/* ── Filters sheet ── */}
+      <Modal visible={showFilters} transparent animationType="slide" onRequestClose={() => setShowFilters(false)}>
+        <View style={styles.sheetOverlay}>
+          <Pressable style={{ flex: 1 }} onPress={() => setShowFilters(false)} />
+          <View style={styles.sheet}>
+            <View style={styles.sheetGrip} />
+            <View style={styles.sheetHead}>
+              <Text style={styles.sheetTitle}>Filters</Text>
+              <TouchableOpacity onPress={clearFilters}><Text style={styles.clearText}>Clear all</Text></TouchableOpacity>
+            </View>
+            <ScrollView style={{ maxHeight: 440 }} showsVerticalScrollIndicator={false}>
+              <FilterSection title="Technology" items={(facets?.skills || []).slice(0, 24).map((s) => s.skill)} value={skill} onPick={(v) => setSkill(v === skill ? '' : v)} />
+              <FilterSection title="Location" items={(facets?.countries || []).map((c) => c.country)} value={country} onPick={(v) => setCountry(v === country ? '' : v)} />
+              <FilterSection title="Work mode" items={MODES} value={cap(mode) || ''} onPick={(v) => setMode(v.toLowerCase() === mode ? '' : v.toLowerCase())} />
+              <FilterSection title="Employer" items={(facets?.employers || []).slice(0, 20).map((e) => e.employer_name)} value={employer} onPick={(v) => setEmployer(v === employer ? '' : v)} />
+              <View style={{ height: 8 }} />
+            </ScrollView>
+            <TouchableOpacity style={styles.applySheet} onPress={() => setShowFilters(false)} activeOpacity={0.9}>
+              <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.applySheetGrad}>
+                <Text style={styles.applySheetText}>Show {fmt(total)} jobs</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
+  );
+}
+
+function FilterSection({ title, items, value, onPick }: { title: string; items: string[]; value: string; onPick: (v: string) => void }) {
+  if (!items.length) return null;
+  return (
+    <View style={styles.fSection}>
+      <Text style={styles.fSectionTitle}>{title}</Text>
+      <View style={styles.fChipWrap}>
+        {items.map((it) => <FChip key={it} label={it} on={value === it} onPress={() => onPick(it)} />)}
+      </View>
+    </View>
   );
 }
 
@@ -296,12 +325,18 @@ const styles = StyleSheet.create({
 
   searchWrap: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: T.surface, borderRadius: 14, borderWidth: 1, borderColor: T.border, paddingHorizontal: 12, height: 46, marginBottom: 10 },
   searchInput: { flex: 1, fontSize: 14, color: T.ink, padding: 0 },
-  chipsRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' },
-  filterChip: { paddingHorizontal: 13, paddingVertical: 7, borderRadius: 100, backgroundColor: T.surface, borderWidth: 1, borderColor: T.border },
-  filterChipOn: { backgroundColor: T.blue, borderColor: T.blue },
-  filterChipText: { fontSize: 12.5, fontWeight: '700', color: T.textMuted },
-  filterChipTextOn: { color: '#fff' },
-  countLine: { fontSize: 12, color: T.textMuted, fontWeight: '600', marginLeft: 'auto' },
+  controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
+  sortToggle: { flexDirection: 'row', backgroundColor: T.surface, borderRadius: 12, borderWidth: 1, borderColor: T.border, padding: 3, flex: 1 },
+  sortBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 34, borderRadius: 9 },
+  sortBtnOn: { backgroundColor: T.blue },
+  sortText: { fontSize: 12.5, fontWeight: '700', color: T.textMuted },
+  sortTextOn: { color: '#fff' },
+  filterBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 40, paddingHorizontal: 14, borderRadius: 12, backgroundColor: T.surface, borderWidth: 1, borderColor: T.border },
+  filterBtnOn: { backgroundColor: T.blueDeep, borderColor: T.blueDeep },
+  filterBtnText: { fontSize: 12.5, fontWeight: '700', color: T.blueDeep },
+  hintBox: { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: 'rgba(79,141,255,0.08)', borderRadius: 10, paddingHorizontal: 11, paddingVertical: 9, marginBottom: 8 },
+  hintText: { fontSize: 12, color: T.blueDeep, fontWeight: '600', flex: 1 },
+  countLine: { fontSize: 12, color: T.textMuted, fontWeight: '600', marginBottom: 8, marginLeft: 2 },
 
   card: { backgroundColor: T.surface, borderRadius: 20, borderWidth: 1, borderColor: T.border, padding: 15, marginBottom: 12, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.06, shadowRadius: 18, elevation: 2 },
   cardHead: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
@@ -309,6 +344,8 @@ const styles = StyleSheet.create({
   logoText: { color: '#fff', fontWeight: '800', fontSize: 19 },
   jobTitle: { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.2 },
   jobCompany: { fontSize: 12.5, color: T.textMuted, marginTop: 3, fontWeight: '600' },
+  matchBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 100, borderWidth: 1 },
+  matchText: { fontSize: 11.5, fontWeight: '800' },
   metaRow: { flexDirection: 'row', gap: 6, marginTop: 13, flexWrap: 'wrap' },
   metaChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: T.bg, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5, maxWidth: 220 },
   metaText: { fontSize: 11.5, color: T.textMuted, fontWeight: '600' },
@@ -329,4 +366,22 @@ const styles = StyleSheet.create({
 
   empty: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, gap: 12 },
   emptyText: { fontSize: 13.5, color: T.textMuted, fontWeight: '600', textAlign: 'center', paddingHorizontal: 30 },
+
+  // filters sheet
+  sheetOverlay: { flex: 1, backgroundColor: 'rgba(6,10,25,0.45)' },
+  sheet: { backgroundColor: T.bg, borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingTop: 8, paddingHorizontal: 18, paddingBottom: 28 },
+  sheetGrip: { alignSelf: 'center', width: 40, height: 4, borderRadius: 100, backgroundColor: 'rgba(11,15,34,0.14)', marginBottom: 10 },
+  sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  sheetTitle: { fontSize: 18, fontWeight: '800', color: T.ink },
+  clearText: { fontSize: 13, fontWeight: '700', color: T.blueDeep },
+  fSection: { marginTop: 14 },
+  fSectionTitle: { fontSize: 12, fontWeight: '800', color: T.textFaint, letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 9 },
+  fChipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  fChip: { paddingHorizontal: 13, paddingVertical: 8, borderRadius: 100, backgroundColor: T.surface, borderWidth: 1, borderColor: T.border, maxWidth: 260 },
+  fChipOn: { backgroundColor: T.blue, borderColor: T.blue },
+  fChipText: { fontSize: 12.5, fontWeight: '700', color: T.textMuted },
+  fChipTextOn: { color: '#fff' },
+  applySheet: { marginTop: 14, borderRadius: 14, overflow: 'hidden' },
+  applySheetGrad: { height: 50, alignItems: 'center', justifyContent: 'center' },
+  applySheetText: { color: '#fff', fontSize: 15, fontWeight: '800' },
 });
