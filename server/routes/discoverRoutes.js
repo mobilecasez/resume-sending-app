@@ -6,5 +6,6 @@ const ctrl = require('../controllers/discoverController');
 
 router.get('/discover/jobs', authenticateToken, ctrl.discoverJobs);
 router.get('/discover/facets', authenticateToken, ctrl.discoverFacets);
+router.post('/discover/ai-search', authenticateToken, ctrl.aiSearch);
 
 module.exports = router;

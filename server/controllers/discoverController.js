@@ -12,7 +12,8 @@
 //  • Detailed filters: field, role category, technology/skill, country, work mode, employer, search.
 'use strict';
 const dbConfig = require('../../db-config');
-const { deriveUserField } = require('../utils/jobTaxonomy');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { deriveUserField, ALL_FIELDS } = require('../utils/jobTaxonomy');
 
 const BASE_CAP = 1500;         // diversify + match-rank the freshest N candidates (bounds correlated-subquery cost)
 const DEFAULT_MIN_MATCH = 10;  // in the résumé-scoped default view, hide sub-10% noise
@@ -177,4 +178,143 @@ async function discoverFacets(req, res) {
   }
 }
 
-module.exports = { discoverJobs, discoverFacets };
+// ─── AI natural-language search ────────────────────────────────────────────────
+// The user types a plain sentence ("senior react developer, remote, in Europe"); we break it into
+// structured criteria (role/tech keywords, field, location, work-mode, seniority), then search the
+// saved global_jobs network — ranked by their résumé match. If they paste an employer URL instead,
+// we flag it so the app can hand it to the existing "research this employer" (add-URL) flow.
+const LITE_MODEL = process.env.GEMINI_LITE_MODEL || 'gemini-2.5-flash-lite';
+const STOP = new Set(('a an the and or for in on at of to with as is are i im looking look want need '
+  + 'job jobs role roles position positions work working me my his her their any some good best').split(' '));
+
+// If the query contains an explicit link, treat it as "research this employer", not a text search.
+function extractUrl(query) {
+  const m = String(query || '').match(/(https?:\/\/[^\s]+|www\.[^\s]+\.[a-z]{2,}[^\s]*)/i);
+  return m ? m[1].replace(/[.,)]+$/, '') : null;
+}
+
+// Deterministic fallback when the AI parser is unavailable (e.g. local key depleted) — keeps search working.
+function naiveParse(query) {
+  const ql = String(query || '').toLowerCase();
+  let workMode = null;
+  if (/\bremote\b/.test(ql)) workMode = 'remote';
+  else if (/\bhybrid\b/.test(ql)) workMode = 'hybrid';
+  else if (/\b(on[-\s]?site|onsite|in[-\s]?office)\b/.test(ql)) workMode = 'onsite';
+  const keywords = ql.replace(/[^a-z0-9+#.\s]/g, ' ').split(/\s+/).filter((w) => w.length >= 2 && !STOP.has(w)).slice(0, 8);
+  return { keywords, field: null, location: null, workMode, seniority: null };
+}
+
+async function parseSearchQuery(query) {
+  const q = String(query || '').trim().slice(0, 300);
+  if (!q) return { keywords: [], field: null, location: null, workMode: null, seniority: null };
+  if (!process.env.GEMINI_API_KEY) return naiveParse(q);
+  try {
+    const model = new GoogleGenerativeAI(process.env.GEMINI_API_KEY).getGenerativeModel({ model: LITE_MODEL });
+    const prompt = `Parse this job-seeker's free-text search into STRICT JSON (no markdown, no commentary), keys exactly:
+{"keywords": string[], "field": string|null, "location": string|null, "workMode": "remote"|"hybrid"|"onsite"|null, "seniority": string|null}
+Rules:
+- keywords: 1-6 lowercase role/title/technology terms to search for (e.g. ["react","frontend"] or ["registered nurse"]). No filler words, no location, no seniority.
+- field: EXACTLY one of ${JSON.stringify(ALL_FIELDS)} or null if unclear.
+- location: a city / country / region if stated, else null.
+- workMode: remote/hybrid/onsite only if stated, else null.
+- seniority: e.g. senior, junior, lead, manager, intern — only if stated, else null.
+User text: ${JSON.stringify(q)}`;
+    const r = await model.generateContent(prompt);
+    const txt = String((r && r.response && r.response.text && r.response.text()) || '').trim().replace(/^```(json)?\s*/i, '').replace(/\s*```$/,'');
+    const j = JSON.parse(txt);
+    let workMode = j.workMode ? String(j.workMode).toLowerCase() : null;
+    if (!['remote', 'hybrid', 'onsite'].includes(workMode)) workMode = null;
+    const keywords = Array.isArray(j.keywords)
+      ? j.keywords.map((k) => String(k || '').toLowerCase().trim()).filter((k) => k.length >= 2).slice(0, 6) : [];
+    return {
+      keywords: keywords.length ? keywords : naiveParse(q).keywords,
+      field: j.field && ALL_FIELDS.includes(j.field) ? j.field : null,
+      location: j.location ? String(j.location).trim().slice(0, 60) : null,
+      workMode,
+      seniority: j.seniority ? String(j.seniority).trim().slice(0, 30) : null,
+    };
+  } catch (e) {
+    console.error('[discover] parse error:', e.message);
+    return naiveParse(q);
+  }
+}
+
+async function aiSearch(req, res) {
+  try {
+    const rawQuery = String((req.body && req.body.query) || req.query.q || '').trim().slice(0, 300);
+    const limit = Math.min(Math.max(parseInt((req.body && req.body.limit) || req.query.limit, 10) || 20, 1), 50);
+    const offset = Math.max(parseInt((req.body && req.body.offset) || req.query.offset, 10) || 0, 0);
+    if (!rawQuery) return res.status(400).json({ error: 'Empty query' });
+
+    // Employer URL → hand off to the existing "research this employer" flow (app opens add-URL).
+    const url = extractUrl(rawQuery);
+    if (url) return res.json({ success: true, urlDetected: true, url, parsed: null, jobs: [], total: 0, offset, limit, hasMore: false });
+
+    const resume = await getResume(req.user && req.user.id);
+    const userSkills = skillsOf(resume);
+    const noProfile = userSkills.length === 0;
+    const userFieldObj = deriveUserField(resume);
+    const parsed = await parseSearchQuery(rawQuery);
+
+    // ── WHERE ──
+    const wParams = [];
+    const WP = (v) => { wParams.push(v); return '$' + wParams.length; };
+    const where = ['is_active'];
+    const kws = parsed.keywords && parsed.keywords.length ? parsed.keywords : [rawQuery.toLowerCase().slice(0, 60)];
+    if (kws.length) {
+      const ors = kws.map((k) => {
+        const p = WP('%' + k + '%');
+        return `(LOWER(title) LIKE ${p} OR LOWER(employer_name) LIKE ${p} OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(skills,'[]'::jsonb)) js WHERE lower(js) LIKE ${p}))`;
+      });
+      where.push('(' + ors.join(' OR ') + ')');
+    }
+    if (parsed.field) where.push(`field = ${WP(parsed.field)}`);
+    if (parsed.location) { const lp = WP('%' + parsed.location.toLowerCase() + '%'); where.push(`(LOWER(location) LIKE ${lp} OR LOWER(country) LIKE ${lp})`); }
+    if (parsed.workMode) where.push(`LOWER(work_mode) = ${WP(parsed.workMode)}`);
+    const whereSql = where.join(' AND ');
+
+    const FIELDS = `job_url, title, employer_name, employer_domain, location, work_mode, job_type, salary, experience, responsibilities, skills, source, country, field, role_category, seniority, last_seen`;
+    const params = [...wParams];
+    const P = (v) => { params.push(v); return '$' + params.length; };
+    const matchExpr = noProfile ? 'NULL::int' : matchExprSql(P(userSkills));
+    const useMatchSort = !noProfile;
+    const rnOrder = useMatchSort ? 'match DESC NULLS LAST, last_seen DESC' : 'last_seen DESC';
+    const finalOrder = useMatchSort ? 'match DESC NULLS LAST, rn ASC, last_seen DESC' : 'rn ASC, last_seen DESC';
+
+    const sql = `
+      WITH base AS (
+        SELECT ${FIELDS}, ${matchExpr} AS match
+        FROM global_jobs WHERE ${whereSql}
+        ORDER BY last_seen DESC LIMIT ${BASE_CAP}
+      ), ranked AS (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY employer_name ORDER BY ${rnOrder}) AS rn FROM base
+      )
+      SELECT ${FIELDS}, match, COUNT(*) OVER ()::int AS total_filtered
+      FROM ranked
+      ORDER BY ${finalOrder}
+      LIMIT ${P(limit)} OFFSET ${P(offset)}`;
+
+    const rows = await dbConfig.query(sql, params);
+    const total = rows && rows.length ? rows[0].total_filtered : 0;
+    const jobs = (rows || []).map((r) => ({
+      id: r.job_url, title: r.title, company: r.employer_name, employer_name: r.employer_name,
+      employer_domain: r.employer_domain, location: r.location, work_mode: r.work_mode,
+      job_type: r.job_type, salary: r.salary, experience: r.experience,
+      responsibilities: Array.isArray(r.responsibilities) ? r.responsibilities : [],
+      skills: Array.isArray(r.skills) ? r.skills : [], job_url: r.job_url, source: r.source,
+      country: r.country, field: r.field, role_category: r.role_category, seniority: r.seniority,
+      match: r.match == null ? null : Number(r.match),
+    }));
+
+    res.json({
+      success: true, urlDetected: false, parsed, jobs, total, offset, limit,
+      hasMore: jobs.length === limit && (offset + jobs.length) < total, noProfile,
+      userField: userFieldObj ? userFieldObj.field : null,
+    });
+  } catch (e) {
+    console.error('[discover] ai-search error:', e.message);
+    res.status(500).json({ error: 'Search failed' });
+  }
+}
+
+module.exports = { discoverJobs, discoverFacets, aiSearch };
