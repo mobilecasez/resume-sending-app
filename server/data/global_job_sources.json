@@ -2170,5 +2170,581 @@
   {
     "url": "https://boards.greenhouse.io/slingshotaerospace",
     "region": "US"
+  },
+  {
+    "url": "https://boards.greenhouse.io/doctolib",
+    "region": "France/DACH/EU (Paris, Berlin, Frankfurt, Milan)"
+  },
+  {
+    "url": "https://boards.greenhouse.io/dataiku",
+    "region": "France/EU/UK (Paris, London) + global"
+  },
+  {
+    "url": "https://boards.greenhouse.io/mirakl",
+    "region": "France/EU/UK (Paris, London, München, Bordeaux)"
+  },
+  {
+    "url": "https://jobs.lever.co/qonto",
+    "region": "France/EU (Paris, Brussels, Barcelona, Milan, Belgrade)"
+  },
+  {
+    "url": "https://jobs.lever.co/pigment",
+    "region": "France/EU/UK/CH (Paris, London) + North America"
+  },
+  {
+    "url": "https://jobs.lever.co/contentsquare",
+    "region": "France/EU (Germany, Amsterdam) + global"
+  },
+  {
+    "url": "https://jobs.lever.co/blablacar",
+    "region": "France/EU (Paris, remote France)"
+  },
+  {
+    "url": "https://jobs.lever.co/swile",
+    "region": "France/EU (Paris, Montpellier) + Brazil"
+  },
+  {
+    "url": "https://jobs.lever.co/vestiairecollective",
+    "region": "France/EU/UK (Paris, Tourcoing, Crawley, Berlin)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/pennylane",
+    "region": "France (Paris, Bordeaux, Caen, remote France)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/alan",
+    "region": "France/EU (Paris, Belgium, Madrid)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/ledger",
+    "region": "France/EU/UK (Paris, London) + US"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/sorare",
+    "region": "France (Paris)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/backmarket",
+    "region": "France/EU/UK (Paris, Bordeaux, Barcelona, London)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/finary",
+    "region": "France (Paris, remote France)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/gorgias",
+    "region": "France/EU (Paris, Belgrade) + North America"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/ankorstore",
+    "region": "France (Paris)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/photoroom",
+    "region": "France/EU (Paris, Europe remote) + US"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/dust",
+    "region": "France (Paris) + US"
+  },
+  {
+    "url": "https://boards.greenhouse.io/n26",
+    "region": "Berlin, DE / EU (Paris, Madrid)"
+  },
+  {
+    "url": "https://boards.greenhouse.io/celonis",
+    "region": "Munich, DE / EU"
+  },
+  {
+    "url": "https://boards.greenhouse.io/contentful",
+    "region": "Berlin, DE / London, UK"
+  },
+  {
+    "url": "https://boards.greenhouse.io/raisin",
+    "region": "Berlin, DE"
+  },
+  {
+    "url": "https://boards.greenhouse.io/sumup",
+    "region": "Berlin, DE / Barcelona, ES / EU"
+  },
+  {
+    "url": "https://boards.greenhouse.io/solarisbank",
+    "region": "Berlin / Frankfurt, DE"
+  },
+  {
+    "url": "https://boards.greenhouse.io/grover",
+    "region": "Berlin, DE"
+  },
+  {
+    "url": "https://boards.greenhouse.io/moonfare",
+    "region": "Berlin, DE / London, UK"
+  },
+  {
+    "url": "https://boards.greenhouse.io/commercetools",
+    "region": "Munich, DE / Valencia, ES"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/flink",
+    "region": "Zürich, CH"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/choco",
+    "region": "Berlin, DE / London, UK"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/babbel",
+    "region": "Berlin, DE"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/billie",
+    "region": "Berlin, DE"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/zenjob",
+    "region": "Berlin, DE"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/deepl",
+    "region": "Cologne, DE / EU"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/alephalpha",
+    "region": "Heidelberg, DE"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/enpal",
+    "region": "Berlin, DE / Milan, IT"
+  },
+  {
+    "url": "https://jobs.lever.co/pipedrive",
+    "region": "Prague, CZ / Lisbon, PT / EU"
+  },
+  {
+    "url": "https://boards.greenhouse.io/proton",
+    "region": "Geneva, Switzerland HQ — 31 CH jobs (Geneva), plus Paris/Bar"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/frontify",
+    "region": "St. Gallen, Switzerland HQ — 9 CH (Sankt Gallen) + 8 London"
+  },
+  {
+    "url": "https://boards.greenhouse.io/scandit",
+    "region": "Zurich, Switzerland HQ — 3 CH jobs, 7 EU total"
+  },
+  {
+    "url": "https://jobs.lever.co/swissborg",
+    "region": "Lausanne, Switzerland — 3 EU/remote-EU jobs"
+  },
+  {
+    "url": "https://boards.greenhouse.io/datadog",
+    "region": "Paris eng + EU — 88 EU jobs incl. 2 CH"
+  },
+  {
+    "url": "https://boards.greenhouse.io/okta",
+    "region": "US HQ + EU/EMEA — 32 EU jobs"
+  },
+  {
+    "url": "https://boards.greenhouse.io/braze",
+    "region": "US HQ + London/EU — 22 EU jobs"
+  },
+  {
+    "url": "https://boards.greenhouse.io/intercom",
+    "region": "Dublin, Ireland HQ — 90 EU jobs"
+  },
+  {
+    "url": "https://boards.greenhouse.io/rubrik",
+    "region": "US HQ + EU — 12 EU jobs incl. 1 CH"
+  },
+  {
+    "url": "https://boards.greenhouse.io/algolia",
+    "region": "Paris, France HQ — 26 EU jobs"
+  },
+  {
+    "url": "https://boards.greenhouse.io/ledgy",
+    "region": "Zurich/London — 17 EU jobs (DE/UK/ES/PL/RO)"
+  },
+  {
+    "url": "https://boards.greenhouse.io/tines",
+    "region": "Dublin, Ireland HQ — 3 EU jobs"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/elevenlabs",
+    "region": "London + remote-EU — 90 EU jobs"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/synthesia",
+    "region": "London HQ + remote-EU — 53 EU jobs incl. 2 CH"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/lovable",
+    "region": "Stockholm, Sweden — 18 EU jobs"
+  },
+  {
+    "url": "https://boards.greenhouse.io/catawiki",
+    "region": "Amsterdam NL / EU (Netherlands, Lisbon, France, Italy)"
+  },
+  {
+    "url": "https://jobs.lever.co/fresha",
+    "region": "EU/UK (London, Warsaw, Madrid, Paris; Amsterdam office)"
+  },
+  {
+    "url": "https://jobs.lever.co/crypto",
+    "region": "Global; EU/UK (London, Sofia)"
+  },
+  {
+    "url": "https://jobs.lever.co/netlight",
+    "region": "EU (Stockholm, Munich, Berlin, Amsterdam, Madrid)"
+  },
+  {
+    "url": "https://jobs.lever.co/storiogroup",
+    "region": "Amsterdam NL / EU (Amsterdam, Munich, London, Barcelona)"
+  },
+  {
+    "url": "https://jobs.eu.lever.co/tomtom",
+    "region": "Amsterdam NL / EU (Amsterdam, Madrid, Lodz, Gent) — EU Lever"
+  },
+  {
+    "url": "https://jobs.eu.lever.co/prosus",
+    "region": "Amsterdam NL — EU Lever host"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/eye-security",
+    "region": "NL/DACH (The Hague, Netherlands, Germany, Belgium, Austria)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/wetravel",
+    "region": "Amsterdam office / EU (Spain, Portugal, Lithuania, Poland)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/monumental",
+    "region": "Amsterdam NL (all roles Amsterdam)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/luminovo",
+    "region": "DACH (Munich, Berlin)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/bitvavo",
+    "region": "Amsterdam NL (HQ)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/recharge",
+    "region": "UK/Remote (London, Toronto, Remote)"
+  },
+  {
+    "url": "https://boards.greenhouse.io/okx",
+    "region": "Global; Remote EMEA, Dubai"
+  },
+  {
+    "url": "https://boards.greenhouse.io/bitpanda",
+    "region": "Vienna (AT) HQ; all-EU (Berlin, Barcelona, Paris, Milan)"
+  },
+  {
+    "url": "https://boards.greenhouse.io/bitgo",
+    "region": "Global; Frankfurt (DE), London"
+  },
+  {
+    "url": "https://boards.greenhouse.io/blockchain",
+    "region": "Global; London, Paris, Malta"
+  },
+  {
+    "url": "https://boards.greenhouse.io/aptoslabs",
+    "region": "Global remote incl. EU; Palo Alto"
+  },
+  {
+    "url": "https://boards.greenhouse.io/bitmex",
+    "region": "Hong Kong; Remote - Europe"
+  },
+  {
+    "url": "https://boards.greenhouse.io/consensys",
+    "region": "Global; Remote EMEA"
+  },
+  {
+    "url": "https://boards.greenhouse.io/21shares",
+    "region": "Zug (CH) HQ; current role New York"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/kraken.com",
+    "region": "Global; Poland, UK, Ireland"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/blockdaemon",
+    "region": "Global; Dublin (IE)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/keyrock",
+    "region": "Brussels (BE) HQ; Zurich (CH), London"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/nethermind",
+    "region": "Remote; Hungary (EU)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/dune",
+    "region": "Europe / New York"
+  },
+  {
+    "url": "https://boards.greenhouse.io/scout24",
+    "region": "Germany (Berlin/Munich/Bonn) — .NET/Microsoft-stack marketpl"
+  },
+  {
+    "url": "https://boards.greenhouse.io/avepoint",
+    "region": "Global; 31 EU/UK roles — heavy Microsoft 365 / .NET vendor"
+  },
+  {
+    "url": "https://boards.greenhouse.io/wolt",
+    "region": "EU (Berlin/Athens/Budapest/Stockholm/Helsinki/Ljubljana)"
+  },
+  {
+    "url": "https://boards.greenhouse.io/gocardless",
+    "region": "EU/UK (Riga/Lisbon/London/Leeds)"
+  },
+  {
+    "url": "https://jobs.lever.co/sonarsource",
+    "region": "Switzerland (Geneva HQ)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/deepjudge",
+    "region": "Switzerland (Zurich HQ)"
+  },
+  {
+    "url": "https://jobs.lever.co/frontify",
+    "region": "Switzerland (St. Gallen HQ)"
+  },
+  {
+    "url": "https://jobs.lever.co/anybotics",
+    "region": "Switzerland (Zurich HQ)"
+  },
+  {
+    "url": "https://boards.greenhouse.io/terraquantum",
+    "region": "Switzerland (St. Gallen HQ) / Germany"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/smallpdf",
+    "region": "Switzerland (Zurich HQ, remote roles)"
+  },
+  {
+    "url": "https://boards.greenhouse.io/parloa",
+    "region": "EU (Berlin/Munich + UK/France)"
+  },
+  {
+    "url": "https://boards.greenhouse.io/typeform",
+    "region": "Barcelona, Spain"
+  },
+  {
+    "url": "https://boards.greenhouse.io/cabify",
+    "region": "Madrid, Spain"
+  },
+  {
+    "url": "https://boards.greenhouse.io/feedzai",
+    "region": "Lisbon/Porto, Portugal"
+  },
+  {
+    "url": "https://jobs.lever.co/jobandtalent",
+    "region": "Madrid/Barcelona, Spain"
+  },
+  {
+    "url": "https://jobs.lever.co/deliverect",
+    "region": "Ghent, Belgium (roles in Madrid/London/Berlin)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/satispay",
+    "region": "Milan, Italy (roles in Barcelona/EU)"
+  },
+  {
+    "url": "https://jobs.lever.co/spotify",
+    "region": "Sweden"
+  },
+  {
+    "url": "https://jobs.lever.co/veo",
+    "region": "Denmark"
+  },
+  {
+    "url": "https://jobs.lever.co/whereby",
+    "region": "Norway"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/pleo",
+    "region": "Denmark"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/supercell",
+    "region": "Finland"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/iceye",
+    "region": "Finland"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/gelato",
+    "region": "Norway"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/corti",
+    "region": "Denmark"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/planday",
+    "region": "Denmark"
+  },
+  {
+    "url": "https://boards.greenhouse.io/truecaller",
+    "region": "Sweden"
+  },
+  {
+    "url": "https://boards.greenhouse.io/relex",
+    "region": "Finland"
+  },
+  {
+    "url": "https://boards.greenhouse.io/smartlyio",
+    "region": "Finland"
+  },
+  {
+    "url": "https://boards.greenhouse.io/cognite",
+    "region": "Norway"
+  },
+  {
+    "url": "https://boards.greenhouse.io/trustpilot",
+    "region": "Denmark"
+  },
+  {
+    "url": "https://boards.greenhouse.io/yousician",
+    "region": "Finland"
+  },
+  {
+    "url": "https://boards.greenhouse.io/monzo",
+    "region": "UK/EU"
+  },
+  {
+    "url": "https://boards.greenhouse.io/tide",
+    "region": "UK/DACH/EU"
+  },
+  {
+    "url": "https://boards.greenhouse.io/form3",
+    "region": "UK/EU (remote)"
+  },
+  {
+    "url": "https://boards.greenhouse.io/payoneer",
+    "region": "EU"
+  },
+  {
+    "url": "https://boards.greenhouse.io/wayve",
+    "region": "UK"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/hyperexponential",
+    "region": "UK"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/quantexa",
+    "region": "UK/DACH"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/n8n",
+    "region": "DACH (Berlin)"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/tacto",
+    "region": "DACH (Munich)"
+  },
+  {
+    "url": "https://jobs.lever.co/matillion",
+    "region": "UK"
+  },
+  {
+    "url": "https://jobs.lever.co/celerion",
+    "region": "Switzerland (Fehraltorf/Zurich) + US — clinical CRO / bioana"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/cradlebio",
+    "region": "Switzerland (Zürich) + Amsterdam — protein-design biotech"
+  },
+  {
+    "url": "https://boards.greenhouse.io/bridgebio",
+    "region": "Switzerland (Zug HQ) + US — biotech pharma"
+  },
+  {
+    "url": "https://boards.greenhouse.io/nlcventures",
+    "region": "EU (Netherlands/Germany/France) — healthtech venture builder"
+  },
+  {
+    "url": "https://boards.greenhouse.io/iniziomedical",
+    "region": "UK (London/Manchester) — medical/healthcare services"
+  },
+  {
+    "url": "https://boards.greenhouse.io/olema",
+    "region": "Ireland (Dublin) + US — oncology biotech"
+  },
+  {
+    "url": "https://jobs.lever.co/bioagilytix",
+    "region": "Germany (Hamburg) + US — bioanalytical CRO"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/amboss",
+    "region": "Germany (Berlin) — clinical knowledge / healthcare"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/neko-health",
+    "region": "UK (London) + Sweden (Stockholm) — preventive health-screeni"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/basecamp-research",
+    "region": "UK (London) — biotech / protein AI"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/genomics",
+    "region": "UK (Oxford/London) — genomics drug discovery"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/owkin",
+    "region": "France (Paris) + UK — TechBio drug discovery"
+  },
+  {
+    "url": "https://jobs.lever.co/h1",
+    "region": "Denmark (Copenhagen) + UK + US — healthcare data platform"
+  },
+  {
+    "url": "https://boards.greenhouse.io/numab",
+    "region": "Switzerland (Wädenswil/Zurich) biotech — current posting Rem"
+  },
+  {
+    "url": "https://boards.greenhouse.io/inyova",
+    "region": "Zurich, Switzerland — impact-investing wealth fintech"
+  },
+  {
+    "url": "https://boards.greenhouse.io/bybit",
+    "region": "Vienna (Austria) + global — crypto exchange (25 EU roles)"
+  },
+  {
+    "url": "https://boards.greenhouse.io/copperco",
+    "region": "London + Remote-EMEA — crypto custody/prime brokerage"
+  },
+  {
+    "url": "https://boards.greenhouse.io/truelayer",
+    "region": "London/Milan — open-banking payments (9 EU roles)"
+  },
+  {
+    "url": "https://boards.greenhouse.io/remotecom",
+    "region": "Remote-EMEA/Western Europe/UK — global payroll & EOR (142 EU"
+  },
+  {
+    "url": "https://jobs.lever.co/moonpay",
+    "region": "London/UK + US — crypto payments on-ramp"
+  },
+  {
+    "url": "https://jobs.lever.co/anchorage",
+    "region": "US + Portugal (3 EU) — crypto bank/custody"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/mollie",
+    "region": "Amsterdam/Lisbon/Milan/Munich — payments fintech (24 EU role"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/airwallex",
+    "region": "London + global — cross-border payments fintech (96 EU roles"
+  },
+  {
+    "url": "https://jobs.ashbyhq.com/trulioo",
+    "region": "Dublin + Vancouver/US — KYC/identity verification for financ"
   }
 ]
