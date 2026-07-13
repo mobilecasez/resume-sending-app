@@ -306,7 +306,9 @@ async function aiSearch(req, res) {
       where.push('(' + ors.join(' OR ') + ')');
     }
     if (parsed.field) where.push(`field = ${WP(parsed.field)}`);
-    if (parsed.location) { const lp = WP('%' + parsed.location.toLowerCase() + '%'); where.push(`(LOWER(location) LIKE ${lp} OR LOWER(country) LIKE ${lp})`); }
+    // Match the JOB's own location text (accurate) — NOT the board-HQ `country` tag, which would
+    // false-match a Swiss-HQ'd company's jobs that are actually in Germany/Singapore/etc.
+    if (parsed.location) { const lp = WP('%' + parsed.location.toLowerCase() + '%'); where.push(`LOWER(location) LIKE ${lp}`); }
     if (parsed.workMode) where.push(`LOWER(work_mode) = ${WP(parsed.workMode)}`);
     const whereSql = where.join(' AND ');
 
