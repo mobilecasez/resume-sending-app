@@ -196,6 +196,8 @@ export default function DiscoverScreen() {
   const [aiParsed, setAiParsed] = useState<AiSearchParsed | null>(null);
   const [aiResults, setAiResults] = useState<DiscoverJob[]>([]);
   const [aiTotal, setAiTotal] = useState(0);
+  const [aiHasMore, setAiHasMore] = useState(false);
+  const [aiLoadingMore, setAiLoadingMore] = useState(false);
   // Silent on-device browser: X-Ray the web (user IP) → hydrate → grow the network for this search
   const [xrayUrls, setXrayUrls] = useState<string[]>([]);  // [] = WebViews unmounted
   const [xraySeq, setXraySeq] = useState(0);               // bump to force fresh WebViews per search
@@ -261,6 +263,7 @@ export default function DiscoverScreen() {
         return;
       }
       setAiParsed(data.parsed || null); setAiResults(data.jobs || []); setAiTotal(data.total || 0);
+      setAiHasMore(!!data.hasMore); lastQueryRef.current = query;
       if (typeof data.noProfile === 'boolean') setNoProfile(data.noProfile);
       // Kick off the silent on-device web search to find MORE jobs across the ATS web (user IP).
       // Google (far richer index) as primary + DDG-lite as fallback, each as a SEPARATE per-site query.
@@ -290,11 +293,23 @@ export default function DiscoverScreen() {
       const h = await hydrateJobUrls(urls, q).catch(() => ({ ingested: 0 } as any));
       // Re-run the network search — it now includes the freshly-ingested jobs.
       const fresh = await aiSearchJobs(q, 0, 30);
-      setAiResults(fresh.jobs || []); setAiTotal(fresh.total || 0);
-      setWebNote(h && h.ingested > 0 ? `+${h.ingested} live jobs added from the web` : '');
+      setAiResults(fresh.jobs || []); setAiTotal(fresh.total || 0); setAiHasMore(!!fresh.hasMore);
+      setWebNote(h && h.ingested > 0 ? 'Searched the live web — results updated' : '');
     } catch { /* keep the network results */ }
     finally { setWebPhase(''); }
   }, []);
+
+  // Paginate AI-search results (was disabled → the feed capped at the first 30 even when total was 214).
+  const onAiEnd = useCallback(async () => {
+    if (aiLoadingMore || !aiHasMore || webPhase) return;
+    setAiLoadingMore(true);
+    try {
+      const data = await aiSearchJobs(lastQueryRef.current, aiResults.length, 30);
+      setAiResults((prev) => [...prev, ...(data.jobs || [])]);
+      setAiHasMore(!!data.hasMore);
+    } catch {}
+    finally { setAiLoadingMore(false); }
+  }, [aiLoadingMore, aiHasMore, webPhase, aiResults.length]);
 
   const clearAiSearch = useCallback(() => {
     if (webTimerRef.current) { clearTimeout(webTimerRef.current); webTimerRef.current = null; }
@@ -407,12 +422,12 @@ export default function DiscoverScreen() {
           contentContainerStyle={{ padding: 12, paddingBottom: 40 }}
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
-          onEndReached={aiActive ? undefined : onEnd} onEndReachedThreshold={0.5}
+          onEndReached={aiActive ? onAiEnd : onEnd} onEndReachedThreshold={0.6}
           removeClippedSubviews initialNumToRender={6} windowSize={9}
           ListEmptyComponent={aiActive
             ? <View style={styles.empty}>{aiLoading ? <ActivityIndicator color={T.blue} /> : <><Ionicons name="search-outline" size={40} color={T.textFaint} /><Text style={styles.emptyText}>No matches in the network yet — try different words, or check back as coverage grows.</Text></>}</View>
             : <View style={styles.empty}><Ionicons name={error ? 'cloud-offline-outline' : 'briefcase-outline'} size={40} color={T.textFaint} /><Text style={styles.emptyText}>{error || (query || activeCount || field ? 'No jobs match — try “All fields” or clear filters.' : 'No jobs yet — check back soon.')}</Text></View>}
-          ListFooterComponent={loadingMore ? <ActivityIndicator color={T.blue} style={{ marginVertical: 18 }} /> : <View style={{ height: 8 }} />}
+          ListFooterComponent={(loadingMore || aiLoadingMore) ? <ActivityIndicator color={T.blue} style={{ marginVertical: 18 }} /> : <View style={{ height: 8 }} />}
         />
       )}
 
