@@ -184,6 +184,7 @@ async function discoverFacets(req, res) {
 // saved global_jobs network — ranked by their résumé match. If they paste an employer URL instead,
 // we flag it so the app can hand it to the existing "research this employer" (add-URL) flow.
 const LITE_MODEL = process.env.GEMINI_LITE_MODEL || 'gemini-2.5-flash-lite';
+const PARSE_MODEL = process.env.GEMINI_FLASH_MODEL || 'gemini-2.5-flash';  // stronger model for query parsing (low volume, quality-critical)
 const STOP = new Set(('a an the and or for in on at of to with as is are i im looking look want need '
   + 'job jobs role roles position positions work working me my his her their any some good best').split(' '));
 
@@ -217,18 +218,23 @@ async function parseSearchQuery(query, locHint) {
   if (!q) return { keywords: [], field: null, location: null, workMode: null, seniority: null };
   if (!process.env.GEMINI_API_KEY) return naiveParse(q);
   try {
-    const model = new GoogleGenerativeAI(process.env.GEMINI_API_KEY).getGenerativeModel({ model: LITE_MODEL });
+    const model = new GoogleGenerativeAI(process.env.GEMINI_API_KEY).getGenerativeModel({ model: PARSE_MODEL });
     const locLine = locHint
-      ? `\nThe user's OWN saved location is city="${locHint.city || ''}", country="${locHint.country || ''}", address="${locHint.address || ''}". If the text refers to their own area ("near me", "my area", "nearby", "my city", "my location"), set "location" to their city — infer the city from the address/zip if the city field is blank.`
+      ? `\nThe user's OWN saved location is city="${locHint.city || ''}", country="${locHint.country || ''}", address="${locHint.address || ''}". If the text refers to their own area ("near me", "my area", "nearby", "my city", "my location"), set "location" to their city — INFER the city from the address/zip when the city field is blank (e.g. an address ending "…Gurgaon, Haryana" → "Gurgaon").`
       : '';
-    const prompt = `Parse this job-seeker's free-text search into STRICT JSON (no markdown, no commentary), keys exactly:
+    const prompt = `You extract structured job-search filters. Output STRICT JSON only (no markdown/commentary), keys EXACTLY:
 {"keywords": string[], "field": string|null, "location": string|null, "workMode": "remote"|"hybrid"|"onsite"|null, "seniority": string|null}
 Rules:
-- keywords: 1-6 lowercase role/title/technology terms to search for (e.g. ["react","frontend"], [".net"], ["registered nurse"]). Keep tech tokens exactly (".net","c#","c++","node.js"). No filler words, no location, no seniority.
-- field: EXACTLY one of ${JSON.stringify(ALL_FIELDS)} or null if unclear.
-- location: a city / country / region if stated, else null.
+- keywords: ONLY the role/title/technology terms (1-4). Keep tech tokens exactly (".net","c#","c++","node.js","react"). NEVER include filler ("show","me","find","jobs","role","for","in","near","area","my"), the location, the seniority, or the field name.
+- field: EXACTLY one of ${JSON.stringify(ALL_FIELDS)}, or null if unclear.
+- location: the city/country/region the user wants (resolve "near me/my area" per the note below), else null.
 - workMode: remote/hybrid/onsite only if stated, else null.
-- seniority: e.g. senior, junior, lead, manager, intern — only if stated, else null.${locLine}
+- seniority: senior/junior/lead/manager/intern only if stated, else null.
+Examples:
+"show me .net jobs for switzerland location" -> {"keywords":[".net"],"field":"IT & Software","location":"Switzerland","workMode":null,"seniority":null}
+"senior react developer, remote" -> {"keywords":["react"],"field":"IT & Software","location":null,"workMode":"remote","seniority":"senior"}
+"registered nurse jobs in the US" -> {"keywords":["registered nurse"],"field":"Healthcare & Clinical","location":"United States","workMode":null,"seniority":null}
+"sales jobs near my area" (address "…Gurgaon, Haryana") -> {"keywords":["sales"],"field":"Sales & Business Development","location":"Gurgaon","workMode":null,"seniority":null}${locLine}
 User text: ${JSON.stringify(q)}`;
     const r = await model.generateContent(prompt);
     const txt = String((r && r.response && r.response.text && r.response.text()) || '').trim().replace(/^```(json)?\s*/i, '').replace(/\s*```$/,'');
