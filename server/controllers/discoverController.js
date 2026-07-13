@@ -329,21 +329,24 @@ async function aiSearch(req, res) {
     const wParams = [];
     const WP = (v) => { wParams.push(v); return '$' + wParams.length; };
     const where = ['is_active'];
-    const kws = parsed.keywords && parsed.keywords.length ? parsed.keywords : [rawQuery.toLowerCase().slice(0, 60)];
-    if (kws.length) {
-      const ors = kws.map((k) => {
-        const p = WP('%' + k + '%');
+    const hasKw = !!(parsed.keywords && parsed.keywords.length);
+    if (hasKw) {
+      const ors = parsed.keywords.map((k) => {
+        const p = WP('%' + String(k).toLowerCase() + '%');
         return `(LOWER(title) LIKE ${p} OR LOWER(employer_name) LIKE ${p} OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(skills,'[]'::jsonb)) js WHERE lower(js) LIKE ${p}))`;
       });
       where.push('(' + ors.join(' OR ') + ')');
     }
     if (parsed.field) where.push(`field = ${WP(parsed.field)}`);
-    // Match the JOB's own location text (accurate) — NOT the board-HQ `country` tag (which would
-    // false-match a Swiss-HQ'd company's German jobs). Expand a country to its cities so "switzerland"
-    // also catches jobs whose location is just "Geneva"/"Zürich".
+    // Location: with a ROLE/keyword present, treat it as a SOFT preference (rank matches first but still
+    // show the role elsewhere — so ".net switzerland" surfaces Swiss first, THEN more .NET, instead of
+    // just 2). For a pure "jobs in <place>" browse (no role), it stays a HARD filter. Location matches
+    // the JOB's own location text (+ country→cities), never the board-HQ tag.
+    let locMatchExpr = '0';
     if (parsed.location) {
-      const terms = locationTerms(parsed.location);
-      where.push('(' + terms.map((t) => `LOWER(location) LIKE ${WP('%' + t + '%')}`).join(' OR ') + ')');
+      const locOr = '(' + locationTerms(parsed.location).map((t) => `LOWER(location) LIKE ${WP('%' + t + '%')}`).join(' OR ') + ')';
+      if (hasKw) locMatchExpr = `(CASE WHEN ${locOr} THEN 1 ELSE 0 END)`;
+      else where.push(locOr);
     }
     if (parsed.workMode) where.push(`LOWER(work_mode) = ${WP(parsed.workMode)}`);
     const whereSql = where.join(' AND ');
@@ -353,18 +356,18 @@ async function aiSearch(req, res) {
     const P = (v) => { params.push(v); return '$' + params.length; };
     const matchExpr = noProfile ? 'NULL::int' : matchExprSql(P(userSkills));
     const useMatchSort = !noProfile;
-    const rnOrder = useMatchSort ? 'match DESC NULLS LAST, last_seen DESC' : 'last_seen DESC';
-    const finalOrder = useMatchSort ? 'match DESC NULLS LAST, rn ASC, last_seen DESC' : 'rn ASC, last_seen DESC';
+    const rnOrder = 'loc_match DESC, ' + (useMatchSort ? 'match DESC NULLS LAST, last_seen DESC' : 'last_seen DESC');
+    const finalOrder = 'loc_match DESC, ' + (useMatchSort ? 'match DESC NULLS LAST, rn ASC, last_seen DESC' : 'rn ASC, last_seen DESC');
 
     const sql = `
       WITH base AS (
-        SELECT ${FIELDS}, ${matchExpr} AS match
+        SELECT ${FIELDS}, ${matchExpr} AS match, ${locMatchExpr} AS loc_match
         FROM global_jobs WHERE ${whereSql}
         ORDER BY last_seen DESC LIMIT ${BASE_CAP}
       ), ranked AS (
         SELECT *, ROW_NUMBER() OVER (PARTITION BY employer_name ORDER BY ${rnOrder}) AS rn FROM base
       )
-      SELECT ${FIELDS}, match, COUNT(*) OVER ()::int AS total_filtered
+      SELECT ${FIELDS}, match, loc_match, COUNT(*) OVER ()::int AS total_filtered
       FROM ranked
       ORDER BY ${finalOrder}
       LIMIT ${P(limit)} OFFSET ${P(offset)}`;
