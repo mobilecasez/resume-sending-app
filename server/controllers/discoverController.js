@@ -204,20 +204,31 @@ function naiveParse(query) {
   return { keywords, field: null, location: null, workMode, seniority: null };
 }
 
-async function parseSearchQuery(query) {
+// The user's own saved location (for "near me" / "my area" searches).
+async function getUserProfileLoc(userId) {
+  if (!userId) return null;
+  try { return await dbConfig.get('SELECT city, country, address FROM users WHERE id = ?', [userId]); }
+  catch { return null; }
+}
+const NEAR_ME_RE = /\b(near me|my area|nearby|near by|my location|around me|close to me|my city|my region|my place|around here)\b/i;
+
+async function parseSearchQuery(query, locHint) {
   const q = String(query || '').trim().slice(0, 300);
   if (!q) return { keywords: [], field: null, location: null, workMode: null, seniority: null };
   if (!process.env.GEMINI_API_KEY) return naiveParse(q);
   try {
     const model = new GoogleGenerativeAI(process.env.GEMINI_API_KEY).getGenerativeModel({ model: LITE_MODEL });
+    const locLine = locHint
+      ? `\nThe user's OWN saved location is city="${locHint.city || ''}", country="${locHint.country || ''}", address="${locHint.address || ''}". If the text refers to their own area ("near me", "my area", "nearby", "my city", "my location"), set "location" to their city — infer the city from the address/zip if the city field is blank.`
+      : '';
     const prompt = `Parse this job-seeker's free-text search into STRICT JSON (no markdown, no commentary), keys exactly:
 {"keywords": string[], "field": string|null, "location": string|null, "workMode": "remote"|"hybrid"|"onsite"|null, "seniority": string|null}
 Rules:
-- keywords: 1-6 lowercase role/title/technology terms to search for (e.g. ["react","frontend"] or ["registered nurse"]). No filler words, no location, no seniority.
+- keywords: 1-6 lowercase role/title/technology terms to search for (e.g. ["react","frontend"], [".net"], ["registered nurse"]). Keep tech tokens exactly (".net","c#","c++","node.js"). No filler words, no location, no seniority.
 - field: EXACTLY one of ${JSON.stringify(ALL_FIELDS)} or null if unclear.
 - location: a city / country / region if stated, else null.
 - workMode: remote/hybrid/onsite only if stated, else null.
-- seniority: e.g. senior, junior, lead, manager, intern — only if stated, else null.
+- seniority: e.g. senior, junior, lead, manager, intern — only if stated, else null.${locLine}
 User text: ${JSON.stringify(q)}`;
     const r = await model.generateContent(prompt);
     const txt = String((r && r.response && r.response.text && r.response.text()) || '').trim().replace(/^```(json)?\s*/i, '').replace(/\s*```$/,'');
@@ -254,7 +265,10 @@ async function aiSearch(req, res) {
     const userSkills = skillsOf(resume);
     const noProfile = userSkills.length === 0;
     const userFieldObj = deriveUserField(resume);
-    const parsed = await parseSearchQuery(rawQuery);
+    const loc = await getUserProfileLoc(req.user && req.user.id);
+    const parsed = await parseSearchQuery(rawQuery, loc);
+    // "near me / my area" → resolve to the user's saved city (fallback if the AI didn't).
+    if (NEAR_ME_RE.test(rawQuery) && loc && loc.city && String(loc.city).trim()) parsed.location = String(loc.city).trim();
 
     // ── WHERE ──
     const wParams = [];
