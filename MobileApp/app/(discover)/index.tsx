@@ -9,14 +9,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, ActivityIndicator,
-  SafeAreaView, RefreshControl, Platform, Animated, Easing, Modal, Pressable, ScrollView,
+  SafeAreaView, RefreshControl, Platform, Animated, Easing, Modal, Pressable, ScrollView, Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import {
-  fetchDiscoverJobs, fetchDiscoverFacets,
-  type DiscoverJob, type DiscoverFacets,
+  fetchDiscoverJobs, fetchDiscoverFacets, aiSearchJobs,
+  type DiscoverJob, type DiscoverFacets, type AiSearchParsed,
 } from '../../services/aiHubService';
 import { logEvent } from '../../services/firebaseAnalytics';
 
@@ -188,6 +188,12 @@ export default function DiscoverScreen() {
   const [facets, setFacets] = useState<DiscoverFacets | null>(null);
   const seq = useRef(0);
   const fieldInit = useRef(false);
+  // AI natural-language search (over the whole saved network)
+  const [aiActive, setAiActive] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiParsed, setAiParsed] = useState<AiSearchParsed | null>(null);
+  const [aiResults, setAiResults] = useState<DiscoverJob[]>([]);
+  const [aiTotal, setAiTotal] = useState(0);
 
   const activeCount = [mode, skill, country, employer, roleCat].filter(Boolean).length;
   // A ≥10% match floor only makes sense inside the user's OWN field (where match is meaningful).
@@ -229,6 +235,25 @@ export default function DiscoverScreen() {
   const onEnd = useCallback(async () => { if (loadingMore || jobs.length >= total || loading) return; setLoadingMore(true); await load({ offset: jobs.length, append: true }); setLoadingMore(false); }, [loadingMore, jobs.length, total, loading, load]);
   const openJob = useCallback((dj: DiscoverJob) => { router.push({ pathname: '/(ai-hub)/job-detail', params: toJobHubParams(dj) }); }, [router]);
   const clearFilters = () => { setMode(''); setSkill(''); setCountry(''); setEmployer(''); setRoleCat(''); };
+
+  // AI natural-language search: parse the sentence → search the network → show ranked matches.
+  const runAiSearch = useCallback(async (q: string) => {
+    const query = (q || '').trim();
+    if (!query) return;
+    setAiLoading(true); setAiActive(true);
+    try {
+      const data = await aiSearchJobs(query, 0, 30);
+      if (data.urlDetected && data.url) {
+        setAiActive(false);
+        Alert.alert('Employer link detected', 'Add this link in Job Hub to research every open role at this employer.', [{ text: 'OK' }]);
+        return;
+      }
+      setAiParsed(data.parsed || null); setAiResults(data.jobs || []); setAiTotal(data.total || 0);
+      if (typeof data.noProfile === 'boolean') setNoProfile(data.noProfile);
+    } catch { setAiResults([]); setAiTotal(0); }
+    finally { setAiLoading(false); }
+  }, []);
+  const clearAiSearch = useCallback(() => { setAiActive(false); setAiParsed(null); setAiResults([]); setAiTotal(0); setQuery(''); }, []);
   const pickField = (f: string) => { const nf = f === field ? '' : f; setField(nf); setRoleCat(''); };
 
   const scopeLabel = field ? shortField(field) : 'All fields';
@@ -238,11 +263,36 @@ export default function DiscoverScreen() {
     <View>
       <HeroCard facets={facets} total={total} />
       <View style={styles.searchWrap}>
-        <Ionicons name="search" size={16} color={T.textFaint} />
-        <TextInput value={query} onChangeText={setQuery} placeholder="Search role, company or city" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" />
+        <Ionicons name="sparkles" size={16} color={T.blueDeep} />
+        <TextInput value={query} onChangeText={setQuery} placeholder="Describe the job you want — AI finds it" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" onSubmitEditing={() => runAiSearch(query)} />
         {query.length > 0 && <TouchableOpacity onPress={() => setQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Ionicons name="close-circle" size={17} color={T.textFaint} /></TouchableOpacity>}
+        <TouchableOpacity onPress={() => runAiSearch(query)} disabled={!query.trim() || aiLoading} style={[styles.askAiBtn, (!query.trim() || aiLoading) && { opacity: 0.5 }]} activeOpacity={0.85}>
+          {aiLoading ? <ActivityIndicator size="small" color="#fff" /> : <><Ionicons name="arrow-forward" size={13} color="#fff" /><Text style={styles.askAiText}>Ask AI</Text></>}
+        </TouchableOpacity>
       </View>
 
+      {aiActive && (
+        <View style={styles.aiBanner}>
+          <View style={styles.aiBannerHead}>
+            <Ionicons name="sparkles" size={13} color={T.blueDeep} />
+            <Text style={styles.aiBannerTitle}>AI understood your search</Text>
+            <View style={{ flex: 1 }} />
+            <TouchableOpacity onPress={clearAiSearch} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={styles.aiClear}>Clear</Text></TouchableOpacity>
+          </View>
+          {!!aiParsed && (
+            <View style={styles.aiChips}>
+              {(aiParsed.keywords || []).slice(0, 4).map((k) => <View key={'k' + k} style={styles.aiChip}><Text style={styles.aiChipText}>{k}</Text></View>)}
+              {!!aiParsed.field && <View style={[styles.aiChip, styles.aiChipAlt]}><Text style={styles.aiChipText}>{shortField(aiParsed.field)}</Text></View>}
+              {!!aiParsed.location && <View style={styles.aiChip}><Text style={styles.aiChipText}>📍 {aiParsed.location}</Text></View>}
+              {!!aiParsed.workMode && <View style={styles.aiChip}><Text style={styles.aiChipText}>{cap(aiParsed.workMode)}</Text></View>}
+              {!!aiParsed.seniority && <View style={styles.aiChip}><Text style={styles.aiChipText}>{aiParsed.seniority}</Text></View>}
+            </View>
+          )}
+          <Text style={styles.aiCount}>{aiLoading ? 'Searching the network…' : `${fmt(aiTotal)} ${aiTotal === 1 ? 'match' : 'matches'} found`}</Text>
+        </View>
+      )}
+
+      {!aiActive && (<>
       {/* Field scope pill: defaults to the user's field, tap to change, clear to browse all */}
       <View style={styles.scopeRow}>
         <TouchableOpacity onPress={() => setShowFilters(true)} style={styles.scopePill} activeOpacity={0.85}>
@@ -280,8 +330,9 @@ export default function DiscoverScreen() {
         {fmt(total)} {total === 1 ? 'job' : 'jobs'}
         {isOwnField && !noProfile ? ' · your field, best matches' : (field ? ` · ${shortField(field)}` : '')}
       </Text>
+      </>)}
     </View>
-  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField]);
+  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, runAiSearch, clearAiSearch]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -295,15 +346,17 @@ export default function DiscoverScreen() {
         <View style={styles.center}><ActivityIndicator color={T.blue} size="large" /></View>
       ) : (
         <FlatList
-          data={jobs} keyExtractor={(j, i) => j.id + ':' + i}
+          data={aiActive ? aiResults : jobs} keyExtractor={(j, i) => j.id + ':' + i}
           renderItem={({ item }) => <JobCard job={item} onOpen={openJob} />}
           ListHeaderComponent={header}
           contentContainerStyle={{ padding: 12, paddingBottom: 40 }}
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
-          onEndReached={onEnd} onEndReachedThreshold={0.5}
+          onEndReached={aiActive ? undefined : onEnd} onEndReachedThreshold={0.5}
           removeClippedSubviews initialNumToRender={6} windowSize={9}
-          ListEmptyComponent={<View style={styles.empty}><Ionicons name={error ? 'cloud-offline-outline' : 'briefcase-outline'} size={40} color={T.textFaint} /><Text style={styles.emptyText}>{error || (query || activeCount || field ? 'No jobs match — try “All fields” or clear filters.' : 'No jobs yet — check back soon.')}</Text></View>}
+          ListEmptyComponent={aiActive
+            ? <View style={styles.empty}>{aiLoading ? <ActivityIndicator color={T.blue} /> : <><Ionicons name="search-outline" size={40} color={T.textFaint} /><Text style={styles.emptyText}>No matches in the network yet — try different words, or check back as coverage grows.</Text></>}</View>
+            : <View style={styles.empty}><Ionicons name={error ? 'cloud-offline-outline' : 'briefcase-outline'} size={40} color={T.textFaint} /><Text style={styles.emptyText}>{error || (query || activeCount || field ? 'No jobs match — try “All fields” or clear filters.' : 'No jobs yet — check back soon.')}</Text></View>}
           ListFooterComponent={loadingMore ? <ActivityIndicator color={T.blue} style={{ marginVertical: 18 }} /> : <View style={{ height: 8 }} />}
         />
       )}
@@ -383,6 +436,17 @@ const styles = StyleSheet.create({
 
   searchWrap: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: T.surface, borderRadius: 14, borderWidth: 1, borderColor: T.border, paddingHorizontal: 12, height: 46, marginBottom: 10 },
   searchInput: { flex: 1, fontSize: 14, color: T.ink, padding: 0 },
+  askAiBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: T.blueDeep, borderRadius: 9, paddingHorizontal: 11, height: 32 },
+  askAiText: { color: '#fff', fontSize: 12.5, fontWeight: '800' },
+  aiBanner: { backgroundColor: 'rgba(79,141,255,0.07)', borderWidth: 1, borderColor: 'rgba(79,141,255,0.18)', borderRadius: 14, padding: 12, marginBottom: 10 },
+  aiBannerHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  aiBannerTitle: { fontSize: 12.5, fontWeight: '800', color: T.blueDeep },
+  aiClear: { fontSize: 12.5, fontWeight: '700', color: T.textMuted },
+  aiChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 9 },
+  aiChip: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: T.surface, borderWidth: 1, borderColor: T.border, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5 },
+  aiChipAlt: { backgroundColor: 'rgba(124,107,255,0.10)', borderColor: 'rgba(124,107,255,0.25)' },
+  aiChipText: { fontSize: 11.5, fontWeight: '700', color: T.textMuted },
+  aiCount: { fontSize: 11.5, fontWeight: '700', color: T.blueDeep, marginTop: 9 },
 
   scopeRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
   scopePill: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: T.surface, borderRadius: 12, borderWidth: 1, borderColor: T.border, paddingHorizontal: 12, height: 42 },

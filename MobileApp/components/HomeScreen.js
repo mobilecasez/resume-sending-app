@@ -1369,18 +1369,32 @@ export default function HomeScreen({
   const showOnboarding = !onboardingDismissed && setup && !setup.complete;
 
   // First-run explainer — shown ONCE per user (before any setup), tells them what the app does.
+  // Override: if the server sends alwaysShowIntro (env ALWAYS_SHOW_INTRO=1), show it EVERY launch —
+  // handy for testing the intro on TestFlight without a rebuild (toggle the Railway env var).
   const [showExplainer, setShowExplainer] = useState(false);
+  const alwaysIntroRef = useRef(false);
   const explainerKey = user?.email ? `explainer_seen_v1_${user.email}` : null;
   useEffect(() => {
     let alive = true;
     (async () => {
+      let always = false;
+      try {
+        if (API_BASE) {
+          const r = await fetch(`${API_BASE}/app-config`);
+          if (r.ok) { const cfg = await r.json(); always = !!(cfg && cfg.alwaysShowIntro); }
+        }
+      } catch {}
+      if (!alive) return;
+      alwaysIntroRef.current = always;
+      if (always) { setShowExplainer(true); return; }
       try { if (explainerKey) { const v = await AsyncStorage.getItem(explainerKey); if (alive && v !== '1') setShowExplainer(true); } } catch {}
     })();
     return () => { alive = false; };
-  }, [explainerKey]);
+  }, [explainerKey, API_BASE]);
   const dismissExplainer = useCallback(async () => {
     setShowExplainer(false);
-    try { if (explainerKey) await AsyncStorage.setItem(explainerKey, '1'); } catch {}
+    // When forced on for testing, DON'T persist the "seen" flag, so it shows again next launch.
+    try { if (explainerKey && !alwaysIntroRef.current) await AsyncStorage.setItem(explainerKey, '1'); } catch {}
   }, [explainerKey]);
 
   // Google-Ads conversion signal — fire ONCE per install when a logged-in user reaches Home. That

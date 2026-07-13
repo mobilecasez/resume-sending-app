@@ -503,6 +503,74 @@ const HARVEST_JS = `(function(){
   } catch(e){}
 })(); true;`;
 
+// ── IFRAME AGENT ────────────────────────────────────────────────────────────────
+// Many ATS embed the real application form in a CROSS-ORIGIN iframe (e.g. Greenhouse's
+// grnhse_iframe → job-boards.greenhouse.io). injectJavaScript() only runs in the MAIN frame, so the
+// scan/fill/attach never reached those fields ("No fillable fields found"). With the WebView's
+// injectedJavaScriptForMainFrameOnly={false}, THIS script runs inside every frame; child frames then
+// act on relayed commands (scan/fill/attach) posted from the main frame. The MAIN frame keeps its own
+// direct path (READ_FIELDS_JS / fillJs / attachJs) unchanged — child frames only SUPPLEMENT it, so a
+// normal (non-iframe) page behaves exactly as before.
+const FRAME_AGENT_JS = `(function(){
+  if (window.__cvfAgent) return; window.__cvfAgent = true;
+  ${JS_HELPERS}
+  function b64ToFile(b64, filename, mime){ var bin=atob(b64); var bytes=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i); return new File([bytes], filename, {type:mime||'application/pdf'}); }
+  function doScan(){
+    try {
+      var out=[], seen={}, rgroups={};
+      function snap(){ var els=document.querySelectorAll('input,textarea,select');
+        for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
+          if(['hidden','submit','button','reset','image'].indexOf(t)>=0) continue;
+          if(!vis(el)) continue; var s=sig(el);
+          if(t==='radio'){ if(!rgroups[s]){ rgroups[s]={key:s,tag:'radio',type:'radio',name:(el.name||'').slice(0,60),label:radioQuestion(el).slice(0,180),required:!!el.required,options:[]}; out.push(rgroups[s]); } var ol=(nlbl(el)||el.value||'').slice(0,80); if(ol&&rgroups[s].options.indexOf(ol)<0) rgroups[s].options.push(ol); continue; }
+          if(seen[s]) continue; seen[s]=true;
+          var f={key:s,tag:el.tagName.toLowerCase(),type:t,name:(el.name||'').slice(0,60),placeholder:(el.placeholder||'').slice(0,80),label:nlbl(el).slice(0,140),required:!!el.required,accept:(el.getAttribute&&el.getAttribute('accept'))||''};
+          if(el.tagName==='SELECT'){ f.options=Array.prototype.slice.call(el.options).map(function(o){return (o.text||'').trim();}).filter(Boolean).slice(0,80); }
+          out.push(f);
+        }
+      }
+      scrollThrough(snap, function(){ post({type:'FIELDS', fields: out, frame:1}); });
+    } catch(e){ post({type:'AUTOFILL_ERROR', error:String((e&&e.message)||e)}); }
+  }
+  function doFill(bySig){
+    try {
+      var total=Object.keys(bySig).length, filled={};
+      function fillVisible(){ var els=document.querySelectorAll('input,textarea,select');
+        for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
+          if(['hidden','submit','button','reset','image','file'].indexOf(t)>=0) continue; if(!vis(el)) continue;
+          var s=sig(el); if(!(s in bySig)||filled[s]) continue; var v=bySig[s]; if(v==null||v===''){filled[s]=true;continue;}
+          try{ if(t==='radio'){ var ol=(nlbl(el)||el.value||'').trim().toLowerCase(); var want=String(v).trim().toLowerCase(); if(ol===want||(want&&ol.indexOf(want)>=0)||(el.value||'').toLowerCase()===want){ setChecked(el,true); if(el.checked) filled[s]=true; } }
+            else if(el.tagName==='SELECT'){ var m=pickOpt(el.options,v); if(m){ el.value=m.value; fire(el); filled[s]=true; } }
+            else if(t==='checkbox'){ var wc=(v===true)||/^(yes|true|on|1|checked)$/i.test(String(v)); setChecked(el,wc); if(el.checked===wc) filled[s]=true; }
+            else { try{el.focus();}catch(e){} setNative(el,String(v)); try{el.dispatchEvent(new Event('blur',{bubbles:true}));el.blur();}catch(e){} if(String(el.value)===String(v)) filled[s]=true; }
+          }catch(e){}
+        }
+      }
+      var passes=0;
+      function pass(){ var before=Object.keys(filled).length; scrollThrough(fillVisible, function(){ passes++; var after=Object.keys(filled).length; if(after>before&&after<total&&passes<5){pass();} else { post({type:'FILLED', count:after, total:total, frame:1}); } }); }
+      pass();
+    } catch(e){ post({type:'AUTOFILL_ERROR', error:String((e&&e.message)||e)}); }
+  }
+  function doAttach(keys,b64,filename,mime,kind){
+    try{ var ok=0,total=0; (keys||[]).forEach(function(k){ var el=document.querySelector('[data-cvf="'+k+'"]'); if(!el||(el.type||'').toLowerCase()!=='file') return; total++; try{ var dt=new DataTransfer(); dt.items.add(b64ToFile(b64,filename,mime)); el.files=dt.files; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); if(el.files&&el.files.length>0) ok++; }catch(e){} });
+      if(total>0) post({type:'ATTACHED', kind:kind, ok:ok, total:total, frame:1});
+    }catch(e){}
+  }
+  window.addEventListener('message', function(ev){
+    var d=ev&&ev.data; if(!d||typeof d!=='object'||!d.__cvfCmd) return;
+    if(window.top===window.self) return;   // main frame uses its own direct path; only CHILD frames act on relays
+    try {
+      if(d.__cvfCmd==='scan') doScan();
+      else if(d.__cvfCmd==='fill') doFill(d.values||{});
+      else if(d.__cvfCmd==='attach') doAttach(d.keys, d.b64, d.filename, d.mime, d.kind);
+    } catch(e){}
+  }, false);
+})(); true;`;
+
+// Relay a command from the main frame to every child (iframe) frame. Runs in the MAIN frame.
+const relayToChildrenJs = (cmd: Record<string, any>) =>
+  `(function(){var m=${JSON.stringify(cmd)};try{for(var i=0;i<window.frames.length;i++){try{window.frames[i].postMessage(m,'*');}catch(e){}}}catch(e){}})(); true;`;
+
 // Translate the apply page to English IN PLACE using Google's free website-translator widget
 // (no API key, no backend, NO our-AI). It rewrites the visible text on the page's OWN domain,
 // so the form, our autofill and smart-copy all keep working. The Google banner is hidden via CSS.
@@ -598,6 +666,7 @@ const buildApplyNodesJS = (map: Record<string, string>) =>
 // common non-English function words (German/Dutch/French/Spanish/Italian/Portuguese/…). Posts
 // PAGE_LANG so RN can decide. Runs after a short delay so SPA content has rendered.
 const AUTODETECT_JS = `(function(){
+  if (window.top !== window.self) return;   // language auto-detect only on the top page, not iframes
   function post(o){ try{o.__cvf=true;window.ReactNativeWebView.postMessage(JSON.stringify(o));}catch(e){} }
   function detect(){
     try{
@@ -820,6 +889,13 @@ export default function JobDetailScreen() {
   const [autofillNote,  setAutofillNote]  = useState('');
   const [afStep,        setAfStep]        = useState<Record<string, string>>({}); // stepKey -> pending|active|done|warn
   const autofillRef = useRef<{ active: boolean; gen: number; resumeKeys: string[]; clKeys: string[]; radioKeys: string[]; files: any }>({ active: false, gen: 0, resumeKeys: [], clKeys: [], radioKeys: [], files: null });
+  // Cross-frame field merge: the main frame AND any iframe(s) each post FIELDS; accumulate + debounce
+  // so an empty main frame (form lives in a Greenhouse-style iframe) doesn't fire "no fields found".
+  const fieldsAccumRef = useRef<any[]>([]);
+  const fieldsTimerRef = useRef<any>(null);
+  const attachTimerRef = useRef<any>(null);
+  const filledAccumRef = useRef<{ count: number }>({ count: 0 });
+  const filledTimerRef = useRef<any>(null);
   const setStep = (key: string, status: string) => setAfStep(prev => ({ ...prev, [key]: status }));
 
   // File-tap interception: offer our resume / cover letter when the user taps an upload field.
@@ -1311,7 +1387,39 @@ export default function JobDetailScreen() {
     setAutofillNote('');
     setAfStep({ reading: 'active' });
     setAutofillState('running');
-    applyWebRef.current.injectJavaScript(READ_FIELDS_JS);
+    fieldsAccumRef.current = [];
+    if (fieldsTimerRef.current) { clearTimeout(fieldsTimerRef.current); fieldsTimerRef.current = null; }
+    applyWebRef.current.injectJavaScript(READ_FIELDS_JS);                          // main frame (as before)
+    applyWebRef.current.injectJavaScript(relayToChildrenJs({ __cvfCmd: 'scan' })); // + any iframe(s)
+  };
+
+  // Process the MERGED field set (main frame + iframes) once it settles. Extracted from the FIELDS
+  // handler so a debounce can gather fields from every frame before the AI mapping runs.
+  const processFields = async (fields: any[], gen: number) => {
+    if (!autofillRef.current.active || autofillRef.current.gen !== gen) return;
+    if (!Array.isArray(fields) || fields.length === 0) {
+      setStep('reading', 'warn');
+      finishAutofill('error', 'No fillable fields found. Open the application form first, then tap Auto Fill.');
+      return;
+    }
+    setStep('reading', 'done'); setStep('mapping', 'active');
+    try {
+      const token = await getToken();
+      if (!stillValid(gen)) return;
+      const data = await postAndPoll('/ai-hub/autofill-map', { fields, coverLetterHtml, jobTitle: job.title, companyName: companyNameCL || employer.name }, token);
+      if (!stillValid(gen)) return;
+      const values = (data && data.values) || {};
+      const clText = clPlainText(coverLetterHtml);
+      if (clText) { for (const f of fields) { if (isCoverLetterTextarea(f)) values[f.key] = clText; } }
+      try { smartValuesRef.current = { ...smartValuesRef.current, ...values }; } catch {}
+      setStep('mapping', 'done'); setStep('filling', 'active');
+      filledAccumRef.current = { count: 0 };
+      if (filledTimerRef.current) { clearTimeout(filledTimerRef.current); filledTimerRef.current = null; }
+      applyWebRef.current?.injectJavaScript(fillJs(values));                          // main frame
+      applyWebRef.current?.injectJavaScript(relayToChildrenJs({ __cvfCmd: 'fill', values })); // + iframe(s)
+    } catch (err: any) {
+      if (stillValid(gen)) { setStep('mapping', 'warn'); finishAutofill('error', err?.message || 'AI mapping failed.'); }
+    }
   };
 
   const onWebMessage = async (e: any) => {
@@ -1322,6 +1430,8 @@ export default function JobDetailScreen() {
     // File-tap interception (works independently of an auto-fill run).
     if (msg.type === 'FILE_PICK') { setFilePick({ key: msg.key, accept: msg.accept || '', label: msg.label || '' }); return; }
     if (msg.type === 'ATTACHED' && msg.kind === 'pick') {
+      if (!msg.total) return;   // a frame that didn't contain the tapped field — wait for the one that does
+      if (attachTimerRef.current) { clearTimeout(attachTimerRef.current); attachTimerRef.current = null; }
       setFilePickBusy(null); setFilePick(null);
       if (msg.ok > 0) Alert.alert('Attached ✓', 'Your file was attached to the form.');
       else Alert.alert("Couldn't attach here", 'This upload field blocked the attachment. Tap “Choose from device” and pick the file yourself.');
@@ -1407,36 +1517,23 @@ export default function JobDetailScreen() {
     const gen = autofillRef.current.gen;
 
     if (msg.type === 'FIELDS') {
-      if (!Array.isArray(msg.fields) || msg.fields.length === 0) { setStep('reading', 'warn'); finishAutofill('error', 'No fillable fields found. Open the application form first, then tap Auto Fill.'); return; }
-      setStep('reading', 'done'); setStep('mapping', 'active');
-      try {
-        const token = await getToken();
-        if (!stillValid(gen)) return;
-        // Runs as a background job server-side, so minimizing the app won't fail the AI mapping.
-        const data = await postAndPoll('/ai-hub/autofill-map', { fields: msg.fields, coverLetterHtml, jobTitle: job.title, companyName: companyNameCL || employer.name }, token);
-        if (!stillValid(gen)) return;
-        const values = (data && data.values) || {};
-        // If the form has a free-text cover-letter box (no file upload), paste the WHOLE
-        // cover letter straight in — deterministically, so it's never AI-truncated.
-        const clText = clPlainText(coverLetterHtml);
-        if (clText) {
-          for (const f of msg.fields) {
-            if (isCoverLetterTextarea(f)) values[f.key] = clText;
-          }
-        }
-        // Cache the field→value map so the smart-copy popup can lead with the exact value
-        // the AI/memory computed for whichever field the user focuses.
-        try { smartValuesRef.current = { ...smartValuesRef.current, ...values }; } catch {}
-        setStep('mapping', 'done'); setStep('filling', 'active');
-        applyWebRef.current?.injectJavaScript(fillJs(values));
-      } catch (err: any) {
-        if (stillValid(gen)) { setStep('mapping', 'warn'); finishAutofill('error', err?.message || 'AI mapping failed.'); }
-      }
+      // Accumulate fields across frames (main + iframe), dedupe by key, then process once they settle.
+      const incoming = Array.isArray(msg.fields) ? msg.fields : [];
+      for (const f of incoming) { if (f && f.key && !fieldsAccumRef.current.some((x: any) => x.key === f.key)) fieldsAccumRef.current.push(f); }
+      if (fieldsTimerRef.current) clearTimeout(fieldsTimerRef.current);
+      fieldsTimerRef.current = setTimeout(() => { void processFields(fieldsAccumRef.current.slice(), gen); }, 700);
     } else if (msg.type === 'FILLED') {
-      setStep('filling', (msg.count > 0) ? 'done' : 'warn');
-      finishAutofill('done', msg.count > 0
-        ? `Filled ${msg.count} field${msg.count === 1 ? '' : 's'}. Now tap each upload field to attach your resume & cover letter.`
-        : "We couldn't match any fields automatically — please fill this form manually.");
+      // Sum FILLED across frames (main fills 0 when the form is in an iframe; the iframe fills N) —
+      // debounce so we report the combined count once, not a race between frames.
+      filledAccumRef.current.count += (msg.count || 0);
+      if (filledTimerRef.current) clearTimeout(filledTimerRef.current);
+      filledTimerRef.current = setTimeout(() => {
+        const c = filledAccumRef.current.count;
+        setStep('filling', c > 0 ? 'done' : 'warn');
+        finishAutofill('done', c > 0
+          ? `Filled ${c} field${c === 1 ? '' : 's'}. Now tap each upload field to attach your resume & cover letter.`
+          : "We couldn't match any fields automatically — please fill this form manually.");
+      }, 600);
     } else if (msg.type === 'AUTOFILL_ERROR') {
       finishAutofill('error', msg.error || 'Auto-fill failed.');
     }
@@ -1467,8 +1564,14 @@ export default function JobDetailScreen() {
         Alert.alert('Not available', kind === 'resume' ? 'Your resume could not be prepared.' : 'No cover letter for this job yet — generate one first.');
         return;
       }
-      applyWebRef.current.injectJavaScript(attachJs([filePick.key], f.base64, f.name, f.mime, 'pick'));
-      // result handled in onWebMessage (ATTACHED kind 'pick')
+      applyWebRef.current.injectJavaScript(attachJs([filePick.key], f.base64, f.name, f.mime, 'pick'));                                          // main frame
+      applyWebRef.current.injectJavaScript(relayToChildrenJs({ __cvfCmd: 'attach', keys: [filePick.key], b64: f.base64, filename: f.name, mime: f.mime, kind: 'pick' })); // + iframe(s)
+      // result handled in onWebMessage (ATTACHED kind 'pick'). Fallback if no frame reports back:
+      if (attachTimerRef.current) clearTimeout(attachTimerRef.current);
+      attachTimerRef.current = setTimeout(() => {
+        attachTimerRef.current = null; setFilePickBusy(null); setFilePick(null);
+        Alert.alert("Couldn't attach here", 'This upload field blocked the attachment. Tap “Choose from device” and pick the file yourself.');
+      }, 4500);
     } catch {
       setFilePickBusy(null);
       Alert.alert('Error', 'Could not attach the file. Try “Choose from device”.');
@@ -2364,7 +2467,8 @@ export default function JobDetailScreen() {
               source={{ uri: applyWebUrl }}
               style={s.webView}
               originWhitelist={['*']}
-              injectedJavaScript={INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS}
+              injectedJavaScript={INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + FRAME_AGENT_JS}
+              injectedJavaScriptForMainFrameOnly={false}
               javaScriptEnabled
               domStorageEnabled
               thirdPartyCookiesEnabled

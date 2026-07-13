@@ -1024,6 +1024,21 @@ export async function fetchDiscoverJobs(
   return data;
 }
 
+export type AiSearchParsed = { keywords: string[]; field: string | null; location: string | null; workMode: string | null; seniority: string | null };
+export type AiSearchResponse = {
+  success: boolean; urlDetected?: boolean; url?: string; parsed?: AiSearchParsed | null;
+  jobs: DiscoverJob[]; total: number; offset: number; limit: number; hasMore: boolean;
+  noProfile?: boolean; userField?: string | null;
+};
+
+/** AI natural-language search over the saved network: breaks the sentence into role/location/etc,
+ *  then returns matched jobs ranked by résumé fit. A pasted employer URL comes back as urlDetected. */
+export async function aiSearchJobs(query: string, offset = 0, limit = 20): Promise<AiSearchResponse> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.post(`${API_BASE_URL}/discover/ai-search`, { query, offset, limit }, { headers, timeout: 30000 });
+  return data;
+}
+
 /** Filter chips for the feed. Pass `field` to get the role categories within that field. */
 export async function fetchDiscoverFacets(field?: string): Promise<DiscoverFacets> {
   const headers = await getAuthHeader();
