@@ -61,6 +61,22 @@ function postJson(url, body) {
   });
 }
 
+// Extract a JS object literal assigned in page HTML (e.g. `window.pageData = {…}`) by brace-matching
+// (string-aware) from the first `{` after the marker. Returns the parsed object or null.
+function extractJsonAssign(html, marker) {
+  const i = String(html || '').indexOf(marker); if (i < 0) return null;
+  const s = html.indexOf('{', i); if (s < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let k = s; k < html.length; k++) {
+    const ch = html[k];
+    if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; }
+    else if (ch === '"') inStr = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) { try { return JSON.parse(html.slice(s, k + 1)); } catch { return null; } } }
+  }
+  return null;
+}
+
 // Bounded-concurrency map (for per-job detail fetches on Workday/SmartRecruiters).
 async function mapLimit(items, limit, fn) {
   const out = new Array(items.length); let i = 0;
@@ -697,6 +713,115 @@ const adapters = [
     },
   },
 
+  // PHENOM — POST {careerHost}/widgets (refNum scraped from the careers HTML). Big enterprise skin.
+  {
+    name: 'phenom',
+    detect: (c) => {
+      const html = String(c.html || '');
+      if (!/phenom|phApp|smashfly|phenompeople/i.test(html)) return false;
+      const m = html.match(/["']refNum["']\s*:\s*["']([A-Za-z0-9_-]+)["']/);
+      return m ? m[1] : false;
+    },
+    async fetch(c) {
+      const host = c.origin; const refNum = c.token; const out = []; const size = 100;
+      const company = resolveCompany(c.html, '', c.origin);
+      for (let from = 0; from < 4000;) {
+        const body = { lang: 'en', deviceType: 'desktop', country: 'us', pageName: 'search-results', ddoKey: 'refineSearch', size, from, clientName: 'cvapplyr', refNum, jobs: true, keywords: '', location: '', profileData: {} };
+        const data = await postJson(`${host}/widgets`, body).catch(() => null);
+        const rs = data && data.refineSearch;
+        const jobs = rs && rs.data && Array.isArray(rs.data.jobs) ? rs.data.jobs : [];
+        if (!jobs.length) break;
+        for (const j of jobs) {
+          out.push(makeJob({ title: j.title, location: j.location || [j.city, j.state, j.country].filter(Boolean).join(', ') || 'Not specified', job_url: j.applyUrl || `${host}/job/${j.jobId}`, employer_name: company, employmentCode: j.type, descHtml: j.descriptionTeaser || '' }));
+        }
+        from += jobs.length;
+        if (from >= (rs.totalHits || 0)) break;
+      }
+      return out.filter((j) => j.title && j.job_url);
+    },
+  },
+
+  // UKG PRO / ULTIPRO — POST recruiting.ultipro.com/{CODE}/JobBoard/{guid}/JobBoardView/LoadSearchResults
+  {
+    name: 'ukgpro',
+    detect: (c) => {
+      if (!/^(recruiting|recruiting2)\.ultipro\.com$/i.test(c.host)) {
+        const h = String(c.html || '').match(/(recruiting2?\.ultipro\.com)\/([A-Za-z0-9]+)\/JobBoard\/([0-9a-f-]{36})/i);
+        return h ? { host: h[1], code: h[2], guid: h[3] } : false;
+      }
+      const m = c.pathname.match(/\/([A-Za-z0-9]+)\/JobBoard\/([0-9a-f-]{36})/i);
+      return m ? { host: c.host, code: m[1], guid: m[2] } : false;
+    },
+    async fetch(c) {
+      const { host, code, guid } = c.token; const base = `https://${host}/${code}/JobBoard/${guid}`;
+      const out = []; const Top = 50; const company = resolveCompany(c.html, code, c.origin);
+      for (let Skip = 0; Skip < 3000;) {
+        const data = await postJson(`${base}/JobBoardView/LoadSearchResults`, { opportunitySearch: { Top, Skip, QueryString: '', OrderBy: [], Filters: [] } }).catch(() => null);
+        const ops = data && Array.isArray(data.opportunities) ? data.opportunities : [];
+        if (!ops.length) break;
+        for (const o of ops) {
+          const L = Array.isArray(o.Locations) && o.Locations[0] ? o.Locations[0] : {};
+          const a = L.Address || {};
+          out.push(makeJob({ title: o.Title, location: L.LocalizedName || [a.City, a.State && a.State.Name, a.Country && a.Country.Name].filter(Boolean).join(', ') || 'Not specified', job_url: `${base}/OpportunityDetail?opportunityId=${o.Id}`, employer_name: company, employmentCode: o.FullTime ? 'Full-time' : null, descHtml: o.BriefDescription || '' }));
+        }
+        Skip += ops.length;
+        if (Skip >= (data.totalCount || 0)) break;
+      }
+      return out.filter((j) => j.title);
+    },
+  },
+
+  // PAYLOCITY — jobs are server-embedded as `window.pageData` in the careers HTML (no separate API)
+  {
+    name: 'paylocity',
+    detect: (c) => (/recruiting\.paylocity\.com$/i.test(c.host) && /\/recruiting\/jobs\/All\//i.test(c.pathname)) ? (firstSeg(c.pathname) || true) : (/window\.pageData/.test(String(c.html || '')) && /paylocity/i.test(String(c.html || '')) ? true : false),
+    async fetch(c) {
+      let html = c.html || '';
+      if (!/window\.pageData/.test(html)) html = await fetchText(c.url).catch(() => html);
+      const pd = extractJsonAssign(html, 'window.pageData');
+      const jobs = pd && Array.isArray(pd.Jobs) ? pd.Jobs : [];
+      const company = (pd && pd.ModuleTitle) || resolveCompany(c.html, c.token, c.origin);
+      return jobs.map((j) => {
+        const L = j.JobLocation || {};
+        return makeJob({ title: j.JobTitle, location: j.LocationName || [L.City, L.State, L.Country].filter(Boolean).join(', ') || 'Not specified', job_url: `https://recruiting.paylocity.com/Recruiting/Jobs/Apply/${j.JobId}`, employer_name: company, descHtml: j.Description || '' });
+      }).filter((j) => j.title && j.job_url);
+    },
+  },
+
+  // ICIMS — GET {prefix}-{slug}.icims.com/jobs/search?ss=1&in_iframe=1 (iframe HTML; iCIMS_Anchor rows)
+  {
+    name: 'icims',
+    detect: (c) => {
+      if (/^[a-z0-9-]+-[a-z0-9-]+\.icims\.com$/i.test(c.host)) return c.host;
+      const h = String(c.html || '').match(/([a-z0-9-]+-[a-z0-9-]+\.icims\.com)/i); return h ? h[1] : false;
+    },
+    async fetch(c) {
+      const base = `https://${c.token}/jobs/search?ss=1&in_iframe=1`;
+      const out = []; const seen = new Set();
+      // Employer = the icims subdomain slug (careers-peraton.icims.com → "Peraton").
+      const slug = String(c.token).split('.')[0].replace(/^(careers|jobs|uscareers|us|apply|search|talent|www)-/i, '');
+      const company = slug.replace(/[-_]+/g, ' ').trim().replace(/\b\w/g, (ch) => ch.toUpperCase());
+      for (let pr = 0; pr < 12; pr++) {
+        const html = await fetchText(pr === 0 ? base : `${base}&pr=${pr}`).catch(() => '');
+        if (!/iCIMS_Anchor/i.test(html)) break;
+        const tags = html.match(/<a[^>]*class="[^"]*iCIMS_Anchor[^"]*"[^>]*>/gi) || [];
+        let added = 0;
+        for (const tag of tags) {
+          const t = htmlUnescape((tag.match(/title="([^"]*)"/i) || [])[1] || '');
+          let h = (tag.match(/href="([^"]+)"/i) || [])[1] || '';
+          if (!t || !h) continue;
+          const title = t.includes(' - ') ? t.split(' - ').slice(1).join(' - ').trim() : t.trim();
+          h = h.replace(/([?&])in_iframe=1&?/i, '$1').replace(/[?&]$/, '');
+          const url = /^https?:/i.test(h) ? h : `https://${c.token}${h}`;
+          if (!title || seen.has(url)) continue; seen.add(url); added++;
+          out.push(makeJob({ title, location: 'Not specified', job_url: url, employer_name: company }));
+        }
+        if (!added) break;
+      }
+      return out;
+    },
+  },
+
 ];
 
 /**
@@ -727,7 +852,7 @@ async function detectAndFetchAts(url, rawHtml = '') {
   // the provenance guard only applies when the target is a real EMPLOYER domain. The host
   // alternatives are ANCHORED to a real host boundary so a legit employer like "clever.co"
   // (contains "lever.co") doesn't bypass the guard. (H2)
-  const targetIsAtsHost = /(^|\.)(greenhouse\.io|grnh\.se|lever\.co|ashbyhq\.com|myworkdayjobs\.com|smartrecruiters\.com|recruitee\.com|breezy\.hr|workable\.com|personio\.(de|com)|teamtailor\.com|jobvite\.com|icims\.com|bamboohr\.com|applytojob\.com|jobscore\.com|homerun\.co|rippling\.com|eightfold\.ai|hrmdirect\.com|comeet\.(co|com))$/i.test(host);
+  const targetIsAtsHost = /(^|\.)(greenhouse\.io|grnh\.se|lever\.co|ashbyhq\.com|myworkdayjobs\.com|smartrecruiters\.com|recruitee\.com|breezy\.hr|workable\.com|personio\.(de|com)|teamtailor\.com|jobvite\.com|icims\.com|bamboohr\.com|applytojob\.com|jobscore\.com|homerun\.co|rippling\.com|eightfold\.ai|hrmdirect\.com|comeet\.(co|com)|ultipro\.com|paylocity\.com)$/i.test(host);
   for (const a of adapters) {
     let token;
     try { token = a.detect({ url, origin, host, pathname, html: rawHtml }); } catch { token = false; }
