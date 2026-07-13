@@ -213,12 +213,23 @@ async function getUserProfileLoc(userId) {
 }
 const NEAR_ME_RE = /\b(near me|my area|nearby|near by|my location|around me|close to me|my city|my region|my place|around here)\b/i;
 
+// Best-effort city from a free-text address ("…, Sector 15, Gurgaon, Haryana" → "Gurgaon"): the city
+// is usually the comma-segment just before the state/country.
+function cityFromAddress(addr) {
+  const parts = String(addr || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length >= 2) return parts[parts.length - 2];
+  return parts[0] || '';
+}
+
 async function parseSearchQuery(query, locHint) {
   const q = String(query || '').trim().slice(0, 300);
   if (!q) return { keywords: [], field: null, location: null, workMode: null, seniority: null };
   if (!process.env.GEMINI_API_KEY) return naiveParse(q);
   try {
-    const model = new GoogleGenerativeAI(process.env.GEMINI_API_KEY).getGenerativeModel({ model: PARSE_MODEL });
+    const model = new GoogleGenerativeAI(process.env.GEMINI_API_KEY).getGenerativeModel({
+      model: PARSE_MODEL,
+      generationConfig: { responseMimeType: 'application/json', temperature: 0 },  // force clean JSON
+    });
     const locLine = locHint
       ? `\nThe user's OWN saved location is city="${locHint.city || ''}", country="${locHint.country || ''}", address="${locHint.address || ''}". If the text refers to their own area ("near me", "my area", "nearby", "my city", "my location"), set "location" to their city — INFER the city from the address/zip when the city field is blank (e.g. an address ending "…Gurgaon, Haryana" → "Gurgaon").`
       : '';
@@ -237,8 +248,9 @@ Examples:
 "sales jobs near my area" (address "…Gurgaon, Haryana") -> {"keywords":["sales"],"field":"Sales & Business Development","location":"Gurgaon","workMode":null,"seniority":null}${locLine}
 User text: ${JSON.stringify(q)}`;
     const r = await model.generateContent(prompt);
-    const txt = String((r && r.response && r.response.text && r.response.text()) || '').trim().replace(/^```(json)?\s*/i, '').replace(/\s*```$/,'');
-    const j = JSON.parse(txt);
+    const txt = String((r && r.response && r.response.text && r.response.text()) || '').trim();
+    const m = txt.match(/\{[\s\S]*\}/);   // robust: pull the first {…} block even if the model adds prose/fences
+    const j = JSON.parse(m ? m[0] : txt);
     let workMode = j.workMode ? String(j.workMode).toLowerCase() : null;
     if (!['remote', 'hybrid', 'onsite'].includes(workMode)) workMode = null;
     const keywords = Array.isArray(j.keywords)
@@ -273,8 +285,11 @@ async function aiSearch(req, res) {
     const userFieldObj = deriveUserField(resume);
     const loc = await getUserProfileLoc(req.user && req.user.id);
     const parsed = await parseSearchQuery(rawQuery, loc);
-    // "near me / my area" → resolve to the user's saved city (fallback if the AI didn't).
-    if (NEAR_ME_RE.test(rawQuery) && loc && loc.city && String(loc.city).trim()) parsed.location = String(loc.city).trim();
+    // "near me / my area" → resolve to the user's saved city (deterministic; wins over the AI).
+    if (NEAR_ME_RE.test(rawQuery) && loc) {
+      const city = (loc.city && String(loc.city).trim()) ? String(loc.city).trim() : cityFromAddress(loc.address);
+      if (city) parsed.location = city;
+    }
 
     // ── WHERE ──
     const wParams = [];
