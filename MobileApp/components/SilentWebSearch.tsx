@@ -31,11 +31,11 @@ const EXTRACT_JS = `(function(){
   var iv = setInterval(function(){
     tries++;
     var r = scan();
-    if (r.urls.length > 0 || tries >= 6) {
+    if (r.urls.length > 0 || tries >= 12) {   // Google results render via JS — give them time to settle
       clearInterval(iv);
       try { window.ReactNativeWebView.postMessage(JSON.stringify({ __cvfx:true, urls:r.urls, blocked:r.blocked })); } catch(e){}
     }
-  }, 400);
+  }, 500);
 })(); true;`;
 
 export default function SilentWebSearch({ urls, onResult }: { urls: string[]; onResult: (urls: string[], blocked: boolean) => void }) {
@@ -69,8 +69,6 @@ export default function SilentWebSearch({ urls, onResult }: { urls: string[]; on
           onHttpError={() => onEach([], true)}
           javaScriptEnabled
           domStorageEnabled
-          cacheEnabled={false}
-          incognito
           userAgent={MOBILE_UA}
         />
       ))}

@@ -263,9 +263,12 @@ export default function DiscoverScreen() {
       setAiParsed(data.parsed || null); setAiResults(data.jobs || []); setAiTotal(data.total || 0);
       if (typeof data.noProfile === 'boolean') setNoProfile(data.noProfile);
       // Kick off the silent on-device web search to find MORE jobs across the ATS web (user IP).
-      // Per-site DDG-lite queries (the OR-group returns nothing on DDG).
+      // Google (far richer index) as primary + DDG-lite as fallback, each as a SEPARATE per-site query.
       const perSite: string[] = (data.xray && Array.isArray(data.xray.perSite)) ? data.xray.perSite : [];
-      const urls = perSite.map((q) => 'https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(q));
+      const urls = [
+        ...perSite.map((q) => 'https://www.google.com/search?num=30&q=' + encodeURIComponent(q)),
+        ...perSite.slice(0, 2).map((q) => 'https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(q)),
+      ].slice(0, 6);
       if (urls.length) {
         lastQueryRef.current = query;
         setWebPhase('searching'); setXraySeq((n) => n + 1); setXrayUrls(urls);
