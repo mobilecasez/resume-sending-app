@@ -15,11 +15,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import {
-  fetchDiscoverJobs, fetchDiscoverFacets, aiSearchJobs,
-  type DiscoverJob, type DiscoverFacets, type AiSearchParsed,
+  fetchDiscoverJobs, fetchDiscoverFacets, aiSearchJobs, hydrateJobUrls,
+  type DiscoverJob, type DiscoverFacets, type AiSearchParsed, type AiXray,
 } from '../../services/aiHubService';
 import { logEvent } from '../../services/firebaseAnalytics';
 import HelpAssistant from '../../components/HelpAssistant';
+import SilentWebSearch from '../../components/SilentWebSearch';
 
 const T = {
   bg: '#E5EAF3', surface: '#FFFFFF', ink: '#0B0F22', textMuted: '#5B6B8A', textFaint: '#8896B0',
@@ -195,6 +196,13 @@ export default function DiscoverScreen() {
   const [aiParsed, setAiParsed] = useState<AiSearchParsed | null>(null);
   const [aiResults, setAiResults] = useState<DiscoverJob[]>([]);
   const [aiTotal, setAiTotal] = useState(0);
+  // Silent on-device browser: X-Ray the web (user IP) → hydrate → grow the network for this search
+  const [xrayQuery, setXrayQuery] = useState('');      // '' = WebView unmounted
+  const [xraySeq, setXraySeq] = useState(0);           // bump to force a fresh WebView per search
+  const [webPhase, setWebPhase] = useState<'' | 'searching' | 'hydrating'>('');
+  const [webNote, setWebNote] = useState('');
+  const lastQueryRef = useRef('');
+  const webTimerRef = useRef<any>(null);
 
   const activeCount = [mode, skill, country, employer, roleCat].filter(Boolean).length;
   // A ≥10% match floor only makes sense inside the user's OWN field (where match is meaningful).
@@ -244,7 +252,7 @@ export default function DiscoverScreen() {
   const runAiSearch = useCallback(async (q: string) => {
     const query = (q || '').trim();
     if (!query) return;
-    setAiLoading(true); setAiActive(true);
+    setAiLoading(true); setAiActive(true); setWebNote(''); setWebPhase('');
     try {
       const data = await aiSearchJobs(query, 0, 30);
       if (data.urlDetected && data.url) {
@@ -254,10 +262,40 @@ export default function DiscoverScreen() {
       }
       setAiParsed(data.parsed || null); setAiResults(data.jobs || []); setAiTotal(data.total || 0);
       if (typeof data.noProfile === 'boolean') setNoProfile(data.noProfile);
+      // Kick off the silent on-device web search to find MORE jobs across the ATS web (user IP).
+      const xq = data.xray && data.xray.query ? data.xray.query : '';
+      if (xq) {
+        lastQueryRef.current = query;
+        setWebPhase('searching'); setXraySeq((n) => n + 1); setXrayQuery(xq);
+        if (webTimerRef.current) clearTimeout(webTimerRef.current);
+        webTimerRef.current = setTimeout(() => { setWebPhase(''); setXrayQuery(''); }, 22000);  // safety timeout
+      }
     } catch { setAiResults([]); setAiTotal(0); }
     finally { setAiLoading(false); }
   }, []);
-  const clearAiSearch = useCallback(() => { setAiActive(false); setAiParsed(null); setAiResults([]); setAiTotal(0); setQuery(''); }, []);
+
+  // The silent WebView finished the X-Ray → hydrate the discovered boards, then refresh the results.
+  const onXrayResult = useCallback(async (urls: string[], blocked: boolean) => {
+    if (webTimerRef.current) { clearTimeout(webTimerRef.current); webTimerRef.current = null; }
+    setXrayQuery('');   // unmount the WebView
+    if (!urls.length) { setWebPhase(''); setWebNote(blocked ? '' : ''); return; }
+    setWebPhase('hydrating');
+    try {
+      const q = lastQueryRef.current;
+      const h = await hydrateJobUrls(urls, q).catch(() => ({ ingested: 0 } as any));
+      // Re-run the network search — it now includes the freshly-ingested jobs.
+      const fresh = await aiSearchJobs(q, 0, 30);
+      setAiResults(fresh.jobs || []); setAiTotal(fresh.total || 0);
+      setWebNote(h && h.ingested > 0 ? `+${h.ingested} live jobs added from the web` : '');
+    } catch { /* keep the network results */ }
+    finally { setWebPhase(''); }
+  }, []);
+
+  const clearAiSearch = useCallback(() => {
+    if (webTimerRef.current) { clearTimeout(webTimerRef.current); webTimerRef.current = null; }
+    setAiActive(false); setAiParsed(null); setAiResults([]); setAiTotal(0); setQuery('');
+    setXrayQuery(''); setWebPhase(''); setWebNote('');
+  }, []);
   const pickField = (f: string) => { const nf = f === field ? '' : f; setField(nf); setRoleCat(''); };
 
   const scopeLabel = field ? shortField(field) : 'All fields';
@@ -293,6 +331,14 @@ export default function DiscoverScreen() {
             </View>
           )}
           <Text style={styles.aiCount}>{aiLoading ? 'Searching the network…' : `${fmt(aiTotal)} ${aiTotal === 1 ? 'match' : 'matches'} found`}</Text>
+          {(webPhase || webNote) ? (
+            <View style={styles.webRow}>
+              {webPhase ? <ActivityIndicator size="small" color={T.blueDeep} /> : <Ionicons name="checkmark-circle" size={14} color={T.emerald} />}
+              <Text style={[styles.webText, !webPhase && { color: T.emerald }]}>
+                {webPhase === 'searching' ? 'Searching the live web for more…' : webPhase === 'hydrating' ? 'Pulling fresh jobs into your feed…' : webNote}
+              </Text>
+            </View>
+          ) : null}
         </View>
       )}
 
@@ -336,7 +382,7 @@ export default function DiscoverScreen() {
       </Text>
       </>)}
     </View>
-  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, runAiSearch, clearAiSearch]);
+  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, webPhase, webNote, runAiSearch, clearAiSearch]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -401,6 +447,7 @@ export default function DiscoverScreen() {
       </Modal>
 
       <HelpAssistant />
+      {!!xrayQuery && <SilentWebSearch key={xraySeq} query={xrayQuery} onResult={onXrayResult} />}
     </SafeAreaView>
   );
 }
@@ -453,6 +500,8 @@ const styles = StyleSheet.create({
   aiChipAlt: { backgroundColor: 'rgba(124,107,255,0.10)', borderColor: 'rgba(124,107,255,0.25)' },
   aiChipText: { fontSize: 11.5, fontWeight: '700', color: T.textMuted },
   aiCount: { fontSize: 11.5, fontWeight: '700', color: T.blueDeep, marginTop: 9 },
+  webRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 7 },
+  webText: { fontSize: 11.5, fontWeight: '700', color: T.textMuted },
 
   scopeRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
   scopePill: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: T.surface, borderRadius: 12, borderWidth: 1, borderColor: T.border, paddingHorizontal: 12, height: 42 },

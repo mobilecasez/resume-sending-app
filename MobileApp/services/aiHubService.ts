@@ -1025,11 +1025,20 @@ export async function fetchDiscoverJobs(
 }
 
 export type AiSearchParsed = { keywords: string[]; field: string | null; location: string | null; workMode: string | null; seniority: string | null };
+export type AiXray = { sites: string[]; terms: string[]; query: string; perSite: string[] };
 export type AiSearchResponse = {
   success: boolean; urlDetected?: boolean; url?: string; parsed?: AiSearchParsed | null;
   jobs: DiscoverJob[]; total: number; offset: number; limit: number; hasMore: boolean;
-  noProfile?: boolean; userField?: string | null;
+  noProfile?: boolean; userField?: string | null; xray?: AiXray | null;
 };
+
+/** Hydrate ATS board links discovered by the on-device silent browser: the server pulls each board
+ *  through the 24-ATS engine and ingests the jobs into the network. Returns how many were added. */
+export async function hydrateJobUrls(urls: string[], query?: string): Promise<{ boards: number; hydrated: number; ingested: number }> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.post(`${API_BASE_URL}/discover/hydrate-urls`, { urls, query: query || '' }, { headers, timeout: 45000 });
+  return data;
+}
 
 /** AI natural-language search over the saved network: breaks the sentence into role/location/etc,
  *  then returns matched jobs ranked by résumé fit. A pasted employer URL comes back as urlDetected. */
