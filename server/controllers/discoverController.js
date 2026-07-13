@@ -14,6 +14,8 @@
 const dbConfig = require('../../db-config');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { deriveUserField, ALL_FIELDS } = require('../utils/jobTaxonomy');
+const ats = require('../utils/atsDiscovery');
+const firehose = require('../services/globalJobFirehose');
 
 const BASE_CAP = 1500;         // diversify + match-rank the freshest N candidates (bounds correlated-subquery cost)
 const DEFAULT_MIN_MATCH = 10;  // in the résumé-scoped default view, hide sub-10% noise
@@ -345,6 +347,7 @@ async function aiSearch(req, res) {
       success: true, urlDetected: false, parsed, jobs, total, offset, limit,
       hasMore: jobs.length === limit && (offset + jobs.length) < total, noProfile,
       userField: userFieldObj ? userFieldObj.field : null,
+      xray: buildXray(parsed),   // the app runs this dork in a hidden on-device WebView → POST /discover/hydrate-urls
     });
   } catch (e) {
     console.error('[discover] ai-search error:', e.message);
@@ -352,4 +355,62 @@ async function aiSearch(req, res) {
   }
 }
 
-module.exports = { discoverJobs, discoverFacets, aiSearch };
+// ─── Silent-browser X-Ray hydration ─────────────────────────────────────────────
+// The app runs an X-Ray dork in a hidden on-device WebView (the USER's IP — no server-IP ban),
+// scrapes the ATS board links, and posts them here. We hydrate each board through the 24-ATS engine
+// (proven: 1 link → the employer's whole board) and ingest into global_jobs, so the network grows
+// with every search and the very next /discover/ai-search picks the new jobs up.
+
+// The ATS domains we can both DISCOVER via X-Ray and HYDRATE keylessly (high-yield first).
+const XRAY_SITES = ['site:boards.greenhouse.io', 'site:job-boards.greenhouse.io', 'site:jobs.lever.co', 'site:jobs.ashbyhq.com'];
+
+function buildXray(parsed) {
+  const terms = [];
+  (parsed && Array.isArray(parsed.keywords) ? parsed.keywords : []).slice(0, 2).forEach((k) => terms.push(k));
+  if (parsed && parsed.location) terms.push(parsed.location);
+  if (parsed && parsed.workMode === 'remote') terms.push('remote');
+  const query = `(${XRAY_SITES.join(' OR ')}) ` + terms.map((t) => `"${t}"`).join(' ');
+  // Per-site variants are more reliable than the OR-group on some engines — the app can fall back to these.
+  const perSite = XRAY_SITES.map((s) => `${s} ` + terms.map((t) => `"${t}"`).join(' '));
+  return { sites: XRAY_SITES, terms, query: query.trim(), perSite };
+}
+
+// Normalise a discovered ATS URL down to its board root (so many job links collapse to one board fetch).
+function canonicalBoard(u) {
+  let raw = String(u || '').trim();
+  if (!raw) return null;
+  if (!/^https?:\/\//i.test(raw)) raw = 'https://' + raw;
+  try {
+    const url = new URL(raw);
+    const h = url.hostname.toLowerCase();
+    const seg = url.pathname.split('/').filter(Boolean)[0];
+    if (!seg) return null;
+    if (/(^|\.)(boards|job-boards)\.greenhouse\.io$/.test(h)) return `https://boards.greenhouse.io/${seg}`;
+    if (/(^|\.)jobs\.lever\.co$/.test(h)) return `https://jobs.lever.co/${seg}`;
+    if (/(^|\.)jobs\.ashbyhq\.com$/.test(h)) return `https://jobs.ashbyhq.com/${seg}`;
+    return null;
+  } catch { return null; }
+}
+
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+
+async function hydrateUrls(req, res) {
+  try {
+    const urls = Array.isArray(req.body && req.body.urls) ? req.body.urls : [];
+    const boards = [...new Set(urls.map(canonicalBoard).filter(Boolean))].slice(0, 12);
+    if (!boards.length) return res.json({ success: true, boards: 0, hydrated: 0, ingested: 0 });
+    let jobs = [];
+    await ats.mapLimit(boards, 4, async (u) => {
+      const r = await withTimeout(ats.detectAndFetchAts(u), 15000).catch(() => null);
+      if (r && Array.isArray(r.jobs)) jobs = jobs.concat(r.jobs);
+    });
+    let ingested = 0;
+    try { ingested = await firehose.saveJobs(jobs, 'xray', 'Global'); } catch (e) { console.error('[discover] hydrate ingest:', e.message); }
+    res.json({ success: true, boards: boards.length, hydrated: jobs.length, ingested });
+  } catch (e) {
+    console.error('[discover] hydrate error:', e.message);
+    res.status(500).json({ error: 'Hydrate failed' });
+  }
+}
+
+module.exports = { discoverJobs, discoverFacets, aiSearch, hydrateUrls };

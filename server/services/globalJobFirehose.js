@@ -126,4 +126,4 @@ function startGlobalJobFirehose() {
   console.log(`[firehose] scheduler started (every ~${INTERVAL_H}h, ${SOURCES.length} sources)`);
 }
 
-module.exports = { runFirehose, startGlobalJobFirehose, ingestOne, SOURCES };
+module.exports = { runFirehose, startGlobalJobFirehose, ingestOne, saveJobs, SOURCES };
