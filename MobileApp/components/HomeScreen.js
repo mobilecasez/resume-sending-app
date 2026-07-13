@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react'
 import ReplyComposeModal from './ReplyComposeModal';
 import OnboardingChecklist from './OnboardingChecklist';
 import WelcomeExplainer from './WelcomeExplainer';
+import HelpAssistant from './HelpAssistant';
 import { track } from '../services/analytics';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView,
@@ -2010,6 +2011,9 @@ export default function HomeScreen({
         onClose={dismissExplainer}
         onExplore={() => { dismissExplainer(); require('expo-router').router?.push?.('/(discover)'); }}
       />
+
+      {/* ── FLOATING AI HELP ASSISTANT (draggable) ────────── */}
+      {!showExplainer && <HelpAssistant />}
 
       {/* ── SIDE MENU MODAL ──────────────────────────────── */}
       <Modal visible={showSettings} transparent animationType="none" onRequestClose={() => setShowSettings(false)}>

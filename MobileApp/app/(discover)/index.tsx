@@ -19,6 +19,7 @@ import {
   type DiscoverJob, type DiscoverFacets, type AiSearchParsed,
 } from '../../services/aiHubService';
 import { logEvent } from '../../services/firebaseAnalytics';
+import HelpAssistant from '../../components/HelpAssistant';
 
 const T = {
   bg: '#E5EAF3', surface: '#FFFFFF', ink: '#0B0F22', textMuted: '#5B6B8A', textFaint: '#8896B0',
@@ -199,10 +200,13 @@ export default function DiscoverScreen() {
   // A ≥10% match floor only makes sense inside the user's OWN field (where match is meaningful).
   const minMatch = !noProfile && field && field === userField ? 10 : 0;
 
+  // NOTE: the search box no longer live-filters the feed (that caused a refetch on every keystroke).
+  // Typing is for AI search only (triggered by the Ask-AI button / keyboard submit). So `query` is
+  // intentionally NOT a dependency here.
   const load = useCallback(async (opts: { offset: number; append: boolean }) => {
     const my = ++seq.current;
     try {
-      const data = await fetchDiscoverJobs({ q: query.trim(), work_mode: mode, skill, country, employer, field, role_category: roleCat, sort, min_match: minMatch, offset: opts.offset, limit: PAGE });
+      const data = await fetchDiscoverJobs({ work_mode: mode, skill, country, employer, field, role_category: roleCat, sort, min_match: minMatch, offset: opts.offset, limit: PAGE });
       if (my !== seq.current) return;
       setError(null); setTotal(data.total || 0); setNoProfile(!!data.noProfile);
       if (data.userField && userField == null) setUserField(data.userField);
@@ -212,7 +216,7 @@ export default function DiscoverScreen() {
       setError('Could not load jobs. Pull to retry.');
       if (!opts.append) setJobs([]);
     }
-  }, [query, mode, skill, country, employer, field, roleCat, sort, minMatch, userField]);
+  }, [mode, skill, country, employer, field, roleCat, sort, minMatch, userField]);
 
   // Mount: load facets, capture the user's own field, and default the scope to it.
   useEffect(() => {
@@ -395,6 +399,8 @@ export default function DiscoverScreen() {
           </View>
         </View>
       </Modal>
+
+      <HelpAssistant />
     </SafeAreaView>
   );
 }
