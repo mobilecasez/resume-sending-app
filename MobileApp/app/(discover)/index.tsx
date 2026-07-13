@@ -197,8 +197,8 @@ export default function DiscoverScreen() {
   const [aiResults, setAiResults] = useState<DiscoverJob[]>([]);
   const [aiTotal, setAiTotal] = useState(0);
   // Silent on-device browser: X-Ray the web (user IP) → hydrate → grow the network for this search
-  const [xrayQuery, setXrayQuery] = useState('');      // '' = WebView unmounted
-  const [xraySeq, setXraySeq] = useState(0);           // bump to force a fresh WebView per search
+  const [xrayUrls, setXrayUrls] = useState<string[]>([]);  // [] = WebViews unmounted
+  const [xraySeq, setXraySeq] = useState(0);               // bump to force fresh WebViews per search
   const [webPhase, setWebPhase] = useState<'' | 'searching' | 'hydrating'>('');
   const [webNote, setWebNote] = useState('');
   const lastQueryRef = useRef('');
@@ -263,12 +263,14 @@ export default function DiscoverScreen() {
       setAiParsed(data.parsed || null); setAiResults(data.jobs || []); setAiTotal(data.total || 0);
       if (typeof data.noProfile === 'boolean') setNoProfile(data.noProfile);
       // Kick off the silent on-device web search to find MORE jobs across the ATS web (user IP).
-      const xq = data.xray && data.xray.query ? data.xray.query : '';
-      if (xq) {
+      // Per-site DDG-lite queries (the OR-group returns nothing on DDG).
+      const perSite: string[] = (data.xray && Array.isArray(data.xray.perSite)) ? data.xray.perSite : [];
+      const urls = perSite.map((q) => 'https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(q));
+      if (urls.length) {
         lastQueryRef.current = query;
-        setWebPhase('searching'); setXraySeq((n) => n + 1); setXrayQuery(xq);
+        setWebPhase('searching'); setXraySeq((n) => n + 1); setXrayUrls(urls);
         if (webTimerRef.current) clearTimeout(webTimerRef.current);
-        webTimerRef.current = setTimeout(() => { setWebPhase(''); setXrayQuery(''); }, 22000);  // safety timeout
+        webTimerRef.current = setTimeout(() => { setWebPhase(''); setXrayUrls([]); }, 24000);  // safety timeout
       }
     } catch { setAiResults([]); setAiTotal(0); }
     finally { setAiLoading(false); }
@@ -277,7 +279,7 @@ export default function DiscoverScreen() {
   // The silent WebView finished the X-Ray → hydrate the discovered boards, then refresh the results.
   const onXrayResult = useCallback(async (urls: string[], blocked: boolean) => {
     if (webTimerRef.current) { clearTimeout(webTimerRef.current); webTimerRef.current = null; }
-    setXrayQuery('');   // unmount the WebView
+    setXrayUrls([]);   // unmount the WebView
     if (!urls.length) { setWebPhase(''); setWebNote(blocked ? '' : ''); return; }
     setWebPhase('hydrating');
     try {
@@ -294,7 +296,7 @@ export default function DiscoverScreen() {
   const clearAiSearch = useCallback(() => {
     if (webTimerRef.current) { clearTimeout(webTimerRef.current); webTimerRef.current = null; }
     setAiActive(false); setAiParsed(null); setAiResults([]); setAiTotal(0); setQuery('');
-    setXrayQuery(''); setWebPhase(''); setWebNote('');
+    setXrayUrls([]); setWebPhase(''); setWebNote('');
   }, []);
   const pickField = (f: string) => { const nf = f === field ? '' : f; setField(nf); setRoleCat(''); };
 
@@ -447,7 +449,7 @@ export default function DiscoverScreen() {
       </Modal>
 
       <HelpAssistant />
-      {!!xrayQuery && <SilentWebSearch key={xraySeq} query={xrayQuery} onResult={onXrayResult} />}
+      {xrayUrls.length > 0 && <SilentWebSearch key={xraySeq} urls={xrayUrls} onResult={onXrayResult} />}
     </SafeAreaView>
   );
 }
