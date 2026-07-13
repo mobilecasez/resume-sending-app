@@ -3993,6 +3993,7 @@ app.use('/api', adminStoreAnalyticsRoutes);
 app.use('/api', adminNotifyRoutes);
 app.use('/api', adminGlobalJobsRoutes);
 app.use('/api', discoverRoutes);
+app.use('/api', require('./server/routes/appConfigRoutes'));
 app.use('/api', analyticsRoutes);
 
 // LinkedIn job extraction — SEPARATE pipeline (hidden on-device WebView innerText → AI JSON + store).
