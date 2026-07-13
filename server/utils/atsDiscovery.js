@@ -529,6 +529,174 @@ const adapters = [
       return jobs.filter(Boolean).filter((j) => j.title);
     },
   },
+  // ── EXTENDED ATS (fetch-verified keyless public APIs) ────────────────────────
+  // TEAMTAILOR — {slug}.teamtailor.com/jobs.json (JSON Feed v1.1; item._jobposting = schema.org)
+  {
+    name: 'teamtailor',
+    detect: (c) => {
+      const m = c.host.match(/^([a-z0-9-]+)\.teamtailor\.com$/i); if (m) return m[1];
+      const h = String(c.html || '').match(/([a-z0-9-]+)\.teamtailor\.com/i); return h ? h[1] : false;
+    },
+    async fetch(c) {
+      const data = await fetchJson(`https://${c.token}.teamtailor.com/jobs.json`).catch(() => null);
+      const items = data && Array.isArray(data.items) ? data.items : [];
+      const company = (data && data.title) || resolveCompany(c.html, c.token, c.origin);
+      return items.map((it) => {
+        const jp = it._jobposting || {};
+        const a = Array.isArray(jp.jobLocation) && jp.jobLocation[0] && jp.jobLocation[0].address ? jp.jobLocation[0].address : {};
+        const loc = [a.addressLocality, a.addressRegion, a.addressCountry].filter(Boolean).join(', ');
+        return makeJob({ title: it.title, location: loc || 'Not specified', job_url: it.url, employer_name: company, employmentCode: jp.employmentType, descHtml: it.content_html || jp.description || '' });
+      }).filter((j) => j.title && j.job_url);
+    },
+  },
+
+  // RIPPLING — ats.rippling.com/api/v2/board/{slug}/jobs (JSON, paginated)
+  {
+    name: 'rippling',
+    detect: (c) => {
+      if (/rippling\.com$/i.test(c.host)) { const b = c.pathname.match(/\/board\/([a-z0-9_-]+)\//i); if (b) return b[1]; const s = firstSeg(c.pathname); return (s && s !== 'api') ? s : false; }
+      const m = String(c.html || '').match(/ats\.rippling\.com\/([a-z0-9_-]+)\/jobs/i) || String(c.html || '').match(/"board"\s*,\s*"([a-z0-9_-]+)"/i); return m ? m[1] : false;
+    },
+    async fetch(c) {
+      const out = []; const company = resolveCompany(c.html, c.token, c.origin);
+      for (let page = 0; page < 15; page++) {   // Rippling pagination is 0-indexed
+        const data = await fetchJson(`https://ats.rippling.com/api/v2/board/${c.token}/jobs?page=${page}&pageSize=100&groupJobsByLocation=false`).catch(() => null);
+        const items = data && Array.isArray(data.items) ? data.items : [];
+        if (!items.length) break;
+        for (const it of items) {
+          const l = Array.isArray(it.locations) && it.locations[0] ? it.locations[0] : {};
+          out.push(makeJob({ title: it.name, location: [l.city, l.state, l.country].filter(Boolean).join(', ') || (l.name || 'Not specified'), job_url: it.url || `https://ats.rippling.com/${c.token}/jobs/${it.id}`, employer_name: company, employmentCode: it.department && it.department.name }));
+        }
+        if (!data.totalPages || page + 1 >= data.totalPages) break;
+      }
+      return out.filter((j) => j.title);
+    },
+  },
+
+  // JOBSCORE — careers.jobscore.com/careers/{slug}/feed (JSON despite the name)
+  {
+    name: 'jobscore',
+    detect: (c) => {
+      if (/careers\.jobscore\.com$/i.test(c.host)) { const m = c.pathname.match(/\/careers\/([^/?#]+)/i); return m ? m[1] : false; }
+      const m = String(c.html || '').match(/careers\.jobscore\.com\/careers\/([a-z0-9-]+)/i); return m ? m[1] : false;
+    },
+    async fetch(c) {
+      const data = await fetchJson(`https://careers.jobscore.com/careers/${c.token}/feed`).catch(() => null);
+      const jobs = data && Array.isArray(data.jobs) ? data.jobs : [];
+      const company = (data && data.company_name) || resolveCompany(c.html, c.token, c.origin);
+      return jobs.map((j) => makeJob({ title: j.title, location: j.location || [j.city, j.state, j.country].filter(Boolean).join(', ') || 'Not specified', job_url: j.detail_url || j.apply_url, employer_name: company, employmentCode: j.job_type, descHtml: j.description })).filter((j) => j.title && j.job_url);
+    },
+  },
+
+  // HOMERUN — feed.homerun.co/{slug} (Atom XML; all jobs in one request)
+  {
+    name: 'homerun',
+    detect: (c) => {
+      const m = c.host.match(/^([a-z0-9-]+)\.homerun\.co$/i); if (m && m[1] !== 'feed') return m[1];
+      if (/feed\.homerun\.co$/i.test(c.host)) return firstSeg(c.pathname) || false;
+      const h = String(c.html || '').match(/feed\.homerun\.co\/([a-z0-9-]+)/i); return h ? h[1] : false;
+    },
+    async fetch(c) {
+      const xml = await fetchText(`https://feed.homerun.co/${c.token}`).catch(() => '');
+      if (!/<entry/i.test(xml)) return [];
+      const company = htmlUnescape((xml.match(/<feed[\s\S]*?<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '').trim() || resolveCompany(c.html, c.token, c.origin);
+      return xml.split(/<entry/i).slice(1).map((e) => {
+        const title = htmlUnescape((e.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '').replace(/<!\[CDATA\[|\]\]>/g, '').trim();
+        const link = ((e.match(/<link[^>]*rel=["']alternate["'][^>]*href=["']([^"']+)["']/i) || e.match(/<link[^>]*href=["']([^"']+)["']/i) || [])[1] || '').trim();
+        const desc = (e.match(/<(?:description|content)[^>]*>([\s\S]*?)<\/(?:description|content)>/i) || [])[1] || '';
+        return makeJob({ title, location: 'Not specified', job_url: link, employer_name: company, descHtml: desc });
+      }).filter((j) => j.title && j.job_url);
+    },
+  },
+
+  // CLEARCOMPANY — {slug}.hrmdirect.com/employment/rss.php?search=true (RSS)
+  {
+    name: 'clearcompany',
+    detect: (c) => {
+      const m = c.host.match(/^([a-z0-9-]+)\.hrmdirect\.com$/i); if (m) return m[1];
+      const h = String(c.html || '').match(/([a-z0-9-]+)\.hrmdirect\.com/i); return h ? h[1] : false;
+    },
+    async fetch(c) {
+      const xml = await fetchText(`https://${c.token}.hrmdirect.com/employment/rss.php?search=true`).catch(() => '');
+      if (!/<item/i.test(xml)) return [];
+      const company = resolveCompany(c.html, c.token, c.origin);
+      return xml.split(/<item/i).slice(1).map((it) => {
+        const title = htmlUnescape(((it.match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '').replace(/<!\[CDATA\[|\]\]>/g, '')).trim();
+        const link = ((it.match(/<link>([\s\S]*?)<\/link>/i) || [])[1] || '').trim();
+        const desc = (it.match(/<description>([\s\S]*?)<\/description>/i) || [])[1] || '';
+        return makeJob({ title, location: 'Not specified', job_url: link, employer_name: company, descHtml: desc });
+      }).filter((j) => j.title && j.job_url);
+    },
+  },
+
+  // COMEET — www.comeet.co/careers-api/2.0/company/{uid}/positions?token={token} (JSON array).
+  // uid+token are PUBLIC (embedded in the employer's own careers page).
+  {
+    name: 'comeet',
+    detect: (c) => {
+      const html = String(c.html || '');
+      const um = html.match(/company_uid["']?\s*[:=]\s*["']([0-9.]+)["']/i) || html.match(/careers-api\/2\.0\/company\/([0-9.]+)\//i) || c.pathname.match(/company\/([0-9.]+)\//i);
+      const tm = html.match(/["']?token["']?\s*[:=]\s*["']([A-F0-9]{16,})["']/i) || (c.url || '').match(/[?&]token=([A-F0-9]{16,})/i);
+      return (um && tm) ? { uid: um[1], tkn: tm[1] } : false;
+    },
+    async fetch(c) {
+      const { uid, tkn } = c.token;
+      const arr = await fetchJson(`https://www.comeet.co/careers-api/2.0/company/${uid}/positions?token=${tkn}&details=true`).catch(() => null);
+      const list = Array.isArray(arr) ? arr : [];
+      return list.map((p) => {
+        const lo = p.location || {};
+        const desc = Array.isArray(p.details) ? p.details.map((d) => d && d.value).filter(Boolean).join(' ') : '';
+        return makeJob({ title: p.name, location: [lo.city, lo.state, lo.country].filter(Boolean).join(', ') || (lo.name || 'Not specified'), job_url: p.url_comeet_hosted_page || p.url_active_page, employer_name: p.company_name, employmentCode: p.employment_type, descHtml: desc });
+      }).filter((j) => j.title && j.job_url);
+    },
+  },
+
+  // EIGHTFOLD — {slug}.eightfold.ai/api/apply/v2/jobs?domain={companyDomain} (JSON positions[])
+  {
+    name: 'eightfold',
+    detect: (c) => {
+      const m = c.host.match(/^([a-z0-9-]+)\.eightfold\.ai$/i);
+      const dm = String(c.html || '').match(/i18n_override_([a-z0-9.-]+\.[a-z]{2,})/i) || String(c.html || '').match(/[?&]domain=([a-z0-9.-]+\.[a-z]{2,})/i);
+      if (m) return { slug: m[1], domain: (dm && dm[1]) || (m[1] + '.com') };
+      const h = String(c.html || '').match(/([a-z0-9-]+)\.eightfold\.ai/i); return h ? { slug: h[1], domain: (dm && dm[1]) || (h[1] + '.com') } : false;
+    },
+    async fetch(c) {
+      const { slug, domain } = c.token; const out = [];
+      for (let start = 0; start < 2000;) {
+        const data = await fetchJson(`https://${slug}.eightfold.ai/api/apply/v2/jobs?domain=${encodeURIComponent(domain)}&start=${start}&num=100&query=`).catch(() => null);
+        const pos = data && Array.isArray(data.positions) ? data.positions : [];
+        if (!pos.length) break;
+        const company = resolveCompany(c.html, slug, c.origin);
+        for (const p of pos) out.push(makeJob({ title: p.name, location: p.location || (Array.isArray(p.locations) ? p.locations.join(', ') : '') || 'Not specified', job_url: p.canonicalPositionUrl || `https://${slug}.eightfold.ai/careers/job/${p.id}`, employer_name: company, employmentCode: p.type, descHtml: p.job_description }));
+        start += pos.length;
+        if (!data.count || start >= data.count) break;
+      }
+      return out.filter((j) => j.title && j.job_url);
+    },
+  },
+
+  // JAZZHR — {slug}.applytojob.com/apply/jobs/ (server-rendered HTML; stable job_title_link anchors)
+  {
+    name: 'jazzhr',
+    detect: (c) => {
+      const m = c.host.match(/^([a-z0-9-]+)\.applytojob\.com$/i); if (m) return m[1];
+      const h = String(c.html || '').match(/([a-z0-9-]+)\.applytojob\.com/i); return h ? h[1] : false;
+    },
+    async fetch(c) {
+      const html = await fetchText(`https://${c.token}.applytojob.com/apply/jobs/`).catch(() => '');
+      const company = resolveCompany(c.html, c.token, c.origin) || nameFromHtmlOrDomain(html, c.origin);
+      const re = /<a[^>]*class="job_title_link"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+      const seen = new Set(); const out = []; let m;
+      while ((m = re.exec(html))) {
+        const href = m[1].replace(/\?&?$/, ''); const title = htmlUnescape(strip(m[2])).trim();
+        const url = /^https?:/i.test(href) ? href : `https://${c.token}.applytojob.com${href}`;
+        if (!title || seen.has(url)) continue; seen.add(url);
+        out.push(makeJob({ title, location: 'Not specified', job_url: url, employer_name: company }));
+      }
+      return out;
+    },
+  },
+
 ];
 
 /**
@@ -559,7 +727,7 @@ async function detectAndFetchAts(url, rawHtml = '') {
   // the provenance guard only applies when the target is a real EMPLOYER domain. The host
   // alternatives are ANCHORED to a real host boundary so a legit employer like "clever.co"
   // (contains "lever.co") doesn't bypass the guard. (H2)
-  const targetIsAtsHost = /(^|\.)(greenhouse\.io|grnh\.se|lever\.co|ashbyhq\.com|myworkdayjobs\.com|smartrecruiters\.com|recruitee\.com|breezy\.hr|workable\.com|personio\.(de|com)|teamtailor\.com|jobvite\.com|icims\.com|bamboohr\.com)$/i.test(host);
+  const targetIsAtsHost = /(^|\.)(greenhouse\.io|grnh\.se|lever\.co|ashbyhq\.com|myworkdayjobs\.com|smartrecruiters\.com|recruitee\.com|breezy\.hr|workable\.com|personio\.(de|com)|teamtailor\.com|jobvite\.com|icims\.com|bamboohr\.com|applytojob\.com|jobscore\.com|homerun\.co|rippling\.com|eightfold\.ai|hrmdirect\.com|comeet\.(co|com))$/i.test(host);
   for (const a of adapters) {
     let token;
     try { token = a.detect({ url, origin, host, pathname, html: rawHtml }); } catch { token = false; }
