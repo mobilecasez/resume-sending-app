@@ -213,6 +213,38 @@ async function getUserProfileLoc(userId) {
   try { return await dbConfig.get('SELECT city, country, address FROM users WHERE id = ?', [userId]); }
   catch { return null; }
 }
+// Country → its major cities/aliases, so "jobs in switzerland" also matches jobs whose location text
+// is only a city ("Geneva", "Zürich"). Inclusive but accurate (still matches the job's real location).
+const LOCATION_EXPANSIONS = {
+  switzerland: { match: ['switzerland', 'schweiz', 'suisse', 'svizzera'], cities: ['geneva', 'genève', 'geneve', 'zurich', 'zürich', 'basel', 'bern', 'lausanne', 'zug', 'lugano', 'winterthur', 'st. gallen', 'st gallen', 'sankt gallen'] },
+  germany: { match: ['germany', 'deutschland'], cities: ['berlin', 'munich', 'münchen', 'muenchen', 'hamburg', 'frankfurt', 'cologne', 'köln', 'koeln', 'stuttgart', 'düsseldorf', 'dusseldorf', 'bochum', 'leipzig'] },
+  'united kingdom': { match: ['united kingdom', 'uk', 'britain', 'england', 'scotland'], cities: ['london', 'manchester', 'edinburgh', 'birmingham', 'glasgow', 'bristol', 'cambridge', 'leeds', 'oxford'] },
+  netherlands: { match: ['netherlands', 'holland', 'nederland'], cities: ['amsterdam', 'rotterdam', 'utrecht', 'eindhoven', 'the hague', 'den haag'] },
+  france: { match: ['france'], cities: ['paris', 'lyon', 'toulouse', 'marseille', 'lille', 'bordeaux', 'nantes', 'sophia antipolis'] },
+  spain: { match: ['spain', 'españa', 'espana'], cities: ['madrid', 'barcelona', 'valencia', 'malaga', 'málaga', 'seville', 'sevilla'] },
+  italy: { match: ['italy', 'italia'], cities: ['milan', 'milano', 'rome', 'roma', 'turin', 'torino', 'bologna'] },
+  ireland: { match: ['ireland'], cities: ['dublin', 'cork', 'galway', 'limerick'] },
+  india: { match: ['india'], cities: ['bangalore', 'bengaluru', 'mumbai', 'delhi', 'new delhi', 'gurgaon', 'gurugram', 'hyderabad', 'pune', 'chennai', 'noida', 'kolkata', 'ahmedabad'] },
+  'united states': { match: ['united states', 'usa', 'u.s.', 'america'], cities: ['new york', 'san francisco', 'seattle', 'austin', 'boston', 'chicago', 'los angeles', 'denver', 'atlanta'] },
+  sweden: { match: ['sweden', 'sverige'], cities: ['stockholm', 'gothenburg', 'göteborg', 'malmö', 'malmo'] },
+  poland: { match: ['poland', 'polska'], cities: ['warsaw', 'warszawa', 'krakow', 'kraków', 'wroclaw', 'wrocław', 'gdansk'] },
+  austria: { match: ['austria', 'österreich', 'osterreich'], cities: ['vienna', 'wien', 'graz', 'linz'] },
+  portugal: { match: ['portugal'], cities: ['lisbon', 'lisboa', 'porto', 'braga'] },
+  belgium: { match: ['belgium', 'belgique'], cities: ['brussels', 'bruxelles', 'antwerp', 'ghent'] },
+  denmark: { match: ['denmark', 'danmark'], cities: ['copenhagen', 'københavn', 'aarhus'] },
+  finland: { match: ['finland', 'suomi'], cities: ['helsinki', 'espoo', 'tampere'] },
+  norway: { match: ['norway', 'norge'], cities: ['oslo', 'bergen', 'trondheim'] },
+  uae: { match: ['uae', 'united arab emirates', 'emirates'], cities: ['dubai', 'abu dhabi'] },
+};
+function locationTerms(loc) {
+  const l = String(loc || '').toLowerCase().trim();
+  if (!l) return [];
+  for (const [country, obj] of Object.entries(LOCATION_EXPANSIONS)) {
+    if (l === country || obj.match.some((a) => l === a || l.includes(a))) return [country, ...obj.cities];
+  }
+  return [l];
+}
+
 const NEAR_ME_RE = /\b(near me|my area|nearby|near by|my location|around me|close to me|my city|my region|my place|around here)\b/i;
 
 // Best-effort city from a free-text address ("…, Sector 15, Gurgaon, Haryana" → "Gurgaon"): the city
@@ -306,9 +338,13 @@ async function aiSearch(req, res) {
       where.push('(' + ors.join(' OR ') + ')');
     }
     if (parsed.field) where.push(`field = ${WP(parsed.field)}`);
-    // Match the JOB's own location text (accurate) — NOT the board-HQ `country` tag, which would
-    // false-match a Swiss-HQ'd company's jobs that are actually in Germany/Singapore/etc.
-    if (parsed.location) { const lp = WP('%' + parsed.location.toLowerCase() + '%'); where.push(`LOWER(location) LIKE ${lp}`); }
+    // Match the JOB's own location text (accurate) — NOT the board-HQ `country` tag (which would
+    // false-match a Swiss-HQ'd company's German jobs). Expand a country to its cities so "switzerland"
+    // also catches jobs whose location is just "Geneva"/"Zürich".
+    if (parsed.location) {
+      const terms = locationTerms(parsed.location);
+      where.push('(' + terms.map((t) => `LOWER(location) LIKE ${WP('%' + t + '%')}`).join(' OR ') + ')');
+    }
     if (parsed.workMode) where.push(`LOWER(work_mode) = ${WP(parsed.workMode)}`);
     const whereSql = where.join(' AND ');
 
