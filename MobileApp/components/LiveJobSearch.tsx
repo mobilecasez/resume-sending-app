@@ -13,6 +13,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { liveSearchJobs, fetchJobDetail, type LiveJobCard } from '../services/aiHubService';
+import { notifyLocal } from '../services/pushNotificationService';
 
 const { height: SH } = Dimensions.get('window');
 type FetchState = 'idle' | 'fetching' | 'done' | 'failed';
@@ -44,6 +45,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   const cardsRef = useRef<LiveJobCard[]>([]);
   const fetchingRef = useRef(false);
   const queryRef = useRef(query);
+  const batchRef = useRef<string[]>([]);   // urls in the current fetch batch (for the completion notification)
 
   const pulse = useRef(new Animated.Value(0)).current;
 
@@ -110,7 +112,16 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
       timersRef.current[u] = setTimeout(() => finish(u, false), PAGE_TIMEOUT);
     }
     setActiveUrls([...activeRef.current]);
-    if (activeRef.current.size === 0 && queueRef.current.length === 0) setFetchingBoth(false);
+    if (activeRef.current.size === 0 && queueRef.current.length === 0) {
+      setFetchingBoth(false);
+      // Batch finished → tell the user (fires even if they'd minimized and just returned).
+      const batch = batchRef.current;
+      if (batch.length) {
+        const done = batch.filter((u) => fstateRef.current[u] === 'done').length;
+        notifyLocal('Live jobs fetched', `${done} of ${batch.length} job${batch.length > 1 ? 's' : ''} saved to your feed.`, { type: 'live_fetch_done', query: queryRef.current });
+        batchRef.current = [];
+      }
+    }
   }
   // Resolve one url (done or failed), persist, and pull the next from the queue.
   function finish(url: string, ok: boolean, job?: LiveJobCard | null) {
@@ -127,6 +138,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     const urls = cardsRef.current.map((c) => c.job_url).filter((u) => selected.has(u) && fstateRef.current[u] !== 'done');
     if (!urls.length) return;
     queueRef.current = urls;
+    batchRef.current = urls.slice();
     setFetchingBoth(true);
     pump();
   }

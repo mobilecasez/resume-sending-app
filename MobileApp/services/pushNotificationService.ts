@@ -84,6 +84,19 @@ export async function registerForPushNotificationsAsync(): Promise<string | null
 }
 
 /**
+ * Fire a LOCAL notification immediately (no server / push token needed). Shows a banner even in the
+ * foreground (handler above) and lands in the tray if the app is backgrounded. Best-effort: never throws,
+ * no-ops if the native module isn't in this build. Used to tell the user "live jobs fetched" when a
+ * background/on-device fetch batch completes.
+ */
+export async function notifyLocal(title: string, body: string, data: any = {}): Promise<void> {
+  try {
+    if (!Notifications?.scheduleNotificationAsync) return;
+    await Notifications.scheduleNotificationAsync({ content: { title, body, data, sound: true }, trigger: null });
+  } catch { /* native module not present / permission denied — silently ignore */ }
+}
+
+/**
  * Registers a listener for when the user taps a notification (e.g. a "job_search_complete" push).
  * Returns the subscription so the caller can remove() it — or null if notifications aren't available.
  */
