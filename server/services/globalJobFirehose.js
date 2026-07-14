@@ -126,4 +126,127 @@ function startGlobalJobFirehose() {
   console.log(`[firehose] scheduler started (every ~${INTERVAL_H}h, ${SOURCES.length} sources)`);
 }
 
-module.exports = { runFirehose, startGlobalJobFirehose, ingestOne, saveJobs, SOURCES };
+// ── Swiss Job-Room (official SECO / public-employment-service search API) ────────
+// Keyless national search behind the job-room.ch site. One source unlocks the whole Swiss market
+// (agencies + direct employers, incl. the .NET/enterprise roles Greenhouse/Lever/Ashby never had).
+// Greenlist: public, keyless, official government feed. Paginates the search and upserts via saveJobs.
+const JOBROOM_URL = 'https://www.job-room.ch/jobadservice/api/jobAdvertisements/_search';
+function jrToJob(item) {
+  const ad = (item && item.jobAdvertisement) || item || {};
+  const jc = ad.jobContent || {};
+  const desc = (Array.isArray(jc.jobDescriptions) && (jc.jobDescriptions.find((d) => d && d.title) || jc.jobDescriptions[0])) || {};
+  const title = String(desc.title || '').replace(/<\/?em>/gi, '').trim();
+  const company = (jc.company && jc.company.name) || '';
+  const lo = jc.location || {};
+  const location = [lo.city, lo.cantonCode, lo.countryIsoCode === 'CH' ? 'Switzerland' : lo.countryIsoCode].filter(Boolean).join(', ');
+  const job_url = jc.externalUrl || (ad.id ? `https://www.job-room.ch/jobseeker/${ad.id}` : '');
+  const emp = jc.employment || {};
+  const wl = (emp.workloadPercentageMin && emp.workloadPercentageMax) ? `${emp.workloadPercentageMin}-${emp.workloadPercentageMax}%` : '';
+  const jt = emp.permanent === false ? 'Temporary' : (emp.permanent ? 'Permanent' : '');
+  const responsibilities = desc.description ? [String(desc.description).replace(/<\/?em>/gi, '').replace(/\s+/g, ' ').trim().slice(0, 700)] : [];
+  return { job_url, title, employer_name: company, location, job_type: [jt, wl].filter(Boolean).join(' · '), responsibilities, skills: [] };
+}
+// Sweep the Swiss feed (onlineSince days) into global_jobs. keywords=[] pulls all professions.
+async function ingestJobRoom({ keywords = [], maxPages = 25, size = 100, onlineSince = 30 } = {}) {
+  const body = { permanent: null, workloadPercentageMin: 0, workloadPercentageMax: 100, companyName: null, onlineSince, displayRestricted: false, professionCodes: [], keywords: keywords || [], communalCodes: [], cantonCodes: [] };
+  let saved = 0, pages = 0; const collected = [];
+  for (let page = 0; page < maxPages; page++) {
+    let arr = null;
+    try {
+      const r = await fetch(`${JOBROOM_URL}?page=${page}&size=${size}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(20000),
+      });
+      if (!r.ok) break;
+      arr = await r.json();
+    } catch (e) { console.warn('[jobroom] page', page, 'error:', e.message); break; }
+    if (!Array.isArray(arr) || !arr.length) break;
+    const jobs = arr.map(jrToJob).filter((j) => j.job_url && j.title);
+    collected.push(...jobs);
+    saved += await saveJobs(jobs, 'jobroom', 'Switzerland');
+    pages++;
+    if (arr.length < size) break;   // last page
+  }
+  console.log(`[jobroom] swept ${pages} pages → ${saved} Swiss jobs saved (keywords: ${(keywords || []).join(',') || 'all'})`);
+  return { source: 'jobroom', pages, saved, jobs: collected };
+}
+
+// ── German Bundesagentur für Arbeit — Jobsuche (keyless national feed) ───────────
+// Static well-known public client id header; national DE coverage incl. .NET/enterprise/Mittelstand
+// that Greenhouse/Lever/Ashby miss. Greenlist: keyless public feed (throttled + attributed).
+const DE_URL = 'https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs';
+function deToJob(s) {
+  const ao = s.arbeitsort || {};
+  const location = [ao.ort, ao.region, 'Germany'].filter(Boolean).join(', ');
+  const title = String(s.titel || s.beruf || '').trim();
+  const url = s.externeUrl || (s.refnr ? `https://www.arbeitsagentur.de/jobsuche/jobdetail/${encodeURIComponent(s.refnr)}` : '');
+  return { job_url: url, title, employer_name: String(s.arbeitgeber || '').trim(), location, job_type: '', responsibilities: [], skills: [] };
+}
+async function ingestArbeitsagentur({ keywords = [], location = '', maxPages = 3, size = 100 } = {}) {
+  const was = (keywords || []).join(' ').trim();
+  const isCountry = /^(germany|deutschland|de)$/i.test(String(location).trim());
+  const wo = isCountry ? '' : String(location || '').trim();
+  let saved = 0, pages = 0; const collected = [];
+  for (let page = 1; page <= maxPages; page++) {
+    let arr = null;
+    try {
+      const qs = new URLSearchParams({ size: String(size), page: String(page) });
+      if (was) qs.set('was', was);
+      if (wo) qs.set('wo', wo);
+      const r = await fetch(`${DE_URL}?${qs.toString()}`, { headers: { 'X-API-Key': 'jobboerse-jobsuche', 'Accept': 'application/json' }, signal: AbortSignal.timeout(20000) });
+      if (!r.ok) break;
+      const j = await r.json();
+      arr = j.stellenangebote || [];
+    } catch (e) { console.warn('[arbeitsagentur] page', page, 'error:', e.message); break; }
+    if (!Array.isArray(arr) || !arr.length) break;
+    const jobs = arr.map(deToJob).filter((x) => x.job_url && x.title);
+    collected.push(...jobs);
+    saved += await saveJobs(jobs, 'arbeitsagentur', 'Germany');
+    pages++;
+    if (arr.length < size) break;
+  }
+  console.log(`[arbeitsagentur] ${pages} pages → ${saved} DE jobs (was:${was || 'all'} wo:${wo || 'all'})`);
+  return { source: 'arbeitsagentur', pages, saved, jobs: collected };
+}
+
+// ── France Travail (Pôle Emploi) — free OAuth key (FRANCE_TRAVAIL_ID/SECRET) ─────
+// Dormant until the (free) client id/secret are set in env; then unlocks the whole FR market.
+let _ftToken = null, _ftExp = 0;
+async function ftToken() {
+  const id = process.env.FRANCE_TRAVAIL_ID, secret = process.env.FRANCE_TRAVAIL_SECRET;
+  if (!id || !secret) return null;
+  if (_ftToken && Date.now() < _ftExp) return _ftToken;
+  try {
+    const body = new URLSearchParams({ grant_type: 'client_credentials', client_id: id, client_secret: secret, scope: 'api_offresdemploiv2 o2dsoffre' });
+    const r = await fetch('https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body, signal: AbortSignal.timeout(15000) });
+    if (!r.ok) return null;
+    const j = await r.json();
+    _ftToken = j.access_token; _ftExp = Date.now() + ((j.expires_in || 1000) - 60) * 1000;
+    return _ftToken;
+  } catch { return null; }
+}
+function frToJob(o) {
+  const url = (o.origineOffre && o.origineOffre.urlOrigine) || (o.id ? `https://candidat.francetravail.fr/offres/recherche/detail/${o.id}` : '');
+  return { job_url: url, title: String(o.intitule || '').trim(), employer_name: (o.entreprise && o.entreprise.nom) || '', location: [(o.lieuTravail && o.lieuTravail.libelle) || '', 'France'].filter(Boolean).join(', '), job_type: o.typeContrat || '', responsibilities: o.description ? [String(o.description).replace(/\s+/g, ' ').trim().slice(0, 700)] : [], skills: [] };
+}
+async function ingestFranceTravail({ keywords = [], maxRange = 149 } = {}) {
+  const tok = await ftToken();
+  if (!tok) return { source: 'francetravail', skipped: 'no FRANCE_TRAVAIL_ID/SECRET set', saved: 0 };
+  const motsCles = (keywords || []).join(' ').trim();
+  let saved = 0; let collected = [];
+  try {
+    const qs = new URLSearchParams({ range: `0-${maxRange}` });
+    if (motsCles) qs.set('motsCles', motsCles);
+    const r = await fetch(`https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search?${qs.toString()}`, { headers: { Authorization: 'Bearer ' + tok, 'Accept': 'application/json' }, signal: AbortSignal.timeout(20000) });
+    if (r.ok || r.status === 206) {
+      const j = await r.json();
+      const jobs = (j.resultats || []).map(frToJob).filter((x) => x.job_url && x.title);
+      collected = jobs;
+      saved = await saveJobs(jobs, 'francetravail', 'France');
+    }
+  } catch (e) { console.warn('[francetravail] error:', e.message); }
+  console.log(`[francetravail] → ${saved} FR jobs (motsCles:${motsCles || 'all'})`);
+  return { source: 'francetravail', saved, jobs: collected };
+}
+
+module.exports = { runFirehose, startGlobalJobFirehose, ingestOne, saveJobs, SOURCES, ingestJobRoom, ingestArbeitsagentur, ingestFranceTravail };

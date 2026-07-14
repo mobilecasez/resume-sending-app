@@ -13,6 +13,18 @@ router.post('/admin/global-jobs/run', authenticateAdmin, async (req, res) => {
   res.json({ success: true, started: true, sources: limit || firehose.SOURCES.length });
 });
 
+// Sweep the Swiss Job-Room (official SECO public-employment-service) national feed into global_jobs.
+// ?pages=N (default 25, max 60) · ?since=D days (default 30) · ?keywords=a,b (default all professions).
+router.post('/admin/global-jobs/run-jobroom', authenticateAdmin, async (req, res) => {
+  try {
+    const maxPages = Math.min(parseInt(req.query.pages, 10) || 25, 60);
+    const onlineSince = Math.min(parseInt(req.query.since, 10) || 30, 90);
+    const keywords = req.query.keywords ? String(req.query.keywords).split(',').map((s) => s.trim()).filter(Boolean) : [];
+    const result = await firehose.ingestJobRoom({ keywords, maxPages, onlineSince });
+    res.json({ success: true, ...result });
+  } catch (e) { res.status(500).json({ error: 'jobroom ingest failed', detail: String(e.message).slice(0, 200) }); }
+});
+
 // What's in the global feed right now.
 router.get('/admin/global-jobs/stats', authenticateAdmin, async (req, res) => {
   try {

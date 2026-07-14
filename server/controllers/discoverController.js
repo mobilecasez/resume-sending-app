@@ -16,6 +16,8 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { deriveUserField, ALL_FIELDS } = require('../utils/jobTaxonomy');
 const ats = require('../utils/atsDiscovery');
 const firehose = require('../services/globalJobFirehose');
+const aiHub = require('./aiHubController');   // grounded live-search fallback (groundedDiscover)
+const aiJobExtractor = require('../services/aiJobExtractor');   // fetch-detail: on-device HTML → structured job
 
 const BASE_CAP = 1500;         // diversify + match-rank the freshest N candidates (bounds correlated-subquery cost)
 const DEFAULT_MIN_MATCH = 10;  // in the résumé-scoped default view, hide sub-10% noise
@@ -39,11 +41,21 @@ function skillsOf(resume) {
 // SQL skill-overlap match score: how many of the job's skills the user has (exact OR substring, either
 // direction), over a denominator floored at 3 and capped at 8 — a thin 1-skill listing can't hit 100%.
 function matchExprSql(skillsParam) {
-  return `(CASE WHEN jsonb_array_length(COALESCE(skills,'[]'::jsonb)) = 0 THEN NULL ELSE LEAST(100, round(100.0 * (
+  // With a skills[] array: score = overlap of user skills with job skills. When empty (government feeds /
+  // grounded jobs store no skills), fall back to how many user skills appear in the TITLE or description
+  // — so EVERY job gets a match %, not just ATS ones.
+  return `(CASE
+    WHEN jsonb_array_length(COALESCE(skills,'[]'::jsonb)) > 0 THEN LEAST(100, round(100.0 * (
       SELECT COUNT(*) FROM jsonb_array_elements_text(COALESCE(skills,'[]'::jsonb)) js
       WHERE EXISTS (SELECT 1 FROM unnest(${skillsParam}::text[]) u
         WHERE lower(js) = u OR (length(u) > 2 AND lower(js) LIKE '%'||u||'%') OR (length(js) > 2 AND u LIKE '%'||lower(js)||'%'))
-    ) / GREATEST(3, LEAST(jsonb_array_length(COALESCE(skills,'[]'::jsonb)), 8)))) END)`;
+    ) / GREATEST(3, LEAST(jsonb_array_length(COALESCE(skills,'[]'::jsonb)), 8))))
+    ELSE LEAST(100, round(100.0 * (
+      SELECT COUNT(*) FROM unnest(${skillsParam}::text[]) u
+      WHERE length(u) > 2 AND (lower(title) LIKE '%'||u||'%'
+        OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(responsibilities,'[]'::jsonb)) rs WHERE lower(rs) LIKE '%'||u||'%'))
+    ) / GREATEST(4, LEAST(COALESCE(array_length(${skillsParam}::text[], 1), 0), 12))))
+  END)`;
 }
 
 async function discoverJobs(req, res) {
@@ -242,7 +254,79 @@ function locationTerms(loc) {
   for (const [country, obj] of Object.entries(LOCATION_EXPANSIONS)) {
     if (l === country || obj.match.some((a) => l === a || l.includes(a))) return [country, ...obj.cities];
   }
+  const dk = deaccent(l);
+  if (CITY_ALIAS_LOOKUP.has(dk)) return CITY_ALIAS_LOOKUP.get(dk);   // multilingual city → all spellings
   return [l];
+}
+
+// Every known location term (countries + aliases + cities). Deterministic fix for parseSearchQuery
+// non-determinism: the LLM sometimes drops a country/city into `keywords` with location=null, which
+// disables the hard location filter and bleeds worldwide results (e.g. ".net developer austria" →
+// {kw:[".net","developer","austria"],loc:null} → 972 jobs worldwide). Hoisting any location word out of
+// keywords into `location` makes "…in <place>" ALWAYS a place, never a keyword — stable across parses.
+const LOC_TERMS = (() => {
+  const s = new Set();
+  for (const obj of Object.values(LOCATION_EXPANSIONS)) { obj.match.forEach((a) => s.add(a)); obj.cities.forEach((c) => s.add(c)); }
+  for (const country of Object.keys(LOCATION_EXPANSIONS)) s.add(country);
+  return s;
+})();
+function normalizeParsedLocation(parsed) {
+  if (!parsed) return parsed;
+  const kws = Array.isArray(parsed.keywords) ? parsed.keywords : [];
+  const kept = []; let hoisted = null;
+  for (const k of kws) {
+    if (LOC_TERMS.has(String(k || '').toLowerCase().trim())) { if (!hoisted) hoisted = k; continue; }
+    kept.push(k);
+  }
+  parsed.keywords = kept;
+  if (!parsed.location && hoisted) parsed.location = hoisted;
+  return parsed;
+}
+
+// Diacritic-insensitive matching so a bare "zurich" query matches the stored "Zürich" (and Genève,
+// Zürich, etc.). Applied to BOTH the query term (JS) and the stored column (SQL translate()).
+const DEACC_FROM = 'üäöéèêàâçñ', DEACC_TO = 'uaoeeeaacn';
+function deaccent(s) { return String(s || '').replace(/[üäöéèêàâçñ]/g, (m) => DEACC_TO[DEACC_FROM.indexOf(m)] || m); }
+const SWISS_SET = new Set(['switzerland', ...LOCATION_EXPANSIONS.switzerland.match, ...LOCATION_EXPANSIONS.switzerland.cities].map((t) => deaccent(String(t).toLowerCase())));
+function isSwissLocation(loc) {
+  if (!loc) return false;
+  const l = deaccent(String(loc).toLowerCase());
+  if (l.includes('switzerland') || l.includes('schweiz') || l.includes('suisse')) return true;
+  return locationTerms(loc).some((t) => SWISS_SET.has(deaccent(String(t).toLowerCase())));
+}
+
+// Multilingual city groups (EN/DE/FR/IT spellings) → so "geneva" matches the stored "Genève", "munich"
+// matches "München", etc. Also gives us city→country so a bare-city query routes to the right feed.
+const CITY_ALIASES = [
+  { c: 'switzerland', a: ['geneva', 'genève', 'geneve', 'genf'] },
+  { c: 'switzerland', a: ['zurich', 'zürich', 'zuerich'] },
+  { c: 'switzerland', a: ['basel', 'bâle', 'bale'] },
+  { c: 'switzerland', a: ['bern', 'berne'] },
+  { c: 'switzerland', a: ['lucerne', 'luzern'] },
+  { c: 'switzerland', a: ['st. gallen', 'st gallen', 'sankt gallen'] },
+  { c: 'germany', a: ['munich', 'münchen', 'muenchen'] },
+  { c: 'germany', a: ['cologne', 'köln', 'koeln'] },
+  { c: 'germany', a: ['nuremberg', 'nürnberg', 'nuernberg'] },
+  { c: 'germany', a: ['frankfurt'] }, { c: 'germany', a: ['hamburg'] }, { c: 'germany', a: ['berlin'] },
+  { c: 'germany', a: ['stuttgart'] }, { c: 'germany', a: ['düsseldorf', 'dusseldorf', 'duesseldorf'] },
+  { c: 'austria', a: ['vienna', 'wien'] }, { c: 'austria', a: ['graz'] }, { c: 'austria', a: ['salzburg'] },
+  { c: 'france', a: ['paris'] }, { c: 'france', a: ['lyon'] }, { c: 'france', a: ['marseille'] },
+];
+const CITY_TO_COUNTRY = new Map();    // deaccented alias/city → country key
+const CITY_ALIAS_LOOKUP = new Map();  // deaccented alias → full spelling group (for the SQL filter)
+for (const g of CITY_ALIASES) for (const name of g.a) { const k = deaccent(name.toLowerCase()); CITY_TO_COUNTRY.set(k, g.c); CITY_ALIAS_LOOKUP.set(k, g.a); }
+for (const [country, obj] of Object.entries(LOCATION_EXPANSIONS)) for (const city of obj.cities) { const k = deaccent(String(city).toLowerCase()); if (!CITY_TO_COUNTRY.has(k)) CITY_TO_COUNTRY.set(k, country); }
+
+// Which country a location string belongs to (country name OR a known city) — drives the feed dispatch.
+function detectCountry(loc) {
+  if (!loc) return null;
+  const l = deaccent(String(loc).toLowerCase().trim());
+  for (const [country, obj] of Object.entries(LOCATION_EXPANSIONS)) {
+    if (l === country || obj.match.some((a) => { const d = deaccent(a); return l === d || l.includes(d); })) return country;
+  }
+  if (CITY_TO_COUNTRY.has(l)) return CITY_TO_COUNTRY.get(l);
+  for (const [k, c] of CITY_TO_COUNTRY) if (l.includes(k)) return c;
+  return null;
 }
 
 const NEAR_ME_RE = /\b(near me|my area|nearby|near by|my location|around me|close to me|my city|my region|my place|around here)\b/i;
@@ -324,29 +408,34 @@ async function aiSearch(req, res) {
       const city = (loc.city && String(loc.city).trim()) ? String(loc.city).trim() : cityFromAddress(loc.address);
       if (city) parsed.location = city;
     }
+    normalizeParsedLocation(parsed);   // hoist any country/city out of keywords into location (deterministic)
 
     // ── WHERE ──
     const wParams = [];
     const WP = (v) => { wParams.push(v); return '$' + wParams.length; };
     const where = ['is_active'];
     const hasKw = !!(parsed.keywords && parsed.keywords.length);
+    const kwWords = [];
     if (hasKw) {
-      const ors = parsed.keywords.map((k) => {
-        const p = WP('%' + String(k).toLowerCase() + '%');
-        return `(LOWER(title) LIKE ${p} OR LOWER(employer_name) LIKE ${p} OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(skills,'[]'::jsonb)) js WHERE lower(js) LIKE ${p}))`;
-      });
-      where.push('(' + ors.join(' OR ') + ')');
+      // Split multi-word keywords into words and require EACH (AND) so "java developer" matches jobs that
+      // mention both java AND developer (anywhere in title/employer/skills/description) — precise without
+      // demanding the literal phrase, and not so generic that one common word floods the results.
+      for (const k of parsed.keywords) for (const w of String(k).toLowerCase().split(/\s+/)) { const ww = w.trim(); if (ww && !kwWords.includes(ww)) kwWords.push(ww); }
+      for (const w of kwWords) {
+        const p = WP('%' + w + '%');
+        where.push(`(LOWER(title) LIKE ${p} OR LOWER(employer_name) LIKE ${p} OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(skills,'[]'::jsonb)) js WHERE lower(js) LIKE ${p}) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(responsibilities,'[]'::jsonb)) rs WHERE lower(rs) LIKE ${p}))`);
+      }
     }
     if (parsed.field) where.push(`field = ${WP(parsed.field)}`);
-    // Location: with a ROLE/keyword present, treat it as a SOFT preference (rank matches first but still
-    // show the role elsewhere — so ".net switzerland" surfaces Swiss first, THEN more .NET, instead of
-    // just 2). For a pure "jobs in <place>" browse (no role), it stays a HARD filter. Location matches
-    // the JOB's own location text (+ country→cities), never the board-HQ tag.
+    // Location is a HARD filter: "…in switzerland" means jobs IN Switzerland (incl. its cities via
+    // country→cities expansion), never a soft "rank first then bleed into the rest of Europe". Matches
+    // the JOB's own location text (+ country→cities), never the board-HQ tag. (Coverage for a given
+    // country grows via the silent-browser hydration, so thin locations fill in over time rather than
+    // being padded with out-of-country roles.)
     let locMatchExpr = '0';
     if (parsed.location) {
-      const locOr = '(' + locationTerms(parsed.location).map((t) => `LOWER(location) LIKE ${WP('%' + t + '%')}`).join(' OR ') + ')';
-      if (hasKw) locMatchExpr = `(CASE WHEN ${locOr} THEN 1 ELSE 0 END)`;
-      else where.push(locOr);
+      const locOr = '(' + locationTerms(parsed.location).map((t) => `translate(LOWER(location), '${DEACC_FROM}', '${DEACC_TO}') LIKE ${WP('%' + deaccent(String(t).toLowerCase()) + '%')}`).join(' OR ') + ')';
+      where.push(locOr);
     }
     if (parsed.workMode) where.push(`LOWER(work_mode) = ${WP(parsed.workMode)}`);
     const whereSql = where.join(' AND ');
@@ -355,26 +444,27 @@ async function aiSearch(req, res) {
     const params = [...wParams];
     const P = (v) => { params.push(v); return '$' + params.length; };
     const matchExpr = noProfile ? 'NULL::int' : matchExprSql(P(userSkills));
+    // Query-relevance: how many of the searched words appear in the TITLE (a title hit beats a
+    // description-only hit) — ranks the most on-point jobs to the top, even without a résumé.
+    const relExpr = kwWords.length ? '(' + kwWords.map((w) => `(CASE WHEN LOWER(title) LIKE ${P('%' + w + '%')} THEN 1 ELSE 0 END)`).join(' + ') + ')' : '0';
     const useMatchSort = !noProfile;
-    const rnOrder = 'loc_match DESC, ' + (useMatchSort ? 'match DESC NULLS LAST, last_seen DESC' : 'last_seen DESC');
-    const finalOrder = 'loc_match DESC, ' + (useMatchSort ? 'match DESC NULLS LAST, rn ASC, last_seen DESC' : 'rn ASC, last_seen DESC');
+    const rnOrder = 'rel DESC, ' + (useMatchSort ? 'match DESC NULLS LAST, last_seen DESC' : 'last_seen DESC');
+    const finalOrder = 'rel DESC, ' + (useMatchSort ? 'match DESC NULLS LAST, rn ASC, last_seen DESC' : 'rn ASC, last_seen DESC');
 
     const sql = `
       WITH base AS (
-        SELECT ${FIELDS}, ${matchExpr} AS match, ${locMatchExpr} AS loc_match
+        SELECT ${FIELDS}, ${matchExpr} AS match, ${relExpr} AS rel, ${locMatchExpr} AS loc_match
         FROM global_jobs WHERE ${whereSql}
         ORDER BY last_seen DESC LIMIT ${BASE_CAP}
       ), ranked AS (
         SELECT *, ROW_NUMBER() OVER (PARTITION BY employer_name ORDER BY ${rnOrder}) AS rn FROM base
       )
-      SELECT ${FIELDS}, match, loc_match, COUNT(*) OVER ()::int AS total_filtered
+      SELECT ${FIELDS}, match, rel, loc_match, COUNT(*) OVER ()::int AS total_filtered
       FROM ranked
       ORDER BY ${finalOrder}
       LIMIT ${P(limit)} OFFSET ${P(offset)}`;
 
-    const rows = await dbConfig.query(sql, params);
-    const total = rows && rows.length ? rows[0].total_filtered : 0;
-    const jobs = (rows || []).map((r) => ({
+    const mapRow = (r) => ({
       id: r.job_url, title: r.title, company: r.employer_name, employer_name: r.employer_name,
       employer_domain: r.employer_domain, location: r.location, work_mode: r.work_mode,
       job_type: r.job_type, salary: r.salary, experience: r.experience,
@@ -382,11 +472,52 @@ async function aiSearch(req, res) {
       skills: Array.isArray(r.skills) ? r.skills : [], job_url: r.job_url, source: r.source,
       country: r.country, field: r.field, role_category: r.role_category, seniority: r.seniority,
       match: r.match == null ? null : Number(r.match),
-    }));
+    });
+    const rows = await dbConfig.query(sql, params);
+    let total = rows && rows.length ? rows[0].total_filtered : 0;
+    let jobs = (rows || []).map(mapRow);
+
+    // ── Grounded live enrichment (ASYNC, background) ────────────────────────────
+    // When the structured corpus is thin for this query (first page only), kick off a Google-Search-
+    // grounded discovery worldwide — the same mechanism the user ran manually in Gemini. It is SLOW
+    // (~30-40s: grounding runs many web searches), so we DO NOT block the response. It runs in the
+    // background, persists into global_jobs (+ caches on the normalized query), and the location/keyword
+    // subset then surfaces instantly on the app's re-query (after the on-device silent browser) and on
+    // any repeat search — proven: a query re-served from the grown corpus returns in ~2s. Every thin
+    // search makes itself and the next one richer. Bounded + cached → only thin queries ever pay; repeats
+    // are free. Kill-switch DISCOVER_GROUNDED=0, threshold DISCOVER_GROUNDED_MIN.
+    const GROUNDED_MIN = parseInt(process.env.DISCOVER_GROUNDED_MIN || '8', 10);
+    const COUNTRY_MIN = parseInt(process.env.DISCOVER_COUNTRY_MIN || '30', 10);
+    const GROUNDED_ON = process.env.DISCOVER_GROUNDED !== '0';
+
+    // FAST country-official fallback: dispatch to the right keyless government feed by the query's country
+    // (CH Job-Room / DE Arbeitsagentur / FR France Travail), pull matching REAL jobs SYNCHRONOUSLY (~2s),
+    // and re-run the SQL so they appear now — no slow grounded wait. Fires up to COUNTRY_MIN (the feeds
+    // are cheap + precise); once ingested, repeats are served straight from the corpus.
+    const feedCountry = (offset === 0 && total < COUNTRY_MIN) ? detectCountry(parsed.location) : null;
+    if (feedCountry) {
+      try {
+        const kw = parsed.keywords || [];
+        let ran = false;
+        if (feedCountry === 'switzerland') { await firehose.ingestJobRoom({ keywords: kw, maxPages: 3, onlineSince: 60 }); ran = true; }
+        else if (feedCountry === 'germany') { await firehose.ingestArbeitsagentur({ keywords: kw, location: parsed.location, maxPages: 3 }); ran = true; }
+        else if (feedCountry === 'france') { const r = await firehose.ingestFranceTravail({ keywords: kw }); ran = !r.skipped; }
+        if (ran) { const rows2 = await dbConfig.query(sql, params); if (rows2 && rows2.length) { total = rows2[0].total_filtered; jobs = rows2.map(mapRow); } }
+      } catch (e) { console.error('[discover] country feed on-demand:', e.message); }
+    }
+
+    // SLOW global grounded fallback (async, background) — only if STILL thin after the fast path.
+    const enriching = GROUNDED_ON && offset === 0 && total < GROUNDED_MIN && (hasKw || !!parsed.location);
+    if (enriching) {
+      aiHub.groundedDiscover(parsed, parsed.location || 'Global')
+        .then((found) => (found && found.length) ? firehose.saveJobs(found, 'grounded', parsed.location || 'Global') : 0)
+        .then((n) => n && console.log(`[discover] grounded bg saved ${n} jobs for "${(parsed.keywords || []).join(' ')}|${parsed.location || ''}"`))
+        .catch((e) => console.error('[discover] grounded bg:', e.message));
+    }
 
     res.json({
       success: true, urlDetected: false, parsed, jobs, total, offset, limit,
-      hasMore: jobs.length === limit && (offset + jobs.length) < total, noProfile,
+      hasMore: jobs.length === limit && (offset + jobs.length) < total, noProfile, enriching,
       userField: userFieldObj ? userFieldObj.field : null,
       xray: buildXray(parsed),   // the app runs this dork in a hidden on-device WebView → POST /discover/hydrate-urls
     });
@@ -454,4 +585,106 @@ async function hydrateUrls(req, res) {
   }
 }
 
-module.exports = { discoverJobs, discoverFacets, aiSearch, hydrateUrls };
+// ─── "Look for live jobs on Google" — explicit, user-triggered live search ──────
+// Returns app-style job CARDS from a grounded web search (title/company/location/highlights/link) — the
+// UI renders these as our own cards + multiselect; the raw web page is NEVER shown. Cached + persisted.
+function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
+function jobCard(j) {
+  return {
+    id: j.job_url, job_url: j.job_url, title: j.title, company: j.employer_name, employer_name: j.employer_name,
+    location: j.location || null, work_mode: j.work_mode || null, job_type: j.job_type || null,
+    salary: j.salary || null, experience: j.experience || null,
+    responsibilities: Array.isArray(j.responsibilities) ? j.responsibilities : [],
+    skills: Array.isArray(j.skills) ? j.skills : [], source: hostOf(j.job_url),
+    highlights: Array.isArray(j.responsibilities) ? j.responsibilities.slice(0, 3) : [],
+  };
+}
+
+async function liveSearch(req, res) {
+  try {
+    const rawQuery = String((req.body && req.body.query) || req.query.q || '').trim().slice(0, 300);
+    if (!rawQuery) return res.status(400).json({ error: 'Empty query' });
+    const loc = await getUserProfileLoc(req.user && req.user.id);
+    const parsed = await parseSearchQuery(rawQuery, loc);
+    if (NEAR_ME_RE.test(rawQuery) && loc) {
+      const city = (loc.city && String(loc.city).trim()) ? String(loc.city).trim() : cityFromAddress(loc.address);
+      if (city) parsed.location = city;
+    }
+    normalizeParsedLocation(parsed);
+    const region = parsed.location || 'Global';
+    const kw = Array.isArray(parsed.keywords) ? parsed.keywords : [];
+    const country = detectCountry(parsed.location);
+
+    // Resolve `p` but never wait longer than `ms` (the losing promise keeps running; we stop waiting).
+    const within = (p, ms, fb) => Promise.race([Promise.resolve(p).catch(() => fb), new Promise((r) => setTimeout(() => r(fb), ms))]);
+    const dedupe = (list) => {
+      const seen = new Set(); const out = [];
+      for (const j of list) {
+        if (!j || !j.job_url || !j.title) continue;
+        const k = String(j.job_url).split('#')[0];
+        if (seen.has(k)) continue; seen.add(k); out.push(j);
+      }
+      return out;
+    };
+
+    // FAST national feed (keyless government APIs, real jobs in ~1-2s) — the reliable path where covered.
+    const feedP = (async () => {
+      try {
+        if (country === 'germany') { const r = await firehose.ingestArbeitsagentur({ keywords: kw, location: parsed.location, maxPages: 1 }); return r.jobs || []; }
+        if (country === 'switzerland') { const r = await firehose.ingestJobRoom({ keywords: kw, maxPages: 1, onlineSince: 60 }); return r.jobs || []; }
+        if (country === 'france') { const r = await firehose.ingestFranceTravail({ keywords: kw }); return r.jobs || []; }
+      } catch (_) {}
+      return [];
+    })();
+    // GROUNDED web discovery (slow, variable latency; self-caches). Kick off now; use only if the feed is thin.
+    const groundP = aiHub.groundedDiscover(parsed, region).catch(() => []);
+
+    const feedJobs = await within(feedP, 14000, []);
+    let merged = dedupe(feedJobs);
+    if (merged.length < 8) {
+      // Feed thin/uncovered → wait (bounded) for grounding rather than show nothing.
+      const groundJobs = await within(groundP, 26000, []);
+      if (groundJobs && groundJobs.length) firehose.saveJobs(groundJobs, 'grounded', region).catch(() => {});
+      merged = dedupe([...merged, ...groundJobs]);
+    } else {
+      // Enough from the feed already — let grounding finish in the background to warm the cache for next time.
+      groundP.then((g) => { if (g && g.length) firehose.saveJobs(g, 'grounded', region).catch(() => {}); }).catch(() => {});
+    }
+
+    const cards = merged.slice(0, 40).map(jobCard);
+    res.json({ success: true, parsed, cards, count: cards.length });
+  } catch (e) { console.error('[discover] live-search:', e.message); res.status(500).json({ error: 'Live search failed' }); }
+}
+
+// Fetch ONE job's full details. The app opens the posting in the on-device WebView (the user's own IP →
+// no bot wall), scrapes the page HTML, and posts it here; we AI-extract the structured job, STORE it, and
+// return a full card. Falls back to a server-side fetch for non-bot-protected sites when no HTML is given.
+async function fetchDetail(req, res) {
+  try {
+    const url = String((req.body && req.body.url) || '').trim();
+    const html = (req.body && req.body.html) || '';
+    const employerHint = String((req.body && req.body.company) || '').trim();
+    if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Missing/invalid url' });
+    let job = null;
+    if (html && html.length > 200) {
+      try {
+        const cleaned = aiJobExtractor.cleanHtmlForLLM(html);
+        const data = await aiJobExtractor.llmExtract(cleaned, url, employerHint);
+        let origin = ''; try { origin = new URL(url).origin; } catch {}
+        const jobs = aiJobExtractor.toInternalJobs(data, url, origin, html) || [];
+        job = jobs.find((j) => j && j.title) || null;
+      } catch (e) { console.error('[discover] fetch-detail extract:', e.message); }
+    }
+    if (!job) {   // fallback for non-bot sites (no on-device HTML)
+      try { const r = await ats.detectAndFetchAts(url); if (r && Array.isArray(r.jobs) && r.jobs.length) job = r.jobs[0]; } catch (_) {}
+      if (!job) { try { const r = await aiJobExtractor.findAndExtract(url, employerHint); if (r && Array.isArray(r.jobs) && r.jobs.length) job = r.jobs[0]; } catch (_) {} }
+    }
+    if (!job || !job.title) return res.json({ success: false, error: 'Could not extract job details from this page' });
+    if (!job.job_url) job.job_url = url;
+    const region = detectCountry(job.location) || 'Global';
+    firehose.saveJobs([job], 'fetched', region).catch(() => {});
+    res.json({ success: true, job: jobCard(job) });
+  } catch (e) { console.error('[discover] fetch-detail:', e.message); res.status(500).json({ error: 'Fetch failed' }); }
+}
+
+module.exports = { discoverJobs, discoverFacets, aiSearch, hydrateUrls, liveSearch, fetchDetail };

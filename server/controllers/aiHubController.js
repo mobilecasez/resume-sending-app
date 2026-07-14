@@ -13,7 +13,7 @@ const {
 } = require('../utils/domOptimizer');
 const { smartScrape, stripHtmlToText } = require('../utils/playwrightScraper');
 const { discoverSitemapJobUrls, parseAtsJobPage, fetchJobPage, assessDetailQuality } = require('../utils/atsSitemap');
-const { detectAndFetchAts, findEmbeddedAts } = require('../utils/atsDiscovery');
+const { detectAndFetchAts, findEmbeddedAts, mapLimit } = require('../utils/atsDiscovery');
 const employerFix = require('../services/employerFix');
 const detailRecipeStore = require('../services/detailRecipe');
 const aiJobExtractor = require('../services/aiJobExtractor');
@@ -2028,6 +2028,72 @@ async function groundedJobSearch(employerName, careersUrl) {
     return live;
 }
 
+// ── Grounded live DISCOVERY (keyword/location) ──────────────────────────────────
+// Called by discoverController.aiSearch ONLY when the structured corpus is thin for a query. Same
+// Google-Search-grounded Gemini that produced the user's manual "40-50 real Swiss .NET jobs", but for
+// a keyword+location QUERY (not a single employer): enumerate real current openings → chain each cited
+// board URL through the ATS engine for a full structured board (real deep-apply links) → else keep the
+// grounded single posting (only if the URL is still live). Aggregators / ToS-protected boards are
+// dropped (greenlist only). Cached on the normalized query (ai_grounding_cache) so a repeat is free;
+// the CALLER persists via firehose.saveJobs so global_jobs self-grows and its hard-filter SQL then
+// naturally selects the location/keyword-relevant subset. Returns global_jobs-shaped rows.
+// jobs.ch / jobup deliberately NOT filtered: grounded may surface them as apply-out links (title+URL
+// come from Google's index — we never fetch jobs.ch's servers; the ATS engine skips non-ATS hosts).
+const DISCOVER_AGG = /indeed|glassdoor|linkedin|stepstone|monster\.|ziprecruiter|simplyhired|xing\.|naukri|foundit|talent\.com|jooble|careerjet|adzuna/i;
+function empNameFromUrl(u) { try { const h = new URL(u).hostname.replace(/^www\./, '').split('.'); const s = (h.length > 2 ? h[h.length - 2] : h[0]) || ''; return s.charAt(0).toUpperCase() + s.slice(1); } catch { return ''; } }
+
+async function groundedDiscover(parsed, region) {
+    const kws = (parsed && Array.isArray(parsed.keywords) ? parsed.keywords : []).join(' ').trim();
+    const loc = (parsed && parsed.location ? String(parsed.location) : '').trim();
+    if (!kws && !loc) return [];
+    const wm = parsed && parsed.workMode ? String(parsed.workMode) : '';
+    const sen = parsed && parsed.seniority ? String(parsed.seniority) : '';
+    const cacheKey = `discover:v1:${normLocKey(kws)}|${normLocKey(loc)}|${normLocKey(wm)}|${normLocKey(sen)}`;
+    const cached = await groundingCacheGet(cacheKey);
+    if (Array.isArray(cached)) return cached;   // may legitimately be [] — still avoids re-paying
+
+    // Resolve `p` but never wait longer than `ms` (the losing promise keeps running, we just stop waiting).
+    const within = (p, ms, onTimeout) => Promise.race([Promise.resolve(p).catch(() => onTimeout), new Promise((r) => setTimeout(() => r(onTimeout), ms))]);
+
+    // STEP A — grounded enumeration (google_search tool; prose-JSON, since grounding forbids JSON mode).
+    // HARD-CAPPED: grounding latency is highly variable (can hang 60-90s) with no built-in timeout.
+    const prompt = `Using Google Search, find REAL, currently-open ${sen ? sen + ' ' : ''}${kws || 'jobs'}${loc ? ' in ' + loc : ''}${wm ? ' (' + wm + ')' : ''}. Aim for 25-40 distinct current openings from DIFFERENT employers. Return ONLY a JSON array; each item exactly {"title":string,"company":string,"location":string,"job_url":the direct posting or the employer's own careers/ATS page URL}. STRONGLY PREFER the employer's OWN careers/ATS page (greenhouse/lever/ashby/workday/smartrecruiters/personio/recruitee/teamtailor or the company's own site) over any job aggregator. Use ONLY real postings found in the search — never invent a URL. Omit any item without a real URL.`;
+    let raw = [];
+    try {
+        const model = geminiModel(true, GEMINI_FLASH_MODEL);
+        const res = await within(aiGenerateWithRetry(model, prompt, 2), 40000, null);   // background — allow grounding to complete
+        if (res) raw = parseJsonArray(res.response.text().trim());
+    } catch (e) { console.error('[discover] groundedDiscover enum:', e.message); }
+    raw = (Array.isArray(raw) ? raw : []).filter((j) =>
+        j && j.title && j.job_url && /^https?:\/\//i.test(String(j.job_url)) && !DISCOVER_AGG.test(String(j.job_url)));
+    // Empty is usually a transient grounding timeout (latency > cap), not a real "no jobs" — cache it only
+    // briefly so it doesn't lock out results for hours; a non-empty result below is cached for 6h.
+    if (!raw.length) { await groundingCacheSet(cacheKey, 'discover', [], 15 * 60); return []; }
+
+    // STEP B — chain each UNIQUE board root through the ATS engine (full board w/ real deep links);
+    // else keep the grounded single posting if it's still live. Bounded concurrency + board count.
+    const boardKey = (u) => { try { const x = new URL(u); return x.hostname.replace(/^www\./, '') + '/' + x.pathname.split('/').filter(Boolean).slice(0, 2).join('/'); } catch { return u; } };
+    const uniq = []; const seenBoard = new Set();
+    for (const j of raw) { const k = boardKey(j.job_url); if (!seenBoard.has(k)) { seenBoard.add(k); uniq.push(j); } }
+
+    // Latency-bounded (synchronous search path): the ATS engine gets ≤6s/board; a non-ATS URL keeps its
+    // grounded single posting directly — detection returns instantly for non-ATS hosts and grounding is
+    // told to cite only real pages, so we skip the slow per-URL liveness GET that dominated latency.
+    const groups = await mapLimit(uniq.slice(0, 10), 6, async (j) => {
+        try { const r = await within(detectAndFetchAts(j.job_url), 6000, null); if (r && Array.isArray(r.jobs) && r.jobs.length) return r.jobs; } catch (_) {}
+        return [{ job_url: j.job_url, title: j.title, employer_name: j.company || empNameFromUrl(j.job_url), location: j.location || loc }];
+    });
+
+    const out = []; const seenUrl = new Set();
+    for (const g of groups) for (const jb of (g || [])) {
+        if (!jb || !jb.job_url || !jb.title || seenUrl.has(jb.job_url)) continue;
+        seenUrl.add(jb.job_url); out.push(jb);
+    }
+    await groundingCacheSet(cacheKey, 'discover', out, 6 * 3600);
+    console.log(`[discover] grounded "${kws}|${loc}": ${raw.length} cited → ${out.length} jobs from ${uniq.length} boards`);
+    return out;
+}
+
 // Normalize a free-form work-mode string to our canonical chip values (Remote / Hybrid / On-site).
 function normWorkMode(s) {
     const v = String(s || '').toLowerCase();
@@ -3893,10 +3959,11 @@ Return ONLY the cover letter text in English — no explanation, no markdown, no
 // with Gemini, caching the result per job (shared across users) so each job is
 // translated once. Free (no credit cost) — it's a convenience toggle.
 
+let _jtMigrated = false;
 async function ensureJobTranslationsTable() {
     await dbConfig.run(`
         CREATE TABLE IF NOT EXISTS job_translations (
-            job_id UUID NOT NULL,
+            job_id TEXT NOT NULL,
             target_lang VARCHAR(8) NOT NULL DEFAULT 'en',
             source_lang VARCHAR(16),
             payload JSONB NOT NULL,
@@ -3904,6 +3971,15 @@ async function ensureJobTranslationsTable() {
             PRIMARY KEY (job_id, target_lang)
         )
     `);
+    // One-time migration: the original schema made job_id UUID, which THREW (invalid uuid) on the hashed
+    // ids Explore/live jobs use (gj_…) → the 500 that made "translate not work" on searched jobs. Widen
+    // to TEXT so every job can be translated + cached. Guarded so we only rewrite once, when needed.
+    if (_jtMigrated) return;
+    try {
+        const col = await dbConfig.get(`SELECT data_type FROM information_schema.columns WHERE table_name='job_translations' AND column_name='job_id'`);
+        if (col && String(col.data_type).toLowerCase() === 'uuid') await dbConfig.run(`ALTER TABLE job_translations ALTER COLUMN job_id TYPE TEXT`);
+        _jtMigrated = true;
+    } catch (_) { /* best-effort */ }
 }
 
 async function translateJob(req, res) {
@@ -3921,14 +3997,24 @@ async function translateJob(req, res) {
             return res.json({ jobId, sourceLang: cached.source_lang || null, cached: true, translated: p });
         }
 
-        // 2. Load the job (+ location text via join, + skills).
-        const job = await dbConfig.get(
+        // 2. Load the job (+ location text via join, + skills). Only hit the Job-Hub `jobs` table for a
+        // real UUID id — Explore/live jobs use a hashed id (gj_…) which would throw an invalid-uuid cast
+        // against jobs.id (UUID). That cast error was the real cause of translate 500-ing on searched jobs.
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(jobId));
+        const job = isUuid ? await dbConfig.get(
             `SELECT j.*, l.raw_text AS location_text
              FROM jobs j LEFT JOIN locations l ON l.id = j.location_id
              WHERE j.id = $1`,
             [jobId]
-        );
-        if (!job) return res.status(404).json({ error: 'Job not found' });
+        ) : null;
+        // Explore / live / searched jobs don't live in the Job-Hub `jobs` table and their client id is a
+        // hash (not a DB key) — so the app sends the job's fields in the body. THIS is why translate
+        // "wasn't working" on searched/online jobs. Order: body fields → global_jobs (by job_url) → 404.
+        const asArr = (v) => { try { return Array.isArray(v) ? v : (v ? JSON.parse(v) : []); } catch { return []; } };
+        const bf = (req.body && req.body.fields) || null;
+        const hasBodyFields = !!(bf && typeof bf === 'object' && (bf.title || asArr(bf.responsibilities).length || asArr(bf.skills).length));
+        const gjob = (job || hasBodyFields) ? null : await dbConfig.get(`SELECT * FROM global_jobs WHERE job_url = $1`, [jobId]);
+        if (!job && !hasBodyFields && !gjob) return res.status(404).json({ error: 'Job not found' });
 
         // Charge only on a real (cache-miss) translation. Free today (cost 0) unless an admin sets a price.
         const userId = req.user && req.user.id;
@@ -3939,28 +4025,30 @@ async function translateJob(req, res) {
             }
         }
 
-        const skillRows = await dbConfig.query(
-            `SELECT s.name FROM skills s JOIN job_skills js ON js.skill_id = s.id WHERE js.job_id = $1`,
-            [jobId]
-        );
-        const skills = skillRows.map(s => s.name);
-        const responsibilities = (() => {
-            try {
-                if (!job.responsibilities) return [];
-                return typeof job.responsibilities === 'string' ? JSON.parse(job.responsibilities) : job.responsibilities;
-            } catch { return []; }
-        })();
-
-        const fields = {
-            title: job.title || '',
-            location: job.location_text || '',
-            experience: job.experience || '',
-            salary: job.salary || '',
-            jobType: job.job_type || '',
-            workMode: job.work_mode || null,
-            skills,
-            responsibilities,
-        };
+        let fields;
+        if (hasBodyFields) {
+            fields = {
+                title: bf.title || '', location: bf.location || '', experience: bf.experience || '',
+                salary: bf.salary || '', jobType: bf.jobType || bf.job_type || '', workMode: bf.workMode || bf.work_mode || null,
+                skills: asArr(bf.skills), responsibilities: asArr(bf.responsibilities),
+            };
+        } else if (job) {
+            const skillRows = await dbConfig.query(
+                `SELECT s.name FROM skills s JOIN job_skills js ON js.skill_id = s.id WHERE js.job_id = $1`,
+                [jobId]
+            );
+            fields = {
+                title: job.title || '', location: job.location_text || '', experience: job.experience || '',
+                salary: job.salary || '', jobType: job.job_type || '', workMode: job.work_mode || null,
+                skills: skillRows.map(s => s.name), responsibilities: asArr(job.responsibilities),
+            };
+        } else {
+            fields = {
+                title: gjob.title || '', location: gjob.location || '', experience: gjob.experience || '',
+                salary: gjob.salary || '', jobType: gjob.job_type || '', workMode: gjob.work_mode || null,
+                skills: asArr(gjob.skills), responsibilities: asArr(gjob.responsibilities),
+            };
+        }
 
         // 3. Translate with Gemini (flash-lite, JSON out). One retry on bad JSON.
         const model = geminiModel(false, GEMINI_LITE_MODEL);
@@ -4025,7 +4113,7 @@ ${JSON.stringify(fields, null, 2)}`;
 
         return res.json({ jobId, sourceLang, cached: false, translated });
     } catch (error) {
-        console.error('[aiHub] translateJob error:', error.message);
+        console.error('[aiHub] translateJob error:', error && error.message);
         return res.status(500).json({ error: 'Failed to translate job. Please try again.' });
     }
 }
@@ -4723,4 +4811,5 @@ module.exports = {
     generateEmailBodyHandler,
     getMatchScores,
     getMotivation,
+    groundedDiscover,
 };

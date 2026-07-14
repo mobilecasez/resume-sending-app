@@ -8,5 +8,7 @@ router.get('/discover/jobs', authenticateToken, ctrl.discoverJobs);
 router.get('/discover/facets', authenticateToken, ctrl.discoverFacets);
 router.post('/discover/ai-search', authenticateToken, ctrl.aiSearch);
 router.post('/discover/hydrate-urls', authenticateToken, ctrl.hydrateUrls);
+router.post('/discover/live-search', authenticateToken, ctrl.liveSearch);   // "Look for live jobs on Google" → app-style cards
+router.post('/discover/fetch-detail', authenticateToken, ctrl.fetchDetail); // on-device page HTML → full job + store
 
 module.exports = router;
