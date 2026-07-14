@@ -128,8 +128,8 @@ function JobCard({ job, onOpen }: { job: DiscoverJob; onOpen: (j: DiscoverJob) =
       <View style={styles.cardHead}>
         <LinearGradient colors={c} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.logo}><Text style={styles.logoText}>{initial(job.employer_name)}</Text></LinearGradient>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={styles.jobTitle} numberOfLines={2}>{job.title}</Text>
-          <Text style={styles.jobCompany} numberOfLines={1}>{job.employer_name || 'Company'}</Text>
+          <Text style={styles.jobTitle} numberOfLines={3}>{job.title}</Text>
+          <Text style={styles.jobCompany} numberOfLines={2}>{job.employer_name || 'Company'}</Text>
           {!!job.role_category && <Text style={styles.roleTag} numberOfLines={1}>{job.role_category}</Text>}
         </View>
         {typeof job.match === 'number' && <MatchBadge score={job.match} />}

@@ -6,11 +6,12 @@
 // backend for AI extraction, STORED, and shown back as a full our-style job card.
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  Modal, View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, Animated, Easing, Dimensions,
+  Modal, View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, Animated, Easing, Dimensions, AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { liveSearchJobs, fetchJobDetail, type LiveJobCard } from '../services/aiHubService';
 
 const { height: SH } = Dimensions.get('window');
@@ -20,38 +21,63 @@ type FetchState = 'idle' | 'fetching' | 'done' | 'failed';
 const GRAB_JS = `(function(){
   function grab(){ try { window.ReactNativeWebView.postMessage(JSON.stringify({ __cvd:true, url: location.href, html: (document.documentElement.outerHTML||'').slice(0,220000) })); } catch(e){} }
   var blocked = /captcha|unusual traffic|are you a robot|verify you are human/i.test(document.body ? document.body.innerText : '');
-  setTimeout(grab, blocked ? 400 : 2600);
+  setTimeout(grab, blocked ? 400 : 1800);
 })(); true;`;
 
 const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 
 export default function LiveJobSearch({ visible, query, onClose }: { visible: boolean; query: string; onClose: () => void }) {
+  const CONCURRENCY = 5;   // fetch up to 5 selected postings at once (was one-at-a-time)
   const [phase, setPhase] = useState<'searching' | 'results' | 'error'>('searching');
   const [cards, setCards] = useState<LiveJobCard[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [details, setDetails] = useState<Record<string, LiveJobCard>>({});
   const [fstate, setFstate] = useState<Record<string, FetchState>>({});
   const [fetching, setFetching] = useState(false);
-  const [currentUrl, setCurrentUrl] = useState<string | null>(null);
+  const [activeUrls, setActiveUrls] = useState<string[]>([]);   // urls with a live hidden WebView (≤ CONCURRENCY)
+  const [webGen, setWebGen] = useState(0);                      // bump → remount WebViews (resume after background)
   const queueRef = useRef<string[]>([]);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeRef = useRef<Set<string>>(new Set());
+  const timersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const detailsRef = useRef<Record<string, LiveJobCard>>({});
+  const fstateRef = useRef<Record<string, FetchState>>({});
+  const cardsRef = useRef<LiveJobCard[]>([]);
+  const fetchingRef = useRef(false);
+  const queryRef = useRef(query);
 
   const pulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => { cardsRef.current = cards; }, [cards]);
+  useEffect(() => { queryRef.current = query; }, [query]);
+
+  // Persist completed fetches so progress survives app minimize / restart (restored on open, below).
+  const persistKey = () => 'live_fetch_v1:' + String(queryRef.current || '').trim().toLowerCase();
+  const saveProgress = () => { AsyncStorage.setItem(persistKey(), JSON.stringify({ details: detailsRef.current, fstate: fstateRef.current })).catch(() => {}); };
+  const setFetchingBoth = (v: boolean) => { fetchingRef.current = v; setFetching(v); };
 
   // ── run the live search when opened ──
   useEffect(() => {
     if (!visible) return;
-    setPhase('searching'); setCards([]); setSelected(new Set()); setDetails({}); setFstate({}); setFetching(false); setCurrentUrl(null);
+    setPhase('searching'); setCards([]); setSelected(new Set());
+    setDetails({}); detailsRef.current = {};
+    setFstate({}); fstateRef.current = {};
+    setFetchingBoth(false); setActiveUrls([]); activeRef.current = new Set(); queueRef.current = [];
+    Object.values(timersRef.current).forEach(clearTimeout); timersRef.current = {};
     let alive = true;
     (async () => {
+      // restore any saved fetch progress for THIS query (survives minimize / app restart)
+      try {
+        const raw = await AsyncStorage.getItem('live_fetch_v1:' + String(query || '').trim().toLowerCase());
+        if (alive && raw) { const p = JSON.parse(raw); if (p && p.details) { detailsRef.current = p.details; setDetails(p.details); } if (p && p.fstate) { fstateRef.current = p.fstate; setFstate(p.fstate); } }
+      } catch (_) {}
       try {
         const r = await liveSearchJobs(query);
         if (!alive) return;
-        setCards(r.cards || []);
+        setCards(r.cards || []); cardsRef.current = r.cards || [];
         setPhase((r.cards && r.cards.length) ? 'results' : 'error');
       } catch { if (alive) setPhase('error'); }
     })();
-    return () => { alive = false; if (timerRef.current) clearTimeout(timerRef.current); };
+    return () => { alive = false; Object.values(timersRef.current).forEach(clearTimeout); };
   }, [visible, query]);
 
   // ── searching animation ──
@@ -72,39 +98,70 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     setSelected((prev) => prev.size === cards.length ? new Set() : new Set(cards.map((c) => c.job_url)));
   }, [cards]);
 
-  // ── fetch details for the selected cards, ONE AT A TIME via the hidden WebView ──
-  const processNext = useCallback(() => {
-    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-    const next = queueRef.current.shift();
-    if (!next) { setFetching(false); setCurrentUrl(null); return; }
-    setFstate((s) => ({ ...s, [next]: 'fetching' }));
-    setCurrentUrl(next);
-    // Safety: if the page never reports back within 16s, mark failed and move on.
-    timerRef.current = setTimeout(() => { setFstate((s) => ({ ...s, [next]: 'failed' })); setCurrentUrl(null); processNext(); }, 16000);
-  }, []);
-
-  const startFetch = useCallback(() => {
-    const urls = cards.map((c) => c.job_url).filter((u) => selected.has(u) && fstate[u] !== 'done');
+  // ── fetch selected cards, up to CONCURRENCY at a time, via hidden on-device WebViews ──
+  const PAGE_TIMEOUT = 20000;
+  // Fill open slots from the queue (mounts a hidden WebView per active url).
+  function pump() {
+    while (activeRef.current.size < CONCURRENCY && queueRef.current.length) {
+      const u = queueRef.current.shift() as string;
+      activeRef.current.add(u);
+      fstateRef.current = { ...fstateRef.current, [u]: 'fetching' };
+      setFstate((s) => ({ ...s, [u]: 'fetching' }));
+      timersRef.current[u] = setTimeout(() => finish(u, false), PAGE_TIMEOUT);
+    }
+    setActiveUrls([...activeRef.current]);
+    if (activeRef.current.size === 0 && queueRef.current.length === 0) setFetchingBoth(false);
+  }
+  // Resolve one url (done or failed), persist, and pull the next from the queue.
+  function finish(url: string, ok: boolean, job?: LiveJobCard | null) {
+    if (!activeRef.current.has(url)) return;   // already handled
+    if (timersRef.current[url]) { clearTimeout(timersRef.current[url]); delete timersRef.current[url]; }
+    activeRef.current.delete(url);
+    if (ok && job) { detailsRef.current = { ...detailsRef.current, [url]: job }; setDetails((d) => ({ ...d, [url]: job })); }
+    fstateRef.current = { ...fstateRef.current, [url]: ok ? 'done' : 'failed' };
+    setFstate((s) => ({ ...s, [url]: ok ? 'done' : 'failed' }));
+    saveProgress();
+    pump();
+  }
+  function startFetch() {
+    const urls = cardsRef.current.map((c) => c.job_url).filter((u) => selected.has(u) && fstateRef.current[u] !== 'done');
     if (!urls.length) return;
     queueRef.current = urls;
-    setFetching(true);
-    processNext();
-  }, [cards, selected, fstate, processNext]);
-
-  const onGrab = useCallback(async (raw: string) => {
+    setFetchingBoth(true);
+    pump();
+  }
+  async function onGrab(sourceUrl: string, raw: string) {
     let payload: any = null; try { payload = JSON.parse(raw); } catch { return; }
     if (!payload || !payload.__cvd) return;
-    const url = currentUrl; if (!url) return;
-    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-    const card = cards.find((c) => c.job_url === url);
+    if (!activeRef.current.has(sourceUrl)) return;   // stale / already finished
+    if (timersRef.current[sourceUrl]) { clearTimeout(timersRef.current[sourceUrl]); delete timersRef.current[sourceUrl]; }
+    const card = cardsRef.current.find((c) => c.job_url === sourceUrl);
     try {
-      const job = await fetchJobDetail(url, String(payload.html || ''), card?.company || card?.employer_name || '');
-      if (job) { setDetails((d) => ({ ...d, [url]: job })); setFstate((s) => ({ ...s, [url]: 'done' })); }
-      else setFstate((s) => ({ ...s, [url]: 'failed' }));
-    } catch { setFstate((s) => ({ ...s, [url]: 'failed' })); }
-    setCurrentUrl(null);
-    processNext();
-  }, [currentUrl, cards, processNext]);
+      const job = await fetchJobDetail(sourceUrl, String(payload.html || ''), card?.company || card?.employer_name || '');
+      finish(sourceUrl, !!job, job || null);
+    } catch { finish(sourceUrl, false, null); }
+  }
+
+  // Keep fetching alive across app minimize/restore: iOS pauses background WebViews & timers, so on return
+  // we re-arm timers and REMOUNT the in-flight WebViews (webGen bump) to resume the scrape, then keep pumping.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st === 'active') {
+        if (fetchingRef.current && (activeRef.current.size > 0 || queueRef.current.length > 0)) {
+          activeRef.current.forEach((u) => {
+            if (timersRef.current[u]) clearTimeout(timersRef.current[u]);
+            timersRef.current[u] = setTimeout(() => finish(u, false), PAGE_TIMEOUT);
+          });
+          setWebGen((g) => g + 1);
+          pump();
+        }
+      } else {
+        Object.values(timersRef.current).forEach(clearTimeout);
+        timersRef.current = {};   // don't let suspended time count as timeouts
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   const doneCount = Object.values(fstate).filter((s) => s === 'done').length;
 
@@ -120,11 +177,14 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
             {isSel && <Ionicons name="checkmark" size={13} color="#fff" />}
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.cardTitle} numberOfLines={2}>{det?.title || item.title}</Text>
-            <Text style={styles.cardCompany} numberOfLines={1}>
-              {(det?.company || item.company || item.employer_name || 'Employer')}
-              {(det?.location || item.location) ? ` · ${det?.location || item.location}` : ''}
-            </Text>
+            <Text style={styles.cardTitle} numberOfLines={3}>{det?.title || item.title}</Text>
+            <Text style={styles.cardCompany} numberOfLines={2}>{det?.company || item.company || item.employer_name || 'Employer'}</Text>
+            {!!(det?.location || item.location) && (
+              <View style={styles.cardLocRow}>
+                <Ionicons name="location-outline" size={11} color="#94A3B8" style={{ marginTop: 1 }} />
+                <Text style={styles.cardLoc} numberOfLines={2}>{det?.location || item.location}</Text>
+              </View>
+            )}
           </View>
           {st === 'done' && <View style={styles.badgeDone}><Ionicons name="checkmark-circle" size={12} color="#059669" /><Text style={styles.badgeDoneTx}>Saved</Text></View>}
           {st === 'fetching' && <ActivityIndicator size="small" color="#06B6D4" />}
@@ -211,7 +271,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
                 <TouchableOpacity disabled={!selCount || fetching} activeOpacity={0.85} onPress={startFetch} style={{ flex: 1 }}>
                   <LinearGradient colors={(!selCount || fetching) ? ['#CBD5E1', '#CBD5E1'] : ['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.fetchBtn}>
                     {fetching
-                      ? <><ActivityIndicator size="small" color="#fff" /><Text style={styles.fetchTx}>Fetching details…</Text></>
+                      ? <><ActivityIndicator size="small" color="#fff" /><Text style={styles.fetchTx}>Fetching… {doneCount ? `(${doneCount} done)` : ''}</Text></>
                       : <><Ionicons name="download-outline" size={18} color="#fff" /><Text style={styles.fetchTx}>{selCount ? `Fetch details (${selCount})` : 'Select jobs to fetch'}</Text></>}
                   </LinearGradient>
                 </TouchableOpacity>
@@ -219,21 +279,21 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
             </>
           )}
 
-          {/* hidden on-device fetcher — one page at a time, on the user's IP */}
-          {currentUrl && (
-            <View style={styles.hiddenWeb} pointerEvents="none">
+          {/* hidden on-device fetchers — up to CONCURRENCY pages at once, on the user's IP.
+              Keyed by webGen so an AppState resume remounts them (iOS pauses background WebViews). */}
+          {activeUrls.map((url) => (
+            <View key={webGen + '|' + url} style={styles.hiddenWeb} pointerEvents="none">
               <WebView
-                key={currentUrl}
-                source={{ uri: currentUrl }}
+                source={{ uri: url }}
                 injectedJavaScript={GRAB_JS}
-                onMessage={(e) => onGrab(e.nativeEvent.data)}
+                onMessage={(e) => onGrab(url, e.nativeEvent.data)}
                 userAgent={MOBILE_UA}
                 javaScriptEnabled
                 domStorageEnabled
                 originWhitelist={['*']}
               />
             </View>
-          )}
+          ))}
         </View>
       </View>
     </Modal>
@@ -261,7 +321,9 @@ const styles = StyleSheet.create({
   check: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.6, borderColor: '#CBD5E1', marginRight: 11, marginTop: 1, alignItems: 'center', justifyContent: 'center' },
   checkOn: { backgroundColor: '#06B6D4', borderColor: '#06B6D4' },
   cardTitle: { fontSize: 14.5, fontWeight: '800', color: '#0F172A', letterSpacing: -0.3 },
-  cardCompany: { fontSize: 12.5, color: '#64748B', marginTop: 3 },
+  cardCompany: { fontSize: 12.5, color: '#334155', fontWeight: '600', marginTop: 3 },
+  cardLocRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 3, marginTop: 3 },
+  cardLoc: { flex: 1, fontSize: 12, color: '#64748B', lineHeight: 16 },
   badgeDone: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#ECFDF5', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 8, gap: 3 },
   badgeDoneTx: { fontSize: 10.5, fontWeight: '700', color: '#059669' },
   cardBody: { marginTop: 10, marginLeft: 33 },

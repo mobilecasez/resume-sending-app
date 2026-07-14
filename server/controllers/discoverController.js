@@ -651,7 +651,7 @@ async function liveSearch(req, res) {
       groundP.then((g) => { if (g && g.length) firehose.saveJobs(g, 'grounded', region).catch(() => {}); }).catch(() => {});
     }
 
-    const cards = merged.slice(0, 40).map(jobCard);
+    const cards = merged.map(jobCard);   // no artificial cap — return everything the feed + grounding found
     res.json({ success: true, parsed, cards, count: cards.length });
   } catch (e) { console.error('[discover] live-search:', e.message); res.status(500).json({ error: 'Live search failed' }); }
 }
