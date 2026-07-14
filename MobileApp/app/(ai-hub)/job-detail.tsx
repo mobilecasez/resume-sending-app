@@ -1139,7 +1139,11 @@ export default function JobDetailScreen() {
     if (translatedJob) { setShowEnglish((v) => !v); return; }
     setTranslatingJob(true);
     try {
-      const t = await translateJob(job.id);
+      const t = await translateJob(job.id, {
+        title: (job as any).title, location: (job as any).location, experience: (job as any).experience,
+        salary: (job as any).salary, jobType: (job as any).jobType, workMode: (job as any).workMode,
+        skills: (job as any).skills, responsibilities: (job as any).responsibilities,
+      });
       setTranslatedJob(t);
       setShowEnglish(true);
     } catch {

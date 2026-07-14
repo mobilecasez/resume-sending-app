@@ -1,0 +1,279 @@
+// AI Hub — new feature. Safe to delete without affecting existing app.
+// "Look for live jobs on Google" — a rich, interactive modal. The web browser is the ENGINE, never the
+// UI: the search comes back as structured cards rendered in OUR style (the raw Google page is never
+// shown). The user multi-selects cards and taps "Fetch details" → each posting is opened ONE AT A TIME
+// in a hidden on-device WebView (the user's own IP → no bot wall), the page HTML is scraped, sent to the
+// backend for AI extraction, STORED, and shown back as a full our-style job card.
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import {
+  Modal, View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, Animated, Easing, Dimensions,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { WebView } from 'react-native-webview';
+import { liveSearchJobs, fetchJobDetail, type LiveJobCard } from '../services/aiHubService';
+
+const { height: SH } = Dimensions.get('window');
+type FetchState = 'idle' | 'fetching' | 'done' | 'failed';
+
+// Grab the fully-rendered page HTML after giving a SPA a moment to hydrate. Runs on the user's device/IP.
+const GRAB_JS = `(function(){
+  function grab(){ try { window.ReactNativeWebView.postMessage(JSON.stringify({ __cvd:true, url: location.href, html: (document.documentElement.outerHTML||'').slice(0,220000) })); } catch(e){} }
+  var blocked = /captcha|unusual traffic|are you a robot|verify you are human/i.test(document.body ? document.body.innerText : '');
+  setTimeout(grab, blocked ? 400 : 2600);
+})(); true;`;
+
+const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+
+export default function LiveJobSearch({ visible, query, onClose }: { visible: boolean; query: string; onClose: () => void }) {
+  const [phase, setPhase] = useState<'searching' | 'results' | 'error'>('searching');
+  const [cards, setCards] = useState<LiveJobCard[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [details, setDetails] = useState<Record<string, LiveJobCard>>({});
+  const [fstate, setFstate] = useState<Record<string, FetchState>>({});
+  const [fetching, setFetching] = useState(false);
+  const [currentUrl, setCurrentUrl] = useState<string | null>(null);
+  const queueRef = useRef<string[]>([]);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const pulse = useRef(new Animated.Value(0)).current;
+
+  // ── run the live search when opened ──
+  useEffect(() => {
+    if (!visible) return;
+    setPhase('searching'); setCards([]); setSelected(new Set()); setDetails({}); setFstate({}); setFetching(false); setCurrentUrl(null);
+    let alive = true;
+    (async () => {
+      try {
+        const r = await liveSearchJobs(query);
+        if (!alive) return;
+        setCards(r.cards || []);
+        setPhase((r.cards && r.cards.length) ? 'results' : 'error');
+      } catch { if (alive) setPhase('error'); }
+    })();
+    return () => { alive = false; if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [visible, query]);
+
+  // ── searching animation ──
+  useEffect(() => {
+    if (phase !== 'searching') return;
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(pulse, { toValue: 1, duration: 900, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+      Animated.timing(pulse, { toValue: 0, duration: 900, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+    ]));
+    loop.start();
+    return () => loop.stop();
+  }, [phase, pulse]);
+
+  const toggle = useCallback((url: string) => {
+    setSelected((prev) => { const n = new Set(prev); n.has(url) ? n.delete(url) : n.add(url); return n; });
+  }, []);
+  const selectAll = useCallback(() => {
+    setSelected((prev) => prev.size === cards.length ? new Set() : new Set(cards.map((c) => c.job_url)));
+  }, [cards]);
+
+  // ── fetch details for the selected cards, ONE AT A TIME via the hidden WebView ──
+  const processNext = useCallback(() => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    const next = queueRef.current.shift();
+    if (!next) { setFetching(false); setCurrentUrl(null); return; }
+    setFstate((s) => ({ ...s, [next]: 'fetching' }));
+    setCurrentUrl(next);
+    // Safety: if the page never reports back within 16s, mark failed and move on.
+    timerRef.current = setTimeout(() => { setFstate((s) => ({ ...s, [next]: 'failed' })); setCurrentUrl(null); processNext(); }, 16000);
+  }, []);
+
+  const startFetch = useCallback(() => {
+    const urls = cards.map((c) => c.job_url).filter((u) => selected.has(u) && fstate[u] !== 'done');
+    if (!urls.length) return;
+    queueRef.current = urls;
+    setFetching(true);
+    processNext();
+  }, [cards, selected, fstate, processNext]);
+
+  const onGrab = useCallback(async (raw: string) => {
+    let payload: any = null; try { payload = JSON.parse(raw); } catch { return; }
+    if (!payload || !payload.__cvd) return;
+    const url = currentUrl; if (!url) return;
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    const card = cards.find((c) => c.job_url === url);
+    try {
+      const job = await fetchJobDetail(url, String(payload.html || ''), card?.company || card?.employer_name || '');
+      if (job) { setDetails((d) => ({ ...d, [url]: job })); setFstate((s) => ({ ...s, [url]: 'done' })); }
+      else setFstate((s) => ({ ...s, [url]: 'failed' }));
+    } catch { setFstate((s) => ({ ...s, [url]: 'failed' })); }
+    setCurrentUrl(null);
+    processNext();
+  }, [currentUrl, cards, processNext]);
+
+  const doneCount = Object.values(fstate).filter((s) => s === 'done').length;
+
+  const renderCard = ({ item }: { item: LiveJobCard }) => {
+    const isSel = selected.has(item.job_url);
+    const st = fstate[item.job_url] || 'idle';
+    const det = details[item.job_url];
+    const highlights = (det?.responsibilities?.length ? det.responsibilities : item.highlights) || [];
+    return (
+      <TouchableOpacity activeOpacity={0.85} onPress={() => toggle(item.job_url)} style={[styles.card, isSel && styles.cardSel]}>
+        <View style={styles.cardTop}>
+          <View style={[styles.check, isSel && styles.checkOn]}>
+            {isSel && <Ionicons name="checkmark" size={13} color="#fff" />}
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle} numberOfLines={2}>{det?.title || item.title}</Text>
+            <Text style={styles.cardCompany} numberOfLines={1}>
+              {(det?.company || item.company || item.employer_name || 'Employer')}
+              {(det?.location || item.location) ? ` · ${det?.location || item.location}` : ''}
+            </Text>
+          </View>
+          {st === 'done' && <View style={styles.badgeDone}><Ionicons name="checkmark-circle" size={12} color="#059669" /><Text style={styles.badgeDoneTx}>Saved</Text></View>}
+          {st === 'fetching' && <ActivityIndicator size="small" color="#06B6D4" />}
+          {st === 'failed' && <Ionicons name="alert-circle-outline" size={16} color="#F59E0B" />}
+        </View>
+        {(det || highlights.length > 0) && (
+          <View style={styles.cardBody}>
+            {!!det && (
+              <View style={styles.metaRow}>
+                {!!det.job_type && <Text style={styles.metaPill}>{det.job_type}</Text>}
+                {!!det.work_mode && <Text style={styles.metaPill}>{det.work_mode}</Text>}
+                {!!det.salary && <Text style={styles.metaPill}>{det.salary}</Text>}
+              </View>
+            )}
+            {highlights.slice(0, det ? 4 : 2).map((h, i) => (
+              <Text key={i} style={styles.highlight} numberOfLines={2}>• {String(h).replace(/<[^>]+>/g, '')}</Text>
+            ))}
+            {!!det?.skills?.length && <Text style={styles.skills} numberOfLines={1}>{det.skills.slice(0, 6).join(' · ')}</Text>}
+          </View>
+        )}
+        <View style={styles.srcRow}>
+          <Ionicons name="globe-outline" size={11} color="#94A3B8" />
+          <Text style={styles.srcTx}>{item.source || 'web'}</Text>
+          {st === 'idle' && <Text style={styles.tapHint}>tap to select</Text>}
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.18] });
+  const opacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1] });
+  const selCount = selected.size;
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose} transparent>
+      <View style={styles.backdrop}>
+        <View style={styles.sheet}>
+          {/* header */}
+          <View style={styles.header}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.hTitle}>Live jobs on the web</Text>
+              <Text style={styles.hSub} numberOfLines={1}>“{query}”</Text>
+            </View>
+            <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Ionicons name="close" size={24} color="#64748B" />
+            </TouchableOpacity>
+          </View>
+
+          {phase === 'searching' && (
+            <View style={styles.center}>
+              <Animated.View style={{ transform: [{ scale }], opacity }}>
+                <LinearGradient colors={['#06B6D4', '#3B82F6']} style={styles.pulseCircle}>
+                  <Ionicons name="search" size={30} color="#fff" />
+                </LinearGradient>
+              </Animated.View>
+              <Text style={styles.searchingTx}>Searching the live web…</Text>
+              <Text style={styles.searchingSub}>Finding real, current openings and formatting them for you.</Text>
+            </View>
+          )}
+
+          {phase === 'error' && (
+            <View style={styles.center}>
+              <Ionicons name="cloud-offline-outline" size={40} color="#CBD5E1" />
+              <Text style={styles.searchingTx}>No live results right now</Text>
+              <Text style={styles.searchingSub}>Try a broader search, or check your feed — it may already have matches.</Text>
+              <TouchableOpacity style={styles.retryBtn} onPress={onClose}><Text style={styles.retryTx}>Close</Text></TouchableOpacity>
+            </View>
+          )}
+
+          {phase === 'results' && (
+            <>
+              <View style={styles.subBar}>
+                <Text style={styles.subBarTx}>{cards.length} found{doneCount ? ` · ${doneCount} fetched` : ''}</Text>
+                <TouchableOpacity onPress={selectAll}><Text style={styles.selAll}>{selected.size === cards.length ? 'Clear' : 'Select all'}</Text></TouchableOpacity>
+              </View>
+              <FlatList
+                data={cards}
+                keyExtractor={(c) => c.job_url}
+                renderItem={renderCard}
+                contentContainerStyle={{ padding: 14, paddingBottom: 100 }}
+                showsVerticalScrollIndicator={false}
+              />
+              <View style={styles.footer}>
+                <TouchableOpacity disabled={!selCount || fetching} activeOpacity={0.85} onPress={startFetch} style={{ flex: 1 }}>
+                  <LinearGradient colors={(!selCount || fetching) ? ['#CBD5E1', '#CBD5E1'] : ['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.fetchBtn}>
+                    {fetching
+                      ? <><ActivityIndicator size="small" color="#fff" /><Text style={styles.fetchTx}>Fetching details…</Text></>
+                      : <><Ionicons name="download-outline" size={18} color="#fff" /><Text style={styles.fetchTx}>{selCount ? `Fetch details (${selCount})` : 'Select jobs to fetch'}</Text></>}
+                  </LinearGradient>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+
+          {/* hidden on-device fetcher — one page at a time, on the user's IP */}
+          {currentUrl && (
+            <View style={styles.hiddenWeb} pointerEvents="none">
+              <WebView
+                key={currentUrl}
+                source={{ uri: currentUrl }}
+                injectedJavaScript={GRAB_JS}
+                onMessage={(e) => onGrab(e.nativeEvent.data)}
+                userAgent={MOBILE_UA}
+                javaScriptEnabled
+                domStorageEnabled
+                originWhitelist={['*']}
+              />
+            </View>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+const styles = StyleSheet.create({
+  backdrop: { flex: 1, backgroundColor: 'rgba(6,10,25,0.55)', justifyContent: 'flex-end' },
+  sheet: { height: Math.min(SH * 0.9, 800), backgroundColor: '#F0F4FA', borderTopLeftRadius: 26, borderTopRightRadius: 26, overflow: 'hidden' },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, paddingTop: 18, paddingBottom: 12, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#EEF2F7' },
+  hTitle: { fontSize: 18, fontWeight: '800', color: '#0F172A', letterSpacing: -0.4 },
+  hSub: { fontSize: 12.5, color: '#64748B', marginTop: 2 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 30 },
+  pulseCircle: { width: 76, height: 76, borderRadius: 38, alignItems: 'center', justifyContent: 'center' },
+  searchingTx: { fontSize: 16, fontWeight: '700', color: '#0F172A', marginTop: 22 },
+  searchingSub: { fontSize: 13, color: '#64748B', marginTop: 6, textAlign: 'center', lineHeight: 19 },
+  retryBtn: { marginTop: 18, paddingHorizontal: 22, paddingVertical: 10, borderRadius: 12, backgroundColor: '#E2E8F0' },
+  retryTx: { fontSize: 14, fontWeight: '700', color: '#334155' },
+  subBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 2 },
+  subBarTx: { fontSize: 12.5, fontWeight: '700', color: '#475569' },
+  selAll: { fontSize: 12.5, fontWeight: '700', color: '#06B6D4' },
+  card: { backgroundColor: '#fff', borderRadius: 18, padding: 14, marginBottom: 10, borderWidth: 1.5, borderColor: '#fff' },
+  cardSel: { borderColor: '#06B6D4', backgroundColor: '#F7FEFF' },
+  cardTop: { flexDirection: 'row', alignItems: 'flex-start' },
+  check: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.6, borderColor: '#CBD5E1', marginRight: 11, marginTop: 1, alignItems: 'center', justifyContent: 'center' },
+  checkOn: { backgroundColor: '#06B6D4', borderColor: '#06B6D4' },
+  cardTitle: { fontSize: 14.5, fontWeight: '800', color: '#0F172A', letterSpacing: -0.3 },
+  cardCompany: { fontSize: 12.5, color: '#64748B', marginTop: 3 },
+  badgeDone: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#ECFDF5', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 8, gap: 3 },
+  badgeDoneTx: { fontSize: 10.5, fontWeight: '700', color: '#059669' },
+  cardBody: { marginTop: 10, marginLeft: 33 },
+  metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
+  metaPill: { fontSize: 11, fontWeight: '600', color: '#0369A1', backgroundColor: '#E0F2FE', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, overflow: 'hidden' },
+  highlight: { fontSize: 12, color: '#475569', lineHeight: 17, marginTop: 1 },
+  skills: { fontSize: 11.5, color: '#7C3AED', marginTop: 6, fontWeight: '600' },
+  srcRow: { flexDirection: 'row', alignItems: 'center', marginTop: 9, marginLeft: 33, gap: 4 },
+  srcTx: { fontSize: 10.5, color: '#94A3B8', fontWeight: '600' },
+  tapHint: { fontSize: 10.5, color: '#CBD5E1', marginLeft: 8 },
+  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, padding: 14, backgroundColor: 'rgba(240,244,250,0.96)', borderTopWidth: 1, borderTopColor: '#E2E8F0' },
+  fetchBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', height: 52, borderRadius: 16, gap: 8 },
+  fetchTx: { fontSize: 15.5, fontWeight: '800', color: '#fff' },
+  hiddenWeb: { position: 'absolute', width: 1, height: 1, left: -4000, top: -4000, opacity: 0 },
+});

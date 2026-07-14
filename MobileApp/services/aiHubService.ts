@@ -248,12 +248,12 @@ export type TranslatedJob = {
   responsibilities?: string[];
 };
 
-export async function translateJob(jobId: string): Promise<TranslatedJob> {
+export async function translateJob(jobId: string, fields?: Record<string, any>): Promise<TranslatedJob> {
   try {
     const headers = await getAuthHeader();
     const response = await axios.post(
       `${API_BASE_URL}/ai-hub/jobs/${jobId}/translate`,
-      {},
+      fields ? { fields } : {},   // Explore/live jobs aren't in the DB → send their text so translate works
       { headers }
     );
     return (response.data?.translated ?? {}) as TranslatedJob;
@@ -1046,6 +1046,27 @@ export async function aiSearchJobs(query: string, offset = 0, limit = 20): Promi
   const headers = await getAuthHeader();
   const { data } = await axios.post(`${API_BASE_URL}/discover/ai-search`, { query, offset, limit }, { headers, timeout: 30000 });
   return data;
+}
+
+// ── "Look for live jobs on Google" — user-triggered live search → our-style cards ─────────────
+export type LiveJobCard = {
+  id: string; job_url: string; title: string; company: string | null; employer_name: string | null;
+  location: string | null; work_mode: string | null; job_type: string | null; salary: string | null;
+  experience: string | null; responsibilities: string[]; skills: string[]; source: string | null; highlights: string[];
+};
+
+/** Grounded live web search → structured job CARDS (the raw web page is never shown). ~15-40s. */
+export async function liveSearchJobs(query: string): Promise<{ parsed: AiSearchParsed | null; cards: LiveJobCard[]; count: number }> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.post(`${API_BASE_URL}/discover/live-search`, { query }, { headers, timeout: 60000 });
+  return { parsed: data?.parsed ?? null, cards: (data?.cards ?? []) as LiveJobCard[], count: data?.count ?? 0 };
+}
+
+/** Fetch ONE job's full details from the on-device-scraped page HTML → stores it → returns a rich card. */
+export async function fetchJobDetail(url: string, html: string, company?: string): Promise<LiveJobCard | null> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.post(`${API_BASE_URL}/discover/fetch-detail`, { url, html, company: company || '' }, { headers, timeout: 45000 });
+  return data?.success && data.job ? (data.job as LiveJobCard) : null;
 }
 
 /** Filter chips for the feed. Pass `field` to get the role categories within that field. */

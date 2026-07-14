@@ -21,6 +21,7 @@ import {
 import { logEvent } from '../../services/firebaseAnalytics';
 import HelpAssistant from '../../components/HelpAssistant';
 import SilentWebSearch from '../../components/SilentWebSearch';
+import LiveJobSearch from '../../components/LiveJobSearch';
 
 const T = {
   bg: '#E5EAF3', surface: '#FFFFFF', ink: '#0B0F22', textMuted: '#5B6B8A', textFaint: '#8896B0',
@@ -178,6 +179,8 @@ export default function DiscoverScreen() {
   const [error, setError] = useState<string | null>(null);
   const [noProfile, setNoProfile] = useState(false);
   const [query, setQuery] = useState('');
+  const [liveOpen, setLiveOpen] = useState(false);   // "Look for live jobs on Google" modal
+  const [liveQuery, setLiveQuery] = useState('');
   const [sort, setSort] = useState<'match' | 'recent'>('match');
   const [mode, setMode] = useState('');          // work_mode
   const [skill, setSkill] = useState('');
@@ -190,6 +193,7 @@ export default function DiscoverScreen() {
   const [facets, setFacets] = useState<DiscoverFacets | null>(null);
   const seq = useRef(0);
   const fieldInit = useRef(false);
+  const searchRef = useRef<TextInput | null>(null);   // focus target for the always-on Live-jobs pill
   // AI natural-language search (over the whole saved network)
   const [aiActive, setAiActive] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -316,6 +320,13 @@ export default function DiscoverScreen() {
     setAiActive(false); setAiParsed(null); setAiResults([]); setAiTotal(0); setQuery('');
     setXrayUrls([]); setWebPhase(''); setWebNote('');
   }, []);
+  // Always-on "Live jobs on Google": use whatever the user is searching for; if nothing yet, nudge them to type.
+  const openLive = useCallback(() => {
+    const q = (lastQueryRef.current || query).trim();
+    if (q) { setLiveQuery(q); setLiveOpen(true); }
+    else { searchRef.current?.focus(); }
+  }, [query]);
+
   const pickField = (f: string) => { const nf = f === field ? '' : f; setField(nf); setRoleCat(''); };
 
   const scopeLabel = field ? shortField(field) : 'All fields';
@@ -326,7 +337,7 @@ export default function DiscoverScreen() {
       <HeroCard facets={facets} total={total} />
       <View style={styles.searchWrap}>
         <Ionicons name="sparkles" size={16} color={T.blueDeep} />
-        <TextInput value={query} onChangeText={setQuery} placeholder="Describe the job you want — AI finds it" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" onSubmitEditing={() => runAiSearch(query)} />
+        <TextInput ref={searchRef} value={query} onChangeText={setQuery} placeholder="Describe the job you want — AI finds it" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" onSubmitEditing={() => runAiSearch(query)} />
         {query.length > 0 && <TouchableOpacity onPress={() => setQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Ionicons name="close-circle" size={17} color={T.textFaint} /></TouchableOpacity>}
         <TouchableOpacity onPress={() => runAiSearch(query)} disabled={!query.trim() || aiLoading} style={[styles.askAiBtn, (!query.trim() || aiLoading) && { opacity: 0.5 }]} activeOpacity={0.85}>
           {aiLoading ? <ActivityIndicator size="small" color="#fff" /> : <><Ionicons name="arrow-forward" size={13} color="#fff" /><Text style={styles.askAiText}>Ask AI</Text></>}
@@ -419,15 +430,20 @@ export default function DiscoverScreen() {
           data={aiActive ? aiResults : jobs} keyExtractor={(j, i) => j.id + ':' + i}
           renderItem={({ item }) => <JobCard job={item} onOpen={openJob} />}
           ListHeaderComponent={header}
-          contentContainerStyle={{ padding: 12, paddingBottom: 40 }}
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
           onEndReached={aiActive ? onAiEnd : onEnd} onEndReachedThreshold={0.6}
           removeClippedSubviews initialNumToRender={6} windowSize={9}
+          contentContainerStyle={{ padding: 12, paddingBottom: 96 }}
           ListEmptyComponent={aiActive
-            ? <View style={styles.empty}>{aiLoading ? <ActivityIndicator color={T.blue} /> : <><Ionicons name="search-outline" size={40} color={T.textFaint} /><Text style={styles.emptyText}>No matches in the network yet — try different words, or check back as coverage grows.</Text></>}</View>
+            ? <View style={styles.empty}>{aiLoading ? <ActivityIndicator color={T.blue} /> : <><Ionicons name="search-outline" size={40} color={T.textFaint} /><Text style={styles.emptyText}>No matches in the network yet — try different words, or tap “Live jobs on Google” below to search the live web.</Text></>}</View>
             : <View style={styles.empty}><Ionicons name={error ? 'cloud-offline-outline' : 'briefcase-outline'} size={40} color={T.textFaint} /><Text style={styles.emptyText}>{error || (query || activeCount || field ? 'No jobs match — try “All fields” or clear filters.' : 'No jobs yet — check back soon.')}</Text></View>}
-          ListFooterComponent={(loadingMore || aiLoadingMore) ? <ActivityIndicator color={T.blue} style={{ marginVertical: 18 }} /> : <View style={{ height: 8 }} />}
+          ListFooterComponent={
+            <View>
+              {(loadingMore || aiLoadingMore) ? <ActivityIndicator color={T.blue} style={{ marginVertical: 18 }} /> : null}
+              <View style={{ height: 20 }} />
+            </View>
+          }
         />
       )}
 
@@ -466,8 +482,21 @@ export default function DiscoverScreen() {
         </View>
       </Modal>
 
+      {/* Always-on Live-jobs pill — jump to a live web search anytime, even while ATS results are showing */}
+      {!loading && (
+        <View pointerEvents="box-none" style={styles.liveFabWrap}>
+          <TouchableOpacity activeOpacity={0.9} onPress={openLive} style={styles.liveFabShadow}>
+            <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.liveFab}>
+              <Ionicons name="globe-outline" size={17} color="#fff" />
+              <Text style={styles.liveFabText}>Live jobs on Google</Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <HelpAssistant />
       {xrayUrls.length > 0 && <SilentWebSearch key={xraySeq} urls={xrayUrls} onResult={onXrayResult} />}
+      <LiveJobSearch visible={liveOpen} query={liveQuery} onClose={() => setLiveOpen(false)} />
     </SafeAreaView>
   );
 }
@@ -591,4 +620,10 @@ const styles = StyleSheet.create({
   applySheet: { marginTop: 14, borderRadius: 14, overflow: 'hidden' },
   applySheetGrad: { height: 50, alignItems: 'center', justifyContent: 'center' },
   applySheetText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+
+  // always-on floating "Live jobs on Google" pill (bottom-center; clears the help FAB at bottom-right)
+  liveFabWrap: { position: 'absolute', left: 0, right: 0, bottom: Platform.OS === 'ios' ? 30 : 22, alignItems: 'center', zIndex: 998 },
+  liveFabShadow: { borderRadius: 100, shadowColor: '#2563EB', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.4, shadowRadius: 12, elevation: 8 },
+  liveFab: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, height: 50, borderRadius: 100 },
+  liveFabText: { color: '#fff', fontSize: 14.5, fontWeight: '800', letterSpacing: -0.2 },
 });
