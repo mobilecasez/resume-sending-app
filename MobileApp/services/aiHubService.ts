@@ -1083,6 +1083,12 @@ export async function removeSavedJob(url: string): Promise<void> {
   await axios.post(`${API_BASE_URL}/discover/saved-jobs/remove`, { url }, { headers, timeout: 15000 });
 }
 
+// Save a card directly (fallback when detail-fetch fails) so every selected job still lands in Saved Jobs.
+export async function saveCard(card: LiveJobCard): Promise<void> {
+  const headers = await getAuthHeader();
+  await axios.post(`${API_BASE_URL}/discover/save-card`, { card }, { headers, timeout: 15000 });
+}
+
 /** Filter chips for the feed. Pass `field` to get the role categories within that field. */
 export async function fetchDiscoverFacets(field?: string): Promise<DiscoverFacets> {
   const headers = await getAuthHeader();

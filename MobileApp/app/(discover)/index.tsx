@@ -22,6 +22,7 @@ import { logEvent } from '../../services/firebaseAnalytics';
 import HelpAssistant from '../../components/HelpAssistant';
 import SilentWebSearch from '../../components/SilentWebSearch';
 import LiveJobSearch from '../../components/LiveJobSearch';
+import SavedJobsList from '../../components/SavedJobsList';
 
 const T = {
   bg: '#E5EAF3', surface: '#FFFFFF', ink: '#0B0F22', textMuted: '#5B6B8A', textFaint: '#8896B0',
@@ -179,6 +180,8 @@ export default function DiscoverScreen() {
   const [error, setError] = useState<string | null>(null);
   const [noProfile, setNoProfile] = useState(false);
   const [query, setQuery] = useState('');
+  const [tab, setTab] = useState<'explore' | 'saved'>('explore');   // top segmented tabs
+  const [savedCount, setSavedCount] = useState(0);
   const [liveOpen, setLiveOpen] = useState(false);   // "Look for live jobs on Google" modal
   const [liveQuery, setLiveQuery] = useState('');
   const [sort, setSort] = useState<'match' | 'recent'>('match');
@@ -420,12 +423,22 @@ export default function DiscoverScreen() {
       <View style={styles.topBar}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}><Ionicons name="chevron-back" size={20} color={T.ink} /></TouchableOpacity>
         <Text style={styles.topTitle}>Explore Jobs</Text>
-        <TouchableOpacity onPress={() => router.push('/(discover)/saved')} style={styles.savedBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-          <Ionicons name="bookmark" size={18} color={T.blueDeep} />
-        </TouchableOpacity>
+        <View style={{ width: 38 }} />
       </View>
 
-      {loading ? (
+      {/* Top segmented tabs: Explore | Saved */}
+      <View style={styles.segWrap}>
+        {(['explore', 'saved'] as const).map((t) => (
+          <TouchableOpacity key={t} onPress={() => setTab(t)} style={[styles.segBtn, tab === t && styles.segBtnOn]} activeOpacity={0.85}>
+            <Ionicons name={t === 'explore' ? 'compass-outline' : 'bookmark-outline'} size={15} color={tab === t ? '#fff' : T.textMuted} />
+            <Text style={[styles.segText, tab === t && styles.segTextOn]}>{t === 'explore' ? 'Explore' : (savedCount > 0 ? `Saved · ${savedCount}` : 'Saved')}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {tab === 'saved' ? (
+        <SavedJobsList onCountChange={setSavedCount} />
+      ) : loading ? (
         <View style={styles.center}><ActivityIndicator color={T.blue} size="large" /></View>
       ) : (
         <FlatList
@@ -485,7 +498,7 @@ export default function DiscoverScreen() {
       </Modal>
 
       {/* Always-on Live-jobs pill — jump to a live web search anytime, even while ATS results are showing */}
-      {!loading && (
+      {tab === 'explore' && !loading && (
         <View pointerEvents="box-none" style={styles.liveFabWrap}>
           <TouchableOpacity activeOpacity={0.9} onPress={openLive} style={styles.liveFabShadow}>
             <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.liveFab}>
@@ -521,8 +534,12 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: T.bg },
   topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingTop: Platform.OS === 'android' ? 30 : 6, paddingBottom: 8 },
   backBtn: { width: 38, height: 38, borderRadius: 12, backgroundColor: T.surface, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: T.border },
-  savedBtn: { width: 38, height: 38, borderRadius: 12, backgroundColor: T.surface, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: T.border },
   topTitle: { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
+  segWrap: { flexDirection: 'row', marginHorizontal: 14, marginBottom: 8, backgroundColor: T.surface, borderRadius: 12, borderWidth: 1, borderColor: T.border, padding: 3, gap: 4 },
+  segBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, height: 38, borderRadius: 9 },
+  segBtnOn: { backgroundColor: T.blueDeep },
+  segText: { fontSize: 13, fontWeight: '800', color: T.textMuted },
+  segTextOn: { color: '#fff' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
   hero: { borderRadius: 26, overflow: 'hidden', padding: 20, marginBottom: 14, shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.18, shadowRadius: 24, elevation: 8 },

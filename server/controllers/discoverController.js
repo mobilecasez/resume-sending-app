@@ -727,6 +727,23 @@ async function savedJobs(req, res) {
     res.json({ success: true, jobs, count: jobs.length });
   } catch (e) { console.error('[discover] saved-jobs:', e.message); res.status(500).json({ error: 'Could not load saved jobs' }); }
 }
+// POST /discover/save-card {card} — save a job card directly (no fetch/extraction). Used as the graceful
+// fallback so EVERY selected live-search job lands in Saved Jobs even when its detail page can't be scraped.
+async function saveCard(req, res) {
+  try {
+    const c = req.body && req.body.card;
+    if (!c || !c.job_url || !c.title) return res.status(400).json({ error: 'Invalid card' });
+    const norm = jobCard({
+      job_url: c.job_url, title: c.title, employer_name: c.employer_name || c.company,
+      location: c.location, work_mode: c.work_mode, job_type: c.job_type, salary: c.salary,
+      experience: c.experience, responsibilities: c.responsibilities, skills: c.skills,
+    });
+    await saveUserJob(req.user && req.user.id, norm);
+    const region = detectCountry(norm.location) || 'Global';
+    firehose.saveJobs([{ job_url: norm.job_url, title: norm.title, employer_name: norm.employer_name, location: norm.location }], 'fetched', region).catch(() => {});
+    res.json({ success: true, job: norm });
+  } catch (e) { console.error('[discover] save-card:', e.message); res.status(500).json({ error: 'Could not save' }); }
+}
 // POST /discover/saved-jobs/remove {url} — unsave one.
 async function unsaveJob(req, res) {
   try {
@@ -738,4 +755,4 @@ async function unsaveJob(req, res) {
   } catch (e) { console.error('[discover] unsave:', e.message); res.status(500).json({ error: 'Could not remove' }); }
 }
 
-module.exports = { discoverJobs, discoverFacets, aiSearch, hydrateUrls, liveSearch, fetchDetail, savedJobs, unsaveJob };
+module.exports = { discoverJobs, discoverFacets, aiSearch, hydrateUrls, liveSearch, fetchDetail, savedJobs, unsaveJob, saveCard };

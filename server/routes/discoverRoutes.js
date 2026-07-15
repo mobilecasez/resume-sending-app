@@ -12,5 +12,6 @@ router.post('/discover/live-search', authenticateToken, ctrl.liveSearch);   // "
 router.post('/discover/fetch-detail', authenticateToken, ctrl.fetchDetail); // on-device page HTML → full job + store
 router.get('/discover/saved-jobs', authenticateToken, ctrl.savedJobs);      // the user's fetched/saved jobs
 router.post('/discover/saved-jobs/remove', authenticateToken, ctrl.unsaveJob);
+router.post('/discover/save-card', authenticateToken, ctrl.saveCard);       // fallback: save basic card w/o fetch
 
 module.exports = router;

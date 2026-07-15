@@ -12,7 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { liveSearchJobs, fetchJobDetail, type LiveJobCard } from '../services/aiHubService';
+import { liveSearchJobs, fetchJobDetail, saveCard, type LiveJobCard } from '../services/aiHubService';
 import { notifyLocal } from '../services/pushNotificationService';
 
 const { height: SH } = Dimensions.get('window');
@@ -142,9 +142,18 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
       pump();
       return;
     }
-    if (ok && job) { detailsRef.current = { ...detailsRef.current, [url]: job }; setDetails((d) => ({ ...d, [url]: job })); }
-    fstateRef.current = { ...fstateRef.current, [url]: ok ? 'done' : 'failed' };
-    setFstate((s) => ({ ...s, [url]: ok ? 'done' : 'failed' }));
+    let st: FetchState = 'failed';
+    if (ok && job) {
+      detailsRef.current = { ...detailsRef.current, [url]: job }; setDetails((d) => ({ ...d, [url]: job }));
+      st = 'done';
+    } else {
+      // Enrichment failed after the retry → still SAVE the basic card so EVERY selected job lands in
+      // Saved Jobs (title/company/location/link we already have from the search).
+      const basic = cardsRef.current.find((c) => c.job_url === url);
+      if (basic) { saveCard(basic).catch(() => {}); st = 'done'; }
+    }
+    fstateRef.current = { ...fstateRef.current, [url]: st };
+    setFstate((s) => ({ ...s, [url]: st }));
     saveProgress();
     pump();
   }
