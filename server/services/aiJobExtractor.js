@@ -436,6 +436,102 @@ function extractJsonLdJobs(html, baseUrl) {
   return dedup;
 }
 
+// ── Rich SINGLE-detail extraction (for the live-search "fetch details") ───────────
+// The listing prompt conserves tokens (short bullets, no description) and the JSON-LD mapper leaves
+// skills/responsibilities empty. For a single job the user explicitly fetched we want EVERYTHING — so:
+// pull the authoritative JSON-LD fields, and feed the rich JSON-LD `description` (the fullest source,
+// which cleanHtmlForLLM was throwing away with <script>) PLUS the cleaned body to a comprehensive,
+// translate-to-English single-job prompt.
+function _htmlToText(s) {
+  return String(s || '')
+    .replace(/<\s*(br|\/p|\/li|\/div|\/h[1-6]|\/tr)\s*>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '• ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;|&rsquo;|&lsquo;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n) => { try { return String.fromCharCode(+n); } catch { return ' '; } })
+    .replace(/&[a-z]+;/gi, ' ')
+    .replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
+}
+const _wmMap = (s) => { const v = String(s || '').toLowerCase(); if (/remote|telework|home\s?office/.test(v)) return 'Remote'; if (/hybrid/.test(v)) return 'Hybrid'; if (/office|on-?site|vor ort/.test(v)) return 'On-site'; return null; };
+
+async function llmExtractDetailOne(text, sourceUrl, employerHint) {
+  const model = geminiModel();
+  if (!model || !text) return null;
+  const prompt = `You are a meticulous, multilingual job-posting extraction engine. From the SINGLE job posting below, produce ONE complete job record in English. Translate any non-English content into professional English. Be COMPREHENSIVE — capture EVERY responsibility, task, and requirement as its own clear bullet (full phrases are fine — do NOT compress to one-word tags, and do NOT drop any). Never invent; use only what is in the text.
+
+INPUT
+• Employer (hint): ${employerHint || '(infer from the text)'}
+• Source URL: ${sourceUrl}
+
+Return ONLY one JSON object (no markdown, no fences), starting with '{' and ending with '}':
+{
+  "Job Title": "English title",
+  "Employer": "company name or N/A",
+  "Location": "City, Region or Country or N/A",
+  "Employment Type": "Full-time" | "Part-time" | "Contract" | "Internship" | "Temporary" | "N/A",
+  "Work Mode": "Remote" | "Hybrid" | "Office" | "N/A",
+  "Salary": "salary text or N/A",
+  "Experience": "e.g. '3+ years' or N/A",
+  "Summary": "2-3 sentence plain-English overview of the role",
+  "Skills": ["each required skill / technology / qualification as a bullet"],
+  "Responsibilities": ["each responsibility, task, and requirement as a clear English bullet — be exhaustive"]
+}
+
+JOB POSTING TEXT:
+"""${text}"""`;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const res = await model.generateContent(prompt);
+      const t = String(res.response.text() || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '');
+      const a = t.indexOf('{'), b = t.lastIndexOf('}');
+      return JSON.parse(a >= 0 && b > a ? t.slice(a, b + 1) : t);
+    } catch (e) {
+      const transient = /\b429\b|rate|quota|overload|unavailable|\b50[03]\b|timeout|deadline|fetch failed|ECONNRESET|ETIMEDOUT/i.test(String(e && e.message));
+      if (i < 2 && transient) { await new Promise((r) => setTimeout(r, 900 * Math.pow(2, i))); continue; }
+      return null;
+    }
+  }
+  return null;
+}
+
+async function richDetailFromHtml(html, sourceUrl, employerHint) {
+  if (!html) return null;
+  let ld = null, ldDesc = '';
+  try {
+    const posts = jsonLdJobPostings(html);
+    if (posts.length) {
+      const mapped = extractJsonLdJobs(html, sourceUrl);
+      ld = mapped.find((j) => j.title) || null;
+      const p = posts.find((x) => x.description) || posts[0];
+      ldDesc = _htmlToText(p && p.description);
+    }
+  } catch (_) {}
+  const body = cleanHtmlForLLM(html);
+  const input = ((ldDesc && ldDesc.length > 80) ? ('FULL JOB DESCRIPTION:\n' + ldDesc + '\n\n---\nPAGE CONTEXT:\n') : '') + body;
+  if (!input.trim()) return null;
+  const rich = await llmExtractDetailOne(input.slice(0, 30000), sourceUrl, employerHint || (ld && ld.employer_name) || '');
+  if (!rich) return null;
+  const na = (v) => { const s = String(v == null ? '' : v).trim(); return (!s || /^n\/?a$/i.test(s)) ? '' : s; };
+  const pick = (a, b) => na(a) || na(b) || '';
+  const arr = (v) => Array.isArray(v) ? [...new Set(v.map((x) => String(x).trim()).filter((x) => x && !/^n\/?a$/i.test(x)))] : [];
+  const title = pick(ld && ld.title, rich['Job Title']);
+  if (!title) return null;
+  return {
+    job_url: (ld && ld.job_url && !/#role-/.test(ld.job_url)) ? ld.job_url : sourceUrl,
+    title,
+    employer_name: pick(ld && ld.employer_name, rich.Employer) || employerHint || '',
+    location: pick(ld && (ld.location !== 'Not specified' ? ld.location : ''), rich.Location),
+    job_type: pick(ld && ld.job_type, rich['Employment Type']),
+    work_mode: _wmMap(pick(ld && ld.work_mode, rich['Work Mode'])),
+    salary: pick(ld && ld.salary, rich.Salary),
+    experience: na(rich.Experience),
+    summary: na(rich.Summary),
+    skills: arr(rich.Skills).slice(0, 20),
+    responsibilities: arr(rich.Responsibilities).slice(0, 25),
+    contacts: [],
+  };
+}
+
 // ── Find the real jobs page (static-first), then extract ──────────────────────
 function careersCandidates(inputUrl) {
   let origin, root;
@@ -929,4 +1025,4 @@ async function detectAtsOnCareers(inputUrl) {
   return null;
 }
 
-module.exports = { findAndExtract, detectAtsOnCareers, cleanHtmlForLLM, llmExtract, toInternalJobs, extractJsonLdJobs };
+module.exports = { findAndExtract, detectAtsOnCareers, cleanHtmlForLLM, llmExtract, toInternalJobs, extractJsonLdJobs, richDetailFromHtml };

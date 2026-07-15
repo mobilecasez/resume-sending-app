@@ -593,7 +593,7 @@ function jobCard(j) {
   return {
     id: j.job_url, job_url: j.job_url, title: j.title, company: j.employer_name, employer_name: j.employer_name,
     location: j.location || null, work_mode: j.work_mode || null, job_type: j.job_type || null,
-    salary: j.salary || null, experience: j.experience || null,
+    salary: j.salary || null, experience: j.experience || null, summary: j.summary || null,
     responsibilities: Array.isArray(j.responsibilities) ? j.responsibilities : [],
     skills: Array.isArray(j.skills) ? j.skills : [], source: hostOf(j.job_url),
     highlights: Array.isArray(j.responsibilities) ? j.responsibilities.slice(0, 3) : [],
@@ -667,13 +667,19 @@ async function fetchDetail(req, res) {
     if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Missing/invalid url' });
     let job = null;
     if (html && html.length > 200) {
-      try {
-        const cleaned = aiJobExtractor.cleanHtmlForLLM(html);
-        const data = await aiJobExtractor.llmExtract(cleaned, url, employerHint);
-        let origin = ''; try { origin = new URL(url).origin; } catch {}
-        const jobs = aiJobExtractor.toInternalJobs(data, url, origin, html) || [];
-        job = jobs.find((j) => j && j.title) || null;
-      } catch (e) { console.error('[discover] fetch-detail extract:', e.message); }
+      // Rich single-detail extraction: authoritative JSON-LD fields + the full JSON-LD description
+      // (was being discarded) fed to a comprehensive translate-to-English prompt → full resp/skills.
+      try { job = await aiJobExtractor.richDetailFromHtml(html, url, employerHint); }
+      catch (e) { console.error('[discover] fetch-detail rich:', e.message); }
+      if (!job) {   // fallback to the listing extractor
+        try {
+          const cleaned = aiJobExtractor.cleanHtmlForLLM(html);
+          const data = await aiJobExtractor.llmExtract(cleaned, url, employerHint);
+          let origin = ''; try { origin = new URL(url).origin; } catch {}
+          const jobs = aiJobExtractor.toInternalJobs(data, url, origin, html) || [];
+          job = jobs.find((j) => j && j.title) || null;
+        } catch (e) { console.error('[discover] fetch-detail extract:', e.message); }
+      }
     }
     if (!job) {   // fallback for non-bot sites (no on-device HTML)
       try { const r = await ats.detectAndFetchAts(url); if (r && Array.isArray(r.jobs) && r.jobs.length) job = r.jobs[0]; } catch (_) {}
