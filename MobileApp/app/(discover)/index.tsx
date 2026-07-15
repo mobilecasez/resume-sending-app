@@ -427,7 +427,9 @@ export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
     </View>
   ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, webPhase, webNote, runAiSearch, clearAiSearch, openLive]);
 
-  const feedContent = loading ? (
+  // Only blank to a spinner on the FIRST load (no data yet). A re-load triggered by facets setting the
+  // field must NOT clear the screen — that was the "shows page → blank → reloads" flicker on the tab.
+  const feedContent = (loading && jobs.length === 0 && !aiActive) ? (
     <View style={styles.center}><ActivityIndicator color={T.blue} size="large" /></View>
   ) : (
     <FlatList

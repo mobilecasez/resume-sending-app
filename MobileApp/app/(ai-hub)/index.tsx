@@ -1418,9 +1418,18 @@ export default function AIHubScreen() {
   // Job cards always sort best-match-first (see the render). No sort toggle/prompt:
   // whenever match %s exist, the list shows highest → lowest automatically.
 
-  // Relay: if job-detail set aiHub_navigate_home, pop this screen too → reveals App.js HomeScreen
+  // Relay: if job-detail set aiHub_navigate_home, pop this screen too → reveals App.js HomeScreen.
+  // ⚠️ The Home tab defensively sets this flag on every mount, so on the Hub's FIRST focus (opening
+  // Jobs from the menu) it would bounce straight back Home — the flicker. Skip + clear on first focus;
+  // only honor the relay on LATER focuses (returning from job-detail, which sets it intentionally).
+  const relayFirstFocus = useRef(true);
   useFocusEffect(
     useCallback(() => {
+      if (relayFirstFocus.current) {
+        relayFirstFocus.current = false;
+        AsyncStorage.removeItem('aiHub_navigate_home').catch(() => {});
+        return;
+      }
       AsyncStorage.getItem('aiHub_navigate_home').then(flag => {
         if (flag === 'true') {
           AsyncStorage.removeItem('aiHub_navigate_home');

@@ -63,6 +63,7 @@ function SavedCard({ job, onOpen, onRemove }: { job: SavedJobCard; onOpen: (j: S
         <Meta icon="business-outline" color={META.workMode} text={job.work_mode} />
         <Meta icon="briefcase-outline" color={META.jobType} text={job.job_type} />
       </View>
+      {!!job.summary && <Text style={styles.summary} numberOfLines={3}>{job.summary}</Text>}
       {skills.length > 0 && (
         <View style={styles.skillRow}>
           {skills.slice(0, 5).map((s, i) => <View key={i} style={styles.skillChip}><Text style={styles.skillText} numberOfLines={1}>{s}</Text></View>)}
@@ -137,6 +138,7 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', gap: 6, marginTop: 13, flexWrap: 'wrap' },
   metaChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: T.bg, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5, maxWidth: 240 },
   metaText: { fontSize: 11.5, color: T.textMuted, fontWeight: '600' },
+  summary: { fontSize: 12.5, color: T.textMuted, lineHeight: 18, marginTop: 10 },
   skillRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap', marginTop: 12 },
   skillChip: { backgroundColor: 'rgba(79,141,255,0.08)', borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5, maxWidth: 220 },
   skillText: { fontSize: 11, color: T.blueDeep, fontWeight: '700' },
