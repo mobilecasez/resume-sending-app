@@ -683,8 +683,59 @@ async function fetchDetail(req, res) {
     if (!job.job_url) job.job_url = url;
     const region = detectCountry(job.location) || 'Global';
     firehose.saveJobs([job], 'fetched', region).catch(() => {});
-    res.json({ success: true, job: jobCard(job) });
+    const card = jobCard(job);
+    saveUserJob(req.user && req.user.id, card).catch(() => {});   // add to the user's Saved Jobs
+    res.json({ success: true, job: card });
   } catch (e) { console.error('[discover] fetch-detail:', e.message); res.status(500).json({ error: 'Fetch failed' }); }
 }
 
-module.exports = { discoverJobs, discoverFacets, aiSearch, hydrateUrls, liveSearch, fetchDetail };
+// ─── Saved Jobs: per-user list of jobs fetched via live search ──────────────────
+let _savedJobsReady = false;
+async function ensureSavedJobsTable() {
+  if (_savedJobsReady) return;
+  await dbConfig.run(`
+    CREATE TABLE IF NOT EXISTS user_saved_jobs (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      job_url TEXT NOT NULL,
+      card JSONB NOT NULL,
+      saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (user_id, job_url)
+    )
+  `);
+  try { await dbConfig.run(`CREATE INDEX IF NOT EXISTS idx_user_saved_jobs_user ON user_saved_jobs(user_id, saved_at DESC)`); } catch (_) {}
+  _savedJobsReady = true;
+}
+async function saveUserJob(userId, card) {
+  if (!userId || !card || !card.job_url) return;
+  await ensureSavedJobsTable();
+  await dbConfig.run(
+    `INSERT INTO user_saved_jobs (user_id, job_url, card) VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, job_url) DO UPDATE SET card = EXCLUDED.card, saved_at = CURRENT_TIMESTAMP`,
+    [userId, card.job_url, JSON.stringify(card)]
+  );
+}
+// GET /discover/saved-jobs — the user's fetched jobs, newest first.
+async function savedJobs(req, res) {
+  try {
+    await ensureSavedJobsTable();
+    const rows = await dbConfig.query(
+      `SELECT card, saved_at FROM user_saved_jobs WHERE user_id = $1 ORDER BY saved_at DESC LIMIT 500`,
+      [req.user.id]
+    );
+    const jobs = (rows || []).map((r) => { const c = typeof r.card === 'string' ? JSON.parse(r.card) : r.card; return { ...c, saved_at: r.saved_at }; });
+    res.json({ success: true, jobs, count: jobs.length });
+  } catch (e) { console.error('[discover] saved-jobs:', e.message); res.status(500).json({ error: 'Could not load saved jobs' }); }
+}
+// POST /discover/saved-jobs/remove {url} — unsave one.
+async function unsaveJob(req, res) {
+  try {
+    const url = String((req.body && req.body.url) || '').trim();
+    if (!url) return res.status(400).json({ error: 'Missing url' });
+    await ensureSavedJobsTable();
+    await dbConfig.run(`DELETE FROM user_saved_jobs WHERE user_id = $1 AND job_url = $2`, [req.user.id, url]);
+    res.json({ success: true });
+  } catch (e) { console.error('[discover] unsave:', e.message); res.status(500).json({ error: 'Could not remove' }); }
+}
+
+module.exports = { discoverJobs, discoverFacets, aiSearch, hydrateUrls, liveSearch, fetchDetail, savedJobs, unsaveJob };

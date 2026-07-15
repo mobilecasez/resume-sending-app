@@ -1069,6 +1069,20 @@ export async function fetchJobDetail(url: string, html: string, company?: string
   return data?.success && data.job ? (data.job as LiveJobCard) : null;
 }
 
+export type SavedJobCard = LiveJobCard & { saved_at?: string };
+
+// The user's Saved Jobs — every posting fetched via live search is stored server-side.
+export async function fetchSavedJobs(): Promise<{ jobs: SavedJobCard[]; count: number }> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE_URL}/discover/saved-jobs`, { headers, timeout: 20000 });
+  return { jobs: (data?.jobs ?? []) as SavedJobCard[], count: data?.count ?? 0 };
+}
+
+export async function removeSavedJob(url: string): Promise<void> {
+  const headers = await getAuthHeader();
+  await axios.post(`${API_BASE_URL}/discover/saved-jobs/remove`, { url }, { headers, timeout: 15000 });
+}
+
 /** Filter chips for the feed. Pass `field` to get the role categories within that field. */
 export async function fetchDiscoverFacets(field?: string): Promise<DiscoverFacets> {
   const headers = await getAuthHeader();

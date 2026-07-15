@@ -18,11 +18,16 @@ import { notifyLocal } from '../services/pushNotificationService';
 const { height: SH } = Dimensions.get('window');
 type FetchState = 'idle' | 'fetching' | 'done' | 'failed';
 
-// Grab the fully-rendered page HTML after giving a SPA a moment to hydrate. Runs on the user's device/IP.
+// Grab the fully-rendered page HTML once the page has actually rendered (SPAs like arbeitsagentur/get-in-it
+// load their content via JS). Polls until readyState=complete AND the body has real text, up to a 9s cap —
+// so fast pages return quickly and slow SPAs still get captured (a fixed short delay was missing them).
 const GRAB_JS = `(function(){
+  var START = Date.now(), MAXW = 9000;
   function grab(){ try { window.ReactNativeWebView.postMessage(JSON.stringify({ __cvd:true, url: location.href, html: (document.documentElement.outerHTML||'').slice(0,220000) })); } catch(e){} }
   var blocked = /captcha|unusual traffic|are you a robot|verify you are human/i.test(document.body ? document.body.innerText : '');
-  setTimeout(grab, blocked ? 400 : 1800);
+  if (blocked) { setTimeout(grab, 400); return; }
+  function ready(){ try { var t = (document.body && document.body.innerText) || ''; return document.readyState === 'complete' && t.replace(/\\s+/g,' ').trim().length > 500; } catch(e){ return false; } }
+  (function wait(){ if (ready() || Date.now()-START > MAXW) setTimeout(grab, 250); else setTimeout(wait, 300); })();
 })(); true;`;
 
 const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
@@ -46,6 +51,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   const fetchingRef = useRef(false);
   const queryRef = useRef(query);
   const batchRef = useRef<string[]>([]);   // urls in the current fetch batch (for the completion notification)
+  const retryRef = useRef<Record<string, number>>({});   // per-url auto-retry count (retry once before failing)
 
   const pulse = useRef(new Animated.Value(0)).current;
 
@@ -118,7 +124,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
       const batch = batchRef.current;
       if (batch.length) {
         const done = batch.filter((u) => fstateRef.current[u] === 'done').length;
-        notifyLocal('Live jobs fetched', `${done} of ${batch.length} job${batch.length > 1 ? 's' : ''} saved to your feed.`, { type: 'live_fetch_done', query: queryRef.current });
+        notifyLocal('Live jobs fetched', `${done} of ${batch.length} job${batch.length > 1 ? 's' : ''} saved — find them in Saved Jobs.`, { type: 'live_fetch_done', query: queryRef.current });
         batchRef.current = [];
       }
     }
@@ -128,6 +134,14 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     if (!activeRef.current.has(url)) return;   // already handled
     if (timersRef.current[url]) { clearTimeout(timersRef.current[url]); delete timersRef.current[url]; }
     activeRef.current.delete(url);
+    // One automatic retry before giving up (a fresh WebView — key includes the retry count — reloads the
+    // page; handles SPA/timing misses that failed the first pass).
+    if (!ok && (retryRef.current[url] || 0) < 1) {
+      retryRef.current[url] = (retryRef.current[url] || 0) + 1;
+      queueRef.current.unshift(url);
+      pump();
+      return;
+    }
     if (ok && job) { detailsRef.current = { ...detailsRef.current, [url]: job }; setDetails((d) => ({ ...d, [url]: job })); }
     fstateRef.current = { ...fstateRef.current, [url]: ok ? 'done' : 'failed' };
     setFstate((s) => ({ ...s, [url]: ok ? 'done' : 'failed' }));
@@ -294,7 +308,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
           {/* hidden on-device fetchers — up to CONCURRENCY pages at once, on the user's IP.
               Keyed by webGen so an AppState resume remounts them (iOS pauses background WebViews). */}
           {activeUrls.map((url) => (
-            <View key={webGen + '|' + url} style={styles.hiddenWeb} pointerEvents="none">
+            <View key={webGen + '|' + (retryRef.current[url] || 0) + '|' + url} style={styles.hiddenWeb} pointerEvents="none">
               <WebView
                 source={{ uri: url }}
                 injectedJavaScript={GRAB_JS}

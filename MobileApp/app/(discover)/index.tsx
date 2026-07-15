@@ -420,7 +420,9 @@ export default function DiscoverScreen() {
       <View style={styles.topBar}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}><Ionicons name="chevron-back" size={20} color={T.ink} /></TouchableOpacity>
         <Text style={styles.topTitle}>Explore Jobs</Text>
-        <View style={{ width: 38 }} />
+        <TouchableOpacity onPress={() => router.push('/(discover)/saved')} style={styles.savedBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <Ionicons name="bookmark" size={18} color={T.blueDeep} />
+        </TouchableOpacity>
       </View>
 
       {loading ? (
@@ -519,6 +521,7 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: T.bg },
   topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingTop: Platform.OS === 'android' ? 30 : 6, paddingBottom: 8 },
   backBtn: { width: 38, height: 38, borderRadius: 12, backgroundColor: T.surface, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: T.border },
+  savedBtn: { width: 38, height: 38, borderRadius: 12, backgroundColor: T.surface, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: T.border },
   topTitle: { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
