@@ -1042,10 +1042,18 @@ export async function hydrateJobUrls(urls: string[], query?: string): Promise<{ 
 
 /** AI natural-language search over the saved network: breaks the sentence into role/location/etc,
  *  then returns matched jobs ranked by résumé fit. A pasted employer URL comes back as urlDetected. */
-export async function aiSearchJobs(query: string, offset = 0, limit = 20): Promise<AiSearchResponse> {
+export async function aiSearchJobs(query: string, offset = 0, limit = 20, refresh = false): Promise<AiSearchResponse & { insufficient?: boolean; creditsRequired?: number; creditsRemaining?: number }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.post(`${API_BASE_URL}/discover/ai-search`, { query, offset, limit }, { headers, timeout: 30000 });
-  return data;
+  try {
+    // `refresh` = an internal re-run (e.g. after silent web hydration) → backend skips the credit charge.
+    const { data } = await axios.post(`${API_BASE_URL}/discover/ai-search`, { query, offset, limit, refresh }, { headers, timeout: 30000 });
+    return data;
+  } catch (e: any) {
+    if (axios.isAxiosError(e) && e.response?.status === 402) {
+      return { insufficient: true, creditsRequired: e.response.data?.creditsRequired, creditsRemaining: e.response.data?.creditsRemaining, jobs: [], total: 0, parsed: null, hasMore: false } as any;
+    }
+    throw e;
+  }
 }
 
 // ── "Look for live jobs on Google" — user-triggered live search → our-style cards ─────────────
@@ -1066,8 +1074,17 @@ export async function liveSearchJobs(query: string): Promise<{ parsed: AiSearchP
 /** Fetch ONE job's full details from the on-device-scraped page HTML → stores it → returns a rich card. */
 export async function fetchJobDetail(url: string, html: string, company?: string): Promise<LiveJobCard | null> {
   const headers = await getAuthHeader();
-  const { data } = await axios.post(`${API_BASE_URL}/discover/fetch-detail`, { url, html, company: company || '' }, { headers, timeout: 45000 });
-  return data?.success && data.job ? (data.job as LiveJobCard) : null;
+  try {
+    const { data } = await axios.post(`${API_BASE_URL}/discover/fetch-detail`, { url, html, company: company || '' }, { headers, timeout: 45000 });
+    return data?.success && data.job ? (data.job as LiveJobCard) : null;
+  } catch (e: any) {
+    if (axios.isAxiosError(e) && e.response?.status === 402) {
+      const err: any = new Error('insufficient_credits');
+      err.insufficient = true; err.creditsRemaining = e.response.data?.creditsRemaining;
+      throw err;
+    }
+    throw e;
+  }
 }
 
 export type SavedJobCard = LiveJobCard & { saved_at?: string };

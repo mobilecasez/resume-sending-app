@@ -18,6 +18,7 @@ const ats = require('../utils/atsDiscovery');
 const firehose = require('../services/globalJobFirehose');
 const aiHub = require('./aiHubController');   // grounded live-search fallback (groundedDiscover)
 const aiJobExtractor = require('../services/aiJobExtractor');   // fetch-detail: on-device HTML → structured job
+const { chargeCredits, getEventCost } = require('../services/eventCosts');   // credit metering for AI search + live fetch
 
 const BASE_CAP = 1500;         // diversify + match-rank the freshest N candidates (bounds correlated-subquery cost)
 const DEFAULT_MIN_MATCH = 10;  // in the résumé-scoped default view, hide sub-10% noise
@@ -397,6 +398,14 @@ async function aiSearch(req, res) {
     const url = extractUrl(rawQuery);
     if (url) return res.json({ success: true, urlDetected: true, url, parsed: null, jobs: [], total: 0, offset, limit, hasMore: false });
 
+    // AI search costs credits — charge on a NEW query only (offset 0, not a refresh/pagination). Deduct + block.
+    const aiUserId = req.user && req.user.id;
+    const aiRefresh = !!(req.body && req.body.refresh);
+    if (offset === 0 && !aiRefresh && aiUserId) {
+      const charge = await chargeCredits(aiUserId, 'ai_search');
+      if (charge.insufficient) return res.status(402).json({ error: `Insufficient credits — AI search needs ${charge.cost}.`, creditsRequired: charge.cost, creditsRemaining: charge.remaining });
+    }
+
     const resume = await getResume(req.user && req.user.id);
     const userSkills = skillsOf(resume);
     const noProfile = userSkills.length === 0;
@@ -680,13 +689,22 @@ async function fetchDetail(req, res) {
     const html = (req.body && req.body.html) || '';
     const employerHint = String((req.body && req.body.company) || '').trim();
     if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Missing/invalid url' });
+    // Live fetch costs credits — block up front if the user can't afford it; charge once on SUCCESS
+    // (a failed extraction is not charged, so the mobile's auto-retry can't double-bill).
+    const fetchUserId = req.user && req.user.id;
+    const fetchCost = await getEventCost('live_fetch');
+    if (fetchUserId && fetchCost > 0) {
+      const bal = await dbConfig.get('SELECT credits_remaining FROM user_credits WHERE user_id = $1', [fetchUserId]);
+      if (!bal || (bal.credits_remaining || 0) < fetchCost) return res.status(402).json({ error: `Insufficient credits — fetching a job needs ${fetchCost}.`, creditsRequired: fetchCost, creditsRemaining: bal ? bal.credits_remaining : 0 });
+    }
     // CACHE: a job's details rarely change — reuse a prior good extraction (any user) and skip the LLM
     // entirely. Saves the ~$0.0015 extraction on every repeat fetch of the same posting.
     const cacheKey = 'fetchdetail:v2:' + normUrl(url);
     try {
       const hit = await aiHub.groundingCacheGet(cacheKey);
       if (hit && hit.title && Array.isArray(hit.responsibilities) && hit.responsibilities.length >= 3) {
-        saveUserJob(req.user && req.user.id, hit).catch(() => {});
+        if (fetchUserId && fetchCost > 0) await chargeCredits(fetchUserId, 'live_fetch');
+        saveUserJob(fetchUserId, hit).catch(() => {});
         return res.json({ success: true, job: hit, cached: true });
       }
     } catch (_) {}
@@ -715,9 +733,10 @@ async function fetchDetail(req, res) {
     const region = detectCountry(job.location) || 'Global';
     firehose.saveJobs([job], 'fetched', region).catch(() => {});
     const card = jobCard(job);
+    if (fetchUserId && fetchCost > 0) await chargeCredits(fetchUserId, 'live_fetch');   // charge 1 on success
     // cache a GOOD extraction for reuse (7d); skip caching thin ones so a later fetch can do better.
     if (Array.isArray(card.responsibilities) && card.responsibilities.length >= 3) aiHub.groundingCacheSet(cacheKey, 'fetchdetail', card, 7 * 24 * 3600).catch(() => {});
-    saveUserJob(req.user && req.user.id, card).catch(() => {});   // add to the user's Saved Jobs
+    saveUserJob(fetchUserId, card).catch(() => {});   // add to the user's Saved Jobs
     res.json({ success: true, job: card });
   } catch (e) { console.error('[discover] fetch-detail:', e.message); res.status(500).json({ error: 'Fetch failed' }); }
 }

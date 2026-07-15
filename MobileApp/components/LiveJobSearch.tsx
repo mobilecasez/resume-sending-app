@@ -6,8 +6,9 @@
 // backend for AI extraction, STORED, and shown back as a full our-style job card.
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  Modal, View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, Animated, Easing, Dimensions, AppState,
+  Modal, View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, Animated, Easing, Dimensions, AppState, Alert,
 } from 'react-native';
+import { useEventCosts } from '../hooks/useEventCosts';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
@@ -34,6 +35,8 @@ const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleW
 
 export default function LiveJobSearch({ visible, query, onClose }: { visible: boolean; query: string; onClose: () => void }) {
   const CONCURRENCY = 5;   // fetch up to 5 selected postings at once (was one-at-a-time)
+  const { costOf } = useEventCosts();
+  const fetchCost = costOf('live_fetch') ?? 0;
   const [phase, setPhase] = useState<'searching' | 'results' | 'error'>('searching');
   const [cards, setCards] = useState<LiveJobCard[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -167,6 +170,14 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     setFetchingBoth(true);
     pump();
   }
+  // Out of credits mid-batch → stop everything and tell the user.
+  function stopForCredits(remaining?: number) {
+    queueRef.current = [];
+    Object.values(timersRef.current).forEach(clearTimeout); timersRef.current = {};
+    activeRef.current = new Set(); setActiveUrls([]);
+    setFetchingBoth(false);
+    Alert.alert('Not enough credits', `Fetching a job costs ${fetchCost || 1} credit${(fetchCost || 1) === 1 ? '' : 's'} each. You have ${remaining ?? 0}. Top up in Account → Credits.`);
+  }
   async function onGrab(sourceUrl: string, raw: string) {
     let payload: any = null; try { payload = JSON.parse(raw); } catch { return; }
     if (!payload || !payload.__cvd) return;
@@ -176,7 +187,10 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     try {
       const job = await fetchJobDetail(sourceUrl, String(payload.html || ''), card?.company || card?.employer_name || '');
       finish(sourceUrl, !!job, job || null);
-    } catch { finish(sourceUrl, false, null); }
+    } catch (e: any) {
+      if (e && e.insufficient) { stopForCredits(e.creditsRemaining); return; }
+      finish(sourceUrl, false, null);
+    }
   }
 
   // Keep fetching alive across app minimize/restore: iOS pauses background WebViews & timers, so on return
@@ -310,7 +324,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
                   <LinearGradient colors={(!selCount || fetching) ? ['#CBD5E1', '#CBD5E1'] : ['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.fetchBtn}>
                     {fetching
                       ? <><ActivityIndicator size="small" color="#fff" /><Text style={styles.fetchTx}>Fetching… {doneCount ? `(${doneCount} done)` : ''}</Text></>
-                      : <><Ionicons name="download-outline" size={18} color="#fff" /><Text style={styles.fetchTx}>{selCount ? `Fetch details (${selCount})` : 'Select jobs to fetch'}</Text></>}
+                      : <><Ionicons name="download-outline" size={18} color="#fff" /><Text style={styles.fetchTx}>{selCount ? `Fetch details (${selCount})${fetchCost > 0 ? ` · ${selCount * fetchCost} cr` : ''}` : 'Select jobs to fetch'}</Text></>}
                   </LinearGradient>
                 </TouchableOpacity>
               </View>

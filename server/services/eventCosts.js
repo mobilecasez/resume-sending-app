@@ -20,6 +20,8 @@ const CATALOG = [
   { key: 'ai_autofill',           label: 'AI auto-fill',              credits: 0, category: 'free', sort: 9,  description: 'Auto-fill an application form with AI. Free today.' },
   { key: 'translate_job',         label: 'Translate to English',      credits: 0, category: 'free', sort: 10, description: 'Translate a job posting to English. Free today.' },
   { key: 'ai_email_body',         label: 'AI email body',             credits: 0, category: 'free', sort: 11, description: 'Write the outreach email body with AI. Free today.' },
+  { key: 'ai_search',             label: 'AI job search',             credits: 5, category: 'paid', sort: 12, description: 'Natural-language AI search across the network + live web.' },
+  { key: 'live_fetch',            label: 'Fetch live job',            credits: 1, category: 'paid', sort: 13, description: 'Fetch one live job posting from the web into your feed.' },
 ];
 
 const DEFAULT = {};

@@ -21,6 +21,7 @@ import {
 import { logEvent } from '../../services/firebaseAnalytics';
 import HelpAssistant from '../../components/HelpAssistant';
 import SilentWebSearch from '../../components/SilentWebSearch';
+import { useEventCosts } from '../../hooks/useEventCosts';
 import LiveJobSearch from '../../components/LiveJobSearch';
 import SavedJobsList from '../../components/SavedJobsList';
 
@@ -174,6 +175,8 @@ function FChip({ label, on, onPress }: { label: string; on: boolean; onPress: ()
 // sub-tabs) so the Job Hub can mount it as its "Search" tab; the standalone /(discover) route wraps it.
 export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
+  const { costOf } = useEventCosts();
+  const aiCost = costOf('ai_search');
   const [jobs, setJobs] = useState<DiscoverJob[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -266,6 +269,12 @@ export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
     setAiLoading(true); setAiActive(true); setWebNote(''); setWebPhase('');
     try {
       const data = await aiSearchJobs(query, 0, 30);
+      if ((data as any).insufficient) {
+        setAiActive(false);
+        const need = (data as any).creditsRequired ?? aiCost ?? 5;
+        Alert.alert('Not enough credits', `AI search needs ${need} credit${need === 1 ? '' : 's'}. You have ${(data as any).creditsRemaining ?? 0}. Top up in Account → Credits.`);
+        return;
+      }
       if (data.urlDetected && data.url) {
         setAiActive(false);
         Alert.alert('Employer link detected', 'Add this link in Job Hub to research every open role at this employer.', [{ text: 'OK' }]);
@@ -300,8 +309,8 @@ export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
     try {
       const q = lastQueryRef.current;
       const h = await hydrateJobUrls(urls, q).catch(() => ({ ingested: 0 } as any));
-      // Re-run the network search — it now includes the freshly-ingested jobs.
-      const fresh = await aiSearchJobs(q, 0, 30);
+      // Re-run the network search — it now includes the freshly-ingested jobs. refresh=true → no re-charge.
+      const fresh = await aiSearchJobs(q, 0, 30, true);
       setAiResults(fresh.jobs || []); setAiTotal(fresh.total || 0); setAiHasMore(!!fresh.hasMore);
       setWebNote(h && h.ingested > 0 ? 'Searched the live web — results updated' : '');
     } catch { /* keep the network results */ }
@@ -345,7 +354,7 @@ export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
         <TextInput ref={searchRef} value={query} onChangeText={setQuery} placeholder="Describe the job you want — AI finds it" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" onSubmitEditing={() => runAiSearch(query)} />
         {query.length > 0 && <TouchableOpacity onPress={() => setQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Ionicons name="close-circle" size={17} color={T.textFaint} /></TouchableOpacity>}
         <TouchableOpacity onPress={() => runAiSearch(query)} disabled={!query.trim() || aiLoading} style={[styles.askAiBtn, (!query.trim() || aiLoading) && { opacity: 0.5 }]} activeOpacity={0.85}>
-          {aiLoading ? <ActivityIndicator size="small" color="#fff" /> : <><Ionicons name="arrow-forward" size={13} color="#fff" /><Text style={styles.askAiText}>Ask AI</Text></>}
+          {aiLoading ? <ActivityIndicator size="small" color="#fff" /> : <><Ionicons name="sparkles" size={12} color="#fff" /><Text style={styles.askAiText}>Ask AI{aiCost && aiCost > 0 ? ` · ${aiCost}` : ''}</Text></>}
         </TouchableOpacity>
       </View>
 
