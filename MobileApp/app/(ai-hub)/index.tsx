@@ -43,6 +43,8 @@ import CreditCostPill from '../../components/CreditCostPill';
 import LinkedInJobLoader from '../../components/LinkedInJobLoader';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import { track } from '../../services/analytics';
+import { ExploreFeed } from '../(discover)';
+import SavedJobsList from '../../components/SavedJobsList';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
@@ -1284,6 +1286,8 @@ export default function AIHubScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { costs } = useEventCosts();
+  const [hubTab, setHubTab] = useState<'search' | 'myjobs' | 'saved'>('myjobs');   // unified Job Hub tabs
+  const [hubSavedCount, setHubSavedCount] = useState(0);
   const [pills, setPills] = useState<WishlistPill[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [inputValue, setInputValue] = useState('https://');
@@ -1834,6 +1838,35 @@ export default function AIHubScreen() {
           }}
         />
       ) : null}
+      {/* ══ FIXED TOP BAR (wordmark + add) — shared across the Job Hub tabs ══ */}
+      <View style={styles.topBar}>
+        <TouchableOpacity style={styles.backPill} onPress={() => router.back()} activeOpacity={0.8}>
+          <Ionicons name="arrow-back" size={14} color={T.ink} />
+          <Text style={styles.backPillText}>Back</Text>
+        </TouchableOpacity>
+        <View style={styles.wordmark} pointerEvents="none">
+          <Image source={require('../../assets/images/logo_img.png')} style={styles.wordmarkLogo} resizeMode="contain" />
+          <Text style={styles.wordmarkText}>cv<Text style={styles.wordmarkBlue}>applyr</Text></Text>
+        </View>
+        <TouchableOpacity style={styles.addBtn} onPress={openModal} activeOpacity={0.8}>
+          <Ionicons name="add" size={18} color={T.ink} />
+        </TouchableOpacity>
+      </View>
+
+      {/* ══ JOB HUB TABS: Search | My Jobs | Saved ══ */}
+      <View style={styles.hubSeg}>
+        {([['search', 'Search', 'search-outline'], ['myjobs', 'My Jobs', 'briefcase-outline'], ['saved', 'Saved', 'bookmark-outline']] as const).map(([k, label, icon]) => (
+          <TouchableOpacity key={k} onPress={() => setHubTab(k as any)} style={[styles.hubSegBtn, hubTab === k && styles.hubSegBtnOn]} activeOpacity={0.85}>
+            <Ionicons name={icon as any} size={14} color={hubTab === k ? '#fff' : T.textFaint} />
+            <Text style={[styles.hubSegText, hubTab === k && styles.hubSegTextOn]} numberOfLines={1}>{k === 'saved' && hubSavedCount > 0 ? `Saved · ${hubSavedCount}` : label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {hubTab === 'search' && <ExploreFeed embedded />}
+      {hubTab === 'saved' && <View style={{ flex: 1 }}><SavedJobsList onCountChange={setHubSavedCount} /></View>}
+
+      {hubTab === 'myjobs' && (
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
@@ -1845,30 +1878,6 @@ export default function AIHubScreen() {
           setShowFloatingFilter((prev) => (prev === should ? prev : should));
         }}
       >
-
-        {/* ══ TOP BAR ══════════════════════════════════════════════════════════ */}
-        <View style={styles.topBar}>
-          <TouchableOpacity style={styles.backPill} onPress={() => router.back()} activeOpacity={0.8}>
-            <Ionicons name="arrow-back" size={14} color={T.ink} />
-            <Text style={styles.backPillText}>Back</Text>
-          </TouchableOpacity>
-
-          {/* Absolutely centred wordmark — unaffected by side button sizes */}
-          <View style={styles.wordmark} pointerEvents="none">
-            <Image
-              source={require('../../assets/images/logo_img.png')}
-              style={styles.wordmarkLogo}
-              resizeMode="contain"
-            />
-            <Text style={styles.wordmarkText}>
-              cv<Text style={styles.wordmarkBlue}>applyr</Text>
-            </Text>
-          </View>
-
-          <TouchableOpacity style={styles.addBtn} onPress={openModal} activeOpacity={0.8}>
-            <Ionicons name="add" size={18} color={T.ink} />
-          </TouchableOpacity>
-        </View>
 
         {/* ══ HERO CARD (Letters-style dark gradient) ══════════════════════════ */}
         <View style={styles.heroCard}>
@@ -2190,6 +2199,7 @@ export default function AIHubScreen() {
           )}
         </View>
       </ScrollView>
+      )}
 
       {/* Floating filter — pinned top-right, fades in once scrolled into the job list */}
       {showFilterBtn && showFloatingFilter && (
@@ -2414,6 +2424,11 @@ const styles = StyleSheet.create({
   safeArea:     { flex: 1, backgroundColor: T.bg },
   scrollView:   { flex: 1 },
   scrollContent:{ flexGrow: 1, paddingBottom: 100 },
+  hubSeg:       { flexDirection: 'row', gap: 4, marginHorizontal: 14, marginBottom: 8, backgroundColor: T.surface, borderRadius: 13, borderWidth: 1, borderColor: T.border, padding: 3 },
+  hubSegBtn:    { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 36, borderRadius: 10 },
+  hubSegBtnOn:  { backgroundColor: T.blueDeep },
+  hubSegText:   { fontSize: 12, fontWeight: '800', color: T.textFaint },
+  hubSegTextOn: { color: '#fff' },
 
   // ── Top bar ──
   topBar: {

@@ -170,7 +170,9 @@ function FChip({ label, on, onPress }: { label: string; on: boolean; onPress: ()
   return <TouchableOpacity onPress={onPress} style={[styles.fChip, on && styles.fChipOn]} activeOpacity={0.8}><Text style={[styles.fChipText, on && styles.fChipTextOn]} numberOfLines={1}>{label}</Text></TouchableOpacity>;
 }
 
-export default function DiscoverScreen() {
+// Reusable Explore feed. `embedded` renders JUST the feed (no SafeAreaView / top bar / Explore|Saved
+// sub-tabs) so the Job Hub can mount it as its "Search" tab; the standalone /(discover) route wraps it.
+export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
   const [jobs, setJobs] = useState<DiscoverJob[]>([]);
   const [total, setTotal] = useState(0);
@@ -415,53 +417,42 @@ export default function DiscoverScreen() {
         {isOwnField && !noProfile ? ' · your field, best matches' : (field ? ` · ${shortField(field)}` : '')}
       </Text>
       </>)}
+
+      {/* Inline "search live on Google" — contextual, always under the search area (replaces the floating pill) */}
+      <TouchableOpacity onPress={openLive} activeOpacity={0.85} style={styles.liveBar}>
+        <Ionicons name="globe-outline" size={15} color={T.blueDeep} />
+        <Text style={styles.liveBarText}>Not finding it? <Text style={{ fontWeight: '800' }}>Search live on Google</Text></Text>
+        <Ionicons name="arrow-forward" size={14} color={T.blueDeep} />
+      </TouchableOpacity>
     </View>
-  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, webPhase, webNote, runAiSearch, clearAiSearch]);
+  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, webPhase, webNote, runAiSearch, clearAiSearch, openLive]);
 
-  return (
-    <SafeAreaView style={styles.safe}>
-      <View style={styles.topBar}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}><Ionicons name="chevron-back" size={20} color={T.ink} /></TouchableOpacity>
-        <Text style={styles.topTitle}>Explore Jobs</Text>
-        <View style={{ width: 38 }} />
-      </View>
+  const feedContent = loading ? (
+    <View style={styles.center}><ActivityIndicator color={T.blue} size="large" /></View>
+  ) : (
+    <FlatList
+      data={aiActive ? aiResults : jobs} keyExtractor={(j, i) => j.id + ':' + i}
+      renderItem={({ item }) => <JobCard job={item} onOpen={openJob} />}
+      ListHeaderComponent={header}
+      showsVerticalScrollIndicator={false}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
+      onEndReached={aiActive ? onAiEnd : onEnd} onEndReachedThreshold={0.6}
+      removeClippedSubviews initialNumToRender={6} windowSize={9}
+      contentContainerStyle={{ padding: 12, paddingBottom: embedded ? 120 : 96 }}
+      ListEmptyComponent={aiActive
+        ? <View style={styles.empty}>{aiLoading ? <ActivityIndicator color={T.blue} /> : <><Ionicons name="search-outline" size={40} color={T.textFaint} /><Text style={styles.emptyText}>No matches in the network yet — try different words, or tap “Search live on Google” above.</Text></>}</View>
+        : <View style={styles.empty}><Ionicons name={error ? 'cloud-offline-outline' : 'briefcase-outline'} size={40} color={T.textFaint} /><Text style={styles.emptyText}>{error || (query || activeCount || field ? 'No jobs match — try “All fields” or clear filters.' : 'No jobs yet — check back soon.')}</Text></View>}
+      ListFooterComponent={
+        <View>
+          {(loadingMore || aiLoadingMore) ? <ActivityIndicator color={T.blue} style={{ marginVertical: 18 }} /> : null}
+          <View style={{ height: 20 }} />
+        </View>
+      }
+    />
+  );
 
-      {/* Top segmented tabs: Explore | Saved */}
-      <View style={styles.segWrap}>
-        {(['explore', 'saved'] as const).map((t) => (
-          <TouchableOpacity key={t} onPress={() => setTab(t)} style={[styles.segBtn, tab === t && styles.segBtnOn]} activeOpacity={0.85}>
-            <Ionicons name={t === 'explore' ? 'compass-outline' : 'bookmark-outline'} size={15} color={tab === t ? '#fff' : T.textMuted} />
-            <Text style={[styles.segText, tab === t && styles.segTextOn]}>{t === 'explore' ? 'Explore' : (savedCount > 0 ? `Saved · ${savedCount}` : 'Saved')}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-
-      {tab === 'saved' ? (
-        <SavedJobsList onCountChange={setSavedCount} />
-      ) : loading ? (
-        <View style={styles.center}><ActivityIndicator color={T.blue} size="large" /></View>
-      ) : (
-        <FlatList
-          data={aiActive ? aiResults : jobs} keyExtractor={(j, i) => j.id + ':' + i}
-          renderItem={({ item }) => <JobCard job={item} onOpen={openJob} />}
-          ListHeaderComponent={header}
-          showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
-          onEndReached={aiActive ? onAiEnd : onEnd} onEndReachedThreshold={0.6}
-          removeClippedSubviews initialNumToRender={6} windowSize={9}
-          contentContainerStyle={{ padding: 12, paddingBottom: 96 }}
-          ListEmptyComponent={aiActive
-            ? <View style={styles.empty}>{aiLoading ? <ActivityIndicator color={T.blue} /> : <><Ionicons name="search-outline" size={40} color={T.textFaint} /><Text style={styles.emptyText}>No matches in the network yet — try different words, or tap “Live jobs on Google” below to search the live web.</Text></>}</View>
-            : <View style={styles.empty}><Ionicons name={error ? 'cloud-offline-outline' : 'briefcase-outline'} size={40} color={T.textFaint} /><Text style={styles.emptyText}>{error || (query || activeCount || field ? 'No jobs match — try “All fields” or clear filters.' : 'No jobs yet — check back soon.')}</Text></View>}
-          ListFooterComponent={
-            <View>
-              {(loadingMore || aiLoadingMore) ? <ActivityIndicator color={T.blue} style={{ marginVertical: 18 }} /> : null}
-              <View style={{ height: 20 }} />
-            </View>
-          }
-        />
-      )}
-
+  const overlays = (
+    <>
       {/* ── Filters sheet ── */}
       <Modal visible={showFilters} transparent animationType="slide" onRequestClose={() => setShowFilters(false)}>
         <View style={styles.sheetOverlay}>
@@ -496,25 +487,45 @@ export default function DiscoverScreen() {
           </View>
         </View>
       </Modal>
-
-      {/* Always-on Live-jobs pill — jump to a live web search anytime, even while ATS results are showing */}
-      {tab === 'explore' && !loading && (
-        <View pointerEvents="box-none" style={styles.liveFabWrap}>
-          <TouchableOpacity activeOpacity={0.9} onPress={openLive} style={styles.liveFabShadow}>
-            <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.liveFab}>
-              <Ionicons name="globe-outline" size={17} color="#fff" />
-              <Text style={styles.liveFabText}>Live jobs on Google</Text>
-            </LinearGradient>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      <HelpAssistant />
+      {!embedded && <HelpAssistant />}
       {xrayUrls.length > 0 && <SilentWebSearch key={xraySeq} urls={xrayUrls} onResult={onXrayResult} />}
       <LiveJobSearch visible={liveOpen} query={liveQuery} onClose={() => setLiveOpen(false)} />
+    </>
+  );
+
+  // Embedded (Job Hub "Search" tab): just the feed + overlays, no screen chrome.
+  if (embedded) {
+    return (
+      <View style={{ flex: 1, backgroundColor: T.bg }}>
+        {feedContent}
+        {overlays}
+      </View>
+    );
+  }
+
+  // Standalone /(discover) route: full screen with its own top bar + Explore|Saved sub-tabs.
+  return (
+    <SafeAreaView style={styles.safe}>
+      <View style={styles.topBar}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}><Ionicons name="chevron-back" size={20} color={T.ink} /></TouchableOpacity>
+        <Text style={styles.topTitle}>Explore Jobs</Text>
+        <View style={{ width: 38 }} />
+      </View>
+      <View style={styles.segWrap}>
+        {(['explore', 'saved'] as const).map((t) => (
+          <TouchableOpacity key={t} onPress={() => setTab(t)} style={[styles.segBtn, tab === t && styles.segBtnOn]} activeOpacity={0.85}>
+            <Ionicons name={t === 'explore' ? 'compass-outline' : 'bookmark-outline'} size={15} color={tab === t ? '#fff' : T.textMuted} />
+            <Text style={[styles.segText, tab === t && styles.segTextOn]}>{t === 'explore' ? 'Explore' : (savedCount > 0 ? `Saved · ${savedCount}` : 'Saved')}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      {tab === 'saved' ? <SavedJobsList onCountChange={setSavedCount} /> : feedContent}
+      {overlays}
     </SafeAreaView>
   );
 }
+
+export default function DiscoverScreen() { return <ExploreFeed />; }
 
 function FilterSection({ title, items, value, onPick, allLabel, onAll, labelFor, highlight }:
   { title: string; items: string[]; value: string; onPick: (v: string) => void; allLabel?: string; onAll?: () => void; labelFor?: (v: string) => string; highlight?: string }) {
@@ -646,4 +657,6 @@ const styles = StyleSheet.create({
   liveFabShadow: { borderRadius: 100, shadowColor: '#2563EB', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.4, shadowRadius: 12, elevation: 8 },
   liveFab: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, height: 50, borderRadius: 100 },
   liveFabText: { color: '#fff', fontSize: 14.5, fontWeight: '800', letterSpacing: -0.2 },
+  liveBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: 'rgba(37,99,235,0.06)', borderWidth: 1, borderColor: 'rgba(37,99,235,0.18)', borderRadius: 12, paddingVertical: 11, paddingHorizontal: 12, marginTop: 2, marginBottom: 6 },
+  liveBarText: { fontSize: 12.5, color: T.textMuted, fontWeight: '600' },
 });
