@@ -600,6 +600,18 @@ function jobCard(j) {
   };
 }
 
+const GROUNDED_MIN = parseInt(process.env.DISCOVER_GROUNDED_MIN || '8', 10);
+// Normalize a job URL for equality (strip tracking params + hash + trailing slash), so a live-search
+// card and its already-saved copy match even when one carries utm/affiliate params and the other doesn't.
+function normUrl(u) {
+  try {
+    const url = new URL(String(u || ''));
+    for (const k of [...url.searchParams.keys()]) if (/^(utm_|gclid|fbclid|msclkid|mc_|_hs)/i.test(k)) url.searchParams.delete(k);
+    const q = url.searchParams.toString();
+    return (url.origin + url.pathname + (q ? '?' + q : '')).replace(/\/+$/, '');
+  } catch { return String(u || '').split('#')[0].replace(/\/+$/, ''); }
+}
+
 async function liveSearch(req, res) {
   try {
     const rawQuery = String((req.body && req.body.query) || req.query.q || '').trim().slice(0, 300);
@@ -636,22 +648,25 @@ async function liveSearch(req, res) {
       } catch (_) {}
       return [];
     })();
-    // GROUNDED web discovery (slow, variable latency; self-caches). Kick off now; use only if the feed is thin.
-    const groundP = aiHub.groundedDiscover(parsed, region).catch(() => []);
-
     const feedJobs = await within(feedP, 14000, []);
     let merged = dedupe(feedJobs);
-    if (merged.length < 8) {
-      // Feed thin/uncovered → wait (bounded) for grounding rather than show nothing.
-      const groundJobs = await within(groundP, 26000, []);
+    // COST: only pay for grounded web discovery ($0.035 Google-Search fee/call) when the free national
+    // feed is THIN. A fat feed (100 gov jobs) already covers the query — no need to also ground.
+    if (merged.length < GROUNDED_MIN) {
+      const groundJobs = await within(aiHub.groundedDiscover(parsed, region).catch(() => []), 26000, []);
       if (groundJobs && groundJobs.length) firehose.saveJobs(groundJobs, 'grounded', region).catch(() => {});
       merged = dedupe([...merged, ...groundJobs]);
-    } else {
-      // Enough from the feed already — let grounding finish in the background to warm the cache for next time.
-      groundP.then((g) => { if (g && g.length) firehose.saveJobs(g, 'grounded', region).catch(() => {}); }).catch(() => {});
     }
 
-    const cards = merged.map(jobCard);   // no artificial cap — return everything the feed + grounding found
+    // Mark jobs the user already saved, and float them to the BOTTOM (they render disabled + "Saved").
+    let savedSet = new Set();
+    try {
+      await ensureSavedJobsTable();
+      const rows = await dbConfig.query('SELECT job_url FROM user_saved_jobs WHERE user_id = $1', [req.user && req.user.id]);
+      savedSet = new Set((rows || []).map((r) => normUrl(r.job_url)));
+    } catch (_) {}
+    const cards = merged.map(jobCard).map((c) => ({ ...c, saved: savedSet.has(normUrl(c.job_url)) }));
+    cards.sort((a, b) => (a.saved ? 1 : 0) - (b.saved ? 1 : 0));   // unsaved first, saved last
     res.json({ success: true, parsed, cards, count: cards.length });
   } catch (e) { console.error('[discover] live-search:', e.message); res.status(500).json({ error: 'Live search failed' }); }
 }
@@ -665,6 +680,16 @@ async function fetchDetail(req, res) {
     const html = (req.body && req.body.html) || '';
     const employerHint = String((req.body && req.body.company) || '').trim();
     if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Missing/invalid url' });
+    // CACHE: a job's details rarely change — reuse a prior good extraction (any user) and skip the LLM
+    // entirely. Saves the ~$0.0015 extraction on every repeat fetch of the same posting.
+    const cacheKey = 'fetchdetail:v2:' + normUrl(url);
+    try {
+      const hit = await aiHub.groundingCacheGet(cacheKey);
+      if (hit && hit.title && Array.isArray(hit.responsibilities) && hit.responsibilities.length >= 3) {
+        saveUserJob(req.user && req.user.id, hit).catch(() => {});
+        return res.json({ success: true, job: hit, cached: true });
+      }
+    } catch (_) {}
     let job = null;
     if (html && html.length > 200) {
       // Rich single-detail extraction: authoritative JSON-LD fields + the full JSON-LD description
@@ -690,6 +715,8 @@ async function fetchDetail(req, res) {
     const region = detectCountry(job.location) || 'Global';
     firehose.saveJobs([job], 'fetched', region).catch(() => {});
     const card = jobCard(job);
+    // cache a GOOD extraction for reuse (7d); skip caching thin ones so a later fetch can do better.
+    if (Array.isArray(card.responsibilities) && card.responsibilities.length >= 3) aiHub.groundingCacheSet(cacheKey, 'fetchdetail', card, 7 * 24 * 3600).catch(() => {});
     saveUserJob(req.user && req.user.id, card).catch(() => {});   // add to the user's Saved Jobs
     res.json({ success: true, job: card });
   } catch (e) { console.error('[discover] fetch-detail:', e.message); res.status(500).json({ error: 'Fetch failed' }); }

@@ -4812,4 +4812,6 @@ module.exports = {
     getMatchScores,
     getMotivation,
     groundedDiscover,
+    groundingCacheGet,
+    groundingCacheSet,
 };

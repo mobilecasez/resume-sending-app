@@ -103,7 +103,9 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     setSelected((prev) => { const n = new Set(prev); n.has(url) ? n.delete(url) : n.add(url); return n; });
   }, []);
   const selectAll = useCallback(() => {
-    setSelected((prev) => prev.size === cards.length ? new Set() : new Set(cards.map((c) => c.job_url)));
+    // Only jobs that aren't already saved (this session or a previous one) are selectable.
+    const selectable = cards.filter((c) => !c.saved && fstateRef.current[c.job_url] !== 'done').map((c) => c.job_url);
+    setSelected((prev) => (prev.size === selectable.length && selectable.length > 0) ? new Set() : new Set(selectable));
   }, [cards]);
 
   // ── fetch selected cards, up to CONCURRENCY at a time, via hidden on-device WebViews ──
@@ -158,7 +160,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     pump();
   }
   function startFetch() {
-    const urls = cardsRef.current.map((c) => c.job_url).filter((u) => selected.has(u) && fstateRef.current[u] !== 'done');
+    const urls = cardsRef.current.filter((c) => !c.saved).map((c) => c.job_url).filter((u) => selected.has(u) && fstateRef.current[u] !== 'done');
     if (!urls.length) return;
     queueRef.current = urls;
     batchRef.current = urls.slice();
@@ -201,16 +203,17 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   const doneCount = Object.values(fstate).filter((s) => s === 'done').length;
 
   const renderCard = ({ item }: { item: LiveJobCard }) => {
-    const isSel = selected.has(item.job_url);
     const st = fstate[item.job_url] || 'idle';
+    const locked = !!item.saved || st === 'done';   // already saved (prior session) or fetched this session
+    const isSel = !locked && selected.has(item.job_url);
     const det = details[item.job_url];
     const highlights = (det?.responsibilities?.length ? det.responsibilities : item.highlights) || [];
     return (
-      <TouchableOpacity activeOpacity={0.85} onPress={() => toggle(item.job_url)} style={[styles.card, isSel && styles.cardSel]}>
+      <TouchableOpacity activeOpacity={locked ? 1 : 0.85} onPress={() => { if (!locked) toggle(item.job_url); }} style={[styles.card, isSel && styles.cardSel, locked && styles.cardSaved]}>
         <View style={styles.cardTop}>
-          <View style={[styles.check, isSel && styles.checkOn]}>
-            {isSel && <Ionicons name="checkmark" size={13} color="#fff" />}
-          </View>
+          {locked
+            ? <View style={styles.savedIcon}><Ionicons name="bookmark" size={13} color="#059669" /></View>
+            : <View style={[styles.check, isSel && styles.checkOn]}>{isSel && <Ionicons name="checkmark" size={13} color="#fff" />}</View>}
           <View style={{ flex: 1 }}>
             <Text style={styles.cardTitle} numberOfLines={3}>{det?.title || item.title}</Text>
             <Text style={styles.cardCompany} numberOfLines={2}>{det?.company || item.company || item.employer_name || 'Employer'}</Text>
@@ -221,9 +224,9 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
               </View>
             )}
           </View>
-          {st === 'done' && <View style={styles.badgeDone}><Ionicons name="checkmark-circle" size={12} color="#059669" /><Text style={styles.badgeDoneTx}>Saved</Text></View>}
-          {st === 'fetching' && <ActivityIndicator size="small" color="#06B6D4" />}
-          {st === 'failed' && <Ionicons name="alert-circle-outline" size={16} color="#F59E0B" />}
+          {locked && <View style={styles.badgeDone}><Ionicons name="checkmark-circle" size={12} color="#059669" /><Text style={styles.badgeDoneTx}>Saved</Text></View>}
+          {!locked && st === 'fetching' && <ActivityIndicator size="small" color="#06B6D4" />}
+          {!locked && st === 'failed' && <Ionicons name="alert-circle-outline" size={16} color="#F59E0B" />}
         </View>
         {(det || highlights.length > 0) && (
           <View style={styles.cardBody}>
@@ -243,7 +246,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
         <View style={styles.srcRow}>
           <Ionicons name="globe-outline" size={11} color="#94A3B8" />
           <Text style={styles.srcTx}>{item.source || 'web'}</Text>
-          {st === 'idle' && <Text style={styles.tapHint}>tap to select</Text>}
+          {item.saved ? <Text style={[styles.tapHint, { color: '#059669' }]}>already in Saved Jobs</Text> : (st === 'idle' && <Text style={styles.tapHint}>tap to select</Text>)}
         </View>
       </TouchableOpacity>
     );
@@ -352,6 +355,8 @@ const styles = StyleSheet.create({
   selAll: { fontSize: 12.5, fontWeight: '700', color: '#06B6D4' },
   card: { backgroundColor: '#fff', borderRadius: 18, padding: 14, marginBottom: 10, borderWidth: 1.5, borderColor: '#fff' },
   cardSel: { borderColor: '#06B6D4', backgroundColor: '#F7FEFF' },
+  cardSaved: { backgroundColor: '#F8FAFC', borderColor: '#ECFDF5', opacity: 0.7 },
+  savedIcon: { width: 22, height: 22, borderRadius: 7, backgroundColor: '#ECFDF5', marginRight: 11, marginTop: 1, alignItems: 'center', justifyContent: 'center' },
   cardTop: { flexDirection: 'row', alignItems: 'flex-start' },
   check: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.6, borderColor: '#CBD5E1', marginRight: 11, marginTop: 1, alignItems: 'center', justifyContent: 'center' },
   checkOn: { backgroundColor: '#06B6D4', borderColor: '#06B6D4' },

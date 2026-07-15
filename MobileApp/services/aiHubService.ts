@@ -1053,6 +1053,7 @@ export type LiveJobCard = {
   id: string; job_url: string; title: string; company: string | null; employer_name: string | null;
   location: string | null; work_mode: string | null; job_type: string | null; salary: string | null;
   experience: string | null; responsibilities: string[]; skills: string[]; source: string | null; highlights: string[];
+  saved?: boolean; summary?: string | null;
 };
 
 /** Grounded live web search → structured job CARDS (the raw web page is never shown). ~15-40s. */

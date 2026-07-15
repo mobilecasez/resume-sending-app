@@ -507,7 +507,12 @@ async function richDetailFromHtml(html, sourceUrl, employerHint) {
     }
   } catch (_) {}
   const body = cleanHtmlForLLM(html);
-  const input = ((ldDesc && ldDesc.length > 80) ? ('FULL JOB DESCRIPTION:\n' + ldDesc + '\n\n---\nPAGE CONTEXT:\n') : '') + body;
+  const hasLd = ldDesc && ldDesc.length > 300;
+  // COST: when JSON-LD carries the full description it already IS the posting, so feed it plus only a
+  // small body slice for context (far fewer input tokens) instead of the whole 30k-char page.
+  const input = hasLd
+    ? ('FULL JOB DESCRIPTION:\n' + ldDesc + '\n\n---\nPAGE CONTEXT:\n' + body.slice(0, 6000))
+    : body;
   if (!input.trim()) return null;
   const rich = await llmExtractDetailOne(input.slice(0, 30000), sourceUrl, employerHint || (ld && ld.employer_name) || '');
   if (!rich) return null;
