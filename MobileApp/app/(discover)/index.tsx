@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import {
   fetchDiscoverJobs, fetchDiscoverFacets, aiSearchJobs, hydrateJobUrls, loadAllJobStatuses,
@@ -182,6 +183,7 @@ function FChip({ label, on, onPress }: { label: string; on: boolean; onPress: ()
 // sub-tabs) so the Job Hub can mount it as its "Search" tab; the standalone /(discover) route wraps it.
 export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embedded?: boolean; onStats?: (s: { total: number; remote: number; fields: number; regions: number }) => void; onSavedChange?: () => void }) {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { costOf } = useEventCosts();
   const aiCost = costOf('ai_search');
   const [clStatuses, setClStatuses] = useState<Record<string, string>>({});   // job id → cover-letter/applied status
@@ -460,7 +462,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
       onEndReached={aiActive ? onAiEnd : onEnd} onEndReachedThreshold={0.6}
       removeClippedSubviews initialNumToRender={6} windowSize={9}
-      contentContainerStyle={{ padding: 12, paddingBottom: embedded ? 120 : 96 }}
+      contentContainerStyle={{ padding: 12, paddingBottom: insets.bottom + (embedded ? 96 : 80) }}
       ListEmptyComponent={aiActive
         ? <View style={styles.empty}>{aiLoading ? <ActivityIndicator color={T.blue} /> : <><Ionicons name="search-outline" size={40} color={T.textFaint} /><Text style={styles.emptyText}>No matches in the network yet — try different words, or tap “Search live on Google” above.</Text></>}</View>
         : <View style={styles.empty}><Ionicons name={error ? 'cloud-offline-outline' : 'briefcase-outline'} size={40} color={T.textFaint} /><Text style={styles.emptyText}>{error || (query || activeCount || field ? 'No jobs match — try “All fields” or clear filters.' : 'No jobs yet — check back soon.')}</Text></View>}

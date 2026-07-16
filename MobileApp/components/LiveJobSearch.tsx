@@ -24,12 +24,16 @@ type FetchState = 'idle' | 'fetching' | 'done' | 'failed';
 // Grab the fully-rendered page HTML once the page has actually rendered (SPAs like arbeitsagentur/get-in-it
 // load their content via JS). Polls until readyState=complete AND the body has real text, up to a 9s cap —
 // so fast pages return quickly and slow SPAs still get captured (a fixed short delay was missing them).
+// Grab the fully-rendered page HTML once it's actually ready. Waits out bot-challenge pages (Cloudflare
+// "Just a moment" / Indeed / PerimeterX): those auto-resolve their JS challenge in a real on-device browser
+// within a few seconds, so we must NOT grab the interstitial — keep polling up to a longer cap and grab the
+// REAL page once it appears. Fast pages still return in ~250ms.
 const GRAB_JS = `(function(){
-  var START = Date.now(), MAXW = 9000;
+  var START = Date.now(), MAXW = 13000;
   function grab(){ try { window.ReactNativeWebView.postMessage(JSON.stringify({ __cvd:true, url: location.href, html: (document.documentElement.outerHTML||'').slice(0,220000) })); } catch(e){} }
-  var blocked = /captcha|unusual traffic|are you a robot|verify you are human/i.test(document.body ? document.body.innerText : '');
-  if (blocked) { setTimeout(grab, 400); return; }
-  function ready(){ try { var t = (document.body && document.body.innerText) || ''; return document.readyState === 'complete' && t.replace(/\\s+/g,' ').trim().length > 500; } catch(e){ return false; } }
+  function bodyText(){ try { return (document.body && document.body.innerText) || ''; } catch(e){ return ''; } }
+  function isChallenge(t){ return /just a moment|checking (if the site|your browser)|verifying you are (a )?human|attention required|enable javascript and cookies|please enable (js|javascript)|cloudflare|unusual traffic|are you a robot|verify you.?re human|px-captcha|hcaptcha|recaptcha challenge/i.test(t); }
+  function ready(){ try { var t = bodyText(); if (isChallenge(t) && Date.now()-START < MAXW) return false; return document.readyState === 'complete' && t.replace(/\\s+/g,' ').trim().length > 500; } catch(e){ return false; } }
   (function wait(){ if (ready() || Date.now()-START > MAXW) setTimeout(grab, 250); else setTimeout(wait, 300); })();
 })(); true;`;
 
@@ -155,6 +159,21 @@ function buildLinkedInKeywords(kw: string): string {
   else out = tokens.map((t) => { const v = expandTerm(t); return v.length > 1 ? orGroup(v) : t; }).join(' ');
   if (tokens.length === 1 && /[.#+]/.test(tokens[0])) out += ' developer';
   return out;
+}
+
+// The URL to actually LOAD when fetching a card's details (the card keeps its real apply URL for the user).
+// LinkedIn's /jobs/view/ page walls guests + shows an app-interstitial on mobile → its details never load;
+// the PUBLIC guest jobPosting API returns the full JD (title/company/location/description/criteria) with NO
+// login. So for LinkedIn cards we scrape the guest API instead. Everything else loads its own page.
+function fetchSourceUrl(u: string): string {
+  const s = String(u || '');
+  try {
+    if (/linkedin\.com\/jobs\/view\//i.test(s)) {
+      const m = s.split('?')[0].match(/(\d{6,})\/?$/);   // trailing numeric job id
+      if (m) return 'https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/' + m[1];
+    }
+  } catch {}
+  return s;
 }
 
 export default function LiveJobSearch({ visible, query, onClose }: { visible: boolean; query: string; onClose: () => void }) {
@@ -323,7 +342,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   }, [cards]);
 
   // ── fetch selected cards, up to CONCURRENCY at a time, via hidden on-device WebViews ──
-  const PAGE_TIMEOUT = 20000;
+  const PAGE_TIMEOUT = 28000;   // allow up to a 13s bot-challenge wait (GRAB_JS) + backend extraction
   // Fill open slots from the queue (mounts a hidden WebView per active url).
   function pump() {
     while (activeRef.current.size < CONCURRENCY && queueRef.current.length) {
@@ -565,7 +584,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
           {activeUrls.map((url) => (
             <View key={webGen + '|' + (retryRef.current[url] || 0) + '|' + url} style={styles.hiddenWeb} pointerEvents="none">
               <WebView
-                source={{ uri: url }}
+                source={{ uri: fetchSourceUrl(url) }}
                 injectedJavaScript={GRAB_JS}
                 onMessage={(e) => onGrab(url, e.nativeEvent.data)}
                 userAgent={MOBILE_UA}

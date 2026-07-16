@@ -6,6 +6,7 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, 
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchSavedJobs, removeSavedJob, loadAllJobStatuses, type SavedJobCard } from '../services/aiHubService';
 
 function clTagOf(s?: string | null): { label: string; color: string } | null {
@@ -103,6 +104,7 @@ function SavedCard({ job, onOpen, onRemove, clStatus }: { job: SavedJobCard; onO
 
 export default function SavedJobsList({ onCountChange, onStats }: { onCountChange?: (n: number) => void; onStats?: (s: { count: number; withCl: number; applied: number }) => void }) {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [jobs, setJobs] = useState<SavedJobCard[]>([]);
   const [clStatuses, setClStatuses] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -158,7 +160,7 @@ export default function SavedJobsList({ onCountChange, onStats }: { onCountChang
       extraData={clStatuses}
       keyExtractor={(j, i) => j.job_url + ':' + i}
       renderItem={({ item }) => <SavedCard job={item} onOpen={openJob} onRemove={removeJob} clStatus={clStatuses[hashId(item.job_url)]} />}
-      contentContainerStyle={{ padding: 12, paddingBottom: 40 }}
+      contentContainerStyle={{ padding: 12, paddingBottom: insets.bottom + 96 }}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
       ListHeaderComponent={jobs.length > 0 ? <Text style={styles.countLine}>{jobs.length} saved {jobs.length === 1 ? 'job' : 'jobs'}</Text> : null}
