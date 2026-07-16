@@ -8,10 +8,15 @@ let _ready = false;
 async function ensureTables() {
   if (_ready) return;
   await dbConfig.run(`CREATE TABLE IF NOT EXISTS referral_codes (
-    user_id INTEGER PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER UNIQUE NOT NULL,
     code TEXT UNIQUE NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
+  // db-config.run auto-appends "RETURNING id" to INSERTs, so the table MUST have an id column. The v1
+  // schema shipped without one (user_id was the PK) → every code insert threw → codes never persisted.
+  // Add id to any already-created table (it's empty since all inserts failed, so this is safe).
+  try { await dbConfig.run(`ALTER TABLE referral_codes ADD COLUMN IF NOT EXISTS id SERIAL`); } catch (_) {}
   await dbConfig.run(`CREATE TABLE IF NOT EXISTS referrals (
     id SERIAL PRIMARY KEY,
     code TEXT NOT NULL,
