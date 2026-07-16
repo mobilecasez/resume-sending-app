@@ -25,6 +25,7 @@ export default function AiEventCreditsScreen() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<'debit' | 'credit'>('debit');   // Spending (costs) vs Rewards (grants)
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -79,7 +80,7 @@ export default function AiEventCreditsScreen() {
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={s.title}>AI Event Credits</Text>
-          <Text style={s.subtitle}>Credits charged per AI action — edit live</Text>
+          <Text style={s.subtitle}>Credits charged & rewarded — edit live</Text>
         </View>
         <TouchableOpacity onPress={load} style={s.backBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
           <Ionicons name="refresh" size={19} color="#9FB2D4" />
@@ -97,9 +98,21 @@ export default function AiEventCreditsScreen() {
       ) : (
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 48 }} keyboardShouldPersistTaps="handled">
           <UserCreditAdmin />
-          <Text style={s.sectionTitle}>Event credit costs</Text>
-          <Text style={s.note}>Set credits to 0 to make an action free. Inactive events are never charged.</Text>
-          {rows.map((r) => (
+
+          {/* Two tabs: Spending (credits charged) vs Rewards (credits granted). */}
+          <View style={s.tabs}>
+            {([['debit', 'Spending', 'trending-down'], ['credit', 'Rewards', 'gift']] as const).map(([k, label, icon]) => (
+              <TouchableOpacity key={k} onPress={() => setTab(k)} style={[s.tabBtn, tab === k && s.tabBtnOn]} activeOpacity={0.85}>
+                <Ionicons name={icon as any} size={14} color={tab === k ? '#0B1120' : '#9FB2D4'} />
+                <Text style={[s.tabTxt, tab === k && s.tabTxtOn]}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Text style={s.sectionTitle}>{tab === 'credit' ? 'Reward credits' : 'Event credit costs'}</Text>
+          <Text style={s.note}>{tab === 'credit'
+            ? 'Credits GRANTED to users for these actions. Set to 0 or turn off to disable a reward.'
+            : 'Credits CHARGED per AI action. Set to 0 to make an action free. Inactive events are never charged.'}</Text>
+          {rows.filter((r) => (r.direction === 'credit' ? 'credit' : 'debit') === tab).map((r) => (
             <View key={r.event_key} style={s.card}>
               <View style={s.cardTop}>
                 <View style={{ flex: 1, paddingRight: 10 }}>
@@ -299,7 +312,12 @@ const s = StyleSheet.create({
   retry: { backgroundColor: '#1E293B', paddingHorizontal: 18, paddingVertical: 9, borderRadius: 10 },
   retryTxt: { color: '#fff', fontWeight: '700' },
   note: { color: '#7C8BA5', fontSize: 12.5, lineHeight: 18, marginBottom: 14 },
-  sectionTitle: { color: '#F8FAFC', fontSize: 16, fontWeight: '800', marginTop: 22, marginBottom: 6 },
+  sectionTitle: { color: '#F8FAFC', fontSize: 16, fontWeight: '800', marginTop: 8, marginBottom: 6 },
+  tabs: { flexDirection: 'row', gap: 6, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 12, padding: 4, marginTop: 22 },
+  tabBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, height: 38, borderRadius: 9 },
+  tabBtnOn: { backgroundColor: '#22D3EE' },
+  tabTxt: { color: '#9FB2D4', fontWeight: '800', fontSize: 13 },
+  tabTxtOn: { color: '#0B1120' },
   // User-credit card
   ucCard: { backgroundColor: 'rgba(34,211,238,0.06)', borderColor: 'rgba(34,211,238,0.18)', borderWidth: 1, borderRadius: 16, padding: 14 },
   ucHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },

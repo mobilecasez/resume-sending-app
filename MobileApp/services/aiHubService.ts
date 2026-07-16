@@ -790,7 +790,7 @@ export async function pollJobCoverLetter(
 // ── AI event credit costs (admin-configurable) ──────────────────────────────
 export type AiEventCost = {
   id: number; event_key: string; label: string; description: string;
-  category: string; credits: number; is_active: number; sort_order: number;
+  category: string; direction?: string; credits: number; is_active: number; sort_order: number;
 };
 
 let _eventCostsCache: Record<string, number> | null = null;
