@@ -6,6 +6,11 @@
 const dbConfig = require('../../db-config');
 const eventCosts = require('./eventCosts');
 
+// GOING-FORWARD ONLY: rewards pay out only for actions done AFTER the program launched — existing users
+// are NOT retroactively paid for a résumé/apply/feedback they did earlier. Set REWARDS_LAUNCH_AT on Railway
+// to the exact go-live moment; default is the build date.
+const LAUNCH_AT = process.env.REWARDS_LAUNCH_AT || '2026-07-16T00:00:00Z';
+
 // Idempotently grant `eventKey`'s reward to a user: add the admin-configured (active) credit amount to
 // user_credits and record it in the ledger. idempotencyKey defaults to eventKey (a one-time reward);
 // referrals pass 'reward_referral:<referredUserId>' so each friend pays out at most once.
@@ -29,20 +34,20 @@ async function grantReward(userId, eventKey, opts = {}) {
   return { granted: true, amount };
 }
 
-// ── Eligibility checks for the self-serve, one-time rewards ──────────────────────
+// ── Eligibility checks for the self-serve, one-time rewards (only actions AFTER LAUNCH_AT count) ──────
 async function hasCompleteProfile(userId) {
-  const r = await dbConfig.get("SELECT 1 AS ok FROM resume_metadata WHERE user_id = ? AND parse_status = 'done' LIMIT 1", [userId]).catch(() => null);
+  const r = await dbConfig.get("SELECT 1 AS ok FROM resume_metadata WHERE user_id = ? AND parse_status = 'done' AND created_at > ? LIMIT 1", [userId, LAUNCH_AT]).catch(() => null);
   return !!(r && r.ok);
 }
 async function hasAppliedOnce(userId) {
   // "Applied to a job" = a Job Hub job marked applied, OR an apply telemetry event (either signal counts).
-  const r1 = await dbConfig.get("SELECT 1 AS ok FROM job_cover_letters WHERE user_id = ? AND status = 'applied' LIMIT 1", [userId]).catch(() => null);
+  const r1 = await dbConfig.get("SELECT 1 AS ok FROM job_cover_letters WHERE user_id = ? AND status = 'applied' AND updated_at > ? LIMIT 1", [userId, LAUNCH_AT]).catch(() => null);
   if (r1 && r1.ok) return true;
-  const r2 = await dbConfig.get("SELECT 1 AS ok FROM app_events WHERE user_id = ? AND event IN ('apply','application_submitted','job_applied','application_sent') LIMIT 1", [userId]).catch(() => null);
+  const r2 = await dbConfig.get("SELECT 1 AS ok FROM app_events WHERE user_id = ? AND event IN ('apply','application_submitted','job_applied','application_sent') AND created_at > ? LIMIT 1", [userId, LAUNCH_AT]).catch(() => null);
   return !!(r2 && r2.ok);
 }
 async function hasRatedApp(userId) {
-  const r = await dbConfig.get('SELECT 1 AS ok FROM app_feedback WHERE user_id = ? LIMIT 1', [userId]).catch(() => null);
+  const r = await dbConfig.get('SELECT 1 AS ok FROM app_feedback WHERE user_id = ? AND created_at > ? LIMIT 1', [userId, LAUNCH_AT]).catch(() => null);
   return !!(r && r.ok);
 }
 
