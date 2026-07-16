@@ -16,6 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { liveSearchJobs, fetchJobDetail, saveCard, type LiveJobCard } from '../services/aiHubService';
 import { notifyLocal } from '../services/pushNotificationService';
 import { expandTerm } from '../utils/searchSynonyms';
+import { resolveLiveLocation, locationAllowed } from '../utils/jobLocation';
 
 const { height: SH } = Dimensions.get('window');
 type FetchState = 'idle' | 'fetching' | 'done' | 'failed';
@@ -201,19 +202,27 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   // On-device sources, run on the user's own device/IP for a RICH, real search:
   //  • LinkedIn public guest jobs API — dense, paginated INDIVIDUAL postings (~25/page → ~100 across pages)
   //  • Google + DuckDuckGo-lite web search — breadth (Naukri/Indeed/company career pages)
+  // Resolve the searched place to a LinkedIn-recognizable "City, Country" — an UNqualified place ("delhi",
+  // "delhi ncr") silently resolves to the WRONG location on LinkedIn (→ Cincinnati). Also yields match-terms
+  // so any stray wrong-region card gets dropped in mergeCards.
+  const locResolved = useMemo(() => resolveLiveLocation(parseLiveQuery(query).loc), [query]);
+  const locRef = useRef(locResolved);
+  useEffect(() => { locRef.current = locResolved; }, [locResolved]);
+
   const webSources = useMemo(() => {
     const q = String(query || '').trim();
     if (!q) return [] as { uri: string; kind: 'li' | 'organic' }[];
     const enc = encodeURIComponent;
-    const { kw, loc } = parseLiveQuery(q);
-    const liBase = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=' + enc(buildLinkedInKeywords(kw)) + (loc ? '&location=' + enc(loc) : '');
-    // LinkedIn guest returns ~10 individual postings per page → paginate by 10 for depth.
-    const sources: { uri: string; kind: 'li' | 'organic' }[] = [0, 10, 20, 30, 40, 50].map((s) => ({ uri: liBase + '&start=' + s, kind: 'li' as const }));
+    const { kw } = parseLiveQuery(q);
+    const liLoc = locResolved.linkedInLocation;   // country-qualified (or '' → LinkedIn's default worldwide)
+    const liBase = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=' + enc(buildLinkedInKeywords(kw)) + (liLoc ? '&location=' + enc(liLoc) : '');
+    // LinkedIn guest returns ~10 individual postings per page → paginate by 10 for depth (8 pages ≈ 80 postings).
+    const sources: { uri: string; kind: 'li' | 'organic' }[] = [0, 10, 20, 30, 40, 50, 60, 70].map((s) => ({ uri: liBase + '&start=' + s, kind: 'li' as const }));
     sources.push({ uri: 'https://www.google.com/search?num=30&hl=en&q=' + enc(q), kind: 'organic' });
     sources.push({ uri: 'https://www.google.com/search?num=30&hl=en&start=10&q=' + enc(q), kind: 'organic' });
     sources.push({ uri: 'https://lite.duckduckgo.com/lite/?q=' + enc(q), kind: 'organic' });
     return sources;
-  }, [query]);
+  }, [query, locResolved]);
 
   const normUrl = (u: string) => { try { const x = new URL(String(u || '')); return (x.origin + x.pathname).replace(/\/+$/, ''); } catch { return String(u || '').split('#')[0].replace(/\/+$/, ''); } };
 
@@ -223,8 +232,9 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     if (!incoming || !incoming.length) return;
     setCards((prev) => {
       const seen = new Set(prev.map((c) => normUrl(c.job_url)));
+      const loc = locRef.current;   // drop cards that resolve to a clearly-different country than searched
       const add: LiveJobCard[] = [];
-      for (const c of incoming) { const k = normUrl(c.job_url); if (c && c.job_url && c.title && !seen.has(k)) { seen.add(k); add.push(c); } }
+      for (const c of incoming) { const k = normUrl(c.job_url); if (c && c.job_url && c.title && !seen.has(k) && locationAllowed(c.location, loc)) { seen.add(k); add.push(c); } }
       if (!add.length) return prev;
       const next = [...prev, ...add];
       next.sort((a, b) => (a.saved ? 1 : 0) - (b.saved ? 1 : 0));

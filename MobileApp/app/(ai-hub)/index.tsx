@@ -30,7 +30,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import type { Contact, Job, Employer, WishlistPill } from '../../types/aiHub';
 import { fetchJobMatches, fetchDashboard, getCachedDashboard, evictEmployerFromDashboardCache, fetchEmployerJobs, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, loadAllJobStatuses, fetchJobMatchScores, getMotivationLines, submitEmployerFixRequest, isLinkedInJobUrl, fetchSavedJobs, type DashboardEntry } from '../../services/aiHubService';
 
@@ -1289,7 +1289,10 @@ export default function AIHubScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { costs } = useEventCosts();
-  const [hubTab, setHubTab] = useState<'search' | 'myjobs' | 'saved'>('myjobs');   // unified Job Hub tabs
+  // Deep-link support: /(ai-hub)?tab=search lands on the Search/Explore tab (the home "Explore Jobs" CTA).
+  const params = useLocalSearchParams<{ tab?: string }>();
+  const initialTab = params?.tab === 'search' || params?.tab === 'saved' || params?.tab === 'myjobs' ? params.tab : 'myjobs';
+  const [hubTab, setHubTab] = useState<'search' | 'myjobs' | 'saved'>(initialTab);   // unified Job Hub tabs
   const [hubSavedCount, setHubSavedCount] = useState(0);
   const [hubSavedStats, setHubSavedStats] = useState({ count: 0, withCl: 0, applied: 0 });   // Saved-tab summary
   const [hubSearchStats, setHubSearchStats] = useState({ total: 0, remote: 0, fields: 0, regions: 0 });   // Search-tab summary

@@ -302,8 +302,14 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
       setAiParsed(data.parsed || null); setAiResults(data.jobs || []); setAiTotal(data.total || 0);
       setAiHasMore(!!data.hasMore); lastQueryRef.current = query;
       if (typeof data.noProfile === 'boolean') setNoProfile(data.noProfile);
-      // Kick off the silent on-device web search to find MORE jobs across the ATS web (user IP).
-      // Google (far richer index) as primary + DDG-lite as fallback, each as a SEPARATE per-site query.
+      // Nothing in our own network yet → go STRAIGHT to the rich live web search (LinkedIn + Google on the
+      // user's IP, location-accurate). Far better than the ATS-only X-Ray for places like Delhi/India — this
+      // is why "0 matches → searched the web → still nothing" happened. Skip the X-Ray in that case.
+      if ((data.total || 0) === 0) {
+        setWebPhase(''); setWebNote(''); setLiveQuery(query); setLiveOpen(true);
+        return;
+      }
+      // We have some network matches → silently X-Ray the ATS web to GROW them (Google + DDG-lite).
       const perSite: string[] = (data.xray && Array.isArray(data.xray.perSite)) ? data.xray.perSite : [];
       const urls = [
         ...perSite.map((q) => 'https://www.google.com/search?num=30&q=' + encodeURIComponent(q)),

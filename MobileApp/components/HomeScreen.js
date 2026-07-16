@@ -1789,7 +1789,7 @@ export default function HomeScreen({
         {/* ── EXPLORE LIVE JOBS (value-first feed) ──────────── */}
         <TouchableOpacity
           activeOpacity={0.9}
-          onPress={() => require('expo-router').router?.push?.('/(discover)')}
+          onPress={() => require('expo-router').router?.push?.({ pathname: '/(ai-hub)', params: { tab: 'search' } })}
           style={{ marginHorizontal: 16, marginBottom: 16, borderRadius: 20, overflow: 'hidden', shadowColor: '#06B6D4', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.28, shadowRadius: 18, elevation: 6 }}
         >
           <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ flexDirection: 'row', alignItems: 'center', gap: 14, padding: 18 }}>
@@ -2009,7 +2009,7 @@ export default function HomeScreen({
       <WelcomeExplainer
         visible={showExplainer}
         onClose={dismissExplainer}
-        onExplore={() => { dismissExplainer(); require('expo-router').router?.push?.('/(discover)'); }}
+        onExplore={() => { dismissExplainer(); require('expo-router').router?.push?.({ pathname: '/(ai-hub)', params: { tab: 'search' } }); }}
       />
 
       {/* ── FLOATING AI HELP ASSISTANT (draggable) ────────── */}
@@ -2027,7 +2027,7 @@ export default function HomeScreen({
             {[
               { icon: 'settings-outline',   title: 'Account Settings',   sub: 'View your profile',          onPress: () => { setShowSettings(false); setScreen('profile'); } },
               { icon: 'briefcase-outline',   title: 'Jobs Dashboard',     sub: 'AI-powered job search hub',  onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(ai-hub)'); } },
-              { icon: 'compass-outline',     title: 'Explore Jobs',       sub: 'Browse live openings worldwide', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(discover)'); } },
+              { icon: 'compass-outline',     title: 'Explore Jobs',       sub: 'Browse live openings worldwide', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.({ pathname: '/(ai-hub)', params: { tab: 'search' } }); } },
               { icon: 'document-text-outline', title: 'Resume Builder',   sub: 'Build your AI-powered resume', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(resume-builder)'); } },
             ].concat(isAdmin ? [
               { icon: 'star-outline', title: 'Admin Panel', sub: 'Manage credit packages', onPress: () => { setShowSettings(false); setScreen('admin'); } },
