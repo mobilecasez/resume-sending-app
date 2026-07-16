@@ -4,6 +4,7 @@
 const rewards = require('../services/creditRewards');
 const referrals = require('../services/referrals');
 const eventCosts = require('../services/eventCosts');
+const rewardNudges = require('../services/rewardNudges');
 const dbConfig = require('../../db-config');
 
 // GET /api/rewards — reward status + balance (+ grants any self-serve reward the user has now earned, and
@@ -59,4 +60,18 @@ async function claimReferral(req, res) {
   }
 }
 
-module.exports = { getRewards, evaluate, getReferral, claimReferral };
+// POST /api/admin/reward-nudge { nudgeKey, limit?, cooldownDays?, dryRun? } — ADMIN-ONLY. Safe by default:
+// dryRun unless dryRun:false is passed explicitly (so a preview never blasts anyone).
+async function sendRewardNudge(req, res) {
+  try {
+    const { nudgeKey, limit, cooldownDays } = req.body || {};
+    const dryRun = (req.body && req.body.dryRun) === false ? false : true;
+    const r = await rewardNudges.sendNudge(nudgeKey, { limit, cooldownDays, dryRun });
+    res.json({ success: !r.error, ...r });
+  } catch (e) {
+    console.error('[rewards] sendRewardNudge:', e.message);
+    res.status(500).json({ error: 'Nudge failed' });
+  }
+}
+
+module.exports = { getRewards, evaluate, getReferral, claimReferral, sendRewardNudge };
