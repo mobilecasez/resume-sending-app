@@ -1,4 +1,20 @@
 const dbConfig = require('../../db-config');
+const creditRewards = require('../services/creditRewards');
+const referrals = require('../services/referrals');
+
+// UNIVERSAL reward earning: evaluate the going-forward rewards on the balance fetch (which EVERY app version
+// calls), so users on OLD builds — not just the new Rewards screen — earn profile/apply/rate credits.
+// Throttled per user (≤ once / 10 min) and best-effort so it never slows or breaks the balance read.
+const _rewardEvalAt = new Map();
+async function maybeEvaluateRewards(userId) {
+  if (!userId) return;
+  const now = Date.now();
+  if (now - (_rewardEvalAt.get(userId) || 0) < 10 * 60 * 1000) return;
+  _rewardEvalAt.set(userId, now);
+  if (_rewardEvalAt.size > 20000) _rewardEvalAt.clear();   // bound memory
+  await creditRewards.evaluateSelfServe(userId).catch(() => {});
+  await referrals.evaluateReferralQualification(userId).catch(() => {});
+}
 
 // Get all plans
 const getPlans = async (req, res) => {
@@ -22,7 +38,8 @@ const getPlans = async (req, res) => {
 const getUserCredits = async (req, res) => {
     try {
         const userId = req.user.id;
-        
+        await maybeEvaluateRewards(userId);   // grant any newly-earned going-forward rewards (all app versions)
+
         // Get credits from user_credits table (primary source)
         const userCredits = await dbConfig.get(`
             SELECT credits_remaining, credits_total, expiry_date, last_purchase_date

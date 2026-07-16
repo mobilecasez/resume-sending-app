@@ -814,10 +814,11 @@ export async function fetchAdminAiEvents(): Promise<AiEventCost[]> {
   return (data && data.events) || [];
 }
 
-/** Admin: send (or dry-run preview) a reward push nudge. dryRun=true returns { wouldTarget } without sending. */
-export async function sendRewardNudge(nudgeKey: string, dryRun: boolean): Promise<{ wouldTarget?: number; sent?: number; targeted?: number; credits?: number; error?: string }> {
+/** Admin: send (or dry-run preview) a reward push nudge. dryRun=true returns { wouldTarget } without sending;
+ *  testSelf=true sends ONLY to the admin's own device (ignores filters) for previewing before a mass send. */
+export async function sendRewardNudge(nudgeKey: string, dryRun: boolean, testSelf = false): Promise<{ wouldTarget?: number; sent?: number; targeted?: number; credits?: number; test?: boolean; reason?: string; error?: string }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.post(`${API_BASE_URL}/admin/reward-nudge`, { nudgeKey, dryRun }, { headers, timeout: 30000 });
+  const { data } = await axios.post(`${API_BASE_URL}/admin/reward-nudge`, { nudgeKey, dryRun, testSelf }, { headers, timeout: 30000 });
   return data || {};
 }
 

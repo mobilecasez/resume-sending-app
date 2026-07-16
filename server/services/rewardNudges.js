@@ -38,13 +38,23 @@ async function targets(nudgeKey, limit, cooldownDays) {
 async function sendNudge(nudgeKey, opts = {}) {
   const cfg = NUDGES[nudgeKey];
   if (!cfg) return { error: 'unknown_nudge', available: Object.keys(NUDGES) };
-  const limit = Math.min(Math.max(parseInt(opts.limit, 10) || 500, 1), 10000);
-  const cooldownDays = parseInt(opts.cooldownDays, 10) || 7;
   const credits = await eventCosts.getEventCost(nudgeKey);
-  const tgt = await targets(nudgeKey, limit, cooldownDays);
-  if (opts.dryRun) return { dryRun: true, nudgeKey, credits, wouldTarget: tgt.length };
   const title = cfg.title.replace(/\{credits\}/g, String(credits));
   const body = cfg.body.replace(/\{credits\}/g, String(credits));
+
+  // TEST mode — send ONLY to this user's device (ignores the earned/cooldown filters so the admin can
+  // preview the real notification on their own phone before any mass send).
+  if (opts.testUserId) {
+    const u = await dbConfig.get('SELECT id, expo_push_token FROM users WHERE id = ?', [opts.testUserId]).catch(() => null);
+    if (!u || !/^Expo(nent)?PushToken\[/.test(u.expo_push_token || '')) return { test: true, sent: 0, reason: 'no_push_token' };
+    const res = await sendPushNotification(u.expo_push_token, title, body, { type: 'reward', screen: 'rewards', nudge: nudgeKey, test: true });
+    return { test: true, sent: res === true ? 1 : 0, reason: res === true ? undefined : (res === 'stale' ? 'stale_token' : 'send_failed') };
+  }
+
+  const limit = Math.min(Math.max(parseInt(opts.limit, 10) || 500, 1), 10000);
+  const cooldownDays = parseInt(opts.cooldownDays, 10) || 7;
+  const tgt = await targets(nudgeKey, limit, cooldownDays);
+  if (opts.dryRun) return { dryRun: true, nudgeKey, credits, wouldTarget: tgt.length };
   let sent = 0, stale = 0;
   for (const u of tgt) {
     const res = await sendPushNotification(u.expo_push_token, title, body, { type: 'reward', screen: 'rewards', nudge: nudgeKey });

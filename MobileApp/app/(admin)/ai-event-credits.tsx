@@ -67,17 +67,30 @@ export default function AiEventCreditsScreen() {
       const preview = await sendRewardNudge(key, true);
       if (preview.error) { Alert.alert('No nudge', 'This reward has no push nudge configured.'); return; }
       const n = preview.wouldTarget || 0;
-      if (n === 0) { Alert.alert('No one to notify', 'Every eligible user has already earned this reward or was nudged recently (7-day cooldown).'); return; }
+      // Test-on-my-device: sends ONLY to the admin's own phone (ignores filters) so you can preview first.
+      const testBtn = {
+        text: 'Test on my device', style: 'default' as const, onPress: async () => {
+          try {
+            const r = await sendRewardNudge(key, false, true);
+            Alert.alert(r.sent ? 'Sent to your device ✓' : 'Not sent',
+              r.sent ? 'Check your phone for the notification.'
+                : r.reason === 'no_push_token' ? 'Your device has no push token yet — enable notifications for CVApplyr, reopen the app, then try again.'
+                : 'Could not send — please try again.');
+          } catch (e: any) { Alert.alert('Failed', e?.response?.data?.error || 'Please try again.'); }
+        },
+      };
+      const sendAllBtn = {
+        text: `Send to all ${n}`, style: 'destructive' as const, onPress: async () => {
+          try { const r = await sendRewardNudge(key, false); Alert.alert('Sent ✓', `Notified ${r.sent || 0} user${(r.sent || 0) === 1 ? '' : 's'}.`); }
+          catch (e: any) { Alert.alert('Send failed', e?.response?.data?.error || 'Please try again.'); }
+        },
+      };
       Alert.alert(
-        `Send “${label}” nudge?`,
-        `This sends a push to ${n} user${n === 1 ? '' : 's'} who haven’t earned this reward yet. It is NOT automatic — only sends when you confirm.`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: `Send to ${n}`, style: 'default', onPress: async () => {
-              try { const r = await sendRewardNudge(key, false); Alert.alert('Sent ✓', `Notified ${r.sent || 0} user${(r.sent || 0) === 1 ? '' : 's'}.`); }
-              catch (e: any) { Alert.alert('Send failed', e?.response?.data?.error || 'Please try again.'); }
-            } },
-        ]
+        `“${label}” nudge`,
+        n > 0
+          ? `${n} user${n === 1 ? '' : 's'} haven’t earned this reward yet. Test it on your own device first, or send to everyone. Never automatic.`
+          : 'No one is currently eligible (everyone earned it or was nudged in the last 7 days). You can still test it on your own device.',
+        n > 0 ? [{ text: 'Cancel', style: 'cancel' }, testBtn, sendAllBtn] : [{ text: 'Cancel', style: 'cancel' }, testBtn]
       );
     } catch (e: any) {
       Alert.alert('Failed', e?.response?.data?.error || 'Could not reach the server.');

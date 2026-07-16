@@ -65,8 +65,10 @@ async function claimReferral(req, res) {
 async function sendRewardNudge(req, res) {
   try {
     const { nudgeKey, limit, cooldownDays } = req.body || {};
+    const testSelf = (req.body && req.body.testSelf) === true;
     const dryRun = (req.body && req.body.dryRun) === false ? false : true;
-    const r = await rewardNudges.sendNudge(nudgeKey, { limit, cooldownDays, dryRun });
+    const opts = testSelf ? { testUserId: req.user && req.user.id } : { limit, cooldownDays, dryRun };
+    const r = await rewardNudges.sendNudge(nudgeKey, opts);
     res.json({ success: !r.error, ...r });
   } catch (e) {
     console.error('[rewards] sendRewardNudge:', e.message);
