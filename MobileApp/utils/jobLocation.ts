@@ -107,6 +107,40 @@ const CITY_TO_COUNTRY: Record<string, string> = (() => {
 const REMOTE_RE = /\b(remote|anywhere|work from home|wfh|worldwide|global)\b/i;
 const titleCase = (s: string) => s.replace(/\b\w/g, (m) => m.toUpperCase());
 
+// Sub-national aliases that are also embedded in other place names → only counted as a LAST resort so a
+// real country name wins (e.g. "New South Wales, Australia" → Australia, not UK via "wales").
+const REGIONAL_ALIASES = new Set(['england', 'scotland', 'wales', 'britain', 'great britain', 'holland']);
+
+// Word/bigram/trigram tokens of a string (lowercased) — used for EXACT lookups so a country name can never
+// match as a mere substring ("india" must not hit inside "Indianapolis"; "wales" not inside "New South Wales").
+function ngrams(s: string): string[] {
+  const toks = String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const g: string[] = [];
+  for (let i = 0; i < toks.length; i++) {
+    g.push(toks[i]);
+    if (i + 1 < toks.length) g.push(toks[i] + ' ' + toks[i + 1]);
+    if (i + 2 < toks.length) g.push(toks[i] + ' ' + toks[i + 1] + ' ' + toks[i + 2]);
+  }
+  return g;
+}
+
+// Detect the country a location string belongs to, via EXACT token/bigram/trigram lookup:
+//   1) a recognized city (most specific) wins — scanned in text order;
+//   2) else a country-level alias/name;
+//   3) else a sub-national alias (england/wales/…) as a last resort.
+function countryFromText(s: string): string | null {
+  const grams = ngrams(s);
+  for (const g of grams) if (CITY_TO_COUNTRY[g]) return CITY_TO_COUNTRY[g];
+  let regional: string | null = null;
+  for (const g of grams) {
+    const disp = COUNTRY_ALIASES[g];
+    if (!disp) continue;
+    if (REGIONAL_ALIASES.has(g)) { if (!regional) regional = disp; continue; }
+    return disp;   // full country-level alias/name
+  }
+  return regional;
+}
+
 // Resolve a raw location string → { linkedInLocation, country, hasLocation }.
 export function resolveLiveLocation(rawLoc: string): ResolvedLocation {
   const raw = String(rawLoc || '').trim();
@@ -118,15 +152,8 @@ export function resolveLiveLocation(rawLoc: string): ResolvedLocation {
   const lower = raw.toLowerCase();
   const parts = lower.split(/[,/|]| in | near /).map((p) => p.trim()).filter(Boolean);
 
-  // Detect country: explicit country/alias anywhere, else infer from a recognized city/state token.
-  let country: string | null = null;
-  for (const p of parts) { if (COUNTRY_ALIASES[p]) { country = COUNTRY_ALIASES[p]; break; } }
-  if (!country) for (const p of parts) { if (CITY_TO_COUNTRY[p]) { country = CITY_TO_COUNTRY[p]; break; } }
-  // token-level (handles "noida sector 62", "south delhi")
-  if (!country) {
-    const toks = lower.split(/\s+/);
-    for (const t of toks) { if (COUNTRY_ALIASES[t]) { country = COUNTRY_ALIASES[t]; break; } if (CITY_TO_COUNTRY[t]) { country = CITY_TO_COUNTRY[t]; break; } }
-  }
+  // Detect country via EXACT token/bigram/trigram lookup (never substring — see countryFromText).
+  const country: string | null = countryFromText(raw);
 
   const isNcr = /\bncr\b|national capital region/.test(lower) || (country === 'India' && /\bdelhi\b/.test(lower));
 
@@ -146,21 +173,12 @@ export function resolveLiveLocation(rawLoc: string): ResolvedLocation {
   return { linkedInLocation, country, hasLocation: true };
 }
 
-// Detect which country a location STRING belongs to (from a country name/alias or a recognized city),
-// or null if unknown. Token/bigram lookup → fast enough to run per result card.
+// Detect which country a location STRING belongs to (from a recognized city or a country name/alias),
+// or null if unknown. EXACT token/bigram/trigram matching (no substring) → "Indianapolis" no longer
+// mis-detects as India, "New South Wales, Australia" resolves to Australia, "Salt Lake City" to the US.
 export function detectLocationCountry(loc: string | null | undefined): string | null {
-  const s = String(loc || '').toLowerCase();
-  if (!s.trim()) return null;
-  for (const [alias, disp] of Object.entries(COUNTRY_ALIASES)) {
-    if (alias.length < 4) continue;   // skip ambiguous 2–3 char aliases (us/uk/hk/nz) that hit substrings
-    if (s.includes(alias)) return disp;
-  }
-  const toks = s.split(/[^a-z0-9]+/).filter(Boolean);
-  for (let i = 0; i < toks.length; i++) {
-    if (CITY_TO_COUNTRY[toks[i]]) return CITY_TO_COUNTRY[toks[i]];
-    if (i + 1 < toks.length) { const bg = toks[i] + ' ' + toks[i + 1]; if (CITY_TO_COUNTRY[bg]) return CITY_TO_COUNTRY[bg]; }
-  }
-  return null;
+  const s = String(loc || '');
+  return s.trim() ? countryFromText(s) : null;
 }
 
 // Should a result card be kept for a location-scoped search?

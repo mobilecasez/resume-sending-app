@@ -306,7 +306,11 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
       // user's IP, location-accurate). Far better than the ATS-only X-Ray for places like Delhi/India — this
       // is why "0 matches → searched the web → still nothing" happened. Skip the X-Ray in that case.
       if ((data.total || 0) === 0) {
-        setWebPhase(''); setWebNote(''); setLiveQuery(query); setLiveOpen(true);
+        // Cancel any still-in-flight X-Ray from a PRIOR search (its timer + mounted SilentWebSearch) so it
+        // can't hydrate/re-query behind the modal, then jump to the rich live web search.
+        if (webTimerRef.current) { clearTimeout(webTimerRef.current); webTimerRef.current = null; }
+        setXrayUrls([]); setWebPhase(''); setWebNote('');
+        setLiveQuery(query); setLiveOpen(true);
         return;
       }
       // We have some network matches → silently X-Ray the ATS web to GROW them (Google + DDG-lite).
