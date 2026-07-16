@@ -4,7 +4,7 @@
 // shown). The user multi-selects cards and taps "Fetch details" → each posting is opened ONE AT A TIME
 // in a hidden on-device WebView (the user's own IP → no bot wall), the page HTML is scraped, sent to the
 // backend for AI extraction, STORED, and shown back as a full our-style job card.
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   Modal, View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, Animated, Easing, Dimensions, AppState, Alert,
 } from 'react-native';
@@ -33,6 +33,59 @@ const GRAB_JS = `(function(){
 
 const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 
+// On-device organic-results scraper. A REAL Google (+ DuckDuckGo-lite fallback) search on the USER's own
+// IP → works for ANY country/city and doesn't depend on the slow server-side grounding. Grabs each organic
+// result's <h3> title + destination URL (resolving Google's /url? and DDG's redirect wrappers), skipping
+// the engines' own domains. Retries while the page settles, then posts what it found.
+const SEARCH_SCRAPE_JS = `(function(){
+  function real(href){
+    if(!href) return '';
+    try{
+      var m = href.match(/[?&](?:q|url|uddg)=([^&]+)/);
+      if(/\\/url\\?|duckduckgo\\.com\\/l\\//i.test(href) && m){ return decodeURIComponent(m[1]); }
+    }catch(e){}
+    return href;
+  }
+  var SKIP = /google\\.|gstatic|googleusercontent|youtube\\.|webcache|duckduckgo\\.com|bing\\.|\\.google\\./i;
+  function scan(){
+    var out=[], seen={};
+    try{
+      var h3s=document.querySelectorAll('h3');
+      for(var i=0;i<h3s.length;i++){
+        var h=h3s[i], a=(h.closest?h.closest('a'):null);
+        if(!a){ var p=h.parentElement; while(p && p.tagName!=='A'){ p=p.parentElement; } a=p; }
+        if(!a||!a.href) continue;
+        var href=real(a.href);
+        if(!/^https?:\\/\\//i.test(href) || SKIP.test(href)) continue;
+        var title=(h.innerText||h.textContent||'').trim();
+        if(!title||title.length<3||seen[href]) continue; seen[href]=1;
+        out.push({title:title.slice(0,180), url:href});
+      }
+      if(!out.length){   // DDG-lite / plain markup: result links carry the title text directly
+        var as=document.querySelectorAll('a.result-link, a[href]');
+        for(var j=0;j<as.length && out.length<30;j++){
+          var href2=real(as[j].href||'');
+          if(!/^https?:\\/\\//i.test(href2) || SKIP.test(href2)) continue;
+          var t2=(as[j].innerText||as[j].textContent||'').trim();
+          if(!t2||t2.length<8||seen[href2]) continue; seen[href2]=1;
+          out.push({title:t2.slice(0,180), url:href2});
+        }
+      }
+    }catch(e){}
+    var bt=(document.body?document.body.innerText:'')||'';
+    return {out:out, blocked:/captcha|unusual traffic|are you a robot|too many requests|before you continue|verify you.re human/i.test(bt)};
+  }
+  var tries=0;
+  var iv=setInterval(function(){
+    tries++;
+    var r=scan();
+    if(r.out.length>0 || tries>=14){
+      clearInterval(iv);
+      try{ window.ReactNativeWebView.postMessage(JSON.stringify({__cvsr:true, results:r.out, blocked:r.blocked})); }catch(e){}
+    }
+  },500);
+})(); true;`;
+
 export default function LiveJobSearch({ visible, query, onClose }: { visible: boolean; query: string; onClose: () => void }) {
   const CONCURRENCY = 5;   // fetch up to 5 selected postings at once (was one-at-a-time)
   const { costOf } = useEventCosts();
@@ -55,6 +108,13 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   const queryRef = useRef(query);
   const batchRef = useRef<string[]>([]);   // urls in the current fetch batch (for the completion notification)
   const retryRef = useRef<Record<string, number>>({});   // per-url auto-retry count (retry once before failing)
+  // On-device web search (real Google/DDG on the user's IP → worldwide, no server bot wall). Runs in
+  // PARALLEL with the server search and merges in; we only show "no results" once BOTH have finished empty.
+  const [searchActive, setSearchActive] = useState(false);
+  const [searchGen, setSearchGen] = useState(0);
+  const serverDoneRef = useRef(false);
+  const webDoneRef = useRef(false);
+  const webReportsRef = useRef(0);
 
   const pulse = useRef(new Animated.Value(0)).current;
 
@@ -66,15 +126,68 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   const saveProgress = () => { AsyncStorage.setItem(persistKey(), JSON.stringify({ details: detailsRef.current, fstate: fstateRef.current })).catch(() => {}); };
   const setFetchingBoth = (v: boolean) => { fetchingRef.current = v; setFetching(v); };
 
+  // A real Google search + a DDG-lite fallback, run on the user's device/IP.
+  const searchUrls = useMemo(() => {
+    const q = String(query || '').trim();
+    if (!q) return [] as string[];
+    return [
+      'https://www.google.com/search?num=30&hl=en&q=' + encodeURIComponent(q),
+      'https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(q),
+    ];
+  }, [query]);
+
+  const normUrl = (u: string) => { try { const x = new URL(String(u || '')); return (x.origin + x.pathname).replace(/\/+$/, ''); } catch { return String(u || '').split('#')[0].replace(/\/+$/, ''); } };
+
+  // Merge new cards (server grounded OR on-device web) into the list, de-duped by normalized URL; keep
+  // already-saved ones at the bottom. Any card arriving flips the modal to the results view.
+  const mergeCards = useCallback((incoming: LiveJobCard[]) => {
+    if (!incoming || !incoming.length) return;
+    setCards((prev) => {
+      const seen = new Set(prev.map((c) => normUrl(c.job_url)));
+      const add: LiveJobCard[] = [];
+      for (const c of incoming) { const k = normUrl(c.job_url); if (c && c.job_url && c.title && !seen.has(k)) { seen.add(k); add.push(c); } }
+      if (!add.length) return prev;
+      const next = [...prev, ...add];
+      next.sort((a, b) => (a.saved ? 1 : 0) - (b.saved ? 1 : 0));
+      cardsRef.current = next;
+      return next;
+    });
+    setPhase('results');
+  }, []);
+
+  // On-device organic results → our card shape (company/location fill in when the user fetches details).
+  const toWebCards = (results: { title: string; url: string }[]): LiveJobCard[] => (results || []).map((r) => {
+    let host = ''; try { host = new URL(r.url).hostname.replace(/^www\./, ''); } catch {}
+    return { id: r.url, job_url: r.url, title: r.title, company: host || null, employer_name: host || null, location: null, work_mode: null, job_type: null, salary: null, experience: null, responsibilities: [], skills: [], source: host || 'web', highlights: [], saved: false, summary: null } as LiveJobCard;
+  });
+
+  // Only fall to the empty/error state once BOTH the server and the on-device search have finished empty.
+  const finishSource = useCallback((which: 'server' | 'web') => {
+    if (which === 'server') serverDoneRef.current = true; else webDoneRef.current = true;
+    if (serverDoneRef.current && webDoneRef.current) setPhase((p) => (p === 'results' || cardsRef.current.length > 0) ? 'results' : 'error');
+  }, []);
+
+  const onSearchReport = useCallback((results: { title: string; url: string }[]) => {
+    const got = results && results.length;
+    if (got) mergeCards(toWebCards(results));
+    webReportsRef.current += 1;
+    if (got || webReportsRef.current >= 2) { setSearchActive(false); finishSource('web'); }   // first engine to yield wins
+  }, [mergeCards, finishSource]);
+
   // ── run the live search when opened ──
   useEffect(() => {
     if (!visible) return;
-    setPhase('searching'); setCards([]); setSelected(new Set());
+    setPhase('searching'); setCards([]); cardsRef.current = []; setSelected(new Set());
     setDetails({}); detailsRef.current = {};
     setFstate({}); fstateRef.current = {};
     setFetchingBoth(false); setActiveUrls([]); activeRef.current = new Set(); queueRef.current = [];
     Object.values(timersRef.current).forEach(clearTimeout); timersRef.current = {};
+    serverDoneRef.current = false; webDoneRef.current = false; webReportsRef.current = 0;
+    // Kick off the on-device web search (hidden WebViews mount below) in PARALLEL with the server search.
+    setSearchGen((g) => g + 1); setSearchActive(true);
     let alive = true;
+    // Safety net: if the hidden search WebViews never report back (offline / hard block), stop waiting.
+    const webTimer = setTimeout(() => { if (alive) { setSearchActive(false); finishSource('web'); } }, 16000);
     (async () => {
       // restore any saved fetch progress for THIS query (survives minimize / app restart)
       try {
@@ -84,11 +197,11 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
       try {
         const r = await liveSearchJobs(query);
         if (!alive) return;
-        setCards(r.cards || []); cardsRef.current = r.cards || [];
-        setPhase((r.cards && r.cards.length) ? 'results' : 'error');
-      } catch { if (alive) setPhase('error'); }
+        mergeCards(r.cards || []);
+      } catch { /* on-device search may still deliver */ }
+      finally { if (alive) finishSource('server'); }
     })();
-    return () => { alive = false; Object.values(timersRef.current).forEach(clearTimeout); };
+    return () => { alive = false; clearTimeout(webTimer); Object.values(timersRef.current).forEach(clearTimeout); };
   }, [visible, query]);
 
   // ── searching animation ──
@@ -330,6 +443,24 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
               </View>
             </>
           )}
+
+          {/* hidden on-device SEARCH — a real Google (+ DDG-lite fallback) query on the user's own IP →
+              worldwide organic results, no server-side bot wall / grounding latency. */}
+          {searchActive && searchUrls.map((uri, i) => (
+            <View key={searchGen + '|search|' + i} style={styles.hiddenWeb} pointerEvents="none">
+              <WebView
+                source={{ uri }}
+                injectedJavaScript={SEARCH_SCRAPE_JS}
+                onMessage={(e) => { try { const d = JSON.parse(e.nativeEvent.data); if (d && d.__cvsr) onSearchReport(Array.isArray(d.results) ? d.results : []); } catch {} }}
+                onError={() => onSearchReport([])}
+                onHttpError={() => onSearchReport([])}
+                userAgent={MOBILE_UA}
+                javaScriptEnabled
+                domStorageEnabled
+                originWhitelist={['*']}
+              />
+            </View>
+          ))}
 
           {/* hidden on-device fetchers — up to CONCURRENCY pages at once, on the user's IP.
               Keyed by webGen so an AppState resume remounts them (iOS pauses background WebViews). */}
