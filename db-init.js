@@ -651,30 +651,53 @@ async function runPostgresMigrations(db) {
                 label TEXT NOT NULL,
                 description TEXT,
                 category TEXT DEFAULT 'paid',
+                direction TEXT NOT NULL DEFAULT 'debit',
                 credits INTEGER NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 sort_order INTEGER DEFAULT 0,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
+        // direction: 'credit' = a REWARD (credits granted), 'debit' = a COST (credits charged). Split into
+        // two tabs on the admin credits screen. Added after the original table → migrate existing rows.
+        await col(`ALTER TABLE ai_event_costs ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT 'debit'`);
         try {
             const { CATALOG } = require('./server/services/eventCosts');
             for (const e of CATALOG) {
                 await db.query(
-                    `INSERT INTO ai_event_costs (event_key, label, description, category, credits, is_active, sort_order)
-                     VALUES ($1, $2, $3, $4, $5, 1, $6)
+                    `INSERT INTO ai_event_costs (event_key, label, description, category, direction, credits, is_active, sort_order)
+                     VALUES ($1, $2, $3, $4, $5, $6, 1, $7)
                      ON CONFLICT (event_key) DO UPDATE SET
                         label = EXCLUDED.label,
                         description = EXCLUDED.description,
                         category = EXCLUDED.category,
+                        direction = EXCLUDED.direction,
                         sort_order = EXCLUDED.sort_order`,
-                    [e.key, e.label, e.description, e.category, e.credits, e.sort]
+                    [e.key, e.label, e.description, e.category, e.direction || 'debit', e.credits, e.sort]
                 );
             }
             console.log('✅ Migration 008: ai_event_costs table + seed done');
         } catch (seedErr) {
             console.warn('⚠️ ai_event_costs seed warning:', seedErr.message);
         }
+
+        // user_reward_grants — idempotent ledger of credits GRANTED to users (activation rewards + referrals).
+        // idem_key makes each grant one-shot: one-time rewards use the event_key; referral uses
+        // 'reward_referral:<referredUserId>' so each invited friend pays out at most once.
+        await col(`
+            CREATE TABLE IF NOT EXISTS user_reward_grants (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                event_key TEXT NOT NULL,
+                idem_key TEXT NOT NULL,
+                credits INTEGER NOT NULL DEFAULT 0,
+                note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (user_id, idem_key)
+            )
+        `);
+        await col(`CREATE INDEX IF NOT EXISTS idx_user_reward_grants_user ON user_reward_grants(user_id, created_at DESC)`);
+        console.log('✅ Migration 008b: user_reward_grants ledger done');
 
         // app_feedback — private in-app feedback (low ratings + messages). Happy users
         // go to the native store review instead; only 1–3★ / written feedback lands here.

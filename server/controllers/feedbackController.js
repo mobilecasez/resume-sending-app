@@ -3,6 +3,7 @@
 'use strict';
 
 const dbConfig = require('../../db-config');
+const creditRewards = require('../services/creditRewards');
 
 // POST /api/feedback — store a user's private feedback / rating.
 async function submitFeedback(req, res) {
@@ -15,7 +16,11 @@ async function submitFeedback(req, res) {
        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
       [userId || null, isNaN(r) ? null : r, String(message || '').slice(0, 4000), trigger || null, platform || null, appVersion || null]
     );
-    res.json({ success: true });
+    // "Rate the app" reward — granted once for sharing in-app feedback (store-policy safe: the reward is
+    // for the feedback, NOT the store review). Idempotent, so repeat submissions don't re-pay.
+    let reward = null;
+    if (userId) { try { const g = await creditRewards.grantReward(userId, 'reward_rate_app'); if (g.granted) reward = { key: 'reward_rate_app', credits: g.amount }; } catch (_) {} }
+    res.json({ success: true, reward });
   } catch (e) {
     console.error('submitFeedback error:', e.message);
     res.status(500).json({ error: 'Failed to save feedback' });

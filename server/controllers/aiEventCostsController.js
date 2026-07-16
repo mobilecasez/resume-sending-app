@@ -8,7 +8,7 @@ const eventCosts = require('../services/eventCosts');
 async function getAllEvents(req, res) {
   try {
     const rows = await dbConfig.query(
-      `SELECT id, event_key, label, description, category, credits, is_active, sort_order, updated_at
+      `SELECT id, event_key, label, description, category, direction, credits, is_active, sort_order, updated_at
        FROM ai_event_costs ORDER BY sort_order ASC, id ASC`
     );
     res.json({ events: rows || [] });

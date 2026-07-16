@@ -22,10 +22,21 @@ const CATALOG = [
   { key: 'ai_email_body',         label: 'AI email body',             credits: 0, category: 'free', sort: 11, description: 'Write the outreach email body with AI. Free today.' },
   { key: 'ai_search',             label: 'AI job search',             credits: 5, category: 'paid', sort: 12, description: 'Natural-language AI search across the network + live web.' },
   { key: 'live_fetch',            label: 'Fetch live job',            credits: 1, category: 'paid', sort: 13, description: 'Fetch one live job posting from the web into your feed.' },
+
+  // ── REWARDS (credits IN — grants, not charges). direction:'credit' so the admin screen shows them
+  // in the "Rewards" tab. Amounts are admin-configurable exactly like the costs above; set is_active=0
+  // (via the admin screen) to switch a reward off. Granted ONCE per user (except referral, once/friend).
+  { key: 'reward_complete_profile', label: 'Complete your profile', credits: 5,  category: 'reward', direction: 'credit', sort: 101, description: 'One-time: user uploads a résumé / completes their profile.' },
+  { key: 'reward_first_apply',      label: 'Apply to your first job', credits: 10, category: 'reward', direction: 'credit', sort: 102, description: 'One-time: user applies to their first job.' },
+  { key: 'reward_rate_app',         label: 'Rate the app',          credits: 20, category: 'reward', direction: 'credit', sort: 103, description: 'One-time: user shares in-app feedback (store-policy safe — reward is for feedback, not the store review).' },
+  { key: 'reward_referral',         label: 'Refer a friend',        credits: 20, category: 'reward', direction: 'credit', sort: 104, description: 'Per friend: an invited user signs up, completes their profile, and applies to a job.' },
 ];
 
 const DEFAULT = {};
 CATALOG.forEach((c) => { DEFAULT[c.key] = c.credits; });
+// direction map (credit = a reward grant, debit = a cost); defaults to 'debit' for anything unspecified.
+const DIRECTION = {};
+CATALOG.forEach((c) => { DIRECTION[c.key] = c.direction || 'debit'; });
 
 let _cache = null;
 let _at = 0;
@@ -89,4 +100,4 @@ async function chargeCredits(userId, eventKey, metadata = {}) {
   return { charged: true, cost, remaining: remaining - cost };
 }
 
-module.exports = { CATALOG, DEFAULT, getEventCost, getPublicCosts, invalidate, chargeCredits };
+module.exports = { CATALOG, DEFAULT, DIRECTION, getEventCost, getPublicCosts, invalidate, chargeCredits };
