@@ -1862,14 +1862,48 @@ export default function AIHubScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* ══ JOB HUB TABS: Search | My Jobs | Saved ══ */}
-      <View style={styles.hubSeg}>
-        {([['search', 'Search', 'search-outline'], ['myjobs', 'My Jobs', 'briefcase-outline'], ['saved', 'Saved', 'bookmark-outline']] as const).map(([k, label, icon]) => (
-          <TouchableOpacity key={k} onPress={() => setHubTab(k as any)} style={[styles.hubSegBtn, hubTab === k && styles.hubSegBtnOn]} activeOpacity={0.85}>
-            <Ionicons name={icon as any} size={14} color={hubTab === k ? '#fff' : T.textFaint} />
-            <Text style={[styles.hubSegText, hubTab === k && styles.hubSegTextOn]} numberOfLines={1}>{k === 'saved' && hubSavedCount > 0 ? `Saved · ${hubSavedCount}` : label}</Text>
-          </TouchableOpacity>
-        ))}
+      {/* ══ SHARED HERO CARD — the Search | My Jobs | Saved tabs live INSIDE it; title + summary swap per tab ══ */}
+      <View style={styles.hubHero}>
+        <LinearGradient colors={['#0B0F22', '#0F1635', '#0B0F22']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={StyleSheet.absoluteFillObject} />
+        <View style={[styles.blob, { top: -24, left: -30, backgroundColor: 'rgba(79,141,255,0.18)', width: 150, height: 150 }]} />
+        <View style={[styles.blob, { bottom: -20, right: -20, backgroundColor: 'rgba(124,107,255,0.14)', width: 120, height: 120 }]} />
+        <View style={styles.heroEyeRow}>
+          <Text style={styles.heroEyebrow}>{hubTab === 'search' ? 'AI JOB SEARCH' : hubTab === 'saved' ? 'SAVED JOBS' : 'YOUR COMPANIES'}</Text>
+          <View style={styles.aiPill}><Animated.View style={[styles.pulseDot, { transform: [{ scale: pulseAnim }] }]} /><Text style={styles.aiPillText}>Live</Text></View>
+        </View>
+        <Text style={styles.heroTitle}>{hubTab === 'search' ? 'Search' : hubTab === 'saved' ? 'Saved' : 'My Jobs'}</Text>
+        <Text style={styles.heroSub}>
+          {hubTab === 'search'
+            ? 'Describe the job you want — found across the live web'
+            : hubTab === 'saved'
+            ? (hubSavedCount > 0 ? `${hubSavedCount} job${hubSavedCount === 1 ? '' : 's'} fetched from the web` : 'Jobs you fetch from the web appear here')
+            : (employers.length > 0
+              ? `Tracking ${stats.sources} ${stats.sources === 1 ? 'company' : 'companies'} · ${stats.matches} match${stats.matches === 1 ? '' : 'es'} · ${stats.contacts} contacts`
+              : 'Add a company to start AI job matching')}
+        </Text>
+        {hubTab === 'myjobs' && employers.length > 0 && (
+          <View style={styles.statsRow}>
+            {[
+              { value: stats.matches, label: 'Matches', color: '#22D3EE' },
+              { value: stats.contacts, label: 'Contacts', color: '#A78BFA' },
+              { value: `${stats.verifiedPct}%`, label: 'Verified', color: '#34D399' },
+              { value: stats.sources, label: 'Companies', color: '#FB923C' },
+            ].map((s, i, arr) => (
+              <React.Fragment key={s.label}>
+                <View style={styles.statItem}><Text style={[styles.statValue, { color: s.color }]}>{s.value}</Text><Text style={styles.statLabel}>{s.label}</Text></View>
+                {i < arr.length - 1 && <View style={styles.statDivider} />}
+              </React.Fragment>
+            ))}
+          </View>
+        )}
+        <View style={styles.hubTabsInCard}>
+          {([['search', 'Search', 'search-outline'], ['myjobs', 'My Jobs', 'briefcase-outline'], ['saved', 'Saved', 'bookmark-outline']] as const).map(([k, label, icon]) => (
+            <TouchableOpacity key={k} onPress={() => setHubTab(k as any)} style={[styles.hubTabInCard, hubTab === k && styles.hubTabInCardOn]} activeOpacity={0.85}>
+              <Ionicons name={icon as any} size={14} color={hubTab === k ? '#0B0F22' : 'rgba(255,255,255,0.72)'} />
+              <Text style={[styles.hubTabInCardText, hubTab === k && styles.hubTabInCardTextOn]} numberOfLines={1}>{k === 'saved' && hubSavedCount > 0 ? `Saved · ${hubSavedCount}` : label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
       </View>
 
       {hubTab === 'search' && <ExploreFeed embedded />}
@@ -1888,58 +1922,7 @@ export default function AIHubScreen() {
         }}
       >
 
-        {/* ══ HERO CARD (Letters-style dark gradient) ══════════════════════════ */}
-        <View style={styles.heroCard}>
-          <LinearGradient
-            colors={['#0B0F22', '#0F1635', '#0B0F22']}
-            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-            style={StyleSheet.absoluteFillObject}
-          />
-          {/* Mesh blobs */}
-          <View style={[styles.blob, { top: -24, left: -30, backgroundColor: 'rgba(79,141,255,0.18)', width: 150, height: 150 }]} />
-          <View style={[styles.blob, { top: 16, right: -20, backgroundColor: 'rgba(124,107,255,0.14)', width: 120, height: 120 }]} />
-          <View style={[styles.blob, { bottom: -16, left: 80, backgroundColor: 'rgba(20,184,166,0.10)', width: 100, height: 100 }]} />
-
-          {/* Eyebrow + AI dot */}
-          <View style={styles.heroEyeRow}>
-            <Text style={styles.heroEyebrow}>AI-POWERED JOB SEARCH</Text>
-            {employers.length > 0 && (
-              <View style={styles.aiPill}>
-                <Animated.View style={[styles.pulseDot, { transform: [{ scale: pulseAnim }] }]} />
-                <Text style={styles.aiPillText}>Live</Text>
-              </View>
-            )}
-          </View>
-
-          {/* Title */}
-          <Text style={styles.heroTitle}>Job Hub</Text>
-          <Text style={styles.heroSub}>
-            {employers.length > 0
-              ? `Tracking ${stats.sources} ${stats.sources === 1 ? 'company' : 'companies'} · ${stats.matches} job ${stats.matches === 1 ? 'match' : 'matches'} · ${stats.contacts} contacts found`
-              : 'Add a company to start AI-powered job matching'}
-          </Text>
-
-          {/* Stats row — only when data exists */}
-          {employers.length > 0 && (
-            <View style={styles.statsRow}>
-              {[
-                { value: stats.matches,  label: 'Matches',   color: '#22D3EE' },
-                { value: stats.contacts, label: 'Contacts',  color: '#A78BFA' },
-                { value: `${stats.verifiedPct}%`, label: 'Verified',  color: '#34D399' },
-                { value: stats.sources,  label: 'Companies', color: '#FB923C' },
-              ].map((s, i, arr) => (
-                <React.Fragment key={s.label}>
-                  <View style={styles.statItem}>
-                    <Text style={[styles.statValue, { color: s.color }]}>{s.value}</Text>
-                    <Text style={styles.statLabel}>{s.label}</Text>
-                  </View>
-                  {i < arr.length - 1 && <View style={styles.statDivider} />}
-                </React.Fragment>
-              ))}
-            </View>
-          )}
-
-        </View>
+        <View style={{ height: 2 }} />
 
         {/* ══ BODY (light bg) ══════════════════════════════════════════════════ */}
         <View style={styles.body}>
@@ -2438,6 +2421,12 @@ const styles = StyleSheet.create({
   hubSegBtnOn:  { backgroundColor: T.blueDeep },
   hubSegText:   { fontSize: 12, fontWeight: '800', color: T.textFaint },
   hubSegTextOn: { color: '#fff' },
+  hubHero:      { marginHorizontal: 14, marginBottom: 10, borderRadius: 24, overflow: 'hidden', padding: 16, paddingBottom: 10 },
+  hubTabsInCard:{ flexDirection: 'row', gap: 5, marginTop: 14, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 12, padding: 4 },
+  hubTabInCard: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 34, borderRadius: 9 },
+  hubTabInCardOn:{ backgroundColor: '#fff' },
+  hubTabInCardText:{ fontSize: 12, fontWeight: '800', color: 'rgba(255,255,255,0.72)' },
+  hubTabInCardTextOn:{ color: '#0B0F22' },
 
   // ── Top bar ──
   topBar: {

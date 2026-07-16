@@ -6,7 +6,13 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, 
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { fetchSavedJobs, removeSavedJob, type SavedJobCard } from '../services/aiHubService';
+import { fetchSavedJobs, removeSavedJob, loadAllJobStatuses, type SavedJobCard } from '../services/aiHubService';
+
+function clTagOf(s?: string | null): { label: string; color: string } | null {
+  if (s === 'applied') return { label: 'Applied', color: '#10B981' };
+  if (s === 'generated' || s === 'downloaded') return { label: 'Cover letter ready', color: '#2563EB' };
+  return null;
+}
 
 const T = {
   bg: '#E5EAF3', surface: '#FFFFFF', ink: '#0B0F22', textMuted: '#5B6B8A', textFaint: '#8896B0',
@@ -41,17 +47,19 @@ function Meta({ icon, color, text }: { icon: any; color: string; text?: string |
   return <View style={styles.metaChip}><Ionicons name={icon} size={12} color={color} /><Text style={styles.metaText} numberOfLines={1}>{text}</Text></View>;
 }
 
-function SavedCard({ job, onOpen, onRemove }: { job: SavedJobCard; onOpen: (j: SavedJobCard) => void; onRemove: (j: SavedJobCard) => void }) {
+function SavedCard({ job, onOpen, onRemove, clStatus }: { job: SavedJobCard; onOpen: (j: SavedJobCard) => void; onRemove: (j: SavedJobCard) => void; clStatus?: string | null }) {
   const c = gradFor(job.company || job.employer_name || job.title);
   const skills = Array.isArray(job.skills) ? job.skills : [];
   const resp = Array.isArray(job.responsibilities) ? job.responsibilities : [];
+  const clt = clTagOf(clStatus);
   return (
-    <TouchableOpacity style={styles.card} activeOpacity={0.85} onPress={() => onOpen(job)}>
+    <TouchableOpacity style={[styles.card, clStatus === 'applied' && styles.cardApplied, (clStatus === 'generated' || clStatus === 'downloaded') && styles.cardCl]} activeOpacity={0.85} onPress={() => onOpen(job)}>
       <View style={styles.cardHead}>
         <LinearGradient colors={c} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.logo}><Text style={styles.logoText}>{initial(job.company || job.employer_name)}</Text></LinearGradient>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={styles.jobTitle} numberOfLines={3}>{job.title}</Text>
           <Text style={styles.jobCompany} numberOfLines={2}>{job.company || job.employer_name || 'Company'}</Text>
+          {clt && <View style={[styles.clTag, { backgroundColor: clt.color + '18', borderColor: clt.color + '44' }]}><Ionicons name="document-text" size={10} color={clt.color} /><Text style={[styles.clTagText, { color: clt.color }]}>{clt.label}</Text></View>}
         </View>
         <TouchableOpacity onPress={() => onRemove(job)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={styles.trashBtn}>
           <Ionicons name="trash-outline" size={17} color={T.textFaint} />
@@ -83,12 +91,13 @@ function SavedCard({ job, onOpen, onRemove }: { job: SavedJobCard; onOpen: (j: S
 export default function SavedJobsList({ onCountChange }: { onCountChange?: (n: number) => void }) {
   const router = useRouter();
   const [jobs, setJobs] = useState<SavedJobCard[]>([]);
+  const [clStatuses, setClStatuses] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
 
   const load = useCallback(async () => {
-    try { const r = await fetchSavedJobs(); setJobs(r.jobs || []); setError(false); onCountChange?.(r.count || 0); }
+    try { const r = await fetchSavedJobs(); setJobs(r.jobs || []); setError(false); onCountChange?.(r.count || 0); loadAllJobStatuses().then((s) => setClStatuses(s || {})).catch(() => {}); }
     catch { setError(true); }
   }, [onCountChange]);
 
@@ -109,7 +118,7 @@ export default function SavedJobsList({ onCountChange }: { onCountChange?: (n: n
     <FlatList
       data={jobs}
       keyExtractor={(j, i) => j.job_url + ':' + i}
-      renderItem={({ item }) => <SavedCard job={item} onOpen={openJob} onRemove={removeJob} />}
+      renderItem={({ item }) => <SavedCard job={item} onOpen={openJob} onRemove={removeJob} clStatus={clStatuses[hashId(item.job_url)]} />}
       contentContainerStyle={{ padding: 12, paddingBottom: 40 }}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
@@ -129,6 +138,10 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   countLine: { fontSize: 12, color: T.textMuted, fontWeight: '700', marginBottom: 8, marginLeft: 2 },
   card: { backgroundColor: T.surface, borderRadius: 20, borderWidth: 1, borderColor: T.border, padding: 15, marginBottom: 12, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.06, shadowRadius: 18, elevation: 2 },
+  cardApplied: { backgroundColor: '#F1FBF5', borderColor: '#CDEBD8' },
+  cardCl: { backgroundColor: '#F5F9FF', borderColor: '#D6E4FB' },
+  clTag: { flexDirection: 'row', alignItems: 'center', gap: 3, alignSelf: 'flex-start', marginTop: 5, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 100, borderWidth: 1 },
+  clTagText: { fontSize: 10, fontWeight: '800' },
   cardHead: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
   logo: { width: 46, height: 46, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   logoText: { color: '#fff', fontWeight: '800', fontSize: 19 },

@@ -15,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import {
-  fetchDiscoverJobs, fetchDiscoverFacets, aiSearchJobs, hydrateJobUrls,
+  fetchDiscoverJobs, fetchDiscoverFacets, aiSearchJobs, hydrateJobUrls, loadAllJobStatuses,
   type DiscoverJob, type DiscoverFacets, type AiSearchParsed, type AiXray,
 } from '../../services/aiHubService';
 import { logEvent } from '../../services/firebaseAnalytics';
@@ -121,18 +121,25 @@ function Meta({ icon, color, text }: { icon: any; color: string; text?: string |
   return <View style={styles.metaChip}><Ionicons name={icon} size={12} color={color} /><Text style={styles.metaText} numberOfLines={1}>{text}</Text></View>;
 }
 
-function JobCard({ job, onOpen }: { job: DiscoverJob; onOpen: (j: DiscoverJob) => void }) {
+function clTagOf(s?: string | null): { label: string; color: string } | null {
+  if (s === 'applied') return { label: 'Applied', color: '#10B981' };
+  if (s === 'generated' || s === 'downloaded') return { label: 'Cover letter ready', color: '#2563EB' };
+  return null;
+}
+function JobCard({ job, onOpen, clStatus }: { job: DiscoverJob; onOpen: (j: DiscoverJob) => void; clStatus?: string | null }) {
   const c = gradFor(job.employer_name || job.title);
   const skills = Array.isArray(job.skills) ? job.skills : [];
   const resp = Array.isArray(job.responsibilities) ? job.responsibilities : [];
+  const clt = clTagOf(clStatus);
   return (
-    <TouchableOpacity style={styles.card} activeOpacity={0.85} onPress={() => onOpen(job)}>
+    <TouchableOpacity style={[styles.card, clStatus === 'applied' && styles.cardApplied, (clStatus === 'generated' || clStatus === 'downloaded') && styles.cardCl]} activeOpacity={0.85} onPress={() => onOpen(job)}>
       <View style={styles.cardHead}>
         <LinearGradient colors={c} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.logo}><Text style={styles.logoText}>{initial(job.employer_name)}</Text></LinearGradient>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={styles.jobTitle} numberOfLines={3}>{job.title}</Text>
           <Text style={styles.jobCompany} numberOfLines={2}>{job.employer_name || 'Company'}</Text>
           {!!job.role_category && <Text style={styles.roleTag} numberOfLines={1}>{job.role_category}</Text>}
+          {clt && <View style={[styles.clTag, { backgroundColor: clt.color + '18', borderColor: clt.color + '44' }]}><Ionicons name="document-text" size={10} color={clt.color} /><Text style={[styles.clTagText, { color: clt.color }]}>{clt.label}</Text></View>}
         </View>
         {typeof job.match === 'number' && <MatchBadge score={job.match} />}
       </View>
@@ -177,6 +184,7 @@ export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
   const { costOf } = useEventCosts();
   const aiCost = costOf('ai_search');
+  const [clStatuses, setClStatuses] = useState<Record<string, string>>({});   // job id → cover-letter/applied status
   const [jobs, setJobs] = useState<DiscoverJob[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -249,6 +257,8 @@ export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
     }).catch(() => {});
     logEvent('feed_opened');
   }, []);
+  // Cover-letter / applied status for the visible jobs → drives the CL tag on Search cards too.
+  useEffect(() => { loadAllJobStatuses().then((s) => setClStatuses(s || {})).catch(() => {}); }, [jobs.length, aiResults.length]);
   // When the scope field changes, refresh facets so the Role list matches the field.
   useEffect(() => { if (field) fetchDiscoverFacets(field).then(setFacets).catch(() => {}); }, [field]);
 
@@ -348,7 +358,7 @@ export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
 
   const header = useMemo(() => (
     <View>
-      <HeroCard facets={facets} total={total} />
+      {!embedded && <HeroCard facets={facets} total={total} />}
       <View style={styles.searchWrap}>
         <Ionicons name="sparkles" size={16} color={T.blueDeep} />
         <TextInput ref={searchRef} value={query} onChangeText={setQuery} placeholder="Describe the job you want — AI finds it" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" onSubmitEditing={() => runAiSearch(query)} />
@@ -388,37 +398,16 @@ export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
       )}
 
       {!aiActive && (<>
-      {/* Field scope pill: defaults to the user's field, tap to change, clear to browse all */}
-      <View style={styles.scopeRow}>
-        <TouchableOpacity onPress={() => setShowFilters(true)} style={styles.scopePill} activeOpacity={0.85}>
-          <Ionicons name="layers-outline" size={14} color={T.blueDeep} />
-          <Text style={styles.scopePillText} numberOfLines={1}>{scopeLabel}</Text>
-          {isOwnField && <View style={styles.ownTag}><Text style={styles.ownTagText}>your field</Text></View>}
-          <Ionicons name="chevron-down" size={14} color={T.textMuted} />
-        </TouchableOpacity>
-        {!!field && (
-          <TouchableOpacity onPress={() => { setField(''); setRoleCat(''); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.showAllBtn}>
-            <Text style={styles.showAllText}>All fields</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+      {/* Simplified: one Filters bar — Field, Sort (Best match/Recent), Technology, Location… all live in the sheet. */}
+      <TouchableOpacity onPress={() => setShowFilters(true)} style={[styles.filterBar, (activeCount > 0 || !!field) && styles.filterBarOn]} activeOpacity={0.85}>
+        <Ionicons name="options-outline" size={16} color={(activeCount > 0 || !!field) ? '#fff' : T.blueDeep} />
+        <Text style={[styles.filterBarText, (activeCount > 0 || !!field) && { color: '#fff' }]} numberOfLines={1}>
+          {(() => { const parts: string[] = []; if (field) parts.push(shortField(field)); if (sort === 'recent') parts.push('Recent'); if (activeCount > 0) parts.push(`${activeCount} filter${activeCount === 1 ? '' : 's'}`); return parts.length ? `Filters · ${parts.join(' · ')}` : 'Filters — field, sort, location…'; })()}
+        </Text>
+        <Ionicons name="chevron-down" size={15} color={(activeCount > 0 || !!field) ? '#fff' : T.textMuted} />
+      </TouchableOpacity>
 
-      <View style={styles.controlsRow}>
-        <View style={styles.sortToggle}>
-          {(['match', 'recent'] as const).map((s) => (
-            <TouchableOpacity key={s} onPress={() => setSort(s)} style={[styles.sortBtn, sort === s && styles.sortBtnOn]} activeOpacity={0.8}>
-              <Ionicons name={s === 'match' ? 'sparkles' : 'time-outline'} size={13} color={sort === s ? '#fff' : T.textMuted} />
-              <Text style={[styles.sortText, sort === s && styles.sortTextOn]}>{s === 'match' ? 'Best match' : 'Recent'}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-        <TouchableOpacity onPress={() => setShowFilters(true)} style={[styles.filterBtn, activeCount > 0 && styles.filterBtnOn]} activeOpacity={0.8}>
-          <Ionicons name="options-outline" size={16} color={activeCount > 0 ? '#fff' : T.blueDeep} />
-          <Text style={[styles.filterBtnText, activeCount > 0 && { color: '#fff' }]}>{activeCount > 0 ? `Filters · ${activeCount}` : 'Filters'}</Text>
-        </TouchableOpacity>
-      </View>
-
-      {sort === 'match' && noProfile && (
+      {noProfile && (
         <View style={styles.hintBox}><Ionicons name="information-circle-outline" size={15} color={T.blueDeep} /><Text style={styles.hintText}>Upload your résumé in Account Settings to see match scores and your-field jobs.</Text></View>
       )}
       <Text style={styles.countLine}>
@@ -443,7 +432,7 @@ export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
   ) : (
     <FlatList
       data={aiActive ? aiResults : jobs} keyExtractor={(j, i) => j.id + ':' + i}
-      renderItem={({ item }) => <JobCard job={item} onOpen={openJob} />}
+      renderItem={({ item }) => <JobCard job={item} onOpen={openJob} clStatus={clStatuses[hashId(item.job_url || item.id)]} />}
       ListHeaderComponent={header}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
@@ -475,6 +464,7 @@ export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
               <TouchableOpacity onPress={clearFilters}><Text style={styles.clearText}>Clear all</Text></TouchableOpacity>
             </View>
             <ScrollView style={{ maxHeight: 460 }} showsVerticalScrollIndicator={false}>
+              <FilterSection title="Sort" items={['Best match', 'Recent']} value={sort === 'recent' ? 'Recent' : 'Best match'} onPick={(v) => setSort(v === 'Recent' ? 'recent' : 'match')} />
               <FilterSection
                 title="Field" allLabel="All fields"
                 items={(facets?.fields || []).map((f) => f.field)} value={field}
@@ -611,11 +601,18 @@ const styles = StyleSheet.create({
   filterBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 40, paddingHorizontal: 14, borderRadius: 12, backgroundColor: T.surface, borderWidth: 1, borderColor: T.border },
   filterBtnOn: { backgroundColor: T.blueDeep, borderColor: T.blueDeep },
   filterBtnText: { fontSize: 12.5, fontWeight: '700', color: T.blueDeep },
+  filterBar: { flexDirection: 'row', alignItems: 'center', gap: 8, height: 44, paddingHorizontal: 14, borderRadius: 12, backgroundColor: T.surface, borderWidth: 1, borderColor: T.border, marginBottom: 8 },
+  filterBarOn: { backgroundColor: T.blueDeep, borderColor: T.blueDeep },
+  filterBarText: { flex: 1, fontSize: 13, fontWeight: '700', color: T.blueDeep },
   hintBox: { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: 'rgba(79,141,255,0.08)', borderRadius: 10, paddingHorizontal: 11, paddingVertical: 9, marginBottom: 8 },
   hintText: { fontSize: 12, color: T.blueDeep, fontWeight: '600', flex: 1 },
   countLine: { fontSize: 12, color: T.textMuted, fontWeight: '600', marginBottom: 8, marginLeft: 2 },
 
   card: { backgroundColor: T.surface, borderRadius: 20, borderWidth: 1, borderColor: T.border, padding: 15, marginBottom: 12, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.06, shadowRadius: 18, elevation: 2 },
+  cardApplied: { backgroundColor: '#F1FBF5', borderColor: '#CDEBD8' },
+  cardCl: { backgroundColor: '#F5F9FF', borderColor: '#D6E4FB' },
+  clTag: { flexDirection: 'row', alignItems: 'center', gap: 3, alignSelf: 'flex-start', marginTop: 5, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 100, borderWidth: 1 },
+  clTagText: { fontSize: 10, fontWeight: '800' },
   cardHead: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
   logo: { width: 46, height: 46, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   logoText: { color: '#fff', fontWeight: '800', fontSize: 19 },
