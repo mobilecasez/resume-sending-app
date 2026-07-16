@@ -76,14 +76,16 @@ async function authHeader(): Promise<Record<string, string>> {
   } catch { return {}; }
 }
 
-/** Submit private feedback (1–3★ path). Best-effort. */
-export async function submitFeedback(rating: number, message: string, trigger: string, appVersion?: string) {
+/** Submit feedback / rating. Records the rating (so the "Rate the app" reward is granted server-side) and
+ *  returns the reward, if any, so the caller can celebrate the earned credits. Best-effort. */
+export async function submitFeedback(rating: number, message: string, trigger: string, appVersion?: string): Promise<{ reward?: { key: string; credits: number } | null } | null> {
   try {
     const headers = await authHeader();
-    await axios.post(
+    const { data } = await axios.post(
       `${API_BASE}/feedback`,
       { rating, message, trigger, platform: Platform.OS, appVersion: appVersion || null },
       { headers }
     );
-  } catch { /* best-effort; never block the user */ }
+    return data || null;
+  } catch { return null; }   // best-effort; never block the user
 }

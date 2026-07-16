@@ -28,6 +28,7 @@ export default function RateAppModal({
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const [thanks, setThanks] = useState<'store' | 'feedback' | null>(null);
+  const [earned, setEarned] = useState(0);   // credits granted for sharing feedback (rate-app reward)
 
   // Native-driven vertical shift so the card lifts SMOOTHLY above the keyboard. (KeyboardAvoidingView's
   // padding reflow re-lays-out the centered card on the JS thread → jerky.)
@@ -35,7 +36,7 @@ export default function RateAppModal({
 
   // Reset to a clean state every time the modal is opened.
   useEffect(() => {
-    if (visible) { setMode('ask'); setMsg(''); setBusy(false); setThanks(null); translateY.setValue(0); }
+    if (visible) { setMode('ask'); setMsg(''); setBusy(false); setThanks(null); setEarned(0); translateY.setValue(0); }
   }, [visible]);
 
   // Drive the card's shift from the keyboard's own show/hide animation (same duration → in sync).
@@ -58,11 +59,12 @@ export default function RateAppModal({
   const onLove = async () => {
     if (busy) return;
     setBusy(true);
-    await submitFeedback(5, '', TRIGGER);   // record the positive sentiment (no text — they review on the store)
+    const r = await submitFeedback(5, '', TRIGGER);   // record the positive sentiment (no text — they review on the store)
+    setEarned(r?.reward?.credits || 0);
     await markRated();
     setBusy(false);
     setThanks('store');
-    setTimeout(async () => { await openNativeReview(); onClose(); }, 800);
+    setTimeout(async () => { await openNativeReview(); onClose(); }, 1100);
   };
 
   // 👎 unhappy → private feedback only. Never routed to the store.
@@ -71,11 +73,12 @@ export default function RateAppModal({
     if (!text || busy) return;
     Keyboard.dismiss();
     setBusy(true);
-    await submitFeedback(2, text, TRIGGER);
+    const r = await submitFeedback(2, text, TRIGGER);
+    setEarned(r?.reward?.credits || 0);
     await markHandled();
     setBusy(false);
     setThanks('feedback');
-    setTimeout(onClose, 1300);
+    setTimeout(onClose, 1600);
   };
 
   const showThanks = thanks !== null;
@@ -144,6 +147,7 @@ export default function RateAppModal({
             <>
               <Text style={s.title}>Thank you! 🙌</Text>
               <Text style={s.subtitle}>Opening the App Store so you can post your rating…</Text>
+              {earned > 0 && <View style={s.creditPill}><Ionicons name="sparkles" size={13} color="#34D399" /><Text style={s.creditPillText}>+{earned} credits added 🎉</Text></View>}
             </>
           )}
 
@@ -151,6 +155,7 @@ export default function RateAppModal({
             <>
               <Text style={s.title}>Thanks for your feedback</Text>
               <Text style={s.subtitle}>We really appreciate it — our team reads every message and uses it to improve the app.</Text>
+              {earned > 0 && <View style={s.creditPill}><Ionicons name="sparkles" size={13} color="#34D399" /><Text style={s.creditPillText}>+{earned} credits added 🎉</Text></View>}
             </>
           )}
         </Animated.View>
@@ -181,4 +186,6 @@ const s = StyleSheet.create({
   btnDisabled: { opacity: 0.5 },
   btn: { height: 50, alignItems: 'center', justifyContent: 'center', borderRadius: 14 },
   btnText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  creditPill: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 16, backgroundColor: 'rgba(52,211,153,0.12)', borderWidth: 1, borderColor: 'rgba(52,211,153,0.35)', borderRadius: 100, paddingHorizontal: 14, paddingVertical: 8 },
+  creditPillText: { color: '#34D399', fontSize: 14, fontWeight: '800' },
 });

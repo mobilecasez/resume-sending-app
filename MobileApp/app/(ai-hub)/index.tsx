@@ -1876,9 +1876,15 @@ export default function AIHubScreen() {
           <Image source={require('../../assets/images/logo_img.png')} style={styles.wordmarkLogo} resizeMode="contain" />
           <Text style={styles.wordmarkText}>cv<Text style={styles.wordmarkBlue}>applyr</Text></Text>
         </View>
-        <TouchableOpacity style={styles.addBtn} onPress={openModal} activeOpacity={0.8}>
-          <Ionicons name="add" size={18} color={T.ink} />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          {/* Earn free credits — activation rewards + referrals */}
+          <TouchableOpacity style={styles.addBtn} onPress={() => router.push('/(rewards)')} activeOpacity={0.8}>
+            <Ionicons name="gift-outline" size={17} color={T.ink} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.addBtn} onPress={openModal} activeOpacity={0.8}>
+            <Ionicons name="add" size={18} color={T.ink} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* ══ SHARED HERO CARD — the Search | My Jobs | Saved tabs live INSIDE it. Heading sits on the top
