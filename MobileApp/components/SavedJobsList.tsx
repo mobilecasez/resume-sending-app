@@ -10,7 +10,7 @@ import { fetchSavedJobs, removeSavedJob, loadAllJobStatuses, type SavedJobCard }
 
 function clTagOf(s?: string | null): { label: string; color: string } | null {
   if (s === 'applied') return { label: 'Applied', color: '#10B981' };
-  if (s === 'generated' || s === 'downloaded') return { label: 'Cover letter ready', color: '#2563EB' };
+  if (s === 'generated' || s === 'downloaded') return { label: 'CL Ready', color: '#4F8DFF' };   // matches the My Jobs badge
   return null;
 }
 const matchColor = (m: number) => (m >= 70 ? '#10B981' : m >= 40 ? '#F59E0B' : '#94A3B8');
@@ -125,7 +125,8 @@ export default function SavedJobsList({ onCountChange, onStats }: { onCountChang
   const load = useCallback(async () => {
     try {
       const r = await fetchSavedJobs();
-      const list = r.jobs || [];
+      // Sort best-match first (like the My Jobs tab); jobs with no match score sink to the bottom.
+      const list = (r.jobs || []).slice().sort((a, b) => (b.match ?? -1) - (a.match ?? -1));
       setJobs(list); setError(false); onCountChange?.(r.count || 0);
       const s = await loadAllJobStatuses().catch(() => ({} as Record<string, string>));
       setClStatuses(s || {}); reportStats(list, s || {});
@@ -154,6 +155,7 @@ export default function SavedJobsList({ onCountChange, onStats }: { onCountChang
   return (
     <FlatList
       data={jobs}
+      extraData={clStatuses}
       keyExtractor={(j, i) => j.job_url + ':' + i}
       renderItem={({ item }) => <SavedCard job={item} onOpen={openJob} onRemove={removeJob} clStatus={clStatuses[hashId(item.job_url)]} />}
       contentContainerStyle={{ padding: 12, paddingBottom: 40 }}

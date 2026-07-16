@@ -32,7 +32,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import type { Contact, Job, Employer, WishlistPill } from '../../types/aiHub';
-import { fetchJobMatches, fetchDashboard, getCachedDashboard, evictEmployerFromDashboardCache, fetchEmployerJobs, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, loadAllJobStatuses, fetchJobMatchScores, getMotivationLines, submitEmployerFixRequest, isLinkedInJobUrl, type DashboardEntry } from '../../services/aiHubService';
+import { fetchJobMatches, fetchDashboard, getCachedDashboard, evictEmployerFromDashboardCache, fetchEmployerJobs, resumeJobPolling, removeDashboardItem, fetchCreditBalance, deductSearchCredits, getRecruiters, findRecruiters, findRecruiterEmails, loadJobStatuses, loadAllJobStatuses, fetchJobMatchScores, getMotivationLines, submitEmployerFixRequest, isLinkedInJobUrl, fetchSavedJobs, type DashboardEntry } from '../../services/aiHubService';
+
+// Same hash the Saved/Search cards use to key cover-letter/applied status by job_url (must match).
+const savedHashId = (s: string) => { let h = 0; const k = s || 'x'; for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0; return 'gj_' + h.toString(36); };
 import type { Recruiter } from '../../services/aiHubService';
 import { API_BASE } from '../../config';
 import axios from 'axios';
@@ -1290,6 +1293,20 @@ export default function AIHubScreen() {
   const [hubSavedCount, setHubSavedCount] = useState(0);
   const [hubSavedStats, setHubSavedStats] = useState({ count: 0, withCl: 0, applied: 0 });   // Saved-tab summary
   const [hubSearchStats, setHubSearchStats] = useState({ total: 0, remote: 0, fields: 0, regions: 0 });   // Search-tab summary
+
+  // Refresh the Saved count + summary independently of the Saved tab being mounted — so the hero/tab badge
+  // update right after a live-fetch (which happens on the Search tab) closes, not only when Saved is opened.
+  const refreshSavedSummary = useCallback(async () => {
+    try {
+      const [r, statuses] = await Promise.all([fetchSavedJobs(), loadAllJobStatuses().catch(() => ({} as Record<string, string>))]);
+      const list = r.jobs || [];
+      let withCl = 0, applied = 0;
+      for (const j of list) { const st = (statuses || {})[savedHashId(j.job_url)]; if (st === 'applied') applied++; else if (st === 'generated' || st === 'downloaded') withCl++; }
+      setHubSavedCount(r.count || list.length);
+      setHubSavedStats({ count: r.count || list.length, withCl, applied });
+    } catch { /* keep last known */ }
+  }, []);
+  useEffect(() => { refreshSavedSummary(); }, [refreshSavedSummary]);   // initial Saved badge count (before the Saved tab is ever opened)
   const [pills, setPills] = useState<WishlistPill[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [inputValue, setInputValue] = useState('https://');
@@ -1921,7 +1938,7 @@ export default function AIHubScreen() {
         </View>
       </View>
 
-      {hubTab === 'search' && <ExploreFeed embedded onStats={setHubSearchStats} />}
+      {hubTab === 'search' && <ExploreFeed embedded onStats={setHubSearchStats} onSavedChange={refreshSavedSummary} />}
       {hubTab === 'saved' && <View style={{ flex: 1 }}><SavedJobsList onCountChange={setHubSavedCount} onStats={setHubSavedStats} /></View>}
 
       {hubTab === 'myjobs' && (

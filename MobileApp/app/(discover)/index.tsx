@@ -123,7 +123,7 @@ function Meta({ icon, color, text }: { icon: any; color: string; text?: string |
 
 function clTagOf(s?: string | null): { label: string; color: string } | null {
   if (s === 'applied') return { label: 'Applied', color: '#10B981' };
-  if (s === 'generated' || s === 'downloaded') return { label: 'Cover letter ready', color: '#2563EB' };
+  if (s === 'generated' || s === 'downloaded') return { label: 'CL Ready', color: '#4F8DFF' };   // matches the My Jobs badge
   return null;
 }
 function JobCard({ job, onOpen, clStatus }: { job: DiscoverJob; onOpen: (j: DiscoverJob) => void; clStatus?: string | null }) {
@@ -180,7 +180,7 @@ function FChip({ label, on, onPress }: { label: string; on: boolean; onPress: ()
 
 // Reusable Explore feed. `embedded` renders JUST the feed (no SafeAreaView / top bar / Explore|Saved
 // sub-tabs) so the Job Hub can mount it as its "Search" tab; the standalone /(discover) route wraps it.
-export function ExploreFeed({ embedded = false, onStats }: { embedded?: boolean; onStats?: (s: { total: number; remote: number; fields: number; regions: number }) => void }) {
+export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embedded?: boolean; onStats?: (s: { total: number; remote: number; fields: number; regions: number }) => void; onSavedChange?: () => void }) {
   const router = useRouter();
   const { costOf } = useEventCosts();
   const aiCost = costOf('ai_search');
@@ -443,6 +443,7 @@ export function ExploreFeed({ embedded = false, onStats }: { embedded?: boolean;
   ) : (
     <FlatList
       data={aiActive ? aiResults : jobs} keyExtractor={(j, i) => j.id + ':' + i}
+      extraData={clStatuses}
       renderItem={({ item }) => <JobCard job={item} onOpen={openJob} clStatus={clStatuses[hashId(item.job_url || item.id)]} />}
       ListHeaderComponent={header}
       showsVerticalScrollIndicator={false}
@@ -501,7 +502,8 @@ export function ExploreFeed({ embedded = false, onStats }: { embedded?: boolean;
       </Modal>
       {!embedded && <HelpAssistant />}
       {xrayUrls.length > 0 && <SilentWebSearch key={xraySeq} urls={xrayUrls} onResult={onXrayResult} />}
-      <LiveJobSearch visible={liveOpen} query={liveQuery} onClose={() => setLiveOpen(false)} />
+      {/* On close, tell the parent so the Saved count/summary refresh (fetching happens here, not on the Saved tab). */}
+      <LiveJobSearch visible={liveOpen} query={liveQuery} onClose={() => { setLiveOpen(false); onSavedChange?.(); }} />
     </>
   );
 

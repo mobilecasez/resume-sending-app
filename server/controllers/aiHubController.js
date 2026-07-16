@@ -4202,7 +4202,7 @@ async function ensureCoverLetterTable() {
         CREATE TABLE IF NOT EXISTS job_cover_letters (
             id                SERIAL PRIMARY KEY,
             user_id           INTEGER NOT NULL,
-            job_id            UUID NOT NULL,
+            job_id            TEXT NOT NULL,
             cover_letter_html TEXT,
             company_name      VARCHAR(255),
             website_url       TEXT,
@@ -4217,6 +4217,10 @@ async function ensureCoverLetterTable() {
     // Add missing columns (migrations for existing tables)
     await dbConfig.run(`ALTER TABLE job_cover_letters ADD COLUMN IF NOT EXISTS company_address   TEXT DEFAULT ''`);
     await dbConfig.run(`ALTER TABLE job_cover_letters ADD COLUMN IF NOT EXISTS company_locations TEXT DEFAULT '[]'`);
+    // ⚠️ job_id was originally UUID — that made saving a cover letter for a SAVED/SEARCH job (synthetic id
+    // like "gj_abc123", not a DB UUID) throw "invalid input syntax for type uuid" → 500 → the app silently
+    // failed to persist. Widen to TEXT so every job (tracked, saved, live-search) can hold a cover letter.
+    try { await dbConfig.run(`ALTER TABLE job_cover_letters ALTER COLUMN job_id TYPE TEXT USING job_id::text`); } catch (_) {}
 }
 
 /** POST /api/ai-hub/jobs/:jobId/cover-letter — save generated cover letter */
