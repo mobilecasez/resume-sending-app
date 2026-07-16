@@ -15,6 +15,7 @@ import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { liveSearchJobs, fetchJobDetail, saveCard, type LiveJobCard } from '../services/aiHubService';
 import { notifyLocal } from '../services/pushNotificationService';
+import { expandTerm } from '../utils/searchSynonyms';
 
 const { height: SH } = Dimensions.get('window');
 type FetchState = 'idle' | 'fetching' | 'done' | 'failed';
@@ -131,14 +132,28 @@ function parseLiveQuery(q: string): { kw: string; loc: string } {
   return { kw: kw || raw, loc };
 }
 
-// LinkedIn's guest keyword search returns location-only JUNK for bare symbol-tokens (".net", "c#", "c++",
-// "node.js") but matches well once a role word is present (verified: ".net" → 0 relevant, ".net developer"
-// → strong). So append "developer" ONLY for a single symbol-bearing token; leave normal phrases alone.
-function linkedInKeyword(kw: string): string {
-  const k = String(kw || '').trim();
-  if (!k) return k;
-  if (!/\s/.test(k) && /[.#+]/.test(k)) return k + ' developer';
-  return k;
+// Build the LinkedIn guest `keywords` value with SYNONYM expansion + boolean OR (verified LinkedIn honours
+// it: "(.net OR dotnet) developer" → strong). So ".net" also pulls "dotnet"/"dot net", "node" pulls
+// "node.js"/"nodejs", "sde" pulls "software engineer", etc. — the user gets every phrasing.
+//  • whole-phrase synonym (e.g. "full stack developer") → one OR group
+//  • else expand each token; a token with variants becomes "(a OR b OR c)"
+//  • a single bare symbol-token (".net","c#","node.js") also gets "developer" (LinkedIn returns junk for
+//    a bare symbol otherwise — verified ".net" → 0 relevant, ".net developer"/"(.net OR dotnet) developer" → strong)
+function buildLinkedInKeywords(kw: string): string {
+  const raw = String(kw || '').trim();
+  if (!raw) return raw;
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  // Sanitize each variant: drop parenthetical fragments/stray parens (they break LinkedIn's boolean parser),
+  // then quote any multi-word phrase so the OR groups stay unambiguous.
+  const clean = (v: string) => v.replace(/\s*\([^)]*\)/g, '').replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim();
+  const q = (v: string) => (/\s/.test(v) ? '"' + v + '"' : v);
+  const orGroup = (variants: string[]) => '(' + [...new Set(variants.map(clean).filter(Boolean))].map(q).join(' OR ') + ')';
+  const whole = expandTerm(raw);
+  let out: string;
+  if (whole.length > 1) out = orGroup(whole);
+  else out = tokens.map((t) => { const v = expandTerm(t); return v.length > 1 ? orGroup(v) : t; }).join(' ');
+  if (tokens.length === 1 && /[.#+]/.test(tokens[0])) out += ' developer';
+  return out;
 }
 
 export default function LiveJobSearch({ visible, query, onClose }: { visible: boolean; query: string; onClose: () => void }) {
@@ -191,7 +206,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     if (!q) return [] as { uri: string; kind: 'li' | 'organic' }[];
     const enc = encodeURIComponent;
     const { kw, loc } = parseLiveQuery(q);
-    const liBase = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=' + enc(linkedInKeyword(kw)) + (loc ? '&location=' + enc(loc) : '');
+    const liBase = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=' + enc(buildLinkedInKeywords(kw)) + (loc ? '&location=' + enc(loc) : '');
     // LinkedIn guest returns ~10 individual postings per page → paginate by 10 for depth.
     const sources: { uri: string; kind: 'li' | 'organic' }[] = [0, 10, 20, 30, 40, 50].map((s) => ({ uri: liBase + '&start=' + s, kind: 'li' as const }));
     sources.push({ uri: 'https://www.google.com/search?num=30&hl=en&q=' + enc(q), kind: 'organic' });

@@ -19,6 +19,7 @@ const firehose = require('../services/globalJobFirehose');
 const aiHub = require('./aiHubController');   // grounded live-search fallback (groundedDiscover)
 const aiJobExtractor = require('../services/aiJobExtractor');   // fetch-detail: on-device HTML → structured job
 const { chargeCredits, getEventCost } = require('../services/eventCosts');   // credit metering for AI search + live fetch
+const synonyms = require('../utils/searchSynonyms');   // .net⇄dotnet, node⇄node.js, sde⇄software engineer …
 
 const BASE_CAP = 1500;         // diversify + match-rank the freshest N candidates (bounds correlated-subquery cost)
 const DEFAULT_MIN_MATCH = 10;  // in the résumé-scoped default view, hide sub-10% noise
@@ -445,15 +446,29 @@ async function aiSearch(req, res) {
     const WP = (v) => { wParams.push(v); return '$' + wParams.length; };
     const where = ['is_active'];
     const hasKw = !!(parsed.keywords && parsed.keywords.length);
-    const kwWords = [];
+    const kwWords = [];   // ORIGINAL search words (used for title-relevance ranking, so exact terms rank first)
     if (hasKw) {
-      // Split multi-word keywords into words and require EACH (AND) so "java developer" matches jobs that
-      // mention both java AND developer (anywhere in title/employer/skills/description) — precise without
-      // demanding the literal phrase, and not so generic that one common word floods the results.
-      for (const k of parsed.keywords) for (const w of String(k).toLowerCase().split(/\s+/)) { const ww = w.trim(); if (ww && !kwWords.includes(ww)) kwWords.push(ww); }
-      for (const w of kwWords) {
-        const p = WP('%' + w + '%');
-        where.push(`(LOWER(title) LIKE ${p} OR LOWER(employer_name) LIKE ${p} OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(skills,'[]'::jsonb)) js WHERE lower(js) LIKE ${p}) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(responsibilities,'[]'::jsonb)) rs WHERE lower(rs) LIKE ${p}))`);
+      // Match a term in title/employer/skills/description.
+      const orClause = (v) => { const p = WP('%' + v + '%'); return `(LOWER(title) LIKE ${p} OR LOWER(employer_name) LIKE ${p} OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(skills,'[]'::jsonb)) js WHERE lower(js) LIKE ${p}) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(responsibilities,'[]'::jsonb)) rs WHERE lower(rs) LIKE ${p}))`; };
+      // Each keyword is required (AND across keywords), but SYNONYM VARIANTS are OR'd within it — so ".net"
+      // also matches "dotnet", "node" matches "node.js"/"nodejs", "sde" matches "software engineer", etc.
+      // (expandForSql drops noisy <3-char variants since matching is substring LIKE). Multi-word keywords
+      // with no whole-phrase synonym keep the old word-AND behavior ("java developer" → java AND developer).
+      for (const k of parsed.keywords) {
+        const kl = String(k).toLowerCase().trim();
+        if (!kl) continue;
+        const whole = synonyms.expandTerm(kl);
+        if (whole.length > 1) {
+          const safe = [kl, ...whole.filter((v) => v !== kl && (v.length >= 3 || /[.#+]/.test(v)))];
+          where.push('(' + [...new Set(safe)].map(orClause).join(' OR ') + ')');
+          for (const w of kl.split(/\s+/)) { const ww = w.trim(); if (ww && !kwWords.includes(ww)) kwWords.push(ww); }
+        } else {
+          for (const w of kl.split(/\s+/)) {
+            const ww = w.trim(); if (!ww) continue;
+            where.push('(' + synonyms.expandForSql(ww).map(orClause).join(' OR ') + ')');
+            if (!kwWords.includes(ww)) kwWords.push(ww);
+          }
+        }
       }
     }
     if (parsed.field) where.push(`field = ${WP(parsed.field)}`);
