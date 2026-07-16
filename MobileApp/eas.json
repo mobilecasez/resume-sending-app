@@ -1,7 +1,7 @@
 {
   "cli": {
     "version": ">= 16.0.0",
-    "appVersionSource": "remote",
+    "appVersionSource": "local",
     "promptToConfigurePushNotifications": false
   },
   "build": {
@@ -19,8 +19,7 @@
       "android": {
         "buildType": "app-bundle",
         "credentialsSource": "local"
-      },
-      "autoIncrement": true
+      }
     }
   },
   "submit": {

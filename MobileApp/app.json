@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.cvapplyr.mobile",
-      "buildNumber": "57",
+      "buildNumber": "81",
       "usesAppleSignIn": true,
       "infoPlist": {
         "CFBundleURLTypes": [
@@ -107,9 +107,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "64da997e-bbff-4054-8601-c71753430bd5"
+        "projectId": "1e19c014-d8ab-4b50-82d2-5e7e88d965bb"
       }
     },
-    "owner": "zsellr"
+    "owner": "zsellr_01"
   }
 }
