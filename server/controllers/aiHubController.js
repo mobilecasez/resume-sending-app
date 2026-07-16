@@ -2042,13 +2042,18 @@ async function groundedJobSearch(employerName, careersUrl) {
 const DISCOVER_AGG = /indeed|glassdoor|linkedin|stepstone|monster\.|ziprecruiter|simplyhired|xing\.|naukri|foundit|talent\.com|jooble|careerjet|adzuna/i;
 function empNameFromUrl(u) { try { const h = new URL(u).hostname.replace(/^www\./, '').split('.'); const s = (h.length > 2 ? h[h.length - 2] : h[0]) || ''; return s.charAt(0).toUpperCase() + s.slice(1); } catch { return ''; } }
 
-async function groundedDiscover(parsed, region) {
+async function groundedDiscover(parsed, region, opts = {}) {
+    // allowAggregators: for the EXPLICIT "Search live on Google" modal we keep Naukri/Indeed/LinkedIn/etc.
+    // results instead of dropping them. Employer-direct is preferred for the background feed (keeps the
+    // corpus clean), but in markets like India almost every posting lives on an aggregator — filtering them
+    // all out returned ZERO for ".net jobs in Gurgaon". The user opens/fetches these on-device (own IP).
+    const allowAgg = !!(opts && opts.allowAggregators);
     const kws = (parsed && Array.isArray(parsed.keywords) ? parsed.keywords : []).join(' ').trim();
     const loc = (parsed && parsed.location ? String(parsed.location) : '').trim();
     if (!kws && !loc) return [];
     const wm = parsed && parsed.workMode ? String(parsed.workMode) : '';
     const sen = parsed && parsed.seniority ? String(parsed.seniority) : '';
-    const cacheKey = `discover:v1:${normLocKey(kws)}|${normLocKey(loc)}|${normLocKey(wm)}|${normLocKey(sen)}`;
+    const cacheKey = `discover:v1:${allowAgg ? 'agg:' : ''}${normLocKey(kws)}|${normLocKey(loc)}|${normLocKey(wm)}|${normLocKey(sen)}`;
     const cached = await groundingCacheGet(cacheKey);
     if (Array.isArray(cached)) return cached;   // may legitimately be [] — still avoids re-paying
 
@@ -2057,18 +2062,18 @@ async function groundedDiscover(parsed, region) {
 
     // STEP A — grounded enumeration (google_search tool; prose-JSON, since grounding forbids JSON mode).
     // HARD-CAPPED: grounding latency is highly variable (can hang 60-90s) with no built-in timeout.
-    const prompt = `Using Google Search, find REAL, currently-open ${sen ? sen + ' ' : ''}${kws || 'jobs'}${loc ? ' in ' + loc : ''}${wm ? ' (' + wm + ')' : ''}. Aim for 25-40 distinct current openings from DIFFERENT employers. Return ONLY a JSON array; each item exactly {"title":string,"company":string,"location":string,"job_url":the direct posting or the employer's own careers/ATS page URL}. STRONGLY PREFER the employer's OWN careers/ATS page (greenhouse/lever/ashby/workday/smartrecruiters/personio/recruitee/teamtailor or the company's own site) over any job aggregator. Use ONLY real postings found in the search — never invent a URL. Omit any item without a real URL.`;
+    const prompt = `Using Google Search, find REAL, currently-open ${sen ? sen + ' ' : ''}${kws || 'jobs'}${loc ? ' in ' + loc : ''}${wm ? ' (' + wm + ')' : ''}. Aim for 25-40 distinct current openings from DIFFERENT employers. Return ONLY a JSON array; each item exactly {"title":string,"company":string,"location":string,"job_url":the direct posting or the employer's own careers/ATS page URL}. ${allowAgg ? 'Include postings from job boards/aggregators (LinkedIn, Indeed, Naukri, Foundit, etc.) AS WELL AS employer career pages — whatever real openings exist for this search.' : "STRONGLY PREFER the employer's OWN careers/ATS page (greenhouse/lever/ashby/workday/smartrecruiters/personio/recruitee/teamtailor or the company's own site) over any job aggregator."} Use ONLY real postings found in the search — never invent a URL. Omit any item without a real URL.`;
     let raw = [];
     try {
         const model = geminiModel(true, GEMINI_FLASH_MODEL);
-        const res = await within(aiGenerateWithRetry(model, prompt, 2), 40000, null);   // background — allow grounding to complete
+        const res = await within(aiGenerateWithRetry(model, prompt, 2), 52000, null);   // grounding is slow + variable; give a full attempt room to complete
         if (res) raw = parseJsonArray(res.response.text().trim());
     } catch (e) { console.error('[discover] groundedDiscover enum:', e.message); }
     raw = (Array.isArray(raw) ? raw : []).filter((j) =>
-        j && j.title && j.job_url && /^https?:\/\//i.test(String(j.job_url)) && !DISCOVER_AGG.test(String(j.job_url)));
+        j && j.title && j.job_url && /^https?:\/\//i.test(String(j.job_url)) && (allowAgg || !DISCOVER_AGG.test(String(j.job_url))));
     // Empty is usually a transient grounding timeout (latency > cap), not a real "no jobs" — cache it only
     // briefly so it doesn't lock out results for hours; a non-empty result below is cached for 6h.
-    if (!raw.length) { await groundingCacheSet(cacheKey, 'discover', [], 15 * 60); return []; }
+    if (!raw.length) { await groundingCacheSet(cacheKey, 'discover', [], (allowAgg ? 5 : 15) * 60); return []; }
 
     // STEP B — chain each UNIQUE board root through the ATS engine (full board w/ real deep links);
     // else keep the grounded single posting if it's still live. Bounded concurrency + board count.
@@ -2079,7 +2084,7 @@ async function groundedDiscover(parsed, region) {
     // Latency-bounded (synchronous search path): the ATS engine gets ≤6s/board; a non-ATS URL keeps its
     // grounded single posting directly — detection returns instantly for non-ATS hosts and grounding is
     // told to cite only real pages, so we skip the slow per-URL liveness GET that dominated latency.
-    const groups = await mapLimit(uniq.slice(0, 10), 6, async (j) => {
+    const groups = await mapLimit(uniq.slice(0, allowAgg ? 14 : 10), 6, async (j) => {
         try { const r = await within(detectAndFetchAts(j.job_url), 6000, null); if (r && Array.isArray(r.jobs) && r.jobs.length) return r.jobs; } catch (_) {}
         return [{ job_url: j.job_url, title: j.title, employer_name: j.company || empNameFromUrl(j.job_url), location: j.location || loc }];
     });

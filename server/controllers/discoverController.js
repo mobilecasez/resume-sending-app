@@ -631,6 +631,9 @@ function jobCard(j) {
 }
 
 const GROUNDED_MIN = parseInt(process.env.DISCOVER_GROUNDED_MIN || '8', 10);
+// Aggregator hosts — shown to the user in live-search cards, but NOT persisted into the shared global_jobs
+// corpus (which stays employer-direct). Mirrors DISCOVER_AGG in aiHubController.
+const AGG_URL = /indeed|glassdoor|linkedin|stepstone|monster\.|ziprecruiter|simplyhired|xing\.|naukri|foundit|talent\.com|jooble|careerjet|adzuna/i;
 // Normalize a job URL for equality (strip tracking params + hash + trailing slash), so a live-search
 // card and its already-saved copy match even when one carries utm/affiliate params and the other doesn't.
 function normUrl(u) {
@@ -683,12 +686,16 @@ async function liveSearch(req, res) {
     // COST: only pay for grounded web discovery ($0.035 Google-Search fee/call) when the free national
     // feed is THIN. A fat feed (100 gov jobs) already covers the query — no need to also ground.
     // The grounded path is the REAL worldwide Google search (works for ANY city/country, not just the
-    // DE/CH/FR government feeds). groundedDiscover's own budget is ~40s enumeration + board hydration, so
-    // we must give it ~50s here — a 26s cap was cutting it off (e.g. ".net jobs in Gurgaon" → 0 results
-    // because India has no national feed, so grounding is the ONLY path and it hadn't finished in 26s).
+    // DE/CH/FR government feeds). Two things were making it return nothing for no-feed markets like India:
+    //  (1) the cap was too short (grounding needs ~40-55s; groundedDiscover's own budget is ~52s enum +
+    //      board hydration), and (2) aggregator results (Naukri/Indeed/LinkedIn) were being filtered out —
+    //      but in India nearly every .NET posting is on an aggregator, so the strict filter left ZERO.
+    //  → allowAggregators keeps them (the user opens/fetches on their own IP), and we give it ~66s.
     if (merged.length < GROUNDED_MIN) {
-      const groundJobs = await within(aiHub.groundedDiscover(parsed, region).catch(() => []), 50000, []);
-      if (groundJobs && groundJobs.length) firehose.saveJobs(groundJobs, 'grounded', region).catch(() => {});
+      const groundJobs = await within(aiHub.groundedDiscover(parsed, region, { allowAggregators: true }).catch(() => []), 66000, []);
+      // Show the user ALL grounded jobs (incl. aggregators); only persist employer-DIRECT ones to the
+      // shared corpus so global_jobs stays clean (the feed keeps preferring real employer career pages).
+      if (groundJobs && groundJobs.length) firehose.saveJobs(groundJobs.filter((j) => j && j.job_url && !AGG_URL.test(String(j.job_url))), 'grounded', region).catch(() => {});
       merged = dedupe([...merged, ...groundJobs]);
     }
 
