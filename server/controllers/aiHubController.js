@@ -2066,7 +2066,7 @@ async function groundedDiscover(parsed, region, opts = {}) {
     let raw = [];
     try {
         const model = geminiModel(true, GEMINI_FLASH_MODEL);
-        const res = await within(aiGenerateWithRetry(model, prompt, 2), 52000, null);   // grounding is slow + variable; give a full attempt room to complete
+        const res = await within(aiGenerateWithRetry(model, prompt, 2), 62000, null);   // grounding is slow + variable; give a full attempt room to complete
         if (res) raw = parseJsonArray(res.response.text().trim());
     } catch (e) { console.error('[discover] groundedDiscover enum:', e.message); }
     raw = (Array.isArray(raw) ? raw : []).filter((j) =>
@@ -2074,6 +2074,22 @@ async function groundedDiscover(parsed, region, opts = {}) {
     // Empty is usually a transient grounding timeout (latency > cap), not a real "no jobs" — cache it only
     // briefly so it doesn't lock out results for hours; a non-empty result below is cached for 6h.
     if (!raw.length) { await groundingCacheSet(cacheKey, 'discover', [], (allowAgg ? 5 : 15) * 60); return []; }
+
+    // FAST PATH (live-search modal): return the grounded postings AS-IS — no ATS board hydration. The user
+    // opens/fetches each one on-device (their own IP), so we don't need the slow per-board pass, and skipping
+    // it keeps the whole call under the caller's cap (STEP B could otherwise push total latency past it and
+    // lose an otherwise-good enumeration).
+    if (allowAgg) {
+        const out = []; const seen = new Set();
+        for (const j of raw) {
+            if (!j.job_url || seen.has(j.job_url)) continue;
+            seen.add(j.job_url);
+            out.push({ job_url: j.job_url, title: j.title, employer_name: j.company || empNameFromUrl(j.job_url), location: j.location || loc });
+        }
+        await groundingCacheSet(cacheKey, 'discover', out, 6 * 3600);
+        console.log(`[discover] grounded(agg) "${kws}|${loc}": ${out.length} postings`);
+        return out;
+    }
 
     // STEP B — chain each UNIQUE board root through the ATS engine (full board w/ real deep links);
     // else keep the grounded single posting if it's still live. Bounded concurrency + board count.
