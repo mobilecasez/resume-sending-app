@@ -14,9 +14,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from 'expo-router';
 import {
-  fetchAdminAiEvents, updateAiEventCost, type AiEventCost,
+  fetchAdminAiEvents, updateAiEventCost, sendRewardNudge, type AiEventCost,
   adminSearchUsers, adminSetUserCredits, type AdminUser,
 } from '../../services/aiHubService';
+
+// Rewards that have a push nudge (matches NUDGES in server/services/rewardNudges.js).
+const NUDGEABLE = new Set(['reward_rate_app', 'reward_complete_profile', 'reward_first_apply']);
 
 type Row = AiEventCost & { _credits: string; _active: boolean; _dirty: boolean; _saving: boolean; _saved: boolean };
 
@@ -54,6 +57,32 @@ export default function AiEventCreditsScreen() {
     patch(key, { _credits: clean, _dirty: true, _saved: false });
   };
   const onToggle = (key: string, val: boolean) => patch(key, { _active: val, _dirty: true, _saved: false });
+
+  // Admin-triggered reward push nudge: preview the audience (dry-run) → confirm → send. Never automatic.
+  const [nudging, setNudging] = useState<string | null>(null);
+  const nudge = async (key: string, label: string) => {
+    if (nudging) return;
+    setNudging(key);
+    try {
+      const preview = await sendRewardNudge(key, true);
+      if (preview.error) { Alert.alert('No nudge', 'This reward has no push nudge configured.'); return; }
+      const n = preview.wouldTarget || 0;
+      if (n === 0) { Alert.alert('No one to notify', 'Every eligible user has already earned this reward or was nudged recently (7-day cooldown).'); return; }
+      Alert.alert(
+        `Send “${label}” nudge?`,
+        `This sends a push to ${n} user${n === 1 ? '' : 's'} who haven’t earned this reward yet. It is NOT automatic — only sends when you confirm.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: `Send to ${n}`, style: 'default', onPress: async () => {
+              try { const r = await sendRewardNudge(key, false); Alert.alert('Sent ✓', `Notified ${r.sent || 0} user${(r.sent || 0) === 1 ? '' : 's'}.`); }
+              catch (e: any) { Alert.alert('Send failed', e?.response?.data?.error || 'Please try again.'); }
+            } },
+        ]
+      );
+    } catch (e: any) {
+      Alert.alert('Failed', e?.response?.data?.error || 'Could not reach the server.');
+    } finally { setNudging(null); }
+  };
 
   const save = async (row: Row) => {
     const credits = parseInt(row._credits, 10);
@@ -165,6 +194,14 @@ export default function AiEventCreditsScreen() {
                   )}
                 </TouchableOpacity>
               </View>
+
+              {tab === 'credit' && NUDGEABLE.has(r.event_key) && (
+                <TouchableOpacity onPress={() => nudge(r.event_key, r.label)} disabled={nudging === r.event_key} style={s.nudgeBtn} activeOpacity={0.85}>
+                  {nudging === r.event_key
+                    ? <ActivityIndicator size="small" color="#22D3EE" />
+                    : <><Ionicons name="notifications-outline" size={15} color="#22D3EE" /><Text style={s.nudgeTxt}>Send push nudge</Text></>}
+                </TouchableOpacity>
+              )}
             </View>
           ))}
         </ScrollView>
@@ -318,6 +355,8 @@ const s = StyleSheet.create({
   tabBtnOn: { backgroundColor: '#22D3EE' },
   tabTxt: { color: '#9FB2D4', fontWeight: '800', fontSize: 13 },
   tabTxtOn: { color: '#0B1120' },
+  nudgeBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 12, height: 40, borderRadius: 11, borderWidth: 1, borderColor: 'rgba(34,211,238,0.35)', backgroundColor: 'rgba(34,211,238,0.08)' },
+  nudgeTxt: { color: '#22D3EE', fontWeight: '800', fontSize: 13 },
   // User-credit card
   ucCard: { backgroundColor: 'rgba(34,211,238,0.06)', borderColor: 'rgba(34,211,238,0.18)', borderWidth: 1, borderRadius: 16, padding: 14 },
   ucHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },

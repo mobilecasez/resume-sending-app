@@ -814,6 +814,13 @@ export async function fetchAdminAiEvents(): Promise<AiEventCost[]> {
   return (data && data.events) || [];
 }
 
+/** Admin: send (or dry-run preview) a reward push nudge. dryRun=true returns { wouldTarget } without sending. */
+export async function sendRewardNudge(nudgeKey: string, dryRun: boolean): Promise<{ wouldTarget?: number; sent?: number; targeted?: number; credits?: number; error?: string }> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.post(`${API_BASE_URL}/admin/reward-nudge`, { nudgeKey, dryRun }, { headers, timeout: 30000 });
+  return data || {};
+}
+
 // Admin Store Analytics (Apple App Store + Google Play downloads + recorded transactions).
 export type StoreAnalytics = {
   generatedAt: string;
