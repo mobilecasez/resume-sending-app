@@ -86,6 +86,61 @@ const SEARCH_SCRAPE_JS = `(function(){
   },500);
 })(); true;`;
 
+// Scraper for LinkedIn's PUBLIC guest jobs API (no login) — the dense, paginated source of INDIVIDUAL
+// postings (~25/page). Each guest card carries title + company + location + a real /jobs/view/ link.
+const LINKEDIN_SCRAPE_JS = `(function(){
+  function txt(el){ return el ? (el.innerText||el.textContent||'').trim() : ''; }
+  function scan(){
+    var out=[], seen={};
+    var cards=document.querySelectorAll('li');
+    for(var i=0;i<cards.length;i++){
+      var c=cards[i];
+      var a=c.querySelector('a.base-card__full-link, a[href*="/jobs/view/"]');
+      if(!a||!a.href) continue;
+      var href=a.href.split('?')[0];
+      if(seen[href]) continue;
+      var title=txt(c.querySelector('.base-search-card__title, h3'));
+      if(!title) continue;
+      var company=txt(c.querySelector('.base-search-card__subtitle, h4'));
+      var loc=txt(c.querySelector('.job-search-card__location, .base-search-card__metadata span'));
+      seen[href]=1;
+      out.push({title:title.slice(0,180), url:href, company:company.slice(0,120), location:loc.slice(0,120)});
+    }
+    return out;
+  }
+  var tries=0;
+  var iv=setInterval(function(){
+    tries++;
+    var r=scan();
+    if(r.length>0 || tries>=16){
+      clearInterval(iv);
+      try{ window.ReactNativeWebView.postMessage(JSON.stringify({__cvli:true, results:r})); }catch(e){}
+    }
+  },500);
+})(); true;`;
+
+// Split a free-text query into {keywords, location} for the LinkedIn/engine URLs. Heuristic: "<role> in
+// <place>" → keywords="<role>", location="<place>"; strips filler ("jobs", "vacancies", "near me"…).
+function parseLiveQuery(q: string): { kw: string; loc: string } {
+  const raw = String(q || '').trim();
+  let kw = raw, loc = '';
+  const m = raw.match(/\bin\b\s+(.+)$/i);
+  if (m && typeof m.index === 'number') { loc = m[1].trim(); kw = raw.slice(0, m.index).trim(); }
+  kw = kw.replace(/\b(jobs?|vacan\w*|openings?|positions?|roles?|hiring|profile|near\s+me)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+  loc = loc.replace(/\b(jobs?|near\s+me)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+  return { kw: kw || raw, loc };
+}
+
+// LinkedIn's guest keyword search returns location-only JUNK for bare symbol-tokens (".net", "c#", "c++",
+// "node.js") but matches well once a role word is present (verified: ".net" → 0 relevant, ".net developer"
+// → strong). So append "developer" ONLY for a single symbol-bearing token; leave normal phrases alone.
+function linkedInKeyword(kw: string): string {
+  const k = String(kw || '').trim();
+  if (!k) return k;
+  if (!/\s/.test(k) && /[.#+]/.test(k)) return k + ' developer';
+  return k;
+}
+
 export default function LiveJobSearch({ visible, query, onClose }: { visible: boolean; query: string; onClose: () => void }) {
   const CONCURRENCY = 5;   // fetch up to 5 selected postings at once (was one-at-a-time)
   const { costOf } = useEventCosts();
@@ -115,6 +170,8 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   const serverDoneRef = useRef(false);
   const webDoneRef = useRef(false);
   const webReportsRef = useRef(0);
+  const webTargetsRef = useRef(0);   // how many on-device sources we're waiting on this run
+  const webReportedRef = useRef<Set<number>>(new Set());   // source indices that have reported (dedup)
 
   const pulse = useRef(new Animated.Value(0)).current;
 
@@ -126,14 +183,21 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   const saveProgress = () => { AsyncStorage.setItem(persistKey(), JSON.stringify({ details: detailsRef.current, fstate: fstateRef.current })).catch(() => {}); };
   const setFetchingBoth = (v: boolean) => { fetchingRef.current = v; setFetching(v); };
 
-  // A real Google search + a DDG-lite fallback, run on the user's device/IP.
-  const searchUrls = useMemo(() => {
+  // On-device sources, run on the user's own device/IP for a RICH, real search:
+  //  • LinkedIn public guest jobs API — dense, paginated INDIVIDUAL postings (~25/page → ~100 across pages)
+  //  • Google + DuckDuckGo-lite web search — breadth (Naukri/Indeed/company career pages)
+  const webSources = useMemo(() => {
     const q = String(query || '').trim();
-    if (!q) return [] as string[];
-    return [
-      'https://www.google.com/search?num=30&hl=en&q=' + encodeURIComponent(q),
-      'https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(q),
-    ];
+    if (!q) return [] as { uri: string; kind: 'li' | 'organic' }[];
+    const enc = encodeURIComponent;
+    const { kw, loc } = parseLiveQuery(q);
+    const liBase = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=' + enc(linkedInKeyword(kw)) + (loc ? '&location=' + enc(loc) : '');
+    // LinkedIn guest returns ~10 individual postings per page → paginate by 10 for depth.
+    const sources: { uri: string; kind: 'li' | 'organic' }[] = [0, 10, 20, 30, 40, 50].map((s) => ({ uri: liBase + '&start=' + s, kind: 'li' as const }));
+    sources.push({ uri: 'https://www.google.com/search?num=30&hl=en&q=' + enc(q), kind: 'organic' });
+    sources.push({ uri: 'https://www.google.com/search?num=30&hl=en&start=10&q=' + enc(q), kind: 'organic' });
+    sources.push({ uri: 'https://lite.duckduckgo.com/lite/?q=' + enc(q), kind: 'organic' });
+    return sources;
   }, [query]);
 
   const normUrl = (u: string) => { try { const x = new URL(String(u || '')); return (x.origin + x.pathname).replace(/\/+$/, ''); } catch { return String(u || '').split('#')[0].replace(/\/+$/, ''); } };
@@ -155,11 +219,15 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     setPhase('results');
   }, []);
 
-  // On-device organic results → our card shape (company/location fill in when the user fetches details).
+  // On-device organic (Google/DDG) results → cards (company/location fill in when the user fetches details).
   const toWebCards = (results: { title: string; url: string }[]): LiveJobCard[] => (results || []).map((r) => {
     let host = ''; try { host = new URL(r.url).hostname.replace(/^www\./, ''); } catch {}
     return { id: r.url, job_url: r.url, title: r.title, company: host || null, employer_name: host || null, location: null, work_mode: null, job_type: null, salary: null, experience: null, responsibilities: [], skills: [], source: host || 'web', highlights: [], saved: false, summary: null } as LiveJobCard;
   });
+  // LinkedIn guest cards already carry company + location.
+  const toLiCards = (results: { title: string; url: string; company?: string; location?: string }[]): LiveJobCard[] => (results || []).map((r) => (
+    { id: r.url, job_url: r.url, title: r.title, company: r.company || null, employer_name: r.company || null, location: r.location || null, work_mode: null, job_type: null, salary: null, experience: null, responsibilities: [], skills: [], source: 'linkedin.com', highlights: [], saved: false, summary: null } as LiveJobCard
+  ));
 
   // Only fall to the empty/error state once BOTH the server and the on-device search have finished empty.
   const finishSource = useCallback((which: 'server' | 'web') => {
@@ -167,11 +235,15 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     if (serverDoneRef.current && webDoneRef.current) setPhase((p) => (p === 'results' || cardsRef.current.length > 0) ? 'results' : 'error');
   }, []);
 
-  const onSearchReport = useCallback((results: { title: string; url: string }[]) => {
-    const got = results && results.length;
-    if (got) mergeCards(toWebCards(results));
-    webReportsRef.current += 1;
-    if (got || webReportsRef.current >= 2) { setSearchActive(false); finishSource('web'); }   // first engine to yield wins
+  // Each on-device source (LinkedIn page / Google / DDG) reports here by its index; accumulate ALL of them,
+  // then finish 'web' once every UNIQUE source has reported (or the safety timeout fires) — so all the
+  // LinkedIn pages add up. Index-deduped so a double signal (onMessage + onError) can't end it early.
+  const onWebReport = useCallback((idx: number, results: any[], kind: 'li' | 'organic') => {
+    if (webReportedRef.current.has(idx)) return;
+    webReportedRef.current.add(idx);
+    const cards = kind === 'li' ? toLiCards(results) : toWebCards(results);
+    if (cards.length) mergeCards(cards);
+    if (webReportedRef.current.size >= (webTargetsRef.current || 1)) { setSearchActive(false); finishSource('web'); }
   }, [mergeCards, finishSource]);
 
   // ── run the live search when opened ──
@@ -183,11 +255,12 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     setFetchingBoth(false); setActiveUrls([]); activeRef.current = new Set(); queueRef.current = [];
     Object.values(timersRef.current).forEach(clearTimeout); timersRef.current = {};
     serverDoneRef.current = false; webDoneRef.current = false; webReportsRef.current = 0;
+    webReportedRef.current = new Set(); webTargetsRef.current = webSources.length;
     // Kick off the on-device web search (hidden WebViews mount below) in PARALLEL with the server search.
     setSearchGen((g) => g + 1); setSearchActive(true);
     let alive = true;
-    // Safety net: if the hidden search WebViews never report back (offline / hard block), stop waiting.
-    const webTimer = setTimeout(() => { if (alive) { setSearchActive(false); finishSource('web'); } }, 16000);
+    // Safety net: if some hidden search WebViews never report back (offline / hard block), stop waiting.
+    const webTimer = setTimeout(() => { if (alive) { setSearchActive(false); finishSource('web'); } }, 22000);
     (async () => {
       // restore any saved fetch progress for THIS query (survives minimize / app restart)
       try {
@@ -444,16 +517,16 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
             </>
           )}
 
-          {/* hidden on-device SEARCH — a real Google (+ DDG-lite fallback) query on the user's own IP →
-              worldwide organic results, no server-side bot wall / grounding latency. */}
-          {searchActive && searchUrls.map((uri, i) => (
-            <View key={searchGen + '|search|' + i} style={styles.hiddenWeb} pointerEvents="none">
+          {/* hidden on-device SEARCH — LinkedIn public guest jobs (dense individual postings, paginated) +
+              Google/DDG (breadth), all on the user's own IP → rich worldwide results, no server bot wall. */}
+          {searchActive && webSources.map((s, i) => (
+            <View key={searchGen + '|w|' + i} style={styles.hiddenWeb} pointerEvents="none">
               <WebView
-                source={{ uri }}
-                injectedJavaScript={SEARCH_SCRAPE_JS}
-                onMessage={(e) => { try { const d = JSON.parse(e.nativeEvent.data); if (d && d.__cvsr) onSearchReport(Array.isArray(d.results) ? d.results : []); } catch {} }}
-                onError={() => onSearchReport([])}
-                onHttpError={() => onSearchReport([])}
+                source={{ uri: s.uri }}
+                injectedJavaScript={s.kind === 'li' ? LINKEDIN_SCRAPE_JS : SEARCH_SCRAPE_JS}
+                onMessage={(e) => { try { const d = JSON.parse(e.nativeEvent.data); if (d && d.__cvli) onWebReport(i, Array.isArray(d.results) ? d.results : [], 'li'); else if (d && d.__cvsr) onWebReport(i, Array.isArray(d.results) ? d.results : [], 'organic'); } catch {} }}
+                onError={() => onWebReport(i, [], s.kind)}
+                onHttpError={() => onWebReport(i, [], s.kind)}
                 userAgent={MOBILE_UA}
                 javaScriptEnabled
                 domStorageEnabled
