@@ -1288,6 +1288,8 @@ export default function AIHubScreen() {
   const { costs } = useEventCosts();
   const [hubTab, setHubTab] = useState<'search' | 'myjobs' | 'saved'>('myjobs');   // unified Job Hub tabs
   const [hubSavedCount, setHubSavedCount] = useState(0);
+  const [hubSavedStats, setHubSavedStats] = useState({ count: 0, withCl: 0, applied: 0 });   // Saved-tab summary
+  const [hubSearchStats, setHubSearchStats] = useState({ total: 0, remote: 0, fields: 0, regions: 0 });   // Search-tab summary
   const [pills, setPills] = useState<WishlistPill[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [inputValue, setInputValue] = useState('https://');
@@ -1862,40 +1864,53 @@ export default function AIHubScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* ══ SHARED HERO CARD — the Search | My Jobs | Saved tabs live INSIDE it; title + summary swap per tab ══ */}
+      {/* ══ SHARED HERO CARD — the Search | My Jobs | Saved tabs live INSIDE it. Heading sits on the top
+          row (reclaims the old eyebrow strip → tighter card); summary + a stats row (shown for EVERY tab)
+          + the tabs swap per tab. ══ */}
       <View style={styles.hubHero}>
         <LinearGradient colors={['#0B0F22', '#0F1635', '#0B0F22']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={StyleSheet.absoluteFillObject} />
         <View style={[styles.blob, { top: -24, left: -30, backgroundColor: 'rgba(79,141,255,0.18)', width: 150, height: 150 }]} />
         <View style={[styles.blob, { bottom: -20, right: -20, backgroundColor: 'rgba(124,107,255,0.14)', width: 120, height: 120 }]} />
-        <View style={styles.heroEyeRow}>
-          <Text style={styles.heroEyebrow}>{hubTab === 'search' ? 'AI JOB SEARCH' : hubTab === 'saved' ? 'SAVED JOBS' : 'YOUR COMPANIES'}</Text>
+        <View style={styles.heroTopRow}>
+          <Text style={styles.hubHeroTitle}>{hubTab === 'search' ? 'Search' : hubTab === 'saved' ? 'Saved Jobs' : 'My Jobs'}</Text>
           <View style={styles.aiPill}><Animated.View style={[styles.pulseDot, { transform: [{ scale: pulseAnim }] }]} /><Text style={styles.aiPillText}>Live</Text></View>
         </View>
-        <Text style={styles.heroTitle}>{hubTab === 'search' ? 'Search' : hubTab === 'saved' ? 'Saved' : 'My Jobs'}</Text>
         <Text style={styles.heroSub}>
           {hubTab === 'search'
-            ? 'Describe the job you want — found across the live web'
+            ? (hubSearchStats.total > 0 ? `${hubSearchStats.total.toLocaleString('en-US')} live openings — describe the job you want` : 'Describe the job you want — found across the live web')
             : hubTab === 'saved'
-            ? (hubSavedCount > 0 ? `${hubSavedCount} job${hubSavedCount === 1 ? '' : 's'} fetched from the web` : 'Jobs you fetch from the web appear here')
+            ? (hubSavedStats.count > 0 ? `${hubSavedStats.count} job${hubSavedStats.count === 1 ? '' : 's'} fetched from the web` : 'Jobs you fetch from the web appear here')
             : (employers.length > 0
               ? `Tracking ${stats.sources} ${stats.sources === 1 ? 'company' : 'companies'} · ${stats.matches} match${stats.matches === 1 ? '' : 'es'} · ${stats.contacts} contacts`
               : 'Add a company to start AI job matching')}
         </Text>
-        {hubTab === 'myjobs' && employers.length > 0 && (
-          <View style={styles.statsRow}>
-            {[
-              { value: stats.matches, label: 'Matches', color: '#22D3EE' },
-              { value: stats.contacts, label: 'Contacts', color: '#A78BFA' },
-              { value: `${stats.verifiedPct}%`, label: 'Verified', color: '#34D399' },
-              { value: stats.sources, label: 'Companies', color: '#FB923C' },
-            ].map((s, i, arr) => (
-              <React.Fragment key={s.label}>
-                <View style={styles.statItem}><Text style={[styles.statValue, { color: s.color }]}>{s.value}</Text><Text style={styles.statLabel}>{s.label}</Text></View>
-                {i < arr.length - 1 && <View style={styles.statDivider} />}
-              </React.Fragment>
-            ))}
-          </View>
-        )}
+        <View style={styles.statsRow}>
+          {(hubTab === 'search'
+            ? [
+                { value: hubSearchStats.total.toLocaleString('en-US'), label: 'Live jobs', color: '#22D3EE' },
+                { value: String(hubSearchStats.remote), label: 'Remote', color: '#A78BFA' },
+                { value: String(hubSearchStats.fields), label: 'Fields', color: '#34D399' },
+                { value: String(hubSearchStats.regions), label: 'Regions', color: '#FB923C' },
+              ]
+            : hubTab === 'saved'
+            ? [
+                { value: String(hubSavedStats.count), label: 'Saved', color: '#22D3EE' },
+                { value: String(hubSavedStats.withCl), label: 'Cover letters', color: '#A78BFA' },
+                { value: String(hubSavedStats.applied), label: 'Applied', color: '#34D399' },
+              ]
+            : [
+                { value: String(stats.matches), label: 'Matches', color: '#22D3EE' },
+                { value: String(stats.contacts), label: 'Contacts', color: '#A78BFA' },
+                { value: `${employers.length > 0 ? stats.verifiedPct : 0}%`, label: 'Verified', color: '#34D399' },
+                { value: String(stats.sources), label: 'Companies', color: '#FB923C' },
+              ]
+          ).map((s, i, arr) => (
+            <React.Fragment key={s.label}>
+              <View style={styles.statItem}><Text style={[styles.statValue, { color: s.color }]}>{s.value}</Text><Text style={styles.statLabel}>{s.label}</Text></View>
+              {i < arr.length - 1 && <View style={styles.statDivider} />}
+            </React.Fragment>
+          ))}
+        </View>
         <View style={styles.hubTabsInCard}>
           {([['search', 'Search', 'search-outline'], ['myjobs', 'My Jobs', 'briefcase-outline'], ['saved', 'Saved', 'bookmark-outline']] as const).map(([k, label, icon]) => (
             <TouchableOpacity key={k} onPress={() => setHubTab(k as any)} style={[styles.hubTabInCard, hubTab === k && styles.hubTabInCardOn]} activeOpacity={0.85}>
@@ -1906,8 +1921,8 @@ export default function AIHubScreen() {
         </View>
       </View>
 
-      {hubTab === 'search' && <ExploreFeed embedded />}
-      {hubTab === 'saved' && <View style={{ flex: 1 }}><SavedJobsList onCountChange={setHubSavedCount} /></View>}
+      {hubTab === 'search' && <ExploreFeed embedded onStats={setHubSearchStats} />}
+      {hubTab === 'saved' && <View style={{ flex: 1 }}><SavedJobsList onCountChange={setHubSavedCount} onStats={setHubSavedStats} /></View>}
 
       {hubTab === 'myjobs' && (
       <ScrollView
@@ -2507,6 +2522,20 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     zIndex: 1,
   },
+  // Compact heading row — the title lives here now (no separate eyebrow strip) with the Live pill at the end.
+  heroTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+    zIndex: 1,
+  },
+  hubHeroTitle: {
+    fontSize: 23,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: -0.6,
+  },
   heroEyebrow: {
     fontSize: 10,
     fontWeight: '700',
@@ -2543,7 +2572,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: 'rgba(255,255,255,0.5)',
     lineHeight: 18,
-    marginBottom: 18,
+    marginBottom: 12,
     zIndex: 1,
   },
 
@@ -2555,9 +2584,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
     borderRadius: 18,
-    paddingVertical: 14,
+    paddingVertical: 12,
     paddingHorizontal: 10,
-    marginBottom: 18,
+    marginBottom: 2,
     zIndex: 1,
   },
   statItem:   { flex: 1, alignItems: 'center' },

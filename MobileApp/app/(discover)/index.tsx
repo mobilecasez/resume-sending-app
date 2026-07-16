@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import {
   fetchDiscoverJobs, fetchDiscoverFacets, aiSearchJobs, hydrateJobUrls, loadAllJobStatuses,
   type DiscoverJob, type DiscoverFacets, type AiSearchParsed, type AiXray,
@@ -180,7 +180,7 @@ function FChip({ label, on, onPress }: { label: string; on: boolean; onPress: ()
 
 // Reusable Explore feed. `embedded` renders JUST the feed (no SafeAreaView / top bar / Explore|Saved
 // sub-tabs) so the Job Hub can mount it as its "Search" tab; the standalone /(discover) route wraps it.
-export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
+export function ExploreFeed({ embedded = false, onStats }: { embedded?: boolean; onStats?: (s: { total: number; remote: number; fields: number; regions: number }) => void }) {
   const router = useRouter();
   const { costOf } = useEventCosts();
   const aiCost = costOf('ai_search');
@@ -259,6 +259,15 @@ export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
   }, []);
   // Cover-letter / applied status for the visible jobs → drives the CL tag on Search cards too.
   useEffect(() => { loadAllJobStatuses().then((s) => setClStatuses(s || {})).catch(() => {}); }, [jobs.length, aiResults.length]);
+  // Refresh statuses whenever this screen regains focus, so a cover letter generated in job-detail shows
+  // on the Search cards the moment the user comes back (was loaded once → stale until the list reloaded).
+  useFocusEffect(useCallback(() => { loadAllJobStatuses().then((s) => setClStatuses(s || {})).catch(() => {}); }, []));
+  // Surface feed totals to the parent Job Hub so its shared hero can show Search-tab stats (issue: every tab must show counts).
+  useEffect(() => {
+    if (!onStats || !facets) return;
+    const remote = facets.workModes?.find((w) => /remote/i.test(w.work_mode))?.n || 0;
+    onStats({ total: facets.total || 0, remote, fields: facets.fields?.length || 0, regions: facets.countries?.length || 0 });
+  }, [facets, onStats]);
   // When the scope field changes, refresh facets so the Role list matches the field.
   useEffect(() => { if (field) fetchDiscoverFacets(field).then(setFacets).catch(() => {}); }, [field]);
 
@@ -344,9 +353,11 @@ export function ExploreFeed({ embedded = false }: { embedded?: boolean }) {
     setAiActive(false); setAiParsed(null); setAiResults([]); setAiTotal(0); setQuery('');
     setXrayUrls([]); setWebPhase(''); setWebNote('');
   }, []);
-  // Always-on "Live jobs on Google": use whatever the user is searching for; if nothing yet, nudge them to type.
+  // Always-on "Live jobs on Google": use whatever is CURRENTLY typed first (so tapping this straight after
+  // typing works without pressing "Ask AI" — the earlier bug preferred the stale last-searched text); fall
+  // back to the last AI-searched query when the box is empty. If neither exists, nudge them to type.
   const openLive = useCallback(() => {
-    const q = (lastQueryRef.current || query).trim();
+    const q = (query.trim() || lastQueryRef.current || '').trim();
     if (q) { setLiveQuery(q); setLiveOpen(true); }
     else { searchRef.current?.focus(); }
   }, [query]);

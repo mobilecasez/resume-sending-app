@@ -1,17 +1,27 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 // Reusable Saved-Jobs list: the postings the user fetched via "Look for live jobs on Google", stored
 // server-side and listed newest-first. Rendered as the "Saved" tab on Explore and by the /saved route.
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { fetchSavedJobs, removeSavedJob, loadAllJobStatuses, type SavedJobCard } from '../services/aiHubService';
 
 function clTagOf(s?: string | null): { label: string; color: string } | null {
   if (s === 'applied') return { label: 'Applied', color: '#10B981' };
   if (s === 'generated' || s === 'downloaded') return { label: 'Cover letter ready', color: '#2563EB' };
   return null;
+}
+const matchColor = (m: number) => (m >= 70 ? '#10B981' : m >= 40 ? '#F59E0B' : '#94A3B8');
+function MatchBadge({ score }: { score: number }) {
+  const c = matchColor(score);
+  return (
+    <View style={[styles.matchBadge, { backgroundColor: c + '18', borderColor: c + '44' }]}>
+      <Ionicons name="sparkles" size={10} color={c} />
+      <Text style={[styles.matchText, { color: c }]}>{score}%</Text>
+    </View>
+  );
 }
 
 const T = {
@@ -31,7 +41,7 @@ function toJobHubParams(c: SavedJobCard) {
     experience: c.experience || '', salary: c.salary || '', jobType: c.job_type || '',
     workMode: c.work_mode || null, urgent: false, skills: Array.isArray(c.skills) ? c.skills : [],
     responsibilities: Array.isArray(c.responsibilities) ? c.responsibilities : [], contacts: [],
-    applyUrl: c.job_url, matchScore: null,
+    applyUrl: c.job_url, matchScore: typeof c.match === 'number' ? c.match : null,
   };
   const g = gradFor(c.company || c.employer_name || c.title);
   const employer = {
@@ -61,9 +71,12 @@ function SavedCard({ job, onOpen, onRemove, clStatus }: { job: SavedJobCard; onO
           <Text style={styles.jobCompany} numberOfLines={2}>{job.company || job.employer_name || 'Company'}</Text>
           {clt && <View style={[styles.clTag, { backgroundColor: clt.color + '18', borderColor: clt.color + '44' }]}><Ionicons name="document-text" size={10} color={clt.color} /><Text style={[styles.clTagText, { color: clt.color }]}>{clt.label}</Text></View>}
         </View>
-        <TouchableOpacity onPress={() => onRemove(job)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={styles.trashBtn}>
-          <Ionicons name="trash-outline" size={17} color={T.textFaint} />
-        </TouchableOpacity>
+        <View style={styles.headRight}>
+          {typeof job.match === 'number' && <MatchBadge score={job.match} />}
+          <TouchableOpacity onPress={() => onRemove(job)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={styles.trashBtn}>
+            <Ionicons name="trash-outline" size={17} color={T.textFaint} />
+          </TouchableOpacity>
+        </View>
       </View>
       <View style={styles.metaRow}>
         <Meta icon="location-outline" color={META.location} text={job.location} />
@@ -88,20 +101,44 @@ function SavedCard({ job, onOpen, onRemove, clStatus }: { job: SavedJobCard; onO
   );
 }
 
-export default function SavedJobsList({ onCountChange }: { onCountChange?: (n: number) => void }) {
+export default function SavedJobsList({ onCountChange, onStats }: { onCountChange?: (n: number) => void; onStats?: (s: { count: number; withCl: number; applied: number }) => void }) {
   const router = useRouter();
   const [jobs, setJobs] = useState<SavedJobCard[]>([]);
   const [clStatuses, setClStatuses] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
+  const jobsRef = useRef<SavedJobCard[]>([]);
+  useEffect(() => { jobsRef.current = jobs; }, [jobs]);
+
+  // Derive the Saved-tab summary stats (total / cover-letters-ready / applied) from the list + statuses.
+  const reportStats = useCallback((list: SavedJobCard[], statuses: Record<string, string>) => {
+    let withCl = 0, applied = 0;
+    for (const j of list) {
+      const s = statuses[hashId(j.job_url)];
+      if (s === 'applied') applied++;
+      else if (s === 'generated' || s === 'downloaded') withCl++;
+    }
+    onStats?.({ count: list.length, withCl, applied });
+  }, [onStats]);
 
   const load = useCallback(async () => {
-    try { const r = await fetchSavedJobs(); setJobs(r.jobs || []); setError(false); onCountChange?.(r.count || 0); loadAllJobStatuses().then((s) => setClStatuses(s || {})).catch(() => {}); }
-    catch { setError(true); }
-  }, [onCountChange]);
+    try {
+      const r = await fetchSavedJobs();
+      const list = r.jobs || [];
+      setJobs(list); setError(false); onCountChange?.(r.count || 0);
+      const s = await loadAllJobStatuses().catch(() => ({} as Record<string, string>));
+      setClStatuses(s || {}); reportStats(list, s || {});
+    } catch { setError(true); }
+  }, [onCountChange, reportStats]);
 
   useEffect(() => { let alive = true; (async () => { setLoading(true); await load(); if (alive) setLoading(false); })(); return () => { alive = false; }; }, [load]);
+
+  // Refresh CL/applied statuses whenever the screen regains focus — so a cover letter generated (or an
+  // application marked) over in job-detail is reflected on the Saved cards the moment the user returns.
+  useFocusEffect(useCallback(() => {
+    loadAllJobStatuses().then((s) => { setClStatuses(s || {}); reportStats(jobsRef.current, s || {}); }).catch(() => {});
+  }, [reportStats]));
 
   const onRefresh = useCallback(async () => { setRefreshing(true); await load(); setRefreshing(false); }, [load]);
   const openJob = useCallback((c: SavedJobCard) => { router.push({ pathname: '/(ai-hub)/job-detail', params: toJobHubParams(c) }); }, [router]);
@@ -147,6 +184,9 @@ const styles = StyleSheet.create({
   logoText: { color: '#fff', fontWeight: '800', fontSize: 19 },
   jobTitle: { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.2 },
   jobCompany: { fontSize: 12.5, color: T.textMuted, marginTop: 3, fontWeight: '600' },
+  headRight: { alignItems: 'flex-end', gap: 8 },
+  matchBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 100, borderWidth: 1 },
+  matchText: { fontSize: 11.5, fontWeight: '800' },
   trashBtn: { padding: 4 },
   metaRow: { flexDirection: 'row', gap: 6, marginTop: 13, flexWrap: 'wrap' },
   metaChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: T.bg, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5, maxWidth: 240 },

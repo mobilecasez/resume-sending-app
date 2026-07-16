@@ -1061,13 +1061,14 @@ export type LiveJobCard = {
   id: string; job_url: string; title: string; company: string | null; employer_name: string | null;
   location: string | null; work_mode: string | null; job_type: string | null; salary: string | null;
   experience: string | null; responsibilities: string[]; skills: string[]; source: string | null; highlights: string[];
-  saved?: boolean; summary?: string | null;
+  saved?: boolean; summary?: string | null; match?: number | null;   // résumé skill-match 0..100 (null = no résumé)
 };
 
-/** Grounded live web search → structured job CARDS (the raw web page is never shown). ~15-40s. */
+/** Grounded live web search → structured job CARDS (the raw web page is never shown). Worldwide (any
+ *  city/country) via Google-Search grounding, which can run ~40-50s for a novel query — so allow 75s. */
 export async function liveSearchJobs(query: string): Promise<{ parsed: AiSearchParsed | null; cards: LiveJobCard[]; count: number }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.post(`${API_BASE_URL}/discover/live-search`, { query }, { headers, timeout: 60000 });
+  const { data } = await axios.post(`${API_BASE_URL}/discover/live-search`, { query }, { headers, timeout: 75000 });
   return { parsed: data?.parsed ?? null, cards: (data?.cards ?? []) as LiveJobCard[], count: data?.count ?? 0 };
 }
 

@@ -39,6 +39,27 @@ function skillsOf(resume) {
   return sk.map((s) => String(s || '').toLowerCase().trim()).filter((s) => s.length >= 2).slice(0, 40);
 }
 
+// JS mirror of matchExprSql — a résumé skill-overlap % for a job CARD (used for saved/live-search cards,
+// which live outside global_jobs so the SQL match expr can't reach them). Returns null when the user has
+// no parsed résumé skills. Same denominator floors as the SQL so scores are consistent across the app.
+function computeCardMatch(card, userSkills) {
+  if (!userSkills || !userSkills.length || !card) return null;
+  const overlap = (u, j) => u === j || (u.length > 2 && j.includes(u)) || (j.length > 2 && u.includes(j));
+  const jobSkills = (Array.isArray(card.skills) ? card.skills : []).map((s) => String(s || '').toLowerCase().trim()).filter((s) => s.length >= 2);
+  if (jobSkills.length > 0) {
+    let hit = 0;
+    for (const js of jobSkills) if (userSkills.some((u) => overlap(u, js))) hit++;
+    const denom = Math.max(3, Math.min(jobSkills.length, 8));
+    return Math.min(100, Math.round(100 * hit / denom));
+  }
+  // No skills on the card → count how many résumé skills appear in the title / responsibilities text.
+  const hay = (String(card.title || '') + ' ' + (Array.isArray(card.responsibilities) ? card.responsibilities.join(' ') : '')).toLowerCase();
+  let hit = 0;
+  for (const u of userSkills) if (u.length > 2 && hay.includes(u)) hit++;
+  const denom = Math.max(4, Math.min(userSkills.length, 12));
+  return Math.min(100, Math.round(100 * hit / denom));
+}
+
 // SQL skill-overlap match score: how many of the job's skills the user has (exact OR substring, either
 // direction), over a denominator floored at 3 and capped at 8 — a thin 1-skill listing can't hit 100%.
 function matchExprSql(skillsParam) {
@@ -661,8 +682,12 @@ async function liveSearch(req, res) {
     let merged = dedupe(feedJobs);
     // COST: only pay for grounded web discovery ($0.035 Google-Search fee/call) when the free national
     // feed is THIN. A fat feed (100 gov jobs) already covers the query — no need to also ground.
+    // The grounded path is the REAL worldwide Google search (works for ANY city/country, not just the
+    // DE/CH/FR government feeds). groundedDiscover's own budget is ~40s enumeration + board hydration, so
+    // we must give it ~50s here — a 26s cap was cutting it off (e.g. ".net jobs in Gurgaon" → 0 results
+    // because India has no national feed, so grounding is the ONLY path and it hadn't finished in 26s).
     if (merged.length < GROUNDED_MIN) {
-      const groundJobs = await within(aiHub.groundedDiscover(parsed, region).catch(() => []), 26000, []);
+      const groundJobs = await within(aiHub.groundedDiscover(parsed, region).catch(() => []), 50000, []);
       if (groundJobs && groundJobs.length) firehose.saveJobs(groundJobs, 'grounded', region).catch(() => {});
       merged = dedupe([...merged, ...groundJobs]);
     }
@@ -674,7 +699,8 @@ async function liveSearch(req, res) {
       const rows = await dbConfig.query('SELECT job_url FROM user_saved_jobs WHERE user_id = $1', [req.user && req.user.id]);
       savedSet = new Set((rows || []).map((r) => normUrl(r.job_url)));
     } catch (_) {}
-    const cards = merged.map(jobCard).map((c) => ({ ...c, saved: savedSet.has(normUrl(c.job_url)) }));
+    const liveUserSkills = skillsOf(await getResume(req.user && req.user.id));
+    const cards = merged.map(jobCard).map((c) => ({ ...c, saved: savedSet.has(normUrl(c.job_url)), match: computeCardMatch(c, liveUserSkills) }));
     cards.sort((a, b) => (a.saved ? 1 : 0) - (b.saved ? 1 : 0));   // unsaved first, saved last
     res.json({ success: true, parsed, cards, count: cards.length });
   } catch (e) { console.error('[discover] live-search:', e.message); res.status(500).json({ error: 'Live search failed' }); }
@@ -775,7 +801,10 @@ async function savedJobs(req, res) {
       `SELECT card, saved_at FROM user_saved_jobs WHERE user_id = $1 ORDER BY saved_at DESC LIMIT 500`,
       [req.user.id]
     );
-    const jobs = (rows || []).map((r) => { const c = typeof r.card === 'string' ? JSON.parse(r.card) : r.card; return { ...c, saved_at: r.saved_at }; });
+    // Attach a live résumé match % to every saved card (computed at read time so it tracks the current
+    // résumé). Null when the user has no parsed skills — the card then simply shows no match badge.
+    const userSkills = skillsOf(await getResume(req.user && req.user.id));
+    const jobs = (rows || []).map((r) => { const c = typeof r.card === 'string' ? JSON.parse(r.card) : r.card; return { ...c, match: computeCardMatch(c, userSkills), saved_at: r.saved_at }; });
     res.json({ success: true, jobs, count: jobs.length });
   } catch (e) { console.error('[discover] saved-jobs:', e.message); res.status(500).json({ error: 'Could not load saved jobs' }); }
 }
