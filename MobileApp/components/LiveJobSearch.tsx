@@ -216,7 +216,8 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   const [expandGen, setExpandGen] = useState(0);
   const [expandingUrl, setExpandingUrl] = useState<string | null>(null);   // the listing card being expanded
   const expandReportedRef = useRef<Set<number>>(new Set());
-  const expandFoundRef = useRef(0);
+  const expandFoundRef = useRef(0);    // cards actually ADDED to the list (post-dedupe/filter)
+  const expandRawRef = useRef(0);      // cards the scrape RETURNED (pre-filter) — scrape worked at all?
   const expandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const pulse = useRef(new Animated.Value(0)).current;
@@ -258,20 +259,26 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
 
   // Merge new cards (server grounded OR on-device web) into the list, de-duped by normalized URL; keep
   // already-saved ones at the bottom. Any card arriving flips the modal to the results view.
-  const mergeCards = useCallback((incoming: LiveJobCard[]) => {
-    if (!incoming || !incoming.length) return;
+  // Returns how many cards were actually ADDED (post-dedupe, post-location-filter) — the listing
+  // expansion needs the real number, not the raw scrape count.
+  const mergeCards = useCallback((incoming: LiveJobCard[]): number => {
+    if (!incoming || !incoming.length) return 0;
+    const loc = locRef.current;   // drop cards that resolve to a clearly-different country than searched
+    const seen = new Set(cardsRef.current.map((c) => normUrl(c.job_url)));
+    const add: LiveJobCard[] = [];
+    for (const c of incoming) { const k = normUrl(c.job_url); if (c && c.job_url && c.title && !seen.has(k) && locationAllowed(c.location, loc)) { seen.add(k); add.push(c); } }
+    if (!add.length) return 0;
     setCards((prev) => {
-      const seen = new Set(prev.map((c) => normUrl(c.job_url)));
-      const loc = locRef.current;   // drop cards that resolve to a clearly-different country than searched
-      const add: LiveJobCard[] = [];
-      for (const c of incoming) { const k = normUrl(c.job_url); if (c && c.job_url && c.title && !seen.has(k) && locationAllowed(c.location, loc)) { seen.add(k); add.push(c); } }
-      if (!add.length) return prev;
-      const next = [...prev, ...add];
+      const seen2 = new Set(prev.map((c) => normUrl(c.job_url)));   // re-check against prev (batching safety)
+      const add2 = add.filter((c) => !seen2.has(normUrl(c.job_url)));
+      if (!add2.length) return prev;
+      const next = [...prev, ...add2];
       next.sort((a, b) => (a.saved ? 1 : 0) - (b.saved ? 1 : 0));
       cardsRef.current = next;
       return next;
     });
     setPhase('results');
+    return add.length;
   }, []);
 
   // On-device organic (Google/DDG) results → cards (company/location fill in when the user fetches details).
@@ -308,7 +315,9 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   const finishExpand = useCallback((listingUrl: string) => {
     if (expandTimerRef.current) { clearTimeout(expandTimerRef.current); expandTimerRef.current = null; }
     setExpandSrcs([]); setExpandingUrl(null);
-    if (expandFoundRef.current > 0) {
+    if (expandRawRef.current > 0) {
+      // Scrape worked → the listing card is redundant now (its jobs were added, or were already in the
+      // list / filtered by location) — remove it either way.
       setCards((prev) => { const next = prev.filter((c) => c.job_url !== listingUrl); cardsRef.current = next; return next; });
       setSelected((prev) => { const n = new Set(prev); n.delete(listingUrl); return n; });
     } else {
@@ -325,7 +334,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
       const base = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=' + encodeURIComponent(parsed.keywords) + (liLoc ? '&location=' + encodeURIComponent(liLoc) : '');
       for (const s of [0, 10, 20, 30, 40, 50]) srcs.push(base + '&start=' + s);
     }
-    expandReportedRef.current = new Set(); expandFoundRef.current = 0;
+    expandReportedRef.current = new Set(); expandFoundRef.current = 0; expandRawRef.current = 0;
     setExpandingUrl(listingUrl); setExpandGen((g) => g + 1); setExpandSrcs(srcs);
     if (expandTimerRef.current) clearTimeout(expandTimerRef.current);
     expandTimerRef.current = setTimeout(() => finishExpand(listingUrl), 18000);   // safety net
@@ -334,7 +343,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     if (expandReportedRef.current.has(idx)) return;
     expandReportedRef.current.add(idx);
     const cards = toLiCards(results || []);
-    if (cards.length) { expandFoundRef.current += cards.length; mergeCards(cards); }
+    if (cards.length) { expandRawRef.current += cards.length; expandFoundRef.current += mergeCards(cards); }
     if (expandReportedRef.current.size >= total) finishExpand(listingUrl);
   }, [mergeCards, finishExpand]);
 
@@ -346,9 +355,11 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     if (existing) {
       detailsRef.current = { ...detailsRef.current, [existing.job_url]: job }; setDetails((d) => ({ ...d, [existing.job_url]: job }));
       fstateRef.current = { ...fstateRef.current, [existing.job_url]: 'done' }; setFstate((s) => ({ ...s, [existing.job_url]: 'done' }));
+      setSelected((prev) => { const n = new Set(prev); n.delete(existing.job_url); return n; });   // keep the footer count honest
     } else {
+      // Append at the BOTTOM — saved cards sort last, so inserting at the top would visibly jump on the next merge.
       const card: LiveJobCard = { ...job, saved: true };
-      setCards((prev) => { const next = [card, ...prev]; cardsRef.current = next; return next; });
+      setCards((prev) => { const next = [...prev, card]; cardsRef.current = next; return next; });
     }
     saveProgress();
     setPhase('results');
@@ -386,7 +397,11 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
       } catch { /* on-device search may still deliver */ }
       finally { if (alive) finishSource('server'); }
     })();
-    return () => { alive = false; clearTimeout(webTimer); Object.values(timersRef.current).forEach(clearTimeout); };
+    return () => {
+      alive = false; clearTimeout(webTimer); Object.values(timersRef.current).forEach(clearTimeout);
+      // Also stop any in-flight listing expansion — its 18s safety timer must not fire (and Alert) after close.
+      if (expandTimerRef.current) { clearTimeout(expandTimerRef.current); expandTimerRef.current = null; }
+    };
   }, [visible, query]);
 
   // ── searching animation ──

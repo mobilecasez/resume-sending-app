@@ -3,22 +3,34 @@
 // the user browses the list like a human, opens a job they like, then taps the floating, DRAGGABLE
 // "Fetch job" bubble to capture that posting into CVApplyr (scrape → AI extract → Saved Jobs).
 // The bubble warns (instead of charging) when the current page is still a LIST of jobs.
-import React, { useRef, useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback, useEffect } from 'react';
 import {
   Modal, View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated, PanResponder, Alert, Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchJobDetail, type LiveJobCard } from '../services/aiHubService';
 import { isListingUrl } from '../utils/jobListing';
 
 const { height: SH } = Dimensions.get('window');
 
-// Immediate page grab — the user has visually confirmed the job is on screen, so no challenge-waiting.
-const GRAB_NOW_JS = `(function(){ try { window.ReactNativeWebView.postMessage(JSON.stringify({ __cvbf: true, url: location.href, html: (document.documentElement.outerHTML || '').slice(0, 220000) })); } catch (e) {} })(); true;`;
+// Immediate page grab (the user has visually confirmed the job is on screen — no challenge-waiting).
+// The per-fetch id lets onMessage ignore stale grabs from an earlier, abandoned fetch.
+const grabNowJs = (id: number) => `(function(){ try { window.ReactNativeWebView.postMessage(JSON.stringify({ __cvbf: true, id: ${id}, url: location.href, html: (document.documentElement.outerHTML || '').slice(0, 220000) })); } catch (e) {} })(); true;`;
 
-const normUrl = (u: string) => { try { const x = new URL(String(u || '')); return (x.origin + x.pathname).replace(/\/+$/, ''); } catch { return String(u || '').split('#')[0].replace(/\/+$/, ''); } };
+// KEEP the query string (an Indeed job is /viewjob?jk=<id> — the query IS the job identity); drop only
+// tracking params + hash + trailing slashes.
+const normUrl = (u: string) => {
+  try {
+    const x = new URL(String(u || ''));
+    const qp = new URLSearchParams(x.search);
+    for (const k of [...qp.keys()]) if (/^(utm_|gclid|fbclid|msclkid|mc_|_hs|ref$|trk)/i.test(k)) qp.delete(k);
+    const q = qp.toString();
+    return (x.origin + x.pathname).replace(/\/+$/, '') + (q ? '?' + q : '');
+  } catch { return String(u || '').split('#')[0].replace(/\/+$/, ''); }
+};
 
 export default function BrowseFetch({ visible, url, fetchCost, onClose, onFetched }: {
   visible: boolean;
@@ -28,6 +40,7 @@ export default function BrowseFetch({ visible, url, fetchCost, onClose, onFetche
   onFetched: (job: LiveJobCard | null, sourceUrl: string) => void;
 }) {
   const webRef = useRef<WebView>(null);
+  const insets = useSafeAreaInsets();
   const [currentUrl, setCurrentUrl] = useState(url);
   const [canGoBack, setCanGoBack] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
@@ -36,6 +49,8 @@ export default function BrowseFetch({ visible, url, fetchCost, onClose, onFetche
   const currentUrlRef = useRef(url);
   const fetchingRef = useRef(false);
   const savedUrlsRef = useRef<Set<string>>(new Set());   // don't double-charge the same posting
+  const fetchIdRef = useRef(0);                          // per-fetch nonce (stale grabs are ignored)
+  const grabTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Draggable bubble (same pattern as the Help assistant): drag moves it, a TAP (no movement) fetches.
   const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
@@ -60,6 +75,17 @@ export default function BrowseFetch({ visible, url, fetchCost, onClose, onFetche
     })
   ).current;
 
+  // The component stays mounted across open/close cycles — reset per-session state on every open so a
+  // previous session's canGoBack/url/fetching/bubble-position can't leak into the new one.
+  useEffect(() => {
+    if (!visible) return;
+    currentUrlRef.current = url; setCurrentUrl(url);
+    setCanGoBack(false); setPageLoading(true);
+    fetchingRef.current = false; setFetching(false); setJustSaved(false);
+    if (grabTimerRef.current) { clearTimeout(grabTimerRef.current); grabTimerRef.current = null; }
+    pan.setOffset({ x: 0, y: 0 }); pan.setValue({ x: 0, y: 0 });   // bubble back to its home corner
+  }, [visible, url]);
+
   const fetchCurrent = useCallback(() => {
     if (fetchingRef.current) return;
     const u = currentUrlRef.current;
@@ -71,15 +97,22 @@ export default function BrowseFetch({ visible, url, fetchCost, onClose, onFetche
       Alert.alert('This is a list of jobs', 'Open one specific job first, then tap “Fetch job” to save it.');
       return;
     }
+    const id = ++fetchIdRef.current;
     fetchingRef.current = true; setFetching(true);
-    webRef.current?.injectJavaScript(GRAB_NOW_JS);
-    // Safety: if the page never posts back (rare), release the button.
-    setTimeout(() => { if (fetchingRef.current) { fetchingRef.current = false; setFetching(false); } }, 20000);
+    webRef.current?.injectJavaScript(grabNowJs(id));
+    // Safety net ONLY for "the page never posted back" — cleared the moment the grab arrives
+    // (the backend extraction can legitimately take >20s and must not be interrupted).
+    if (grabTimerRef.current) clearTimeout(grabTimerRef.current);
+    grabTimerRef.current = setTimeout(() => {
+      if (fetchingRef.current && fetchIdRef.current === id) { fetchingRef.current = false; setFetching(false); }
+    }, 20000);
   }, []);
 
   const onMessage = useCallback(async (raw: string) => {
     let payload: any = null; try { payload = JSON.parse(raw); } catch { return; }
     if (!payload || !payload.__cvbf || !fetchingRef.current) return;
+    if (payload.id !== fetchIdRef.current) return;   // stale grab from an earlier, abandoned fetch
+    if (grabTimerRef.current) { clearTimeout(grabTimerRef.current); grabTimerRef.current = null; }
     const srcUrl = String(payload.url || currentUrlRef.current);
     try {
       const job = await fetchJobDetail(srcUrl, String(payload.html || ''), '');
@@ -105,8 +138,8 @@ export default function BrowseFetch({ visible, url, fetchCost, onClose, onFetche
   let host = ''; try { host = new URL(currentUrl).hostname.replace(/^www\./, ''); } catch {}
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={styles.root}>
+    <Modal visible={visible} animationType="slide" onRequestClose={() => (canGoBack ? webRef.current?.goBack() : onClose())}>
+      <View style={[styles.root, { paddingTop: Math.max(insets.top, 14) }]}>
         {/* top bar */}
         <View style={styles.topBar}>
           <TouchableOpacity onPress={() => (canGoBack ? webRef.current?.goBack() : onClose())} style={styles.navBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -160,7 +193,7 @@ export default function BrowseFetch({ visible, url, fetchCost, onClose, onFetche
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#F0F4FA', paddingTop: 54 },
+  root: { flex: 1, backgroundColor: '#F0F4FA' },
   topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingBottom: 10, gap: 4, backgroundColor: '#F0F4FA' },
   navBtn: { width: 36, height: 36, borderRadius: 12, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
   host: { fontSize: 13.5, fontWeight: '800', color: '#0F172A' },

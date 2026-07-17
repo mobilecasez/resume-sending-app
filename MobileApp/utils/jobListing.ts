@@ -14,6 +14,7 @@ const JOB_RE: RegExp[] = [
   /foundit\.(in|com)[^?#]*\/job\//i,
   /shine\.com\/jobs\/[^/]+\/\d/i,
   /timesjobs\.com\/job-detail/i,
+  /wellfound\.com\/jobs\/\d/i,          // individual postings are /jobs/{numericId}-{slug}
 ];
 
 // Listing / search-results URL shapes per major job board.
@@ -31,8 +32,10 @@ const LISTING_RE: RegExp[] = [
   /timesjobs\.com\/.*job-search/i,
   /instahyre\.com\/search/i,
   /cutshort\.io\/jobs/i,
-  /wellfound\.com\/(jobs|role)/i,
-  /(simplyhired|ziprecruiter|talent)\.[a-z.]+\/(search|jobs\?|q-)/i,
+  /wellfound\.com\/(jobs\/?([?#]|$)|role\/)/i,   // only the /jobs index + /role/… browse pages, NOT /jobs/{id}-{slug}
+  // Host-anchored (preceded by "//" or ".") with a constrained TLD so "talent." can't swallow a company
+  // careers subdomain like talent.acmecorp.com — only the boards themselves (talent.com, ziprecruiter.com…).
+  /(\/\/|\.)(simplyhired|ziprecruiter|talent)\.[a-z]{2,6}(\.[a-z]{2})?\/(search|jobs\?|q-)/i,
 ];
 
 export function isListingUrl(u: string): boolean {
@@ -62,8 +65,17 @@ export function parseLinkedInListing(u: string): { keywords: string; location: s
 }
 
 // Pull the advertised job count out of a listing card's title ("500+ .Net Jobs in Gurgaon" → "500+").
-// Allows a few keyword words between the number and "Jobs" ("500+ [.Net] Jobs", "1,234 [Dotnet] Openings").
+// Allows a few keyword words between the number and "Jobs" ("500+ [.Net] Jobs"), rejects experience
+// figures ("5 Years Exp Jobs" — lookahead on years/yrs; digit-free bridge words so "(5-10 Years) - 500
+// Vacancies" can't bridge 10→Vacancies), scans ALL matches keeping the largest, trims trailing ",.".
 export function listingCountFromTitle(title: string): string | null {
-  const m = String(title || '').match(/([\d][\d,.]*\s*\+?)\s+(?:[a-z0-9.#+&()/-]+\s+){0,4}?(?:jobs?|openings?|vacanc)/i);
-  return m ? m[1].replace(/\s+/g, '') : null;
+  const s = String(title || '');
+  const re = /([\d][\d,.]*\+?)(?!\s*(?:years?|yrs?)\b)\s+(?:[a-z.#+&]+\s+){0,4}?(?:jobs?|openings?|vacanc)/gi;
+  let best: string | null = null; let bestVal = -1;
+  for (const m of s.matchAll(re)) {
+    const cap = m[1].replace(/[.,]+$/, '');
+    const val = parseInt(cap.replace(/[^\d]/g, ''), 10) || 0;
+    if (val > bestVal) { bestVal = val; best = cap; }
+  }
+  return best;
 }
