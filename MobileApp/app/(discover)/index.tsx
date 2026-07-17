@@ -14,7 +14,9 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter, useFocusEffect } from 'expo-router';
+import SortControl from '../../components/SortControl';
 import {
   fetchDiscoverJobs, fetchDiscoverFacets, aiSearchJobs, hydrateJobUrls, loadAllJobStatuses,
   type DiscoverJob, type DiscoverFacets, type AiSearchParsed, type AiXray,
@@ -227,6 +229,14 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
   const [webNote, setWebNote] = useState('');
   const lastQueryRef = useRef('');
   const webTimerRef = useRef<any>(null);
+  // Recent searches (last 5) — shown in a popup when the search box is focused.
+  const [recent, setRecent] = useState<string[]>([]);
+  const [showRecent, setShowRecent] = useState(false);
+  useEffect(() => { AsyncStorage.getItem('discover_recent_v1').then((r) => { if (!r) return; try { const a = JSON.parse(r); if (Array.isArray(a)) setRecent(a.filter((x) => typeof x === 'string').slice(0, 5)); } catch {} }); }, []);
+  const pushRecent = useCallback((q: string) => {
+    const t = String(q || '').trim(); if (!t) return;
+    setRecent((prev) => { const next = [t, ...prev.filter((x) => x.toLowerCase() !== t.toLowerCase())].slice(0, 5); AsyncStorage.setItem('discover_recent_v1', JSON.stringify(next)).catch(() => {}); return next; });
+  }, []);
 
   const activeCount = [mode, skill, country, employer, roleCat].filter(Boolean).length;
   // A ≥10% match floor only makes sense inside the user's OWN field (where match is meaningful).
@@ -308,6 +318,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
   const runAiSearch = useCallback(async (q: string) => {
     const query = (q || '').trim();
     if (!query) return;
+    pushRecent(query); setShowRecent(false);
     setAiLoading(true); setAiActive(true); setWebNote(''); setWebPhase('');
     try {
       const data = await aiSearchJobs(query, 0, 30);
@@ -404,19 +415,36 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
     <View>
       {!embedded && <HeroCard facets={facets} total={total} />}
       <View style={styles.searchWrap}>
-        <Ionicons name="sparkles" size={16} color={T.blueDeep} />
-        <TextInput ref={searchRef} value={query} onChangeText={setQuery} placeholder="Describe the job you want — AI finds it" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" onSubmitEditing={() => runAiSearch(query)} />
+        <Ionicons name="search" size={16} color={T.blueDeep} />
+        <TextInput ref={searchRef} value={query} onChangeText={setQuery} placeholder="Search jobs — title, skill, location" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" onFocus={() => setShowRecent(true)} onBlur={() => setTimeout(() => setShowRecent(false), 150)} onSubmitEditing={() => runAiSearch(query)} />
         {query.length > 0 && <TouchableOpacity onPress={() => setQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Ionicons name="close-circle" size={17} color={T.textFaint} /></TouchableOpacity>}
         <TouchableOpacity onPress={() => runAiSearch(query)} disabled={!query.trim() || aiLoading} style={[styles.askAiBtn, (!query.trim() || aiLoading) && { opacity: 0.5 }]} activeOpacity={0.85}>
-          {aiLoading ? <ActivityIndicator size="small" color="#fff" /> : <><Ionicons name="sparkles" size={12} color="#fff" /><Text style={styles.askAiText}>Ask AI{aiCost && aiCost > 0 ? ` · ${aiCost}` : ''}</Text></>}
+          {aiLoading ? <ActivityIndicator size="small" color="#fff" /> : <><Ionicons name="search" size={13} color="#fff" /><Text style={styles.askAiText}>Search</Text></>}
         </TouchableOpacity>
       </View>
+
+      {/* Recent searches (last 5) — shown while the box is focused + empty. */}
+      {showRecent && recent.length > 0 && query.trim().length === 0 && !aiActive && (
+        <View style={styles.recentBox}>
+          <View style={styles.recentHead}>
+            <Text style={styles.recentTitle}>Recent searches</Text>
+            <TouchableOpacity onPress={() => { setRecent([]); AsyncStorage.removeItem('discover_recent_v1').catch(() => {}); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={styles.recentClear}>Clear</Text></TouchableOpacity>
+          </View>
+          {recent.map((r, i) => (
+            <TouchableOpacity key={r + i} style={styles.recentRow} activeOpacity={0.7} onPress={() => { setQuery(r); setShowRecent(false); searchRef.current?.blur(); runAiSearch(r); }}>
+              <Ionicons name="time-outline" size={15} color={T.textFaint} />
+              <Text style={styles.recentRowTx} numberOfLines={1}>{r}</Text>
+              <Ionicons name="arrow-forward" size={14} color={T.textFaint} />
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
 
       {aiActive && (
         <View style={styles.aiBanner}>
           <View style={styles.aiBannerHead}>
-            <Ionicons name="sparkles" size={13} color={T.blueDeep} />
-            <Text style={styles.aiBannerTitle}>AI understood your search</Text>
+            <Ionicons name="search" size={13} color={T.blueDeep} />
+            <Text style={styles.aiBannerTitle}>Your search</Text>
             <View style={{ flex: 1 }} />
             <TouchableOpacity onPress={clearAiSearch} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={styles.aiClear}>Clear</Text></TouchableOpacity>
           </View>
@@ -429,7 +457,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
               {!!aiParsed.seniority && <View style={styles.aiChip}><Text style={styles.aiChipText}>{aiParsed.seniority}</Text></View>}
             </View>
           )}
-          <Text style={styles.aiCount}>{aiLoading ? 'Searching the network…' : `${fmt(aiTotal)} ${aiTotal === 1 ? 'match' : 'matches'} found`}</Text>
+          <Text style={styles.aiCount}>{aiLoading ? 'Searching…' : `${fmt(aiTotal)} ${aiTotal === 1 ? 'match' : 'matches'} found`}</Text>
           {(webPhase || webNote) ? (
             <View style={styles.webRow}>
               {webPhase ? <ActivityIndicator size="small" color={T.blueDeep} /> : <Ionicons name="checkmark-circle" size={14} color={T.emerald} />}
@@ -441,33 +469,34 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
         </View>
       )}
 
-      {!aiActive && (<>
-      {/* Simplified: one Filters bar — Field, Sort (Best match/Recent), Technology, Location… all live in the sheet. */}
-      <TouchableOpacity onPress={() => setShowFilters(true)} style={[styles.filterBar, (activeCount > 0 || !!field) && styles.filterBarOn]} activeOpacity={0.85}>
-        <Ionicons name="options-outline" size={16} color={(activeCount > 0 || !!field) ? '#fff' : T.blueDeep} />
-        <Text style={[styles.filterBarText, (activeCount > 0 || !!field) && { color: '#fff' }]} numberOfLines={1}>
-          {(() => { const parts: string[] = []; if (field) parts.push(shortField(field)); if (sort === 'recent') parts.push('Recent'); if (activeCount > 0) parts.push(`${activeCount} filter${activeCount === 1 ? '' : 's'}`); return parts.length ? `Filters · ${parts.join(' · ')}` : 'Filters — field, sort, location…'; })()}
-        </Text>
-        <Ionicons name="chevron-down" size={15} color={(activeCount > 0 || !!field) ? '#fff' : T.textMuted} />
-      </TouchableOpacity>
+      {/* One action row: green "Search live on Google" (flex) + a compact Filters button. Always visible. */}
+      <View style={styles.actionRow}>
+        <TouchableOpacity onPress={openLive} activeOpacity={0.85} style={styles.liveBar}>
+          <Ionicons name="globe-outline" size={15} color="#059669" />
+          <Text style={styles.liveBarText}>Search live on Google</Text>
+          <Ionicons name="arrow-forward" size={14} color="#059669" />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => setShowFilters(true)} style={[styles.liveFilterBtn, (activeCount > 0 || !!field) && styles.liveFilterBtnOn]} activeOpacity={0.85}>
+          <Ionicons name="options-outline" size={18} color={(activeCount > 0 || !!field) ? '#fff' : T.blueDeep} />
+          {(activeCount > 0 || !!field) && <View style={styles.filterDot}><Text style={styles.filterDotTx}>{activeCount + (field ? 1 : 0)}</Text></View>}
+        </TouchableOpacity>
+      </View>
 
+      {!aiActive && (<>
       {noProfile && (
         <View style={styles.hintBox}><Ionicons name="information-circle-outline" size={15} color={T.blueDeep} /><Text style={styles.hintText}>Upload your résumé in Account Settings to see match scores and your-field jobs.</Text></View>
       )}
-      <Text style={styles.countLine}>
-        {fmt(total)} {total === 1 ? 'job' : 'jobs'}
-        {isOwnField && !noProfile ? ' · your field, best matches' : (field ? ` · ${shortField(field)}` : '')}
-      </Text>
+      {/* Count + Sort — uses the summary row's spare space for the sort control. */}
+      <View style={styles.countRow}>
+        <Text style={styles.countLine} numberOfLines={1}>
+          {fmt(total)} {total === 1 ? 'job' : 'jobs'}
+          {isOwnField && !noProfile ? ' · best matches' : (field ? ` · ${shortField(field)}` : '')}
+        </Text>
+        <SortControl options={[{ key: 'match', label: 'Best match' }, { key: 'recent', label: 'Newest first' }]} value={sort} onChange={(k) => setSort(k as any)} />
+      </View>
       </>)}
-
-      {/* Inline "search live on Google" — contextual, always under the search area (replaces the floating pill) */}
-      <TouchableOpacity onPress={openLive} activeOpacity={0.85} style={styles.liveBar}>
-        <Ionicons name="globe-outline" size={15} color={T.blueDeep} />
-        <Text style={styles.liveBarText}>Not finding it? <Text style={{ fontWeight: '800' }}>Search live on Google</Text></Text>
-        <Ionicons name="arrow-forward" size={14} color={T.blueDeep} />
-      </TouchableOpacity>
     </View>
-  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, webPhase, webNote, runAiSearch, clearAiSearch, openLive]);
+  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, webPhase, webNote, runAiSearch, clearAiSearch, openLive, recent, showRecent]);
 
   // Only blank to a spinner on the FIRST load (no data yet). A re-load triggered by facets setting the
   // field must NOT clear the screen — that was the "shows page → blank → reloads" flicker on the tab.
@@ -711,6 +740,19 @@ const styles = StyleSheet.create({
   liveFabShadow: { borderRadius: 100, shadowColor: '#2563EB', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.4, shadowRadius: 12, elevation: 8 },
   liveFab: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, height: 50, borderRadius: 100 },
   liveFabText: { color: '#fff', fontSize: 14.5, fontWeight: '800', letterSpacing: -0.2 },
-  liveBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: 'rgba(37,99,235,0.06)', borderWidth: 1, borderColor: 'rgba(37,99,235,0.18)', borderRadius: 12, paddingVertical: 11, paddingHorizontal: 12, marginTop: 2, marginBottom: 6 },
-  liveBarText: { fontSize: 12.5, color: T.textMuted, fontWeight: '600' },
+  // Green "Search live on Google" + compact filter share one row.
+  actionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  liveBar: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: 'rgba(16,185,129,0.10)', borderWidth: 1, borderColor: 'rgba(16,185,129,0.35)', borderRadius: 12, height: 44, paddingHorizontal: 12 },
+  liveBarText: { fontSize: 13, color: '#047857', fontWeight: '800' },
+  liveFilterBtn: { width: 44, height: 44, borderRadius: 12, backgroundColor: T.surface, borderWidth: 1, borderColor: T.border, alignItems: 'center', justifyContent: 'center' },
+  liveFilterBtnOn: { backgroundColor: T.blueDeep, borderColor: T.blueDeep },
+  filterDot: { position: 'absolute', top: -5, right: -5, minWidth: 18, height: 18, borderRadius: 9, backgroundColor: '#FB923C', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, borderWidth: 1.5, borderColor: '#fff' },
+  filterDotTx: { fontSize: 10, fontWeight: '800', color: '#fff' },
+  countRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8 },
+  recentBox: { backgroundColor: T.surface, borderRadius: 14, borderWidth: 1, borderColor: T.border, paddingHorizontal: 6, paddingVertical: 4, marginBottom: 10, marginTop: -4 },
+  recentHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 8, paddingTop: 6, paddingBottom: 4 },
+  recentTitle: { fontSize: 11, fontWeight: '800', color: T.textFaint, textTransform: 'uppercase', letterSpacing: 0.4 },
+  recentClear: { fontSize: 12, fontWeight: '700', color: T.blueDeep },
+  recentRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 8, paddingVertical: 10, borderRadius: 10 },
+  recentRowTx: { flex: 1, fontSize: 14, color: T.ink, fontWeight: '600' },
 });

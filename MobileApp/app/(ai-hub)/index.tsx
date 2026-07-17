@@ -47,6 +47,7 @@ import LinkedInJobLoader from '../../components/LinkedInJobLoader';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import { track } from '../../services/analytics';
 import { ExploreFeed } from '../(discover)';
+import SortControl from '../../components/SortControl';
 import SavedJobsList from '../../components/SavedJobsList';
 
 const { width: SCREEN_W } = Dimensions.get('window');
@@ -1293,6 +1294,7 @@ export default function AIHubScreen() {
   const params = useLocalSearchParams<{ tab?: string }>();
   const initialTab = params?.tab === 'search' || params?.tab === 'saved' || params?.tab === 'myjobs' ? params.tab : 'myjobs';
   const [hubTab, setHubTab] = useState<'search' | 'myjobs' | 'saved'>(initialTab);   // unified Job Hub tabs
+  const [myJobsSort, setMyJobsSort] = useState<'match' | 'recent'>('match');   // My Jobs sort (best match / newest)
   const [hubSavedCount, setHubSavedCount] = useState(0);
   const [hubSavedStats, setHubSavedStats] = useState({ count: 0, withCl: 0, applied: 0 });   // Saved-tab summary
   const [hubSearchStats, setHubSearchStats] = useState({ total: 0, remote: 0, fields: 0, regions: 0 });   // Search-tab summary
@@ -2067,17 +2069,25 @@ export default function AIHubScreen() {
                 ))}
               </ScrollView>
 
+              {/* Sort control for My Jobs (best match / newest) — right-aligned above the job cards. */}
+              {visibleEmployers.length > 0 && (
+                <View style={styles.myJobsSortRow}>
+                  <SortControl options={[{ key: 'match', label: 'Best match' }, { key: 'recent', label: 'Newest first' }]} value={myJobsSort} onChange={(k) => setMyJobsSort(k as any)} />
+                </View>
+              )}
+
               {/* ── Job cards for selected / all companies ── */}
               {visibleEmployers.map((employer) => {
                 // Always best-match first: scored jobs rank by % (highest → lowest).
                 // Still-evaluating / unscorable jobs (matchScore null or -1) fall to the
                 // bottom, newest-first among themselves (createdAt desc).
                 const jobs = [...(employer.jobs || [])].sort((a, b) => {
+                  const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                  const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                  if (myJobsSort === 'recent') { if (tb !== ta) return tb - ta; }
                   const ma = typeof a.matchScore === 'number' && a.matchScore >= 0 ? a.matchScore : -1;
                   const mb = typeof b.matchScore === 'number' && b.matchScore >= 0 ? b.matchScore : -1;
                   if (mb !== ma) return mb - ma;
-                  const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-                  const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
                   return tb - ta;
                 });
                 // Per-company filter (Location + minimum match) — applied ONLY when a single
@@ -2457,6 +2467,7 @@ const styles = StyleSheet.create({
   safeArea:     { flex: 1, backgroundColor: T.bg },
   scrollView:   { flex: 1 },
   scrollContent:{ flexGrow: 1, paddingBottom: 100 },
+  myJobsSortRow: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16, marginTop: 2, marginBottom: 8 },
   hubSeg:       { flexDirection: 'row', gap: 4, marginHorizontal: 14, marginBottom: 8, backgroundColor: T.surface, borderRadius: 13, borderWidth: 1, borderColor: T.border, padding: 3 },
   hubSegBtn:    { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 36, borderRadius: 10 },
   hubSegBtnOn:  { backgroundColor: T.blueDeep },

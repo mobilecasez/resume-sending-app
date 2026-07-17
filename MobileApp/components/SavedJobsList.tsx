@@ -1,13 +1,14 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 // Reusable Saved-Jobs list: the postings the user fetched via "Look for live jobs on Google", stored
 // server-side and listed newest-first. Rendered as the "Saved" tab on Explore and by the /saved route.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchSavedJobs, removeSavedJob, loadAllJobStatuses, type SavedJobCard } from '../services/aiHubService';
+import SortControl from './SortControl';
 
 function clTagOf(s?: string | null): { label: string; color: string } | null {
   if (s === 'applied') return { label: 'Applied', color: '#10B981' };
@@ -110,8 +111,18 @@ export default function SavedJobsList({ onCountChange, onStats }: { onCountChang
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
+  const [sortBy, setSortBy] = useState<'recent' | 'match' | 'company'>('recent');   // default: newest added first
   const jobsRef = useRef<SavedJobCard[]>([]);
   useEffect(() => { jobsRef.current = jobs; }, [jobs]);
+
+  // Sort applied client-side so switching is instant (no refetch). Default = date added, newest→oldest.
+  const sorted = useMemo(() => {
+    const arr = jobs.slice();
+    if (sortBy === 'match') arr.sort((a, b) => (b.match ?? -1) - (a.match ?? -1));
+    else if (sortBy === 'company') arr.sort((a, b) => String(a.company || a.employer_name || '').localeCompare(String(b.company || b.employer_name || '')));
+    else arr.sort((a, b) => { const ta = a.saved_at ? Date.parse(a.saved_at) : 0; const tb = b.saved_at ? Date.parse(b.saved_at) : 0; return tb - ta; });   // recent
+    return arr;
+  }, [jobs, sortBy]);
 
   // Derive the Saved-tab summary stats (total / cover-letters-ready / applied) from the list + statuses.
   const reportStats = useCallback((list: SavedJobCard[], statuses: Record<string, string>) => {
@@ -127,8 +138,7 @@ export default function SavedJobsList({ onCountChange, onStats }: { onCountChang
   const load = useCallback(async () => {
     try {
       const r = await fetchSavedJobs();
-      // Sort best-match first (like the My Jobs tab); jobs with no match score sink to the bottom.
-      const list = (r.jobs || []).slice().sort((a, b) => (b.match ?? -1) - (a.match ?? -1));
+      const list = (r.jobs || []).slice();   // order is applied by the `sorted` memo (default: newest added)
       setJobs(list); setError(false); onCountChange?.(r.count || 0);
       const s = await loadAllJobStatuses().catch(() => ({} as Record<string, string>));
       setClStatuses(s || {}); reportStats(list, s || {});
@@ -156,14 +166,19 @@ export default function SavedJobsList({ onCountChange, onStats }: { onCountChang
 
   return (
     <FlatList
-      data={jobs}
+      data={sorted}
       extraData={clStatuses}
       keyExtractor={(j, i) => j.job_url + ':' + i}
       renderItem={({ item }) => <SavedCard job={item} onOpen={openJob} onRemove={removeJob} clStatus={clStatuses[hashId(item.job_url)]} />}
       contentContainerStyle={{ padding: 12, paddingBottom: insets.bottom + 96 }}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
-      ListHeaderComponent={jobs.length > 0 ? <Text style={styles.countLine}>{jobs.length} saved {jobs.length === 1 ? 'job' : 'jobs'}</Text> : null}
+      ListHeaderComponent={jobs.length > 0 ? (
+        <View style={styles.headRow}>
+          <Text style={styles.countLine}>{jobs.length} saved {jobs.length === 1 ? 'job' : 'jobs'}</Text>
+          <SortControl options={[{ key: 'recent', label: 'Date added' }, { key: 'match', label: 'Best match' }, { key: 'company', label: 'Company A–Z' }]} value={sortBy} onChange={(k) => setSortBy(k as any)} />
+        </View>
+      ) : null}
       ListEmptyComponent={
         <View style={styles.empty}>
           <Ionicons name={error ? 'cloud-offline-outline' : 'bookmark-outline'} size={44} color={T.textFaint} />
@@ -177,6 +192,7 @@ export default function SavedJobsList({ onCountChange, onStats }: { onCountChang
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  headRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, marginLeft: 2 },
   countLine: { fontSize: 12, color: T.textMuted, fontWeight: '700', marginBottom: 8, marginLeft: 2 },
   card: { backgroundColor: T.surface, borderRadius: 20, borderWidth: 1, borderColor: T.border, padding: 15, marginBottom: 12, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.06, shadowRadius: 18, elevation: 2 },
   cardApplied: { backgroundColor: '#F1FBF5', borderColor: '#CDEBD8' },

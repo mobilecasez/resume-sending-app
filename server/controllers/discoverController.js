@@ -233,13 +233,27 @@ function extractUrl(query) {
 
 // Deterministic fallback when the AI parser is unavailable (e.g. local key depleted) — keeps search working.
 function naiveParse(query) {
-  const ql = String(query || '').toLowerCase();
+  const raw = String(query || '').trim();
+  const ql = raw.toLowerCase();
   let workMode = null;
   if (/\bremote\b/.test(ql)) workMode = 'remote';
   else if (/\bhybrid\b/.test(ql)) workMode = 'hybrid';
   else if (/\b(on[-\s]?site|onsite|in[-\s]?office)\b/.test(ql)) workMode = 'onsite';
-  const keywords = ql.replace(/[^a-z0-9+#.\s]/g, ' ').split(/\s+/).filter((w) => w.length >= 2 && !STOP.has(w)).slice(0, 8);
-  return { keywords, field: null, location: null, workMode, seniority: null };
+  let seniority = null;
+  const sm = ql.match(/\b(senior|junior|lead|principal|manager|intern|fresher)\b/);
+  if (sm) seniority = sm[1];
+  // location: "<role> in/near/around <place>" → the tail is the place (strip filler words).
+  let location = null; let kwSource = ql;
+  const lm = ql.match(/\b(?:in|near|around|based in)\b\s+(.+)$/);
+  if (lm && typeof lm.index === 'number') {
+    const cand = lm[1]
+      .replace(/\b(jobs?|openings?|vacan\w*|positions?|roles?|near\s+me|my\s+area|me|area|region|location)\b/g, ' ')
+      .replace(/[^a-z0-9\s,.-]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (cand && cand.length >= 2 && cand.length <= 40) { location = cand; kwSource = ql.slice(0, lm.index); }
+  }
+  const DROP = new Set(['near', 'around', 'based', 'nearby']);
+  const keywords = kwSource.replace(/[^a-z0-9+#.\s]/g, ' ').split(/\s+/).filter((w) => w.length >= 2 && !STOP.has(w) && !DROP.has(w)).slice(0, 8);
+  return { keywords, field: null, location, workMode, seniority };
 }
 
 // The user's own saved location (for "near me" / "my area" searches).
@@ -362,7 +376,13 @@ function cityFromAddress(addr) {
   return parts[0] || '';
 }
 
-async function parseSearchQuery(query, locHint) {
+// NOTE: the in-app "Search" (formerly "Ask AI") over our OWN corpus is now a FREE, deterministic
+// ATS-style search — no Gemini call, no credit charge. `parseSearchQuery` just runs the local
+// keyword/location parser. (The old AI parser is kept below for any explicit AI callers.)
+async function parseSearchQuery(query) {
+  return naiveParse(String(query || '').trim().slice(0, 300));
+}
+async function parseSearchQueryAI(query, locHint) {
   const q = String(query || '').trim().slice(0, 300);
   if (!q) return { keywords: [], field: null, location: null, workMode: null, seniority: null };
   if (!process.env.GEMINI_API_KEY) return naiveParse(q);
@@ -420,14 +440,7 @@ async function aiSearch(req, res) {
     const url = extractUrl(rawQuery);
     if (url) return res.json({ success: true, urlDetected: true, url, parsed: null, jobs: [], total: 0, offset, limit, hasMore: false });
 
-    // AI search costs credits — charge on a NEW query only (offset 0, not a refresh/pagination). Deduct + block.
-    const aiUserId = req.user && req.user.id;
-    const aiRefresh = !!(req.body && req.body.refresh);
-    if (offset === 0 && !aiRefresh && aiUserId) {
-      const charge = await chargeCredits(aiUserId, 'ai_search');
-      if (charge.insufficient) return res.status(402).json({ error: `Insufficient credits — AI search needs ${charge.cost}.`, creditsRequired: charge.cost, creditsRemaining: charge.remaining });
-    }
-
+    // FREE search over our own corpus — no credit charge (deterministic ATS-style, no AI). Was `ai_search`.
     const resume = await getResume(req.user && req.user.id);
     const userSkills = skillsOf(resume);
     const noProfile = userSkills.length === 0;
