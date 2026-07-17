@@ -17,6 +17,8 @@ import { liveSearchJobs, fetchJobDetail, saveCard, type LiveJobCard } from '../s
 import { notifyLocal } from '../services/pushNotificationService';
 import { expandTerm } from '../utils/searchSynonyms';
 import { resolveLiveLocation, locationAllowed } from '../utils/jobLocation';
+import { isListingUrl, parseLinkedInListing, listingCountFromTitle } from '../utils/jobListing';
+import BrowseFetch from './BrowseFetch';
 
 const { height: SH } = Dimensions.get('window');
 type FetchState = 'idle' | 'fetching' | 'done' | 'failed';
@@ -207,6 +209,15 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   const webReportsRef = useRef(0);
   const webTargetsRef = useRef(0);   // how many on-device sources we're waiting on this run
   const webReportedRef = useRef<Set<number>>(new Set());   // source indices that have reported (dedup)
+  // "Browse & Fetch" visible browser (non-LinkedIn listing pages / previewing any organic result).
+  const [browseUrl, setBrowseUrl] = useState<string | null>(null);
+  // LinkedIn LISTING expansion ("500+ .NET jobs in Gurgaon" card → the individual jobs, in-place).
+  const [expandSrcs, setExpandSrcs] = useState<string[]>([]);   // hidden WebView urls ([] = unmounted)
+  const [expandGen, setExpandGen] = useState(0);
+  const [expandingUrl, setExpandingUrl] = useState<string | null>(null);   // the listing card being expanded
+  const expandReportedRef = useRef<Set<number>>(new Set());
+  const expandFoundRef = useRef(0);
+  const expandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const pulse = useRef(new Animated.Value(0)).current;
 
@@ -290,6 +301,59 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     if (webReportedRef.current.size >= (webTargetsRef.current || 1)) { setSearchActive(false); finishSource('web'); }
   }, [mergeCards, finishSource]);
 
+  // ── Expand a LinkedIn LISTING card ("500+ jobs…") into its individual postings, in-place ──
+  // The public listing page itself carries ~60 job cards in the exact markup LINKEDIN_SCRAPE_JS reads
+  // (verified, no login wall); we also paginate the guest API (parsed keywords/location, country-qualified)
+  // for extra depth. Results merge into the list; the listing card is then removed.
+  const finishExpand = useCallback((listingUrl: string) => {
+    if (expandTimerRef.current) { clearTimeout(expandTimerRef.current); expandTimerRef.current = null; }
+    setExpandSrcs([]); setExpandingUrl(null);
+    if (expandFoundRef.current > 0) {
+      setCards((prev) => { const next = prev.filter((c) => c.job_url !== listingUrl); cardsRef.current = next; return next; });
+      setSelected((prev) => { const n = new Set(prev); n.delete(listingUrl); return n; });
+    } else {
+      Alert.alert('Could not open this list', 'LinkedIn didn’t return the jobs this time — try again, or use another result.');
+    }
+  }, []);
+  const expandListing = useCallback((card: LiveJobCard) => {
+    if (expandingUrl) return;   // one expansion at a time
+    const listingUrl = card.job_url;
+    const srcs: string[] = [listingUrl];
+    const parsed = parseLinkedInListing(listingUrl);
+    if (parsed && parsed.keywords) {
+      const liLoc = resolveLiveLocation(parsed.location).linkedInLocation || parsed.location;
+      const base = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=' + encodeURIComponent(parsed.keywords) + (liLoc ? '&location=' + encodeURIComponent(liLoc) : '');
+      for (const s of [0, 10, 20, 30, 40, 50]) srcs.push(base + '&start=' + s);
+    }
+    expandReportedRef.current = new Set(); expandFoundRef.current = 0;
+    setExpandingUrl(listingUrl); setExpandGen((g) => g + 1); setExpandSrcs(srcs);
+    if (expandTimerRef.current) clearTimeout(expandTimerRef.current);
+    expandTimerRef.current = setTimeout(() => finishExpand(listingUrl), 18000);   // safety net
+  }, [expandingUrl, finishExpand]);
+  const onExpandReport = useCallback((idx: number, results: any[], listingUrl: string, total: number) => {
+    if (expandReportedRef.current.has(idx)) return;
+    expandReportedRef.current.add(idx);
+    const cards = toLiCards(results || []);
+    if (cards.length) { expandFoundRef.current += cards.length; mergeCards(cards); }
+    if (expandReportedRef.current.size >= total) finishExpand(listingUrl);
+  }, [mergeCards, finishExpand]);
+
+  // ── A job fetched from the Browse & Fetch browser → reflect it on the matching card (or add one) ──
+  const onBrowseFetched = useCallback((job: LiveJobCard | null, sourceUrl: string) => {
+    if (!job) return;
+    const k = normUrl(sourceUrl);
+    const existing = cardsRef.current.find((c) => normUrl(c.job_url) === k);
+    if (existing) {
+      detailsRef.current = { ...detailsRef.current, [existing.job_url]: job }; setDetails((d) => ({ ...d, [existing.job_url]: job }));
+      fstateRef.current = { ...fstateRef.current, [existing.job_url]: 'done' }; setFstate((s) => ({ ...s, [existing.job_url]: 'done' }));
+    } else {
+      const card: LiveJobCard = { ...job, saved: true };
+      setCards((prev) => { const next = [card, ...prev]; cardsRef.current = next; return next; });
+    }
+    saveProgress();
+    setPhase('results');
+  }, []);
+
   // ── run the live search when opened ──
   useEffect(() => {
     if (!visible) return;
@@ -300,6 +364,10 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     Object.values(timersRef.current).forEach(clearTimeout); timersRef.current = {};
     serverDoneRef.current = false; webDoneRef.current = false; webReportsRef.current = 0;
     webReportedRef.current = new Set(); webTargetsRef.current = webSources.length;
+    // reset listing-expansion + browser state from any previous run
+    if (expandTimerRef.current) { clearTimeout(expandTimerRef.current); expandTimerRef.current = null; }
+    setExpandSrcs([]); setExpandingUrl(null); expandReportedRef.current = new Set(); expandFoundRef.current = 0;
+    setBrowseUrl(null);
     // Kick off the on-device web search (hidden WebViews mount below) in PARALLEL with the server search.
     setSearchGen((g) => g + 1); setSearchActive(true);
     let alive = true;
@@ -336,8 +404,9 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     setSelected((prev) => { const n = new Set(prev); n.has(url) ? n.delete(url) : n.add(url); return n; });
   }, []);
   const selectAll = useCallback(() => {
-    // Only jobs that aren't already saved (this session or a previous one) are selectable.
-    const selectable = cards.filter((c) => !c.saved && fstateRef.current[c.job_url] !== 'done').map((c) => c.job_url);
+    // Only INDIVIDUAL jobs that aren't already saved are selectable — listing pages ("500+ jobs…")
+    // can't be fetched as one job, they expand or open in the browser instead.
+    const selectable = cards.filter((c) => !c.saved && fstateRef.current[c.job_url] !== 'done' && !isListingUrl(c.job_url)).map((c) => c.job_url);
     setSelected((prev) => (prev.size === selectable.length && selectable.length > 0) ? new Set() : new Set(selectable));
   }, [cards]);
 
@@ -452,6 +521,38 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     const isSel = !locked && selected.has(item.job_url);
     const det = details[item.job_url];
     const highlights = (det?.responsibilities?.length ? det.responsibilities : item.highlights) || [];
+
+    // LISTING card ("500+ .NET jobs in Gurgaon") — many jobs behind one link, so it can't be fetched as
+    // one job. LinkedIn lists expand into individual cards right here; other boards open in the in-app
+    // browser where the floating "Fetch job" bubble captures whichever job the user opens.
+    if (isListingUrl(item.job_url)) {
+      const isLi = /linkedin\.com/i.test(item.job_url);
+      const count = listingCountFromTitle(item.title);
+      const busy = expandingUrl === item.job_url;
+      const act = () => { if (busy) return; if (isLi) expandListing(item); else setBrowseUrl(item.job_url); };
+      return (
+        <TouchableOpacity activeOpacity={0.85} onPress={act} style={[styles.card, styles.cardListing]}>
+          <View style={styles.cardTop}>
+            <View style={styles.listIcon}><Ionicons name="albums-outline" size={14} color="#7C3AED" /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardTitle} numberOfLines={3}>{item.title}</Text>
+              <View style={styles.listBadgeRow}>
+                <View style={styles.listBadge}><Text style={styles.listBadgeTx}>{count ? `List · ${count} jobs` : 'List of jobs'}</Text></View>
+                <Text style={styles.srcTx}>{item.source || 'web'}</Text>
+              </View>
+            </View>
+          </View>
+          <View style={styles.listActionRow}>
+            <LinearGradient colors={busy ? ['#CBD5E1', '#CBD5E1'] : ['#7C3AED', '#6D28D9']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.listActionBtn}>
+              {busy
+                ? <><ActivityIndicator size="small" color="#fff" /><Text style={styles.listActionTx}>Opening the jobs…</Text></>
+                : <><Ionicons name={isLi ? 'list' : 'globe-outline'} size={14} color="#fff" /><Text style={styles.listActionTx}>{isLi ? 'Show these jobs' : 'Browse & pick jobs'}</Text></>}
+            </LinearGradient>
+          </View>
+        </TouchableOpacity>
+      );
+    }
+
     return (
       <TouchableOpacity activeOpacity={locked ? 1 : 0.85} onPress={() => { if (!locked) toggle(item.job_url); }} style={[styles.card, isSel && styles.cardSel, locked && styles.cardSaved]}>
         <View style={styles.cardTop}>
@@ -491,6 +592,15 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
           <Ionicons name="globe-outline" size={11} color="#94A3B8" />
           <Text style={styles.srcTx}>{item.source || 'web'}</Text>
           {item.saved ? <Text style={[styles.tapHint, { color: '#059669' }]}>already in Saved Jobs</Text> : (st === 'idle' && <Text style={styles.tapHint}>tap to select</Text>)}
+          <View style={{ flex: 1 }} />
+          {/* Open the page in the in-app browser (verify it's the right job / fetch it from there with the
+              floating bubble). LinkedIn postings excluded — they wall the visible browser; fetch handles them. */}
+          {!/linkedin\.com/i.test(item.job_url) && (
+            <TouchableOpacity onPress={() => setBrowseUrl(item.job_url)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.previewBtn}>
+              <Ionicons name="open-outline" size={12} color="#2563EB" />
+              <Text style={styles.previewTx}>Open</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </TouchableOpacity>
     );
@@ -579,6 +689,24 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
             </View>
           ))}
 
+          {/* hidden LISTING-EXPANSION scrapers — the tapped LinkedIn list page + guest-API pages; each
+              merges its individual postings into the results. */}
+          {expandingUrl && expandSrcs.map((s, i) => (
+            <View key={expandGen + '|x|' + i} style={styles.hiddenWeb} pointerEvents="none">
+              <WebView
+                source={{ uri: s }}
+                injectedJavaScript={LINKEDIN_SCRAPE_JS}
+                onMessage={(e) => { try { const d = JSON.parse(e.nativeEvent.data); if (d && d.__cvli) onExpandReport(i, Array.isArray(d.results) ? d.results : [], expandingUrl, expandSrcs.length); } catch {} }}
+                onError={() => onExpandReport(i, [], expandingUrl, expandSrcs.length)}
+                onHttpError={() => onExpandReport(i, [], expandingUrl, expandSrcs.length)}
+                userAgent={MOBILE_UA}
+                javaScriptEnabled
+                domStorageEnabled
+                originWhitelist={['*']}
+              />
+            </View>
+          ))}
+
           {/* hidden on-device fetchers — up to CONCURRENCY pages at once, on the user's IP.
               Keyed by webGen so an AppState resume remounts them (iOS pauses background WebViews). */}
           {activeUrls.map((url) => (
@@ -596,6 +724,16 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
           ))}
         </View>
       </View>
+
+      {/* Browse & Fetch — visible in-app browser (non-LinkedIn lists + "Open" on any card): browse like a
+          human, open a job, tap the draggable "Fetch job" bubble to save it into CVApplyr. */}
+      <BrowseFetch
+        visible={!!browseUrl}
+        url={browseUrl || 'about:blank'}
+        fetchCost={fetchCost}
+        onClose={() => setBrowseUrl(null)}
+        onFetched={onBrowseFetched}
+      />
     </Modal>
   );
 }
@@ -617,6 +755,16 @@ const styles = StyleSheet.create({
   selAll: { fontSize: 12.5, fontWeight: '700', color: '#06B6D4' },
   card: { backgroundColor: '#fff', borderRadius: 18, padding: 14, marginBottom: 10, borderWidth: 1.5, borderColor: '#fff' },
   cardSel: { borderColor: '#06B6D4', backgroundColor: '#F7FEFF' },
+  cardListing: { borderColor: '#EDE9FE', backgroundColor: '#FDFCFF' },
+  listIcon: { width: 22, height: 22, borderRadius: 7, backgroundColor: '#F3E8FF', marginRight: 11, marginTop: 1, alignItems: 'center', justifyContent: 'center' },
+  listBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 5 },
+  listBadge: { backgroundColor: '#F3E8FF', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
+  listBadgeTx: { fontSize: 10.5, fontWeight: '800', color: '#7C3AED' },
+  listActionRow: { marginTop: 10, marginLeft: 33 },
+  listActionBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, height: 38, borderRadius: 12 },
+  listActionTx: { fontSize: 13, fontWeight: '800', color: '#fff' },
+  previewBtn: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: '#EFF6FF', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3.5 },
+  previewTx: { fontSize: 10.5, fontWeight: '800', color: '#2563EB' },
   cardSaved: { backgroundColor: '#F8FAFC', borderColor: '#ECFDF5', opacity: 0.7 },
   savedIcon: { width: 22, height: 22, borderRadius: 7, backgroundColor: '#ECFDF5', marginRight: 11, marginTop: 1, alignItems: 'center', justifyContent: 'center' },
   cardTop: { flexDirection: 'row', alignItems: 'flex-start' },
