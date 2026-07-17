@@ -222,6 +222,22 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   const [expandNote, setExpandNote] = useState('');   // "✓ 34 jobs added from the list" feedback
   const expandNoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listRef = useRef<FlatList<LiveJobCard>>(null);
+  // AUTO-expansion of LinkedIn listing results ("100+ .Net Jobs in Gurgaon"): instead of showing the
+  // list as a card with a "Show these jobs" button, expand it in the background as soon as the search
+  // settles — the individual jobs just appear in the results. Queued (one at a time), capped at 2
+  // listings per search (they mostly overlap each other), suppresses the note/scroll used by manual taps.
+  const autoExpandedRef  = useRef<Set<string>>(new Set());   // norm URLs already queued/expanded
+  const autoQueueRef     = useRef<string[]>([]);
+  const expandAutoRef    = useRef(false);                     // current expansion is an auto one
+  const expandingUrlRef  = useRef<string | null>(null);       // mirror (mergeCards has no deps)
+  const searchActiveRef  = useRef(false);                     // mirror of searchActive
+  const expandRunnerRef  = useRef<(url: string, auto: boolean) => void>(() => {});
+  const pumpAutoExpand = useCallback(() => {
+    if (!autoQueueRef.current.length) return;
+    if (expandingUrlRef.current || searchActiveRef.current) { setTimeout(pumpAutoExpand, 900); return; }
+    const next = autoQueueRef.current.shift();
+    if (next) expandRunnerRef.current(next, true);
+  }, []);
 
   const pulse = useRef(new Animated.Value(0)).current;
 
@@ -269,7 +285,22 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     const loc = locRef.current;   // drop cards that resolve to a clearly-different country than searched
     const seen = new Set(cardsRef.current.map((c) => normUrl(c.job_url)));
     const add: LiveJobCard[] = [];
-    for (const c of incoming) { const k = normUrl(c.job_url); if (c && c.job_url && c.title && !seen.has(k) && locationAllowed(c.location, loc)) { seen.add(k); add.push(c); } }
+    for (const c of incoming) {
+      if (!c || !c.job_url || !c.title) continue;
+      const k = normUrl(c.job_url);
+      if (seen.has(k) || !locationAllowed(c.location, loc)) continue;
+      // A LinkedIn LISTING result never becomes a card — queue it for AUTO-expansion into its
+      // individual jobs instead (the user shouldn't need a "Show these jobs" step).
+      if (/linkedin\.com/i.test(c.job_url) && isListingUrl(c.job_url)) {
+        if (!autoExpandedRef.current.has(k) && autoExpandedRef.current.size < 2) {
+          autoExpandedRef.current.add(k);
+          autoQueueRef.current.push(c.job_url);
+          setTimeout(pumpAutoExpand, 400);
+        }
+        continue;
+      }
+      seen.add(k); add.push(c);
+    }
     if (!add.length) return 0;
     setCards((prev) => {
       const seen2 = new Set(prev.map((c) => normUrl(c.job_url)));   // re-check against prev (batching safety)
@@ -317,26 +348,31 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   // for extra depth. Results merge into the list; the listing card is then removed.
   const finishExpand = useCallback((listingUrl: string) => {
     if (expandTimerRef.current) { clearTimeout(expandTimerRef.current); expandTimerRef.current = null; }
+    const wasAuto = expandAutoRef.current;
+    expandAutoRef.current = false;
+    expandingUrlRef.current = null;
     setExpandSrcs([]); setExpandingUrl(null);
     if (expandRawRef.current > 0) {
       // Scrape worked → the listing card is redundant now (its jobs were added, or were already in the
-      // list / filtered by location) — remove it either way.
+      // list / filtered by location) — remove it either way (auto expansions never had a card).
       setCards((prev) => { const next = prev.filter((c) => c.job_url !== listingUrl); cardsRef.current = next; return next; });
       setSelected((prev) => { const n = new Set(prev); n.delete(listingUrl); return n; });
-      // Make the outcome VISIBLE: say how many jobs actually appeared (new cards land at the bottom of
-      // the list, so without this the tap looks like it did nothing) and scroll them into view.
-      const added = expandFoundRef.current;
-      setExpandNote(added > 0 ? `✓ ${added} job${added === 1 ? '' : 's'} added from the list — select the ones you want` : 'These jobs were already in your results');
-      if (expandNoteTimerRef.current) clearTimeout(expandNoteTimerRef.current);
-      expandNoteTimerRef.current = setTimeout(() => setExpandNote(''), 6000);
-      if (added > 0) setTimeout(() => { try { listRef.current?.scrollToEnd({ animated: true }); } catch {} }, 350);
-    } else {
+      if (!wasAuto) {
+        // Manual tap → make the outcome VISIBLE (new cards land at the bottom of the list).
+        const added = expandFoundRef.current;
+        setExpandNote(added > 0 ? `✓ ${added} job${added === 1 ? '' : 's'} added from the list — select the ones you want` : 'These jobs were already in your results');
+        if (expandNoteTimerRef.current) clearTimeout(expandNoteTimerRef.current);
+        expandNoteTimerRef.current = setTimeout(() => setExpandNote(''), 6000);
+        if (added > 0) setTimeout(() => { try { listRef.current?.scrollToEnd({ animated: true }); } catch {} }, 350);
+      }
+    } else if (!wasAuto) {
       Alert.alert('Could not open this list', 'LinkedIn didn’t return the jobs this time — try again, or use another result.');
     }
-  }, []);
-  const expandListing = useCallback((card: LiveJobCard) => {
-    if (expandingUrl) return;   // one expansion at a time
-    const listingUrl = card.job_url;
+    // Run the next queued auto-expansion, if any.
+    setTimeout(pumpAutoExpand, 250);
+  }, [pumpAutoExpand]);
+  const expandListing = useCallback((listingUrl: string, auto = false) => {
+    if (expandingUrlRef.current) { if (auto) autoQueueRef.current.unshift(listingUrl); return; }   // one at a time
     const srcs: string[] = [listingUrl];
     const parsed = parseLinkedInListing(listingUrl);
     if (parsed && parsed.keywords) {
@@ -346,10 +382,14 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
       for (const s of [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]) srcs.push(base + '&start=' + s);
     }
     expandReportedRef.current = new Set(); expandFoundRef.current = 0; expandRawRef.current = 0;
+    expandAutoRef.current = auto;
+    expandingUrlRef.current = listingUrl;
     setExpandingUrl(listingUrl); setExpandGen((g) => g + 1); setExpandSrcs(srcs);
     if (expandTimerRef.current) clearTimeout(expandTimerRef.current);
     expandTimerRef.current = setTimeout(() => finishExpand(listingUrl), 22000);   // safety net (11 sources)
-  }, [expandingUrl, finishExpand]);
+  }, [finishExpand]);
+  expandRunnerRef.current = expandListing;   // stable ref → mergeCards/pump can start expansions
+  useEffect(() => { searchActiveRef.current = searchActive; }, [searchActive]);
   const onExpandReport = useCallback((idx: number, results: any[], listingUrl: string, total: number) => {
     if (expandReportedRef.current.has(idx)) return;
     expandReportedRef.current.add(idx);
@@ -390,6 +430,8 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     if (expandTimerRef.current) { clearTimeout(expandTimerRef.current); expandTimerRef.current = null; }
     if (expandNoteTimerRef.current) { clearTimeout(expandNoteTimerRef.current); expandNoteTimerRef.current = null; }
     setExpandSrcs([]); setExpandingUrl(null); expandReportedRef.current = new Set(); expandFoundRef.current = 0;
+    expandingUrlRef.current = null; expandAutoRef.current = false;
+    autoExpandedRef.current = new Set(); autoQueueRef.current = [];
     setExpandNote('');
     setBrowseUrl(null);
     // Kick off the on-device web search (hidden WebViews mount below) in PARALLEL with the server search.
@@ -557,7 +599,7 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
       const isLi = /linkedin\.com/i.test(item.job_url);
       const count = listingCountFromTitle(item.title);
       const busy = expandingUrl === item.job_url;
-      const act = () => { if (busy) return; if (isLi) expandListing(item); else setBrowseUrl(item.job_url); };
+      const act = () => { if (busy) return; if (isLi) expandListing(item.job_url); else setBrowseUrl(item.job_url); };
       return (
         <TouchableOpacity activeOpacity={0.85} onPress={act} style={[styles.card, styles.cardListing]}>
           <View style={styles.cardTop}>

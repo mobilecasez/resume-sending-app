@@ -91,17 +91,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched }: {
     })
   ).current;
 
-  const fetchCurrent = useCallback(() => {
-    if (fetchingRef.current) return;
-    const u = currentUrlRef.current;
-    if (savedUrlsRef.current.has(normUrl(u))) {
-      Alert.alert('Already saved', 'This job is already in your Saved Jobs.');
-      return;
-    }
-    if (isListingUrl(u)) {
-      Alert.alert('This is a list of jobs', 'Open one specific job first, then tap “Fetch job” to save it.');
-      return;
-    }
+  const doGrab = useCallback(() => {
     const id = ++fetchIdRef.current;
     fetchingRef.current = true; setFetching(true);
     webRef.current?.injectJavaScript(grabNowJs(id));
@@ -112,6 +102,26 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched }: {
       if (fetchingRef.current && fetchIdRef.current === id) { fetchingRef.current = false; setFetching(false); }
     }, 20000);
   }, []);
+
+  const fetchCurrent = useCallback(() => {
+    if (fetchingRef.current) return;
+    const u = currentUrlRef.current;
+    if (savedUrlsRef.current.has(normUrl(u))) {
+      Alert.alert('Already saved', 'This job is already in your Saved Jobs.');
+      return;
+    }
+    // The URL LOOKS like a list — but SPA boards (Glassdoor/Indeed) open a job without changing the
+    // URL, so this can be wrong. CONFIRM instead of blocking: the user can see what's on screen.
+    if (isListingUrl(u)) {
+      Alert.alert(
+        'Is one job open?',
+        'This page looks like a list of jobs. If you have a specific job open, go ahead and fetch it.',
+        [{ text: 'Cancel', style: 'cancel' }, { text: 'Fetch this job', onPress: doGrab }],
+      );
+      return;
+    }
+    doGrab();
+  }, [doGrab]);
 
   const onMessage = useCallback(async (raw: string) => {
     let payload: any = null; try { payload = JSON.parse(raw); } catch { return; }

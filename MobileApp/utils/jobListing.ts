@@ -38,10 +38,16 @@ const LISTING_RE: RegExp[] = [
   /(\/\/|\.)(simplyhired|ziprecruiter|talent)\.[a-z]{2,6}(\.[a-z]{2})?\/(search|jobs\?|q-)/i,
 ];
 
+// A job-identifying QUERY PARAM means a specific job is open even when the PATH is a listing —
+// SPA boards keep the search URL and open the job as an overlay: Glassdoor `?jl=`, Indeed
+// `?vjk=`/`?jk=`, LinkedIn `?currentJobId=`, generic `jobId=`/`jobListingId=`/`jobkey=`.
+const JOB_QUERY_RE = /[?&](jl|vjk|jk|jobid|joblistingid|jobkey|currentjobid)=[\w-]/i;
+
 export function isListingUrl(u: string): boolean {
   const s = String(u || '');
   if (!s) return false;
   if (JOB_RE.some((r) => r.test(s))) return false;
+  if (JOB_QUERY_RE.test(s)) return false;
   return LISTING_RE.some((r) => r.test(s));
 }
 
