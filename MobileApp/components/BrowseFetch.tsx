@@ -20,6 +20,9 @@ import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchJobDetail, type LiveJobCard } from '../services/aiHubService';
 import { isListingUrl } from '../utils/jobListing';
+import RobotIcon from './RobotIcon';
+
+const NOT_COMPANY_RE = /linkedin\.com|licdn\.com|lnkd\.in|google\.[a-z.]+|bing\.com|duckduckgo|accounts\.|login\.|signin\.|auth[0-9]?\.|appleid\.apple|facebook\.com|about:blank/i;
 
 const { height: SH } = Dimensions.get('window');
 
@@ -89,6 +92,8 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const [fetching, setFetching] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const [dockOpen, setDockOpen] = useState(false);
+  const [companyHint, setCompanyHint] = useState(false);   // reached the company site after a LinkedIn apply
+  const sawLinkedInRef = useRef(false);
   const currentUrlRef = useRef(url);
   const currentTitleRef = useRef('');
   const canGoBackRef = useRef(false);
@@ -249,6 +254,13 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           <Ionicons name="close" size={20} color={fetching ? '#94A3B8' : '#0F172A'} />
         </TouchableOpacity>
       </View>
+      {companyHint && (
+        <TouchableOpacity style={styles.hintBar} activeOpacity={0.9} onPress={() => { setCompanyHint(false); fetchCurrent(); }}>
+          <Ionicons name="business" size={15} color="#fff" />
+          <Text style={styles.hintTx} numberOfLines={2}>You’re on the company’s page — tap to Fetch this job with full details.</Text>
+          <Ionicons name="sparkles" size={15} color="#fff" />
+        </TouchableOpacity>
+      )}
       {pageLoading && <View style={styles.progress}><ActivityIndicator size="small" color="#06B6D4" /></View>}
 
       <WebView
@@ -259,6 +271,13 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           currentUrlRef.current = nav.url; canGoBackRef.current = nav.canGoBack;
           currentTitleRef.current = String(nav.title || '');
           setCurrentUrl(nav.url); setCanGoBack(nav.canGoBack);
+          // LinkedIn hides the external apply URL from us, but tapping Apply lands the user on the
+          // company's own site. Detect that hop → nudge them to Fetch the REAL company page (full
+          // details), which is exactly what they wanted for aasoka / iris etc.
+          if (nav.url && /^https?:\/\//i.test(nav.url)) {
+            if (/linkedin\.com/i.test(nav.url)) sawLinkedInRef.current = true;
+            else if (sawLinkedInRef.current && !NOT_COMPANY_RE.test(nav.url)) setCompanyHint(true);
+          }
         }}
         onLoadStart={() => setPageLoading(true)}
         onLoadEnd={() => setPageLoading(false)}
@@ -327,7 +346,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           <LinearGradient colors={justSaved ? ['#10B981', '#059669'] : ['#06B6D4', '#3B82F6']} style={styles.fabCircle}>
             {fetching
               ? <ActivityIndicator size="small" color="#fff" />
-              : <Ionicons name={justSaved ? 'checkmark' : 'apps'} size={22} color="#fff" />}
+              : justSaved ? <Ionicons name="checkmark" size={22} color="#fff" /> : <RobotIcon size={24} color="#fff" />}
           </LinearGradient>
           <View style={styles.fabLabel}>
             <Text style={styles.fabLabelTx}>
@@ -348,6 +367,8 @@ const styles = StyleSheet.create({
   host: { fontSize: 13.5, fontWeight: '800', color: '#0F172A' },
   hint: { fontSize: 10.5, color: '#64748B', marginTop: 1 },
   progress: { position: 'absolute', top: 100, alignSelf: 'center', zIndex: 5, backgroundColor: '#fff', borderRadius: 14, padding: 8, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 10, elevation: 6 },
+  hintBar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 10, marginBottom: 8, backgroundColor: '#2563EB', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
+  hintTx: { flex: 1, color: '#fff', fontSize: 12.5, fontWeight: '700', lineHeight: 16 },
   fabWrap: { position: 'absolute', right: 14, bottom: Math.min(SH * 0.16, 140), zIndex: 30 },
   fabInner: { alignItems: 'center' },
   fabCircle: { width: 58, height: 58, borderRadius: 29, alignItems: 'center', justifyContent: 'center', shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.3, shadowRadius: 14, elevation: 10 },

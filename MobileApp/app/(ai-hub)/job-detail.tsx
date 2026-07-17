@@ -37,6 +37,7 @@ import LinkedInJobLoader from '../../components/LinkedInJobLoader';
 import { API_BASE } from '../../config';
 import { SUBMIT_DETECT_JS, CONFIRM_URL_RE } from './submitDetect';
 import CreditCostPill from '../../components/CreditCostPill';
+import JobToolsDock from '../../components/JobToolsDock';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import type { Contact, Job, Employer } from '../../types/aiHub';
@@ -2584,15 +2585,18 @@ export default function JobDetailScreen() {
             </View>
           )}
 
-          {/* ── Smart-copy floating helper — UPPER-right so the keyboard never hides it ── */}
-          {autofillState !== 'running' && !smartOpen && (
-            <TouchableOpacity
-              style={[s.smartFab, { top: insets.top + 110 }]}
-              activeOpacity={0.9}
-              onPress={openSmart}
-            >
-              <Ionicons name="copy-outline" size={20} color="#fff" />
-            </TouchableOpacity>
+          {/* ── Floating "Job tools" robot dock — one control for Auto Fill / My details / Upload,
+                consistent across Saved, My Jobs and live jobs (replaces the old Auto-Fill button +
+                smart-copy FAB). A plain overlay (NOT a Modal — it lives inside the apply Modal). ── */}
+          {autofillState !== 'running' && !smartOpen && !filePick && (
+            <JobToolsDock
+              bottomInset={insets.bottom}
+              actions={[
+                { key: 'autofill', icon: 'sparkles', label: 'Auto Fill', sub: 'Fill the form with AI', colors: ['#7C6BFF', '#4F8DFF'], onPress: startAutofill },
+                { key: 'upload', icon: 'cloud-upload', label: 'Upload', sub: 'Résumé & cover letter', colors: ['#06B6D4', '#3B82F6'], onPress: () => setFilePick({ key: '__manual__', accept: '', label: 'Attach your résumé or cover letter' }) },
+                { key: 'details', icon: 'copy-outline', label: 'My details', sub: 'Copy to any field', colors: ['#10B981', '#059669'], onPress: openSmart },
+              ]}
+            />
           )}
 
           {smartOpen && (() => {
@@ -2644,7 +2648,7 @@ export default function JobDetailScreen() {
             );
           })()}
 
-          {/* Bottom nav + Auto Fill */}
+          {/* Bottom nav (back / reload) — Auto Fill moved into the floating Job-tools dock. */}
           <View style={[s.webNav, { paddingBottom: 9 + insets.bottom }]}>
             <View style={s.webNavGroup}>
               <TouchableOpacity disabled={!applyCanGoBack} onPress={() => applyWebRef.current?.goBack()} style={s.webNavBtn} activeOpacity={0.7}>
@@ -2654,12 +2658,10 @@ export default function JobDetailScreen() {
                 <Ionicons name="reload" size={16} color={T.ink} />
               </TouchableOpacity>
             </View>
-            <TouchableOpacity onPress={startAutofill} activeOpacity={0.88} style={s.autofillOuter} disabled={autofillState === 'running'}>
-              <LinearGradient colors={['#7C6BFF', '#4F8DFF']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.autofillBtn}>
-                <Ionicons name="sparkles" size={15} color="#fff" />
-                <Text style={s.autofillBtnText}>Auto Fill with AI</Text>
-              </LinearGradient>
-            </TouchableOpacity>
+            <View style={s.webNavHint}>
+              <Ionicons name="arrow-forward" size={13} color={T.textMuted} />
+              <Text style={s.webNavHintTx}>Tap the robot for Auto Fill, Upload & your details</Text>
+            </View>
           </View>
 
           {/* Intelligent processing overlay — per-step status reflects REAL outcomes */}
@@ -3179,6 +3181,8 @@ const s = StyleSheet.create({
   },
   webNavGroup:     { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: T.bg, borderRadius: 12, padding: 3 },
   webNavBtn:       { width: 40, height: 34, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  webNavHint:      { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 5, paddingRight: 4 },
+  webNavHintTx:    { fontSize: 11, fontWeight: '700', color: T.textMuted, textAlign: 'right' },
   autofillOuter:   { flex: 1, borderRadius: 13, overflow: 'hidden', shadowColor: '#4F8DFF', shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 4 },
   autofillBtn:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, height: 40, borderRadius: 13 },
   autofillBtnText: { fontSize: 14.5, fontWeight: '800', color: '#fff', letterSpacing: -0.2 },

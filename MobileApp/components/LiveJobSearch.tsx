@@ -688,14 +688,13 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
           <Text style={styles.srcTx}>{item.source || 'web'}</Text>
           {item.saved ? <Text style={[styles.tapHint, { color: '#059669' }]}>already in Saved Jobs</Text> : (st === 'idle' && <Text style={styles.tapHint}>tap to select</Text>)}
           <View style={{ flex: 1 }} />
-          {/* Open the page in the in-app browser (verify it's the right job / fetch it from there with the
-              floating bubble). LinkedIn postings excluded — they wall the visible browser; fetch handles them. */}
-          {!/linkedin\.com/i.test(item.job_url) && (
-            <TouchableOpacity onPress={() => setBrowseUrl(item.job_url)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.previewBtn}>
-              <Ionicons name="open-outline" size={12} color="#2563EB" />
-              <Text style={styles.previewTx}>Open</Text>
-            </TouchableOpacity>
-          )}
+          {/* Open the page in the in-app browser: verify it's the right job, and for a LinkedIn posting
+              that applies on the company's own site, tap Apply → land on the company page → Fetch THAT
+              (full details), which the LinkedIn guest data can't give. */}
+          <TouchableOpacity onPress={() => setBrowseUrl(item.job_url)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.previewBtn}>
+            <Ionicons name="open-outline" size={12} color="#2563EB" />
+            <Text style={styles.previewTx}>Open</Text>
+          </TouchableOpacity>
         </View>
       </TouchableOpacity>
     );

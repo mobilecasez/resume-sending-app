@@ -509,6 +509,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
       renderItem={({ item }) => <JobCard job={item} onOpen={openJob} clStatus={clStatuses[hashId(item.job_url || item.id)]} />}
       ListHeaderComponent={header}
       showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={T.blue} />}
       onEndReached={aiActive ? onAiEnd : onEnd} onEndReachedThreshold={0.6}
       removeClippedSubviews initialNumToRender={6} windowSize={9}
