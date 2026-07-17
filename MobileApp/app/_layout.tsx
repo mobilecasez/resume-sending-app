@@ -1,11 +1,35 @@
 import { useEffect } from 'react';
-import { AppState } from 'react-native';
+import { AppState, Alert } from 'react-native';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { track } from '../services/analytics';
 
 // Keep the splash screen visible until we explicitly hide it
 SplashScreen.preventAutoHideAsync();
+
+// ── GLOBAL CRASH GUARD ────────────────────────────────────────────────────────
+// In a RELEASE build, an unhandled JS exception hard-crashes the app (no RedBox). Catch fatal JS
+// errors instead: report them to our analytics (so we SEE crashes in the admin dashboard) and show
+// a friendly alert. In dev, defer to the original handler (RedBox) so debugging stays normal.
+const globalAny = global as any;
+if (globalAny.ErrorUtils && !globalAny.__cvErrorGuard) {
+  globalAny.__cvErrorGuard = true;
+  const prevHandler = globalAny.ErrorUtils.getGlobalHandler && globalAny.ErrorUtils.getGlobalHandler();
+  let lastAlertAt = 0;
+  globalAny.ErrorUtils.setGlobalHandler((error: any, isFatal?: boolean) => {
+    try { track('app_error', { message: String(error && error.message || error).slice(0, 300), fatal: !!isFatal }); } catch {}
+    if (__DEV__) { prevHandler && prevHandler(error, isFatal); return; }
+    if (isFatal) {
+      const now = Date.now();
+      if (now - lastAlertAt > 5000) {   // don't stack alerts if errors cascade
+        lastAlertAt = now;
+        try { Alert.alert('Something went wrong', 'That action hit a snag. Please try again — if it keeps happening, restart the app.'); } catch {}
+      }
+    } else {
+      prevHandler && prevHandler(error, isFatal);
+    }
+  });
+}
 
 export default function RootLayout() {
   useEffect(() => {

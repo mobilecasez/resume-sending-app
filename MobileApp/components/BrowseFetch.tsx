@@ -3,9 +3,14 @@
 // the user browses the list like a human, opens a job they like, then taps the floating, DRAGGABLE
 // "Fetch job" bubble to capture that posting into CVApplyr (scrape → AI extract → Saved Jobs).
 // The bubble warns (instead of charging) when the current page is still a LIST of jobs.
+//
+// ⚠️ Deliberately NOT a <Modal>: it renders as a full-screen overlay VIEW inside the caller's modal.
+// A Modal nested inside another Modal crashed the app on iOS when dismissed (v3.3 build 87 report:
+// "picked a few jobs → closed the webview → app crashed") — plain-view unmount cannot. Mount it
+// conditionally ({open && <BrowseFetch …/>}) so each session starts with fresh state.
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import {
-  Modal, View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated, PanResponder, Alert, Dimensions,
+  View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated, PanResponder, Alert, Dimensions, BackHandler,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -32,8 +37,7 @@ const normUrl = (u: string) => {
   } catch { return String(u || '').split('#')[0].replace(/\/+$/, ''); }
 };
 
-export default function BrowseFetch({ visible, url, fetchCost, onClose, onFetched }: {
-  visible: boolean;
+export default function BrowseFetch({ url, fetchCost, onClose, onFetched }: {
   url: string;
   fetchCost: number;
   onClose: () => void;
@@ -47,10 +51,22 @@ export default function BrowseFetch({ visible, url, fetchCost, onClose, onFetche
   const [fetching, setFetching] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const currentUrlRef = useRef(url);
+  const canGoBackRef = useRef(false);
   const fetchingRef = useRef(false);
   const savedUrlsRef = useRef<Set<string>>(new Set());   // don't double-charge the same posting
   const fetchIdRef = useRef(0);                          // per-fetch nonce (stale grabs are ignored)
   const grabTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Android hardware back: back in web history first, then close the browser (we're not a Modal, so
+  // there's no onRequestClose — handle it explicitly while mounted).
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (canGoBackRef.current) { webRef.current?.goBack(); return true; }
+      onClose();
+      return true;
+    });
+    return () => { sub.remove(); if (grabTimerRef.current) clearTimeout(grabTimerRef.current); };
+  }, [onClose]);
 
   // Draggable bubble (same pattern as the Help assistant): drag moves it, a TAP (no movement) fetches.
   const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
@@ -74,17 +90,6 @@ export default function BrowseFetch({ visible, url, fetchCost, onClose, onFetche
       },
     })
   ).current;
-
-  // The component stays mounted across open/close cycles — reset per-session state on every open so a
-  // previous session's canGoBack/url/fetching/bubble-position can't leak into the new one.
-  useEffect(() => {
-    if (!visible) return;
-    currentUrlRef.current = url; setCurrentUrl(url);
-    setCanGoBack(false); setPageLoading(true);
-    fetchingRef.current = false; setFetching(false); setJustSaved(false);
-    if (grabTimerRef.current) { clearTimeout(grabTimerRef.current); grabTimerRef.current = null; }
-    pan.setOffset({ x: 0, y: 0 }); pan.setValue({ x: 0, y: 0 });   // bubble back to its home corner
-  }, [visible, url]);
 
   const fetchCurrent = useCallback(() => {
     if (fetchingRef.current) return;
@@ -138,62 +143,60 @@ export default function BrowseFetch({ visible, url, fetchCost, onClose, onFetche
   let host = ''; try { host = new URL(currentUrl).hostname.replace(/^www\./, ''); } catch {}
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={() => (canGoBack ? webRef.current?.goBack() : onClose())}>
-      <View style={[styles.root, { paddingTop: Math.max(insets.top, 14) }]}>
-        {/* top bar */}
-        <View style={styles.topBar}>
-          <TouchableOpacity onPress={() => (canGoBack ? webRef.current?.goBack() : onClose())} style={styles.navBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="chevron-back" size={20} color="#0F172A" />
-          </TouchableOpacity>
-          <View style={{ flex: 1, alignItems: 'center' }}>
-            <Text style={styles.host} numberOfLines={1}>{host || 'browser'}</Text>
-            <Text style={styles.hint} numberOfLines={1}>Open a job, then tap “Fetch job”</Text>
-          </View>
-          <TouchableOpacity onPress={() => webRef.current?.reload()} style={styles.navBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="refresh" size={17} color="#0F172A" />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={onClose} style={styles.navBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="close" size={20} color="#0F172A" />
-          </TouchableOpacity>
+    <View style={[StyleSheet.absoluteFillObject, styles.root, { paddingTop: Math.max(insets.top, 14) }]}>
+      {/* top bar */}
+      <View style={styles.topBar}>
+        <TouchableOpacity onPress={() => (canGoBack ? webRef.current?.goBack() : onClose())} style={styles.navBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Ionicons name="chevron-back" size={20} color="#0F172A" />
+        </TouchableOpacity>
+        <View style={{ flex: 1, alignItems: 'center' }}>
+          <Text style={styles.host} numberOfLines={1}>{host || 'browser'}</Text>
+          <Text style={styles.hint} numberOfLines={1}>Open a job, then tap “Fetch job”</Text>
         </View>
-        {pageLoading && <View style={styles.progress}><ActivityIndicator size="small" color="#06B6D4" /></View>}
-
-        <WebView
-          ref={webRef}
-          source={{ uri: url }}
-          style={{ flex: 1 }}
-          onNavigationStateChange={(nav) => { currentUrlRef.current = nav.url; setCurrentUrl(nav.url); setCanGoBack(nav.canGoBack); }}
-          onLoadStart={() => setPageLoading(true)}
-          onLoadEnd={() => setPageLoading(false)}
-          onMessage={(e) => onMessage(e.nativeEvent.data)}
-          javaScriptEnabled
-          domStorageEnabled
-          originWhitelist={['*']}
-          allowsBackForwardNavigationGestures
-        />
-
-        {/* draggable "Fetch job" bubble */}
-        <Animated.View style={[styles.fabWrap, { transform: pan.getTranslateTransform() }]} {...responder.panHandlers}>
-          <View style={styles.fabInner}>
-            <LinearGradient colors={justSaved ? ['#10B981', '#059669'] : ['#06B6D4', '#3B82F6']} style={styles.fabCircle}>
-              {fetching
-                ? <ActivityIndicator size="small" color="#fff" />
-                : <Ionicons name={justSaved ? 'checkmark' : 'sparkles'} size={22} color="#fff" />}
-            </LinearGradient>
-            <View style={styles.fabLabel}>
-              <Text style={styles.fabLabelTx}>
-                {fetching ? 'Fetching…' : justSaved ? 'Saved ✓' : `Fetch job${fetchCost > 0 ? ` · ${fetchCost} cr` : ''}`}
-              </Text>
-            </View>
-          </View>
-        </Animated.View>
+        <TouchableOpacity onPress={() => webRef.current?.reload()} style={styles.navBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Ionicons name="refresh" size={17} color="#0F172A" />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={onClose} style={styles.navBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Ionicons name="close" size={20} color="#0F172A" />
+        </TouchableOpacity>
       </View>
-    </Modal>
+      {pageLoading && <View style={styles.progress}><ActivityIndicator size="small" color="#06B6D4" /></View>}
+
+      <WebView
+        ref={webRef}
+        source={{ uri: url }}
+        style={{ flex: 1 }}
+        onNavigationStateChange={(nav) => { currentUrlRef.current = nav.url; canGoBackRef.current = nav.canGoBack; setCurrentUrl(nav.url); setCanGoBack(nav.canGoBack); }}
+        onLoadStart={() => setPageLoading(true)}
+        onLoadEnd={() => setPageLoading(false)}
+        onMessage={(e) => onMessage(e.nativeEvent.data)}
+        javaScriptEnabled
+        domStorageEnabled
+        originWhitelist={['*']}
+        allowsBackForwardNavigationGestures
+      />
+
+      {/* draggable "Fetch job" bubble */}
+      <Animated.View style={[styles.fabWrap, { transform: pan.getTranslateTransform() }]} {...responder.panHandlers}>
+        <View style={styles.fabInner}>
+          <LinearGradient colors={justSaved ? ['#10B981', '#059669'] : ['#06B6D4', '#3B82F6']} style={styles.fabCircle}>
+            {fetching
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Ionicons name={justSaved ? 'checkmark' : 'sparkles'} size={22} color="#fff" />}
+          </LinearGradient>
+          <View style={styles.fabLabel}>
+            <Text style={styles.fabLabelTx}>
+              {fetching ? 'Fetching…' : justSaved ? 'Saved ✓' : `Fetch job${fetchCost > 0 ? ` · ${fetchCost} cr` : ''}`}
+            </Text>
+          </View>
+        </View>
+      </Animated.View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#F0F4FA' },
+  root: { backgroundColor: '#F0F4FA', zIndex: 100, elevation: 100 },
   topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingBottom: 10, gap: 4, backgroundColor: '#F0F4FA' },
   navBtn: { width: 36, height: 36, borderRadius: 12, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
   host: { fontSize: 13.5, fontWeight: '800', color: '#0F172A' },

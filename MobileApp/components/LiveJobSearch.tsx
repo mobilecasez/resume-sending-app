@@ -741,14 +741,18 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
       </View>
 
       {/* Browse & Fetch — visible in-app browser (non-LinkedIn lists + "Open" on any card): browse like a
-          human, open a job, tap the draggable "Fetch job" bubble to save it into CVApplyr. */}
-      <BrowseFetch
-        visible={!!browseUrl}
-        url={browseUrl || 'about:blank'}
-        fetchCost={fetchCost}
-        onClose={() => setBrowseUrl(null)}
-        onFetched={onBrowseFetched}
-      />
+          human, open a job, tap the draggable "Fetch job" bubble to save it into CVApplyr.
+          ⚠️ A plain full-screen overlay VIEW, deliberately NOT a nested <Modal> — dismissing a Modal
+          nested inside this Modal hard-crashed the app on iOS (build 87). Conditionally mounted so each
+          open starts fresh. */}
+      {!!browseUrl && (
+        <BrowseFetch
+          url={browseUrl}
+          fetchCost={fetchCost}
+          onClose={() => setBrowseUrl(null)}
+          onFetched={onBrowseFetched}
+        />
+      )}
     </Modal>
   );
 }

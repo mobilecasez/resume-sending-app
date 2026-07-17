@@ -767,10 +767,21 @@ export async function pollJobCoverLetter(
     return JSON.parse(jobId.slice(8));
   }
   const headers = await getAuthHeader();
+  // Must always SETTLE (mirrors pollUntilDone): a hard deadline + give-up on consecutive 404/401
+  // (job row gone after a redeploy / expired session). Without these, a vanished job left the
+  // promise pending forever — button stuck on "loading", polling in the background until restart.
+  const DEADLINE_MS = 5 * 60 * 1000;
+  const startedAt = Date.now();
+  let gone = 0;   // consecutive 404/401 responses
   return new Promise((resolve, reject) => {
     const tick = async () => {
+      if (Date.now() - startedAt > DEADLINE_MS) {
+        reject(new Error('This is taking longer than expected. Please try again.'));
+        return;
+      }
       try {
         const { data } = await axios.get(`${API_BASE_URL}/job-status/${jobId}`, { headers });
+        gone = 0;
         if (data.status === 'completed') {
           resolve(data.data);
         } else if (data.status === 'failed') {
@@ -779,7 +790,14 @@ export async function pollJobCoverLetter(
           onProgress?.();
           setTimeout(tick, 2500);
         }
-      } catch {
+      } catch (err) {
+        if (axios.isAxiosError(err) && [401, 404].includes(err.response?.status ?? 0)) {
+          gone += 1;
+          if (gone >= 2) {
+            reject(new Error('We lost track of this generation. Please try again.'));
+            return;
+          }
+        }
         setTimeout(tick, 2500);
       }
     };
