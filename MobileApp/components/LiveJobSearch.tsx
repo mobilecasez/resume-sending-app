@@ -219,6 +219,9 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
   const expandFoundRef = useRef(0);    // cards actually ADDED to the list (post-dedupe/filter)
   const expandRawRef = useRef(0);      // cards the scrape RETURNED (pre-filter) — scrape worked at all?
   const expandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [expandNote, setExpandNote] = useState('');   // "✓ 34 jobs added from the list" feedback
+  const expandNoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const listRef = useRef<FlatList<LiveJobCard>>(null);
 
   const pulse = useRef(new Animated.Value(0)).current;
 
@@ -320,6 +323,13 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
       // list / filtered by location) — remove it either way.
       setCards((prev) => { const next = prev.filter((c) => c.job_url !== listingUrl); cardsRef.current = next; return next; });
       setSelected((prev) => { const n = new Set(prev); n.delete(listingUrl); return n; });
+      // Make the outcome VISIBLE: say how many jobs actually appeared (new cards land at the bottom of
+      // the list, so without this the tap looks like it did nothing) and scroll them into view.
+      const added = expandFoundRef.current;
+      setExpandNote(added > 0 ? `✓ ${added} job${added === 1 ? '' : 's'} added from the list — select the ones you want` : 'These jobs were already in your results');
+      if (expandNoteTimerRef.current) clearTimeout(expandNoteTimerRef.current);
+      expandNoteTimerRef.current = setTimeout(() => setExpandNote(''), 6000);
+      if (added > 0) setTimeout(() => { try { listRef.current?.scrollToEnd({ animated: true }); } catch {} }, 350);
     } else {
       Alert.alert('Could not open this list', 'LinkedIn didn’t return the jobs this time — try again, or use another result.');
     }
@@ -332,12 +342,13 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     if (parsed && parsed.keywords) {
       const liLoc = resolveLiveLocation(parsed.location).linkedInLocation || parsed.location;
       const base = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=' + encodeURIComponent(parsed.keywords) + (liLoc ? '&location=' + encodeURIComponent(liLoc) : '');
-      for (const s of [0, 10, 20, 30, 40, 50]) srcs.push(base + '&start=' + s);
+      // 10 guest pages ≈ 100 postings — matches what a "100+ jobs" list advertises.
+      for (const s of [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]) srcs.push(base + '&start=' + s);
     }
     expandReportedRef.current = new Set(); expandFoundRef.current = 0; expandRawRef.current = 0;
     setExpandingUrl(listingUrl); setExpandGen((g) => g + 1); setExpandSrcs(srcs);
     if (expandTimerRef.current) clearTimeout(expandTimerRef.current);
-    expandTimerRef.current = setTimeout(() => finishExpand(listingUrl), 18000);   // safety net
+    expandTimerRef.current = setTimeout(() => finishExpand(listingUrl), 22000);   // safety net (11 sources)
   }, [expandingUrl, finishExpand]);
   const onExpandReport = useCallback((idx: number, results: any[], listingUrl: string, total: number) => {
     if (expandReportedRef.current.has(idx)) return;
@@ -377,7 +388,9 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
     webReportedRef.current = new Set(); webTargetsRef.current = webSources.length;
     // reset listing-expansion + browser state from any previous run
     if (expandTimerRef.current) { clearTimeout(expandTimerRef.current); expandTimerRef.current = null; }
+    if (expandNoteTimerRef.current) { clearTimeout(expandNoteTimerRef.current); expandNoteTimerRef.current = null; }
     setExpandSrcs([]); setExpandingUrl(null); expandReportedRef.current = new Set(); expandFoundRef.current = 0;
+    setExpandNote('');
     setBrowseUrl(null);
     // Kick off the on-device web search (hidden WebViews mount below) in PARALLEL with the server search.
     setSearchGen((g) => g + 1); setSearchActive(true);
@@ -664,10 +677,13 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
           {phase === 'results' && (
             <>
               <View style={styles.subBar}>
-                <Text style={styles.subBarTx}>{cards.length} found{doneCount ? ` · ${doneCount} fetched` : ''}</Text>
+                <Text style={[styles.subBarTx, !!expandNote && { color: '#059669' }]} numberOfLines={1}>
+                  {expandNote || `${cards.length} found${doneCount ? ` · ${doneCount} fetched` : ''}`}
+                </Text>
                 <TouchableOpacity onPress={selectAll}><Text style={styles.selAll}>{selected.size === cards.length ? 'Clear' : 'Select all'}</Text></TouchableOpacity>
               </View>
               <FlatList
+                ref={listRef}
                 data={cards}
                 keyExtractor={(c) => c.job_url}
                 renderItem={renderCard}
