@@ -12,7 +12,7 @@
 // A Modal nested inside another Modal crashed the app on iOS when dismissed (v3.3 build 87).
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated, PanResponder, Alert, Dimensions, BackHandler, Pressable,
+  View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated, PanResponder, Alert, Dimensions, BackHandler, Pressable, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -22,6 +22,13 @@ import { fetchJobDetail, type LiveJobCard } from '../services/aiHubService';
 import { isListingUrl } from '../utils/jobListing';
 
 const { height: SH } = Dimensions.get('window');
+
+// Real-browser UA (same fix as the job-detail apply WebView, commit d1f9627): Google rejects
+// embedded-WebView UAs with "disallowed_useragent" — "Sign in with Google" silently dies. A clean
+// platform-browser UA makes OAuth serve its redirect-based mobile flow that works in one WebView.
+const BROWSER_UA = Platform.OS === 'android'
+  ? 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36'
+  : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1';
 
 // Immediate page grab (the user has visually confirmed the job is on screen — no challenge-waiting).
 // The per-fetch id lets onMessage ignore stale grabs from an earlier, abandoned fetch.
@@ -264,6 +271,18 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         thirdPartyCookiesEnabled
         originWhitelist={['*']}
         allowsBackForwardNavigationGestures
+        // OAuth (Google/Apple/Microsoft) support — same fix as the apply WebView: clean browser UA,
+        // popups allowed, and popup windows loaded IN THIS WebView (iOS drops them by default →
+        // "nothing happens" / endless spinner on Sign in with Google/Apple).
+        userAgent={BROWSER_UA}
+        javaScriptCanOpenWindowsAutomatically
+        setSupportMultipleWindows={false}
+        onOpenWindow={(e: any) => {
+          const target = e?.nativeEvent?.targetUrl;
+          if (target && webRef.current) {
+            webRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(target)}; true;`);
+          }
+        }}
       />
 
       {/* ── translucent DOCK (iOS-style sheet above the bubble) ── */}

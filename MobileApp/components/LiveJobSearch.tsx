@@ -94,38 +94,43 @@ const SEARCH_SCRAPE_JS = `(function(){
   },500);
 })(); true;`;
 
-// Scraper for LinkedIn's PUBLIC guest jobs API (no login) — the dense, paginated source of INDIVIDUAL
-// postings (~25/page). Each guest card carries title + company + location + a real /jobs/view/ link.
-const LINKEDIN_SCRAPE_JS = `(function(){
-  function txt(el){ return el ? (el.innerText||el.textContent||'').trim() : ''; }
-  function scan(){
-    var out=[], seen={};
-    var cards=document.querySelectorAll('li');
-    for(var i=0;i<cards.length;i++){
-      var c=cards[i];
-      var a=c.querySelector('a.base-card__full-link, a[href*="/jobs/view/"]');
-      if(!a||!a.href) continue;
-      var href=a.href.split('?')[0];
-      if(seen[href]) continue;
-      var title=txt(c.querySelector('.base-search-card__title, h3'));
-      if(!title) continue;
-      var company=txt(c.querySelector('.base-search-card__subtitle, h4'));
-      var loc=txt(c.querySelector('.job-search-card__location, .base-search-card__metadata span'));
-      seen[href]=1;
-      out.push({title:title.slice(0,180), url:href, company:company.slice(0,120), location:loc.slice(0,120)});
-    }
-    return out;
+// ── LinkedIn GUEST scraping via DIRECT cookie-free fetch (no WebView) ─────────────────────────────
+// ⚠️ WHY fetch and not a hidden WebView: all our WebViews share the app's cookie store (that's the
+// persistent-login feature). Once the user logs in to LinkedIn, the guest endpoints REDIRECT to the
+// logged-in SPA whose markup our scraper can't read → "LinkedIn jobs stopped showing". A plain
+// fetch with credentials:'omit' NEVER sends cookies → always gets the stable guest markup, is
+// immune to the user's login state, and is faster (no hidden browsers to mount).
+async function liFetch(url: string, timeoutMs = 12000): Promise<string> {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, { credentials: 'omit', signal: ctl.signal, headers: { 'User-Agent': MOBILE_UA, 'Accept-Language': 'en-US,en;q=0.9' } });
+    return await r.text();
+  } finally { clearTimeout(t); }
+}
+const deent = (s: string) => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#(?:39|x27);/g, "'").replace(/&nbsp;/g, ' ').trim();
+const stripTags = (s: string) => deent(String(s || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' '));
+// Parse LinkedIn guest search/listing HTML (base-search-card markup) into job cards.
+function parseLiCards(html: string): { title: string; url: string; company?: string; location?: string }[] {
+  const out: { title: string; url: string; company?: string; location?: string }[] = [];
+  const seen = new Set<string>();
+  const chunks = String(html || '').split(/<li[^>]*>/).slice(1);
+  for (const ch of chunks) {
+    const href = ch.match(/href="([^"]*\/jobs\/view\/[^"]+)"/);
+    if (!href) continue;
+    const url = deent(href[1]).split('?')[0];
+    if (seen.has(url)) continue;
+    const t = ch.match(/base-search-card__title[^>]*>\s*([\s\S]*?)\s*<\//);
+    const title = t ? stripTags(t[1]) : '';
+    if (!title) continue;
+    const c = ch.match(/base-search-card__subtitle[^>]*>([\s\S]*?)<\/h4>/);
+    const l = ch.match(/job-search-card__location[^>]*>\s*([\s\S]*?)\s*<\//);
+    seen.add(url);
+    out.push({ title: title.slice(0, 180), url, company: c ? stripTags(c[1]).slice(0, 120) : '', location: l ? stripTags(l[1]).slice(0, 120) : '' });
   }
-  var tries=0;
-  var iv=setInterval(function(){
-    tries++;
-    var r=scan();
-    if(r.length>0 || tries>=16){
-      clearInterval(iv);
-      try{ window.ReactNativeWebView.postMessage(JSON.stringify({__cvli:true, results:r})); }catch(e){}
-    }
-  },500);
-})(); true;`;
+  return out;
+}
+const isLiViewUrl = (u: string) => /linkedin\.com\/jobs\/view\//i.test(String(u || ''));
 
 // Split a free-text query into {keywords, location} for the LinkedIn/engine URLs. Heuristic: "<role> in
 // <place>" → keywords="<role>", location="<place>"; strips filler ("jobs", "vacancies", "near me"…).
@@ -217,11 +222,8 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
   const webReportedRef = useRef<Set<number>>(new Set());   // source indices that have reported (dedup)
   // "Browse & Fetch" visible browser (non-LinkedIn listing pages / previewing any organic result).
   const [browseUrl, setBrowseUrl] = useState<string | null>(null);
-  // LinkedIn LISTING expansion ("500+ .NET jobs in Gurgaon" card → the individual jobs, in-place).
-  const [expandSrcs, setExpandSrcs] = useState<string[]>([]);   // hidden WebView urls ([] = unmounted)
-  const [expandGen, setExpandGen] = useState(0);
-  const [expandingUrl, setExpandingUrl] = useState<string | null>(null);   // the listing card being expanded
-  const expandReportedRef = useRef<Set<number>>(new Set());
+  // LinkedIn LISTING expansion ("500+ .NET jobs in Gurgaon" → the individual jobs, in-place).
+  const [expandingUrl, setExpandingUrl] = useState<string | null>(null);   // the listing being expanded
   const expandFoundRef = useRef(0);    // cards actually ADDED to the list (post-dedupe/filter)
   const expandRawRef = useRef(0);      // cards the scrape RETURNED (pre-filter) — scrape worked at all?
   const expandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -265,20 +267,18 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
   const locRef = useRef(locResolved);
   useEffect(() => { locRef.current = locResolved; }, [locResolved]);
 
+  // Organic web sources still use hidden WebViews (Google needs a real browser). LinkedIn guest
+  // pages are fetched DIRECTLY (liFetch, cookie-free) in the open-run effect — see runLinkedIn there.
   const webSources = useMemo(() => {
     const q = String(query || '').trim();
-    if (!q) return [] as { uri: string; kind: 'li' | 'organic' }[];
+    if (!q) return [] as { uri: string; kind: 'organic' }[];
     const enc = encodeURIComponent;
-    const { kw } = parseLiveQuery(q);
-    const liLoc = locResolved.linkedInLocation;   // country-qualified (or '' → LinkedIn's default worldwide)
-    const liBase = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=' + enc(buildLinkedInKeywords(kw)) + (liLoc ? '&location=' + enc(liLoc) : '');
-    // LinkedIn guest returns ~10 individual postings per page → paginate by 10 for depth (8 pages ≈ 80 postings).
-    const sources: { uri: string; kind: 'li' | 'organic' }[] = [0, 10, 20, 30, 40, 50, 60, 70].map((s) => ({ uri: liBase + '&start=' + s, kind: 'li' as const }));
+    const sources: { uri: string; kind: 'organic' }[] = [];
     sources.push({ uri: 'https://www.google.com/search?num=30&hl=en&q=' + enc(q), kind: 'organic' });
     sources.push({ uri: 'https://www.google.com/search?num=30&hl=en&start=10&q=' + enc(q), kind: 'organic' });
     sources.push({ uri: 'https://lite.duckduckgo.com/lite/?q=' + enc(q), kind: 'organic' });
     return sources;
-  }, [query, locResolved]);
+  }, [query]);
 
   const normUrl = (u: string) => { try { const x = new URL(String(u || '')); return (x.origin + x.pathname).replace(/\/+$/, ''); } catch { return String(u || '').split('#')[0].replace(/\/+$/, ''); } };
 
@@ -348,16 +348,15 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
     if (webReportedRef.current.size >= (webTargetsRef.current || 1)) { setSearchActive(false); finishSource('web'); }
   }, [mergeCards, finishSource]);
 
-  // ── Expand a LinkedIn LISTING card ("500+ jobs…") into its individual postings, in-place ──
-  // The public listing page itself carries ~60 job cards in the exact markup LINKEDIN_SCRAPE_JS reads
-  // (verified, no login wall); we also paginate the guest API (parsed keywords/location, country-qualified)
-  // for extra depth. Results merge into the list; the listing card is then removed.
+  // ── Expand a LinkedIn LISTING ("500+ jobs…") into its individual postings, in-place ──
+  // The public listing page carries ~60 job cards in the guest markup, plus guest-API pagination for
+  // depth — all read via DIRECT cookie-free fetches (immune to the user's LinkedIn login).
   const finishExpand = useCallback((listingUrl: string) => {
     if (expandTimerRef.current) { clearTimeout(expandTimerRef.current); expandTimerRef.current = null; }
     const wasAuto = expandAutoRef.current;
     expandAutoRef.current = false;
     expandingUrlRef.current = null;
-    setExpandSrcs([]); setExpandingUrl(null);
+    setExpandingUrl(null);
     if (expandRawRef.current > 0) {
       // Scrape worked → the listing card is redundant now (its jobs were added, or were already in the
       // list / filtered by location) — remove it either way (auto expansions never had a card).
@@ -379,30 +378,28 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
   }, [pumpAutoExpand]);
   const expandListing = useCallback((listingUrl: string, auto = false) => {
     if (expandingUrlRef.current) { if (auto) autoQueueRef.current.unshift(listingUrl); return; }   // one at a time
-    const srcs: string[] = [listingUrl];
+    const urls: string[] = [listingUrl];
     const parsed = parseLinkedInListing(listingUrl);
     if (parsed && parsed.keywords) {
       const liLoc = resolveLiveLocation(parsed.location).linkedInLocation || parsed.location;
       const base = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=' + encodeURIComponent(parsed.keywords) + (liLoc ? '&location=' + encodeURIComponent(liLoc) : '');
       // 10 guest pages ≈ 100 postings — matches what a "100+ jobs" list advertises.
-      for (const s of [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]) srcs.push(base + '&start=' + s);
+      for (const s of [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]) urls.push(base + '&start=' + s);
     }
-    expandReportedRef.current = new Set(); expandFoundRef.current = 0; expandRawRef.current = 0;
+    expandFoundRef.current = 0; expandRawRef.current = 0;
     expandAutoRef.current = auto;
     expandingUrlRef.current = listingUrl;
-    setExpandingUrl(listingUrl); setExpandGen((g) => g + 1); setExpandSrcs(srcs);
-    if (expandTimerRef.current) clearTimeout(expandTimerRef.current);
-    expandTimerRef.current = setTimeout(() => finishExpand(listingUrl), 22000);   // safety net (11 sources)
-  }, [finishExpand]);
+    setExpandingUrl(listingUrl);
+    (async () => {
+      try {
+        const pages = await Promise.all(urls.map((u) => liFetch(u).then(parseLiCards).catch(() => [])));
+        for (const r of pages) { if (r.length) { expandRawRef.current += r.length; expandFoundRef.current += mergeCards(toLiCards(r)); } }
+      } catch { /* finishExpand decides messaging from the raw/added counters */ }
+      finally { finishExpand(listingUrl); }
+    })();
+  }, [finishExpand, mergeCards]);
   expandRunnerRef.current = expandListing;   // stable ref → mergeCards/pump can start expansions
   useEffect(() => { searchActiveRef.current = searchActive; }, [searchActive]);
-  const onExpandReport = useCallback((idx: number, results: any[], listingUrl: string, total: number) => {
-    if (expandReportedRef.current.has(idx)) return;
-    expandReportedRef.current.add(idx);
-    const cards = toLiCards(results || []);
-    if (cards.length) { expandRawRef.current += cards.length; expandFoundRef.current += mergeCards(cards); }
-    if (expandReportedRef.current.size >= total) finishExpand(listingUrl);
-  }, [mergeCards, finishExpand]);
 
   // ── A job fetched from the Browse & Fetch browser → reflect it on the matching card (or add one) ──
   const onBrowseFetched = useCallback((job: LiveJobCard | null, sourceUrl: string) => {
@@ -431,11 +428,12 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
     setFetchingBoth(false); setActiveUrls([]); activeRef.current = new Set(); queueRef.current = [];
     Object.values(timersRef.current).forEach(clearTimeout); timersRef.current = {};
     serverDoneRef.current = false; webDoneRef.current = false; webReportsRef.current = 0;
-    webReportedRef.current = new Set(); webTargetsRef.current = webSources.length;
+    // +1 = the direct LinkedIn guest-fetch batch below (reports on the virtual index webSources.length).
+    webReportedRef.current = new Set(); webTargetsRef.current = webSources.length + 1;
     // reset listing-expansion + browser state from any previous run
     if (expandTimerRef.current) { clearTimeout(expandTimerRef.current); expandTimerRef.current = null; }
     if (expandNoteTimerRef.current) { clearTimeout(expandNoteTimerRef.current); expandNoteTimerRef.current = null; }
-    setExpandSrcs([]); setExpandingUrl(null); expandReportedRef.current = new Set(); expandFoundRef.current = 0;
+    setExpandingUrl(null); expandFoundRef.current = 0; expandRawRef.current = 0;
     expandingUrlRef.current = null; expandAutoRef.current = false;
     autoExpandedRef.current = new Set(); autoQueueRef.current = [];
     setExpandNote('');
@@ -443,6 +441,20 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
     // Kick off the on-device web search (hidden WebViews mount below) in PARALLEL with the server search.
     setSearchGen((g) => g + 1); setSearchActive(true);
     let alive = true;
+    // LinkedIn guest search — DIRECT cookie-free fetches (8 pages ≈ 80 postings), immune to the
+    // user's LinkedIn login. Completes as the virtual web source at index webSources.length.
+    (async () => {
+      try {
+        const { kw } = parseLiveQuery(query);
+        if (kw) {
+          const liLoc = locResolved.linkedInLocation;
+          const base = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=' + encodeURIComponent(buildLinkedInKeywords(kw)) + (liLoc ? '&location=' + encodeURIComponent(liLoc) : '');
+          const pages = await Promise.all([0, 10, 20, 30, 40, 50, 60, 70].map((s) => liFetch(base + '&start=' + s).then(parseLiCards).catch(() => [])));
+          if (alive) for (const r of pages) { if (r.length) mergeCards(toLiCards(r)); }
+        }
+      } catch { /* organic sources may still deliver */ }
+      finally { if (alive) onWebReport(webSources.length, [], 'li'); }
+    })();
     // Safety net: if some hidden search WebViews never report back (offline / hard block), stop waiting.
     const webTimer = setTimeout(() => { if (alive) { setSearchActive(false); finishSource('web'); } }, 22000);
     (async () => {
@@ -496,6 +508,13 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
       fstateRef.current = { ...fstateRef.current, [u]: 'fetching' };
       setFstate((s) => ({ ...s, [u]: 'fetching' }));
       timersRef.current[u] = setTimeout(() => finish(u, false), PAGE_TIMEOUT);
+      // LinkedIn cards: read the guest jobPosting API DIRECTLY (cookie-free — a logged-in session
+      // would redirect the guest endpoint to the SPA and break extraction). No WebView needed.
+      if (isLiViewUrl(u)) {
+        liFetch(fetchSourceUrl(u), 15000)
+          .then((html) => { onGrab(u, JSON.stringify({ __cvd: true, url: u, html: String(html || '').slice(0, 220000) })); })
+          .catch(() => finish(u, false, null));
+      }
     }
     setActiveUrls([...activeRef.current]);
     if (activeRef.current.size === 0 && queueRef.current.length === 0) {
@@ -756,8 +775,8 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
             <View key={searchGen + '|w|' + i} style={styles.hiddenWeb} pointerEvents="none">
               <WebView
                 source={{ uri: s.uri }}
-                injectedJavaScript={s.kind === 'li' ? LINKEDIN_SCRAPE_JS : SEARCH_SCRAPE_JS}
-                onMessage={(e) => { try { const d = JSON.parse(e.nativeEvent.data); if (d && d.__cvli) onWebReport(i, Array.isArray(d.results) ? d.results : [], 'li'); else if (d && d.__cvsr) onWebReport(i, Array.isArray(d.results) ? d.results : [], 'organic'); } catch {} }}
+                injectedJavaScript={SEARCH_SCRAPE_JS}
+                onMessage={(e) => { try { const d = JSON.parse(e.nativeEvent.data); if (d && d.__cvsr) onWebReport(i, Array.isArray(d.results) ? d.results : [], 'organic'); } catch {} }}
                 onError={() => onWebReport(i, [], s.kind)}
                 onHttpError={() => onWebReport(i, [], s.kind)}
                 userAgent={MOBILE_UA}
@@ -768,27 +787,10 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
             </View>
           ))}
 
-          {/* hidden LISTING-EXPANSION scrapers — the tapped LinkedIn list page + guest-API pages; each
-              merges its individual postings into the results. */}
-          {expandingUrl && expandSrcs.map((s, i) => (
-            <View key={expandGen + '|x|' + i} style={styles.hiddenWeb} pointerEvents="none">
-              <WebView
-                source={{ uri: s }}
-                injectedJavaScript={LINKEDIN_SCRAPE_JS}
-                onMessage={(e) => { try { const d = JSON.parse(e.nativeEvent.data); if (d && d.__cvli) onExpandReport(i, Array.isArray(d.results) ? d.results : [], expandingUrl, expandSrcs.length); } catch {} }}
-                onError={() => onExpandReport(i, [], expandingUrl, expandSrcs.length)}
-                onHttpError={() => onExpandReport(i, [], expandingUrl, expandSrcs.length)}
-                userAgent={MOBILE_UA}
-                javaScriptEnabled
-                domStorageEnabled
-                originWhitelist={['*']}
-              />
-            </View>
-          ))}
-
           {/* hidden on-device fetchers — up to CONCURRENCY pages at once, on the user's IP.
+              LinkedIn cards are fetched DIRECTLY (liFetch, cookie-free) — no WebView for them.
               Keyed by webGen so an AppState resume remounts them (iOS pauses background WebViews). */}
-          {activeUrls.map((url) => (
+          {activeUrls.filter((u) => !isLiViewUrl(u)).map((url) => (
             <View key={webGen + '|' + (retryRef.current[url] || 0) + '|' + url} style={styles.hiddenWeb} pointerEvents="none">
               <WebView
                 source={{ uri: fetchSourceUrl(url) }}
