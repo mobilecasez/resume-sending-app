@@ -3446,11 +3446,13 @@ async function getJobContacts(req, res) {
 // Some AI/scraped job URLs are wrong or missing (esp. bot-walled sites). A user can set the correct
 // apply URL for THEIR view — it never overwrites the shared job_url for other users. The job-detail
 // screen reads this on load and uses it for the in-app Apply WebView.
-const _UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Accepts BOTH real DB UUIDs and the synthetic TEXT ids of saved/live-search jobs ("gj_…") —
+// the table's job_id is TEXT (Migration 025). Shape-validated to keep junk out.
+const _JOB_ID_RE = /^[0-9a-z_-]{6,80}$/i;
 async function getJobUrlOverride(req, res) {
     try {
         const { jobId } = req.params;
-        if (!_UUID_RE.test(jobId)) return res.json({ url: null });
+        if (!_JOB_ID_RE.test(jobId)) return res.json({ url: null });
         const row = await dbConfig.get('SELECT url FROM user_job_url_overrides WHERE user_id = $1 AND job_id = $2', [req.user.id, jobId]);
         return res.json({ url: row ? row.url : null });
     } catch (error) {
@@ -3461,7 +3463,7 @@ async function getJobUrlOverride(req, res) {
 async function setJobUrlOverride(req, res) {
     try {
         const { jobId } = req.params;
-        if (!_UUID_RE.test(jobId)) return res.status(400).json({ error: 'This job can\'t be edited.' });
+        if (!_JOB_ID_RE.test(jobId)) return res.status(400).json({ error: 'This job can\'t be edited.' });
         let url = String((req.body && req.body.url) || '').trim();
         if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;          // tolerate "digitec.ch/..." input
         if (!/^https?:\/\/[^\s.]+\.[^\s]{2,}/i.test(url)) return res.status(400).json({ error: 'Please enter a valid link (e.g. https://…).' });

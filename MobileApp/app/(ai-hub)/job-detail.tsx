@@ -881,6 +881,20 @@ export default function JobDetailScreen() {
   const applyWebRef = useRef<WebView>(null);
   const applyOriginRef = useRef<string>('');   // origin of the apply page — injections are gated to it
   const currentUrlRef  = useRef<string>('');   // live page URL (from onNavigationStateChange)
+  // ── LinkedIn → company-portal capture ──
+  // LinkedIn hides a job's external apply URL from guests, but when the user taps Apply ON the
+  // LinkedIn page, the browser lands on the company's own portal. Capture that landing URL and save
+  // it as this job's per-user link — from then on, Apply/Portal opens the company page DIRECTLY.
+  const sawLinkedInRef    = useRef(false);   // this apply session visited a linkedin.com page
+  const portalCapturedRef = useRef(false);   // capture at most once per session
+  const [portalSavedBanner, setPortalSavedBanner] = useState(false);
+  useEffect(() => {                                                // auto-dismiss the "link saved" toast
+    if (!portalSavedBanner) return;
+    const t = setTimeout(() => setPortalSavedBanner(false), 4000);
+    return () => clearTimeout(t);
+  }, [portalSavedBanner]);
+  // Hosts that are never "the company portal": LinkedIn itself + auth/OAuth + search engines.
+  const NOT_PORTAL_RE = /linkedin\.com|licdn\.com|lnkd\.in|google\.[a-z.]+|bing\.com|accounts\.|login\.|signin\.|auth[0-9]?\.|appleid\.apple|facebook\.com|about:blank/i;
   const insets = useSafeAreaInsets();          // notch/home-indicator insets (Modal-safe)
   const rating = useRatingPrompt();            // post-apply rating prompt (portal close + email send)
 
@@ -948,6 +962,7 @@ export default function JobDetailScreen() {
     filesRef.current = {};
     setResumeRegion(''); setClRegion(''); setResumeExpanded(false); setClExpanded(false); setPreview(null); setPreviewBusy(null);
     submitMarkedRef.current = false; submitIntentRef.current = 0; setAppliedBanner(false);
+    sawLinkedInRef.current = false; portalCapturedRef.current = false; setPortalSavedBanner(false);
     // Smart-copy: reset + prefetch the user's reusable details for the floating helper.
     setSmartOpen(false); setSmartExpanded(false); setCopiedKey(null);
     focusedFieldRef.current = null; smartValuesRef.current = {};
@@ -2498,6 +2513,24 @@ export default function JobDetailScreen() {
               onNavigationStateChange={(nav) => {
                 setApplyCanGoBack(nav.canGoBack);
                 if (nav.url) { currentUrlRef.current = nav.url; try { setApplyHost(new URL(nav.url).hostname.replace(/^www\./, '')); } catch {} }
+                // ── LinkedIn → company-portal capture: the user tapped Apply on a LinkedIn page and
+                // landed on the company's own site. Save that URL as this job's link (per-user
+                // override) so Apply/Portal opens the company page DIRECTLY from now on.
+                if (nav.url && /^https?:\/\//i.test(nav.url)) {
+                  if (/linkedin\.com/i.test(nav.url)) {
+                    sawLinkedInRef.current = true;
+                  } else if (sawLinkedInRef.current && !portalCapturedRef.current && !NOT_PORTAL_RE.test(nav.url)
+                             && (!overrideUrl || isLinkedInJobUrl(overrideUrl))) {
+                    const jid = (job as any)?.id;
+                    if (jid) {
+                      portalCapturedRef.current = true;
+                      const captured = nav.url;
+                      updateJobUrl(jid, captured)
+                        .then((saved) => { setOverrideUrl(saved); setUrlInput(saved); setPortalSavedBanner(true); })
+                        .catch(() => { portalCapturedRef.current = false; });   // transient failure → retry on next hop
+                    }
+                  }
+                }
                 // Backstop: a real submit just happened and we navigated to a clear
                 // confirmation URL (covers cross-origin pages that drop our injected state).
                 if (nav.url && !submitMarkedRef.current && submitIntentRef.current
@@ -2511,6 +2544,19 @@ export default function JobDetailScreen() {
                 </View>
               )}
             />
+          )}
+
+          {/* LinkedIn → company portal captured → subtle toast (the job's link now opens the portal) */}
+          {portalSavedBanner && !appliedBanner && (
+            <View style={[s.appliedToast, { top: insets.top + 56 }]} pointerEvents="box-none">
+              <View style={[s.appliedToastCard, { backgroundColor: '#2563EB' }]}>
+                <Ionicons name="link" size={18} color="#fff" />
+                <Text style={s.appliedToastText} numberOfLines={2}>Company apply page saved — this job now opens the portal directly.</Text>
+                <TouchableOpacity onPress={() => setPortalSavedBanner(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Ionicons name="close" size={17} color="rgba(255,255,255,0.85)" />
+                </TouchableOpacity>
+              </View>
+            </View>
           )}
 
           {/* Submission detected → confirmation toast (job is now "Applied" on the dashboard) */}

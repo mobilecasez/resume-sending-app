@@ -979,6 +979,15 @@ async function runPostgresMigrations(db) {
         await col(`CREATE INDEX IF NOT EXISTS idx_global_jobs_role_cat ON global_jobs(role_category)`);
         console.log('✅ Migration 024: global_jobs taxonomy done');
 
+        // ── Migration 025: user_job_url_overrides.job_id UUID → TEXT (+ drop the jobs FK) ──────
+        // Saved/live-search jobs use synthetic TEXT ids ("gj_…") that aren't rows in `jobs`, so the
+        // UUID column + FK made URL overrides silently impossible for exactly the jobs that need a
+        // corrected link most (e.g. a LinkedIn job's real company-portal apply URL). Same class of
+        // bug as the job_cover_letters.job_id UUID fix.
+        await col(`ALTER TABLE user_job_url_overrides DROP CONSTRAINT IF EXISTS user_job_url_overrides_job_id_fkey`);
+        await col(`ALTER TABLE user_job_url_overrides ALTER COLUMN job_id TYPE TEXT USING job_id::text`);
+        console.log('✅ Migration 025: user_job_url_overrides synthetic-id support done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);
