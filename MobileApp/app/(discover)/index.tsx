@@ -281,6 +281,27 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
   const onRefresh = useCallback(async () => { setRefreshing(true); await Promise.all([load({ offset: 0, append: false }), fetchDiscoverFacets(field).then(setFacets).catch(() => {})]); setRefreshing(false); }, [load, field]);
   const onEnd = useCallback(async () => { if (loadingMore || jobs.length >= total || loading) return; setLoadingMore(true); await load({ offset: jobs.length, append: true }); setLoadingMore(false); }, [loadingMore, jobs.length, total, loading, load]);
   const openJob = useCallback((dj: DiscoverJob) => { router.push({ pathname: '/(ai-hub)/job-detail', params: toJobHubParams(dj) }); }, [router]);
+  // "Apply here" from the Browse & Fetch dock → open job-detail with the apply browser auto-opened
+  // at that page, so the user gets the FULL apply arsenal (AI auto-fill, resume upload interception,
+  // answer memory, submit detection) on the exact page they were viewing.
+  const openApplyHere = useCallback((applyUrl: string, pageTitle: string, card: any) => {
+    let host = ''; try { host = new URL(applyUrl).hostname.replace(/^www\./, ''); } catch {}
+    const title = (card?.title || pageTitle || 'Job application').slice(0, 140);
+    const company = card?.company || card?.employer_name || host || 'Company';
+    const job = {
+      id: hashId(applyUrl), title, location: card?.location || 'Not specified',
+      experience: card?.experience || '', salary: card?.salary || '', jobType: card?.job_type || '',
+      workMode: card?.work_mode || null, urgent: false, skills: Array.isArray(card?.skills) ? card.skills : [],
+      responsibilities: Array.isArray(card?.responsibilities) ? card.responsibilities : [], contacts: [],
+      applyUrl, matchScore: typeof card?.match === 'number' ? card.match : null,
+    };
+    const g = gradFor(company);
+    const employer = {
+      id: 'g_' + String(company).toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      name: company, subInfo: card?.location || host || 'Live job', logoColor: g, logoInitial: initial(company), domain: host,
+    };
+    router.push({ pathname: '/(ai-hub)/job-detail', params: { jobStr: JSON.stringify(job), employerStr: JSON.stringify(employer), autoApply: '1', applyNowUrl: applyUrl } });
+  }, [router]);
   const clearFilters = () => { setMode(''); setSkill(''); setCountry(''); setEmployer(''); setRoleCat(''); };
 
   // AI natural-language search: parse the sentence → search the network → show ranked matches.
@@ -515,7 +536,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
       {!embedded && <HelpAssistant />}
       {xrayUrls.length > 0 && <SilentWebSearch key={xraySeq} urls={xrayUrls} onResult={onXrayResult} />}
       {/* On close, tell the parent so the Saved count/summary refresh (fetching happens here, not on the Saved tab). */}
-      <LiveJobSearch visible={liveOpen} query={liveQuery} onClose={() => { setLiveOpen(false); onSavedChange?.(); }} />
+      <LiveJobSearch visible={liveOpen} query={liveQuery} onClose={() => { setLiveOpen(false); onSavedChange?.(); }} onApplyHere={openApplyHere} />
     </>
   );
 

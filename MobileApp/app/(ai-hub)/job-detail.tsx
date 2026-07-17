@@ -814,7 +814,7 @@ function isCoverLetterTextarea(f: any): boolean {
 
 export default function JobDetailScreen() {
   const router = useRouter();
-  const { jobId, jobStr, employerStr } = useLocalSearchParams<{ jobId?: string; jobStr?: string; employerStr?: string }>();
+  const { jobId, jobStr, employerStr, autoApply, applyNowUrl } = useLocalSearchParams<{ jobId?: string; jobStr?: string; employerStr?: string; autoApply?: string; applyNowUrl?: string }>();
 
   const [skillsExpanded, setSkillsExpanded] = useState(false);
 
@@ -992,6 +992,18 @@ export default function JobDetailScreen() {
       setWebTranslated(false);
     }
   };
+
+  // "Apply here" hand-off from the Browse & Fetch dock: auto-open the apply browser at the exact
+  // page the user was viewing (they get the full AI auto-fill / upload / memory arsenal there).
+  const autoApplyFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoApply !== '1' || autoApplyFiredRef.current) return;
+    const u = String(applyNowUrl || '').trim();
+    if (!u) return;
+    autoApplyFiredRef.current = true;
+    const t = setTimeout(() => { try { openApplyWebView(u); } catch {} }, 450);   // after mount settles
+    return () => clearTimeout(t);
+  }, [autoApply, applyNowUrl]);
 
   // Pull the user's reusable facts from local storage (session name/email + resume-builder
   // phone/location) so the smart-copy popup is populated even if the server bundle is sparse.

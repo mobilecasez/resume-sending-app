@@ -178,7 +178,13 @@ function fetchSourceUrl(u: string): string {
   return s;
 }
 
-export default function LiveJobSearch({ visible, query, onClose }: { visible: boolean; query: string; onClose: () => void }) {
+export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: {
+  visible: boolean; query: string; onClose: () => void;
+  // "Apply here" from the Browse & Fetch dock: hand the page off to the FULL apply experience
+  // (job-detail's AI auto-fill / resume upload / cover letter). card is the matching result card
+  // when the page corresponds to one, else null (parent synthesizes a minimal job from the title).
+  onApplyHere?: (applyUrl: string, pageTitle: string, card: LiveJobCard | null) => void;
+}) {
   const CONCURRENCY = 5;   // fetch up to 5 selected postings at once (was one-at-a-time)
   const { costOf } = useEventCosts();
   const fetchCost = costOf('live_fetch') ?? 0;
@@ -791,6 +797,8 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
                 userAgent={MOBILE_UA}
                 javaScriptEnabled
                 domStorageEnabled
+                sharedCookiesEnabled
+                thirdPartyCookiesEnabled
                 originWhitelist={['*']}
               />
             </View>
@@ -809,6 +817,15 @@ export default function LiveJobSearch({ visible, query, onClose }: { visible: bo
           fetchCost={fetchCost}
           onClose={() => setBrowseUrl(null)}
           onFetched={onBrowseFetched}
+          onApplyHere={onApplyHere ? (applyUrl, pageTitle) => {
+            // Hand off to the FULL apply experience: find the matching result card for context
+            // (title/company), close the browser + this modal, then let the parent navigate.
+            const k = normUrl(applyUrl);
+            const card = cardsRef.current.find((c) => normUrl(c.job_url) === k) || null;
+            setBrowseUrl(null);
+            onClose();
+            setTimeout(() => onApplyHere(applyUrl, pageTitle, card), 350);   // after the modal dismisses
+          } : undefined}
         />
       )}
     </Modal>
