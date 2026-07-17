@@ -274,10 +274,12 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           // LinkedIn hides the external apply URL from us, but tapping Apply lands the user on the
           // company's own site. Detect that hop → nudge them to Fetch the REAL company page (full
           // details), which is exactly what they wanted for aasoka / iris etc.
-          if (nav.url && /^https?:\/\//i.test(nav.url)) {
-            if (/linkedin\.com/i.test(nav.url)) sawLinkedInRef.current = true;
-            else if (sawLinkedInRef.current && !NOT_COMPANY_RE.test(nav.url)) setCompanyHint(true);
-          }
+          // Recompute the hint on EVERY navigation so it never goes stale: show it only while we're
+          // actually on a company page reached from LinkedIn (hide on LinkedIn itself, on Google/Apple
+          // sign-in, on auth pages, etc.).
+          if (/linkedin\.com/i.test(nav.url || '')) { sawLinkedInRef.current = true; setCompanyHint(false); }
+          else if (nav.url && /^https?:\/\//i.test(nav.url) && sawLinkedInRef.current && !NOT_COMPANY_RE.test(nav.url)) setCompanyHint(true);
+          else setCompanyHint(false);
         }}
         onLoadStart={() => setPageLoading(true)}
         onLoadEnd={() => setPageLoading(false)}

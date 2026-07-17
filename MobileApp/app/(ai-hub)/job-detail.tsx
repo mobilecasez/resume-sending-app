@@ -761,7 +761,9 @@ function attachJs(keys: string[], base64: string, filename: string, mime: string
       for (var i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
       var ok = 0, total = 0;
       keys.forEach(function(k){
+        // Manual "Upload" from the dock has no tapped field → target the first real file input.
         var el = document.querySelector('[data-cvf="'+k+'"]');
+        if ((!el || (el.type||'').toLowerCase()!=='file') && k === '__manual__') el = document.querySelector('input[type=file]');
         if (!el || (el.type||'').toLowerCase()!=='file') return;
         total++;
         try {
@@ -1398,6 +1400,7 @@ export default function JobDetailScreen() {
     setAutofillState(null);
     setPreview(null); setPreviewBusy(null);   // don't leave a stale preview / busy spinner
     setFilePick(null); setFilePickBusy(null);
+    if (attachTimerRef.current) { clearTimeout(attachTimerRef.current); attachTimerRef.current = null; }   // no stray "couldn't attach" alert after close
     const didApply = submitMarkedRef.current;
     setApplyWebUrl(null);
     // If they actually submitted on the portal, ask for a rating after the web view closes.
@@ -1462,6 +1465,12 @@ export default function JobDetailScreen() {
     // File-tap interception (works independently of an auto-fill run).
     if (msg.type === 'FILE_PICK') { setFilePick({ key: msg.key, accept: msg.accept || '', label: msg.label || '' }); return; }
     if (msg.type === 'ATTACHED' && msg.kind === 'pick') {
+      if (msg.noField) {   // manual Upload but the page has no file-upload field at all
+        if (attachTimerRef.current) { clearTimeout(attachTimerRef.current); attachTimerRef.current = null; }
+        setFilePickBusy(null); setFilePick(null);
+        Alert.alert('No upload field here', 'This page has no file-upload field yet. Open the application form first, then tap Upload.');
+        return;
+      }
       if (!msg.total) return;   // a frame that didn't contain the tapped field — wait for the one that does
       if (attachTimerRef.current) { clearTimeout(attachTimerRef.current); attachTimerRef.current = null; }
       setFilePickBusy(null); setFilePick(null);
@@ -1650,7 +1659,8 @@ export default function JobDetailScreen() {
   const pickFromDevice = () => {
     if (!filePick || !applyWebRef.current) return;
     const k = filePick.key;
-    applyWebRef.current.injectJavaScript(`(function(){ try{ var el=document.querySelector('[data-cvf="'+${JSON.stringify(k)}+'"]'); if(el){ el.__cvfSkip=true; el.click(); } }catch(e){} })(); true;`);
+    // Manual "Upload" from the dock ('__manual__') has no tapped field → open the first file input.
+    applyWebRef.current.injectJavaScript(`(function(){ try{ var el=document.querySelector('[data-cvf="'+${JSON.stringify(k)}+'"]') || document.querySelector('input[type=file]'); if(el){ el.__cvfSkip=true; el.click(); } else { window.ReactNativeWebView.postMessage(JSON.stringify({__cvf:true,type:'ATTACHED',kind:'pick',ok:0,total:0,noField:true})); } }catch(e){} })(); true;`);
     setFilePick(null);
   };
 
