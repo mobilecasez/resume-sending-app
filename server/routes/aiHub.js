@@ -38,12 +38,14 @@ const {
     getMatchScores,
     getMotivation,
 } = require('../controllers/aiHubController');
+const { captureJob } = require('../controllers/jobCaptureController');
 
 router.get('/dashboard', authenticateToken, getDashboard);
 router.get('/dashboard/employer/:employerId/jobs', authenticateToken, getEmployerJobs);   // "Show more jobs" pager
 router.delete('/dashboard/:jobId', authenticateToken, removeDashboardItem);
 router.get('/jobs/:jobId/full', authenticateToken, getJobFullHandler);                    // full-fidelity hydration for detail views
 router.post('/analyze-wishlist', authenticateToken, analyzeWishlist);
+router.post('/jobs/capture', authenticateToken, captureJob);   // capture a live/web job's details → canonical UUID (+ track to My Jobs)
 router.get('/jobs', authenticateToken, getJobMatches);
 router.get('/job-status/:jobId', authenticateToken, getJobStatus);
 router.post('/match-scores', authenticateToken, getMatchScores);

@@ -32,7 +32,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { track } from '../../services/analytics';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, fetchJobFull, translateJob, translateBatch, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, isLinkedInJobUrl, type LinkedInJob, type TranslatedJob, type SmartFillData } from '../../services/aiHubService';
+import { startJobCoverLetter, pollJobCoverLetter, saveJobCoverLetter, loadJobCoverLetter, updateJobCLStatus, getJobContacts, fetchJobFull, translateJob, translateBatch, getSmartFillData, recordAutofillMemory, getJobUrlOverride, updateJobUrl, isLinkedInJobUrl, captureJob, type LinkedInJob, type TranslatedJob, type SmartFillData, type CapturedJob } from '../../services/aiHubService';
 import LinkedInJobLoader from '../../components/LinkedInJobLoader';
 import { API_BASE } from '../../config';
 import { SUBMIT_DETECT_JS, CONFIRM_URL_RE } from './submitDetect';
@@ -118,6 +118,27 @@ async function postAndPoll(path: string, body: any, token: string | null): Promi
   if (!r.ok) throw new Error((data && data.error) || `Request failed (${r.status})`);
   return data;
 }
+
+// A clean platform-browser UA for the apply WebView. WKWebView's default UA is flagged by Google
+// ("disallowed_useragent") and LinkedIn as an embedded webview → "Sign in with Google/LinkedIn"
+// silently dies or spins forever. A real mobile-browser UA makes OAuth serve its redirect-based
+// flow that completes inside one WebView (same fix Browse & Fetch uses).
+const BROWSER_UA = Platform.OS === 'android'
+  ? 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36'
+  : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1';
+
+// True only for a real DB job id (UUID). Live/web/LinkedIn cards arrive with a synthetic id
+// (gj_… / hashId) — those need a capture round-trip to get a canonical UUID for tracking.
+const isUuid = (s?: string | null): boolean =>
+  !!s && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+
+// One-shot grab of the job page's visible text (the "actual job details" page the user is viewing),
+// so the backend can extract responsibilities/description for the cover letter. Namespaced __cvf.
+const GRAB_JOB_TEXT_JS = `(function(){ try {
+  var t = (document.body && document.body.innerText) || '';
+  var o = { type:'JOB_PAGE_TEXT', text:String(t).slice(0,16000), title:String(document.title||''), url:String(location.href||'') };
+  o.__cvf = true; window.ReactNativeWebView.postMessage(JSON.stringify(o));
+} catch(e){} })(); true;`;
 
 // ─── Theme (matches index.tsx exactly) ────────────────────────────
 const T = {
@@ -893,13 +914,35 @@ export default function JobDetailScreen() {
     const t = setTimeout(() => setAppliedBanner(false), 6000);
     return () => clearTimeout(t);
   }, [appliedBanner]);
-  // Mark the job "Applied" once (persists to backend → dashboard shows it on return).
+
+  // ── Job capture (live/web jobs) ──────────────────────────────────────────────
+  // A live/web job arrives with a synthetic id and (often) no responsibilities — the real details
+  // live only on the page shown in the apply WebView. We capture that page's text, get a canonical
+  // DB UUID + AI-extracted details, and (on Generate-CL / submit) add it to My Jobs. capturedRef is
+  // the source of truth (survives re-renders); state mirrors it for the UI / cover-letter inputs.
+  const [capturedJobId, setCapturedJobId] = useState<string | null>(null);
+  const [capturedJob,   setCapturedJob]   = useState<CapturedJob | null>(null);
+  const capturedRef  = useRef<{ id: string | null; job: CapturedJob | null; tracked: boolean; promise: Promise<any> | null }>({ id: null, job: null, tracked: false, promise: null });
+  const capturedIdRef = useRef<string | null>(null);          // canonical id readable from early callbacks
+  const lastPageTextRef = useRef<string>('');                 // latest apply-page innerText (for on-demand capture)
+  const capturePrefetchedRef = useRef(false);                 // grab the page text once per apply session
+  const ensureTrackedRef = useRef<((pt?: string) => Promise<{ id: string; job: CapturedJob | null }>) | null>(null);
+
+  // Mark the job "Applied" once — against the CANONICAL job (create + track it first if it was a
+  // live/web job) so the dashboard shows it as Applied even without a generated cover letter.
   const markApplied = useCallback(() => {
     if (submitMarkedRef.current) return;
     submitMarkedRef.current = true;
-    updateJobCLStatus(job.id, 'applied').catch(() => {});
     setAppliedBanner(true);
-  }, [job?.id]);
+    (async () => {
+      try {
+        const cap = ensureTrackedRef.current
+          ? await ensureTrackedRef.current(lastPageTextRef.current || undefined)
+          : { id: capturedIdRef.current || '' };
+        if (cap.id) await updateJobCLStatus(cap.id, 'applied');
+      } catch {}
+    })();
+  }, []);
   const applyWebRef = useRef<WebView>(null);
   const applyOriginRef = useRef<string>('');   // origin of the apply page — injections are gated to it
   const currentUrlRef  = useRef<string>('');   // live page URL (from onNavigationStateChange)
@@ -986,6 +1029,7 @@ export default function JobDetailScreen() {
     setResumeRegion(''); setClRegion(''); setResumeExpanded(false); setClExpanded(false); setPreview(null); setPreviewBusy(null);
     submitMarkedRef.current = false; submitIntentRef.current = 0; setAppliedBanner(false);
     sawLinkedInRef.current = false; portalCapturedRef.current = false; setPortalSavedBanner(false);
+    capturePrefetchedRef.current = false; lastPageTextRef.current = '';   // re-grab the job page text for this session
     // Smart-copy: reset + prefetch the user's reusable details for the floating helper.
     setSmartOpen(false); setSmartExpanded(false); setCopiedKey(null);
     focusedFieldRef.current = null; smartValuesRef.current = {};
@@ -1168,17 +1212,29 @@ export default function JobDetailScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job?.id]);
   const hydratedJob: any = fullJob ? { ...job, ...fullJob } : job;
-  const baseJob: any = liJob ? {
+  // Layer in captured details (live/web jobs) so the detail view + cover letter see the real
+  // responsibilities/skills that were only on the page the user viewed in the apply WebView.
+  const capBase: any = capturedJob ? {
     ...hydratedJob,
-    title: liJob.title || hydratedJob.title,
-    location: liJob.location || hydratedJob.location,
-    salary: liJob.salary || hydratedJob.salary,
-    jobType: liJob.employment_type || hydratedJob.jobType,
-    workMode: liJob.work_mode || hydratedJob.workMode,
-    experience: liJob.seniority || hydratedJob.experience,
-    skills: (liJob.skills && liJob.skills.length) ? liJob.skills : hydratedJob.skills,
-    responsibilities: (liJob.responsibilities && liJob.responsibilities.length) ? liJob.responsibilities : hydratedJob.responsibilities,
+    location: hydratedJob.location || capturedJob.location,
+    jobType: hydratedJob.jobType || capturedJob.jobType,
+    workMode: hydratedJob.workMode || capturedJob.workMode,
+    experience: hydratedJob.experience || capturedJob.experience,
+    salary: hydratedJob.salary || capturedJob.salary,
+    skills: (hydratedJob.skills && hydratedJob.skills.length) ? hydratedJob.skills : capturedJob.skills,
+    responsibilities: (hydratedJob.responsibilities && hydratedJob.responsibilities.length) ? hydratedJob.responsibilities : capturedJob.responsibilities,
   } : hydratedJob;
+  const baseJob: any = liJob ? {
+    ...capBase,
+    title: liJob.title || capBase.title,
+    location: liJob.location || capBase.location,
+    salary: liJob.salary || capBase.salary,
+    jobType: liJob.employment_type || capBase.jobType,
+    workMode: liJob.work_mode || capBase.workMode,
+    experience: liJob.seniority || capBase.experience,
+    skills: (liJob.skills && liJob.skills.length) ? liJob.skills : capBase.skills,
+    responsibilities: (liJob.responsibilities && liJob.responsibilities.length) ? liJob.responsibilities : capBase.responsibilities,
+  } : capBase;
   const display: any = (showEnglish && translatedJob)
     ? { ...baseJob, ...Object.fromEntries(Object.entries(translatedJob).filter(([, v]) => v != null && (!Array.isArray(v) || v.length > 0))) }
     : baseJob;
@@ -1277,6 +1333,25 @@ export default function JobDetailScreen() {
     });
   }, [job?.id]);
 
+  // When a live/web job resolves to its canonical UUID (via capture), restore any cover letter
+  // previously generated for it — the synthetic mount-load id above couldn't find it.
+  useEffect(() => {
+    if (!capturedJobId || capturedJobId === job.id || coverLetterHtml) return;
+    loadJobCoverLetter(capturedJobId).then(record => {
+      if (!record || !record.cover_letter_html) return;
+      setCoverLetterHtml(record.cover_letter_html);
+      setCompanyNameCL(record.company_name || '');
+      setWebsiteUrlCL(record.website_url || '');
+      let locs: CLLocation[] = [];
+      try { locs = record.company_locations ? JSON.parse(record.company_locations) : []; } catch {}
+      if (Array.isArray(locs)) setCompanyLocations(locs);
+      setCompanyAddressCL(employerAddress({ address: record.company_address, locations: Array.isArray(locs) ? locs : [] }));
+      setClState('done'); clAnim.setValue(1);
+      if (record.status === 'downloaded') { setDlState('done'); dlAnim.setValue(1); }
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [capturedJobId]);
+
   // Load any saved apply-URL override the user previously set for this job.
   // NOTE: use job.id (the real DB UUID, same id contacts/cover-letter use) — navigation passes the
   // job as `jobStr`, NOT a separate `jobId` route param, so the route `jobId` is undefined here.
@@ -1313,6 +1388,69 @@ export default function JobDetailScreen() {
     Animated.timing(anim, { toValue: val, duration: 350, useNativeDriver: false }).start();
   }
 
+  // Build the capture payload from the best-known fields (+ optional page text for AI extraction).
+  const buildCapturePayload = (track: boolean, pageText?: string) => ({
+    url: effectiveApplyUrl || (job as any).applyUrl || currentUrlRef.current || '',
+    title: display.title || job.title || '',
+    company: (employer as any)?.name || companyNameCL || '',
+    companyDomain: (employer as any)?.domain || '',
+    location: display.location || (job as any).location || '',
+    jobType: display.jobType || '',
+    workMode: display.workMode || null,
+    experience: display.experience || '',
+    salary: display.salary || '',
+    responsibilities: (capturedJob?.responsibilities?.length ? capturedJob.responsibilities : (display.responsibilities || [])) as string[],
+    skills: (capturedJob?.skills?.length ? capturedJob.skills : (display.skills || [])) as string[],
+    matchScore: typeof (job as any).matchScore === 'number' ? (job as any).matchScore : null,
+    pageText: pageText || undefined,
+    track,
+  });
+
+  // Prefetch (untracked): fire once when the job page loads, so responsibilities + a canonical UUID
+  // are ready by the time the user taps Generate Cover Letter. No-op for real DB jobs.
+  const prefetchCapture = (pageText: string) => {
+    if (isUuid(job.id)) return;
+    if (capturedRef.current.id || capturedRef.current.promise) return;
+    const p = captureJob(buildCapturePayload(false, pageText))
+      .then((r) => {
+        if (r && r.jobId) {
+          capturedRef.current.id = r.jobId; capturedRef.current.job = r.job;
+          capturedIdRef.current = r.jobId;
+          setCapturedJobId(r.jobId); setCapturedJob(r.job);
+        }
+        return r;
+      })
+      .catch(() => null)
+      .finally(() => { capturedRef.current.promise = null; });
+    capturedRef.current.promise = p;
+  };
+
+  // Ensure the job is captured AND tracked (real UUID + shows in My Jobs). Called at Generate-CL /
+  // successful submit. Reuses an in-flight prefetch so we never double-extract.
+  const ensureTracked = async (pageText?: string): Promise<{ id: string; job: CapturedJob | null }> => {
+    // Real DB job — already persisted (and normally tracked). Don't re-capture: it would risk
+    // re-pointing the employer or shrinking the stored responsibilities. Just use its id; the
+    // server already augments the letter from the full stored list via this id.
+    if (isUuid(job.id)) return { id: job.id, job: capturedRef.current.job };
+    if (capturedRef.current.promise) { try { await capturedRef.current.promise; } catch {} }
+    // If a prefetch already stored responsibilities, omit pageText so the backend keeps them (an
+    // empty list would null them out) and we skip a second AI call.
+    const havePT = !!(capturedRef.current.job?.responsibilities?.length);
+    const r = await captureJob(buildCapturePayload(true, havePT ? undefined : (pageText || lastPageTextRef.current || undefined)));
+    if (r && r.jobId) {
+      capturedRef.current.id = r.jobId; capturedRef.current.tracked = true;
+      capturedRef.current.job = r.job || capturedRef.current.job;
+      capturedIdRef.current = r.jobId;
+      setCapturedJobId(r.jobId); if (r.job) setCapturedJob(r.job);
+      return { id: r.jobId, job: capturedRef.current.job };
+    }
+    return { id: capturedRef.current.id || job.id, job: capturedRef.current.job };
+  };
+  ensureTrackedRef.current = ensureTracked;
+
+  // Canonical id for all cover-letter + status writes (falls back to the param id).
+  const jid = capturedJobId || job.id;
+
   const handleGenerateCoverLetter = async () => {
     if (clState === 'loading') return;
     setClState('loading'); setClProgress(0); clAnim.setValue(0);
@@ -1331,14 +1469,19 @@ export default function JobDetailScreen() {
     }, 8000);
 
     try {
+      // Capture + track the job FIRST: guarantees a real DB UUID (so it appears in My Jobs) and that
+      // the letter is written from the ACTUAL posting's responsibilities, not the thin card.
+      const captured = await ensureTracked(lastPageTextRef.current || undefined);
+      const cjid = captured.id;
       const websiteUrl = websiteUrlCL || employerWebsite;
-      const responsibilities = ((display as any).responsibilities as string[] | undefined) || [];
+      const capResp = (captured.job?.responsibilities || capturedJob?.responsibilities || []) as string[];
+      const responsibilities = capResp.length > 0 ? capResp : (((display as any).responsibilities as string[] | undefined) || []);
       const jobId = await startJobCoverLetter(
         websiteUrl,
         display.title,
         responsibilities.length > 0 ? responsibilities : undefined,
         display.location || undefined,
-        job.id,   // lets the server swap in the FULL stored responsibilities (list payload is slimmed)
+        cjid,   // canonical UUID → server augments from the FULL stored responsibilities
       );
       const result = await pollJobCoverLetter(jobId, () => {
         if (fake < 75) { fake = Math.min(fake + 3, 75); setClProgress(Math.round(fake)); animTo(clAnim, fake / 100); }
@@ -1369,8 +1512,9 @@ export default function JobDetailScreen() {
       setCompanyAddressCL(addr);
       setCompanyLocations(locs);
       setTimeout(() => setClState('done'), 300);
-      // Persist to DB (non-blocking) — store locations as JSON for dropdown restore on reload
-      saveJobCoverLetter(job.id, { coverLetterHtml: html, companyName: cName, websiteUrl: webUrl, position: job.title, companyAddress: addr, companyLocations: locs });
+      // Persist to DB against the canonical job (non-blocking) — sets status 'generated' → the job
+      // now shows in My Jobs as "CL Ready". Store locations as JSON for dropdown restore on reload.
+      saveJobCoverLetter(cjid, { coverLetterHtml: html, companyName: cName, websiteUrl: webUrl, position: job.title, companyAddress: addr, companyLocations: locs });
       return html;   // so callers (e.g. Apply-via-Mail) can proceed once it's ready
     } catch (e: any) {
       clearInterval(tick); clearInterval(stageTick);
@@ -1388,7 +1532,7 @@ export default function JobDetailScreen() {
     setShowOfficePicker(false);
     if (!addr) return;
     setCompanyAddressCL(addr);
-    saveJobCoverLetter(job.id, { coverLetterHtml: coverLetterHtml || '', companyName: companyNameCL || employer.name, websiteUrl: websiteUrlCL, position: job.title, companyAddress: addr, companyLocations });
+    saveJobCoverLetter(jid, { coverLetterHtml: coverLetterHtml || '', companyName: companyNameCL || employer.name, websiteUrl: websiteUrlCL, position: job.title, companyAddress: addr, companyLocations });
   };
 
   const handleDownloadPdf = async () => {
@@ -1400,7 +1544,7 @@ export default function JobDetailScreen() {
         companyName: companyNameCL || employer.name,
         companyAddress: companyAddressCL,
       }));
-      updateJobCLStatus(job.id, 'downloaded');
+      updateJobCLStatus(jid, 'downloaded');
       router.push('/(cover-letter)/templates');
     } catch (e: any) {
       Alert.alert('Error', e.message || 'Could not open download options.');
@@ -1487,6 +1631,14 @@ export default function JobDetailScreen() {
     let msg: any;
     try { msg = JSON.parse(e.nativeEvent.data); } catch { return; }
     if (!msg || msg.__cvf !== true) return;          // ignore the host page's own postMessages
+
+    // Job page text captured → remember it, and prefetch the job details (canonical UUID + AI
+    // responsibilities) so Generate-Cover-Letter has real data ready. No-op for real DB jobs.
+    if (msg.type === 'JOB_PAGE_TEXT') {
+      lastPageTextRef.current = String(msg.text || '');
+      if (lastPageTextRef.current.length > 120) prefetchCapture(lastPageTextRef.current);
+      return;
+    }
 
     // File-tap interception (works independently of an auto-fill run).
     if (msg.type === 'FILE_PICK') { setFilePick({ key: msg.key, accept: msg.accept || '', label: msg.label || '' }); return; }
@@ -1851,7 +2003,7 @@ export default function JobDetailScreen() {
       const finish = (success: boolean, errMsg?: string) => {
         if (success) {
           setSendState('done');
-          updateJobCLStatus(job.id, 'applied');
+          updateJobCLStatus(jid, 'applied');
           setTimeout(() => {
             setComposeVisible(false);
             setTimeout(() => setSendState('idle'), 400);
@@ -2543,13 +2695,32 @@ export default function JobDetailScreen() {
               sharedCookiesEnabled
               allowFileAccess
               allowsInlineMediaPlayback
+              // OAuth (Sign in with Google/LinkedIn/Apple) support — same fix as Browse & Fetch:
+              // a clean browser UA (so LinkedIn/Google don't reject the embedded webview and leave
+              // it spinning), popups allowed, and popup windows loaded IN THIS WebView (iOS drops
+              // them by default → the "stuck on loading" the user hit). The shared cookie store means
+              // a LinkedIn/Google login done here (or in the hidden extractor) is reused next time.
+              userAgent={BROWSER_UA}
+              javaScriptCanOpenWindowsAutomatically
               setSupportMultipleWindows={false}
+              onOpenWindow={(e: any) => {
+                const target = e?.nativeEvent?.targetUrl;
+                if (target && applyWebRef.current) {
+                  applyWebRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(target)}; true;`);
+                }
+              }}
               startInLoadingState
               pullToRefreshEnabled
               onMessage={onWebMessage}
               onLoadStart={() => setApplyLoading(true)}
               onLoadEnd={() => {
                 setApplyLoading(false);
+                // Grab the job page's visible text ONCE per session (the first load is the job
+                // details page the user opened) → capture responsibilities for the cover letter.
+                if (!capturePrefetchedRef.current && !isUuid(job.id) && applyWebRef.current) {
+                  capturePrefetchedRef.current = true;
+                  setTimeout(() => { try { applyWebRef.current?.injectJavaScript(GRAB_JOB_TEXT_JS); } catch {} }, 900);
+                }
                 // If translation is toggled ON, auto-translate each newly-loaded page (the
                 // widget doesn't survive navigation, so re-inject it on every load).
                 if (webTranslatedRef.current && applyWebRef.current) {

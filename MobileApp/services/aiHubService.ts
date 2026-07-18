@@ -726,6 +726,45 @@ export async function loadAllJobStatuses(): Promise<Record<string, string>> {
   } catch { return {}; }
 }
 
+// ── Universal job capture ──────────────────────────────────────────────────────
+// Persist a live/web job's REAL details (AI-extracted from the page text when thin) so the cover
+// letter is written from the actual posting, and — when track:true — the job appears in My Jobs.
+// Returns the canonical DB jobId (UUID) to use for all cover-letter + status calls from then on.
+export type CaptureJobInput = {
+  url: string;
+  title?: string;
+  company?: string;
+  companyDomain?: string;
+  location?: string;
+  jobType?: string;
+  workMode?: string | null;
+  experience?: string;
+  salary?: string;
+  responsibilities?: string[];
+  skills?: string[];
+  description?: string;
+  matchScore?: number | null;
+  pageText?: string;    // the job page's visible innerText (for AI extraction when card fields are thin)
+  track?: boolean;      // true → add to My Jobs (fired on Generate-CL / successful submit)
+};
+export type CapturedJob = {
+  id: string; title: string; company: string; location: string;
+  jobType: string; workMode: string; experience: string; salary: string;
+  responsibilities: string[]; skills: string[]; description: string; url: string;
+};
+export async function captureJob(
+  input: CaptureJobInput
+): Promise<{ jobId: string; job: CapturedJob; tracked: boolean } | null> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.post(`${API_BASE_URL}/ai-hub/jobs/capture`, input, { headers, timeout: 30000 });
+    if (data && data.jobId) return { jobId: String(data.jobId), job: data.job as CapturedJob, tracked: !!data.tracked };
+    return null;
+  } catch {
+    return null;   // graceful: pre-deploy 404 / offline → caller falls back to the synthetic id
+  }
+}
+
 /**
  * Generate a cover letter for a specific job using the existing cover letter pipeline.
  * Uses /api/generate-cover-letter-details (same as Letters page) — returns jobId for polling.
