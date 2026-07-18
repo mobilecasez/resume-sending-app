@@ -233,8 +233,34 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const applyHere = useCallback(() => {
     if (guardBusy()) return;
     setDockOpen(false);
-    onApplyHere?.(currentUrlRef.current, currentTitleRef.current);
+    // Be honest: the apply tools live on another screen, so this reopens the page in a fresh browser
+    // and iOS cannot carry a page's typed-in state across two web views. Warn before destroying work.
+    Alert.alert(
+      'Open the apply tools?',
+      'This reopens this page with Auto Fill, uploads and your saved details.\n\nAnything you have already typed on this page won’t carry over — you’d need to re-enter it.',
+      [
+        { text: 'Stay here', style: 'cancel' },
+        { text: 'Open apply tools', onPress: () => onApplyHere?.(currentUrlRef.current, currentTitleRef.current) },
+      ],
+    );
   }, [onApplyHere, guardBusy]);
+
+  // Sign in to LinkedIn INSIDE the app's own browser. iOS keeps Safari / SFSafariViewController /
+  // the LinkedIn app in separate cookie jars the app can't read, which is why "Log in with LinkedIn"
+  // on a job site kept asking for a password. Logging in here lands the session in the shared jar
+  // every in-app browser uses, so those buttons recognise you from then on.
+  const signInLinkedIn = useCallback(() => {
+    if (guardBusy()) return;
+    setDockOpen(false);
+    Alert.alert(
+      'Sign in to LinkedIn',
+      'We’ll open LinkedIn here so your session is saved inside CVApplyr. After that, “Log in with LinkedIn” on job sites will recognise you without asking for your password again.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Continue', onPress: () => { try { webRef.current?.injectJavaScript(`window.location.href='https://www.linkedin.com/login'; true;`); } catch {} } },
+      ],
+    );
+  }, [guardBusy]);
 
   const onMessage = useCallback(async (raw: string) => {
     let payload: any = null; try { payload = JSON.parse(raw); } catch { return; }
@@ -418,6 +444,11 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
                 <Text style={styles.dockItemSub}>AI auto-fill + resume</Text>
               </TouchableOpacity>
             </View>
+            <TouchableOpacity style={styles.dockLinkRow} onPress={signInLinkedIn} activeOpacity={0.8}>
+              <Ionicons name="logo-linkedin" size={16} color="#0A66C2" />
+              <Text style={styles.dockLinkTx}>Sign in to LinkedIn (so job sites recognise you)</Text>
+              <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.4)" />
+            </TouchableOpacity>
             <Text style={styles.dockHint}>Open a specific job first, then fetch it or apply with auto-fill.</Text>
           </Pressable>
         </Pressable>
@@ -473,4 +504,10 @@ const styles = StyleSheet.create({
   dockItemTitle: { fontSize: 13.5, fontWeight: '800', color: '#fff' },
   dockItemSub: { fontSize: 10.5, color: 'rgba(255,255,255,0.55)', marginTop: 2, textAlign: 'center' },
   dockHint: { fontSize: 10.5, color: 'rgba(255,255,255,0.45)', textAlign: 'center', marginTop: 12, marginBottom: 2 },
+  dockLinkRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 14,
+    paddingVertical: 11, paddingHorizontal: 12, borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)',
+  },
+  dockLinkTx: { flex: 1, fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.85)' },
 });

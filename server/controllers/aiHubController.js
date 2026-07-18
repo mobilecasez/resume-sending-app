@@ -20,7 +20,7 @@ const aiJobExtractor = require('../services/aiJobExtractor');
 const { applyOverride, investigate: investigateEmployer, learnDetailRecipe, validateExtraction } = require('../services/employerDiagnosticAgent');
 const { createFixRequest, recentDeadAttempt } = require('../services/employerFix');
 const expoPush = require('../services/expoPushService');
-const { getEventCost, chargeCredits } = require('../services/eventCosts');
+const { getEventCost, chargeCredits, refundCredits } = require('../services/eventCosts');
 const { emit } = require('../services/track');   // first-party analytics
 
 // ─── Batch tuning ─────────────────────────────────────────────────────────────
@@ -4508,6 +4508,8 @@ RULES:
     • demographic & diversity — race, ethnicity, disability, veteran status, age (and gender/pronouns UNLESS the profile has an explicit "gender" value, handled by the rule above)
     • criminal history, references, or anything requiring a signature/consent
 - For file inputs (type "file"): classify by label — resume/CV → resumeFileKeys, cover letter → coverLetterFileKeys. If generic ("Upload"/"Attachment"), put it in resumeFileKeys.
+- SKILLS: if a field asks for skills / expertise / technologies / competencies, fill it with a
+  comma-separated list of the candidate's OWN skills from the profile (most relevant first, max 10).
 - OMIT any other field you cannot confidently fill. Do not guess personal facts.`;
 
         // Clean-JSON output + a generous token cap so large forms don't truncate mid-object.
@@ -4524,8 +4526,10 @@ RULES:
             ]);
             parsed = parseJsonObject(result.response.text() || '');
         } catch (aiErr) {
-            // Graceful: let the user fill manually instead of a hard error.
+            // Graceful: let the user fill manually instead of a hard error — but give the credit back,
+            // since we charged up front and delivered nothing. (Free today; correct if ever priced.)
             console.warn('[aiHub] autofillMap AI failed:', aiErr.message);
+            await refundCredits(userId, 'ai_autofill', charge);
             return res.json({ success: true, values: {}, resumeFileKeys: [], coverLetterFileKeys: [], warning: 'ai_unavailable' });
         }
         const values = (parsed && parsed.values && typeof parsed.values === 'object') ? parsed.values : {};

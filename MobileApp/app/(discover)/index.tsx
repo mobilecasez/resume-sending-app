@@ -298,17 +298,22 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
     let host = ''; try { host = new URL(applyUrl).hostname.replace(/^www\./, ''); } catch {}
     const title = (card?.title || pageTitle || 'Job application').slice(0, 140);
     const company = card?.company || card?.employer_name || host || 'Company';
+    // These are DISPLAY fallbacks only. When they came from the page/host rather than a real card,
+    // flag them weak so job capture doesn't ship "instahyre.com" as the employer and block the AI's
+    // real extraction (the job board is not the company you're applying to).
+    const weakTitle = !card?.title;
+    const weakName  = !(card?.company || card?.employer_name);
     const job = {
       id: hashId(applyUrl), title, location: card?.location || 'Not specified',
       experience: card?.experience || '', salary: card?.salary || '', jobType: card?.job_type || '',
       workMode: card?.work_mode || null, urgent: false, skills: Array.isArray(card?.skills) ? card.skills : [],
       responsibilities: Array.isArray(card?.responsibilities) ? card.responsibilities : [], contacts: [],
-      applyUrl, matchScore: typeof card?.match === 'number' ? card.match : null,
+      applyUrl, matchScore: typeof card?.match === 'number' ? card.match : null, weakTitle,
     };
     const g = gradFor(company);
     const employer = {
       id: 'g_' + String(company).toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-      name: company, subInfo: card?.location || host || 'Live job', logoColor: g, logoInitial: initial(company), domain: host,
+      name: company, subInfo: card?.location || host || 'Live job', logoColor: g, logoInitial: initial(company), domain: host, weakName,
     };
     router.push({ pathname: '/(ai-hub)/job-detail', params: { jobStr: JSON.stringify(job), employerStr: JSON.stringify(employer), autoApply: '1', applyNowUrl: applyUrl } });
   }, [router]);

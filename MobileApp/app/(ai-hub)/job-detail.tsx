@@ -132,6 +132,11 @@ const BROWSER_UA = Platform.OS === 'android'
 const isUuid = (s?: string | null): boolean =>
   !!s && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
+// "Not specified" / "Location TBD" are TRUTHY strings, so they used to win over a real captured
+// location and then get stripped server-side as placeholders — leaving the letter with no location.
+const isRealLoc = (v?: string | null): boolean =>
+  !!v && !/^(not\s*(specified|available|provided)|location\s*tbd|tbd|n\.?\/?a\.?|none|null|unknown)$/i.test(String(v).trim());
+
 // One-shot grab of the job page's visible text (the "actual job details" page the user is viewing),
 // so the backend can extract responsibilities/description for the cover letter. Namespaced __cvf.
 const GRAB_JOB_TEXT_JS = `(function(){ try {
@@ -426,14 +431,79 @@ const btn = StyleSheet.create({
 const JS_HELPERS = `
   function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
   function vis(el){ try { var t=(el.type||'').toLowerCase(); if(t!=='file'&&el.offsetParent===null) return false; var st=window.getComputedStyle(el); if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0) return false; var r=el.getBoundingClientRect(); if(t!=='file'&&r.width===0&&r.height===0) return false; } catch(e){} return true; }
-  function lbl(el){ try{ if(el.labels&&el.labels.length&&el.labels[0].innerText) return el.labels[0].innerText; }catch(e){} if(el.getAttribute('aria-label')) return el.getAttribute('aria-label'); var ab=el.getAttribute('aria-labelledby'); if(ab){var le=document.getElementById(ab.split(' ')[0]); if(le&&le.innerText) return le.innerText;} if(el.id){try{var lf=document.querySelector('label[for="'+(window.CSS&&CSS.escape?CSS.escape(el.id):el.id)+'"]'); if(lf&&lf.innerText) return lf.innerText;}catch(e){}} var p=el.parentElement,h=0; while(p&&h<3){var b=p.querySelector?p.querySelector('label'):null; if(b&&b.innerText) return b.innerText; h++; p=p.parentElement;} return el.placeholder||el.name||''; }
+  // Question text for a control. Wizard/SPA pages (Instahyre, Typeform-likes) put the question in a
+  // plain <div>/<p>/<h4>, NOT a <label> — the old walk only looked for <label> and returned '' for
+  // those, which made sig() collide and made the AI mapper correctly refuse to guess. So after the
+  // label paths we also read the nearest preceding text block.
+  function txtOf(n){ try { return (n && n.innerText ? n.innerText : '').replace(/\\s+/g,' ').trim(); } catch(e){ return ''; } }
+  function nearText(el){
+    var p=el, h=0;
+    while(p && h<5){
+      var s=p.previousElementSibling, g=0;
+      while(s && g<4){
+        if(!s.querySelector || !s.querySelector('input,textarea,select')){
+          var t=txtOf(s);
+          if(t.length>=4 && t.length<=180) return t;
+        }
+        s=s.previousElementSibling; g++;
+      }
+      p=p.parentElement; h++;
+    }
+    return '';
+  }
+  function lbl(el){
+    try{ if(el.labels&&el.labels.length&&el.labels[0].innerText) return el.labels[0].innerText; }catch(e){}
+    if(el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+    var ab=el.getAttribute('aria-labelledby'); if(ab){var le=document.getElementById(ab.split(' ')[0]); if(le&&le.innerText) return le.innerText;}
+    if(el.id){try{var lf=document.querySelector('label[for="'+(window.CSS&&CSS.escape?CSS.escape(el.id):el.id)+'"]'); if(lf&&lf.innerText) return lf.innerText;}catch(e){}}
+    // NEAREST label by DOM distance (a Bootstrap .form-group can otherwise hand this control the
+    // first label in document order — i.e. a different question's label).
+    var p=el.parentElement,h=0;
+    while(p&&h<3){
+      var ls=p.querySelectorAll?p.querySelectorAll('label'):[];
+      for(var i=0;i<ls.length;i++){ if(ls[i].innerText && (!ls[i].htmlFor || ls[i].htmlFor===el.id)) return ls[i].innerText; }
+      h++; p=p.parentElement;
+    }
+    var nt=nearText(el); if(nt) return nt;
+    return el.placeholder||el.name||'';
+  }
   function nlbl(el){ return (lbl(el)||'').replace(/\\s+/g,' ').trim(); }
-  function sig(el){ var t=(el.type||'').toLowerCase(); if(el.name) return 'n:'+el.name+'|'+t; if(el.id) return 'i:'+el.id+'|'+t; return 'l:'+nlbl(el).toLowerCase().slice(0,70)+'|'+t; }
+  // Stable per-field key. An EMPTY label used to produce 'l:|text' for every unlabeled control of a
+  // type, so the scan silently dropped all but the first — add a positional discriminator instead.
+  function domIdx(el){ try{ var all=document.querySelectorAll('input,textarea,select'); for(var i=0;i<all.length;i++) if(all[i]===el) return i; }catch(e){} return 0; }
+  function sig(el){ var t=(el.type||'').toLowerCase(); if(el.name) return 'n:'+el.name+'|'+t; if(el.id) return 'i:'+el.id+'|'+t; var L=nlbl(el).toLowerCase().slice(0,70); return L ? ('l:'+L+'|'+t) : ('p:'+domIdx(el)+'|'+t); }
   function radioQuestion(el){ var name=el.name; var esc=(window.CSS&&CSS.escape)?CSS.escape(name||''):(name||''); var rs=name?document.querySelectorAll('input[type=radio][name="'+esc+'"]'):[el]; var opts=[]; for(var i=0;i<rs.length;i++){ var o=nlbl(rs[i])||rs[i].value||''; if(o) opts.push(o); } var p=el.parentElement,h=0; while(p&&h<8){ var txt=(p.innerText||'').replace(/\\s+/g,' ').trim(); var strip=txt; for(var k=0;k<opts.length;k++){ if(opts[k]) strip=strip.split(opts[k]).join(' '); } strip=strip.replace(/\\s+/g,' ').replace(/\\*/g,'').trim(); if(strip.length>=4&&strip.length<=180) return strip; h++; p=p.parentElement; } return nlbl(el); }
   function fire(el){ el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); }
   function setNative(el, value){ var proto=el.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:(el.tagName==='SELECT'?window.HTMLSelectElement.prototype:window.HTMLInputElement.prototype); var d=Object.getOwnPropertyDescriptor(proto,'value'); if(d&&d.set) d.set.call(el,value); else el.value=value; fire(el); }
   function setChecked(el, val){ var d=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'checked'); if(d&&d.set) d.set.call(el,val); else el.checked=val; el.dispatchEvent(new Event('click',{bubbles:true})); fire(el); }
-  function pickOpt(opts, v){ v=String(v).trim().toLowerCase(); var ex=[],sw=[],ct=[]; for(var i=0;i<opts.length;i++){var x=(opts[i].text||'').trim().toLowerCase(); if(x===v) ex.push(opts[i]); else if(x.indexOf(v)===0) sw.push(opts[i]); else if(x.indexOf(v)>=0) ct.push(opts[i]);} if(ex.length) return ex[0]; if(sw.length===1) return sw[0]; if(ct.length===1) return ct[0]; return null; }
+  // Ambiguity used to mean "fill nothing": "Management" against {Project/Product/Program Management}
+  // returned null. Prefer exact, then a single starts-with, then the SHORTEST containing option
+  // (only for reasonably specific values, so a 2-char value can't latch onto something random).
+  function pickOpt(opts, v){
+    v=String(v).trim().toLowerCase(); var ex=[],sw=[],ct=[];
+    for(var i=0;i<opts.length;i++){var x=(opts[i].text||'').trim().toLowerCase(); if(!x) continue; if(x===v) ex.push(opts[i]); else if(x.indexOf(v)===0) sw.push(opts[i]); else if(x.indexOf(v)>=0) ct.push(opts[i]);}
+    if(ex.length) return ex[0];
+    if(sw.length===1) return sw[0];
+    if(ct.length===1) return ct[0];
+    if(v.length>=4){
+      var pool = sw.length ? sw : ct;
+      if(pool.length){ var best=pool[0]; for(var j=1;j<pool.length;j++){ if((pool[j].text||'').length < (best.text||'').length) best=pool[j]; } return best; }
+    }
+    return null;
+  }
+  // Respect work the user already did by hand: if a control already holds a different non-empty
+  // answer, autofill leaves it alone (and reports it as handled) instead of overwriting it.
+  function keepUser(el, t, v){
+    try{
+      if(t==='radio'||t==='checkbox'||t==='file') return false;
+      var cur='';
+      if(el.tagName==='SELECT'){ var o=el.options&&el.options[el.selectedIndex]; cur=o?(o.text||o.value||''):''; }
+      else cur=el.value||'';
+      cur=String(cur).trim();
+      if(!cur) return false;
+      return cur.toLowerCase()!==String(v).trim().toLowerCase();
+    }catch(e){ return false; }
+  }
   function findScroller(){ var best=null,bestH=0; try{ var c=document.querySelectorAll('div,main,section,form,ul,ol'); for(var i=0;i<c.length&&i<5000;i++){ var e=c[i]; var diff=e.scrollHeight-e.clientHeight; if(diff>bestH+60){ var oy=''; try{oy=getComputedStyle(e).overflowY;}catch(_){} if(oy==='auto'||oy==='scroll'){ bestH=diff; best=e; } } } }catch(_){} return best; }
   function scrollThrough(onStep, onDone){
     var scroller=findScroller(); var docEl=document.scrollingElement||document.documentElement;
@@ -580,8 +650,9 @@ const FRAME_AGENT_JS = `(function(){
         for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
           if(['hidden','submit','button','reset','image','file'].indexOf(t)>=0) continue; if(!vis(el)) continue;
           var s=sig(el); if(!(s in bySig)||filled[s]) continue; var v=bySig[s]; if(v==null||v===''){filled[s]=true;continue;}
+          if(keepUser(el,t,v)){ filled[s]=true; continue; }   // user already answered this — leave it
           try{ if(t==='radio'){ var ol=(nlbl(el)||el.value||'').trim().toLowerCase(); var want=String(v).trim().toLowerCase(); if(ol===want||(want&&ol.indexOf(want)>=0)||(el.value||'').toLowerCase()===want){ setChecked(el,true); if(el.checked) filled[s]=true; } }
-            else if(el.tagName==='SELECT'){ var m=pickOpt(el.options,v); if(m){ el.value=m.value; fire(el); filled[s]=true; } }
+            else if(el.tagName==='SELECT'){ var m=pickOpt(el.options,v); if(m){ setNative(el, m.value); filled[s]=true; } }
             else if(t==='checkbox'){ var wc=(v===true)||/^(yes|true|on|1|checked)$/i.test(String(v)); setChecked(el,wc); if(el.checked===wc) filled[s]=true; }
             else { try{el.focus();}catch(e){} setNative(el,String(v)); try{el.dispatchEvent(new Event('blur',{bubbles:true}));el.blur();}catch(e){} if(String(el.value)===String(v)) filled[s]=true; }
           }catch(e){}
@@ -754,12 +825,13 @@ function fillJs(values: Record<string, any>): string {
           if (!(s in bySig)) continue;
           if (filled[s]) continue;
           var v = bySig[s]; if (v==null || v===''){ filled[s]=true; continue; }
+          if (keepUser(el,t,v)){ filled[s]=true; continue; }   // user already answered this — leave it
           try {
             if (t==='radio'){
               var ol=(nlbl(el)||el.value||'').trim().toLowerCase(); var want=String(v).trim().toLowerCase();
               if (ol===want || (want && ol.indexOf(want)>=0) || (el.value||'').toLowerCase()===want){ setChecked(el,true); if(el.checked) filled[s]=true; }
             } else if (el.tagName==='SELECT'){
-              var m=pickOpt(el.options,v); if(m){ el.value=m.value; fire(el); filled[s]=true; }
+              var m=pickOpt(el.options,v); if(m){ setNative(el, m.value); filled[s]=true; }
             } else if (t==='checkbox'){
               var wc=(v===true)||/^(yes|true|on|1|checked)$/i.test(String(v)); setChecked(el,wc); if(el.checked===wc) filled[s]=true;
             } else {
@@ -824,10 +896,170 @@ function attachJs(keys: string[], base64: string, filename: string, mime: string
 
 // Stages shown in the processing popup (in order). Files are attached via tap-to-attach,
 // not here (the auto-attach was unreliable on real ATS), so only the fill stages show.
+// 4) SKILLS — the one thing auto-fill could never do. Skill pickers are almost never form fields:
+// they're clickable "+ Agile" chips plus a search box with an autocomplete list — elements the
+// input/textarea/select engine literally cannot see, so skills were unfillable on ANY site. This
+// stage clicks chips that exactly match the user's résumé skills, then types the leftovers into the
+// search box and picks from its dropdown.
+//
+// SAFETY — this is the only code in the app that clicks arbitrary page elements:
+//  • a capturing 'submit' handler is installed for the whole run, so an accidental form submit is
+//    structurally impossible while it's active;
+//  • links with a real href, submit buttons, and a denylist of destructive words are rejected;
+//  • matching is EXACT after normalisation — never substring (that's how you'd click "Java" for a
+//    JavaScript dev);
+//  • the container can never be <body>, nav, header or footer;
+//  • the loop aborts on any URL change, container detachment, or beforeunload;
+//  • hard caps: 10 chip clicks, 8 typed skills, 8s wall clock;
+//  • Enter is NEVER pressed — implicit submission would also trip SUBMIT_DETECT_JS and falsely mark
+//    the job Applied.
+function skillsJs(skills: string[]): string {
+  return `(function(){
+    ${JS_HELPERS}
+    var SKILLS = ${JSON.stringify((skills || []).slice(0, 25))};
+    var t0 = Date.now(), added = 0, attempted = 0, aborted = false;
+    function blockSubmit(e){ try{ e.preventDefault(); e.stopPropagation(); }catch(_){} aborted = true; }
+    function done(){ try{ document.removeEventListener('submit', blockSubmit, true); }catch(e){} post({type:'SKILLS_ADDED', added:added, attempted:attempted, aborted:aborted}); }
+    if (!SKILLS.length) { post({type:'SKILLS_ADDED', added:0, attempted:0, aborted:false, none:true}); return; }
+    document.addEventListener('submit', blockSubmit, true);
+    window.addEventListener('beforeunload', function(){ aborted = true; }, true);
+
+    function norm(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9+#]+/g,''); }
+    var ALIAS = { js:'javascript', ts:'typescript', reactjs:'react', nodejs:'node', msproject:'microsoftproject' };
+    var want = {};
+    for (var i=0;i<SKILLS.length;i++){ var n=norm(SKILLS[i]); if(n){ want[n]=SKILLS[i]; if(ALIAS[n]) want[norm(ALIAS[n])]=SKILLS[i]; } }
+
+    var DENY = /^(submit|save|next|continue|proceed|back|previous|cancel|delete|remove|clear|reset|close|logout|log ?out|sign ?out|apply|send|upload|browse|pay|buy|subscribe|confirm|agree|accept|skip|edit|yes|no|ok|done|finish)$/i;
+    function chipText(el){ return String(el.innerText||el.textContent||'').replace(/\\s+/g,' ').replace(/^[+\\u002B\\u2022\\s]+/,'').replace(/[\\u00D7\\u2715]\\s*$/,'').trim(); }
+    function safeChip(el){
+      try{
+        if(!el || !vis(el)) return false;
+        if(el.querySelectorAll && el.querySelectorAll('*').length > 2) return false;
+        var txt = chipText(el);
+        if(!txt || txt.length>40 || txt.split(' ').length>5) return false;
+        if(DENY.test(txt)) return false;
+        if((el.type||'').toLowerCase()==='submit') return false;
+        if(el.getAttribute && el.getAttribute('form')) return false;
+        if(el.closest && el.closest('button[type=submit]')) return false;
+        var a = el.closest ? el.closest('a') : null;
+        if(a){ var h=a.getAttribute('href')||''; if(h && h!=='#' && h.indexOf('javascript:')!==0) return false; }
+        var al = (el.getAttribute && (el.getAttribute('aria-label')||el.getAttribute('title'))) || '';
+        if(/delete|remove|close|clear/i.test(al)) return false;
+        var cls = String(el.className||'');
+        if(/selected|active|chosen|is-on/i.test(cls)) return false;
+        if(el.getAttribute && el.getAttribute('aria-pressed')==='true') return false;
+        var role = (el.getAttribute && el.getAttribute('role')) || '';
+        var cursor=''; try{ cursor = getComputedStyle(el).cursor; }catch(_){}
+        return (el.tagName==='BUTTON' || role==='button' || role==='option' || cursor==='pointer' || /chip|tag|pill|token|skill|suggest|badge/i.test(cls));
+      }catch(e){ return false; }
+    }
+    function findInput(){
+      var els=document.querySelectorAll('input,textarea');
+      for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
+        if(['hidden','submit','button','reset','image','file','checkbox','radio'].indexOf(t)>=0) continue;
+        if(!vis(el)) continue;
+        var hay=((nlbl(el)||'')+' '+(el.placeholder||'')+' '+(el.name||'')+' '+(el.id||'')).toLowerCase();
+        if(/skill|expertise|competenc|technolog|proficien|tag/.test(hay)) return el;
+      }
+      return null;
+    }
+    function findContainer(anchor){
+      var p = anchor ? anchor.parentElement : null, h = 0;
+      while(p && h<6){
+        if(p===document.body) break;
+        if(!(p.closest && p.closest('nav,header,footer,[role=navigation]'))){
+          var kids = p.querySelectorAll ? p.querySelectorAll('button,[role=button],[role=option],span,li,div,a') : [];
+          var n=0; for(var i=0;i<kids.length && n<3;i++){ if(safeChip(kids[i])) n++; }
+          if(n>=3 && String(p.innerText||'').length < 1500) return p;
+        }
+        p=p.parentElement; h++;
+      }
+      var all=document.querySelectorAll('div,section,ul');
+      for(var j=0;j<all.length && j<3000;j++){
+        var e=all[j];
+        if(e===document.body) continue;
+        var tx=String(e.innerText||'');
+        if(tx.length>1500) continue;
+        if(!/suggested skills|selected skills|add (your )?skills|areas? of expertise/i.test(tx)) continue;
+        if(e.closest && e.closest('nav,header,footer,[role=navigation]')) continue;
+        return e;
+      }
+      return null;
+    }
+    function clickChips(container, cb){
+      if(!container){ cb(); return; }
+      var cands=container.querySelectorAll('button,[role=button],[role=option],span,li,div,a');
+      var picks=[], seen={};
+      for(var i=0;i<cands.length;i++){
+        var el=cands[i]; if(!safeChip(el)) continue;
+        var n=norm(chipText(el));
+        if(!n || !want[n] || seen[n]) continue;
+        seen[n]=true; picks.push({el:el,n:n});
+        if(picks.length>=10) break;
+      }
+      var idx=0;
+      function step(){
+        if(aborted || idx>=picks.length || Date.now()-t0>8000){ cb(); return; }
+        var it=picks[idx++], beforeUrl=location.href;
+        attempted++;
+        try{
+          it.el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
+          it.el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+          if(it.el.click) it.el.click(); else it.el.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+        }catch(e){}
+        setTimeout(function(){
+          if(location.href!==beforeUrl || !document.contains(container)){ aborted=true; cb(); return; }
+          var ok=false;
+          try{ ok = !document.contains(it.el) || /selected|active|chosen/i.test(String(it.el.className||'')) || it.el.getAttribute('aria-pressed')==='true'; }catch(e){}
+          if(ok){ added++; delete want[it.n]; }
+          step();
+        },200);
+      }
+      step();
+    }
+    function typeRest(input, cb){
+      if(!input){ cb(); return; }
+      var left=[]; for(var k in want){ if(Object.prototype.hasOwnProperty.call(want,k)) left.push(want[k]); }
+      left=left.slice(0,8);
+      var i=0;
+      function step(){
+        if(aborted || i>=left.length || Date.now()-t0>8000){ cb(); return; }
+        var sk=left[i++];
+        attempted++;
+        try{ input.focus(); }catch(e){}
+        setNative(input, sk);
+        setTimeout(function(){
+          var opt=null;
+          try{
+            var os=document.querySelectorAll('[role=listbox] [role=option],[role=option],ul.dropdown-menu li,.ui-select-choices-row,.autocomplete-item,[class*=suggestion] li,[class*=autocomplete] li');
+            for(var j=0;j<os.length;j++){ if(!vis(os[j])) continue; if(norm(chipText(os[j]))===norm(sk)){ opt=os[j]; break; } }
+          }catch(e){}
+          if(opt){
+            try{
+              opt.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
+              opt.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+              if(opt.click) opt.click(); else opt.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+              added++;
+            }catch(e){}
+            setTimeout(step,600);
+          } else {
+            setNative(input,'');   // clear the residue — never press Enter (implicit submit)
+            setTimeout(step,300);
+          }
+        },700);
+      }
+      step();
+    }
+    var input=findInput();
+    clickChips(findContainer(input), function(){ typeRest(input, done); });
+  })(); true;`;
+}
+
 const AUTOFILL_STEPS: { key: string; label: string }[] = [
   { key: 'reading', label: 'Scanning the whole form' },
   { key: 'mapping', label: 'Matching with your profile (AI)' },
   { key: 'filling', label: 'Filling in your details' },
+  { key: 'skills',  label: 'Adding your skills' },
 ];
 
 // Cover-letter HTML → readable plain text (for pasting into a textarea).
@@ -976,6 +1208,9 @@ export default function JobDetailScreen() {
   const attachTimerRef = useRef<any>(null);
   const filledAccumRef = useRef<{ count: number }>({ count: 0 });
   const filledTimerRef = useRef<any>(null);
+  const filledCountRef = useRef<number>(0);      // fields filled, carried into the skills stage's message
+  const skillsTimerRef = useRef<any>(null);      // don't hang the overlay if the page has no skills widget
+  const scanTimerRef   = useRef<any>(null);      // watchdog: the form scan must not spin forever
   const setStep = (key: string, status: string) => setAfStep(prev => ({ ...prev, [key]: status }));
 
   // File-tap interception: offer our resume / cover letter when the user taps an upload field.
@@ -1216,7 +1451,7 @@ export default function JobDetailScreen() {
   // responsibilities/skills that were only on the page the user viewed in the apply WebView.
   const capBase: any = capturedJob ? {
     ...hydratedJob,
-    location: hydratedJob.location || capturedJob.location,
+    location: isRealLoc(hydratedJob.location) ? hydratedJob.location : (capturedJob.location || hydratedJob.location),
     jobType: hydratedJob.jobType || capturedJob.jobType,
     workMode: hydratedJob.workMode || capturedJob.workMode,
     experience: hydratedJob.experience || capturedJob.experience,
@@ -1391,10 +1626,13 @@ export default function JobDetailScreen() {
   // Build the capture payload from the best-known fields (+ optional page text for AI extraction).
   const buildCapturePayload = (track: boolean, pageText?: string) => ({
     url: effectiveApplyUrl || (job as any).applyUrl || currentUrlRef.current || '',
-    title: display.title || job.title || '',
-    company: (employer as any)?.name || companyNameCL || '',
+    // Prefer what we actually extracted from the posting. Never ship a page-title / job-board host
+    // as the title/company — the server treats client values as authoritative, so that junk would
+    // block the AI's real extraction and the letter would be addressed to the job board.
+    title: capturedJob?.title || ((job as any).weakTitle ? '' : (display.title || job.title || '')),
+    company: capturedJob?.company || ((employer as any)?.weakName ? '' : ((employer as any)?.name || companyNameCL || '')),
     companyDomain: (employer as any)?.domain || '',
-    location: display.location || (job as any).location || '',
+    location: capturedJob?.location || (isRealLoc(display.location) ? display.location : ((job as any).location || '')),
     jobType: display.jobType || '',
     workMode: display.workMode || null,
     experience: display.experience || '',
@@ -1476,12 +1714,16 @@ export default function JobDetailScreen() {
       const websiteUrl = websiteUrlCL || employerWebsite;
       const capResp = (captured.job?.responsibilities || capturedJob?.responsibilities || []) as string[];
       const responsibilities = capResp.length > 0 ? capResp : (((display as any).responsibilities as string[] | undefined) || []);
+      // The REAL employer name (AI-extracted from the posting) — not the job-board host we may have
+      // stamped on the card. Without this the letter researches instahyre/naukri as the employer.
+      const realCompany = (captured.job?.company || capturedJob?.company || '').trim();
       const jobId = await startJobCoverLetter(
         websiteUrl,
         display.title,
         responsibilities.length > 0 ? responsibilities : undefined,
         display.location || undefined,
         cjid,   // canonical UUID → server augments from the FULL stored responsibilities
+        realCompany || undefined,
       );
       const result = await pollJobCoverLetter(jobId, () => {
         if (fake < 75) { fake = Math.min(fake + 3, 75); setClProgress(Math.round(fake)); animTo(clAnim, fake / 100); }
@@ -1558,6 +1800,19 @@ export default function JobDetailScreen() {
     setAutofillNote(note);
   };
 
+  // Final message from BOTH stages, so a run that filled no text fields but DID add skills still
+  // reads as a success (and vice-versa) instead of the old blanket "couldn't match any fields".
+  const finishFill = (fields: number, skills: number) => {
+    const parts: string[] = [];
+    if (fields > 0) parts.push(`Filled ${fields} field${fields === 1 ? '' : 's'}`);
+    if (skills > 0) parts.push(`${fields > 0 ? 'added' : 'Added'} ${skills} skill${skills === 1 ? '' : 's'}`);
+    if (!parts.length) {
+      finishAutofill('done', "We couldn't match anything on this page automatically — please fill it in manually.");
+      return;
+    }
+    finishAutofill('done', `${parts.join(' and ')}. Now tap each upload field to attach your resume & cover letter.`);
+  };
+
   const closeApplyWebView = () => {
     autofillRef.current.active = false;
     autofillRef.current.gen++;            // invalidate any in-flight run
@@ -1565,6 +1820,8 @@ export default function JobDetailScreen() {
     setPreview(null); setPreviewBusy(null);   // don't leave a stale preview / busy spinner
     setFilePick(null); setFilePickBusy(null);
     if (attachTimerRef.current) { clearTimeout(attachTimerRef.current); attachTimerRef.current = null; }   // no stray "couldn't attach" alert after close
+    if (scanTimerRef.current)   { clearTimeout(scanTimerRef.current);   scanTimerRef.current = null; }
+    if (skillsTimerRef.current) { clearTimeout(skillsTimerRef.current); skillsTimerRef.current = null; }
     const didApply = submitMarkedRef.current;
     setApplyWebUrl(null);
     // If they actually submitted on the portal, ask for a rating after the web view closes.
@@ -1587,7 +1844,21 @@ export default function JobDetailScreen() {
     setAfStep({ reading: 'active' });
     setAutofillState('running');
     fieldsAccumRef.current = [];
+    filledAccumRef.current = { count: 0 };
+    filledCountRef.current = 0;
     if (fieldsTimerRef.current) { clearTimeout(fieldsTimerRef.current); fieldsTimerRef.current = null; }
+    if (skillsTimerRef.current) { clearTimeout(skillsTimerRef.current); skillsTimerRef.current = null; }
+    // The skills stage needs the user's résumé skills — make sure the bundle has landed.
+    if (!smartData) { getSmartFillData().then(setSmartData).catch(() => {}); }
+    // WATCHDOG: the scan retries internally (SPA forms render late). If nothing ever comes back,
+    // fail honestly instead of leaving the overlay spinning forever.
+    if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
+    scanTimerRef.current = setTimeout(() => {
+      if (autofillRef.current.active && autofillRef.current.gen === gen && !fieldsAccumRef.current.length) {
+        setStep('reading', 'warn');
+        finishAutofill('error', "Couldn't read this form in time. Scroll to the application form and tap Auto Fill again.");
+      }
+    }, 25000);
     applyWebRef.current.injectJavaScript(READ_FIELDS_JS);                          // main frame (as before)
     applyWebRef.current.injectJavaScript(relayToChildrenJs({ __cvfCmd: 'scan' })); // + any iframe(s)
   };
@@ -1607,6 +1878,7 @@ export default function JobDetailScreen() {
     // above → active=false → the top guard stops them.)
     if (processedGenRef.current === gen) return;
     processedGenRef.current = gen;
+    if (scanTimerRef.current) { clearTimeout(scanTimerRef.current); scanTimerRef.current = null; }   // fields arrived
     setStep('reading', 'done'); setStep('mapping', 'active');
     try {
       const token = await getToken();
@@ -1617,7 +1889,16 @@ export default function JobDetailScreen() {
       const clText = clPlainText(coverLetterHtml);
       if (clText) { for (const f of fields) { if (isCoverLetterTextarea(f)) values[f.key] = clText; } }
       try { smartValuesRef.current = { ...smartValuesRef.current, ...values }; } catch {}
-      setStep('mapping', 'done'); setStep('filling', 'active');
+      // Be honest about WHICH stage came up empty: blaming the fill for a mapping that returned
+      // nothing (AI down, or a profile too thin to answer these questions) sent people hunting the
+      // wrong problem. The skills stage still runs — it doesn't depend on the mapping.
+      if (data && data.warning === 'ai_unavailable') {
+        setStep('mapping', 'warn');
+        setAutofillNote('Our AI is busy right now — skills will still be added. Try Auto Fill again in a minute for the rest.');
+      } else {
+        setStep('mapping', Object.keys(values).length ? 'done' : 'warn');
+      }
+      setStep('filling', 'active');
       filledAccumRef.current = { count: 0 };
       if (filledTimerRef.current) { clearTimeout(filledTimerRef.current); filledTimerRef.current = null; }
       applyWebRef.current?.injectJavaScript(fillJs(values));                          // main frame
@@ -1748,11 +2029,27 @@ export default function JobDetailScreen() {
       if (filledTimerRef.current) clearTimeout(filledTimerRef.current);
       filledTimerRef.current = setTimeout(() => {
         const c = filledAccumRef.current.count;
+        filledCountRef.current = c;
         setStep('filling', c > 0 ? 'done' : 'warn');
-        finishAutofill('done', c > 0
-          ? `Filled ${c} field${c === 1 ? '' : 's'}. Now tap each upload field to attach your resume & cover letter.`
-          : "We couldn't match any fields automatically — please fill this form manually.");
+        // Skills live in clickable chips, not form fields — run that stage now that the text fields
+        // have settled. Kept as a SEPARATE injection so a bug here can't break the working fill path.
+        const sk = (smartData?.skills || []).filter(Boolean);
+        if (sk.length && stillValid(gen)) {
+          setStep('skills', 'active');
+          try { applyWebRef.current?.injectJavaScript(skillsJs(sk)); } catch { finishFill(c, 0); }
+          // If the page never answers (no skills widget), don't hang the overlay.
+          if (skillsTimerRef.current) clearTimeout(skillsTimerRef.current);
+          skillsTimerRef.current = setTimeout(() => { if (stillValid(gen)) { setStep('skills', 'warn'); finishFill(c, 0); } }, 12000);
+        } else {
+          setStep('skills', 'warn');
+          finishFill(c, 0);
+        }
       }, 600);
+    } else if (msg.type === 'SKILLS_ADDED') {
+      if (skillsTimerRef.current) { clearTimeout(skillsTimerRef.current); skillsTimerRef.current = null; }
+      const n = msg.added || 0;
+      setStep('skills', n > 0 ? 'done' : 'warn');
+      finishFill(filledCountRef.current, n);
     } else if (msg.type === 'AUTOFILL_ERROR') {
       finishAutofill('error', msg.error || 'Auto-fill failed.');
     }

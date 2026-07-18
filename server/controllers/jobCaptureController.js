@@ -96,13 +96,16 @@ async function captureJob(req, res) {
     //      re-capture (empty) or a slimmed card (3 items) must not wipe a richer set stored earlier.
     //  (b) Keep the job under its CURRENT employer — upsertJob re-points employer_id on conflict,
     //      which would otherwise steal a job another user already tracks under a different employer.
-    const existing = await dbConfig.get(`SELECT employer_id, responsibilities FROM jobs WHERE job_url=$1`, [url]).catch(() => null);
+    const existing = await dbConfig.get(`SELECT employer_id, title, responsibilities FROM jobs WHERE job_url=$1`, [url]).catch(() => null);
     if (existing && existing.responsibilities) {
       try {
         const r = typeof existing.responsibilities === 'string' ? JSON.parse(existing.responsibilities) : existing.responsibilities;
         if (Array.isArray(r) && r.length > responsibilities.length) responsibilities = r;
       } catch {}
     }
+    // Same idea for the title: a later field-only capture sends no title (the client deliberately
+    // withholds a weak page-title), and upsertJob would overwrite a good stored one with a fallback.
+    if (!title && existing && existing.title) title = String(existing.title);
 
     // Employer: reuse the job's current employer if it already exists (no re-point); otherwise
     // prefer the real site domain, else a synthetic per-company key (unique in employers.domain).

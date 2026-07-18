@@ -100,4 +100,16 @@ async function chargeCredits(userId, eventKey, metadata = {}) {
   return { charged: true, cost, remaining: remaining - cost };
 }
 
-module.exports = { CATALOG, DEFAULT, DIRECTION, getEventCost, getPublicCosts, invalidate, chargeCredits };
+// Give back a charge when the work it paid for could not be delivered (e.g. the AI was unavailable).
+// No-op when nothing was charged, so callers can call it unconditionally on their failure path.
+async function refundCredits(userId, eventKey, charge) {
+  if (!charge || !charge.charged || !charge.cost || charge.cost <= 0) return;
+  try {
+    await dbConfig.run('UPDATE user_credits SET credits_remaining = credits_remaining + ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', [charge.cost, userId]);
+    await dbConfig.run(
+      'INSERT INTO credit_usage_history (user_id, credits_used, action_type, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
+      [userId, -charge.cost, eventKey + '_refund']);
+  } catch (e) { console.error('[credits] refund failed:', e.message); }
+}
+
+module.exports = { CATALOG, DEFAULT, DIRECTION, getEventCost, getPublicCosts, invalidate, chargeCredits, refundCredits };

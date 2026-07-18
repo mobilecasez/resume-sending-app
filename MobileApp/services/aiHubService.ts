@@ -774,10 +774,14 @@ export async function startJobCoverLetter(
   position: string,
   responsibilities?: string[],
   jobLocation?: string,
-  jobId?: string
+  jobId?: string,
+  companyName?: string
 ): Promise<string> {
   const headers = await getAuthHeader();
   const body: Record<string, any> = { websiteUrl, position, recipientEmail: '' };
+  // The employer's real name. When the only URL we have is a job board (instahyre/naukri/…), the
+  // server researches THIS instead of the board — otherwise the letter is addressed to the board.
+  if (companyName && companyName.trim()) body.companyName = companyName.trim();
   if (responsibilities && responsibilities.length > 0) body.responsibilities = responsibilities;
   if (jobLocation && jobLocation.trim()) body.jobLocation = jobLocation.trim();
   // The dashboard list ships a slimmed job (3 responsibilities) — sending the jobId lets the
