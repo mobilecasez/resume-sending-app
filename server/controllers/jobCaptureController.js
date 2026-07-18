@@ -91,25 +91,31 @@ async function captureJob(req, res) {
     responsibilities = responsibilities.slice(0, 20);
     skills = skills.slice(0, 30);
 
-    // Never SHRINK stored responsibilities. upsertJob overwrites the row, so a field-only re-capture
-    // (empty list) or a slimmed card (3 items) must not wipe a richer set persisted earlier — e.g.
-    // by the page-text prefetch of this same job, or the full list of an already-hydrated DB job.
-    {
-      const existing = await dbConfig.get(`SELECT responsibilities FROM jobs WHERE job_url=$1`, [url]).catch(() => null);
-      if (existing && existing.responsibilities) {
-        try {
-          const r = typeof existing.responsibilities === 'string' ? JSON.parse(existing.responsibilities) : existing.responsibilities;
-          if (Array.isArray(r) && r.length > responsibilities.length) responsibilities = r;
-        } catch {}
-      }
+    // Look up any existing row for this URL ONCE, for two reasons:
+    //  (a) Never SHRINK stored responsibilities — upsertJob overwrites the row, so a field-only
+    //      re-capture (empty) or a slimmed card (3 items) must not wipe a richer set stored earlier.
+    //  (b) Keep the job under its CURRENT employer — upsertJob re-points employer_id on conflict,
+    //      which would otherwise steal a job another user already tracks under a different employer.
+    const existing = await dbConfig.get(`SELECT employer_id, responsibilities FROM jobs WHERE job_url=$1`, [url]).catch(() => null);
+    if (existing && existing.responsibilities) {
+      try {
+        const r = typeof existing.responsibilities === 'string' ? JSON.parse(existing.responsibilities) : existing.responsibilities;
+        if (Array.isArray(r) && r.length > responsibilities.length) responsibilities = r;
+      } catch {}
     }
 
-    // Employer: prefer the real site domain; else a synthetic per-company key (unique in employers.domain).
-    const realDomain = str(b.companyDomain) || domainOf(url);
-    const domain = realDomain || ('web-' + (slug(company) || 'job'));
-    const employerId = await jobService.upsertEmployer(
-      domain, company, location || domain, ['#4F8DFF', '#2563EB'], (company[0] || 'C').toUpperCase()
-    );
+    // Employer: reuse the job's current employer if it already exists (no re-point); otherwise
+    // prefer the real site domain, else a synthetic per-company key (unique in employers.domain).
+    let employerId;
+    if (existing && existing.employer_id) {
+      employerId = existing.employer_id;
+    } else {
+      const realDomain = str(b.companyDomain) || domainOf(url);
+      const domain = realDomain || ('web-' + (slug(company) || 'job'));
+      employerId = await jobService.upsertEmployer(
+        domain, company, location || domain, ['#4F8DFF', '#2563EB'], (company[0] || 'C').toUpperCase()
+      );
+    }
     const locationId = location ? await jobService.upsertLocation(location).catch(() => null) : null;
     const jobId = await jobService.upsertJob(
       employerId, locationId, title, url,
