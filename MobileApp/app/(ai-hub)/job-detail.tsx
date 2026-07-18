@@ -446,7 +446,16 @@ const READ_FIELDS_JS = `(function(){
         out.push(f);
       }
     }
-    scrollThrough(snap, function(){ post({type:'FIELDS', fields: out}); });
+    // SPA forms (SmartRecruiters one-click, Workday, etc.) render their inputs AFTER first paint, so a
+    // single scan finds nothing → "No fillable fields found". Retry for ~5s until fields appear.
+    var tries=0;
+    (function run(){
+      out=[]; seen={}; rgroups={};
+      scrollThrough(snap, function(){
+        if(out.length>0 || ++tries>=11){ post({type:'FIELDS', fields: out}); }
+        else { setTimeout(run, 450); }
+      });
+    })();
   } catch(e){ post({type:'AUTOFILL_ERROR', error: String((e && e.message) || e)}); }
 })(); true;`;
 
@@ -530,7 +539,15 @@ const FRAME_AGENT_JS = `(function(){
           out.push(f);
         }
       }
-      scrollThrough(snap, function(){ post({type:'FIELDS', fields: out, frame:1}); });
+      // Retry for ~5s so a cross-origin ATS iframe that renders its form late still gets scanned.
+      var tries=0;
+      (function run(){
+        out=[]; seen={}; rgroups={};
+        scrollThrough(snap, function(){
+          if(out.length>0 || ++tries>=11){ post({type:'FIELDS', fields: out, frame:1}); }
+          else { setTimeout(run, 450); }
+        });
+      })();
     } catch(e){ post({type:'AUTOFILL_ERROR', error:String((e&&e.message)||e)}); }
   }
   function doFill(bySig){
@@ -1004,7 +1021,7 @@ export default function JobDetailScreen() {
     const u = String(applyNowUrl || '').trim();
     if (!u) return;
     autoApplyFiredRef.current = true;
-    const t = setTimeout(() => { try { openApplyWebView(u); } catch {} }, 450);   // after mount settles
+    const t = setTimeout(() => { try { openApplyWebView(u); } catch {} }, 150);   // open the apply view promptly (minimal job-detail flash)
     return () => clearTimeout(t);
   }, [autoApply, applyNowUrl]);
 

@@ -401,6 +401,18 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
   expandRunnerRef.current = expandListing;   // stable ref → mergeCards/pump can start expansions
   useEffect(() => { searchActiveRef.current = searchActive; }, [searchActive]);
 
+  // Go STRAIGHT to the full apply experience (job-detail's apply WebView + robot dock + AI auto-fill)
+  // for a card, WITHOUT the Browse&Fetch middle step — so a company job (SmartRecruiters/Workday/…)
+  // opens ONCE, no second web view, no reload. LinkedIn stays on Browse&Fetch (company-capture flow).
+  const applyExternally = useCallback((applyUrl: string, title: string) => {
+    if (!onApplyHere) { setBrowseUrl(applyUrl); return; }   // fallback: browse it in-app
+    const k = normUrl(applyUrl);
+    const card = cardsRef.current.find((c) => normUrl(c.job_url) === k) || null;
+    setBrowseUrl(null);
+    onClose();
+    setTimeout(() => onApplyHere(applyUrl, title, card), 350);   // after this modal dismisses
+  }, [onApplyHere, onClose]);
+
   // ── A job fetched from the Browse & Fetch browser → reflect it on the matching card (or add one) ──
   const onBrowseFetched = useCallback((job: LiveJobCard | null, sourceUrl: string) => {
     if (!job) return;
@@ -688,13 +700,20 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
           <Text style={styles.srcTx}>{item.source || 'web'}</Text>
           {item.saved ? <Text style={[styles.tapHint, { color: '#059669' }]}>already in Saved Jobs</Text> : (st === 'idle' && <Text style={styles.tapHint}>tap to select</Text>)}
           <View style={{ flex: 1 }} />
-          {/* Open the page in the in-app browser: verify it's the right job, and for a LinkedIn posting
-              that applies on the company's own site, tap Apply → land on the company page → Fetch THAT
-              (full details), which the LinkedIn guest data can't give. */}
-          <TouchableOpacity onPress={() => setBrowseUrl(item.job_url)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.previewBtn}>
-            <Ionicons name="open-outline" size={12} color="#2563EB" />
-            <Text style={styles.previewTx}>Open</Text>
-          </TouchableOpacity>
+          {/* LinkedIn → Browse & Fetch (its external apply URL is hidden; the user taps Apply on the
+              LinkedIn page → lands on the company site → Fetch/apply there). Every other posting opens
+              STRAIGHT in the full apply view (form + robot dock + AI auto-fill) — one web view, no reload. */}
+          {/linkedin\.com/i.test(item.job_url) ? (
+            <TouchableOpacity onPress={() => setBrowseUrl(item.job_url)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.previewBtn}>
+              <Ionicons name="open-outline" size={12} color="#2563EB" />
+              <Text style={styles.previewTx}>Open</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity onPress={() => applyExternally(item.job_url, item.title)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.previewBtn}>
+              <Ionicons name="flash" size={12} color="#2563EB" />
+              <Text style={styles.previewTx}>Apply</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </TouchableOpacity>
     );
@@ -818,15 +837,7 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
           fetchCost={fetchCost}
           onClose={() => setBrowseUrl(null)}
           onFetched={onBrowseFetched}
-          onApplyHere={onApplyHere ? (applyUrl, pageTitle) => {
-            // Hand off to the FULL apply experience: find the matching result card for context
-            // (title/company), close the browser + this modal, then let the parent navigate.
-            const k = normUrl(applyUrl);
-            const card = cardsRef.current.find((c) => normUrl(c.job_url) === k) || null;
-            setBrowseUrl(null);
-            onClose();
-            setTimeout(() => onApplyHere(applyUrl, pageTitle, card), 350);   // after the modal dismisses
-          } : undefined}
+          onApplyHere={onApplyHere ? (applyUrl, pageTitle) => applyExternally(applyUrl, pageTitle || '') : undefined}
         />
       )}
     </Modal>
