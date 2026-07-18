@@ -1138,10 +1138,12 @@ export async function liveSearchJobs(query: string): Promise<{ parsed: AiSearchP
 }
 
 /** Fetch ONE job's full details from the on-device-scraped page HTML → stores it → returns a rich card. */
-export async function fetchJobDetail(url: string, html: string, company?: string): Promise<LiveJobCard | null> {
+export async function fetchJobDetail(url: string, html: string, company?: string, pageText?: string): Promise<LiveJobCard | null> {
   const headers = await getAuthHeader();
   try {
-    const { data } = await axios.post(`${API_BASE_URL}/discover/fetch-detail`, { url, html, company: company || '' }, { headers, timeout: 45000 });
+    // pageText = the page's VISIBLE text. SPA / iframe-hosted boards render the job where outerHTML
+    // can't see it, so the server falls back to extracting from this when the HTML yields nothing.
+    const { data } = await axios.post(`${API_BASE_URL}/discover/fetch-detail`, { url, html, company: company || '', pageText: pageText || '' }, { headers, timeout: 45000 });
     return data?.success && data.job ? (data.job as LiveJobCard) : null;
   } catch (e: any) {
     if (axios.isAxiosError(e) && e.response?.status === 402) {

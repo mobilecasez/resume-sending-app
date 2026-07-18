@@ -18,7 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fetchJobDetail, type LiveJobCard } from '../services/aiHubService';
+import { fetchJobDetail, saveCard, type LiveJobCard } from '../services/aiHubService';
 import { isListingUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
 
@@ -33,9 +33,57 @@ const BROWSER_UA = Platform.OS === 'android'
   ? 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36'
   : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1';
 
-// Immediate page grab (the user has visually confirmed the job is on screen — no challenge-waiting).
+// Page grab (the user has visually confirmed the job is on screen — no challenge-waiting).
 // The per-fetch id lets onMessage ignore stale grabs from an earlier, abandoned fetch.
-const grabNowJs = (id: number) => `(function(){ try { window.ReactNativeWebView.postMessage(JSON.stringify({ __cvbf: true, id: ${id}, url: location.href, title: String(document.title || ''), html: (document.documentElement.outerHTML || '').slice(0, 220000) })); } catch (e) {} })(); true;`;
+//
+// Sends BOTH the cleaned HTML and the page's VISIBLE TEXT, because raw outerHTML alone kept missing
+// jobs the user could plainly see:
+//  • script/style are stripped BEFORE the 220KB clip, so the budget goes to content instead of being
+//    eaten by <head> + inline hydration JSON (the server strips them only AFTER truncation).
+//  • same-origin iframes (Greenhouse/SmartRecruiters embeds) hold the real job body — appended as a
+//    SIBLING, since the server's cleaner removes <iframe> elements and would drop nested content.
+//  • innerText survives SPA/shadow-DOM rendering that never shows up in outerHTML at all.
+//  • if the body still looks empty (SPA mid-render), wait one short beat and grab again.
+const grabNowJs = (id: number) => `(function(){
+  function collect(){
+    var html = '';
+    try {
+      var clone = document.documentElement.cloneNode(true);
+      var junk = clone.querySelectorAll('script,style,noscript,svg,link,meta');
+      for (var i = 0; i < junk.length; i++) { try { junk[i].parentNode.removeChild(junk[i]); } catch (e) {} }
+      html = clone.outerHTML || '';
+    } catch (e) { try { html = document.documentElement.outerHTML || ''; } catch (e2) { html = ''; } }
+    var text = '';
+    try { text = (document.body && document.body.innerText) || ''; } catch (e) {}
+    try {
+      var fr = document.querySelectorAll('iframe');
+      for (var k = 0; k < fr.length && k < 4; k++) {
+        try {
+          var d2 = fr[k].contentDocument;
+          if (d2 && d2.body) {
+            html += '\\n<div data-cvbf-frame="1">' + (d2.body.innerHTML || '') + '</div>';
+            if (d2.body.innerText) text += '\\n' + d2.body.innerText;
+          }
+        } catch (e) {}   // cross-origin frame — unreachable, that's fine
+      }
+    } catch (e) {}
+    return { html: String(html).slice(0, 220000), text: String(text).slice(0, 40000) };
+  }
+  function send(){
+    try {
+      var c = collect();
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        __cvbf: true, id: ${id}, url: location.href, title: String(document.title || ''),
+        html: c.html, text: c.text
+      }));
+    } catch (e) {}
+  }
+  try {
+    var t0 = (document.body && document.body.innerText) || '';
+    if (t0.length < 400) { setTimeout(send, 900); return; }   // SPA still painting — one short beat
+  } catch (e) {}
+  send();
+})(); true;`;
 
 // KEEP the query string (an Indeed job is /viewjob?jk=<id> — the query IS the job identity); drop only
 // tracking params + hash + trailing slashes.
@@ -90,6 +138,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const [canGoBack, setCanGoBack] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
+  const [stage, setStage] = useState<null | 'reading' | 'understanding' | 'saving'>(null);   // what the loader says
   const [justSaved, setJustSaved] = useState(false);
   const [dockOpen, setDockOpen] = useState(false);
   const [companyHint, setCompanyHint] = useState(false);   // reached the company site after a LinkedIn apply
@@ -147,14 +196,14 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
 
   const doGrab = useCallback(() => {
     const id = ++fetchIdRef.current;
-    fetchingRef.current = true; setFetching(true);
+    fetchingRef.current = true; setFetching(true); setStage('reading');
     webRef.current?.injectJavaScript(grabNowJs(id));
     // Safety net ONLY for "the page never posted back" — cleared the moment the grab arrives
     // (the backend extraction can legitimately take >20s and must not be interrupted).
     if (grabTimerRef.current) clearTimeout(grabTimerRef.current);
     grabTimerRef.current = setTimeout(() => {
       if (fetchingRef.current && fetchIdRef.current === id) {
-        fetchingRef.current = false; setFetching(false);
+        fetchingRef.current = false; setFetching(false); setStage(null);
         Alert.alert('Page didn’t respond', 'The page didn’t hand over its content. Reload it and try again.');
       }
     }, 20000);
@@ -198,7 +247,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     // not cost a credit). Tell the user exactly what to do about it.
     const problem = diagnosePage(String(payload.html || ''));
     if (problem === 'login') {
-      fetchingRef.current = false; setFetching(false);
+      fetchingRef.current = false; setFetching(false); setStage(null);
       Alert.alert(
         `${plat} asks you to log in`,
         `This job is protected — ${plat} wants a login before showing it.\n\n• Log in on this page (CVApplyr remembers your session, even after you close the app), then tap “Fetch job” again.\n• Or tap “Apply here” to open the application with AI auto-fill.`,
@@ -206,33 +255,65 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
       return;
     }
     if (problem === 'challenge') {
-      fetchingRef.current = false; setFetching(false);
+      fetchingRef.current = false; setFetching(false); setStage(null);
       Alert.alert(
         `${plat} is checking you’re human`,
         'Complete the check shown on the page, wait for the job to appear, then tap “Fetch job” again.',
       );
       return;
     }
+    // Advance the label so a slow extraction doesn't look frozen on "Fetching…".
+    setStage('reading');
+    const stageT1 = setTimeout(() => setStage('understanding'), 2500);
+    const stageT2 = setTimeout(() => setStage('saving'), 12000);
+    const clearStages = () => { clearTimeout(stageT1); clearTimeout(stageT2); };
+    // Last-resort save so the user is NEVER left with nothing: keep the posting with what the page
+    // already told us (title + url), exactly as live search degrades.
+    const degrade = async () => {
+      try {
+        await saveCard({ id: srcUrl, job_url: srcUrl, title: String(payload.title || '').slice(0, 200) || 'Job', company: null, employer_name: null, location: null, work_mode: null, job_type: null, salary: null, experience: null, responsibilities: [], skills: [], source: plat, highlights: [], saved: false, summary: null } as any);
+        savedUrlsRef.current.add(normUrl(srcUrl));
+        return true;
+      } catch { return false; }
+    };
     try {
-      const job = await fetchJobDetail(srcUrl, String(payload.html || ''), '');
-      fetchingRef.current = false; setFetching(false);
+      const job = await fetchJobDetail(srcUrl, String(payload.html || ''), '', String(payload.text || ''));
+      clearStages();
+      if (payload.id !== fetchIdRef.current) return;   // a newer fetch superseded this one
+      fetchingRef.current = false; setFetching(false); setStage(null);
       if (job) {
         savedUrlsRef.current.add(normUrl(srcUrl));
         setJustSaved(true); setTimeout(() => setJustSaved(false), 2600);
         onFetched(job, srcUrl);
       } else {
-        Alert.alert('No job found on this page', `We couldn’t read a job posting here. Open the job’s own page on ${plat} and try again — or use “Apply here” to apply directly.`);
+        const kept = await degrade();
+        Alert.alert(
+          'Couldn’t read the full job',
+          `We couldn’t pull the details from this page.${kept ? '\n\nIt’s saved to your Saved Jobs with the title, so you don’t lose it.' : ''}\n\nOpen the job’s own page on ${plat} and try again — or use “Apply here” to apply directly.`,
+        );
         onFetched(null, srcUrl);
       }
     } catch (e: any) {
-      fetchingRef.current = false; setFetching(false);
+      clearStages();
+      if (payload.id !== fetchIdRef.current) return;
+      fetchingRef.current = false; setFetching(false); setStage(null);
       if (e && e.insufficient) {
         Alert.alert('Not enough credits', `Fetching a job costs ${fetchCost || 1} credit${(fetchCost || 1) === 1 ? '' : 's'}. You have ${e.creditsRemaining ?? 0}. Top up in Account → Credits.`);
-      } else {
-        Alert.alert('Could not fetch', 'Something went wrong reading this page. Please try again.');
+        return;
       }
+      // A timeout is NOT a failure — the server finishes and caches the job, so a retry is instant
+      // (and free). Say so honestly instead of the old blanket "Could not fetch", and keep the job.
+      const timedOut = e && (e.code === 'ECONNABORTED' || /timeout/i.test(String(e.message || '')));
+      const kept = await degrade();
+      Alert.alert(
+        timedOut ? 'Taking longer than expected' : 'Could not fetch',
+        timedOut
+          ? `This job is still being read in the background.${kept ? ' We’ve saved it with the title so you don’t lose it.' : ''}\n\nTap Retry in a moment — it’ll be ready instantly, and you won’t be charged twice.`
+          : `Something went wrong reading this page.${kept ? ' We’ve saved it with the title so you don’t lose it.' : ''}`,
+        [{ text: 'OK', style: 'cancel' }, { text: 'Retry', onPress: () => { setTimeout(doGrab, 300); } }],
+      );
     }
-  }, [fetchCost, onFetched]);
+  }, [fetchCost, onFetched, doGrab]);
 
   let host = ''; try { host = new URL(currentUrl).hostname.replace(/^www\./, ''); } catch {}
 
@@ -352,7 +433,9 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           </LinearGradient>
           <View style={styles.fabLabel}>
             <Text style={styles.fabLabelTx}>
-              {fetching ? 'Fetching…' : justSaved ? 'Saved ✓' : 'Job tools'}
+              {fetching
+                ? (stage === 'saving' ? 'Saving…' : stage === 'understanding' ? 'Understanding the job…' : 'Reading page…')
+                : justSaved ? 'Saved ✓' : 'Job tools'}
             </Text>
           </View>
         </View>

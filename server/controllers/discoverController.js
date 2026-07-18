@@ -18,6 +18,7 @@ const ats = require('../utils/atsDiscovery');
 const firehose = require('../services/globalJobFirehose');
 const aiHub = require('./aiHubController');   // grounded live-search fallback (groundedDiscover)
 const aiJobExtractor = require('../services/aiJobExtractor');   // fetch-detail: on-device HTML → structured job
+const jobCapture = require('./jobCaptureController');   // fetch-detail fallback: visible page TEXT → structured job (SPA/iframe-proof)
 const { chargeCredits, getEventCost } = require('../services/eventCosts');   // credit metering for AI search + live fetch
 const synonyms = require('../utils/searchSynonyms');   // .net⇄dotnet, node⇄node.js, sde⇄software engineer …
 
@@ -748,53 +749,101 @@ async function fetchDetail(req, res) {
   try {
     const url = String((req.body && req.body.url) || '').trim();
     const html = (req.body && req.body.html) || '';
+    const pageText = String((req.body && req.body.pageText) || '');   // the page's VISIBLE text (SPA/iframe-proof)
     const employerHint = String((req.body && req.body.company) || '').trim();
     if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Missing/invalid url' });
-    // Live fetch costs credits — block up front if the user can't afford it; charge once on SUCCESS
-    // (a failed extraction is not charged, so the mobile's auto-retry can't double-bill).
+    const haveHtml = !!(html && html.length > 200);
+    const haveText = pageText.length > 120;
+    // Live fetch costs credits — block up front if the user can't afford it; charge once on SUCCESS.
     const fetchUserId = req.user && req.user.id;
     const fetchCost = await getEventCost('live_fetch');
     if (fetchUserId && fetchCost > 0) {
       const bal = await dbConfig.get('SELECT credits_remaining FROM user_credits WHERE user_id = $1', [fetchUserId]);
       if (!bal || (bal.credits_remaining || 0) < fetchCost) return res.status(402).json({ error: `Insufficient credits — fetching a job needs ${fetchCost}.`, creditsRequired: fetchCost, creditsRemaining: bal ? bal.credits_remaining : 0 });
     }
+    // NEVER bill a user who isn't there to receive the result. The app gives up at 45s; if it hung up
+    // we still finish + save + cache the job (so their retry is instant and free) but skip the charge.
+    // Node does not abort the handler on socket close, so without this the timeout silently billed.
+    let clientGone = false;
+    res.on('close', () => { if (!res.writableEnded) clientGone = true; });
+    const chargeOnce = async () => {
+      if (!fetchUserId || fetchCost <= 0 || clientGone) return;
+      try { await chargeCredits(fetchUserId, 'live_fetch'); }
+      catch (e) { console.error('[discover] fetch-detail charge:', e.message); }   // never 500 a good extraction
+    };
     // CACHE: a job's details rarely change — reuse a prior good extraction (any user) and skip the LLM
     // entirely. Saves the ~$0.0015 extraction on every repeat fetch of the same posting.
     const cacheKey = 'fetchdetail:v2:' + normUrl(url);
     try {
       const hit = await aiHub.groundingCacheGet(cacheKey);
       if (hit && hit.title && Array.isArray(hit.responsibilities) && hit.responsibilities.length >= 3) {
-        if (fetchUserId && fetchCost > 0) await chargeCredits(fetchUserId, 'live_fetch');
+        // Don't bill twice for the SAME posting: if it's already in this user's Saved Jobs (e.g. an
+        // earlier attempt timed out on the phone but succeeded here), serve it back free.
+        let already = false;
+        try {
+          await ensureSavedJobsTable();
+          already = !!(await dbConfig.get('SELECT 1 AS x FROM user_saved_jobs WHERE user_id = $1 AND job_url = $2', [fetchUserId, hit.job_url || url]));
+        } catch (_) {}
+        if (!already) await chargeOnce();
         saveUserJob(fetchUserId, hit).catch(() => {});
         return res.json({ success: true, job: hit, cached: true });
       }
     } catch (_) {}
+    // HARD DEADLINE. Every stage below is individually unbounded (the Gemini SDK gets no timeout), so
+    // without this a slow extraction runs for minutes while the app times out at 45s and shows the
+    // opaque "Could not fetch". Answering within 35s turns that into an honest, un-billed result.
+    const within = (p, ms, fb) => Promise.race([Promise.resolve(p).catch(() => fb), new Promise((r) => setTimeout(() => r(fb), ms))]);
+    const deadline = Date.now() + 35000;
+    const left = () => Math.max(1000, deadline - Date.now());
     let job = null;
-    if (html && html.length > 200) {
+    if (haveHtml) {
       // Rich single-detail extraction: authoritative JSON-LD fields + the full JSON-LD description
       // (was being discarded) fed to a comprehensive translate-to-English prompt → full resp/skills.
-      try { job = await aiJobExtractor.richDetailFromHtml(html, url, employerHint); }
-      catch (e) { console.error('[discover] fetch-detail rich:', e.message); }
-      if (!job) {   // fallback to the listing extractor
-        try {
+      job = await within(aiJobExtractor.richDetailFromHtml(html, url, employerHint), left(), null);
+      if (!job) {   // fallback to the listing extractor — CLIP so it can't take the 4-chunk serial branch
+        job = await within((async () => {
           const cleaned = aiJobExtractor.cleanHtmlForLLM(html);
-          const data = await aiJobExtractor.llmExtract(cleaned, url, employerHint);
+          const data = await aiJobExtractor.llmExtract(String(cleaned).slice(0, 30000), url, employerHint);
           let origin = ''; try { origin = new URL(url).origin; } catch {}
           const jobs = aiJobExtractor.toInternalJobs(data, url, origin, html) || [];
-          job = jobs.find((j) => j && j.title) || null;
-        } catch (e) { console.error('[discover] fetch-detail extract:', e.message); }
+          return jobs.find((j) => j && j.title) || null;
+        })(), left(), null);
       }
     }
-    if (!job) {   // fallback for non-bot sites (no on-device HTML)
-      try { const r = await ats.detectAndFetchAts(url); if (r && Array.isArray(r.jobs) && r.jobs.length) job = r.jobs[0]; } catch (_) {}
-      if (!job) { try { const r = await aiJobExtractor.findAndExtract(url, employerHint); if (r && Array.isArray(r.jobs) && r.jobs.length) job = r.jobs[0]; } catch (_) {} }
+    // TEXT fallback — the fix for "the page was clearly visible but we found nothing". SPA and
+    // iframe-hosted boards (Greenhouse/SmartRecruiters/Workday) render the job where outerHTML can't
+    // see it, but it IS in the page's visible text, which the app now also sends.
+    if (!job && haveText) {
+      job = await within((async () => {
+        const out = await jobCapture.extractFromText(pageText, employerHint ? ('company=' + employerHint) : '');
+        if (!out || !String(out.title || '').trim()) return null;
+        return {
+          title: String(out.title).trim(), employer_name: String(out.company || employerHint || '').trim() || null,
+          location: String(out.location || '').trim() || null, work_mode: String(out.work_mode || '').trim() || null,
+          job_type: String(out.employment_type || '').trim() || null, salary: String(out.salary || '').trim() || null,
+          experience: String(out.seniority || '').trim() || null, summary: String(out.description || '').trim() || null,
+          responsibilities: Array.isArray(out.responsibilities) ? out.responsibilities : [],
+          skills: Array.isArray(out.skills) ? out.skills : [], job_url: url,
+        };
+      })(), left(), null);
+    }
+    // Server-side crawl ONLY when the app sent us nothing to work with (the comment here always said
+    // "no on-device HTML" but the condition never checked it). When the app DID supply the page, this
+    // 95-120s careers-site walk is both pointless — the server's IP is exactly what these sites block —
+    // and the reason the request blew past the app's timeout.
+    if (!job && !haveHtml && !haveText) {
+      job = await within((async () => {
+        try { const r = await ats.detectAndFetchAts(url); if (r && Array.isArray(r.jobs) && r.jobs.length) return r.jobs[0]; } catch (_) {}
+        try { const r = await aiJobExtractor.findAndExtract(url, employerHint); if (r && Array.isArray(r.jobs) && r.jobs.length) return r.jobs[0]; } catch (_) {}
+        return null;
+      })(), left(), null);
     }
     if (!job || !job.title) return res.json({ success: false, error: 'Could not extract job details from this page' });
     if (!job.job_url) job.job_url = url;
     const region = detectCountry(job.location) || 'Global';
     firehose.saveJobs([job], 'fetched', region).catch(() => {});
     const card = jobCard(job);
-    if (fetchUserId && fetchCost > 0) await chargeCredits(fetchUserId, 'live_fetch');   // charge 1 on success
+    await chargeOnce();   // charge 1 on success — skipped if the app already gave up waiting
     // cache a GOOD extraction for reuse (7d); skip caching thin ones so a later fetch can do better.
     if (Array.isArray(card.responsibilities) && card.responsibilities.length >= 3) aiHub.groundingCacheSet(cacheKey, 'fetchdetail', card, 7 * 24 * 3600).catch(() => {});
     saveUserJob(fetchUserId, card).catch(() => {});   // add to the user's Saved Jobs

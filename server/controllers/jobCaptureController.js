@@ -144,4 +144,7 @@ async function captureJob(req, res) {
   }
 }
 
-module.exports = { captureJob };
+// extractFromText is also reused by discover's fetch-detail as its SPA/iframe-proof fallback:
+// a job board that renders into an iframe or late-hydrates isn't in the page's outerHTML, but IS
+// in its visible text. Same bounded cost (1 call + 1 retry, 12k cap).
+module.exports = { captureJob, extractFromText };
