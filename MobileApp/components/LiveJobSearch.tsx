@@ -55,6 +55,16 @@ const SEARCH_SCRAPE_JS = `(function(){
     return href;
   }
   var SKIP = /google\\.|gstatic|googleusercontent|youtube\\.|webcache|duckduckgo\\.com|bing\\.|\\.google\\./i;
+  // Search engines also render the DISPLAY URL as link text ("in.indeed.com › viewjob…"), and
+  // DDG-lite's plain markup always does. Taking that as the title gave cards named after a URL,
+  // which tells the user nothing — reject it so we keep looking for the real heading.
+  function urlish(t){
+    if(!t) return true;
+    if(/^https?:\\/\\//i.test(t)) return true;
+    if(/^[a-z0-9.-]+\\.[a-z]{2,}([\\/\\s]|$)/i.test(t)) return true;
+    if(/\\s\\u203a\\s/.test(t)) return true;   // Google's "host › path" breadcrumb
+    return false;
+  }
   function scan(){
     var out=[], seen={};
     try{
@@ -66,16 +76,19 @@ const SEARCH_SCRAPE_JS = `(function(){
         var href=real(a.href);
         if(!/^https?:\\/\\//i.test(href) || SKIP.test(href)) continue;
         var title=(h.innerText||h.textContent||'').trim();
-        if(!title||title.length<3||seen[href]) continue; seen[href]=1;
+        if(!title||title.length<3||urlish(title)||seen[href]) continue; seen[href]=1;
         out.push({title:title.slice(0,180), url:href});
       }
-      if(!out.length){   // DDG-lite / plain markup: result links carry the title text directly
-        var as=document.querySelectorAll('a.result-link, a[href]');
+      if(!out.length){   // DDG-lite / plain markup: the RESULT link carries the title text
+        var as=document.querySelectorAll('a.result-link');
+        if(!as.length) as=document.querySelectorAll('a[href]');
         for(var j=0;j<as.length && out.length<30;j++){
           var href2=real(as[j].href||'');
           if(!/^https?:\\/\\//i.test(href2) || SKIP.test(href2)) continue;
           var t2=(as[j].innerText||as[j].textContent||'').trim();
-          if(!t2||t2.length<8||seen[href2]) continue; seen[href2]=1;
+          // prefer a heading inside the link over the link's own (often URL) text
+          try{ var hh=as[j].querySelector?as[j].querySelector('h1,h2,h3,h4,b,strong'):null; if(hh){ var ht=(hh.innerText||hh.textContent||'').trim(); if(ht.length>=6&&!urlish(ht)) t2=ht; } }catch(e){}
+          if(!t2||t2.length<8||urlish(t2)||seen[href2]) continue; seen[href2]=1;
           out.push({title:t2.slice(0,180), url:href2});
         }
       }
@@ -93,6 +106,43 @@ const SEARCH_SCRAPE_JS = `(function(){
     }
   },500);
 })(); true;`;
+
+// Last line of defence for the card title. Even with the scraper fixed, some results genuinely have
+// no usable heading — a card titled "in.indeed.com › viewjob?jk=…" is useless, so build a readable
+// title out of the URL's job slug instead ("…/senior-dotnet-developer-gurgaon-4821" → "Senior Dotnet
+// Developer Gurgaon"). The real title still replaces this the moment the job is fetched.
+export function looksLikeUrl(s: string): boolean {
+  const t = String(s || '').trim();
+  if (!t) return true;
+  if (/^https?:\/\//i.test(t)) return true;
+  if (/^[a-z0-9.-]+\.[a-z]{2,}([/\s]|$)/i.test(t)) return true;   // bare host, or "host/path"
+  if (/\s›\s/.test(t)) return true;                                // Google breadcrumb line
+  return false;
+}
+// Slug words that carry no meaning in a job title.
+const SLUG_STOP = /^(jobs?|careers?|career|apply|vacancy|vacancies|opening|openings|listing|listings|details?|view|viewjob|posting|position|en|us|uk|in|au|ca|de|fr|nl|p|d|c|r|o|job-detail|jobdetail)$/i;
+const UUID_SEG = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function titleFromUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    let best = '';
+    for (const seg of u.pathname.split('/').filter(Boolean)) {
+      if (UUID_SEG.test(seg)) continue;                       // Lever/Ashby opaque ids
+      const words = decodeURIComponent(seg)
+        .replace(/\.(html?|aspx?|php)$/i, '')
+        .replace(/[_+.]/g, '-')
+        .split('-')
+        .filter((w) => w && !/^\d+$/.test(w) && !/^[0-9a-f]{4,}$/i.test(w) && !SLUG_STOP.test(w));
+      const s = words.join(' ');
+      if (s.length > best.length) best = s;
+    }
+    // Naukri-style slugs tack the experience band on the end ("…-5-to-8-years").
+    best = best.replace(/\b(to\s+)?years?\b.*$/i, '').replace(/\s+to\s*$/i, '').trim();
+    // One word is a company/board slug, not a job title — better to say nothing than to mislead.
+    if (best.length < 6 || best.split(/\s+/).length < 2) return '';
+    return best.replace(/\b[a-z]/g, (c) => c.toUpperCase()).slice(0, 120);
+  } catch { return ''; }
+}
 
 // ── LinkedIn GUEST scraping via DIRECT cookie-free fetch (no WebView) ─────────────────────────────
 // ⚠️ WHY fetch and not a hidden WebView: all our WebViews share the app's cookie store (that's the
@@ -324,7 +374,9 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
   // On-device organic (Google/DDG) results → cards (company/location fill in when the user fetches details).
   const toWebCards = (results: { title: string; url: string }[]): LiveJobCard[] => (results || []).map((r) => {
     let host = ''; try { host = new URL(r.url).hostname.replace(/^www\./, ''); } catch {}
-    return { id: r.url, job_url: r.url, title: r.title, company: host || null, employer_name: host || null, location: null, work_mode: null, job_type: null, salary: null, experience: null, responsibilities: [], skills: [], source: host || 'web', highlights: [], saved: false, summary: null } as LiveJobCard;
+    const raw = String(r.title || '').trim();
+    const title = (raw && !looksLikeUrl(raw)) ? raw : (titleFromUrl(r.url) || (host ? `Job on ${host}` : 'Job posting'));
+    return { id: r.url, job_url: r.url, title, company: host || null, employer_name: host || null, location: null, work_mode: null, job_type: null, salary: null, experience: null, responsibilities: [], skills: [], source: host || 'web', highlights: [], saved: false, summary: null } as LiveJobCard;
   });
   // LinkedIn guest cards already carry company + location.
   const toLiCards = (results: { title: string; url: string; company?: string; location?: string }[]): LiveJobCard[] => (results || []).map((r) => (
