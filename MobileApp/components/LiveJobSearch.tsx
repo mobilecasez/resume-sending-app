@@ -404,8 +404,11 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
   // Go STRAIGHT to the full apply experience (job-detail's apply WebView + robot dock + AI auto-fill)
   // for a card, WITHOUT the Browse&Fetch middle step — so a company job (SmartRecruiters/Workday/…)
   // opens ONCE, no second web view, no reload. LinkedIn stays on Browse&Fetch (company-capture flow).
+  const applyingRef = useRef(false);   // guard a fast double-tap from pushing job-detail twice
   const applyExternally = useCallback((applyUrl: string, title: string) => {
+    if (applyingRef.current) return;
     if (!onApplyHere) { setBrowseUrl(applyUrl); return; }   // fallback: browse it in-app
+    applyingRef.current = true;
     const k = normUrl(applyUrl);
     const card = cardsRef.current.find((c) => normUrl(c.job_url) === k) || null;
     setBrowseUrl(null);
@@ -449,7 +452,7 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
     expandingUrlRef.current = null; expandAutoRef.current = false;
     autoExpandedRef.current = new Set(); autoQueueRef.current = [];
     setExpandNote('');
-    setBrowseUrl(null);
+    setBrowseUrl(null); applyingRef.current = false;
     // Kick off the on-device web search (hidden WebViews mount below) in PARALLEL with the server search.
     setSearchGen((g) => g + 1); setSearchActive(true);
     let alive = true;

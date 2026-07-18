@@ -540,12 +540,14 @@ const FRAME_AGENT_JS = `(function(){
         }
       }
       // Retry for ~5s so a cross-origin ATS iframe that renders its form late still gets scanned.
+      // A CHILD frame posts ONLY when it finds fields — it must never emit an empty terminal (that
+      // would re-arm the debounce after mapping already started); the MAIN frame owns the empty signal.
       var tries=0;
       (function run(){
         out=[]; seen={}; rgroups={};
         scrollThrough(snap, function(){
-          if(out.length>0 || ++tries>=11){ post({type:'FIELDS', fields: out, frame:1}); }
-          else { setTimeout(run, 450); }
+          if(out.length>0){ post({type:'FIELDS', fields: out, frame:1}); }
+          else if(++tries<11){ setTimeout(run, 450); }
         });
       })();
     } catch(e){ post({type:'AUTOFILL_ERROR', error:String((e&&e.message)||e)}); }
@@ -926,6 +928,7 @@ export default function JobDetailScreen() {
   // Cross-frame field merge: the main frame AND any iframe(s) each post FIELDS; accumulate + debounce
   // so an empty main frame (form lives in a Greenhouse-style iframe) doesn't fire "no fields found".
   const fieldsAccumRef = useRef<any[]>([]);
+  const processedGenRef = useRef<number>(-1);   // gen whose AI mapping already started (dedupe late scans)
   const fieldsTimerRef = useRef<any>(null);
   const attachTimerRef = useRef<any>(null);
   const filledAccumRef = useRef<{ count: number }>({ count: 0 });
@@ -1454,6 +1457,12 @@ export default function JobDetailScreen() {
       finishAutofill('error', 'No fillable fields found. Open the application form first, then tap Auto Fill.');
       return;
     }
+    // Run the AI mapping ONCE per run. The field-scan RETRY means a slow/empty frame can post FIELDS
+    // seconds after mapping already started — without this guard that re-armed the debounce and fired a
+    // SECOND autofill-map call (duplicate credit charge) + second fill. (Empty posts hit finishAutofill
+    // above → active=false → the top guard stops them.)
+    if (processedGenRef.current === gen) return;
+    processedGenRef.current = gen;
     setStep('reading', 'done'); setStep('mapping', 'active');
     try {
       const token = await getToken();
