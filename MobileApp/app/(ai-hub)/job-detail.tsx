@@ -41,6 +41,7 @@ import JobToolsDock from '../../components/JobToolsDock';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import { canonicalJobUrl, isAuthUrl } from '../../utils/jobUrl';
+import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../../utils/webviewAuth';
 import type { Contact, Job, Employer } from '../../types/aiHub';
 
 // Lightweight CLIENT-SIDE check: should we offer "Translate to English" for this
@@ -553,7 +554,9 @@ const READ_FIELDS_JS = `(function(){
 
 // Installed on every page load (via the WebView's injectedJavaScript): when the user taps a
 // file-upload field, intercept it and ask RN to offer our resume / cover letter to attach.
+
 const INTERCEPT_FILES_JS = `(function(){
+  if (window.__cvfSkipFrame) return;
   if (window.__cvfFileHook) return; window.__cvfFileHook = true;
   function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
   document.addEventListener('click', function(ev){
@@ -571,6 +574,7 @@ const INTERCEPT_FILES_JS = `(function(){
 // Installed on every page load: tell RN which form field the user just focused, so the
 // "smart copy" popup can lead with the right value for that field. Self-contained helpers.
 const FOCUS_DETECT_JS = `(function(){
+  if (window.__cvfSkipFrame) return;
   if (window.__cvfFocusHook) return; window.__cvfFocusHook = true;
   ${JS_HELPERS}
   document.addEventListener('focus', function(ev){
@@ -614,6 +618,7 @@ const HARVEST_JS = `(function(){
 // direct path (READ_FIELDS_JS / fillJs / attachJs) unchanged — child frames only SUPPLEMENT it, so a
 // normal (non-iframe) page behaves exactly as before.
 const FRAME_AGENT_JS = `(function(){
+  if (window.__cvfSkipFrame) return;
   if (window.__cvfAgent) return; window.__cvfAgent = true;
   ${JS_HELPERS}
   function b64ToFile(b64, filename, mime){ var bin=atob(b64); var bytes=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i); return new File([bytes], filename, {type:mime||'application/pdf'}); }
@@ -1221,6 +1226,13 @@ export default function JobDetailScreen() {
   const filledCountRef = useRef<number>(0);      // fields filled, carried into the skills stage's message
   const skillsTimerRef = useRef<any>(null);      // don't hang the overlay if the page has no skills widget
   const scanTimerRef   = useRef<any>(null);      // watchdog: the form scan must not spin forever
+  // Sign-in flow: the page we must return the user to once auth finishes, plus guards so we restore
+  // exactly once and never fight the provider's own redirect chain.
+  const preAuthUrlRef   = useRef<string>('');
+  const authOriginRef   = useRef<string>('');
+  const authAtRef       = useRef<number>(0);
+  const authRestoreTmr  = useRef<any>(null);
+  const [authBanner, setAuthBanner] = useState(false);
   const setStep = (key: string, status: string) => setAfStep(prev => ({ ...prev, [key]: status }));
 
   // File-tap interception: offer our resume / cover letter when the user taps an upload field.
@@ -1243,6 +1255,34 @@ export default function JobDetailScreen() {
   const smartValuesRef  = useRef<Record<string, string>>({});  // autofill-map field key -> value (for field-awareness)
   const copyTimerRef    = useRef<any>(null);
   const localFillRef    = useRef<{ fullName?: string; email?: string; phone?: string; location?: string }>({}); // local session + resume-builder facts
+
+  // Take over a sign-in popup: remember where we were, then run the auth in this same view.
+  const beginAuthFlow = (target: string, from?: string) => {
+    if (!target || !applyWebRef.current) return;
+    const back = (from && /^https?:/i.test(from) ? from : currentUrlRef.current) || '';
+    // Don't overwrite the remembered form with an auth page if the provider chains through several.
+    if (back && !isAuthUrl(back)) {
+      preAuthUrlRef.current = back;
+      try { authOriginRef.current = new URL(back).origin; } catch { authOriginRef.current = ''; }
+    }
+    authAtRef.current = Date.now();
+    setAuthBanner(true);
+    try { applyWebRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(target)}; true;`); } catch {}
+  };
+
+  // Auth is done — put the user back on the form they were filling. The session cookie is set by
+  // now, so the site renders them as signed in.
+  const returnFromAuth = (delay = 0) => {
+    const back = preAuthUrlRef.current;
+    if (!back || !applyWebRef.current) return;
+    if (authRestoreTmr.current) clearTimeout(authRestoreTmr.current);
+    authRestoreTmr.current = setTimeout(() => {
+      const url = preAuthUrlRef.current;
+      preAuthUrlRef.current = ''; authOriginRef.current = ''; authAtRef.current = 0;
+      setAuthBanner(false);
+      try { applyWebRef.current?.injectJavaScript(`window.location.href = ${JSON.stringify(url)}; true;`); } catch {}
+    }, delay);
+  };
 
   const openApplyWebView = (url?: string) => {
     const u = (url || '').trim();
@@ -1275,6 +1315,8 @@ export default function JobDetailScreen() {
     submitMarkedRef.current = false; submitIntentRef.current = 0; setAppliedBanner(false);
     sawLinkedInRef.current = false; portalCapturedRef.current = false; setPortalSavedBanner(false);
     capturePrefetchedRef.current = false; lastPageTextRef.current = '';   // re-grab the job page text for this session
+    preAuthUrlRef.current = ''; authOriginRef.current = ''; authAtRef.current = 0; setAuthBanner(false);
+    if (authRestoreTmr.current) { clearTimeout(authRestoreTmr.current); authRestoreTmr.current = null; }
     // Smart-copy: reset + prefetch the user's reusable details for the floating helper.
     setSmartOpen(false); setSmartExpanded(false); setCopiedKey(null);
     focusedFieldRef.current = null; smartValuesRef.current = {};
@@ -1924,6 +1966,11 @@ export default function JobDetailScreen() {
     let msg: any;
     try { msg = JSON.parse(e.nativeEvent.data); } catch { return; }
     if (!msg || msg.__cvf !== true) return;          // ignore the host page's own postMessages
+
+    // The page tried to open a sign-in popup (impossible on iOS) — run it here and remember the form.
+    if (msg.type === 'AUTH_POPUP') { beginAuthFlow(String(msg.url || ''), String(msg.from || '')); return; }
+    // The callback page called window.close() → auth finished, go back to the application.
+    if (msg.type === 'AUTH_DONE') { returnFromAuth(600); return; }
 
     // Job page text captured → remember it, and prefetch the job details (canonical UUID + AI
     // responsibilities) so Generate-Cover-Letter has real data ready. No-op for real DB jobs.
@@ -2996,7 +3043,7 @@ export default function JobDetailScreen() {
               source={{ uri: applyWebUrl }}
               style={s.webView}
               originWhitelist={['*']}
-              injectedJavaScript={INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + FRAME_AGENT_JS}
+              injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + FRAME_AGENT_JS}
               injectedJavaScriptForMainFrameOnly={false}
               javaScriptEnabled
               domStorageEnabled
@@ -3014,9 +3061,7 @@ export default function JobDetailScreen() {
               setSupportMultipleWindows={false}
               onOpenWindow={(e: any) => {
                 const target = e?.nativeEvent?.targetUrl;
-                if (target && applyWebRef.current) {
-                  applyWebRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(target)}; true;`);
-                }
+                if (target) beginAuthFlow(target);   // remembers the form so we can come back
               }}
               startInLoadingState
               pullToRefreshEnabled
@@ -3042,6 +3087,14 @@ export default function JobDetailScreen() {
               onNavigationStateChange={(nav) => {
                 setApplyCanGoBack(nav.canGoBack);
                 if (nav.url) { currentUrlRef.current = nav.url; try { setApplyHost(new URL(nav.url).hostname.replace(/^www\./, '')); } catch {} }
+                // Sign-in finished: we're back on the site's own origin, off the auth path. Give the
+                // callback a beat to exchange its code, then return to the form. Once only.
+                if (nav.url && preAuthUrlRef.current && authOriginRef.current && !nav.loading) {
+                  let sameSite = false;
+                  try { sameSite = new URL(nav.url).origin === authOriginRef.current; } catch {}
+                  const settled = Date.now() - authAtRef.current > 2500;
+                  if (sameSite && settled && !isAuthUrl(nav.url) && nav.url !== preAuthUrlRef.current) returnFromAuth(1200);
+                }
                 // ── LinkedIn → company-portal capture: the user tapped Apply on a LinkedIn page and
                 // landed on the company's own site. Save that URL as this job's link (per-user
                 // override) so Apply/Portal opens the company page DIRECTLY from now on.

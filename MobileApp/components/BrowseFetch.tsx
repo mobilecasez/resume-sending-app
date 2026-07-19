@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchJobDetail, saveCard, type LiveJobCard } from '../services/aiHubService';
 import { isListingUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
+import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../utils/webviewAuth';
 
 const NOT_COMPANY_RE = /linkedin\.com|licdn\.com|lnkd\.in|google\.[a-z.]+|bing\.com|duckduckgo|accounts\.|login\.|signin\.|auth[0-9]?\.|appleid\.apple|facebook\.com|about:blank/i;
 
@@ -194,6 +195,27 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     })
   ).current;
 
+  // Sign-in taken over from the page: run it here, then bring the user back to where they were.
+  const preAuthUrlRef = useRef<string>('');
+  const authOriginRef = useRef<string>('');
+  const authAtRef = useRef<number>(0);
+  const beginAuthFlow = useCallback((target: string, from?: string) => {
+    if (!target || !webRef.current) return;
+    const back = (from && /^https?:/i.test(from) ? from : currentUrlRef.current) || '';
+    if (back && !/\/(login|signin|sign-in|register|oauth2?|auth|callback|sso)(\/|$|\?)/i.test(back)) {
+      preAuthUrlRef.current = back;
+      try { authOriginRef.current = new URL(back).origin; } catch { authOriginRef.current = ''; }
+    }
+    authAtRef.current = Date.now();
+    try { webRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(target)}; true;`); } catch {}
+  }, []);
+  const returnFromAuth = useCallback((delay = 900) => {
+    const url = preAuthUrlRef.current;
+    if (!url || !webRef.current) return;
+    preAuthUrlRef.current = ''; authOriginRef.current = ''; authAtRef.current = 0;
+    setTimeout(() => { try { webRef.current?.injectJavaScript(`window.location.href = ${JSON.stringify(url)}; true;`); } catch {} }, delay);
+  }, []);
+
   const doGrab = useCallback(() => {
     const id = ++fetchIdRef.current;
     fetchingRef.current = true; setFetching(true); setStage('reading');
@@ -264,6 +286,9 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
 
   const onMessage = useCallback(async (raw: string) => {
     let payload: any = null; try { payload = JSON.parse(raw); } catch { return; }
+    // Sign-in shim (see utils/webviewAuth.ts): iOS can never give the page a real popup.
+    if (payload && payload.__cvf && payload.type === 'AUTH_POPUP') { beginAuthFlow(String(payload.url || ''), String(payload.from || '')); return; }
+    if (payload && payload.__cvf && payload.type === 'AUTH_DONE') { returnFromAuth(600); return; }
     if (!payload || !payload.__cvbf || !fetchingRef.current) return;
     if (payload.id !== fetchIdRef.current) return;   // stale grab from an earlier, abandoned fetch
     if (grabTimerRef.current) { clearTimeout(grabTimerRef.current); grabTimerRef.current = null; }
@@ -375,6 +400,13 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         source={{ uri: url }}
         style={{ flex: 1 }}
         onNavigationStateChange={(nav) => {
+          if (nav.url && preAuthUrlRef.current && authOriginRef.current && !nav.loading) {
+            let sameSite = false;
+            try { sameSite = new URL(nav.url).origin === authOriginRef.current; } catch {}
+            if (sameSite && Date.now() - authAtRef.current > 2500
+                && !/\/(login|signin|sign-in|oauth2?|auth|callback|sso)(\/|$|\?)/i.test(nav.url)
+                && nav.url !== preAuthUrlRef.current) returnFromAuth(1200);
+          }
           currentUrlRef.current = nav.url; canGoBackRef.current = nav.canGoBack;
           currentTitleRef.current = String(nav.title || '');
           setCurrentUrl(nav.url); setCanGoBack(nav.canGoBack);
@@ -390,6 +422,8 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         }}
         onLoadStart={() => setPageLoading(true)}
         onLoadEnd={() => setPageLoading(false)}
+        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS}
+        injectedJavaScriptForMainFrameOnly={false}
         onMessage={(e) => onMessage(e.nativeEvent.data)}
         javaScriptEnabled
         domStorageEnabled
@@ -407,9 +441,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         setSupportMultipleWindows={false}
         onOpenWindow={(e: any) => {
           const target = e?.nativeEvent?.targetUrl;
-          if (target && webRef.current) {
-            webRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(target)}; true;`);
-          }
+          if (target) beginAuthFlow(target);   // remembers the page so we can come back
         }}
       />
 
