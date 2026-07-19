@@ -42,6 +42,7 @@ import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import { canonicalJobUrl, isAuthUrl } from '../../utils/jobUrl';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../../utils/webviewAuth';
+import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS } from '../../utils/webviewTranslate';
 import type { Contact, Job, Employer } from '../../types/aiHub';
 
 // Lightweight CLIENT-SIDE check: should we offer "Translate to English" for this
@@ -1145,6 +1146,12 @@ export default function JobDetailScreen() {
   const webTranslatedRef = useRef(false);                        // mirror for the load callback (no stale closure)
   const autoXlateRef     = useRef(true);                         // auto-translate non-English pages until the user opts out
   const bridgeXlateRef   = useRef(false);                        // a backend "bridge" translation is in-flight/done for this page
+  // Translation is DESIRED-STATE driven: xlateOnRef is what the user wants, and every page load /
+  // SPA render re-applies it. A tap while the page is still loading is remembered, not dropped.
+  const xlateOnRef      = useRef(false);
+  const xlateGenRef     = useRef(0);      // discard replies from a superseded pass
+  const xlatePendingRef = useRef(false);  // tapped mid-load → run once the load finishes
+  const webLoadingRef   = useRef(false);
   const submitMarkedRef = useRef(false);                          // fire the "Applied" mark only once per session
   const submitIntentRef = useRef(0);                              // ts of last real apply-form submit (for the URL backstop)
   useEffect(() => {                                                // auto-dismiss the "submitted ✓" toast
@@ -1321,6 +1328,7 @@ export default function JobDetailScreen() {
     setSmartOpen(false); setSmartExpanded(false); setCopiedKey(null);
     focusedFieldRef.current = null; smartValuesRef.current = {};
     setWebTranslated(false); setWebTranslating(false); webTranslatedRef.current = false; autoXlateRef.current = true;
+    xlateOnRef.current = false; xlatePendingRef.current = false; xlateGenRef.current++; webLoadingRef.current = false;
     bridgeXlateRef.current = false;
     loadLocalFill();
     if (!smartData) { getSmartFillData().then(setSmartData).catch(() => {}); }
@@ -1328,22 +1336,33 @@ export default function JobDetailScreen() {
   };
 
   // Translate the apply page to English (or back) using Google's free in-page widget — no AI.
+  // Run a translation pass. Safe to call repeatedly — each pass gets a fresh generation and the
+  // page scan never short-circuits, so turning translate off and on again always works.
+  const runXlate = (why = 'toggle') => {
+    if (!applyWebRef.current || !xlateOnRef.current) return;
+    if (webLoadingRef.current) { xlatePendingRef.current = true; setWebTranslating(true); return; }
+    const gen = ++xlateGenRef.current;
+    setWebTranslating(true);
+    try { applyWebRef.current.injectJavaScript(xlateScanJS(gen)); }
+    catch { setWebTranslating(false); }
+  };
+
   const toggleTranslate = () => {
-    if (!applyWebRef.current || webTranslating) return;
-    if (!webTranslated) {
-      setWebTranslating(true);
-      webTranslatedRef.current = true;            // stays on across page navigations
-      autoXlateRef.current = true;                // opt back into auto-translate
-      applyWebRef.current.injectJavaScript(TRANSLATE_TO_EN_JS);
-      setWebTranslated(true);
-      // The widget swaps text asynchronously; clear the spinner shortly after.
-      setTimeout(() => setWebTranslating(false), 2200);
+    if (!applyWebRef.current) return;
+    const next = !xlateOnRef.current;
+    xlateOnRef.current = next;
+    webTranslatedRef.current = next;
+    autoXlateRef.current = next;                 // opting out also stops auto-translate on this page
+    setWebTranslated(next);
+    if (next) {
+      runXlate('toggle-on');
     } else {
-      webTranslatedRef.current = false;
-      autoXlateRef.current = false;               // user wants the original → stop auto-translating
-      bridgeXlateRef.current = false;             // allow re-bridging if they translate again
-      applyWebRef.current.injectJavaScript(TRANSLATE_OFF_JS);   // clears cookie + reloads to original
-      setWebTranslated(false);
+      xlatePendingRef.current = false;
+      xlateGenRef.current++;                     // invalidate any in-flight pass
+      setWebTranslating(false);
+      // Restore IN PLACE — the old path did location.reload(), which raced with a re-tap and threw
+      // away anything the user had typed.
+      try { applyWebRef.current.injectJavaScript(XLATE_RESTORE_JS); } catch {}
     }
   };
 
@@ -1999,54 +2018,48 @@ export default function JobDetailScreen() {
 
     // Language auto-detect: if the page is non-English and the user hasn't opted out, translate.
     if (msg.type === 'PAGE_LANG') {
-      if (msg.nonEnglish && autoXlateRef.current && !webTranslatedRef.current && applyWebRef.current) {
-        setWebTranslating(true);
+      if (msg.nonEnglish && autoXlateRef.current && !xlateOnRef.current && applyWebRef.current) {
+        xlateOnRef.current = true;
         webTranslatedRef.current = true;
-        applyWebRef.current.injectJavaScript(TRANSLATE_TO_EN_JS);
         setWebTranslated(true);
-        setTimeout(() => setWebTranslating(false), 2200);
+        runXlate('auto');
       }
       return;
     }
 
-    // The free Google in-page widget couldn't translate (its script was blocked, or — like ilionx —
-    // the site's CSP blocks Google's translation engine so the page never actually changes). Fall
-    // back to our backend "bridge" translator, which works regardless of the page's CSP.
-    if (msg.type === 'TRANSLATE_FAIL' || msg.type === 'XLATE_WIDGET_DEAD') {
-      if (bridgeXlateRef.current) return;                 // already bridging / bridged this page
-      bridgeXlateRef.current = true;
-      setWebTranslating(true);
-      webTranslatedRef.current = true;
-      try { applyWebRef.current?.injectJavaScript(COLLECT_NODES_JS); } catch {}
-      return;
-    }
-
-    // Bridge step 2: the page handed us its visible text nodes → translate them server-side (chunked),
-    // then write the English back into the same nodes. Inputs/forms are untouched, so Apply still works.
-    if (msg.type === 'XLATE_COLLECT') {
+    // ── translation ────────────────────────────────────────────────────────────
+    // The page handed us everything translatable (text nodes, aria-label/title/placeholder/alt,
+    // button values, shadow DOM). Translate server-side in chunks, then write it back in place.
+    if (msg.type === 'XLATE_ITEMS') {
+      if (msg.gen !== xlateGenRef.current || !xlateOnRef.current) return;   // superseded / turned off
       const items: { i: string; t: string }[] = Array.isArray(msg.items) ? msg.items : [];
       if (!items.length) { setWebTranslating(false); return; }
+      const gen = msg.gen;
       (async () => {
         const map: Record<string, string> = {};
         try {
           const CH = 60, chunks: { i: string; t: string }[][] = [];
           for (let k = 0; k < items.length; k += CH) chunks.push(items.slice(k, k + CH));
-          // translate in small concurrent waves to stay friendly with the AI quota
           for (let k = 0; k < chunks.length; k += 4) {
-            const part = await Promise.all(chunks.slice(k, k + 4).map(c => translateBatch(c)));
-            part.forEach(m => Object.assign(map, m));
+            const part = await Promise.all(chunks.slice(k, k + 4).map((c) => translateBatch(c)));
+            part.forEach((m) => Object.assign(map, m));
           }
+          if (gen !== xlateGenRef.current || !xlateOnRef.current) return;   // user toggled off meanwhile
           if (Object.keys(map).length && applyWebRef.current) {
-            applyWebRef.current.injectJavaScript(buildApplyNodesJS(map));
-            setWebTranslated(true); webTranslatedRef.current = true;
+            applyWebRef.current.injectJavaScript(xlateApplyJS(gen, map));
           } else {
+            setWebTranslating(false);
             Alert.alert('Translation unavailable', "We couldn't translate this page right now. You can open it in your phone's browser to translate it there.");
           }
-        } catch {}
-        finally { setWebTranslating(false); }
+        } catch {
+          setWebTranslating(false);
+        }
       })();
       return;
     }
+    if (msg.type === 'XLATE_APPLIED') { if (msg.gen === xlateGenRef.current) setWebTranslating(false); return; }
+    // SPA rendered new content while translation is on → translate the new bits too.
+    if (msg.type === 'XLATE_DIRTY') { if (xlateOnRef.current && !webLoadingRef.current) runXlate('spa'); return; }
 
     // Smart-copy: remember which field the user focused, so the popup leads with the
     // right value (works independently of an auto-fill run).
@@ -3019,7 +3032,7 @@ export default function JobDetailScreen() {
                 <Text style={s.webHeaderHost} numberOfLines={1}>{applyHost}</Text>
               </View>
             </View>
-            <TouchableOpacity onPress={toggleTranslate} disabled={webTranslating} style={[s.webHeaderBtn, webTranslated && s.webHeaderBtnActive]} hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }} activeOpacity={0.7}>
+            <TouchableOpacity onPress={toggleTranslate} style={[s.webHeaderBtn, webTranslated && s.webHeaderBtnActive]} hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }} activeOpacity={0.7}>
               {webTranslating
                 ? <ActivityIndicator size="small" color={T.blue} />
                 : <Ionicons name="language" size={18} color={webTranslated ? '#fff' : T.textMuted} />}
@@ -3043,7 +3056,7 @@ export default function JobDetailScreen() {
               source={{ uri: applyWebUrl }}
               style={s.webView}
               originWhitelist={['*']}
-              injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + FRAME_AGENT_JS}
+              injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + XLATE_WATCH_JS + '\n' + INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + FRAME_AGENT_JS}
               injectedJavaScriptForMainFrameOnly={false}
               javaScriptEnabled
               domStorageEnabled
@@ -3066,7 +3079,7 @@ export default function JobDetailScreen() {
               startInLoadingState
               pullToRefreshEnabled
               onMessage={onWebMessage}
-              onLoadStart={() => setApplyLoading(true)}
+              onLoadStart={() => { setApplyLoading(true); webLoadingRef.current = true; }}
               onLoadEnd={() => {
                 setApplyLoading(false);
                 // Grab the job page's visible text ONCE per session (the first load is the job
@@ -3075,12 +3088,12 @@ export default function JobDetailScreen() {
                   capturePrefetchedRef.current = true;
                   setTimeout(() => { try { applyWebRef.current?.injectJavaScript(GRAB_JOB_TEXT_JS); } catch {} }, 900);
                 }
-                // If translation is toggled ON, auto-translate each newly-loaded page (the
-                // widget doesn't survive navigation, so re-inject it on every load).
-                if (webTranslatedRef.current && applyWebRef.current) {
-                  setWebTranslating(true);
-                  setTimeout(() => { try { applyWebRef.current?.injectJavaScript(TRANSLATE_TO_EN_JS); } catch {} }, 350);
-                  setTimeout(() => setWebTranslating(false), 2400);
+                webLoadingRef.current = false;
+                // Re-apply translation to the freshly loaded document. This also flushes a tap that
+                // happened WHILE the page was still loading (xlatePendingRef), which used to be lost.
+                if (xlateOnRef.current || xlatePendingRef.current) {
+                  xlatePendingRef.current = false;
+                  setTimeout(() => runXlate('load'), 400);
                 }
               }}
               onLoadProgress={({ nativeEvent }) => setApplyProgress(nativeEvent.progress)}
