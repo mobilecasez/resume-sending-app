@@ -18,6 +18,7 @@ import { notifyLocal } from '../services/pushNotificationService';
 import { expandTerm } from '../utils/searchSynonyms';
 import { resolveLiveLocation, locationAllowed } from '../utils/jobLocation';
 import { isListingUrl, parseLinkedInListing, listingCountFromTitle } from '../utils/jobListing';
+import { canonicalJobUrl } from '../utils/jobUrl';
 import BrowseFetch from './BrowseFetch';
 
 const { height: SH } = Dimensions.get('window');
@@ -372,16 +373,19 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
   }, []);
 
   // On-device organic (Google/DDG) results → cards (company/location fill in when the user fetches details).
-  const toWebCards = (results: { title: string; url: string }[]): LiveJobCard[] => (results || []).map((r) => {
+  const toWebCards = (results: { title: string; url: string }[]): LiveJobCard[] => (results || []).map((rr) => {
+    // Search engines index ATS *login/popup* pages; opening one lands the user on a captcha wall
+    // instead of the job. Rewrite to the real job page before it ever becomes a card.
+    const r = { ...rr, url: canonicalJobUrl(rr.url) };
     let host = ''; try { host = new URL(r.url).hostname.replace(/^www\./, ''); } catch {}
     const raw = String(r.title || '').trim();
     const title = (raw && !looksLikeUrl(raw)) ? raw : (titleFromUrl(r.url) || (host ? `Job on ${host}` : 'Job posting'));
     return { id: r.url, job_url: r.url, title, company: host || null, employer_name: host || null, location: null, work_mode: null, job_type: null, salary: null, experience: null, responsibilities: [], skills: [], source: host || 'web', highlights: [], saved: false, summary: null } as LiveJobCard;
   });
   // LinkedIn guest cards already carry company + location.
-  const toLiCards = (results: { title: string; url: string; company?: string; location?: string }[]): LiveJobCard[] => (results || []).map((r) => (
+  const toLiCards = (results: { title: string; url: string; company?: string; location?: string }[]): LiveJobCard[] => (results || []).map((r0) => ((r) => (
     { id: r.url, job_url: r.url, title: r.title, company: r.company || null, employer_name: r.company || null, location: r.location || null, work_mode: null, job_type: null, salary: null, experience: null, responsibilities: [], skills: [], source: 'linkedin.com', highlights: [], saved: false, summary: null } as LiveJobCard
-  ));
+  ))({ ...r0, url: canonicalJobUrl(r0.url) }));
 
   // Only fall to the empty/error state once BOTH the server and the on-device search have finished empty.
   const finishSource = useCallback((which: 'server' | 'web') => {

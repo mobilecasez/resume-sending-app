@@ -40,6 +40,7 @@ import CreditCostPill from '../../components/CreditCostPill';
 import JobToolsDock from '../../components/JobToolsDock';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
+import { canonicalJobUrl, isAuthUrl } from '../../utils/jobUrl';
 import type { Contact, Job, Employer } from '../../types/aiHub';
 
 // Lightweight CLIENT-SIDE check: should we offer "Translate to English" for this
@@ -1191,7 +1192,16 @@ export default function JobDetailScreen() {
     return () => clearTimeout(t);
   }, [portalSavedBanner]);
   // Hosts that are never "the company portal": LinkedIn itself + auth/OAuth + search engines.
+  // NOTE: this used to match only auth HOSTS (login. / accounts.), so an auth PATH such as
+  // career-schwab.icims.com/jobs/123720/<slug>/login sailed through and got saved as the job's
+  // apply URL — sending every later open to a captcha wall. isAuthUrl() covers paths too.
   const NOT_PORTAL_RE = /linkedin\.com|licdn\.com|lnkd\.in|google\.[a-z.]+|bing\.com|accounts\.|login\.|signin\.|auth[0-9]?\.|appleid\.apple|facebook\.com|about:blank/i;
+  // Every pattern above needs a trailing dot, so it only ever matched auth HOSTS. An OAuth CALLBACK
+  // on the employer's own domain (…/oauth/callback?code=…) matched nothing and was persisted as the
+  // job's permanent apply URL — a single-use, already-spent link, saved server-side. These two cover
+  // the token-bearing and auth-path shapes that must never be captured.
+  const AUTH_TOKEN_RE = /[?&](code|state|id_token|access_token|token|ticket|SAMLResponse|session_state)=/i;
+  const AUTH_PATH_RE  = /\/(oauth2?|auth|callback|signin-|sso|saml|openid|login|session)(\/|$|\?)/i;
   const insets = useSafeAreaInsets();          // notch/home-indicator insets (Modal-safe)
   const rating = useRatingPrompt();            // post-apply rating prompt (portal close + email send)
 
@@ -1517,7 +1527,9 @@ export default function JobDetailScreen() {
   const [overrideUrl, setOverrideUrl] = useState<string | null>(null);
   const [urlInput,    setUrlInput]    = useState('');
   const [savingUrl,   setSavingUrl]   = useState(false);
-  const effectiveApplyUrl = overrideUrl || (job as any).applyUrl || '';
+  // Canonicalise on the way out as well: jobs saved BEFORE this fix still hold the login/popup
+  // URL, and this repairs them at open time without needing a migration.
+  const effectiveApplyUrl = canonicalJobUrl(overrideUrl || (job as any).applyUrl || '');
   // Auto-route a LinkedIn job link to the hidden on-device extractor (once per link; backend caches by URL).
   useEffect(() => {
     if (!effectiveApplyUrl || !isLinkedInJobUrl(effectiveApplyUrl)) return;
@@ -3037,6 +3049,7 @@ export default function JobDetailScreen() {
                   if (/linkedin\.com/i.test(nav.url)) {
                     sawLinkedInRef.current = true;
                   } else if (sawLinkedInRef.current && !portalCapturedRef.current && !NOT_PORTAL_RE.test(nav.url)
+                             && !isAuthUrl(nav.url) && !AUTH_TOKEN_RE.test(nav.url) && !AUTH_PATH_RE.test(nav.url)
                              && (!overrideUrl || isLinkedInJobUrl(overrideUrl))) {
                     const jid = (job as any)?.id;
                     if (jid) {
@@ -3050,9 +3063,13 @@ export default function JobDetailScreen() {
                 }
                 // Backstop: a real submit just happened and we navigated to a clear
                 // confirmation URL (covers cross-origin pages that drop our injected state).
+                // Same-origin ONLY. CONFIRM_URL_RE matches bare words like "success"/"submitted",
+                // so an OAuth callback (…/auth/success?token=…) used to mark the job Applied.
                 if (nav.url && !submitMarkedRef.current && submitIntentRef.current
                     && Date.now() - submitIntentRef.current < 120000 && CONFIRM_URL_RE.test(nav.url)) {
-                  markApplied();
+                  let sameOrigin = false;
+                  try { sameOrigin = !!applyOriginRef.current && new URL(nav.url).origin === applyOriginRef.current; } catch {}
+                  if (sameOrigin) markApplied();
                 }
               }}
               renderLoading={() => (
