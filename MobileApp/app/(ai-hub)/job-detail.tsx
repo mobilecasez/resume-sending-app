@@ -433,6 +433,40 @@ const btn = StyleSheet.create({
 // view) still fill — we fill AS we scroll, not after.
 const JS_HELPERS = `
   function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
+  // document.querySelectorAll NEVER crosses a shadow boundary, so every control inside a web
+  // component was invisible to BOTH the scan and the fill (SmartRecruiters' <spl-select> renders an
+  // open shadow root holding the real dropdown — a plain query finds one control instead of a form).
+  // Same walk utils/webviewTranslate.ts already uses for translation.
+  function deepQuery(sel, root){
+    var out=[], budget=0;
+    function walk(r){
+      if(budget>12000) return;
+      try{
+        var els=r.querySelectorAll(sel);
+        for(var i=0;i<els.length;i++) out.push(els[i]);
+        var all=r.querySelectorAll('*');
+        budget+=all.length;
+        for(var j=0;j<all.length;j++){ if(all[j].shadowRoot) walk(all[j].shadowRoot); }
+      }catch(e){}
+    }
+    walk(root||document);
+    return out;
+  }
+  // The deep walk costs a querySelectorAll('*') per level and fillVisible runs on every scroll step,
+  // so pay for it only on pages that actually have a shadow root, rechecked at most every 2s. On an
+  // ordinary page ctrls() executes byte-identically to the old literal query.
+  var __cvfShadow = { at: 0, on: false };
+  function hasShadow(){
+    var now=Date.now();
+    if(now-__cvfShadow.at < 2000) return __cvfShadow.on;
+    __cvfShadow.at=now; __cvfShadow.on=false;
+    try{ var all=document.querySelectorAll('*'); for(var i=0;i<all.length&&i<8000;i++){ if(all[i].shadowRoot){ __cvfShadow.on=true; break; } } }catch(e){}
+    return __cvfShadow.on;
+  }
+  function ctrls(){
+    if(!hasShadow()) return Array.prototype.slice.call(document.querySelectorAll('input,textarea,select'));
+    return deepQuery('input,textarea,select');
+  }
   function vis(el){ try { var t=(el.type||'').toLowerCase(); if(t!=='file'&&el.offsetParent===null) return false; var st=window.getComputedStyle(el); if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0) return false; var r=el.getBoundingClientRect(); if(t!=='file'&&r.width===0&&r.height===0) return false; } catch(e){} return true; }
   // Question text for a control. Wizard/SPA pages (Instahyre, Typeform-likes) put the question in a
   // plain <div>/<p>/<h4>, NOT a <label> — the old walk only looked for <label> and returned '' for
@@ -472,9 +506,57 @@ const JS_HELPERS = `
   }
   function nlbl(el){ return (lbl(el)||'').replace(/\\s+/g,' ').trim(); }
   // Stable per-field key. An EMPTY label used to produce 'l:|text' for every unlabeled control of a
-  // type, so the scan silently dropped all but the first — add a positional discriminator instead.
-  function domIdx(el){ try{ var all=document.querySelectorAll('input,textarea,select'); for(var i=0;i<all.length;i++) if(all[i]===el) return i; }catch(e){} return 0; }
-  function sig(el){ var t=(el.type||'').toLowerCase(); if(el.name) return 'n:'+el.name+'|'+t; if(el.id) return 'i:'+el.id+'|'+t; var L=nlbl(el).toLowerCase().slice(0,70); return L ? ('l:'+L+'|'+t) : ('p:'+domIdx(el)+'|'+t); }
+  // type, so the scan silently dropped all but the first — hence a positional discriminator.
+  //
+  // That discriminator used to be an ORDINAL index into querySelectorAll('input,textarea,select'),
+  // which any control inserted EARLIER renumbered: the reCAPTCHA textarea appearing mid-list, a
+  // conditional "if yes, please explain" field opening, or Ashby swapping its upload control for a
+  // file card once a résumé is attached. The scan and the fill are separated by a multi-second AI
+  // round-trip, so the failure mode was not a missed field but the WRONG one — the user's city
+  // written into the start-date box. A structural path is stable against inserts elsewhere.
+  function domPath(el){
+    var parts=[], n=el, h=0;
+    try{
+      while(n && n.nodeType===1 && n!==document.body && h<9){
+        var par=n.parentElement;
+        if(!par){ var pn=n.parentNode; if(pn&&pn.host){ parts.push('#s'); n=pn.host; h++; continue; } break; }
+        var idx=0, kids=par.children;
+        for(var k=0;k<kids.length;k++){ if(kids[k]===n) break; if(kids[k].tagName===n.tagName) idx++; }
+        parts.push(n.tagName.toLowerCase()+(idx?('['+idx+']'):''));
+        n=par; h++;
+      }
+    }catch(e){}
+    return parts.join('/');
+  }
+  // A path truncated at 9 levels can be shared by two structurally identical branches, and a key
+  // COLLISION is the exact catastrophe this function exists to prevent. When the path is not unique
+  // among the page's controls, append this control's position among its twins.
+  function uniqPath(el){
+    var p=domPath(el), n=0, mine=0;
+    try{
+      var all=ctrls();
+      if(all.length>150) return p;                       // O(n^2) guard; plain path on huge forms
+      for(var i=0;i<all.length;i++){ if(domPath(all[i])===p){ if(all[i]===el) mine=n; n++; } }
+    }catch(e){}
+    return n>1 ? (p+'#'+mine) : p;
+  }
+  // Framework ids (:r3:, radix-:r1:, headlessui-…, mui-12) change on every re-render — keying on one
+  // is no more stable than an ordinal.
+  function volatileId(id){ try{ return /^:|^radix-|^headlessui-|^mui-\\d|^react-aria|:r[0-9a-z]+:/.test(String(id)); }catch(e){ return false; } }
+  function sig(el){
+    var t=(el.type||'').toLowerCase();
+    if(el.name) return 'n:'+el.name+'|'+t;
+    if(el.id && !volatileId(el.id)) return 'i:'+el.id+'|'+t;
+    var L=nlbl(el).toLowerCase().slice(0,70);
+    if(L) return 'l:'+L+'|'+t;
+    // Cache the positional key ON the element. Scan and fill are separate injections into the SAME
+    // page, so the expando survives between them — an unlabeled field keeps its exact key even if
+    // the surrounding DOM is rebuilt, and we pay the path cost once per element.
+    try{ if(el.__cvfPath) return 'd:'+el.__cvfPath+'|'+t; }catch(e){}
+    var p=uniqPath(el);
+    try{ el.__cvfPath=p; }catch(e){}
+    return 'd:'+p+'|'+t;
+  }
   function radioQuestion(el){ var name=el.name; var esc=(window.CSS&&CSS.escape)?CSS.escape(name||''):(name||''); var rs=name?document.querySelectorAll('input[type=radio][name="'+esc+'"]'):[el]; var opts=[]; for(var i=0;i<rs.length;i++){ var o=nlbl(rs[i])||rs[i].value||''; if(o) opts.push(o); } var p=el.parentElement,h=0; while(p&&h<8){ var txt=(p.innerText||'').replace(/\\s+/g,' ').trim(); var strip=txt; for(var k=0;k<opts.length;k++){ if(opts[k]) strip=strip.split(opts[k]).join(' '); } strip=strip.replace(/\\s+/g,' ').replace(/\\*/g,'').trim(); if(strip.length>=4&&strip.length<=180) return strip; h++; p=p.parentElement; } return nlbl(el); }
   function fire(el){ el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); }
   function setNative(el, value){ var proto=el.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:(el.tagName==='SELECT'?window.HTMLSelectElement.prototype:window.HTMLInputElement.prototype); var d=Object.getOwnPropertyDescriptor(proto,'value'); if(d&&d.set) d.set.call(el,value); else el.value=value; fire(el); }
@@ -494,18 +576,392 @@ const JS_HELPERS = `
     }
     return null;
   }
+  // ── Country / dial-code support ─────────────────────────────────────────────
+  // Option text arrives as "India+91" (intl-tel-input), "India (+91)", "+91 (India)" or "IN +91",
+  // routinely padded with NBSP / bidi marks that break naive indexOf matching.
+  function cleanTxt(s){ return String(s==null?'':s).replace(/[\\u200B-\\u200F\\u202A-\\u202E\\uFEFF]/g,'').replace(/\\u00A0/g,' ').replace(/\\s+/g,' ').trim(); }
+  // \\d{1,4} — NOT \\d[\\d\\s\\-]{0,5}: that form swallows the number after the code, so
+  // dialOf("+91 98765 43210") returned "91987" and every read-back comparison failed.
+  function dialOf(s){ var m=cleanTxt(s).match(/\\+\\s*(\\d{1,4})/); return m ? m[1] : ''; }
+  function wantDial(v){ var s=cleanTxt(v); var m=s.match(/\\+\\s*(\\d{1,4})/); if(m) return m[1]; m=s.match(/^00(\\d{1,4})$/); if(m) return m[1]; m=s.match(/^(\\d{1,4})$/); if(m) return m[1]; return ''; }
+  function isoOf(s){ var t=cleanTxt(s); return /^[A-Za-z]{2}$/.test(t) ? t.toUpperCase() : ''; }
+  function optText(o){ return cleanTxt(o&&o.text!=null?o.text:o); }
+  function optVal(o){ return String(o&&o.value!=null?o.value:'').toUpperCase(); }
+  // Countries that SHARE a dial code — without these, "+1" resolves to Guam and "+44" to Jersey.
+  var PRIM_ISO={'1':'US','7':'RU','44':'GB','39':'IT','47':'NO','61':'AU','212':'MA','262':'RE','290':'SH','358':'FI','500':'FK','590':'GP','599':'CW','672':'NF','683':'NU','690':'TK'};
+  var PRIM_NAME={'1':'united states','7':'russia','44':'united kingdom','39':'italy','47':'norway','61':'australia','212':'morocco','262':'reunion','290':'saint helena','358':'finland','500':'falkland','590':'guadeloupe','599':'curacao','672':'norfolk','683':'niue','690':'tokelau'};
+  // Dial-code-aware option matcher, tried BEFORE pickOpt on country controls. pickOpt is a substring
+  // matcher: against a realistic country list it returns NULL for "+1", "+44" and "+7" (too many
+  // candidates, and its v.length>=4 guard rejects short codes). Here the dial code is compared
+  // NUMERICALLY, so it is exact. Returns null when unsure — pickOpt then still runs.
+  function pickDial(opts, v){
+    var wd=wantDial(v), iso=isoOf(v);
+    var name=cleanTxt(v).replace(/[+0-9()\\[\\]]+/g,' ').replace(/\\s+/g,' ').trim().toLowerCase();
+    var i,t,ex=[];
+    if(wd){ for(i=0;i<opts.length;i++){ if(dialOf(optText(opts[i]))===wd) ex.push(opts[i]); } }
+    if(ex.length>1){
+      if(iso){ for(i=0;i<ex.length;i++){ if(optVal(ex[i])===iso) return ex[i]; } }
+      if(name){ for(i=0;i<ex.length;i++){ if(optText(ex[i]).toLowerCase().indexOf(name)===0) return ex[i]; } }
+      var pv=PRIM_ISO[wd]; if(pv){ for(i=0;i<ex.length;i++){ if(optVal(ex[i])===pv) return ex[i]; } }
+      var pn=PRIM_NAME[wd]; if(pn){ for(i=0;i<ex.length;i++){ if(optText(ex[i]).toLowerCase().indexOf(pn)>=0) return ex[i]; } }
+      var best=ex[0]; for(i=1;i<ex.length;i++){ if(optText(ex[i]).length<optText(best).length) best=ex[i]; } return best;
+    }
+    if(ex.length===1) return ex[0];
+    if(iso){ for(i=0;i<opts.length;i++){ if(optVal(opts[i])===iso) return opts[i]; } }
+    if(name){ for(i=0;i<opts.length;i++){ t=optText(opts[i]).toLowerCase();
+      if(t===name||t.indexOf(name+' ')===0||t.indexOf(name+'+')===0||t.indexOf(name+'(')===0) return opts[i]; } }
+    return null;
+  }
+  function isCountryLabel(s){ return /country|dial|calling code|phone code|isd|nationality/i.test(cleanTxt(s)); }
+  function isPhoneCodeOpts(opts){ var n=0,t=0,i; for(i=0;i<opts.length&&i<40;i++){ var s=optText(opts[i]); if(!s) continue; t++; if(dialOf(s)) n++; } return t>=3 && n/t>0.6; }
+  function isCountrySelect(el){
+    try{ if(el.tagName!=='SELECT') return false;
+      if(isCountryLabel(nlbl(el))) return true;
+      return isPhoneCodeOpts(Array.prototype.slice.call(el.options));
+    }catch(e){ return false; }
+  }
+
+  // ── Custom dropdowns (comboboxes) ───────────────────────────────────────────
+  // A "combobox" = anything that behaves like a <select> but is not one: react-select, MUI
+  // Autocomplete, Downshift, select2, Chosen, intl-tel-input's country list. Setting .value on one
+  // leaves aria-expanded="false", renders no selection and posts NOTHING — while .value still reads
+  // back, so the old read-back marked it FILLED. Every dropdown on such a form submitted empty while
+  // we told the user "Filled 5 fields". This is the single biggest reason "+91 never applied".
+  function cbNorm(s){ return String(s==null?'':s).replace(/\\s+/g,' ').trim().toLowerCase(); }
+  function cbText(el){ try{ return String(el.innerText||el.textContent||'').replace(/\\s+/g,' ').trim(); }catch(e){ return ''; } }
+  function isCombo(el){
+    try{
+      if(el.tagName==='SELECT') return false;
+      if(!el.getAttribute) return false;
+      if(el.getAttribute('role')==='combobox') return true;
+      if(el.getAttribute('aria-haspopup')==='listbox') return true;
+      if(el.getAttribute('aria-autocomplete')==='list') return true;
+      if(el.closest && el.closest('[class*=select__control],[class*=react-select],[class*=select2-container],[class*=chosen-container],[class*=MuiAutocomplete],[class*=ui-select],.iti__country-container')) return true;
+    }catch(e){}
+    return false;
+  }
+  function cbCtrl(el){
+    try{ return (el.closest&&(el.closest('[class*=select__control]')||el.closest('[class*=MuiAutocomplete-root]')||el.closest('[class*=select2-selection]')||el.closest('[class*=chosen-container]')))||el.parentElement; }catch(e){ return el.parentElement; }
+  }
+  // The popup belonging to THIS widget. Deliberately NOT a document-wide query: a page-wide
+  // '[role=option],div[class*=option]' sweep also matches div.optional-note, div.options-wrapper and
+  // any OTHER open menu — and we would then click it.
+  function cbPopup(el){
+    var rt=document; try{ if(el.getRootNode){ var r=el.getRootNode(); if(r&&r.getElementById) rt=r; } }catch(e){}
+    var ids=[];
+    try{ var a=el.getAttribute('aria-controls'); if(a) ids=ids.concat(a.split(' ')); }catch(e){}
+    try{ var o=el.getAttribute('aria-owns');    if(o) ids=ids.concat(o.split(' ')); }catch(e){}
+    for(var i=0;i<ids.length;i++){ if(!ids[i]) continue; var n=null; try{ n=rt.getElementById(ids[i]); }catch(e){} if(n&&vis(n)) return n; }
+    var p=cbCtrl(el), h=0;
+    while(p&&h<4){
+      var lb=null;
+      try{ lb=p.querySelector('[role=listbox],[class*=menu],[class*=results],[class*=dropdown],[class*=options]'); }catch(e){}
+      if(lb&&vis(lb)) return lb;
+      p=p.parentElement; h++;
+    }
+    return null;
+  }
+  function cbOptions(el){
+    var root=cbPopup(el); if(!root) return [];
+    var os=[]; try{ os=root.querySelectorAll('[role=option],li,[class*=option],[class*=item]'); }catch(e){ return []; }
+    var out=[], seen=[];
+    for(var i=0;i<os.length&&out.length<60;i++){
+      var o=os[i];
+      if(!vis(o)) continue;
+      try{ if(o.querySelector && o.querySelector('[role=option]')) continue; }catch(e){}   // container, not a row
+      var tx=cbText(o); if(!tx||tx.length>120) continue;
+      if(seen.indexOf(tx)>=0) continue; seen.push(tx);
+      out.push(o);
+    }
+    return out;
+  }
+  var CB_DENY = /^(submit|save|next|continue|proceed|send|apply|confirm|agree|accept|pay|buy|delete|remove)$/i;
+  // NEVER activate a real submit control.
+  function cbSafeClick(el){
+    try{
+      if(!el) return false;
+      if((el.type||'').toLowerCase()==='submit' && el.form) return false;
+      if(el.closest && el.closest('button[type=submit]') && el.closest('form')) return false;
+      if(CB_DENY.test(cbText(el))) return false;
+      el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
+      el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+      if(el.click) el.click(); else el.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+      return true;
+    }catch(e){ return false; }
+  }
+  // What the widget SHOWS as chosen. After a real pick react-select CLEARS the input, so el.value is
+  // exactly the wrong thing to read — both for verifying OUR write and for detecting the USER's own
+  // answer (without this, keepUser sees an empty box and lets us wipe what they picked by hand).
+  function cbShown(el){
+    try{
+      var w=cbCtrl(el); if(!w) return '';
+      var sv=w.querySelector('[class*=single-value],[class*=multi-value],[class*=selected],[class*=chosen-single]');
+      if(sv) return cbText(sv);
+      var t=cbText(w);
+      var ph=(el.placeholder||''); if(ph) t=t.split(ph).join(' ');
+      var lb=nlbl(el);              if(lb) t=t.split(lb).join(' ');
+      return t.replace(/\\s+/g,' ').trim();
+    }catch(e){ return ''; }
+  }
+  // Close a popup without ever pressing Enter (implicit submit). Escape is what every one of these
+  // libraries listens for; blur is the fallback for the ones that don't. keyup as well as keydown,
+  // because a few (select2) only act on the second.
+  function cbClose(el){
+    try{ el.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true})); }catch(e){}
+    try{ el.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true})); }catch(e){}
+    try{ el.dispatchEvent(new Event('blur',{bubbles:true})); }catch(e){}
+    try{ el.blur(); }catch(e){}
+  }
+  // SAFETY GUARD for every phase that clicks page elements — the same structure skillsJs uses, for
+  // the same reason: while it is on a form submit is swallowed, and the loop aborts on any
+  // navigation, URL change or beforeunload.
+  var __cvfG = { on:false, aborted:false, url:'', h:null, b:null };
+  function cbGuardOn(){
+    if(__cvfG.on) return;
+    __cvfG.on=true; __cvfG.aborted=false;
+    try{ __cvfG.url=location.href; }catch(e){ __cvfG.url=''; }
+    __cvfG.h=function(e){ try{ e.preventDefault(); e.stopPropagation(); }catch(_){} __cvfG.aborted=true; };
+    __cvfG.b=function(){ __cvfG.aborted=true; };
+    try{ document.addEventListener('submit', __cvfG.h, true); }catch(e){}
+    try{ window.addEventListener('beforeunload', __cvfG.b, true); }catch(e){}
+  }
+  function cbGuardOff(){
+    if(!__cvfG.on) return;
+    try{ document.removeEventListener('submit', __cvfG.h, true); }catch(e){}
+    try{ window.removeEventListener('beforeunload', __cvfG.b, true); }catch(e){}
+    __cvfG.on=false;
+  }
+  function cbAborted(){ try{ if(__cvfG.url && location.href!==__cvfG.url) __cvfG.aborted=true; }catch(e){} return __cvfG.aborted; }
+  // Type-then-CLICK. cb(true|false). Never throws, never presses Enter, never clicks a submit.
+  function openAndPick(el, v, cb){
+    var want=String(v), fin=false;
+    function finish(ok){ if(fin) return; fin=true; if(!ok){ try{ cbClose(el); }catch(e){} } cb(ok); }
+    if(cbAborted()){ finish(false); return; }
+    try{ el.focus(); }catch(e){}
+    try{ setNative(el,''); }catch(e){}
+    var ctrl=cbCtrl(el);
+    if(ctrl&&ctrl!==el) cbSafeClick(ctrl);
+    setTimeout(function(){
+      if(cbAborted()){ finish(false); return; }
+      try{ el.focus(); }catch(e){}
+      try{ setNative(el,want); }catch(e){}
+      setTimeout(function(){
+        if(cbAborted()){ finish(false); return; }
+        var os=cbOptions(el);
+        if(!os.length){ finish(false); return; }
+        var pool=[]; for(var i=0;i<os.length;i++) pool.push({text:cbText(os[i]),el:os[i]});
+        var m=isCountryLabel(nlbl(el)) ? pickDial(pool,want) : null;
+        if(!m) m=pickOpt(pool,want);
+        // A FILTERED autocomplete is relevance-ranked, so on genuine ambiguity the FIRST row is the
+        // right answer, not the shortest one ("London" must not become London, Ontario).
+        if(!m && pool.length) m=pool[0];
+        if(!m || !m.el || !cbSafeClick(m.el)){ finish(false); return; }
+        setTimeout(function(){
+          var shown=cbNorm(cbShown(el)), mt=cbNorm(m.text), ok=false;
+          try{ if(shown&&mt) ok = shown.indexOf(mt.slice(0,20))>=0 || mt.indexOf(shown.slice(0,20))>=0; }catch(e){}
+          if(!ok){ try{ ok = cbNorm(el.value)===cbNorm(want) && el.getAttribute('aria-expanded')!=='true'; }catch(e){} }
+          finish(ok);
+        },300);
+      },450);
+    },240);
+  }
+
+  // Custom dropdowns hide their options until opened, so the AI was being asked to free-text a field
+  // that only accepts one of N exact values. Open each one ONCE (bounded: 6 widgets, 2.5s total,
+  // empty filter), read the list, then Escape+blur to restore it. Any widget that already SHOWS an
+  // answer is skipped, so the user's own work is never disturbed. The submit guard is on for the
+  // whole phase — the same protection skillsJs gives its chip clicks.
+  function enumCombos(list, done){
+    var q=[];
+    for(var i=0;i<list.length&&q.length<6;i++){ if(list[i].widget==='combobox') q.push(list[i]); }
+    if(!q.length){ done(); return; }
+    cbGuardOn();
+    var qi=0, t0=Date.now();
+    function fin(){ cbGuardOff(); done(); }
+    function step(){
+      if(qi>=q.length || Date.now()-t0>2500 || cbAborted()){ fin(); return; }
+      var f=q[qi++], el=null, all=ctrls();
+      for(var j=0;j<all.length;j++){ if(sig(all[j])===f.key){ el=all[j]; break; } }
+      if(!el || cbShown(el)){ step(); return; }
+      try{ el.focus(); }catch(e){}
+      var c=cbCtrl(el); if(c&&c!==el) cbSafeClick(c);
+      setTimeout(function(){
+        try{
+          var os=cbOptions(el), opts=[];
+          for(var k=0;k<os.length&&opts.length<60;k++){ var tx=cbText(os[k]); if(tx) opts.push(tx.slice(0,90)); }
+          if(opts.length) f.options=opts;
+        }catch(e){}
+        cbClose(el);
+        setTimeout(step,100);
+      },360);
+    }
+    step();
+  }
+  // Widget-internal controls are not questions: intl-tel-input injects its own country search box,
+  // which the AI would otherwise dutifully try to answer.
+  function isWidgetInternal(el){
+    try{ return !!(el.closest && el.closest('.iti__country-container,.iti__dropdown-content,[class*=select__menu],.MuiAutocomplete-popper,.select2-dropdown,[class*=chosen-drop]')); }catch(e){ return false; }
+  }
+
+  // THE FILL ENGINE. Shared verbatim by the main frame (fillJs) and every iframe agent (doFill), so
+  // the two can never drift. frameFlag is 1 inside an iframe, 0 in the main frame.
+  //
+  // Reports per-field FAILURES, not just a count: a bare number let people trust a form that still
+  // had required dropdowns sitting empty — and on react-select pages that was silently ALL of them.
+  function runFill(bySig, frameFlag){
+    try {
+      var total = 0; for(var kk in bySig){ if(Object.prototype.hasOwnProperty.call(bySig,kk)) total++; }
+      var filled={}, fails={}, deferred=[], dseen={};
+      function fillVisible(){
+        var els = ctrls();
+        for (var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
+          if (['hidden','submit','button','reset','image','file'].indexOf(t)>=0) continue;
+          if (!vis(el)) continue;
+          var s = sig(el);
+          if (!(s in bySig)) continue;
+          if (filled[s]) continue;
+          var v = bySig[s]; if (v==null || v===''){ filled[s]=true; continue; }
+          if (keepUser(el,t,v)){ filled[s]=true; continue; }   // user already answered this — leave it
+          if (t!=='radio' && t!=='checkbox' && el.tagName!=='SELECT' && isCombo(el)){
+            // keepUser() reads el.value — and react-select CLEARS el.value after a pick, so for a
+            // dropdown the USER answered by hand it sees an empty box and would let us wipe and
+            // re-pick their answer. Read what the widget SHOWS instead.
+            if (cbShown(el)){ filled[s]=true; continue; }
+            if (!dseen[s] && deferred.length<8){ dseen[s]=1; deferred.push({s:s, v:v, label:nlbl(el).slice(0,90)}); }
+            continue;
+          }
+          try {
+            if (t==='radio'){
+              var ol=(nlbl(el)||el.value||'').trim().toLowerCase(); var want=String(v).trim().toLowerCase();
+              if (ol===want || (want && ol.indexOf(want)>=0) || (el.value||'').toLowerCase()===want){ setChecked(el,true); if(el.checked) filled[s]=true; }
+            } else if (el.tagName==='SELECT'){
+              // Country/dial-code selects first: pickOpt is a substring matcher and cannot compare
+              // dial codes numerically, so "+1"/"+44"/"+7" matched nothing on a full country list.
+              var oarr=Array.prototype.slice.call(el.options);
+              var m=isCountrySelect(el) ? pickDial(oarr,v) : null;
+              if (!m) m=pickOpt(el.options,v);
+              if (m){
+                setNative(el, m.value);
+                // READ BACK — a controlled <select> can reject the assignment. Reporting a fill we
+                // did not make is worse than reporting nothing.
+                var so=el.options[el.selectedIndex];
+                if (so && (so===m || cleanTxt(so.text)===cleanTxt(m.text))) filled[s]=true;
+                else fails[s]={key:s,label:nlbl(el).slice(0,90),why:'the dropdown rejected the value'};
+              }
+              else fails[s]={key:s,label:nlbl(el).slice(0,90),why:'no matching option'};
+            } else if (t==='checkbox'){
+              var wc=(v===true)||/^(yes|true|on|1|checked)$/i.test(String(v)); setChecked(el,wc); if(el.checked===wc) filled[s]=true;
+            } else {
+              try{el.focus();}catch(e){} setNative(el,String(v)); try{el.dispatchEvent(new Event('blur',{bubbles:true}));el.blur();}catch(e){}
+              if (sameAnswer(el.value,v)) filled[s]=true;
+              else fails[s]={key:s,label:nlbl(el).slice(0,90),why:'the field rejected the value'};
+            }
+          } catch(e){}
+        }
+      }
+      // Drain the custom dropdowns ONE AT A TIME (each needs its own popup open, so they cannot
+      // overlap). Elements are re-resolved by signature here rather than held from the scroll pass —
+      // a virtualized form detaches them. Guard on for the whole phase; hard caps 8 widgets / 9s.
+      function drain(done){
+        if(!deferred.length){ done(); return; }
+        cbGuardOn();
+        var di=0, t0=Date.now();
+        function fin(){ cbGuardOff(); done(); }
+        function step(){
+          if(di>=deferred.length || Date.now()-t0>9000 || cbAborted()){ fin(); return; }
+          var d=deferred[di++], el=null, all=ctrls();
+          for(var j=0;j<all.length;j++){ if(sig(all[j])===d.s && vis(all[j])){ el=all[j]; break; } }
+          if(!el){ if(!filled[d.s]) fails[d.s]={key:d.s,label:d.label,why:'this dropdown left the page before we could pick'}; setTimeout(step,60); return; }
+          if(cbShown(el)){ filled[d.s]=true; delete fails[d.s]; setTimeout(step,60); return; }
+          openAndPick(el, d.v, function(ok){
+            if(ok){ filled[d.s]=true; delete fails[d.s]; }
+            else fails[d.s]={key:d.s,label:d.label,why:'dropdown — please pick this one yourself'};
+            setTimeout(step,150);
+          });
+        }
+        step();
+      }
+      function report(){
+        var fl=[], n=0;
+        for(var k in fails){ if(Object.prototype.hasOwnProperty.call(fails,k) && !filled[k] && fl.length<12) fl.push(fails[k]); }
+        for(var k2 in filled){ if(Object.prototype.hasOwnProperty.call(filled,k2)) n++; }
+        post({type:'FILLED', count:n, total:total, failed:fl, frame:frameFlag});
+      }
+      var passes = 0;
+      function pass(){
+        var before=0; for(var b in filled){ if(Object.prototype.hasOwnProperty.call(filled,b)) before++; }
+        scrollThrough(fillVisible, function(){
+          passes++;
+          var after=0; for(var a in filled){ if(Object.prototype.hasOwnProperty.call(filled,a)) after++; }
+          if (after > before && after < total && passes < 5){ pass(); }
+          else { drain(report); }
+        });
+      }
+      pass();
+    } catch(e){ post({type:'AUTOFILL_ERROR', error:String((e && e.message) || e)}); }
+  }
+
   // Respect work the user already did by hand: if a control already holds a different non-empty
   // answer, autofill leaves it alone (and reports it as handled) instead of overwriting it.
+  //
+  // A <select> needs care. Its "current answer" is usually whatever the BROWSER or the PAGE chose,
+  // not the user's work — but the two are indistinguishable in general, so we relax only where it is
+  // provably safe:
+  //   • an option with an EMPTY VALUE is a placeholder ("Select country", "Select…"). It can never be
+  //     submitted as an answer, so it is never the user's — safe to override on ANY select.
+  //   • the page's own default (an explicit <option selected>, or the browser's implicit index-0
+  //     pick) is overridden ONLY on a country / dial-code control. That is the "+91 never applies
+  //     because the box already reads United States (+1)" bug.
+  // Everywhere else a non-empty selection is still treated as the user's — so a Yes/No consent select
+  // sitting at index 0 (where defaultSelected is false!) is never silently changed.
+  function isPlaceholderOpt(o){
+    if(!o) return true;
+    if(o.disabled) return true;
+    if(!String(o.value==null?'':o.value).trim()) return true;
+    var t=cleanTxt(o.text||'');
+    if(!t) return true;
+    return /^(-{2,}|select\\b|choose\\b|please\\b)/i.test(t);
+  }
+  function selIsUserAnswer(el){
+    try{
+      var i=el.selectedIndex; if(i<0) return false;
+      var o=el.options[i]; if(!o) return false;
+      if(isPlaceholderOpt(o)) return false;
+      if(isCountrySelect(el)){ if(o.defaultSelected) return false; if(i===0) return false; }
+      return true;
+    }catch(e){ return false; }
+  }
   function keepUser(el, t, v){
     try{
       if(t==='radio'||t==='checkbox'||t==='file') return false;
-      var cur='';
-      if(el.tagName==='SELECT'){ var o=el.options&&el.options[el.selectedIndex]; cur=o?(o.text||o.value||''):''; }
-      else cur=el.value||'';
-      cur=String(cur).trim();
-      if(!cur) return false;
-      return cur.toLowerCase()!==String(v).trim().toLowerCase();
+      if(el.tagName==='SELECT'){
+        if(!selIsUserAnswer(el)) return false;
+        var o=el.options[el.selectedIndex];
+        var cur=cleanTxt(o.text||o.value||'');
+        return cur ? cur.toLowerCase()!==cleanTxt(v).toLowerCase() : false;
+      }
+      var cv=cleanTxt(el.value||'');
+      if(!cv) return false;
+      return cv.toLowerCase()!==cleanTxt(v).toLowerCase();
     }catch(e){ return false; }
+  }
+  // A widget that REFORMATS what we typed still filled correctly (typing "2026-09-01" into a date
+  // field can leave it reading "09/01/2026", and strict equality reported that as a failure — then
+  // burned another full-page pass retrying it). Used ONLY to judge whether OUR write landed.
+  // Digit-reordering tolerance is restricted to DATE-shaped strings on purpose: two phone numbers
+  // ending 0123 and 0132 are anagrams of each other and must never read back as "filled".
+  function cbDateish(s){ try{ return /\\d{4}/.test(s) && s.replace(/[^0-9]/g,'').length===8; }catch(e){ return false; } }
+  function sameAnswer(a, b){
+    var x=cbNorm(a), y=cbNorm(b);
+    if(x===y) return true;
+    if(!x||!y) return false;
+    if(cbDateish(x)&&cbDateish(y)){
+      var dx=x.replace(/[^0-9]/g,'').split('').sort().join('');
+      var dy=y.replace(/[^0-9]/g,'').split('').sort().join('');
+      if(dx===dy) return true;
+    }
+    var sx=x.replace(/[^a-z0-9]/g,''), sy=y.replace(/[^a-z0-9]/g,'');
+    return !!sx && sx===sy;
   }
   function findScroller(){ var best=null,bestH=0; try{ var c=document.querySelectorAll('div,main,section,form,ul,ol'); for(var i=0;i<c.length&&i<5000;i++){ var e=c[i]; var diff=e.scrollHeight-e.clientHeight; if(diff>bestH+60){ var oy=''; try{oy=getComputedStyle(e).overflowY;}catch(_){} if(oy==='auto'||oy==='scroll'){ bestH=diff; best=e; } } } }catch(_){} return best; }
   function scrollThrough(onStep, onDone){
@@ -518,16 +974,235 @@ const JS_HELPERS = `
   }
 `;
 
+// ── MULTI-STEP (wizard) DETECTION ─────────────────────────────────────────────
+// READ-ONLY. Nothing here clicks anything. It answers three questions honestly: is this a multi-step
+// form, which step are we on, and is there a forward control we would ever consider safe.
+//
+// Written against real portal DOM:
+//   iCIMS   <li class="iCIMS_Steps_Current"><span class="sr-only">Step 3 of 4. …(Current Step)
+//           The container's innerText concatenates ALL FOUR ordinals, so "first match wins" reads
+//           1 of 4 while standing on step 3 — which would also make the i>=n last-step guard dead.
+//           So an ordinal is trusted only when the element carrying it is MARKED CURRENT and yields
+//           exactly ONE distinct ordinal.
+//   Ashby   <button>Submit Application</button> with el.form === null — proof that "cannot submit a
+//           form" is NOT sufficient on its own; the label gate is what catches it.
+//   Workday el.type === 'submit' on the HAMBURGER MENU, because HTMLButtonElement.type DEFAULTS to
+//           "submit". Every type test below therefore uses getAttribute('type'), never el.type.
+//
+// NOTE: declared HERE, above FRAME_AGENT_JS, because FRAME_AGENT_JS interpolates it. Declaring it
+// further down puts it in the temporal dead zone and the whole module throws on load.
+const WIZARD_HELPERS = `
+  function wfold(s){ try{ return String(s||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').replace(/\\u00df/g,'ss').replace(/[\\u2019\\u00b4']/g,'').replace(/\\s+/g,' ').trim().toLowerCase(); }catch(e){ return String(s||'').toLowerCase(); } }
+  // The whole label must BE a next-word (optional chevron). Anchored, so "Next steps in our process"
+  // is prose and must not match.
+  var W_NEXT = /^(?:next|next step|next page|continue|save and continue|save & continue|proceed|weiter|naechster schritt|fortfahren|speichern und fortfahren|suivant|suivante|continuer|etape suivante|siguiente|continuar|paso siguiente|avanti|prosegui|continua|volgende|doorgaan|verder|proximo|prosseguir|dalej|kontynuuj|nasta|fortsatt|neste|seuraava|jatka)(?:\\s*[>\\u00bb\\u2192\\u203a]+)?$/i;
+  // ANY occurrence anywhere in the label vetoes. Deliberately broad.
+  var W_SUBMIT = /\\b(submit|apply|application|send|finish|finalise|finalize|absenden|abschicken|abschliessen|bewerben|bewerbung|einreichen|envoyer|soumettre|postuler|terminer|candidature|enviar|postular|solicitud|finalizar|invia|inviare|candidati|candidatura|termina|verzenden|versturen|solliciteer|sollicitatie|voltooien|indienen|submeter|candidatar|concluir|wyslij|aplikuj|zloz|zakoncz|skicka|ansok|ansokan|slutfor)\\b/i;
+  var W_REVIEW = /\\b(review your application|please review|review and submit|final step|last step|almost done|confirm and submit|zusammenfassung|letzter schritt|recapitulatif|derniere etape|ultimo paso|riepilogo|ultimo passo|laatste stap|ultima etapa|podsumowanie|ostatni krok|sammanfattning|sista steget)\\b/i;
+  // GLOBAL (we COUNT matches, we never take the first). "page/seite/pagina" deliberately dropped:
+  // "Page 1 of 3" is pagination, not a wizard — a pure false-ordinal generator.
+  var W_ORD    = /(?:^|[^a-z0-9])(?:step|schritt|etape|paso|passo|passaggio|stap|etapa|krok|steg)\\s*(\\d{1,2})\\s*(?:of|von|sur|de|di|van|z|av|\\/)\\s*(\\d{1,2})(?![0-9])/gi;
+  var W_NOTCUR = /(?:^|[-_ ])(?:not[-_]?current|notcurrent|inactive|disabled|incomplete|pending|upcoming|future|completed|complete|done|visited)(?:[-_ ]|$)/i;
+  var W_CURTOK = /^(?:current|active|selected|is-active|is-current|in-progress|iCIMS_Steps_Current)$/i;
+  var W_STEPPY = /step|stepper|wizard|progress|iCIMS_Steps/i;
+
+  // Tokenised — a whole-string regex lets "iCIMS_Steps_NotCurrent" pass as current.
+  function wCurClass(el){
+    try{
+      var cn = el.className; if(cn && typeof cn!=='string' && cn.baseVal!=null) cn=cn.baseVal;
+      cn = String(cn||''); if(W_NOTCUR.test(cn)) return false;
+      var toks = cn.split(/[\\s]+/);
+      for(var i=0;i<toks.length;i++){
+        var t=toks[i]; if(!t) continue;
+        if(W_CURTOK.test(t)) return true;
+        if(/(^|[-_])current$/i.test(t) && !/not[-_]?current/i.test(t)) return true;
+        if(/(^|[-_])(active|selected)$/i.test(t)) return true;
+      }
+    }catch(e){}
+    return false;
+  }
+  function wAllOrds(s){
+    var out=[], m; W_ORD.lastIndex=0;
+    while((m=W_ORD.exec(s))!==null){
+      var i=parseInt(m[1],10), n=parseInt(m[2],10);
+      if(i>=1 && n>=2 && n<=20 && i<=n) out.push(i+'/'+n);
+      if(out.length>6) break;
+    }
+    return out;
+  }
+  function wUniq(a){ var s={},o=[]; for(var i=0;i<a.length;i++){ if(!s[a[i]]){ s[a[i]]=1; o.push(a[i]); } } return o; }
+  function wChrome(el){ try{ return !!(el.closest && el.closest('nav,header,footer,[role=navigation],[role=banner],[role=contentinfo]')); }catch(e){ return false; } }
+
+  // ORDINAL. Three tiers, each requiring EXACTLY ONE distinct ordinal in the text it reads — more
+  // than one means the text concatenates a whole stepper and cannot be trusted.
+  function wOrdinal(){
+    var best=null;
+    try{
+      var els=document.querySelectorAll('[aria-current],[role=tab],[class*=step],[class*=Step],[class*=stepper],[class*=Stepper],[class*=wizard],[class*=Wizard],[class*=progress],[class*=Progress],[data-automation-id]');
+      for(var i=0;i<els.length && i<400;i++){
+        var e=els[i]; if(wChrome(e)) continue;
+        var ac=e.getAttribute('aria-current');
+        var marked = (ac==='step'||ac==='true'||ac==='page') || e.getAttribute('aria-selected')==='true' || wCurClass(e);
+        if(!marked) continue;
+        var hay=wfold((e.getAttribute('aria-label')||'')+' '+txtOf(e).slice(0,240));
+        var o=wUniq(wAllOrds(hay));
+        if(o.length===1){ var p=o[0].split('/'); return {i:parseInt(p[0],10), n:parseInt(p[1],10), src:'marked'}; }
+      }
+    }catch(e){}
+    try{
+      var pools=[String(document.title||'')];
+      var hs=document.querySelectorAll('h1,h2,h3,legend,[role=heading]');
+      for(var k=0;k<hs.length && k<80;k++){ if(!wChrome(hs[k])) pools.push(txtOf(hs[k]).slice(0,160)); }
+      for(var j=0;j<pools.length;j++){
+        var oo=wUniq(wAllOrds(wfold(pools[j])));
+        if(oo.length===1){ var q=oo[0].split('/'); best={i:parseInt(q[0],10), n:parseInt(q[1],10), src:'heading'}; break; }
+      }
+    }catch(e){}
+    if(best) return best;
+    try{
+      var body=wfold(String((document.body&&document.body.innerText)||'').slice(0,8000));
+      var ob=wUniq(wAllOrds(body));
+      if(ob.length===1){ var r=ob[0].split('/'); return {i:parseInt(r[0],10), n:parseInt(r[1],10), src:'body'}; }
+      if(ob.length>1) return {i:0, n:0, src:'ambiguous-text', ambiguous:1};
+    }catch(e){}
+    return null;
+  }
+  // STEPPER. Only role=tablist, or a container whose OWN class/data-automation-id says
+  // step/stepper/wizard/progress. A blanket "any ol/ul with 2-20 children" turned an ordinary
+  // <ul class="nav"><li class="nav-item active"> into a fake "1 of 2" on single-page forms.
+  function wStepper(){
+    var groups=[];
+    try{ var tl=document.querySelectorAll('[role=tablist]');
+         for(var a=0;a<tl.length;a++){ if(wChrome(tl[a])) continue; var tabs=tl[a].querySelectorAll('[role=tab]'); if(tabs.length>=2) groups.push(tabs); } }catch(e){}
+    try{ var cs=document.querySelectorAll('[data-automation-id=progressBar],[class*=stepper],[class*=Stepper],[class*=wizard],[class*=Wizard],[class*=Steps],[class*=steps],[class*=progress-nav]');
+         for(var b=0;b<cs.length && b<120;b++){ var c=cs[b]; if(wChrome(c)) continue;
+           var cn=String((typeof c.className==='string'?c.className:'')||'')+' '+String(c.getAttribute('data-automation-id')||'');
+           if(!W_STEPPY.test(cn)) continue;
+           var kids=c.children; if(kids && kids.length>=2 && kids.length<=20) groups.push(kids); } }catch(e){}
+    for(var g=0;g<groups.length;g++){
+      var it=groups[g]; if(!it || it.length<2 || it.length>20) continue;
+      var cur=-1, names=[], bad=false;
+      for(var k=0;k<it.length;k++){
+        var e2=it[k]; if(!e2 || !e2.getAttribute){ names.push(''); continue; }
+        names.push(txtOf(e2).slice(0,60));
+        var ac2=e2.getAttribute('aria-current');
+        var isCur=(e2.getAttribute('aria-selected')==='true')||(ac2==='step'||ac2==='true')||wCurClass(e2);
+        if(isCur){ if(cur>=0){ bad=true; break; } cur=k; }   // two "current" marks ⇒ untrustworthy
+      }
+      if(!bad && cur>=0) return {i:cur+1, n:it.length, src:'stepper', names:names};
+    }
+    return null;
+  }
+  // Identity of the step we are standing on: its ordinal plus the shape of its field set. RN compares
+  // this across probes to notice the USER advancing the wizard.
+  function wStepKey(){
+    var o=wOrdinal()||wStepper();
+    var sigs=[]; try{ var els=ctrls();
+      for(var i=0;i<els.length;i++){ var t=(els[i].type||'').toLowerCase();
+        if(['hidden','submit','button','reset','image'].indexOf(t)>=0) continue;
+        if(!vis(els[i])) continue; sigs.push(sig(els[i])); } }catch(e){}
+    sigs.sort();
+    return ((o&&o.n)?(o.i+'/'+o.n):'?') + '#' + sigs.length + '#' + sigs.join(',').slice(0,600);
+  }
+  function wRequiredEmpty(){
+    var n=0; try{ var els=ctrls();
+      for(var i=0;i<els.length;i++){ var el=els[i], t=(el.type||'').toLowerCase();
+        if(['hidden','submit','button','reset','image','file','radio','checkbox'].indexOf(t)>=0) continue;
+        if(!vis(el)) continue;
+        if(!(el.required || el.getAttribute('aria-required')==='true')) continue;
+        if(!String(el.value||'').trim()) n++; } }catch(e){}
+    return n;
+  }
+  // THE GATE. Returns {el,why,rejected} and NEVER clicks — the caller only ever REPORTS.
+  function wFindNext(){
+    var cands=[], rejected=[], best=null;
+    try{ cands=document.querySelectorAll('button,input[type=submit],input[type=button],[role=button],a'); }catch(e){ return {el:null, why:'no-dom', rejected:rejected}; }
+    for(var i=0;i<cands.length;i++){
+      var el=cands[i];
+      if(!vis(el) || el.disabled || el.getAttribute('aria-disabled')==='true') continue;
+      var lab=wfold(el.innerText||el.value||el.getAttribute('aria-label')||el.getAttribute('title')||'');
+      if(!lab || lab.length>44) continue;
+      // GATE A — the label must BE a next-word AND carry no submit token in any language.
+      if(!W_NEXT.test(lab)){ if(W_SUBMIT.test(lab)) rejected.push(lab.slice(0,28)+':submit-word'); continue; }
+      if(W_SUBMIT.test(lab)){ rejected.push(lab.slice(0,28)+':submit-word'); continue; }
+      // GATE B — structurally incapable of submitting a form. NEVER el.type (it defaults to submit).
+      var at=String((el.getAttribute && el.getAttribute('type'))||'').toLowerCase();
+      if(at==='submit'||at==='image'){ rejected.push(lab.slice(0,28)+':type'); continue; }
+      if(el.form){ rejected.push(lab.slice(0,28)+':inform'); continue; }
+      try{ if(el.closest && el.closest('form')){ rejected.push(lab.slice(0,28)+':form'); continue; } }catch(e){}
+      if(el.getAttribute && el.getAttribute('form')){ rejected.push(lab.slice(0,28)+':formattr'); continue; }
+      // GATE B2 — a real navigation link is not a wizard control.
+      if(el.tagName==='A'){ var h=el.getAttribute('href')||''; if(h && h!=='#' && h.indexOf('javascript:')!==0){ rejected.push(lab.slice(0,28)+':href'); continue; } }
+      // GATE B3 — never site chrome.
+      if(wChrome(el)){ rejected.push(lab.slice(0,28)+':chrome'); continue; }
+      if(best) return {el:null, why:'ambiguous', rejected:rejected};   // two candidates ⇒ refuse
+      best=el;
+    }
+    return best ? {el:best, why:'ok', rejected:rejected} : {el:null, why:'none', rejected:rejected};
+  }
+  // The single report both the main frame and every iframe agent send back.
+  function wReport(frameFlag){
+    try{
+      var ord = wOrdinal(); if(ord && !ord.n) ord=null;   // 'ambiguous-text' ⇒ no ordinal
+      if(!ord) ord = wStepper();
+      var nx = wFindNext();
+      var txt = wfold(String((document.body&&document.body.innerText)||'').slice(0,8000));
+      var review = W_REVIEW.test(txt);
+      if(ord && ord.names){ try{ var cn=wfold(ord.names[ord.i-1]||''); if(W_REVIEW.test(cn)||W_SUBMIT.test(cn)) review=true; }catch(e){} }
+      post({type:'WIZARD', frame:frameFlag,
+        hasOrdinal: !!ord, i:(ord?ord.i:0), n:(ord?ord.n:0), src:(ord?ord.src:''),
+        stepName:(ord&&ord.names?String(ord.names[ord.i-1]||'').slice(0,40):''),
+        canNext: !!nx.el, why: nx.why, rejected:(nx.rejected||[]).slice(0,6),
+        review: review, requiredEmpty: wRequiredEmpty(), stepKey: wStepKey()});
+    }catch(e){ post({type:'WIZARD', frame:frameFlag, error:String((e&&e.message)||e)}); }
+  }
+`;
+
+// Read-only wizard probe for the main frame. Clicks NOTHING.
+const WIZARD_PROBE_JS = `(function(){
+  ${JS_HELPERS}
+  ${WIZARD_HELPERS}
+  wReport(0);
+})(); true;`;
+
+// Watches for the USER advancing a multi-step form. We never press Next ourselves — the person is
+// the safety interlock — but once they do, the newly rendered step should fill itself instead of
+// making them hunt for the Auto Fill button again. Posts STEP_CHANGED with the new step identity.
+const WIZARD_WATCH_JS = `(function(){
+  if (window.__cvfSkipFrame) return;
+  if (window.__cvfStepWatch) return; window.__cvfStepWatch = true;
+  ${JS_HELPERS}
+  ${WIZARD_HELPERS}
+  var last='', t=null, armed=false;
+  window.__cvfArmStepWatch=function(){ armed=true; try{ last=wStepKey(); }catch(e){ last=''; } };
+  function check(){
+    t=null;
+    if(!armed) return;
+    var k=''; try{ k=wStepKey(); }catch(e){ return; }
+    if(!k || k===last) return;
+    last=k;
+    post({type:'STEP_CHANGED', stepKey:k});
+  }
+  function ping(){ if(t) return; t=setTimeout(check, 1200); }
+  try{
+    var mo=new MutationObserver(function(muts){
+      for(var i=0;i<muts.length;i++){ if(muts[i].addedNodes&&muts[i].addedNodes.length){ ping(); return; } }
+    });
+    mo.observe(document.documentElement,{childList:true,subtree:true});
+  }catch(e){}
+})(); true;`;
+
 // 1) SCROLL through the whole form, snapshotting every field by signature as it renders.
 const READ_FIELDS_JS = `(function(){
   ${JS_HELPERS}
   try {
     var out=[], seen={}, rgroups={};
     function snap(){
-      var els=document.querySelectorAll('input,textarea,select');
+      var els=ctrls();
       for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
         if(['hidden','submit','button','reset','image'].indexOf(t)>=0) continue;
         if(!vis(el)) continue;
+        if(isWidgetInternal(el)) continue;
         var s=sig(el);
         if(t==='radio'){
           if(!rgroups[s]){ rgroups[s]={key:s,tag:'radio',type:'radio',name:(el.name||'').slice(0,60),label:radioQuestion(el).slice(0,180),required:!!el.required,options:[]}; out.push(rgroups[s]); }
@@ -537,6 +1212,7 @@ const READ_FIELDS_JS = `(function(){
         if(seen[s]) continue; seen[s]=true;
         var f={key:s,tag:el.tagName.toLowerCase(),type:t,name:(el.name||'').slice(0,60),placeholder:(el.placeholder||'').slice(0,80),label:nlbl(el).slice(0,140),required:!!el.required,accept:(el.getAttribute&&el.getAttribute('accept'))||''};
         if(el.tagName==='SELECT'){ f.options=Array.prototype.slice.call(el.options).map(function(o){return (o.text||'').trim();}).filter(Boolean).slice(0,80); }
+        else if(isCombo(el)){ f.widget='combobox'; }
         out.push(f);
       }
     }
@@ -546,7 +1222,8 @@ const READ_FIELDS_JS = `(function(){
     (function run(){
       out=[]; seen={}; rgroups={};
       scrollThrough(snap, function(){
-        if(out.length>0 || ++tries>=11){ post({type:'FIELDS', fields: out}); }
+        if(out.length>0){ enumCombos(out, function(){ post({type:'FIELDS', fields: out}); }); }
+        else if(++tries>=11){ post({type:'FIELDS', fields: out}); }
         else { setTimeout(run, 450); }
       });
     })();
@@ -562,7 +1239,8 @@ const INTERCEPT_FILES_JS = `(function(){
   function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
   document.addEventListener('click', function(ev){
     try {
-      var el = ev.target;
+      // composedPath()[0] is the real target inside a shadow root; identical to ev.target elsewhere.
+      var el = (ev.composedPath && ev.composedPath()[0]) || ev.target;
       if (!el || el.tagName!=='INPUT' || (el.type||'').toLowerCase()!=='file') return;
       if (el.__cvfSkip){ el.__cvfSkip=false; return; }   // let the native picker open this once
       ev.preventDefault(); ev.stopPropagation();
@@ -595,7 +1273,7 @@ const HARVEST_JS = `(function(){
   ${JS_HELPERS}
   try {
     var out=[], seenRadio={};
-    var els=document.querySelectorAll('input,textarea,select');
+    var els=ctrls();
     for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
       if(['hidden','submit','button','reset','image','file','password'].indexOf(t)>=0) continue;
       if(!vis(el)) continue;
@@ -622,56 +1300,49 @@ const FRAME_AGENT_JS = `(function(){
   if (window.__cvfSkipFrame) return;
   if (window.__cvfAgent) return; window.__cvfAgent = true;
   ${JS_HELPERS}
+  ${WIZARD_HELPERS}
   function b64ToFile(b64, filename, mime){ var bin=atob(b64); var bytes=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i); return new File([bytes], filename, {type:mime||'application/pdf'}); }
   function doScan(){
     try {
+      // Tell RN a REAL agent frame is working, so the debounce waits for THIS frame. Captcha iframes
+      // are marked __cvfSkipFrame by FRAME_GUARD_JS and never install the agent, so
+      // window.frames.length is NOT a usable count of who owes us an answer.
+      post({type:'FRAME_SCANNING', frame:1});
       var out=[], seen={}, rgroups={};
-      function snap(){ var els=document.querySelectorAll('input,textarea,select');
+      function snap(){ var els=ctrls();
         for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
           if(['hidden','submit','button','reset','image'].indexOf(t)>=0) continue;
-          if(!vis(el)) continue; var s=sig(el);
+          if(!vis(el)) continue;
+          if(isWidgetInternal(el)) continue;
+          var s=sig(el);
           if(t==='radio'){ if(!rgroups[s]){ rgroups[s]={key:s,tag:'radio',type:'radio',name:(el.name||'').slice(0,60),label:radioQuestion(el).slice(0,180),required:!!el.required,options:[]}; out.push(rgroups[s]); } var ol=(nlbl(el)||el.value||'').slice(0,80); if(ol&&rgroups[s].options.indexOf(ol)<0) rgroups[s].options.push(ol); continue; }
           if(seen[s]) continue; seen[s]=true;
           var f={key:s,tag:el.tagName.toLowerCase(),type:t,name:(el.name||'').slice(0,60),placeholder:(el.placeholder||'').slice(0,80),label:nlbl(el).slice(0,140),required:!!el.required,accept:(el.getAttribute&&el.getAttribute('accept'))||''};
           if(el.tagName==='SELECT'){ f.options=Array.prototype.slice.call(el.options).map(function(o){return (o.text||'').trim();}).filter(Boolean).slice(0,80); }
+          else if(isCombo(el)){ f.widget='combobox'; }
           out.push(f);
         }
       }
       // Retry for ~5s so a cross-origin ATS iframe that renders its form late still gets scanned.
-      // A CHILD frame posts ONLY when it finds fields — it must never emit an empty terminal (that
-      // would re-arm the debounce after mapping already started); the MAIN frame owns the empty signal.
+      // A child frame that finds nothing must still say DONE — otherwise RN waits for a frame that
+      // will never answer — but it posts an empty list, which the RN side does not treat as terminal.
       var tries=0;
       (function run(){
         out=[]; seen={}; rgroups={};
         scrollThrough(snap, function(){
-          if(out.length>0){ post({type:'FIELDS', fields: out, frame:1}); }
+          if(out.length>0){ enumCombos(out, function(){ post({type:'FIELDS', fields: out, frame:1}); }); }
           else if(++tries<11){ setTimeout(run, 450); }
+          else { post({type:'FIELDS', fields: [], frame:1, done:true}); }
         });
       })();
     } catch(e){ post({type:'AUTOFILL_ERROR', error:String((e&&e.message)||e)}); }
   }
   function doFill(bySig){
-    try {
-      var total=Object.keys(bySig).length, filled={};
-      function fillVisible(){ var els=document.querySelectorAll('input,textarea,select');
-        for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
-          if(['hidden','submit','button','reset','image','file'].indexOf(t)>=0) continue; if(!vis(el)) continue;
-          var s=sig(el); if(!(s in bySig)||filled[s]) continue; var v=bySig[s]; if(v==null||v===''){filled[s]=true;continue;}
-          if(keepUser(el,t,v)){ filled[s]=true; continue; }   // user already answered this — leave it
-          try{ if(t==='radio'){ var ol=(nlbl(el)||el.value||'').trim().toLowerCase(); var want=String(v).trim().toLowerCase(); if(ol===want||(want&&ol.indexOf(want)>=0)||(el.value||'').toLowerCase()===want){ setChecked(el,true); if(el.checked) filled[s]=true; } }
-            else if(el.tagName==='SELECT'){ var m=pickOpt(el.options,v); if(m){ setNative(el, m.value); filled[s]=true; } }
-            else if(t==='checkbox'){ var wc=(v===true)||/^(yes|true|on|1|checked)$/i.test(String(v)); setChecked(el,wc); if(el.checked===wc) filled[s]=true; }
-            else { try{el.focus();}catch(e){} setNative(el,String(v)); try{el.dispatchEvent(new Event('blur',{bubbles:true}));el.blur();}catch(e){} if(String(el.value)===String(v)) filled[s]=true; }
-          }catch(e){}
-        }
-      }
-      var passes=0;
-      function pass(){ var before=Object.keys(filled).length; scrollThrough(fillVisible, function(){ passes++; var after=Object.keys(filled).length; if(after>before&&after<total&&passes<5){pass();} else { post({type:'FILLED', count:after, total:total, frame:1}); } }); }
-      pass();
-    } catch(e){ post({type:'AUTOFILL_ERROR', error:String((e&&e.message)||e)}); }
+    post({type:'FRAME_FILLING', frame:1});
+    runFill(bySig, 1);
   }
   function doAttach(keys,b64,filename,mime,kind){
-    try{ var ok=0,total=0; (keys||[]).forEach(function(k){ var el=document.querySelector('[data-cvf="'+k+'"]'); if(!el||(el.type||'').toLowerCase()!=='file') return; total++; try{ var dt=new DataTransfer(); dt.items.add(b64ToFile(b64,filename,mime)); el.files=dt.files; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); if(el.files&&el.files.length>0) ok++; }catch(e){} });
+    try{ var ok=0,total=0; (keys||[]).forEach(function(k){ var el=deepQuery('[data-cvf="'+k+'"]')[0]; if(!el||(el.type||'').toLowerCase()!=='file') return; total++; try{ var dt=new DataTransfer(); dt.items.add(b64ToFile(b64,filename,mime)); el.files=dt.files; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); if(el.files&&el.files.length>0) ok++; }catch(e){} });
       if(total>0) post({type:'ATTACHED', kind:kind, ok:ok, total:total, frame:1});
     }catch(e){}
   }
@@ -682,6 +1353,7 @@ const FRAME_AGENT_JS = `(function(){
       if(d.__cvfCmd==='scan') doScan();
       else if(d.__cvfCmd==='fill') doFill(d.values||{});
       else if(d.__cvfCmd==='attach') doAttach(d.keys, d.b64, d.filename, d.mime, d.kind);
+      else if(d.__cvfCmd==='wizardProbe') wReport(1);
     } catch(e){}
   }, false);
 })(); true;`;
@@ -819,48 +1491,7 @@ const AUTODETECT_JS = `(function(){
 function fillJs(values: Record<string, any>): string {
   return `(function(){
     ${JS_HELPERS}
-    try {
-      var bySig = ${JSON.stringify(values)};
-      var total = Object.keys(bySig).length;
-      var filled = {};
-      function fillVisible(){
-        var els = document.querySelectorAll('input,textarea,select');
-        for (var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
-          if (['hidden','submit','button','reset','image','file'].indexOf(t)>=0) continue;
-          if (!vis(el)) continue;
-          var s = sig(el);
-          if (!(s in bySig)) continue;
-          if (filled[s]) continue;
-          var v = bySig[s]; if (v==null || v===''){ filled[s]=true; continue; }
-          if (keepUser(el,t,v)){ filled[s]=true; continue; }   // user already answered this — leave it
-          try {
-            if (t==='radio'){
-              var ol=(nlbl(el)||el.value||'').trim().toLowerCase(); var want=String(v).trim().toLowerCase();
-              if (ol===want || (want && ol.indexOf(want)>=0) || (el.value||'').toLowerCase()===want){ setChecked(el,true); if(el.checked) filled[s]=true; }
-            } else if (el.tagName==='SELECT'){
-              var m=pickOpt(el.options,v); if(m){ setNative(el, m.value); filled[s]=true; }
-            } else if (t==='checkbox'){
-              var wc=(v===true)||/^(yes|true|on|1|checked)$/i.test(String(v)); setChecked(el,wc); if(el.checked===wc) filled[s]=true;
-            } else {
-              try{el.focus();}catch(e){} setNative(el,String(v)); try{el.dispatchEvent(new Event('blur',{bubbles:true}));el.blur();}catch(e){} if(String(el.value)===String(v)) filled[s]=true;
-            }
-          } catch(e){}
-        }
-      }
-      // Multiple passes: re-scroll and fill until nothing new fills (handles virtualization,
-      // lazy sections, and anything re-rendered after a file/upload control).
-      var passes = 0;
-      function pass(){
-        var before = Object.keys(filled).length;
-        scrollThrough(fillVisible, function(){
-          passes++;
-          var after = Object.keys(filled).length;
-          if (after > before && after < total && passes < 5){ pass(); }
-          else { post({type:'FILLED', count:after, total:total}); }
-        });
-      }
-      pass();
-    } catch(e){ post({type:'AUTOFILL_ERROR', error:String((e && e.message) || e)}); }
+    runFill(${JSON.stringify(values)}, 0);
   })(); true;`;
 }
 
@@ -869,6 +1500,22 @@ function fillJs(values: Record<string, any>): string {
 function attachJs(keys: string[], base64: string, filename: string, mime: string, kind: string): string {
   return `(function(){
     function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
+    // Local shadow-aware lookup — this script is injected standalone (no JS_HELPERS), and a file
+    // input living inside a web component is invisible to a plain document.querySelector.
+    function deepQuery(sel, root){
+      var out=[], budget=0;
+      function walk(r){
+        if(budget>12000) return;
+        try{
+          var els=r.querySelectorAll(sel);
+          for(var i=0;i<els.length;i++) out.push(els[i]);
+          var all=r.querySelectorAll('*'); budget+=all.length;
+          for(var j=0;j<all.length;j++){ if(all[j].shadowRoot) walk(all[j].shadowRoot); }
+        }catch(e){}
+      }
+      walk(root||document);
+      return out;
+    }
     try {
       var keys = ${JSON.stringify(keys)};
       var b64 = ${JSON.stringify(base64)};
@@ -881,8 +1528,8 @@ function attachJs(keys: string[], base64: string, filename: string, mime: string
       var ok = 0, total = 0;
       keys.forEach(function(k){
         // Manual "Upload" from the dock has no tapped field → target the first real file input.
-        var el = document.querySelector('[data-cvf="'+k+'"]');
-        if ((!el || (el.type||'').toLowerCase()!=='file') && k === '__manual__') el = document.querySelector('input[type=file]');
+        var el = deepQuery('[data-cvf="'+k+'"]')[0];
+        if ((!el || (el.type||'').toLowerCase()!=='file') && k === '__manual__') el = deepQuery('input[type=file]')[0];
         if (!el || (el.type||'').toLowerCase()!=='file') return;
         total++;
         try {
@@ -961,7 +1608,7 @@ function skillsJs(skills: string[]): string {
       }catch(e){ return false; }
     }
     function findInput(){
-      var els=document.querySelectorAll('input,textarea');
+      var els=deepQuery('input,textarea');
       for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
         if(['hidden','submit','button','reset','image','file','checkbox','radio'].indexOf(t)>=0) continue;
         if(!vis(el)) continue;
@@ -1062,11 +1709,12 @@ function skillsJs(skills: string[]): string {
   })(); true;`;
 }
 
-const AUTOFILL_STEPS: { key: string; label: string }[] = [
+const AUTOFILL_STEPS: { key: string; label: string; wizardOnly?: boolean }[] = [
   { key: 'reading', label: 'Scanning the whole form' },
   { key: 'mapping', label: 'Matching with your profile (AI)' },
   { key: 'filling', label: 'Filling in your details' },
   { key: 'skills',  label: 'Adding your skills' },
+  { key: 'wizard',  label: 'Checking for more steps', wizardOnly: true },
 ];
 
 // Cover-letter HTML → readable plain text (for pasting into a textarea).
@@ -1233,6 +1881,26 @@ export default function JobDetailScreen() {
   const filledCountRef = useRef<number>(0);      // fields filled, carried into the skills stage's message
   const skillsTimerRef = useRef<any>(null);      // don't hang the overlay if the page has no skills widget
   const scanTimerRef   = useRef<any>(null);      // watchdog: the form scan must not spin forever
+  const skillsCountRef = useRef<number>(0);      // carried into the wizard-aware final message
+  // Frames that ANNOUNCED they are working and therefore owe us an answer. window.frames.length is
+  // not usable: FRAME_GUARD_JS marks captcha iframes __cvfSkipFrame so they never install the agent
+  // and never reply — counting them burns the whole cap on every page that has one.
+  const pendingScanFramesRef = useRef<number>(0);
+  const pendingFillFramesRef = useRef<number>(0);
+  const fieldsCapRef   = useRef<any>(null);      // ceiling so a silent frame can't hang the scan
+  const fillCapRef     = useRef<any>(null);
+  const runTimerRef    = useRef<any>(null);      // whole-run ceiling (a hung mapping used to spin forever)
+  const failedAccumRef = useRef<any[]>([]);      // per-field failures merged across frames
+  const fillFinalizedRef = useRef<number>(-1);   // gen whose fill stage already finalized
+  const [autofillFailed, setAutofillFailed] = useState<any[]>([]);
+  // Multi-step forms. Both the main frame and every iframe answer a probe, so we must not act on
+  // whichever lands first — on an iframe-hosted ATS the main frame reports "not a wizard" while the
+  // iframe holds the truth.
+  const wizProbeRef = useRef<{ seq: number; reports: any[] }>({ seq: 0, reports: [] });
+  const wizTimerRef = useRef<any>(null);
+  const wizStepKeyRef = useRef<string>('');      // identity of the step we last filled
+  const wizAutoRef = useRef<number>(0);          // steps auto-filled after the user pressed Next
+  const [wizardUi, setWizardUi] = useState<{ i: number; n: number; name: string } | null>(null);
   // Sign-in flow: the page we must return the user to once auth finishes, plus guards so we restore
   // exactly once and never fight the provider's own redirect chain.
   const preAuthUrlRef   = useRef<string>('');
@@ -1869,21 +2537,31 @@ export default function JobDetailScreen() {
   // ── AI auto-fill orchestration (read → map → fill → attach resume → attach CL) ──
   const finishAutofill = (state: 'done' | 'error', note = '') => {
     autofillRef.current.active = false;
+    if (runTimerRef.current) { clearTimeout(runTimerRef.current); runTimerRef.current = null; }
     setAutofillState(state);
     setAutofillNote(note);
   };
 
   // Final message from BOTH stages, so a run that filled no text fields but DID add skills still
   // reads as a success (and vice-versa) instead of the old blanket "couldn't match any fields".
+  // It also NAMES what it could not answer: a bare count made people trust a form that still had
+  // required dropdowns sitting empty — and on react-select pages that was silently all of them.
   const finishFill = (fields: number, skills: number) => {
     const parts: string[] = [];
     if (fields > 0) parts.push(`Filled ${fields} field${fields === 1 ? '' : 's'}`);
     if (skills > 0) parts.push(`${fields > 0 ? 'added' : 'Added'} ${skills} skill${skills === 1 ? '' : 's'}`);
+    const failed = failedAccumRef.current.filter((f: any) => f && f.label);
+    setAutofillFailed(failed.slice(0, 6));
     if (!parts.length) {
-      finishAutofill('done', "We couldn't match anything on this page automatically — please fill it in manually.");
+      finishAutofill('done', failed.length
+        ? "We couldn't fill this form automatically — the questions below still need you."
+        : "We couldn't match anything on this page automatically — please fill it in manually.");
       return;
     }
-    finishAutofill('done', `${parts.join(' and ')}. Now tap each upload field to attach your resume & cover letter.`);
+    const tail = failed.length
+      ? ` ${failed.length} question${failed.length === 1 ? '' : 's'} still need${failed.length === 1 ? 's' : ''} you — see below.`
+      : '';
+    finishAutofill('done', `${parts.join(' and ')}.${tail} Now tap each upload field to attach your resume & cover letter.`);
   };
 
   const closeApplyWebView = () => {
@@ -1893,8 +2571,13 @@ export default function JobDetailScreen() {
     setPreview(null); setPreviewBusy(null);   // don't leave a stale preview / busy spinner
     setFilePick(null); setFilePickBusy(null);
     if (attachTimerRef.current) { clearTimeout(attachTimerRef.current); attachTimerRef.current = null; }   // no stray "couldn't attach" alert after close
-    if (scanTimerRef.current)   { clearTimeout(scanTimerRef.current);   scanTimerRef.current = null; }
-    if (skillsTimerRef.current) { clearTimeout(skillsTimerRef.current); skillsTimerRef.current = null; }
+    for (const r of [scanTimerRef, skillsTimerRef, fieldsCapRef, fillCapRef, runTimerRef, filledTimerRef, fieldsTimerRef, wizTimerRef]) {
+      if (r.current) { clearTimeout(r.current); r.current = null; }
+    }
+    wizProbeRef.current.seq++;               // invalidate any in-flight wizard probe
+    wizStepKeyRef.current = ''; wizAutoRef.current = 0;
+    setWizardUi(null);
+    setAutofillFailed([]);
     const didApply = submitMarkedRef.current;
     setApplyWebUrl(null);
     // If they actually submitted on the portal, ask for a rating after the web view closes.
@@ -1919,10 +2602,25 @@ export default function JobDetailScreen() {
     fieldsAccumRef.current = [];
     filledAccumRef.current = { count: 0 };
     filledCountRef.current = 0;
-    if (fieldsTimerRef.current) { clearTimeout(fieldsTimerRef.current); fieldsTimerRef.current = null; }
-    if (skillsTimerRef.current) { clearTimeout(skillsTimerRef.current); skillsTimerRef.current = null; }
+    skillsCountRef.current = 0;
+    pendingScanFramesRef.current = 0;
+    pendingFillFramesRef.current = 0;
+    failedAccumRef.current = [];
+    fillFinalizedRef.current = -1;
+    setAutofillFailed([]);
+    wizProbeRef.current = { seq: wizProbeRef.current.seq + 1, reports: [] };
+    for (const r of [fieldsTimerRef, skillsTimerRef, fieldsCapRef, fillCapRef, runTimerRef, filledTimerRef, wizTimerRef]) {
+      if (r.current) { clearTimeout(r.current); r.current = null; }
+    }
     // The skills stage needs the user's résumé skills — make sure the bundle has landed.
     if (!smartData) { getSmartFillData().then(setSmartData).catch(() => {}); }
+    // WHOLE-RUN ceiling. The scan watchdog below disarms the moment fields arrive, which left a hung
+    // mapping (the server's own AI timeout is 60s) spinning the overlay with no honest way out.
+    runTimerRef.current = setTimeout(() => {
+      if (autofillRef.current.active && autofillRef.current.gen === gen) {
+        finishAutofill('error', 'This form took too long. Anything already filled has been kept — please finish the rest by hand.');
+      }
+    }, 95000);
     // WATCHDOG: the scan retries internally (SPA forms render late). If nothing ever comes back,
     // fail honestly instead of leaving the overlay spinning forever.
     if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
@@ -1932,8 +2630,75 @@ export default function JobDetailScreen() {
         finishAutofill('error', "Couldn't read this form in time. Scroll to the application form and tap Auto Fill again.");
       }
     }, 25000);
+    // Arm the step watcher so that when the USER presses Next on a multi-step form, the new step
+    // fills itself. (We never press Next — see wReport/wFindNext: the probe is read-only.)
+    try { applyWebRef.current.injectJavaScript('try{window.__cvfArmStepWatch&&window.__cvfArmStepWatch();}catch(e){} true;'); } catch {}
     applyWebRef.current.injectJavaScript(READ_FIELDS_JS);                          // main frame (as before)
     applyWebRef.current.injectJavaScript(relayToChildrenJs({ __cvfCmd: 'scan' })); // + any iframe(s)
+  };
+
+  // ── MULTI-STEP ──────────────────────────────────────────────────────────────────────────────
+  // We probe; we never click. Deciding that a button labelled "Continue" is a Next and not the final
+  // Submit is a heuristic, and the cost of getting it wrong once is a half-finished application sent
+  // to a real employer. So the person taps Next — and the moment they do, STEP_CHANGED brings us
+  // back and the next step fills itself.
+  const WIZ_PROBE_MS = 900;      // ≈ the FIELDS debounce; long enough for every frame to answer
+  const WIZ_MAX_AUTO = 8;        // never chain more than this many steps in one sitting
+
+  const wizardProbe = (gen: number) => {
+    if (!stillValid(gen)) { finishFill(filledCountRef.current, skillsCountRef.current); return; }
+    const seq = ++wizProbeRef.current.seq;   // also invalidates a duplicate probe (the skills timeout
+    wizProbeRef.current.reports = [];        // and a late SKILLS_ADDED both land here)
+    try {
+      applyWebRef.current?.injectJavaScript(WIZARD_PROBE_JS);
+      applyWebRef.current?.injectJavaScript(relayToChildrenJs({ __cvfCmd: 'wizardProbe' }));
+    } catch { finishFill(filledCountRef.current, skillsCountRef.current); return; }
+    if (wizTimerRef.current) clearTimeout(wizTimerRef.current);
+    wizTimerRef.current = setTimeout(() => {
+      if (wizProbeRef.current.seq !== seq) return;
+      settleWizard(wizProbeRef.current.reports.slice(), gen);
+    }, WIZ_PROBE_MS);
+  };
+
+  const settleWizard = (reports: any[], gen: number) => {
+    if (wizTimerRef.current) { clearTimeout(wizTimerRef.current); wizTimerRef.current = null; }
+    if (!stillValid(gen)) return;
+    // Pick ONE frame's report; never merge across frames. An ordinal printed by the host page must
+    // never be combined with a control that lives inside an iframe.
+    let best: any = null, bestScore = -1;
+    for (const r of reports) {
+      if (!r || r.error) continue;
+      const score = (r.hasOrdinal ? 2 : 0) + (r.canNext ? 1 : 0);
+      if (score > bestScore) { best = r; bestScore = score; }
+    }
+    if (best && best.stepKey) wizStepKeyRef.current = String(best.stepKey);
+    const f = filledCountRef.current, sk = skillsCountRef.current;
+
+    // Not a wizard → exactly today's ending.
+    if (!best || (!best.hasOrdinal && !best.canNext)) { setWizardUi(null); finishFill(f, sk); return; }
+
+    const failed = failedAccumRef.current.filter((x: any) => x && x.label);
+    setAutofillFailed(failed.slice(0, 6));
+    const did = f > 0 || sk > 0
+      ? `Filled ${f} field${f === 1 ? '' : 's'}${sk > 0 ? ` and added ${sk} skill${sk === 1 ? '' : 's'}` : ''}`
+      : 'Nothing on this step matched your profile';
+    setStep('wizard', 'done');
+
+    if (best.hasOrdinal) {
+      setWizardUi({ i: best.i, n: best.n, name: String(best.stepName || '') });
+      if (best.review || best.i >= best.n) {
+        finishAutofill('done', `${did} on step ${best.i} of ${best.n} — the last one. Check everything, then submit it yourself.`);
+        return;
+      }
+      const req = best.requiredEmpty > 0
+        ? ` ${best.requiredEmpty} required question${best.requiredEmpty === 1 ? '' : 's'} here still need${best.requiredEmpty === 1 ? 's' : ''} your answer.`
+        : '';
+      finishAutofill('done', `${did} on step ${best.i} of ${best.n}.${req} Tap Next on the page — I'll fill the next step automatically.`);
+      return;
+    }
+    // Wizard-shaped but uncountable (a bespoke SPA stepper). Say so; never invent a number.
+    setWizardUi({ i: 0, n: 0, name: '' });
+    finishAutofill('done', `${did}. This form has more than one step. Tap Next on the page — I'll fill the next one automatically.`);
   };
 
   // Process the MERGED field set (main frame + iframes) once it settles. Extracted from the FIELDS
@@ -1962,6 +2727,15 @@ export default function JobDetailScreen() {
       const clText = clPlainText(coverLetterHtml);
       if (clText) { for (const f of fields) { if (isCoverLetterTextarea(f)) values[f.key] = clText; } }
       try { smartValuesRef.current = { ...smartValuesRef.current, ...values }; } catch {}
+      // Questions the server DELIBERATELY left blank (legal/consent/no-matching-option). Naming them
+      // is the difference between "filled 12 fields" and the user knowing what is still missing.
+      if (Array.isArray(data?.skipped)) {
+        for (const sk of data.skipped) {
+          if (sk && sk.label && values[sk.key] == null && !failedAccumRef.current.some((x: any) => x.key === sk.key)) {
+            failedAccumRef.current.push({ key: sk.key, label: String(sk.label).slice(0, 90), why: String(sk.why || 'needs your answer') });
+          }
+        }
+      }
       // Be honest about WHICH stage came up empty: blaming the fill for a mapping that returned
       // nothing (AI down, or a profile too thin to answer these questions) sent people hunting the
       // wrong problem. The skills stage still runs — it doesn't depend on the mapping.
@@ -1979,6 +2753,27 @@ export default function JobDetailScreen() {
     } catch (err: any) {
       if (stillValid(gen)) { setStep('mapping', 'warn'); finishAutofill('error', err?.message || 'AI mapping failed.'); }
     }
+  };
+
+  // A slow frame produced fields AFTER the mapping already ran. Fill anything we already hold a value
+  // for; genuinely new questions are reported honestly rather than triggering a second mapping call
+  // (autofill-map charges 'ai_autofill' — free only while no admin has priced it, and processedGenRef
+  // exists precisely to stop the double charge).
+  const processLateFields = async (fresh: any[], gen: number) => {
+    if (!stillValid(gen)) return;
+    const known = smartValuesRef.current || {};
+    const values: Record<string, any> = {};
+    for (const f of fresh) { if (known[f.key] != null) values[f.key] = known[f.key]; }
+    const clText = clPlainText(coverLetterHtml);
+    if (clText) { for (const f of fresh) { if (isCoverLetterTextarea(f)) values[f.key] = clText; } }
+    for (const f of fresh) {
+      if (values[f.key] == null && f.label && !failedAccumRef.current.some((x: any) => x.key === f.key)) {
+        failedAccumRef.current.push({ key: f.key, label: String(f.label).slice(0, 90), why: 'appeared after we finished reading the form' });
+      }
+    }
+    if (!Object.keys(values).length || !stillValid(gen)) return;
+    applyWebRef.current?.injectJavaScript(fillJs(values));
+    applyWebRef.current?.injectJavaScript(relayToChildrenJs({ __cvfCmd: 'fill', values }));
   };
 
   const onWebMessage = async (e: any) => {
@@ -2085,21 +2880,70 @@ export default function JobDetailScreen() {
     // manually, in any language). Mark the job "Applied" once — dashboard reflects it.
     if (msg.type === 'SUBMIT_SUCCESS') { markApplied(); return; }
 
+    // The USER advanced a multi-step form. Fill the step they just landed on, so a wizard takes one
+    // tap per step instead of one tap plus hunting for Auto Fill. Runs only after a completed run,
+    // never while one is in flight, and stops at WIZ_MAX_AUTO.
+    if (msg.type === 'STEP_CHANGED') {
+      const k = String(msg.stepKey || '');
+      if (!k || k === wizStepKeyRef.current) return;
+      if (autofillRef.current.active) return;               // a run is already working this page
+      if (!applyWebUrl || !sameOrigin()) return;
+      if (wizAutoRef.current >= WIZ_MAX_AUTO) return;
+      wizStepKeyRef.current = k;
+      wizAutoRef.current += 1;
+      startAutofill();
+      return;
+    }
+
+    // A real agent frame announced it is working and therefore owes us an answer.
+    if (msg.type === 'FRAME_SCANNING') { pendingScanFramesRef.current += 1; return; }
+    if (msg.type === 'FRAME_FILLING')  { pendingFillFramesRef.current += 1; return; }
+
     if (!autofillRef.current.active) return;
     const gen = autofillRef.current.gen;
 
     if (msg.type === 'FIELDS') {
       // Accumulate fields across frames (main + iframe), dedupe by key, then process once they settle.
       const incoming = Array.isArray(msg.fields) ? msg.fields : [];
-      for (const f of incoming) { if (f && f.key && !fieldsAccumRef.current.some((x: any) => x.key === f.key)) fieldsAccumRef.current.push(f); }
-      if (fieldsTimerRef.current) clearTimeout(fieldsTimerRef.current);
-      fieldsTimerRef.current = setTimeout(() => { void processFields(fieldsAccumRef.current.slice(), gen); }, 700);
+      if (msg.frame) pendingScanFramesRef.current = Math.max(0, pendingScanFramesRef.current - 1);
+      const fresh = incoming.filter((f: any) => f && f.key && !fieldsAccumRef.current.some((x: any) => x.key === f.key));
+      for (const f of fresh) fieldsAccumRef.current.push(f);
+
+      if (processedGenRef.current !== gen) {
+        if (fieldsTimerRef.current) { clearTimeout(fieldsTimerRef.current); fieldsTimerRef.current = null; }
+        // A cross-origin ATS iframe scans SECONDS slower than its host page (scrollThrough + up to 11
+        // retries + dropdown enumeration). A flat 700ms debounce let the host page's lone search box
+        // win the race, start the mapping, and then processedGen threw the iframe's ENTIRE
+        // application form away — we filled a newsletter box and called it done.
+        if (pendingScanFramesRef.current > 0) {
+          if (!fieldsCapRef.current) {
+            fieldsCapRef.current = setTimeout(() => {
+              fieldsCapRef.current = null;
+              if (stillValid(gen)) void processFields(fieldsAccumRef.current.slice(), gen);
+            }, 20000);
+          }
+          return;
+        }
+        if (fieldsCapRef.current) { clearTimeout(fieldsCapRef.current); fieldsCapRef.current = null; }
+        fieldsTimerRef.current = setTimeout(() => { void processFields(fieldsAccumRef.current.slice(), gen); }, 700);
+        return;
+      }
+      // Mapping already ran and a frame has only NOW produced fields. Don't discard them — and don't
+      // pay for a second mapping either.
+      if (fresh.length) void processLateFields(fresh, gen);
+      return;
     } else if (msg.type === 'FILLED') {
-      // Sum FILLED across frames (main fills 0 when the form is in an iframe; the iframe fills N) —
-      // debounce so we report the combined count once, not a race between frames.
       filledAccumRef.current.count += (msg.count || 0);
-      if (filledTimerRef.current) clearTimeout(filledTimerRef.current);
-      filledTimerRef.current = setTimeout(() => {
+      if (msg.frame) pendingFillFramesRef.current = Math.max(0, pendingFillFramesRef.current - 1);
+      if (Array.isArray(msg.failed)) {
+        for (const f of msg.failed) {
+          if (f && f.key && !failedAccumRef.current.some((x: any) => x.key === f.key)) failedAccumRef.current.push(f);
+        }
+      }
+      const finalizeFill = () => {
+        if (fillFinalizedRef.current === gen) return;
+        fillFinalizedRef.current = gen;
+        for (const r of [fillCapRef, filledTimerRef]) { if (r.current) { clearTimeout(r.current); r.current = null; } }
         const c = filledAccumRef.current.count;
         filledCountRef.current = c;
         setStep('filling', c > 0 ? 'done' : 'warn');
@@ -2108,20 +2952,35 @@ export default function JobDetailScreen() {
         const sk = (smartData?.skills || []).filter(Boolean);
         if (sk.length && stillValid(gen)) {
           setStep('skills', 'active');
-          try { applyWebRef.current?.injectJavaScript(skillsJs(sk)); } catch { finishFill(c, 0); }
+          try { applyWebRef.current?.injectJavaScript(skillsJs(sk)); } catch { skillsCountRef.current = 0; wizardProbe(gen); }
           // If the page never answers (no skills widget), don't hang the overlay.
           if (skillsTimerRef.current) clearTimeout(skillsTimerRef.current);
-          skillsTimerRef.current = setTimeout(() => { if (stillValid(gen)) { setStep('skills', 'warn'); finishFill(c, 0); } }, 12000);
+          skillsTimerRef.current = setTimeout(() => { if (stillValid(gen)) { setStep('skills', 'warn'); skillsCountRef.current = 0; wizardProbe(gen); } }, 12000);
         } else {
           setStep('skills', 'warn');
-          finishFill(c, 0);
+          skillsCountRef.current = 0;
+          wizardProbe(gen);
         }
-      }, 600);
+      };
+      if (filledTimerRef.current) { clearTimeout(filledTimerRef.current); filledTimerRef.current = null; }
+      // The main frame posts FILLED{count:0} almost instantly when the form lives in an iframe. The
+      // old 600ms debounce let that win, the run ended, and the iframe's real FILLED{count:18} was
+      // dropped by the `if (!active) return` guard — the user was told nothing matched.
+      if (pendingFillFramesRef.current > 0) {
+        // Deliberately above the injected drain's own 9s cap, so skillsJs (the other script that
+        // clicks page elements) can never run while a dropdown popup is open.
+        if (!fillCapRef.current) fillCapRef.current = setTimeout(() => { fillCapRef.current = null; if (stillValid(gen)) finalizeFill(); }, 30000);
+      } else {
+        filledTimerRef.current = setTimeout(() => { if (stillValid(gen)) finalizeFill(); }, 600);
+      }
     } else if (msg.type === 'SKILLS_ADDED') {
       if (skillsTimerRef.current) { clearTimeout(skillsTimerRef.current); skillsTimerRef.current = null; }
       const n = msg.added || 0;
+      skillsCountRef.current = n;
       setStep('skills', n > 0 ? 'done' : 'warn');
-      finishFill(filledCountRef.current, n);
+      wizardProbe(gen);
+    } else if (msg.type === 'WIZARD') {
+      wizProbeRef.current.reports.push(msg);      // settleWizard decides once every frame has spoken
     } else if (msg.type === 'AUTOFILL_ERROR') {
       finishAutofill('error', msg.error || 'Auto-fill failed.');
     }
@@ -3056,7 +3915,7 @@ export default function JobDetailScreen() {
               source={{ uri: applyWebUrl }}
               style={s.webView}
               originWhitelist={['*']}
-              injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + XLATE_WATCH_JS + '\n' + INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + FRAME_AGENT_JS}
+              injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + XLATE_WATCH_JS + '\n' + INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + WIZARD_WATCH_JS + '\n' + FRAME_AGENT_JS}
               injectedJavaScriptForMainFrameOnly={false}
               javaScriptEnabled
               domStorageEnabled
@@ -3262,7 +4121,10 @@ export default function JobDetailScreen() {
                   <Ionicons name={autofillState === 'done' ? 'checkmark' : autofillState === 'error' ? 'alert' : 'sparkles'} size={26} color="#fff" />
                 </LinearGradient>
                 <Text style={s.afTitle}>
-                  {autofillState === 'done' ? 'Done — review & submit' : autofillState === 'error' ? 'Auto-fill stopped' : 'Auto-filling your application'}
+                  {autofillState === 'done'
+                    // On a multi-step form "Done — review & submit" is a lie: it's done with THIS step.
+                    ? (wizardUi && !(wizardUi.n > 0 && wizardUi.i >= wizardUi.n) ? 'Step filled — more to go' : 'Done — review & submit')
+                    : autofillState === 'error' ? 'Auto-fill stopped' : 'Auto-filling your application'}
                 </Text>
                 {autofillState === 'running' && (
                   <Text style={s.afSub}>Reading the form and filling it with AI — a few seconds.</Text>
@@ -3271,8 +4133,37 @@ export default function JobDetailScreen() {
                   <Text style={autofillState === 'error' ? s.afErrText : s.afSub}>{autofillNote}</Text>
                 )}
 
+                {!!wizardUi && wizardUi.n > 0 && (
+                  <View style={s.afWizBar}>
+                    <Ionicons name="layers-outline" size={15} color={T.blue} />
+                    <Text style={s.afWizText} numberOfLines={1}>
+                      Step {wizardUi.i} of {wizardUi.n}{wizardUi.name ? ` · ${wizardUi.name}` : ''}
+                    </Text>
+                    <View style={s.afWizTrack}>
+                      <View style={[s.afWizFill, { width: `${Math.min(100, Math.round((wizardUi.i / Math.max(1, wizardUi.n)) * 100))}%` }]} />
+                    </View>
+                  </View>
+                )}
+
+                {autofillFailed.length > 0 && (
+                  <View style={s.afFailBox}>
+                    <View style={s.afFailHead}>
+                      <Ionicons name="alert-circle-outline" size={14} color={T.amber} />
+                      <Text style={s.afFailTitle}>STILL NEEDS YOU</Text>
+                    </View>
+                    <ScrollView style={s.afFailScroll} nestedScrollEnabled>
+                      {autofillFailed.map((f: any, i: number) => (
+                        <View key={f.key || i} style={s.afFailRow}>
+                          <Text style={s.afFailLabel} numberOfLines={2}>{f.label}</Text>
+                          {!!f.why && <Text style={s.afFailWhy}>{f.why}</Text>}
+                        </View>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+
                 <View style={s.afSteps}>
-                  {AUTOFILL_STEPS.map((step) => {
+                  {AUTOFILL_STEPS.filter((step) => !step.wizardOnly || !!wizardUi).map((step) => {
                     const st = afStep[step.key] || 'pending';
                     return (
                       <View key={step.key} style={s.afStepRow}>
@@ -3294,8 +4185,23 @@ export default function JobDetailScreen() {
                     <Text style={s.afCloseText}>{autofillState === 'done' ? 'Review the form' : 'Close'}</Text>
                   </TouchableOpacity>
                 )}
+                {/* Manual fallback: the step watcher fires on its own when you press Next, but a
+                    stepper that re-renders in an unusual way may not trip it. */}
+                {autofillState === 'done' && !!wizardUi && !(wizardUi.n > 0 && wizardUi.i >= wizardUi.n) && (
+                  <TouchableOpacity
+                    onPress={() => { setAutofillState(null); setTimeout(() => startAutofill(), 120); }}
+                    activeOpacity={0.85} style={s.afNextStepBtn}
+                  >
+                    <Ionicons name="sparkles" size={15} color="#fff" />
+                    <Text style={s.afNextStepText}>Fill this step</Text>
+                  </TouchableOpacity>
+                )}
                 {autofillState === 'done' && (
-                  <Text style={s.afFootHint}>Double-check the filled details, add anything marked “manually”, then submit on the page.</Text>
+                  <Text style={s.afFootHint}>
+                    {wizardUi && !(wizardUi.n > 0 && wizardUi.i >= wizardUi.n)
+                      ? 'Check this step, tap Next on the page, and the following step fills itself. You always press Submit yourself.'
+                      : 'Double-check the filled details, add anything marked “manually”, then submit on the page.'}
+                  </Text>
                 )}
               </View>
             </View>
@@ -3781,6 +4687,20 @@ const s = StyleSheet.create({
   afTitle:   { fontSize: 17, fontWeight: '800', color: T.ink, textAlign: 'center', letterSpacing: -0.3 },
   afSub:     { fontSize: 12.5, color: T.textMuted, textAlign: 'center', marginTop: 5, lineHeight: 18 },
   afErrText: { fontSize: 12.5, color: T.rose, textAlign: 'center', marginTop: 6, lineHeight: 18 },
+  // Multi-step progress + the questions autofill could not answer
+  afWizBar:       { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 14, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 10, backgroundColor: 'rgba(79,141,255,0.10)' },
+  afWizText:      { fontSize: 12.5, fontWeight: '700', color: T.ink, flexShrink: 1 },
+  afWizTrack:     { flex: 1, height: 4, borderRadius: 2, backgroundColor: 'rgba(79,141,255,0.22)', overflow: 'hidden', marginLeft: 4 },
+  afWizFill:      { height: 4, borderRadius: 2, backgroundColor: T.blue },
+  afNextStepBtn:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, alignSelf: 'stretch', marginTop: 10, paddingVertical: 12, borderRadius: 11, backgroundColor: T.blue },
+  afNextStepText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+  afFailBox:      { marginTop: 12, alignSelf: 'stretch', backgroundColor: '#FFFBEB', borderRadius: 12, borderWidth: 1, borderColor: '#FDE68A', padding: 12 },
+  afFailHead:     { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  afFailTitle:    { fontSize: 10.5, fontWeight: '800', color: '#B45309', letterSpacing: 0.6 },
+  afFailScroll:   { maxHeight: 132 },
+  afFailRow:      { paddingVertical: 5, borderTopWidth: 1, borderTopColor: '#FEF3C7' },
+  afFailLabel:    { fontSize: 13, fontWeight: '600', color: T.ink },
+  afFailWhy:      { fontSize: 11, color: T.textFaint, marginTop: 1 },
   afSteps:   { alignSelf: 'stretch', marginTop: 18, gap: 12 },
   afStepRow: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 20 },
   afStepText:{ fontSize: 13.5, color: T.textFaint, flex: 1 },

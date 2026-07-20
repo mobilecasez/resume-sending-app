@@ -4433,6 +4433,163 @@ Rules:
 
 // ─── In-app Apply: AI auto-fill ───────────────────────────────────────────────
 
+// ── Auto-fill mapping helpers ────────────────────────────────────────────────
+
+// Compact dial-code table (no new deps). Keyed by ISO-2 AND by lowercase country name, so a profile
+// saying "India", "IN" or "+91" all resolve. An unknown country simply yields no code: we then leave
+// the code control alone and report it, rather than guessing.
+const DIAL_CODES = {
+    us: '1', 'united states': '1', usa: '1', ca: '1', canada: '1',
+    gb: '44', uk: '44', 'united kingdom': '44', ie: '353', ireland: '353',
+    de: '49', germany: '49', deutschland: '49', at: '43', austria: '43', ch: '41', switzerland: '41',
+    nl: '31', netherlands: '31', nederland: '31', be: '32', belgium: '32', lu: '352', luxembourg: '352',
+    fr: '33', france: '33', es: '34', spain: '34', pt: '351', portugal: '351', it: '39', italy: '39',
+    pl: '48', poland: '48', cz: '420', 'czech republic': '420', sk: '421', slovakia: '421',
+    hu: '36', hungary: '36', ro: '40', romania: '40', bg: '359', bulgaria: '359', gr: '30', greece: '30',
+    se: '46', sweden: '46', no: '47', norway: '47', dk: '45', denmark: '45', fi: '358', finland: '358',
+    ee: '372', estonia: '372', lv: '371', latvia: '371', lt: '370', lithuania: '370',
+    in: '91', india: '91', pk: '92', pakistan: '92', bd: '880', bangladesh: '880', lk: '94', 'sri lanka': '94',
+    np: '977', nepal: '977',
+    ae: '971', 'united arab emirates': '971', uae: '971', sa: '966', 'saudi arabia': '966',
+    qa: '974', qatar: '974', kw: '965', kuwait: '965', il: '972', israel: '972', tr: '90', turkey: '90',
+    eg: '20', egypt: '20', za: '27', 'south africa': '27', ng: '234', nigeria: '234', ke: '254', kenya: '254',
+    gh: '233', ghana: '233', ma: '212', morocco: '212',
+    au: '61', australia: '61', nz: '64', 'new zealand': '64',
+    sg: '65', singapore: '65', my: '60', malaysia: '60', id: '62', indonesia: '62', th: '66', thailand: '66',
+    ph: '63', philippines: '63', vn: '84', vietnam: '84', hk: '852', 'hong kong': '852',
+    jp: '81', japan: '81', kr: '82', 'south korea': '82', cn: '86', china: '86', tw: '886', taiwan: '886',
+    br: '55', brazil: '55', mx: '52', mexico: '52', ar: '54', argentina: '54', cl: '56', chile: '56',
+    co: '57', colombia: '57', pe: '51', peru: '51', ua: '380', ukraine: '380', rs: '381', serbia: '381',
+    hr: '385', croatia: '385', si: '386', slovenia: '386', is: '354', iceland: '354',
+};
+// Longest-first, so a short code can never shadow a longer one during prefix matching.
+const _DIAL_SET = Array.from(new Set(Object.keys(DIAL_CODES).map((k) => DIAL_CODES[k]))).sort((a, b) => b.length - a.length);
+
+// A LOOSER match key than normalizeQ(): folds the common synonym families so "Phone", "Phone Number",
+// "Mobile" and "Telefonnummer" land on one bucket. Used only for classification here — normalizeQ
+// stays the DB key for saved answers, so there is no migration.
+//
+// ⚠️ ACCENTS: this maps every non-[a-z0-9] byte to a SPACE before the folds run, so
+// "Numéro de téléphone" is "num ro de t l phone" at that point. The folds below are written against
+// THAT form — do not "tidy" them into accent-free words or they stop matching.
+function canonicalQ(s) {
+    let t = String(s || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\b(please|your|the|a|an|do|does|are|is|you|to|of|for|we|this|that|will|would|have|has|enter|select|choose|provide|type|field|required|optional)\b/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    // Order matters: code folds BEFORE phone folds, so "phone country code" -> phonecode.
+    const FOLD = [
+        [/\b(country|international|dial|calling|isd|idd)\s*(phone\s*)?code\b/g, 'phonecode'],
+        [/\bphone\s*(country|dial)\s*code\b/g, 'phonecode'],
+        [/\bvorwahl\b|\blandesvorwahl\b/g, 'phonecode'],
+        [/\bphone\s*(no|nr|number)\b/g, 'phone'],
+        [/\b(mobile|cell|cellular|handy|telephone|telefon|telefoon|telefone|tel|contact)\s*(no|nr|number|phone)?\b/g, 'phone'],
+        [/\btelefonnummer\b|\btelefoonnummer\b|\bnum\s*ro\s*de\s*t\s*l\s*phone\b/g, 'phone'],
+    ];
+    for (const [re, to] of FOLD) t = t.replace(re, to);
+    return t.replace(/\s+/g, '').trim();
+}
+
+// Options that are placeholders, never a real answer.
+const _PLACEHOLDER_OPT = /^[\s\-–—_.]*(?:(?:please\s+)?(?:select|choose|pick)\b.*|none|n\/?a|--.*|\.\.\.)?$/i;
+
+// Server-side mirror of the WebView's pickOpt(): returns the EXACT option string the page uses, or
+// null. Same precedence as the client, so we never "snap" to something the client resolves differently.
+function snapToOption(options, v) {
+    if (!Array.isArray(options) || !options.length) return null;
+    const want = String(v == null ? '' : v).trim().toLowerCase();
+    if (!want) return null;
+    const real = options.filter((o) => o && !_PLACEHOLDER_OPT.test(String(o).trim()));
+    const ex = [], sw = [], ct = [];
+    for (const o of real) {
+        const x = String(o).trim().toLowerCase();
+        if (!x) continue;
+        if (x === want) ex.push(o);
+        else if (x.indexOf(want) === 0) sw.push(o);
+        else if (x.indexOf(want) >= 0) ct.push(o);
+    }
+    if (ex.length) return ex[0];
+    if (sw.length === 1) return sw[0];
+    if (ct.length === 1) return ct[0];
+    if (want.length >= 4) {
+        const pool = sw.length ? sw : ct;
+        if (pool.length) return pool.reduce((b, o) => (String(o).length < String(b).length ? o : b), pool[0]);
+    }
+    return null;
+}
+
+// Split a stored phone into { dial, national }. Accepts "+91 98765 43210", "0049 170 …",
+// "(+31) 6-1234", or a bare national number plus a country hint from the profile.
+function splitPhone(raw, countryHint) {
+    const s = String(raw || '').trim();
+    const hint = DIAL_CODES[String(countryHint || '').trim().toLowerCase()] || '';
+    let digits = s.replace(/[^\d+]/g, '');
+    let dial = '';
+    if (digits.indexOf('+') === 0) digits = digits.slice(1);
+    else if (digits.indexOf('00') === 0) digits = digits.slice(2);
+    else {
+        // No international prefix — the whole thing is national; the code comes from the profile.
+        // Italy keeps its leading 0 on landlines; everywhere else it is a trunk prefix.
+        const nat = hint === '39' ? digits : digits.replace(/^0+/, '');
+        return { dial: hint, national: nat };
+    }
+    if (hint && digits.indexOf(hint) === 0) dial = hint;                 // prefer the profile's own country
+    else for (const c of _DIAL_SET) { if (digits.indexOf(c) === 0) { dial = c; break; } }
+    const national = dial ? digits.slice(dial.length) : digits;
+    return { dial: dial || hint, national: dial === '39' ? national : national.replace(/^0+/, '') };
+}
+
+// Is this field a country DIAL-CODE control (as opposed to a plain country control)?
+function isPhoneCodeField(f) {
+    const q = canonicalQ(fieldQuestion(f));
+    if (/phonecode/.test(q)) return true;
+    const opts = Array.isArray(f && f.options) ? f.options : [];
+    if (opts.length >= 5) {
+        const codey = opts.filter((o) => /\+\s*\d{1,4}/.test(String(o))).length;
+        if (codey / opts.length > 0.6) return true;   // "Germany (+49)", "+49", "DE +49" …
+    }
+    return false;
+}
+function isPhoneNumberField(f) {
+    const q = canonicalQ(fieldQuestion(f));
+    if (/phonecode/.test(q)) return false;
+    if (String((f && f.type) || '').toLowerCase() === 'tel') return true;
+    return /(^|[a-z])phone($|[a-z])/.test(q);
+}
+
+// Salvage a TRUNCATED JSON object (Gemini hitting MAX_TOKENS on a big form): keep every complete
+// "key":"value" pair from the "values" object, so 140 of 150 mapped fields still reach the user
+// instead of the whole response being thrown away as "AI unavailable".
+//
+// ⚠️ The scan is HARD-BOUNDED at the next top-level section. Without that bound it would swallow the
+// "skipped" object and hand the app pairs like {"n:visa|select":"needs your judgement"} — i.e. it
+// would TYPE the reason string into the form.
+function salvageJsonObject(text) {
+    const t = String(text || '').replace(/^```(?:json)?\s*/i, '').trim();
+    const start = t.indexOf('{');
+    if (start === -1) return null;
+    const body = t.slice(start);
+    const vStart = body.indexOf('"values"');
+    if (vStart === -1) return null;
+    let seg = body.slice(vStart + '"values"'.length);
+    let end = seg.length;
+    for (const marker of ['"skipped"', '"resumeFileKeys"', '"coverLetterFileKeys"']) {
+        const i = seg.indexOf(marker);
+        if (i >= 0 && i < end) end = i;
+    }
+    seg = seg.slice(0, end);
+    const out = { values: {}, resumeFileKeys: [], coverLetterFileKeys: [], skipped: {} };
+    const pair = /"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+    let m, n = 0;
+    while ((m = pair.exec(seg)) !== null) {
+        try { out.values[JSON.parse('"' + m[1] + '"')] = JSON.parse('"' + m[2] + '"'); n++; } catch (_) {}
+        if (n > 400) break;
+    }
+    return n ? out : null;
+}
+
 // POST /ai-hub/autofill-map — given the form's fields, return a value for each from the
 // candidate's profile (and classify file inputs as resume vs cover letter). AI-driven.
 async function autofillMap(req, res) {
@@ -4468,6 +4625,13 @@ async function autofillMap(req, res) {
         const profile = { ...(user || {}), resume_metadata: meta || undefined, builder_resume: builder || undefined };
         const clText = String(coverLetterHtml || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
 
+        // Phone facts, computed ONCE and handed to the model as literals so it never has to parse
+        // "+91 98765 43210" itself — the "+91 is not working" complaint started here.
+        const _ph = splitPhone((user && user.phone_number) || '', (user && user.country) || '');
+        const phoneHint = _ph.dial
+            ? `The candidate's dial code is "+${_ph.dial}" and their national number is "${_ph.national}". Full international form: "+${_ph.dial}${_ph.national}".`
+            : `The candidate's phone is "${(user && user.phone_number) || ''}" and no dial code could be determined.`;
+
         const prompt = `You are auto-filling a job application form for a candidate. Map each form field to the best value from the candidate's profile. Return ONLY JSON.
 
 CANDIDATE PROFILE (JSON — the source of truth; never invent anything not present here):
@@ -4488,13 +4652,47 @@ ${JSON.stringify(fields.slice(0, 150))}
 Return ONLY this JSON object:
 {
   "values": { "<field key>": "<value to enter>" },
+  "skipped": { "<field key>": "<short reason you left it blank>" },
   "resumeFileKeys": ["<key of any file input that wants a RESUME/CV>"],
   "coverLetterFileKeys": ["<key of any file input that wants a COVER LETTER>"]
 }
 
+KEYS: every key in "values" and "skipped" MUST be copied character-for-character from a "key" in
+FORM FIELDS above (they look like "n:firstName|text" or "l:phone number|tel"). Never invent a key and
+never use the label as a key. Put "values" FIRST in your output. Each field appears in at most one of
+"values" or "skipped".
+
+"skipped" REASONS — use one of these exact strings so the app can show it to the candidate:
+  "needs your judgement"   — legal / personal attestation only they can answer
+  "not in your profile"    — we simply do not hold this fact
+  "no matching option"     — none of the field's options fits the candidate
+  "needs your consent"     — a checkbox or declaration only they may tick
+
+PHONE — apply these before answering any phone field:
+- ${phoneHint}
+- SPLIT WIDGETS: many forms split the phone into TWO controls — a dial-code control (label like
+  "Country Code", "Country Phone Code", "Dial code", or a select whose options look like "+49",
+  "Germany (+49)", "DE +49") and a separate number control ("Phone", "Phone Number", "Mobile").
+  When BOTH are present in FORM FIELDS:
+    • put ONLY the dial code in the code control, and
+    • put ONLY the national number — dial code REMOVED, no "+", no leading 0, digits only — in the
+      number control.
+  NEVER repeat the dial code inside the number field.
+- SINGLE PHONE FIELD: when there is no separate code control, write the full international number as
+  "+<dial><national>", unless the placeholder clearly shows another shape (then follow the placeholder).
+- EXACT OPTION FORMAT: whenever a field has "options", the value you return MUST be a byte-for-byte
+  COPY of one string from THAT field's own options array — never your own spelling. Copy
+  "Germany (+49)" if that is the option; copy "+49" if that is the option; copy "DE" if that is the
+  option. Do not return "49", "0049" or "Deutschland" when the list says something else. The same
+  applies to a country field: the profile may say "India" while the options say "IN" or "India (IN)".
+- If no option corresponds to the candidate, put the field in "skipped" with "no matching option".
+
 RULES:
 - Use ONLY real values from the profile for personal facts. NEVER invent names, emails, phones, dates, or employers.
-- For a "select" or "radio" field, the value MUST be EXACTLY one of its provided options (e.g. "Yes"/"No", or an exact option label).
+- For a "select" or "radio" field, the value MUST be EXACTLY one of its provided options (e.g. "Yes"/"No", or an exact option label), copied verbatim — including its language ("Ja"/"Nein", "Oui"/"Non").
+- A field with "widget":"combobox" is a custom dropdown. If it lists "options", copy one of them exactly. If it has NO options list, it is a live type-ahead (a city, school or employer picker): give the FULL natural value the candidate would type — "London, United Kingdom" rather than "London".
+- CHECKBOXES (type "checkbox"): return a value ONLY when the box should be TICKED. Never return "No"/"false"/"" for a checkbox — omit it instead (the candidate may have ticked it themselves and a "No" would UNTICK it). NEVER tick a checkbox — or pick the affirmative side of a radio — that agrees to terms, a privacy policy, GDPR/data processing, a declaration of truth, or any consent: put those in "skipped" as "needs your consent".
+- COUNTRY fields: a plain "Country" / "Country of Residence" field takes the profile's country, copied into the field's own spelling. A "Country of Citizenship", "Nationality", "Country of Birth", "Tax residence" or "Passport country" field is a LEGAL question — put it in "skipped" as "needs your judgement" unless the profile has an explicit "nationality" value that answers it.
 - For long-answer / "why this company" / motivation / cover-letter TEXT fields, use the cover letter text (trim to ~1200 chars).
 - For date fields use the format the placeholder suggests, else YYYY-MM-DD.
 - ANSWER benign application questions with a sensible value even without explicit profile data:
@@ -4502,7 +4700,7 @@ RULES:
     • "A cover letter is required — have you included one?" / "Will you attach a resume?" → "Yes"
     • "Are you willing to work on-site / relocate / commute to <the job location>?" → "Yes"
     • Pronouns / gender questions → ONLY if the profile includes an explicit "gender" value. Map it to an option that is LITERALLY present in the field: gender "male" → a He/Him or Male option; "female" → a She/Her or Female option; "prefer not to say" → a "Prefer not to say" / neutral / decline option. If the profile has NO gender value, OMIT the field entirely (leave it blank for the user). NEVER infer gender or pronouns from the candidate's name or anything else.
-- DO NOT answer — leave BLANK (omit) — any question that needs the candidate's own judgement or legal/personal attestation:
+- DO NOT answer — put in "skipped" with "needs your judgement" — any question that needs the candidate's own judgement or legal/personal attestation:
     • work authorization / right to work / visa / sponsorship / immigration status
     • salary / compensation / notice period / availability date
     • demographic & diversity — race, ethnicity, disability, veteran status, age (and gender/pronouns UNLESS the profile has an explicit "gender" value, handled by the rule above)
@@ -4510,7 +4708,7 @@ RULES:
 - For file inputs (type "file"): classify by label — resume/CV → resumeFileKeys, cover letter → coverLetterFileKeys. If generic ("Upload"/"Attachment"), put it in resumeFileKeys.
 - SKILLS: if a field asks for skills / expertise / technologies / competencies, fill it with a
   comma-separated list of the candidate's OWN skills from the profile (most relevant first, max 10).
-- OMIT any other field you cannot confidently fill. Do not guess personal facts.`;
+- Any other field you cannot confidently fill goes in "skipped" with "not in your profile". Do not guess personal facts.`;
 
         // Clean-JSON output + a generous token cap so large forms don't truncate mid-object.
         let parsed = null;
@@ -4524,15 +4722,112 @@ RULES:
                 }),
                 timeout,
             ]);
-            parsed = parseJsonObject(result.response.text() || '');
+            const rawText = result.response.text() || '';
+            try {
+                parsed = parseJsonObject(rawText);
+            } catch (pErr) {
+                // A TRUNCATED answer is not an outage — salvage the complete pairs rather than
+                // discarding a mapping that got 140 of 150 fields right.
+                parsed = salvageJsonObject(rawText);
+                console.warn(`[aiHub] autofillMap JSON parse failed (len=${rawText.length}): ${pErr.message}; salvaged=${parsed ? Object.keys(parsed.values).length : 0}`);
+                if (!parsed) throw pErr;
+            }
         } catch (aiErr) {
             // Graceful: let the user fill manually instead of a hard error — but give the credit back,
             // since we charged up front and delivered nothing. (Free today; correct if ever priced.)
             console.warn('[aiHub] autofillMap AI failed:', aiErr.message);
             await refundCredits(userId, 'ai_autofill', charge);
-            return res.json({ success: true, values: {}, resumeFileKeys: [], coverLetterFileKeys: [], warning: 'ai_unavailable' });
+            return res.json({ success: true, values: {}, skipped: {}, resumeFileKeys: [], coverLetterFileKeys: [], warning: 'ai_unavailable' });
         }
-        const values = (parsed && parsed.values && typeof parsed.values === 'object') ? parsed.values : {};
+
+        // ── Post-pass 1: adopt the model's answers, but only for keys that EXIST ────
+        // A hallucinated key inflates fillJs's `total`, which then drives its pass loop to the
+        // ceiling chasing a field that was never on the page.
+        const fieldByKey = new Map((fields || []).filter((f) => f && f.key).map((f) => [f.key, f]));
+        const nonFile = (fields || []).filter((f) => f && f.key && String(f.type || '').toLowerCase() !== 'file');
+        const values = {};
+        const skipped = {};
+        const aiValues = (parsed && parsed.values && typeof parsed.values === 'object') ? parsed.values : {};
+        let bogus = 0;
+        for (const k of Object.keys(aiValues)) {
+            if (!fieldByKey.has(k)) { bogus++; continue; }
+            const v = aiValues[k];
+            if (v == null || String(v).trim() === '') continue;
+            values[k] = v;
+        }
+        if (bogus) console.warn(`[aiHub] autofillMap dropped ${bogus} value key(s) not present in fields (user ${userId})`);
+        const aiSkipped = (parsed && parsed.skipped && typeof parsed.skipped === 'object') ? parsed.skipped : {};
+        for (const k of Object.keys(aiSkipped)) {
+            if (fieldByKey.has(k) && values[k] == null) skipped[k] = String(aiSkipped[k] || 'needs your answer').slice(0, 60);
+        }
+
+        // ── Post-pass 2: phone split (deterministic, not left to the model) ─────────
+        // Scope is DELIBERATELY narrow: phone only. It never introduces a country, citizenship or
+        // nationality value — those are legal questions and stay with the model + the prompt rules.
+        try {
+            const codeF = nonFile.filter(isPhoneCodeField);
+            const numF = nonFile.filter(isPhoneNumberField);
+            if (_ph.dial) {
+                for (const f of codeF) {
+                    const opts = Array.isArray(f.options) ? f.options : [];
+                    let chosen = null;
+                    if (opts.length) {
+                        const exact = opts.filter((o) => String(o).replace(/[^\d]/g, '') === _ph.dial);
+                        const cName = String((user && user.country) || '').toLowerCase();
+                        chosen = (cName && exact.find((o) => String(o).toLowerCase().indexOf(cName) >= 0)) || exact[0] || null;
+                        if (!chosen) chosen = snapToOption(opts, '+' + _ph.dial);
+                    } else {
+                        chosen = '+' + _ph.dial;
+                    }
+                    if (chosen) { values[f.key] = chosen; delete skipped[f.key]; }
+                    else if (values[f.key] == null) skipped[f.key] = 'no matching option';
+                }
+            }
+            const codeFilled = codeF.some((c) => values[c.key] != null);
+            for (const f of numF) {
+                const want = codeFilled ? _ph.national : (_ph.dial ? '+' + _ph.dial + _ph.national : _ph.national);
+                if (!want) continue;
+                const cur = values[f.key];
+                if (cur == null) { values[f.key] = want; delete skipped[f.key]; continue; }
+                // A learned / AI answer stands — but strip the dial code the page will reject once a
+                // separate code control has already been filled.
+                if (codeFilled && _ph.dial) {
+                    const stripped = String(cur).replace(/^\s*(?:\+|00)\s*/, '').replace(/[^\d]/g, '');
+                    if (stripped.indexOf(_ph.dial) === 0 && /^\s*(?:\+|00)/.test(String(cur))) {
+                        values[f.key] = stripped.slice(_ph.dial.length).replace(/^0+/, '');
+                    }
+                }
+            }
+        } catch (e) { console.warn('[aiHub] autofillMap phone pass skipped:', e.message); }
+
+        // ── Post-pass 3: snap every option-bearing value onto a REAL option ─────────
+        // A value no option matches makes the client's matcher return null: the field stays empty, is
+        // never counted, and the user is never told. Snap it, or say we couldn't.
+        try {
+            for (const k of Object.keys(values)) {
+                const f = fieldByKey.get(k);
+                if (!f || !Array.isArray(f.options) || !f.options.length) continue;
+                const cur = String(values[k]);
+                if (f.options.some((o) => String(o) === cur)) continue;      // already exact
+                const snap = snapToOption(f.options, cur);
+                if (snap) values[k] = snap;
+                else { delete values[k]; skipped[k] = 'no matching option'; }
+            }
+        } catch (e) { console.warn('[aiHub] autofillMap option-snap skipped:', e.message); }
+
+        // ── Post-pass 4: checkbox safety ───────────────────────────────────────────
+        // keepUser() on the client returns false for radio|checkbox, so the fill runs
+        // setChecked(el,false) for a "No" — UNTICKING a box the user ticked by hand. Never emit a
+        // falsy checkbox value at all.
+        try {
+            for (const f of nonFile) {
+                if (String(f.type || '').toLowerCase() !== 'checkbox') continue;
+                const v = values[f.key];
+                if (v === undefined) continue;
+                const truthy = v === true || /^(yes|true|on|1|checked|ja|oui|si|sim|tak)$/i.test(String(v).trim());
+                if (!truthy) delete values[f.key];
+            }
+        } catch (e) { console.warn('[aiHub] autofillMap checkbox pass skipped:', e.message); }
 
         // ── Self-learning overlay ────────────────────────────────────────────
         // Belt-and-suspenders to the AI prompt above: for any field STILL empty, exact-match it
@@ -4545,15 +4840,28 @@ RULES:
                 for (const f of fields) {
                     if (!f || !f.key || values[f.key] != null) continue;   // skip ones the AI already filled
                     const ans = memMap[normalizeQ(fieldQuestion(f))];
-                    if (ans != null && ans !== '') { values[f.key] = ans; learned++; }
+                    if (ans != null && ans !== '') { values[f.key] = ans; delete skipped[f.key]; learned++; }
                 }
                 if (learned) console.log(`[aiHub] saved-answers filled ${learned} field(s) the AI left blank for user ${userId}`);
             }
         } catch (e) { console.warn('[aiHub] saved-answers overlay skipped:', e.message); }
 
+        // Tell the app WHICH questions were deliberately left blank and why, so it can name them
+        // instead of quietly reporting a smaller number than the form actually has.
+        const skippedOut = [];
+        try {
+            for (const k of Object.keys(skipped)) {
+                const f = fieldByKey.get(k);
+                const label = f ? fieldQuestion(f) : '';
+                if (label) skippedOut.push({ key: k, label: label.slice(0, 90), why: skipped[k] });
+                if (skippedOut.length >= 12) break;
+            }
+        } catch (_) {}
+
         return res.json({
             success: true,
             values,
+            skipped: skippedOut,
             resumeFileKeys: parsed && Array.isArray(parsed.resumeFileKeys) ? parsed.resumeFileKeys : [],
             coverLetterFileKeys: parsed && Array.isArray(parsed.coverLetterFileKeys) ? parsed.coverLetterFileKeys : [],
         });
