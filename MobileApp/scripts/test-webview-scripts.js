@@ -238,14 +238,20 @@ const ok = (name, cond, extra) => {
         if(!m) return 'NO-MATCH';
         setNative(el,m.value); var so=el.options[el.selectedIndex];
         return (so&&(so===m||cleanTxt(so.text)===cleanTxt(m.text))) ? so.text : 'REJECTED'; }
-      var c=document.getElementById('c'); c.selectedIndex=2;     // the user picked India by hand
+      // 'c' was set by SCRIPT (a geo-IP default) — indistinguishable in the DOM from a real choice,
+      // so it is only respected when the touch flag says a person did it.
+      var c=document.getElementById('c'); c.selectedIndex=2;
+      var cScript=keepUser(c,'select-one','+91');
+      c.__cvfTouched=true;                                       // now: the user picked it by hand
+      var cTouched=keepUser(c,'select-one','+91');
       var d=document.getElementById('d');                        // their answer sits at INDEX 0
-      return { a:set('a','+91'), b:set('b','+91'), c:keepUser(c,'select-one','+1'),
+      return { a:set('a','+91'), b:set('b','+91'), cScript:cScript, cTouched:cTouched,
                d:keepUser(d,'select-one','No'), dDef:d.options[0].defaultSelected, e:set('e','Full time') };
     })()`);
     ok('a "Select country" placeholder no longer blocks the fill', r.a === 'India (+91)', r.a);
     ok('a select defaulted to United States (+1) is changed to +91', r.b === 'India (+91)', r.b);
-    ok('a country the user picked by hand is respected', r.c === true, r.c);
+    ok('a country set by the PAGE (geo-IP) is overridable', r.cScript === false, r.cScript);
+    ok('a country the USER actually chose is respected', r.cTouched === true, r.cTouched);
     ok('an index-0 Yes/No consent answer is NOT overwritten', r.d === true, { d: r.d, def: r.dDef });
     ok('an empty-value placeholder on a NON-country select fills too', r.e === 'Full time', r.e);
     await page.close();
@@ -347,6 +353,84 @@ const ok = (name, cond, extra) => {
       return ctrls().length;
     })()`);
     ok('ctrls() reaches into an open shadow root', n === 3, n);
+    await page.close();
+  }
+
+  // ── the dropdown engine must never click anything but a real option ────────
+  // Every page below has a combobox with NO aria-controls, so the engine has to fall back to
+  // identifying the popup itself. Each shape was demonstrated to make an earlier version click a
+  // Submit button, follow a nav link, or advance a wizard — while reporting "Filled 1 field".
+  console.log('\ndropdown engine: hostile page shapes');
+  {
+    const shapes = [
+      { name: 'a Submit button sitting in div.form-options',
+        html: '<div class="form-options"><button type="submit" class="btn-item">Submit application</button></div>' },
+      { name: 'a formless Submit button in div.answer-options',
+        html: '<div class="answer-options"><button class="btn-item">Submit application</button></div>' },
+      { name: 'site navigation in nav.navbar-menu',
+        html: '<nav class="navbar-menu"><a class="menu-item" href="/openings">All openings</a></nav>' },
+      { name: 'a wizard advance in div.step-options',
+        html: '<div class="step-options"><button class="wizard-item">Save and continue</button></div>' },
+    ];
+    for (const sh of shapes) {
+      const page = await ctx.newPage();
+      await page.addInitScript(BRIDGE);
+      await page.route('**/*', (r) => r.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body:
+        `<html><body>
+           <label for="c">Country code</label><input id="c" role="combobox">
+           ${sh.html}
+           <script>
+             window.__fired=0; window.__navigated=false;
+             document.querySelectorAll('button').forEach(function(b){ b.addEventListener('click',function(){ window.__fired++; }); });
+             document.querySelectorAll('a').forEach(function(a){ a.addEventListener('click',function(e){ e.preventDefault(); window.__navigated=true; }); });
+           </script></body></html>` }));
+      await page.goto('https://hostile.example.com/apply');
+      await page.evaluate(fillJs({ 'i:c|text': '+91' }));
+      await page.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 45000 });
+      const st = await page.evaluate(() => ({
+        fired: window.__fired, navigated: window.__navigated,
+        msg: window.__msgs.find((m) => m.type === 'FILLED'),
+      }));
+      ok(`nothing is clicked in: ${sh.name}`, st.fired === 0 && st.navigated === false, st);
+      ok(`…and the field is REPORTED, not counted as filled: ${sh.name}`,
+         st.msg.count === 0 && (st.msg.failed || []).length === 1, st.msg);
+      await page.close();
+    }
+  }
+
+  console.log('\ndropdown engine: no match means no pick');
+  {
+    const page = await ctx.newPage();
+    await page.addInitScript(BRIDGE);
+    await page.goto('https://combo.example.com/apply');
+    // "Atlantis" matches none of India/United Kingdom/Canada. The old first-row fallback committed
+    // "India +91" here — a fabricated answer, reported as a success.
+    await page.evaluate(fillJs({ 'i:country|text': 'Atlantis' }));
+    await page.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 45000 });
+    const st = await page.evaluate(() => ({
+      sv: document.querySelectorAll('.select__single-value').length,
+      msg: window.__msgs.find((m) => m.type === 'FILLED'),
+    }));
+    ok('an unmatched value picks NOTHING', st.sv === 0, st);
+    ok('and is reported rather than counted', st.msg.count === 0 && (st.msg.failed || []).length === 1, st.msg);
+    await page.close();
+  }
+
+  console.log('\nan EMPTY dropdown is never mistaken for an answered one');
+  {
+    const page = await ctx.newPage();
+    await page.addInitScript(BRIDGE);
+    await page.route('**/*', (r) => r.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body:
+      `<html><body>
+         <div class="select__control"><div class="select__value-container">
+           <span class="select__placeholder">Select a country</span>
+           <input id="q" role="combobox" placeholder="Select a country">
+         </div></div>
+         <span class="hint">e.g. +91</span></body></html>` }));
+    await page.goto('https://empty.example.com/apply');
+    const shown = await page.evaluate(`(function(){ ${JS_HELPERS}
+      return cbShown(document.getElementById('q')); })()`);
+    ok('cbShown ignores placeholder + sibling hint text on an empty widget', shown === '', shown);
     await page.close();
   }
 

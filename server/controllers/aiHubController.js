@@ -4485,7 +4485,10 @@ function canonicalQ(s) {
         [/\bphone\s*(country|dial)\s*code\b/g, 'phonecode'],
         [/\bvorwahl\b|\blandesvorwahl\b/g, 'phonecode'],
         [/\bphone\s*(no|nr|number)\b/g, 'phone'],
-        [/\b(mobile|cell|cellular|handy|telephone|telefon|telefoon|telefone|tel|contact)\s*(no|nr|number|phone)?\b/g, 'phone'],
+        // "contact" is deliberately NOT folded to "phone": it made "Contact Name",
+        // "Contact Email" and "Emergency contact name" all canonicalise to a phone field, and the
+        // deterministic phone pass then typed the candidate's number into them.
+        [/\b(mobile|cell|cellular|handy|telephone|telefon|telefoon|telefone|tel)\s*(no|nr|number|phone)?\b/g, 'phone'],
         [/\btelefonnummer\b|\btelefoonnummer\b|\bnum\s*ro\s*de\s*t\s*l\s*phone\b/g, 'phone'],
     ];
     for (const [re, to] of FOLD) t = t.replace(re, to);
@@ -4530,7 +4533,15 @@ function splitPhone(raw, countryHint) {
     if (digits.indexOf('+') === 0) digits = digits.slice(1);
     else if (digits.indexOf('00') === 0) digits = digits.slice(2);
     else {
-        // No international prefix — the whole thing is national; the code comes from the profile.
+        // No international prefix. Usually the whole thing is national and the code comes from the
+        // profile — but plenty of people store "919876543210" with the country code and no "+", and
+        // prefixing again yields +91919876543210. Only strip the hint when what remains is still a
+        // full-length national number (>= 9 digits); a national number that merely happens to begin
+        // with its own country's digits is left alone.
+        if (hint && digits.indexOf(hint) === 0 && digits.length - hint.length >= 9) {
+            const rest = digits.slice(hint.length);
+            return { dial: hint, national: hint === '39' ? rest : rest.replace(/^0+/, '') };
+        }
         // Italy keeps its leading 0 on landlines; everywhere else it is a trunk prefix.
         const nat = hint === '39' ? digits : digits.replace(/^0+/, '');
         return { dial: hint, national: nat };
@@ -4552,8 +4563,13 @@ function isPhoneCodeField(f) {
     }
     return false;
 }
+// Someone ELSE's phone number. These fields ask for a referee, a manager or a next of kin — writing
+// the candidate's own number into them is worse than leaving them blank, because it looks answered.
+const _NOT_MY_PHONE = /\b(emergency|next\s*of\s*kin|kin|referee|reference|referrer|referral|guardian|parent|spouse|partner|manager|supervisor|employer|company|recruiter|agency|alternate|alternative|other|witness|beneficiary|notfall|angehoriger)\b/i;
 function isPhoneNumberField(f) {
-    const q = canonicalQ(fieldQuestion(f));
+    const raw = fieldQuestion(f);
+    if (_NOT_MY_PHONE.test(raw)) return false;
+    const q = canonicalQ(raw);
     if (/phonecode/.test(q)) return false;
     if (String((f && f.type) || '').toLowerCase() === 'tel') return true;
     return /(^|[a-z])phone($|[a-z])/.test(q);
@@ -4770,15 +4786,19 @@ RULES:
             if (_ph.dial) {
                 for (const f of codeF) {
                     const opts = Array.isArray(f.options) ? f.options : [];
+                    const partial = !!(f.optionsTruncated || f.optionsUnknown);
                     let chosen = null;
                     if (opts.length) {
                         const exact = opts.filter((o) => String(o).replace(/[^\d]/g, '') === _ph.dial);
                         const cName = String((user && user.country) || '').toLowerCase();
                         chosen = (cName && exact.find((o) => String(o).toLowerCase().indexOf(cName) >= 0)) || exact[0] || null;
                         if (!chosen) chosen = snapToOption(opts, '+' + _ph.dial);
-                    } else {
-                        chosen = '+' + _ph.dial;
                     }
+                    // We only ever see the first 80 options of a 240-country list. When the list we
+                    // hold is partial, emit the bare "+91" and let the device resolve it against the
+                    // REAL, complete list (pickDial matches dial codes numerically). Declaring
+                    // "no matching option" from a truncated list is how +91 kept disappearing.
+                    if (!chosen && (partial || !opts.length)) chosen = '+' + _ph.dial;
                     if (chosen) { values[f.key] = chosen; delete skipped[f.key]; }
                     else if (values[f.key] == null) skipped[f.key] = 'no matching option';
                 }
@@ -4800,35 +4820,6 @@ RULES:
             }
         } catch (e) { console.warn('[aiHub] autofillMap phone pass skipped:', e.message); }
 
-        // ── Post-pass 3: snap every option-bearing value onto a REAL option ─────────
-        // A value no option matches makes the client's matcher return null: the field stays empty, is
-        // never counted, and the user is never told. Snap it, or say we couldn't.
-        try {
-            for (const k of Object.keys(values)) {
-                const f = fieldByKey.get(k);
-                if (!f || !Array.isArray(f.options) || !f.options.length) continue;
-                const cur = String(values[k]);
-                if (f.options.some((o) => String(o) === cur)) continue;      // already exact
-                const snap = snapToOption(f.options, cur);
-                if (snap) values[k] = snap;
-                else { delete values[k]; skipped[k] = 'no matching option'; }
-            }
-        } catch (e) { console.warn('[aiHub] autofillMap option-snap skipped:', e.message); }
-
-        // ── Post-pass 4: checkbox safety ───────────────────────────────────────────
-        // keepUser() on the client returns false for radio|checkbox, so the fill runs
-        // setChecked(el,false) for a "No" — UNTICKING a box the user ticked by hand. Never emit a
-        // falsy checkbox value at all.
-        try {
-            for (const f of nonFile) {
-                if (String(f.type || '').toLowerCase() !== 'checkbox') continue;
-                const v = values[f.key];
-                if (v === undefined) continue;
-                const truthy = v === true || /^(yes|true|on|1|checked|ja|oui|si|sim|tak)$/i.test(String(v).trim());
-                if (!truthy) delete values[f.key];
-            }
-        } catch (e) { console.warn('[aiHub] autofillMap checkbox pass skipped:', e.message); }
-
         // ── Self-learning overlay ────────────────────────────────────────────
         // Belt-and-suspenders to the AI prompt above: for any field STILL empty, exact-match it
         // against the user's saved Q&A by normalized question — so every learned answer fills.
@@ -4845,6 +4836,43 @@ RULES:
                 if (learned) console.log(`[aiHub] saved-answers filled ${learned} field(s) the AI left blank for user ${userId}`);
             }
         } catch (e) { console.warn('[aiHub] saved-answers overlay skipped:', e.message); }
+
+        // NOTE: the saved-answers overlay runs HERE, before passes 3 and 4 — not after them.
+        // Running it last let a learned "No" land on a checkbox after pass 4 had already
+        // removed exactly those values, re-introducing the untick it exists to prevent, and
+        // let learned values skip the option-snap entirely.
+        // ── Post-pass 3: snap every option-bearing value onto a REAL option ─────────
+        // A value no option matches makes the client's matcher return null: the field stays empty, is
+        // never counted, and the user is never told. Snap it, or say we couldn't.
+        try {
+            for (const k of Object.keys(values)) {
+                const f = fieldByKey.get(k);
+                if (!f || !Array.isArray(f.options) || !f.options.length) continue;
+                const cur = String(values[k]);
+                if (f.options.some((o) => String(o) === cur)) continue;      // already exact
+                const snap = snapToOption(f.options, cur);
+                if (snap) { values[k] = snap; continue; }
+                // Only DELETE when we can see the whole list. Against a truncated one, "not found"
+                // means "not in the first 80 rows" — pass it through and let the device match it
+                // against the real options.
+                if (f.optionsTruncated || f.optionsUnknown) continue;
+                delete values[k]; skipped[k] = 'no matching option';
+            }
+        } catch (e) { console.warn('[aiHub] autofillMap option-snap skipped:', e.message); }
+
+        // ── Post-pass 4: checkbox safety ───────────────────────────────────────────
+        // keepUser() on the client returns false for radio|checkbox, so the fill runs
+        // setChecked(el,false) for a "No" — UNTICKING a box the user ticked by hand. Never emit a
+        // falsy checkbox value at all.
+        try {
+            for (const f of nonFile) {
+                if (String(f.type || '').toLowerCase() !== 'checkbox') continue;
+                const v = values[f.key];
+                if (v === undefined) continue;
+                const truthy = v === true || /^(yes|true|on|1|checked|ja|oui|si|sim|tak)$/i.test(String(v).trim());
+                if (!truthy) delete values[f.key];
+            }
+        } catch (e) { console.warn('[aiHub] autofillMap checkbox pass skipped:', e.message); }
 
         // Tell the app WHICH questions were deliberately left blank and why, so it can name them
         // instead of quietly reporting a smaller number than the form actually has.

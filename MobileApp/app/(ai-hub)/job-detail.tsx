@@ -532,12 +532,19 @@ const JS_HELPERS = `
   // COLLISION is the exact catastrophe this function exists to prevent. When the path is not unique
   // among the page's controls, append this control's position among its twins.
   function uniqPath(el){
-    var p=domPath(el), n=0, mine=0;
+    var p=domPath(el), n=0, mine=0, taken=false;
     try{
       var all=ctrls();
       if(all.length>150) return p;                       // O(n^2) guard; plain path on huge forms
-      for(var i=0;i<all.length;i++){ if(domPath(all[i])===p){ if(all[i]===el) mine=n; n++; } }
+      for(var i=0;i<all.length;i++){
+        // A control that appears LATER can compute a path equal to one another element already
+        // cached — and two fields sharing a key means one value lands in the other's box. Whoever
+        // cached it first keeps it.
+        if(all[i]!==el && all[i].__cvfPath===p) taken=true;
+        if(domPath(all[i])===p){ if(all[i]===el) mine=n; n++; }
+      }
     }catch(e){}
+    if(taken){ try{ window.__cvfPathN=(window.__cvfPathN||0)+1; }catch(e){} return p+'#u'+(window.__cvfPathN||n); }
     return n>1 ? (p+'#'+mine) : p;
   }
   // Framework ids (:r3:, radix-:r1:, headlessui-…, mui-12) change on every re-render — keying on one
@@ -612,7 +619,9 @@ const JS_HELPERS = `
       if(t===name||t.indexOf(name+' ')===0||t.indexOf(name+'+')===0||t.indexOf(name+'(')===0) return opts[i]; } }
     return null;
   }
-  function isCountryLabel(s){ return /country|dial|calling code|phone code|isd|nationality/i.test(cleanTxt(s)); }
+  // "nationality" is deliberately NOT here: it is a legal question, not a dial-code control, and it
+  // must keep the full never-overwrite protection.
+  function isCountryLabel(s){ return /country|dial|calling code|phone code|\\bisd\\b/i.test(cleanTxt(s)); }
   function isPhoneCodeOpts(opts){ var n=0,t=0,i; for(i=0;i<opts.length&&i<40;i++){ var s=optText(opts[i]); if(!s) continue; t++; if(dialOf(s)) n++; } return t>=3 && n/t>0.6; }
   function isCountrySelect(el){
     try{ if(el.tagName!=='SELECT') return false;
@@ -643,27 +652,55 @@ const JS_HELPERS = `
   function cbCtrl(el){
     try{ return (el.closest&&(el.closest('[class*=select__control]')||el.closest('[class*=MuiAutocomplete-root]')||el.closest('[class*=select2-selection]')||el.closest('[class*=chosen-container]')))||el.parentElement; }catch(e){ return el.parentElement; }
   }
-  // The popup belonging to THIS widget. Deliberately NOT a document-wide query: a page-wide
-  // '[role=option],div[class*=option]' sweep also matches div.optional-note, div.options-wrapper and
-  // any OTHER open menu — and we would then click it.
-  function cbPopup(el){
+  // ── Resolving a widget's popup — the part that must never go wrong ──────────
+  // An earlier version walked up to 4 ancestors and took any visible node whose class merely
+  // CONTAINED "menu"/"options"/"dropdown". Driven against real page shapes that resolved to
+  // <div class="form-options"> (holding a Submit button), to <nav class="navbar-menu"> (holding
+  // links), and to a wizard's step container — and we then clicked what was inside. So a popup is
+  // now only accepted when it is either EXPLICITLY associated with the control (aria-controls /
+  // aria-owns), or it BECAME VISIBLE as a result of our own open gesture. A site nav and a sibling
+  // button container are visible the whole time and can never qualify.
+  var CB_POPUP_SEL  = '[role=listbox],[role=menu],[role=grid],[class*=menu],[class*=dropdown],[class*=listbox],[class*=autocomplete],[class*=typeahead],[class*=results],[class*=suggestion],[class*=option]';
+  // Word-boundary, so "form-options", "answer-options" and "optional-note" no longer look like popups.
+  var CB_POPUP_WORD = /(^|[-_])(menu|dropdown|listbox|autocomplete|typeahead|results|suggestions?|choices)([-_]|$)/i;
+  function cbClassOf(n){ try{ var cn=n.className; if(cn&&typeof cn!=='string'&&cn.baseVal!=null) cn=cn.baseVal; return String(cn||''); }catch(e){ return ''; } }
+  function cbPopupOk(n){
+    try{
+      var r=(n.getAttribute&&n.getAttribute('role'))||'';
+      if(r==='listbox'||r==='menu'||r==='grid') return true;
+      var toks=cbClassOf(n).split(/\\s+/);
+      for(var i=0;i<toks.length;i++){ if(toks[i]&&CB_POPUP_WORD.test(toks[i])) return true; }
+    }catch(e){}
+    return false;
+  }
+  // Snapshot of popup-shaped nodes ALREADY visible before we open anything.
+  function cbPreOpen(){
+    var out=[];
+    try{ var ns=deepQuery(CB_POPUP_SEL); for(var i=0;i<ns.length&&i<400;i++){ if(vis(ns[i])) out.push(ns[i]); } }catch(e){}
+    return out;
+  }
+  // Returns {el, trusted} or null. trusted === the control itself told us which node its popup is.
+  function cbPopup(el, pre){
     var rt=document; try{ if(el.getRootNode){ var r=el.getRootNode(); if(r&&r.getElementById) rt=r; } }catch(e){}
     var ids=[];
     try{ var a=el.getAttribute('aria-controls'); if(a) ids=ids.concat(a.split(' ')); }catch(e){}
     try{ var o=el.getAttribute('aria-owns');    if(o) ids=ids.concat(o.split(' ')); }catch(e){}
-    for(var i=0;i<ids.length;i++){ if(!ids[i]) continue; var n=null; try{ n=rt.getElementById(ids[i]); }catch(e){} if(n&&vis(n)) return n; }
-    var p=cbCtrl(el), h=0;
-    while(p&&h<4){
-      var lb=null;
-      try{ lb=p.querySelector('[role=listbox],[class*=menu],[class*=results],[class*=dropdown],[class*=options]'); }catch(e){}
-      if(lb&&vis(lb)) return lb;
-      p=p.parentElement; h++;
+    for(var i=0;i<ids.length;i++){ if(!ids[i]) continue; var n=null; try{ n=rt.getElementById(ids[i]); }catch(e){} if(n&&vis(n)) return {el:n, trusted:true}; }
+    if(!pre) return null;                       // no association and no before-picture ⇒ refuse
+    var cands=[]; try{ cands=deepQuery(CB_POPUP_SEL); }catch(e){ return null; }
+    for(var j=0;j<cands.length&&j<400;j++){
+      var c=cands[j];
+      if(!vis(c)||!cbPopupOk(c)) continue;
+      var was=false; for(var k=0;k<pre.length;k++){ if(pre[k]===c){ was=true; break; } }
+      if(was) continue;                          // was already on screen ⇒ not our popup
+      try{ if(c.contains&&c.contains(el)) continue; }catch(e){}   // the control's own wrapper
+      return {el:c, trusted:false};
     }
     return null;
   }
-  function cbOptions(el){
-    var root=cbPopup(el); if(!root) return [];
-    var os=[]; try{ os=root.querySelectorAll('[role=option],li,[class*=option],[class*=item]'); }catch(e){ return []; }
+  function cbOptions(el, pop){
+    if(!pop||!pop.el) return [];
+    var os=[]; try{ os=pop.el.querySelectorAll('[role=option],li,[class*=option],[class*=item]'); }catch(e){ return []; }
     var out=[], seen=[];
     for(var i=0;i<os.length&&out.length<60;i++){
       var o=os[i];
@@ -675,14 +712,28 @@ const JS_HELPERS = `
     }
     return out;
   }
-  var CB_DENY = /^(submit|save|next|continue|proceed|send|apply|confirm|agree|accept|pay|buy|delete|remove)$/i;
-  // NEVER activate a real submit control.
+  // Any label containing one of these is never clicked by us, in any context. Unanchored and
+  // multilingual on purpose: the old anchored English list let "Submit application" and
+  // "Save and continue" straight through. (Kept separate from WIZARD_HELPERS' W_SUBMIT, which must
+  // NOT contain the next-words or wizard detection could never recognise a Next button.)
+  var CB_SUBMIT = /\\b(submit|apply|application|send|finish|finalise|finalize|next|continue|proceed|confirm|agree|accept|pay|buy|delete|remove|absenden|abschicken|abschliessen|bewerben|bewerbung|einreichen|weiter|fortfahren|envoyer|soumettre|postuler|terminer|candidature|suivant|continuer|enviar|postular|solicitud|finalizar|siguiente|continuar|invia|inviare|candidati|candidatura|termina|avanti|verzenden|versturen|solliciteer|sollicitatie|voltooien|indienen|volgende|doorgaan|submeter|candidatar|concluir|proximo|wyslij|aplikuj|zloz|zakoncz|dalej|skicka|ansok|ansokan|slutfor|nasta)\\b/i;
+  // NEVER activate a submit control or a navigation link. Every rejection here is UNCONDITIONAL —
+  // the old version required an "&& el.form" conjunct, and a Submit button outside any <form>
+  // sailed past it. Note getAttribute('type'), never el.type: HTMLButtonElement.type DEFAULTS to
+  // "submit", so el.type would reject every legitimate <button role=option> dropdown row.
   function cbSafeClick(el){
     try{
       if(!el) return false;
-      if((el.type||'').toLowerCase()==='submit' && el.form) return false;
-      if(el.closest && el.closest('button[type=submit]') && el.closest('form')) return false;
-      if(CB_DENY.test(cbText(el))) return false;
+      var at=String((el.getAttribute&&el.getAttribute('type'))||'').toLowerCase();
+      if(at==='submit'||at==='image'||at==='reset') return false;
+      if(el.closest && el.closest('button[type=submit],input[type=submit]')) return false;
+      if(el.getAttribute && el.getAttribute('form')) return false;
+      // a link that would actually navigate — clicking it destroys the half-filled form
+      var a=null; try{ a=el.closest?el.closest('a'):null; }catch(e){}
+      if(a){ var h=a.getAttribute('href')||''; if(h && h!=='#' && h.indexOf('javascript:')!==0) return false; }
+      if(CB_SUBMIT.test(cbText(el))) return false;
+      var al=(el.getAttribute&&(el.getAttribute('aria-label')||el.getAttribute('title')))||'';
+      if(al && CB_SUBMIT.test(al)) return false;
       el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
       el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
       if(el.click) el.click(); else el.dispatchEvent(new MouseEvent('click',{bubbles:true}));
@@ -690,17 +741,25 @@ const JS_HELPERS = `
     }catch(e){ return false; }
   }
   // What the widget SHOWS as chosen. After a real pick react-select CLEARS the input, so el.value is
-  // exactly the wrong thing to read — both for verifying OUR write and for detecting the USER's own
-  // answer (without this, keepUser sees an empty box and lets us wipe what they picked by hand).
+  // the wrong thing to read — both for verifying OUR write and for detecting the USER's own answer.
+  //
+  // STRICT on purpose. An earlier version fell back to the wrapper's whole innerText minus the
+  // placeholder and label, which picked up sibling hint text ("e.g. +91") and the widget's own
+  // "Select…" placeholder — so an EMPTY dropdown looked answered, autofill skipped it, and it was
+  // reported as filled. Only an explicit selected-value node counts now; anything else returns ''.
   function cbShown(el){
     try{
-      var w=cbCtrl(el); if(!w) return '';
-      var sv=w.querySelector('[class*=single-value],[class*=multi-value],[class*=selected],[class*=chosen-single]');
-      if(sv) return cbText(sv);
-      var t=cbText(w);
-      var ph=(el.placeholder||''); if(ph) t=t.split(ph).join(' ');
-      var lb=nlbl(el);              if(lb) t=t.split(lb).join(' ');
-      return t.replace(/\\s+/g,' ').trim();
+      var w=cbCtrl(el); if(!w||!w.querySelector) return '';
+      var sv=w.querySelector('[class*=single-value],[class*=multi-value],[class*=select2-selection__rendered],[class*=chosen-single] span,[aria-selected="true"]');
+      if(!sv) return '';
+      var t=cbText(sv);
+      if(!t) return '';
+      // select2/Chosen render their PLACEHOLDER through the same node.
+      try{ if(sv.className && /placeholder/i.test(cbClassOf(sv))) return ''; }catch(e){}
+      var ph=cbNorm(el.placeholder||'');
+      if(ph && cbNorm(t)===ph) return '';
+      if(/^(select|choose|please select|-{2,}|\\.\\.\\.)\\b/i.test(t)) return '';
+      return t;
     }catch(e){ return ''; }
   }
   // Close a popup without ever pressing Enter (implicit submit). Escape is what every one of these
@@ -733,10 +792,20 @@ const JS_HELPERS = `
   }
   function cbAborted(){ try{ if(__cvfG.url && location.href!==__cvfG.url) __cvfG.aborted=true; }catch(e){} return __cvfG.aborted; }
   // Type-then-CLICK. cb(true|false). Never throws, never presses Enter, never clicks a submit.
+  //
+  // Two rules earn their keep here:
+  //  • The popup must be OUR popup (cbPopup with a before-picture). If we cannot establish that, we
+  //    do nothing and report the field — clicking into an unidentified container is how a Submit
+  //    button, a nav link and a wizard's "Save and continue" all got pressed.
+  //  • If no option actually MATCHES, we give up. There used to be a "first row wins" fallback for
+  //    relevance-ranked autocompletes; on a list that simply doesn't contain the answer it commits a
+  //    random row — a wrong dial code, or a fabricated answer to a legal question — and then reports
+  //    it as filled. An unanswered question the user can see beats a wrong one they cannot.
   function openAndPick(el, v, cb){
     var want=String(v), fin=false;
     function finish(ok){ if(fin) return; fin=true; if(!ok){ try{ cbClose(el); }catch(e){} } cb(ok); }
     if(cbAborted()){ finish(false); return; }
+    var pre=cbPreOpen();
     try{ el.focus(); }catch(e){}
     try{ setNative(el,''); }catch(e){}
     var ctrl=cbCtrl(el);
@@ -747,19 +816,19 @@ const JS_HELPERS = `
       try{ setNative(el,want); }catch(e){}
       setTimeout(function(){
         if(cbAborted()){ finish(false); return; }
-        var os=cbOptions(el);
+        var pop=cbPopup(el, pre);
+        if(!pop){ finish(false); return; }
+        var os=cbOptions(el, pop);
         if(!os.length){ finish(false); return; }
         var pool=[]; for(var i=0;i<os.length;i++) pool.push({text:cbText(os[i]),el:os[i]});
         var m=isCountryLabel(nlbl(el)) ? pickDial(pool,want) : null;
         if(!m) m=pickOpt(pool,want);
-        // A FILTERED autocomplete is relevance-ranked, so on genuine ambiguity the FIRST row is the
-        // right answer, not the shortest one ("London" must not become London, Ontario).
-        if(!m && pool.length) m=pool[0];
         if(!m || !m.el || !cbSafeClick(m.el)){ finish(false); return; }
         setTimeout(function(){
+          // Verify against what the widget SHOWS. el.value is not evidence — we typed it ourselves,
+          // so comparing it to the value we wanted reported success on every run that misfired.
           var shown=cbNorm(cbShown(el)), mt=cbNorm(m.text), ok=false;
           try{ if(shown&&mt) ok = shown.indexOf(mt.slice(0,20))>=0 || mt.indexOf(shown.slice(0,20))>=0; }catch(e){}
-          if(!ok){ try{ ok = cbNorm(el.value)===cbNorm(want) && el.getAttribute('aria-expanded')!=='true'; }catch(e){} }
           finish(ok);
         },300);
       },450);
@@ -783,13 +852,18 @@ const JS_HELPERS = `
       var f=q[qi++], el=null, all=ctrls();
       for(var j=0;j<all.length;j++){ if(sig(all[j])===f.key){ el=all[j]; break; } }
       if(!el || cbShown(el)){ step(); return; }
+      var pre=cbPreOpen();
       try{ el.focus(); }catch(e){}
       var c=cbCtrl(el); if(c&&c!==el) cbSafeClick(c);
       setTimeout(function(){
         try{
-          var os=cbOptions(el), opts=[];
+          var pop=cbPopup(el, pre);
+          var os=pop?cbOptions(el, pop):[], opts=[];
           for(var k=0;k<os.length&&opts.length<60;k++){ var tx=cbText(os[k]); if(tx) opts.push(tx.slice(0,90)); }
-          if(opts.length) f.options=opts;
+          // A list we hit the cap on is INCOMPLETE. Say so, or the server's option-snap treats a
+          // country picker's first 60 rows as the whole world and deletes "India (+91)" as
+          // "no matching option".
+          if(opts.length){ f.options=opts; f.optionsUnknown=false; if(os.length>=60) f.optionsTruncated=true; }
         }catch(e){}
         cbClose(el);
         setTimeout(step,100);
@@ -827,7 +901,14 @@ const JS_HELPERS = `
             // dropdown the USER answered by hand it sees an empty box and would let us wipe and
             // re-pick their answer. Read what the widget SHOWS instead.
             if (cbShown(el)){ filled[s]=true; continue; }
-            if (!dseen[s] && deferred.length<8){ dseen[s]=1; deferred.push({s:s, v:v, label:nlbl(el).slice(0,90)}); }
+            if (!dseen[s]){
+              dseen[s]=1;
+              // Pre-seed the failure NOW, for every dropdown we defer. drain() deletes it on success.
+              // Otherwise a widget past the 8-deep cap is neither filled nor reported — it just
+              // disappears, which is the exact silence this whole change exists to remove.
+              fails[s]={key:s,label:nlbl(el).slice(0,90),why:'dropdown — please pick this one yourself'};
+              if (deferred.length<8) deferred.push({s:s, v:v, label:nlbl(el).slice(0,90)});
+            }
             continue;
           }
           try {
@@ -927,7 +1008,16 @@ const JS_HELPERS = `
       var i=el.selectedIndex; if(i<0) return false;
       var o=el.options[i]; if(!o) return false;
       if(isPlaceholderOpt(o)) return false;
-      if(isCountrySelect(el)){ if(o.defaultSelected) return false; if(i===0) return false; }
+      // A country / dial-code control is the one place we override a selection nobody made. Beyond
+      // the markup default and the browser's index-0 pick, a geo-IP script that calls
+      // selectedIndex = <United States> leaves NOTHING in the DOM to distinguish it from a real
+      // choice — so we trust the touch flag FOCUS_DETECT_JS sets on genuine user gestures instead.
+      if(isCountrySelect(el)){
+        if(el.__cvfTouched) return true;
+        if(o.defaultSelected) return false;
+        if(i===0) return false;
+        return false;
+      }
       return true;
     }catch(e){ return false; }
   }
@@ -1211,8 +1301,10 @@ const READ_FIELDS_JS = `(function(){
         }
         if(seen[s]) continue; seen[s]=true;
         var f={key:s,tag:el.tagName.toLowerCase(),type:t,name:(el.name||'').slice(0,60),placeholder:(el.placeholder||'').slice(0,80),label:nlbl(el).slice(0,140),required:!!el.required,accept:(el.getAttribute&&el.getAttribute('accept'))||''};
-        if(el.tagName==='SELECT'){ f.options=Array.prototype.slice.call(el.options).map(function(o){return (o.text||'').trim();}).filter(Boolean).slice(0,80); }
-        else if(isCombo(el)){ f.widget='combobox'; }
+        if(el.tagName==='SELECT'){ var _all=Array.prototype.slice.call(el.options).map(function(o){return (o.text||'').trim();}).filter(Boolean); f.options=_all.slice(0,80); // A 240-country list truncated to 80 hides India. Flag it so the server does not read the
+          // first 80 rows as the whole list and delete the value as "no matching option".
+          if(_all.length>80) f.optionsTruncated=true; }
+        else if(isCombo(el)){ f.widget='combobox'; f.optionsUnknown=true; }
         out.push(f);
       }
     }
@@ -1256,6 +1348,16 @@ const FOCUS_DETECT_JS = `(function(){
   if (window.__cvfSkipFrame) return;
   if (window.__cvfFocusHook) return; window.__cvfFocusHook = true;
   ${JS_HELPERS}
+  // Mark controls the PERSON actually operated. isTrusted is true only for a real user gesture, so
+  // this distinguishes "the user chose United States" from "the page's geo-IP script preselected
+  // United States" — which are identical in the DOM, and which keepUser previously had to guess
+  // between. Installed at page load, so it also captures anything they filled BEFORE tapping Auto Fill.
+  var mark = function(ev){
+    try{ if(!ev || !ev.isTrusted) return; var t=ev.target;
+      if(t && (t.tagName==='SELECT'||t.tagName==='INPUT'||t.tagName==='TEXTAREA')) t.__cvfTouched = true; }catch(e){}
+  };
+  document.addEventListener('change', mark, true);
+  document.addEventListener('input', mark, true);
   document.addEventListener('focus', function(ev){
     try {
       var el = ev.target; if(!el) return; var tag = el.tagName;
@@ -1318,8 +1420,10 @@ const FRAME_AGENT_JS = `(function(){
           if(t==='radio'){ if(!rgroups[s]){ rgroups[s]={key:s,tag:'radio',type:'radio',name:(el.name||'').slice(0,60),label:radioQuestion(el).slice(0,180),required:!!el.required,options:[]}; out.push(rgroups[s]); } var ol=(nlbl(el)||el.value||'').slice(0,80); if(ol&&rgroups[s].options.indexOf(ol)<0) rgroups[s].options.push(ol); continue; }
           if(seen[s]) continue; seen[s]=true;
           var f={key:s,tag:el.tagName.toLowerCase(),type:t,name:(el.name||'').slice(0,60),placeholder:(el.placeholder||'').slice(0,80),label:nlbl(el).slice(0,140),required:!!el.required,accept:(el.getAttribute&&el.getAttribute('accept'))||''};
-          if(el.tagName==='SELECT'){ f.options=Array.prototype.slice.call(el.options).map(function(o){return (o.text||'').trim();}).filter(Boolean).slice(0,80); }
-          else if(isCombo(el)){ f.widget='combobox'; }
+          if(el.tagName==='SELECT'){ var _all=Array.prototype.slice.call(el.options).map(function(o){return (o.text||'').trim();}).filter(Boolean); f.options=_all.slice(0,80); // A 240-country list truncated to 80 hides India. Flag it so the server does not read the
+          // first 80 rows as the whole list and delete the value as "no matching option".
+          if(_all.length>80) f.optionsTruncated=true; }
+          else if(isCombo(el)){ f.widget='combobox'; f.optionsUnknown=true; }
           out.push(f);
         }
       }
@@ -1354,6 +1458,10 @@ const FRAME_AGENT_JS = `(function(){
       else if(d.__cvfCmd==='fill') doFill(d.values||{});
       else if(d.__cvfCmd==='attach') doAttach(d.keys, d.b64, d.filename, d.mime, d.kind);
       else if(d.__cvfCmd==='wizardProbe') wReport(1);
+      // Most enterprise ATS host their form in a cross-origin iframe, so the step watcher has to be
+      // armed INSIDE the frame — arming only the main frame meant the auto-fill-next-step promise
+      // could never be kept on exactly the portals it was built for.
+      else if(d.__cvfCmd==='armStepWatch'){ try{ window.__cvfArmStepWatch && window.__cvfArmStepWatch(); }catch(e){} }
     } catch(e){}
   }, false);
 })(); true;`;
@@ -1900,7 +2008,10 @@ export default function JobDetailScreen() {
   const wizTimerRef = useRef<any>(null);
   const wizStepKeyRef = useRef<string>('');      // identity of the step we last filled
   const wizAutoRef = useRef<number>(0);          // steps auto-filled after the user pressed Next
+  const lastRunEndedRef = useRef<number>(0);     // cooldown, so a settling DOM can't retrigger a run
   const [wizardUi, setWizardUi] = useState<{ i: number; n: number; name: string } | null>(null);
+  // The auto-advance gate reads this from inside onWebMessage, where the state value would be stale.
+  const wizardUiRef = useRef<{ i: number; n: number; name: string } | null>(null);
   // Sign-in flow: the page we must return the user to once auth finishes, plus guards so we restore
   // exactly once and never fight the provider's own redirect chain.
   const preAuthUrlRef   = useRef<string>('');
@@ -2537,10 +2648,13 @@ export default function JobDetailScreen() {
   // ── AI auto-fill orchestration (read → map → fill → attach resume → attach CL) ──
   const finishAutofill = (state: 'done' | 'error', note = '') => {
     autofillRef.current.active = false;
+    lastRunEndedRef.current = Date.now();
     if (runTimerRef.current) { clearTimeout(runTimerRef.current); runTimerRef.current = null; }
     setAutofillState(state);
     setAutofillNote(note);
   };
+  // Keep the ref in step with the state it mirrors.
+  const applyWizardUi = (v: { i: number; n: number; name: string } | null) => { wizardUiRef.current = v; setWizardUi(v); };
 
   // Final message from BOTH stages, so a run that filled no text fields but DID add skills still
   // reads as a success (and vice-versa) instead of the old blanket "couldn't match any fields".
@@ -2576,7 +2690,7 @@ export default function JobDetailScreen() {
     }
     wizProbeRef.current.seq++;               // invalidate any in-flight wizard probe
     wizStepKeyRef.current = ''; wizAutoRef.current = 0;
-    setWizardUi(null);
+    applyWizardUi(null);
     setAutofillFailed([]);
     const didApply = submitMarkedRef.current;
     setApplyWebUrl(null);
@@ -2632,7 +2746,10 @@ export default function JobDetailScreen() {
     }, 25000);
     // Arm the step watcher so that when the USER presses Next on a multi-step form, the new step
     // fills itself. (We never press Next — see wReport/wFindNext: the probe is read-only.)
-    try { applyWebRef.current.injectJavaScript('try{window.__cvfArmStepWatch&&window.__cvfArmStepWatch();}catch(e){} true;'); } catch {}
+    try {
+      applyWebRef.current.injectJavaScript('try{window.__cvfArmStepWatch&&window.__cvfArmStepWatch();}catch(e){} true;');
+      applyWebRef.current.injectJavaScript(relayToChildrenJs({ __cvfCmd: 'armStepWatch' }));
+    } catch {}
     applyWebRef.current.injectJavaScript(READ_FIELDS_JS);                          // main frame (as before)
     applyWebRef.current.injectJavaScript(relayToChildrenJs({ __cvfCmd: 'scan' })); // + any iframe(s)
   };
@@ -2675,7 +2792,7 @@ export default function JobDetailScreen() {
     const f = filledCountRef.current, sk = skillsCountRef.current;
 
     // Not a wizard → exactly today's ending.
-    if (!best || (!best.hasOrdinal && !best.canNext)) { setWizardUi(null); finishFill(f, sk); return; }
+    if (!best || (!best.hasOrdinal && !best.canNext)) { applyWizardUi(null); finishFill(f, sk); return; }
 
     const failed = failedAccumRef.current.filter((x: any) => x && x.label);
     setAutofillFailed(failed.slice(0, 6));
@@ -2685,7 +2802,7 @@ export default function JobDetailScreen() {
     setStep('wizard', 'done');
 
     if (best.hasOrdinal) {
-      setWizardUi({ i: best.i, n: best.n, name: String(best.stepName || '') });
+      applyWizardUi({ i: best.i, n: best.n, name: String(best.stepName || '') });
       if (best.review || best.i >= best.n) {
         finishAutofill('done', `${did} on step ${best.i} of ${best.n} — the last one. Check everything, then submit it yourself.`);
         return;
@@ -2697,7 +2814,7 @@ export default function JobDetailScreen() {
       return;
     }
     // Wizard-shaped but uncountable (a bespoke SPA stepper). Say so; never invent a number.
-    setWizardUi({ i: 0, n: 0, name: '' });
+    applyWizardUi({ i: 0, n: 0, name: '' });
     finishAutofill('done', `${did}. This form has more than one step. Tap Next on the page — I'll fill the next one automatically.`);
   };
 
@@ -2889,6 +3006,19 @@ export default function JobDetailScreen() {
       if (autofillRef.current.active) return;               // a run is already working this page
       if (!applyWebUrl || !sameOrigin()) return;
       if (wizAutoRef.current >= WIZ_MAX_AUTO) return;
+      // Only ever on a form the previous run actually IDENTIFIED as multi-step. Without this, an
+      // ordinary single-page form that reveals a conditional "if yes, explain" field counts as a
+      // "step change" and re-runs the whole charged mapping while the user is mid-sentence.
+      if (!wizardUiRef.current) return;
+      if (Date.now() - lastRunEndedRef.current < 4000) return;          // not while things settle
+      // The step must really have MOVED: either the ordinal changed, or most of the questions did.
+      // wStepKey is "<i/n>#<count>#<sig,sig,…>".
+      const parse = (s: string) => { const p = s.split('#'); return { ord: p[0] || '', sigs: (p[2] || '').split(',').filter(Boolean) }; };
+      const now = parse(k), was = parse(wizStepKeyRef.current || '');
+      const ordMoved = !!now.ord && now.ord !== '?' && now.ord !== was.ord;
+      const shared = now.sigs.filter((x) => was.sigs.includes(x)).length;
+      const mostlyNew = now.sigs.length > 0 && shared / Math.max(now.sigs.length, was.sigs.length || 1) < 0.5;
+      if (!ordMoved && !mostlyNew) return;
       wizStepKeyRef.current = k;
       wizAutoRef.current += 1;
       startAutofill();
