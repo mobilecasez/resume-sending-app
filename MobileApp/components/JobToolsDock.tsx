@@ -48,7 +48,8 @@ export default function JobToolsDock({ actions, bottomInset = 0, busy, busyLabel
             </View>
             <View style={styles.row}>
               {actions.map((a) => (
-                <TouchableOpacity key={a.key} style={styles.item} activeOpacity={0.85} onPress={() => { setOpen(false); a.onPress(); }}>
+                // ≤3 actions = one even row; 4+ wraps to a 2-column grid so each stays tappable.
+                <TouchableOpacity key={a.key} style={[styles.item, actions.length >= 4 ? styles.itemGrid : styles.itemFlex]} activeOpacity={0.85} onPress={() => { setOpen(false); a.onPress(); }}>
                   <LinearGradient colors={a.colors} style={styles.itemIcon}><Ionicons name={a.icon} size={21} color="#fff" /></LinearGradient>
                   <Text style={styles.itemTitle} numberOfLines={1}>{a.label}</Text>
                   {!!a.sub && <Text style={styles.itemSub} numberOfLines={2}>{a.sub}</Text>}
@@ -82,8 +83,10 @@ const styles = StyleSheet.create({
   grip: { alignSelf: 'center', width: 40, height: 4.5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.22)', marginBottom: 10 },
   head: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   headTx: { fontSize: 14.5, fontWeight: '800', color: '#fff' },
-  row: { flexDirection: 'row', gap: 10 },
-  item: { flex: 1, backgroundColor: 'rgba(255,255,255,0.07)', borderRadius: 18, alignItems: 'center', paddingVertical: 14, paddingHorizontal: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.09)' },
+  row: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  item: { backgroundColor: 'rgba(255,255,255,0.07)', borderRadius: 18, alignItems: 'center', paddingVertical: 14, paddingHorizontal: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.09)' },
+  itemFlex: { flex: 1 },
+  itemGrid: { flexGrow: 1, flexBasis: '46%' },
   itemIcon: { width: 44, height: 44, borderRadius: 15, alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
   itemTitle: { fontSize: 12.5, fontWeight: '800', color: '#fff', textAlign: 'center' },
   itemSub: { fontSize: 10, color: 'rgba(255,255,255,0.55)', marginTop: 2, textAlign: 'center' },

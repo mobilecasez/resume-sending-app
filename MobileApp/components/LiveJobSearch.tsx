@@ -461,15 +461,18 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
   // for a card, WITHOUT the Browse&Fetch middle step — so a company job (SmartRecruiters/Workday/…)
   // opens ONCE, no second web view, no reload. LinkedIn stays on Browse&Fetch (company-capture flow).
   const applyingRef = useRef(false);   // guard a fast double-tap from pushing job-detail twice
-  const applyExternally = useCallback((applyUrl: string, title: string) => {
+  // forceWeak: for a LISTING ("500+ jobs") we open the board in the apply browser with NO card, so
+  // its "500+ jobs" heading is never shipped as the job title — the user browses to a real job and
+  // taps Fetch/Auto Fill there, and capture extracts the true title/company from that page.
+  const applyExternally = useCallback((applyUrl: string, title: string, forceWeak = false) => {
     if (applyingRef.current) return;
     if (!onApplyHere) { setBrowseUrl(applyUrl); return; }   // fallback: browse it in-app
     applyingRef.current = true;
     const k = normUrl(applyUrl);
-    const card = cardsRef.current.find((c) => normUrl(c.job_url) === k) || null;
+    const card = forceWeak ? null : (cardsRef.current.find((c) => normUrl(c.job_url) === k) || null);
     setBrowseUrl(null);
     onClose();
-    setTimeout(() => onApplyHere(applyUrl, title, card), 350);   // after this modal dismisses
+    setTimeout(() => onApplyHere(applyUrl, forceWeak ? '' : title, card), 350);   // after this modal dismisses
   }, [onApplyHere, onClose]);
 
   // ── A job fetched from the Browse & Fetch browser → reflect it on the matching card (or add one) ──
@@ -695,7 +698,10 @@ export default function LiveJobSearch({ visible, query, onClose, onApplyHere }: 
       const isLi = /linkedin\.com/i.test(item.job_url);
       const count = listingCountFromTitle(item.title);
       const busy = expandingUrl === item.job_url;
-      const act = () => { if (busy) return; if (isLi) expandListing(item.job_url); else setBrowseUrl(item.job_url); };
+      // LinkedIn lists expand into individual cards here. Every other board opens in the ONE
+      // tool-equipped browser (apply WebView + robot dock: Fetch job + Auto Fill), so there's no
+      // second web view and no "open the apply tools?" reload when the user picks a job.
+      const act = () => { if (busy) return; if (isLi) expandListing(item.job_url); else applyExternally(item.job_url, '', true); };
       return (
         <TouchableOpacity activeOpacity={0.85} onPress={act} style={[styles.card, styles.cardListing]}>
           <View style={styles.cardTop}>

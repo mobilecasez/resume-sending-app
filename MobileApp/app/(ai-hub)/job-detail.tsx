@@ -148,6 +148,20 @@ const GRAB_JOB_TEXT_JS = `(function(){ try {
   o.__cvf = true; window.ReactNativeWebView.postMessage(JSON.stringify(o));
 } catch(e){} })(); true;`;
 
+// On-demand grab for the "Fetch job" dock action — captures WHATEVER page the user is looking at
+// right now (they may have browsed from a listing to a specific job), on its own message type so it
+// never trips the once-per-session cover-letter prefetch. Also carries a rough login/challenge signal
+// so we can tell the user why a protected page couldn't be read instead of a blank failure.
+const FETCH_PAGE_JS = `(function(){ try {
+  var t = (document.body && document.body.innerText) || '';
+  var low = t.slice(0, 4000).toLowerCase();
+  var wall = (/log ?in|sign ?in|please sign|create an account/.test(low) && t.length < 1200)
+    ? 'login'
+    : (/verify you are human|are you a robot|captcha|unusual traffic|checking your browser/.test(low) ? 'challenge' : '');
+  var o = { type:'FETCH_PAGE', text:String(t).slice(0,16000), title:String(document.title||''), url:String(location.href||''), wall:wall };
+  o.__cvf = true; window.ReactNativeWebView.postMessage(JSON.stringify(o));
+} catch(e){} })(); true;`;
+
 // ─── Theme (matches index.tsx exactly) ────────────────────────────
 const T = {
   bg:       '#E5EAF3',
@@ -1897,6 +1911,11 @@ export default function JobDetailScreen() {
   const [applyCanGoBack, setApplyCanGoBack] = useState(false);
   const [applyHost,      setApplyHost]      = useState('');
   const [appliedBanner,  setAppliedBanner]  = useState(false);   // green "submitted ✓" toast inside the web view
+  // "Fetch job" dock action: capture whatever page the user is viewing into Saved Jobs, so the apply
+  // browser both applies AND fetches (no separate Browse & Fetch screen, no reload).
+  const [fetchState,     setFetchState]     = useState<'idle' | 'fetching' | 'saved'>('idle');
+  const fetchWantRef = useRef(false);        // a Fetch is in flight and awaiting its FETCH_PAGE grab
+  const fetchTimerRef = useRef<any>(null);   // watchdog so a page that never answers doesn't hang the bubble
   const [webTranslated,  setWebTranslated]  = useState(false);   // page translated to English (Google in-page widget)
   const [webTranslating, setWebTranslating] = useState(false);
   const webTranslatedRef = useRef(false);                        // mirror for the load callback (no stale closure)
@@ -2538,6 +2557,67 @@ export default function JobDetailScreen() {
   };
   ensureTrackedRef.current = ensureTracked;
 
+  // ── "Fetch job" — save WHATEVER page is on screen to Saved Jobs ──────────────────────────────
+  // Reuses the universal capture endpoint (same one the cover-letter flow uses), but always against
+  // the LIVE current page, so it works after the user has browsed from a listing to a specific job.
+  // A fresh grab is posted back as FETCH_PAGE; onWebMessage does the capture so title/company can be
+  // left blank on a navigated page (the server AI-extracts them) without disturbing the initial-job
+  // prefetch that feeds the cover letter.
+  const fetchThisPage = () => {
+    // No same-origin gate here (unlike autofill): Fetch sends only the page's PUBLIC text, and the
+    // whole point is to capture whatever job you browsed to — usually a different site than you
+    // started on (a board → the company's own ATS).
+    if (fetchState !== 'idle' || !applyWebRef.current) return;
+    setFetchState('fetching');
+    fetchWantRef.current = true;
+    try { applyWebRef.current.injectJavaScript(FETCH_PAGE_JS); } catch { fetchWantRef.current = false; setFetchState('idle'); return; }
+    if (fetchTimerRef.current) clearTimeout(fetchTimerRef.current);
+    fetchTimerRef.current = setTimeout(() => {
+      if (fetchWantRef.current) { fetchWantRef.current = false; setFetchState('idle'); Alert.alert("Couldn't read this page", 'Give the job a moment to load, then tap Fetch job again.'); }
+    }, 25000);
+  };
+
+  // Runs once the grabbed page text comes back (from fetchThisPage). Captures + tracks it.
+  const captureFetchedPage = async (liveUrl: string, pageText: string, wall: string) => {
+    if (fetchTimerRef.current) { clearTimeout(fetchTimerRef.current); fetchTimerRef.current = null; }
+    const host = (() => { try { return new URL(liveUrl).hostname.replace(/^www\./, ''); } catch { return ''; } })();
+    if (wall === 'login') { setFetchState('idle'); Alert.alert('Sign in first', `${host || 'This site'} wants you logged in before it shows the job. Log in on this page — your session is remembered — then tap Fetch job again.`); return; }
+    if (wall === 'challenge') { setFetchState('idle'); Alert.alert('Human check', 'Complete the check shown on the page, wait for the job to appear, then tap Fetch job again.'); return; }
+    if (!pageText || pageText.length < 120) { setFetchState('idle'); Alert.alert("Couldn't read this job", `We couldn't pull the details from ${host || 'this page'}. Open the job's own page and try again.`); return; }
+    // Are we still on the job this screen was opened for? If so keep the good card title/company;
+    // otherwise (browsed to a different job) leave them blank so the server extracts the real ones.
+    const onInitial = (() => { try { return canonicalJobUrl(liveUrl) === canonicalJobUrl(effectiveApplyUrl || ''); } catch { return false; } })();
+    try {
+      const r = await captureJob({
+        url: liveUrl,
+        title: onInitial && !(job as any).weakTitle ? (display.title || job.title || '') : '',
+        company: onInitial && !(employer as any)?.weakName ? ((employer as any)?.name || companyNameCL || '') : '',
+        companyDomain: onInitial ? ((employer as any)?.domain || '') : '',
+        location: '', jobType: '', workMode: null, experience: '', salary: '',
+        responsibilities: [], skills: [],
+        matchScore: typeof (job as any).matchScore === 'number' ? (job as any).matchScore : null,
+        pageText, track: true,
+      } as any);
+      if (r && r.jobId) {
+        // Feed the cover-letter path too, so a follow-up Generate uses this job's real details.
+        capturedRef.current.id = r.jobId; capturedRef.current.tracked = true;
+        if (r.job) { capturedRef.current.job = r.job; setCapturedJob(r.job); }
+        capturedIdRef.current = r.jobId; setCapturedJobId(r.jobId);
+        setFetchState('saved');
+        setTimeout(() => setFetchState('idle'), 2400);
+      } else {
+        setFetchState('idle');
+        Alert.alert("Couldn't read the full job", `We couldn't pull the details from ${host || 'this page'}. It may need you to open the job's own page first.`);
+      }
+    } catch (e: any) {
+      setFetchState('idle');
+      if (e && e.insufficient) { Alert.alert('Not enough credits', `Fetching a job costs ${e.cost ?? 1} credit(s). You have ${e.creditsRemaining ?? 0}. Top up in Account → Credits.`); return; }
+      const timedOut = e && (e.code === 'ECONNABORTED' || /timeout/i.test(String(e?.message || '')));
+      Alert.alert(timedOut ? 'Taking longer than expected' : "Couldn't save this job",
+        timedOut ? "This job is still being read in the background — tap Fetch job again in a moment and it'll be ready." : String(e?.message || 'Something went wrong reading this page.'));
+    }
+  };
+
   // Canonical id for all cover-letter + status writes (falls back to the param id).
   const jid = capturedJobId || job.id;
 
@@ -2685,9 +2765,10 @@ export default function JobDetailScreen() {
     setPreview(null); setPreviewBusy(null);   // don't leave a stale preview / busy spinner
     setFilePick(null); setFilePickBusy(null);
     if (attachTimerRef.current) { clearTimeout(attachTimerRef.current); attachTimerRef.current = null; }   // no stray "couldn't attach" alert after close
-    for (const r of [scanTimerRef, skillsTimerRef, fieldsCapRef, fillCapRef, runTimerRef, filledTimerRef, fieldsTimerRef, wizTimerRef]) {
+    for (const r of [scanTimerRef, skillsTimerRef, fieldsCapRef, fillCapRef, runTimerRef, filledTimerRef, fieldsTimerRef, wizTimerRef, fetchTimerRef]) {
       if (r.current) { clearTimeout(r.current); r.current = null; }
     }
+    fetchWantRef.current = false; setFetchState('idle');
     wizProbeRef.current.seq++;               // invalidate any in-flight wizard probe
     wizStepKeyRef.current = ''; wizAutoRef.current = 0;
     applyWizardUi(null);
@@ -2908,6 +2989,16 @@ export default function JobDetailScreen() {
     if (msg.type === 'JOB_PAGE_TEXT') {
       lastPageTextRef.current = String(msg.text || '');
       if (lastPageTextRef.current.length > 120) prefetchCapture(lastPageTextRef.current);
+      return;
+    }
+
+    // "Fetch job" grabbed the live page → capture + track it into Saved Jobs.
+    if (msg.type === 'FETCH_PAGE') {
+      if (!fetchWantRef.current) return;
+      fetchWantRef.current = false;
+      const liveUrl = String(msg.url || currentUrlRef.current || '');
+      lastPageTextRef.current = String(msg.text || '');
+      void captureFetchedPage(liveUrl, String(msg.text || ''), String(msg.wall || ''));
       return;
     }
 
@@ -4167,10 +4258,13 @@ export default function JobDetailScreen() {
           {autofillState !== 'running' && !smartOpen && !filePick && (
             <JobToolsDock
               bottomInset={insets.bottom}
+              busy={fetchState === 'fetching'}
+              busyLabel={fetchState === 'fetching' ? 'Saving this job…' : undefined}
               actions={[
-                { key: 'autofill', icon: 'sparkles', label: 'Auto Fill', sub: 'Fill the form with AI', colors: ['#7C6BFF', '#4F8DFF'], onPress: startAutofill },
-                { key: 'upload', icon: 'cloud-upload', label: 'Upload', sub: 'Résumé & cover letter', colors: ['#06B6D4', '#3B82F6'], onPress: () => setFilePick({ key: '__manual__', accept: '', label: 'Attach your résumé or cover letter' }) },
-                { key: 'details', icon: 'copy-outline', label: 'My details', sub: 'Copy to any field', colors: ['#10B981', '#059669'], onPress: openSmart },
+                { key: 'fetch', icon: fetchState === 'saved' ? 'checkmark' : 'sparkles', label: fetchState === 'saved' ? 'Saved ✓' : 'Fetch job', sub: 'Save to CVApplyr', colors: ['#06B6D4', '#3B82F6'], onPress: fetchThisPage },
+                { key: 'autofill', icon: 'flash', label: 'Auto Fill', sub: 'Fill the form', colors: ['#7C6BFF', '#4F8DFF'], onPress: startAutofill },
+                { key: 'upload', icon: 'cloud-upload', label: 'Upload', sub: 'Résumé & cover', colors: ['#0EA5E9', '#2563EB'], onPress: () => setFilePick({ key: '__manual__', accept: '', label: 'Attach your résumé or cover letter' }) },
+                { key: 'details', icon: 'copy-outline', label: 'My details', sub: 'Copy to a field', colors: ['#10B981', '#059669'], onPress: openSmart },
               ]}
             />
           )}
