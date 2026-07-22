@@ -776,12 +776,26 @@ const JS_HELPERS = `
       return t;
     }catch(e){ return ''; }
   }
-  // Close a popup without ever pressing Enter (implicit submit). Escape is what every one of these
-  // libraries listens for; blur is the fallback for the ones that don't. keyup as well as keydown,
-  // because a few (select2) only act on the second.
+  // Close a widget popup without ever pressing Enter (implicit submit) — and WITHOUT closing the host
+  // application MODAL. A real el.blur() is what actually dismisses react-select / MUI Autocomplete /
+  // select2 / Chosen (they all close on focus loss); Escape is only a supplement for widgets that
+  // ignore blur.
+  // ⚠️ The old code sent a BUBBLING Escape. On a portal application form inside a <dialog>/modal (YC's
+  // "Apply for this role" popup, Ashby, etc.) that Escape bubbled to the modal's document-level
+  // Escape-to-close handler and dismissed the user's ENTIRE application popup — during the scan, before
+  // they'd typed anything. Now: Escape is bubbles:false (can't travel up to a document/dialog handler,
+  // still reaches a keydown bound directly on the widget input), and inside a detected modal we skip
+  // Escape entirely (a capture-phase modal listener would see even a non-bubbling event) and let blur
+  // do the work. Residual: a widget that closes ONLY via a document Escape may stay visually open in a
+  // modal — cosmetic, and far better than nuking the user's application.
+  function cbInModal(el){
+    try{ return !!(el.closest && el.closest('[role=dialog],[aria-modal="true"],dialog[open]')); }catch(e){ return false; }
+  }
   function cbClose(el){
-    try{ el.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true})); }catch(e){}
-    try{ el.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true})); }catch(e){}
+    if(!cbInModal(el)){
+      try{ el.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:false})); }catch(e){}
+      try{ el.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:false})); }catch(e){}
+    }
     try{ el.dispatchEvent(new Event('blur',{bubbles:true})); }catch(e){}
     try{ el.blur(); }catch(e){}
   }
@@ -1855,6 +1869,29 @@ function clPlainText(html?: string | null): string {
 }
 
 // Is this form field a free-text COVER LETTER box (so we paste the letter text, not a file)?
+// Parse a mailto: URL → { to, cc, bcc, subject, body }. Manual parse (RN's URLSearchParams polyfill
+// is unreliable). Handles "mailto:a@x.com?cc=…&subject=…&body=…".
+function parseMailto(raw: string): { to: string; cc: string; bcc: string; subject: string; body: string } {
+  const out = { to: '', cc: '', bcc: '', subject: '', body: '' };
+  try {
+    const s = String(raw).replace(/^mailto:/i, '');
+    const q = s.indexOf('?');
+    const path = q >= 0 ? s.slice(0, q) : s;
+    if (path) { try { out.to = decodeURIComponent(path).trim(); } catch { out.to = path.trim(); } }
+    if (q >= 0) s.slice(q + 1).split('&').forEach((pair) => {
+      const eq = pair.indexOf('='); if (eq < 0) return;
+      const k = pair.slice(0, eq).toLowerCase();
+      let v = pair.slice(eq + 1).replace(/\+/g, ' '); try { v = decodeURIComponent(v); } catch {}
+      if (k === 'to') out.to = out.to ? `${out.to}, ${v.trim()}` : v.trim();
+      else if (k === 'cc') out.cc = v.trim();
+      else if (k === 'bcc') out.bcc = v.trim();
+      else if (k === 'subject') out.subject = v.trim();
+      else if (k === 'body') out.body = v;
+    });
+  } catch {}
+  return out;
+}
+
 function isCoverLetterTextarea(f: any): boolean {
   if (!f) return false;
   const tag = String(f.tag || '').toLowerCase();
@@ -2603,6 +2640,23 @@ export default function JobDetailScreen() {
         capturedRef.current.id = r.jobId; capturedRef.current.tracked = true;
         if (r.job) { capturedRef.current.job = r.job; setCapturedJob(r.job); }
         capturedIdRef.current = r.jobId; setCapturedJobId(r.jobId);
+        // "To apply, email …" contact the page named → merge into the job's contacts so it shows and
+        // the compose flow can use it. Keyed on the new jobId, not this screen's initial job.id.
+        const cc = (r.job as any)?.contacts as Contact[] | undefined;
+        if (cc && cc.length) {
+          setContacts((prev) => {
+            const seen = new Set(prev.map((c) => (c.email || c.name || '').toLowerCase()));
+            const merged = [...prev];
+            cc.forEach((c, i) => {
+              const key = (c.email || c.name || '').toLowerCase();
+              if (key && !seen.has(key)) {
+                seen.add(key);
+                merged.push({ ...c, id: `cap-${i}-${Date.now()}`, verified: (c as any).verified ?? false, avatarColor: ((c as any).avatarColor as [string, string]) || ['#06B6D4', '#3B82F6'] });
+              }
+            });
+            return merged;
+          });
+        }
         setFetchState('saved');
         setTimeout(() => setFetchState('idle'), 2400);
       } else {
@@ -3324,13 +3378,15 @@ export default function JobDetailScreen() {
   };
 
   // ── Open compose modal: pre-fill all fields, auto-generate CL if missing ──
-  const openComposeModal = async () => {
+  // `prefill` lets an apply-by-email (mailto:) link inject the recipient/subject the page specified;
+  // existing callers pass nothing → today's contact-derived defaults.
+  const openComposeModal = async (prefill?: { to?: string; cc?: string; bcc?: string; subject?: string }) => {
     // Contacts → To field
     const contactEmails = (contacts || []).map(c => c.email).filter(Boolean).join(', ');
-    setComposeTo(contactEmails);
-    setComposeCc('');
-    setComposeBcc('');
-    setCcExpanded(false);
+    setComposeTo(prefill?.to || contactEmails);
+    setComposeCc(prefill?.cc || '');
+    setComposeBcc(prefill?.bcc || '');
+    setCcExpanded(!!(prefill?.cc || prefill?.bcc));
     // Both region docs are attached by default; user can remove/change in the modal.
     // (The cover-letter chip's JSX is gated on coverLetterHtml, so default this ON; if the CL was
     // just generated, the stale `coverLetterHtml` closure value here would otherwise hide it.)
@@ -3348,7 +3404,7 @@ export default function JobDetailScreen() {
       const raw = await SecureStore.getItemAsync('userSession');
       fullName = JSON.parse(raw || '{}')?.fullName || JSON.parse(raw || '{}')?.full_name || fullName;
     } catch {}
-    setComposeSubject(`Application for ${job.title} - ${fullName}`);
+    setComposeSubject(prefill?.subject || `Application for ${job.title} - ${fullName}`);
 
     // Body — call backend generateEmailBody equivalent via API
     setComposeBody('Loading email body…');
@@ -3370,6 +3426,24 @@ export default function JobDetailScreen() {
 
     setSendState('idle');
     setComposeVisible(true);
+  };
+
+  // The page's Apply button is a mailto: link. Instead of bouncing the user out to the system
+  // Mail/Gmail app, open OUR in-app compose flow prefilled with the recipient (+ the generated cover
+  // letter / résumé attachments). We dismiss the full-screen apply WebView FIRST — iOS is flaky about
+  // presenting a Modal over a fullScreen Modal — then present compose after it settles.
+  const handleMailtoApply = async (rawUrl: string) => {
+    const p = parseMailto(rawUrl);
+    setApplyWebUrl(null);
+    setMailPrep('loading');
+    try {
+      if (!coverLetterHtml) {
+        const html = await handleGenerateCoverLetter();
+        if (!html) return;   // generation failed and already alerted
+      }
+      await new Promise((r) => setTimeout(r, 380));   // let the full-screen modal finish dismissing
+      await openComposeModal({ to: p.to, cc: p.cc, bcc: p.bcc, subject: p.subject });
+    } finally { setMailPrep('idle'); }
   };
 
   // ── "Apply via Mail": show in-button progress, ensure a cover letter exists, then open compose. ──
@@ -4153,8 +4227,18 @@ export default function JobDetailScreen() {
               javaScriptCanOpenWindowsAutomatically
               setSupportMultipleWindows={false}
               onOpenWindow={(e: any) => {
-                const target = e?.nativeEvent?.targetUrl;
+                const target = e?.nativeEvent?.targetUrl || '';
+                if (/^mailto:/i.test(target)) { handleMailtoApply(target); return; }   // _blank mailto edge case
                 if (target) beginAuthFlow(target);   // remembers the form so we can come back
+              }}
+              // Intercept non-http(s) schemes so an "Apply by email" (mailto:) button opens OUR in-app
+              // compose flow instead of bouncing out to Gmail; tel/sms hand off to the OS. Everything
+              // http(s) (autofill, translate, capture, submit-detect, OAuth) returns true → unchanged.
+              onShouldStartLoadWithRequest={(req: any) => {
+                const u = req?.url || '';
+                if (/^mailto:/i.test(u)) { handleMailtoApply(u); return false; }
+                if (/^(tel|sms|facetime|maps|geo):/i.test(u)) { Linking.openURL(u).catch(() => {}); return false; }
+                return true;
               }}
               startInLoadingState
               pullToRefreshEnabled

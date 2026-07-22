@@ -18,10 +18,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fetchJobDetail, saveCard, type LiveJobCard } from '../services/aiHubService';
+import { fetchJobDetail, saveCard, translateBatch, type LiveJobCard } from '../services/aiHubService';
 import { isListingUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../utils/webviewAuth';
+import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS } from '../utils/webviewTranslate';
 
 const NOT_COMPANY_RE = /linkedin\.com|licdn\.com|lnkd\.in|google\.[a-z.]+|bing\.com|duckduckgo|accounts\.|login\.|signin\.|auth[0-9]?\.|appleid\.apple|facebook\.com|about:blank/i;
 
@@ -151,8 +152,30 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const savedUrlsRef = useRef<Set<string>>(new Set());   // don't double-charge the same posting
   const fetchIdRef = useRef(0);                          // per-fetch nonce (stale grabs are ignored)
   const grabTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Translate (manual only here — no auto-detect). Same shared scripts the apply WebView uses.
+  const [webTranslated, setWebTranslated] = useState(false);
+  const [webTranslating, setWebTranslating] = useState(false);
+  const xlateOnRef = useRef(false);
+  const xlateGenRef = useRef(0);       // discard replies from a superseded pass
+  const webLoadingRef = useRef(false); // don't scan while a page load is in flight
 
   const platform = platformOf(currentUrl);
+
+  const runXlate = useCallback((_why = 'toggle') => {
+    if (!webRef.current || !xlateOnRef.current) return;
+    if (webLoadingRef.current) { setWebTranslating(true); return; }   // remembered; flushed on load-end
+    const gen = ++xlateGenRef.current;
+    setWebTranslating(true);
+    try { webRef.current.injectJavaScript(xlateScanJS(gen)); } catch { setWebTranslating(false); }
+  }, []);
+
+  const toggleTranslate = useCallback(() => {
+    if (!webRef.current) return;
+    const next = !xlateOnRef.current;
+    xlateOnRef.current = next; setWebTranslated(next);
+    if (next) runXlate('toggle-on');
+    else { xlateGenRef.current++; setWebTranslating(false); try { webRef.current.injectJavaScript(XLATE_RESTORE_JS); } catch {} }
+  }, [runXlate]);
 
   // While a fetch is running, back/close are BLOCKED — leaving the page mid-grab loses the fetch.
   const guardBusy = useCallback((): boolean => {
@@ -289,6 +312,32 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     // Sign-in shim (see utils/webviewAuth.ts): iOS can never give the page a real popup.
     if (payload && payload.__cvf && payload.type === 'AUTH_POPUP') { beginAuthFlow(String(payload.url || ''), String(payload.from || '')); return; }
     if (payload && payload.__cvf && payload.type === 'AUTH_DONE') { returnFromAuth(600); return; }
+
+    // ── translation (shared bridge; works even where a page's CSP blocks Google's widget) ──
+    if (payload && payload.__cvf && payload.type === 'XLATE_ITEMS') {
+      if (payload.gen !== xlateGenRef.current || !xlateOnRef.current) return;
+      const items: { i: string; t: string }[] = Array.isArray(payload.items) ? payload.items : [];
+      if (!items.length) { setWebTranslating(false); return; }
+      const gen = payload.gen;
+      (async () => {
+        const map: Record<string, string> = {};
+        try {
+          const CH = 60, chunks: { i: string; t: string }[][] = [];
+          for (let k = 0; k < items.length; k += CH) chunks.push(items.slice(k, k + CH));
+          for (let k = 0; k < chunks.length; k += 4) {
+            const part = await Promise.all(chunks.slice(k, k + 4).map((c) => translateBatch(c)));
+            part.forEach((m) => Object.assign(map, m));
+          }
+          if (gen !== xlateGenRef.current || !xlateOnRef.current) return;
+          if (Object.keys(map).length && webRef.current) webRef.current.injectJavaScript(xlateApplyJS(gen, map));
+          else { setWebTranslating(false); Alert.alert('Translation unavailable', "We couldn't translate this page right now. You can open it in your phone's browser to translate it there."); }
+        } catch { setWebTranslating(false); }
+      })();
+      return;
+    }
+    if (payload && payload.__cvf && payload.type === 'XLATE_APPLIED') { if (payload.gen === xlateGenRef.current) setWebTranslating(false); return; }
+    if (payload && payload.__cvf && payload.type === 'XLATE_DIRTY') { if (xlateOnRef.current && !webLoadingRef.current) runXlate('spa'); return; }
+
     if (!payload || !payload.__cvbf || !fetchingRef.current) return;
     if (payload.id !== fetchIdRef.current) return;   // stale grab from an earlier, abandoned fetch
     if (grabTimerRef.current) { clearTimeout(grabTimerRef.current); grabTimerRef.current = null; }
@@ -364,7 +413,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         [{ text: 'OK', style: 'cancel' }, { text: 'Retry', onPress: () => { setTimeout(doGrab, 300); } }],
       );
     }
-  }, [fetchCost, onFetched, doGrab]);
+  }, [fetchCost, onFetched, doGrab, runXlate]);
 
   let host = ''; try { host = new URL(currentUrl).hostname.replace(/^www\./, ''); } catch {}
 
@@ -379,6 +428,11 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           <Text style={styles.host} numberOfLines={1}>{platform}</Text>
           <Text style={styles.hint} numberOfLines={1}>{host}</Text>
         </View>
+        <TouchableOpacity onPress={toggleTranslate} style={[styles.navBtn, webTranslated && styles.navBtnActive]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          {webTranslating
+            ? <ActivityIndicator size="small" color="#06B6D4" />
+            : <Ionicons name="language" size={18} color={webTranslated ? '#fff' : '#0F172A'} />}
+        </TouchableOpacity>
         <TouchableOpacity onPress={() => { if (!fetching) webRef.current?.reload(); }} style={[styles.navBtn, fetching && styles.navBtnOff]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Ionicons name="refresh" size={17} color={fetching ? '#94A3B8' : '#0F172A'} />
         </TouchableOpacity>
@@ -420,9 +474,12 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           else if (nav.url && /^https?:\/\//i.test(nav.url) && sawLinkedInRef.current && !NOT_COMPANY_RE.test(nav.url)) setCompanyHint(true);
           else setCompanyHint(false);
         }}
-        onLoadStart={() => setPageLoading(true)}
-        onLoadEnd={() => setPageLoading(false)}
-        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS}
+        onLoadStart={() => { setPageLoading(true); webLoadingRef.current = true; }}
+        onLoadEnd={() => {
+          setPageLoading(false); webLoadingRef.current = false;
+          if (xlateOnRef.current) setTimeout(() => runXlate('load'), 400);   // re-apply / flush a mid-load tap
+        }}
+        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + XLATE_WATCH_JS}
         injectedJavaScriptForMainFrameOnly={false}
         onMessage={(e) => onMessage(e.nativeEvent.data)}
         javaScriptEnabled
@@ -512,6 +569,7 @@ const styles = StyleSheet.create({
   topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingBottom: 10, gap: 4, backgroundColor: '#F0F4FA' },
   navBtn: { width: 36, height: 36, borderRadius: 12, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
   navBtnOff: { opacity: 0.55 },
+  navBtnActive: { backgroundColor: '#06B6D4', borderColor: '#06B6D4' },
   host: { fontSize: 13.5, fontWeight: '800', color: '#0F172A' },
   hint: { fontSize: 10.5, color: '#64748B', marginTop: 1 },
   progress: { position: 'absolute', top: 100, alignSelf: 'center', zIndex: 5, backgroundColor: '#fff', borderRadius: 14, padding: 8, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 10, elevation: 6 },

@@ -44,8 +44,10 @@ Return ONLY a JSON object with EXACTLY these keys:
 "employment_type" (Full-time/Part-time/Contract/Internship or ""),
 "work_mode" ("Onsite"|"Hybrid"|"Remote"|""), "salary" (string or ""), "seniority" (string or ""),
 "skills" (array of strings), "responsibilities" (array of short bullet strings),
-"description" (a clean plain-text summary of the role, max ~150 words).
+"description" (a clean plain-text summary of the role, max ~150 words),
+"contact_email" (string or ""), "contact_name" (string or ""), "contact_role" (string or "").
 Rules: use ONLY facts present in the text; use "" or [] when absent; never invent. JSON only, no markdown.
+If the page explains how to apply by email (e.g. "To apply, send your CV to X", "email us at Y", "apply via Z", "contact <name> at <email>"), put that address in contact_email, the person's name (if any) in contact_name, and their title in contact_role. Use ONLY an email literally present in the text.
 ${hint ? 'KNOWN (may help disambiguate, prefer page text over this): ' + hint + '\n' : ''}
 JOB PAGE TEXT:
 ${t}`;
@@ -67,6 +69,7 @@ async function captureJob(req, res) {
     let title = str(b.title), company = str(b.company), location = str(b.location);
     let jobType = str(b.jobType), workMode = str(b.workMode), experience = str(b.experience), salary = str(b.salary);
     let responsibilities = arr(b.responsibilities), skills = arr(b.skills), description = str(b.description);
+    let contactEmail = '', contactName = '', contactRole = '';   // "To apply, email …" details
 
     // AI-extract ONLY when we lack substance — keeps the common (already-rich) case free.
     const needExtract = (responsibilities.length < 2 || !description || !title || !company);
@@ -84,6 +87,7 @@ async function captureJob(req, res) {
         description = description || str(out.description);
         if (arr(out.responsibilities).length > responsibilities.length) responsibilities = arr(out.responsibilities);
         if (arr(out.skills).length > skills.length) skills = arr(out.skills);
+        contactEmail = str(out.contact_email); contactName = str(out.contact_name); contactRole = str(out.contact_role);
       }
     }
     if (!title) title = 'Job application';
@@ -129,6 +133,20 @@ async function captureJob(req, res) {
       try { const sid = await jobService.upsertSkill(sk); if (sid) await jobService.linkJobSkill(jobId, sid); } catch {}
     }
 
+    // "To apply, email …" — persist the contact the page named so the job's contact section shows it
+    // and the in-app "apply by email" flow can use it. Upsert on (job_id,email) → idempotent.
+    const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+    const BAD_EMAIL = /noreply|no-reply|donotreply|do-not-reply|postmaster|mailer-daemon|example\.(com|org)|sentry|wixpress/i;
+    const capturedContacts = [];
+    if (contactEmail && EMAIL_RE.test(contactEmail) && !BAD_EMAIL.test(contactEmail) && contactEmail.length <= 100) {
+      const cName = contactName || contactEmail.split('@')[0];
+      const cRole = contactRole || 'Recruiter';
+      try {
+        await jobService.addJobContact(jobId, cName, cRole, contactEmail, null, null, null, null);
+        capturedContacts.push({ name: cName, role: cRole, email: contactEmail, verified: false, avatarColor: ['#06B6D4', '#3B82F6'] });
+      } catch (e) { /* best-effort; upsert is idempotent */ }
+    }
+
     // track:true → add to My Jobs (dashboard). The apply-open prefetch leaves it untracked so merely
     // opening a job doesn't clutter the dashboard; the entry appears on Generate-CL / submit.
     if (b.track && userId) {
@@ -139,7 +157,7 @@ async function captureJob(req, res) {
 
     return res.json({
       jobId: String(jobId), employerId: String(employerId), tracked: !!(b.track && userId),
-      job: { id: String(jobId), title, company, location, jobType, workMode, experience, salary, responsibilities, skills, description, url },
+      job: { id: String(jobId), title, company, location, jobType, workMode, experience, salary, responsibilities, skills, description, url, contacts: capturedContacts },
     });
   } catch (e) {
     console.error('[capture] error:', e && e.message);

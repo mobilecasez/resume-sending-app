@@ -111,6 +111,37 @@ const ok = (name, cond, extra) => {
           inp.addEventListener('blur', function(){ open=false; setTimeout(render,0); });
         </script></form></body></html>`;
     }
+    // A react-select INSIDE a modal that closes on a document-level (bubble-phase) Escape — exactly
+    // the YC "Apply for this role" popup. Autofill's combobox-close Escape must NOT dismiss it.
+    if (url.includes('modal.example.com')) {
+      body = `<html><body>
+        <div id="dlg" role="dialog" aria-modal="true"><form id="f">
+          <label id="country-label">Country code</label>
+          <div class="select__control"><div class="select__value-container">
+            <div class="select__input-container">
+              <input class="select__input" id="country" type="text" role="combobox"
+                     aria-expanded="false" aria-controls="menu" aria-labelledby="country-label">
+            </div></div></div>
+          <div id="menu" role="listbox"></div>
+          <label for="plain">Full name</label><input id="plain" name="plain">
+          <button type="submit" id="go">Submit application</button>
+        </form></div>
+        <script>
+          window.__modalOpen = true; window.__submits = 0;
+          document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();window.__submits++;});
+          document.addEventListener('keydown', function(e){
+            if(e.key==='Escape'){ window.__modalOpen = false; document.getElementById('dlg').style.display='none'; }
+          });
+          var ctrl=document.querySelector('.select__control'), inp=document.getElementById('country'),
+              menu=document.getElementById('menu'), open=false, OPTS=['India +91','United Kingdom +44','Canada +1'];
+          function render(){ menu.innerHTML=''; if(!open){ inp.setAttribute('aria-expanded','false'); return; }
+            inp.setAttribute('aria-expanded','true');
+            OPTS.forEach(function(o){ var d=document.createElement('div'); d.setAttribute('role','option'); d.textContent=o; menu.appendChild(d); }); }
+          ctrl.addEventListener('mousedown',function(){ open=true; setTimeout(render,50); });
+          // react-select closes its OWN menu on blur (no keydown handler → proves it closes w/o Escape).
+          inp.addEventListener('blur', function(){ open=false; setTimeout(render,0); });
+        </script></body></html>`;
+    }
     route.fulfill({ status: 200, contentType: 'text/html', body });
   });
 
@@ -396,6 +427,25 @@ const ok = (name, cond, extra) => {
          st.msg.count === 0 && (st.msg.failed || []).length === 1, st.msg);
       await page.close();
     }
+  }
+
+  console.log('\nautofill scan must NOT dismiss a modal that closes on a document Escape (YC popup)');
+  {
+    const page = await ctx.newPage();
+    await page.addInitScript(BRIDGE);
+    await page.goto('https://modal.example.com/apply');
+    await page.evaluate(READ_FIELDS_JS);                       // scan → enumCombos → cbClose
+    await page.waitForFunction(() => window.__msgs.some((m) => m.type === 'FIELDS'), null, { timeout: 30000 });
+    const st = await page.evaluate(() => {
+      const f = (window.__msgs.find((m) => m.type === 'FIELDS') || {}).fields || [];
+      return { open: window.__modalOpen, combo: f.find((x) => (x.label || '').indexOf('Country') >= 0),
+        expanded: document.getElementById('country').getAttribute('aria-expanded'), submits: window.__submits };
+    });
+    ok('the application modal is STILL OPEN after autofill scanned it', st.open === true, st);
+    ok('the combobox was still enumerated (fix did not neuter enumCombos)', !!st.combo && (st.combo.options || []).length === 3, st.combo);
+    ok('enumeration still leaves the widget popup closed (via blur)', st.expanded === 'false', st);
+    ok('nothing was submitted', st.submits === 0, st.submits);
+    await page.close();
   }
 
   console.log('\ndropdown engine: no match means no pick');

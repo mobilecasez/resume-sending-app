@@ -751,6 +751,7 @@ export type CapturedJob = {
   id: string; title: string; company: string; location: string;
   jobType: string; workMode: string; experience: string; salary: string;
   responsibilities: string[]; skills: string[]; description: string; url: string;
+  contacts?: Contact[];   // "To apply, email …" — captured from the page's apply instructions
 };
 export async function captureJob(
   input: CaptureJobInput
