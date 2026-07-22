@@ -275,7 +275,7 @@ export async function translateBatch(items: { i: string; t: string }[]): Promise
     const response = await axios.post(
       `${API_BASE_URL}/ai-hub/translate-batch`,
       { items },
-      { headers }
+      { headers, timeout: 30000 }   // a stalled request must reject so the translate spinner clears
     );
     return (response.data?.translations ?? {}) as Record<string, string>;
   } catch {

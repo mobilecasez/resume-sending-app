@@ -136,7 +136,9 @@ async function captureJob(req, res) {
     // "To apply, email …" — persist the contact the page named so the job's contact section shows it
     // and the in-app "apply by email" flow can use it. Upsert on (job_id,email) → idempotent.
     const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
-    const BAD_EMAIL = /noreply|no-reply|donotreply|do-not-reply|postmaster|mailer-daemon|example\.(com|org)|sentry|wixpress/i;
+    // Domain-qualify the infra names — a bare "sentry" would reject real employers like
+    // careers@sentry.io / jobs@sentryinsurance.com.
+    const BAD_EMAIL = /noreply|no-reply|donotreply|do-not-reply|postmaster|mailer-daemon|example\.(com|org)|@sentry\.io|@wixpress\.com/i;
     const capturedContacts = [];
     if (contactEmail && EMAIL_RE.test(contactEmail) && !BAD_EMAIL.test(contactEmail) && contactEmail.length <= 100) {
       const cName = contactName || contactEmail.split('@')[0];

@@ -3432,18 +3432,32 @@ export default function JobDetailScreen() {
   // Mail/Gmail app, open OUR in-app compose flow prefilled with the recipient (+ the generated cover
   // letter / résumé attachments). We dismiss the full-screen apply WebView FIRST — iOS is flaky about
   // presenting a Modal over a fullScreen Modal — then present compose after it settles.
-  const handleMailtoApply = async (rawUrl: string) => {
+  // A mailto: could be the real apply action OR an incidental footer "contact us" link — and this
+  // TEARS DOWN the WebView (losing typed input) and generates a cover letter (a credit). So CONFIRM
+  // first, and NEVER honour a page-supplied cc/bcc (the page shouldn't dictate hidden recipients on an
+  // email that carries the user's résumé + PII — only its `to` and `subject`).
+  const handleMailtoApply = (rawUrl: string) => {
     const p = parseMailto(rawUrl);
-    setApplyWebUrl(null);
-    setMailPrep('loading');
-    try {
-      if (!coverLetterHtml) {
-        const html = await handleGenerateCoverLetter();
-        if (!html) return;   // generation failed and already alerted
-      }
-      await new Promise((r) => setTimeout(r, 380));   // let the full-screen modal finish dismissing
-      await openComposeModal({ to: p.to, cc: p.cc, bcc: p.bcc, subject: p.subject });
-    } finally { setMailPrep('idle'); }
+    const to = p.to || 'this address';
+    Alert.alert(
+      'Apply by email?',
+      `This opens your in-app email to ${to} with your résumé and cover letter attached. You can review and edit before sending.`,
+      [
+        { text: 'Not now', style: 'cancel' },
+        { text: 'Continue', onPress: async () => {
+          setApplyWebUrl(null);
+          setMailPrep('loading');
+          try {
+            if (!coverLetterHtml) {
+              const html = await handleGenerateCoverLetter();
+              if (!html) return;   // generation failed and already alerted
+            }
+            await new Promise((r) => setTimeout(r, 380));   // let the full-screen modal finish dismissing
+            await openComposeModal({ to: p.to, subject: p.subject });   // page cc/bcc deliberately ignored
+          } finally { setMailPrep('idle'); }
+        } },
+      ],
+    );
   };
 
   // ── "Apply via Mail": show in-button progress, ensure a cover letter exists, then open compose. ──
