@@ -389,16 +389,23 @@ async function scrapePage(url, origin, usePuppeteer = false) {
         let finalUrl = url;
 
         if (usePuppeteer) {
-            // Use Playwright instead of Puppeteer for listing pages too
+            // Use Playwright instead of Puppeteer for listing pages too. Through the shared limiter,
+            // and — critically — in a try/finally: the old code called browser.close() AFTER
+            // page.goto, so a goto timeout ORPHANED the chromium process. Leaked browsers pile up
+            // until the container can't spawn another → `spawn … EAGAIN` (what broke previews).
             const { chromium } = require('playwright');
-            const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
-            const context = await browser.newContext({ userAgent: HTTP_HEADERS['User-Agent'] });
-            const page    = await context.newPage();
-            await page.goto(url, { waitUntil: 'networkidle', timeout: 28000 });
-            await page.waitForTimeout(2000); // extra wait for React/Vue SPAs
-            finalUrl = page.url();
-            html = await page.content();
-            await browser.close();
+            const { launchChromium } = require('../utils/browserLimit');
+            const browser = await launchChromium(chromium, { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+            try {
+                const context = await browser.newContext({ userAgent: HTTP_HEADERS['User-Agent'] });
+                const page    = await context.newPage();
+                await page.goto(url, { waitUntil: 'networkidle', timeout: 28000 });
+                await page.waitForTimeout(2000); // extra wait for React/Vue SPAs
+                finalUrl = page.url();
+                html = await page.content();
+            } finally {
+                await browser.close().catch(() => {});
+            }
         } else {
             const resp = await axios.get(url, {
                 timeout: 12000, maxContentLength: 2 * 1024 * 1024, headers: HTTP_HEADERS,

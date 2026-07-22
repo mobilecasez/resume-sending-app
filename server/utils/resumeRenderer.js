@@ -30,7 +30,11 @@ const BANDS = {
 
 async function launchBrowser() {
   const { chromium } = require('playwright');
-  return chromium.launch({ headless: true, args: LAUNCH_ARGS });
+  const { launchChromium } = require('./browserLimit');
+  // Capped + retried: unbounded launches here were exhausting the container's process budget and
+  // failing with `spawn chrome-headless-shell EAGAIN` — which killed previews (screenshots have no
+  // PDFKit fallback the way downloads do).
+  return launchChromium(chromium, { headless: true, args: LAUNCH_ARGS });
 }
 
 async function preparePage(browser, html) {

@@ -17,7 +17,10 @@ const A4_H = 1123;  // 297mm @ 96dpi
 
 async function launchBrowser() {
   const { chromium } = require('playwright');
-  return chromium.launch({ headless: true, args: LAUNCH_ARGS });
+  const { launchChromium } = require('./browserLimit');
+  // Capped + retried — see resumeRenderer / browserLimit: prevents the `spawn … EAGAIN` that broke
+  // cover-letter previews when chromium instances piled up in the container.
+  return launchChromium(chromium, { headless: true, args: LAUNCH_ARGS });
 }
 
 async function preparePage(browser, html) {
