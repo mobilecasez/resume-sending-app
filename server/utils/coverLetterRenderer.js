@@ -15,13 +15,16 @@ const LAUNCH_ARGS = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-
 const A4_W = 794;   // 210mm @ 96dpi
 const A4_H = 1123;  // 297mm @ 96dpi
 
-async function launchBrowser() {
+async function launchBrowser(extraArgs = []) {
   const { chromium } = require('playwright');
   const { launchChromium } = require('./browserLimit');
   // Capped + retried — see resumeRenderer / browserLimit: prevents the `spawn … EAGAIN` that broke
   // cover-letter previews when chromium instances piled up in the container.
-  return launchChromium(chromium, { headless: true, args: LAUNCH_ARGS });
+  return launchChromium(chromium, { headless: true, args: [...LAUNCH_ARGS, ...extraArgs] });
 }
+// Single-process for the screenshot PREVIEW path only (safe for static HTML, tiny footprint) — see
+// resumeRenderer. Not used for the PDF path.
+const PREVIEW_ARGS = ['--single-process', '--no-zygote', '--disable-gpu'];
 
 async function preparePage(browser, html) {
   const page = await browser.newPage({ viewport: { width: A4_W, height: A4_H } });
@@ -75,7 +78,7 @@ async function renderPdf(templateId, data, opts = {}) {
 
 // ── Region's templates → preview images (base64 JPEG) ─────────────────────────
 async function renderPreviews(data, opts = {}, templates = TEMPLATES) {
-  const browser = await launchBrowser();
+  const browser = await launchBrowser(PREVIEW_ARGS);   // single-process → survives scraper contention
   try {
     const results = [];
     for (const tpl of templates) {

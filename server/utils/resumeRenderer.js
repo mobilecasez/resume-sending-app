@@ -28,14 +28,19 @@ const BANDS = {
   executive: { side: 'left',  widthMm: 74, top: '#2c3742', bottom: '#222b34' },
 };
 
-async function launchBrowser() {
+async function launchBrowser(extraArgs = []) {
   const { chromium } = require('playwright');
   const { launchChromium } = require('./browserLimit');
   // Capped + retried: unbounded launches here were exhausting the container's process budget and
   // failing with `spawn chrome-headless-shell EAGAIN` — which killed previews (screenshots have no
   // PDFKit fallback the way downloads do).
-  return launchChromium(chromium, { headless: true, args: LAUNCH_ARGS });
+  return launchChromium(chromium, { headless: true, args: [...LAUNCH_ARGS, ...extraArgs] });
 }
+// Previews render STATIC template HTML to a screenshot, so single-process chromium is safe here and
+// uses ~1 process / a few threads instead of ~5 processes / ~40 threads. That's what lets a preview
+// still spawn while the job scraper is holding its own chromium instances (the EAGAIN cause). NOT
+// used for the PDF path, where --single-process can upset page.pdf().
+const PREVIEW_ARGS = ['--single-process', '--no-zygote', '--disable-gpu'];
 
 async function preparePage(browser, html) {
   const page = await browser.newPage({ viewport: { width: A4_W, height: A4_H } });
@@ -133,7 +138,7 @@ async function renderPdf(templateId, resumeData, opts = {}) {
 // One-page render; a full-page screenshot captures the CSS sidebar band. Returns
 // { id, name, accent, image, width, height } so the app can size to the real aspect.
 async function renderPreviews(resumeData, opts = {}, templates = TEMPLATES) {
-  const browser = await launchBrowser();
+  const browser = await launchBrowser(PREVIEW_ARGS);   // single-process → survives scraper contention
   try {
     const results = [];
     for (const tpl of templates) {
