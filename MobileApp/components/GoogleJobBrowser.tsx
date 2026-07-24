@@ -55,7 +55,13 @@ export default function GoogleJobBrowser({ visible, query, onClose, onApplyHere 
         // Saving is BrowseFetch's own job (it stores server-side and shows "Saved ✓"); the parent
         // refreshes its Saved count when this closes, so there is nothing to do per fetch.
         onFetched={() => {}}
-        onApplyHere={onApplyHere ? (applyUrl, pageTitle) => onApplyHere(applyUrl, pageTitle || '', null) : undefined}
+        // ⚠️ CLOSE THIS MODAL FIRST. The apply tools are a pushed ROUTE, so pushing while a
+        // full-screen Modal is still mounted puts the new screen BEHIND it — the user taps
+        // "Apply here", agrees, and nothing appears to happen.
+        onApplyHere={onApplyHere ? (applyUrl, pageTitle) => {
+          onClose();
+          setTimeout(() => onApplyHere(applyUrl, pageTitle || '', null), 350);
+        } : undefined}
       />
     </Modal>
   );

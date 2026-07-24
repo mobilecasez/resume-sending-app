@@ -12,17 +12,18 @@
 // A Modal nested inside another Modal crashed the app on iOS when dismissed (v3.3 build 87).
 import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated, PanResponder, Alert, Dimensions, BackHandler, Pressable, Platform,
+  View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated, PanResponder, Alert, Dimensions, BackHandler, Pressable, Platform, Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
+import * as WebBrowser from 'expo-web-browser';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchJobDetail, saveCard, translateBatch, type LiveJobCard } from '../services/aiHubService';
 import { isListingUrl, isSearchEngineUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../utils/webviewAuth';
-import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, type XlateItem } from '../utils/webviewTranslate';
+import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../utils/webviewTranslate';
 import { PAGE_TEXT_FN } from '../utils/webviewPageText';
 
 const NOT_COMPANY_RE = /linkedin\.com|licdn\.com|lnkd\.in|google\.[a-z.]+|bing\.com|duckduckgo|accounts\.|login\.|signin\.|auth[0-9]?\.|appleid\.apple|facebook\.com|about:blank/i;
@@ -91,6 +92,29 @@ const grabNowJs = (id: number) => `(function(){
   send();
 })(); true;`;
 
+// Does this page hold anything the user actually typed? "Apply here" hands the page to another
+// screen, and iOS cannot carry WebView state across two WebViews — but warning about that on a page
+// with nothing typed is pure friction, which is exactly what it felt like when browsing search
+// results. Ask the page, then only warn when there is something to lose.
+const DIRTY_FORM_JS = `(function(){
+  function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
+  try{
+    var els = document.querySelectorAll('input,textarea,select'), dirty = false;
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i], t = String(el.type || '').toLowerCase();
+      if (t === 'hidden' || t === 'submit' || t === 'button' || t === 'reset' || t === 'image') continue;
+      if (el.disabled || el.readOnly) continue;
+      if (t === 'checkbox' || t === 'radio') { if (el.checked !== el.defaultChecked) { dirty = true; break; } continue; }
+      if (el.tagName === 'SELECT') { var o2 = el.options[el.selectedIndex]; if (o2 && !o2.defaultSelected && el.selectedIndex > 0) { dirty = true; break; } continue; }
+      // A search box the page itself filled in (Google keeps the query there) is not the user's work.
+      if (/^(q|search|query|s)$/i.test(String(el.name || '')) ) continue;
+      var v = String(el.value == null ? '' : el.value).trim();
+      if (v && v !== String(el.defaultValue || '').trim()) { dirty = true; break; }
+    }
+    post({ type: 'FORM_DIRTY', dirty: dirty });
+  }catch(e){ post({ type: 'FORM_DIRTY', dirty: true }); }   // can't tell → assume there IS work
+})(); true;`;
+
 // KEEP the query string (an Indeed job is /viewjob?jk=<id> — the query IS the job identity); drop only
 // tracking params + hash + trailing slashes.
 const normUrl = (u: string) => {
@@ -119,6 +143,30 @@ export function platformOf(u: string): string {
   if (/instahyre\.com/.test(s)) return 'Instahyre';
   if (/(greenhouse|lever|ashbyhq|workday|smartrecruiters|recruitee|jobvite|icims)\./.test(s)) return 'Company portal';
   try { return new URL(String(u)).hostname.replace(/^www\./, ''); } catch { return 'this site'; }
+}
+
+// Is the shared cookie jar actually signed in to LinkedIn? The dock used to offer "Sign in to
+// LinkedIn" unconditionally, which reads as broken once you ARE signed in. RN's fetch goes through
+// the same cookie store as our WebViews (NSHTTPCookieStorage on iOS, the WebView CookieManager via
+// ForwardingCookieHandler on Android), so one credentialed request answers it honestly.
+// Returns the member's name when the feed hands it over, else just signed-in/out.
+async function linkedInSession(): Promise<{ signedIn: boolean; name: string }> {
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 8000);
+    const res = await fetch('https://www.linkedin.com/feed/', {
+      credentials: 'include', headers: { 'User-Agent': BROWSER_UA }, signal: ctl.signal,
+    });
+    clearTimeout(t);
+    const finalUrl = String(res.url || '');
+    if (/\/(login|uas\/login|authwall|checkpoint)/i.test(finalUrl)) return { signedIn: false, name: '' };
+    const html = (await res.text()).slice(0, 200000);
+    if (/name="session_key"|id="session_key"|<title>[^<]*(Sign Up|Login|Sign In)/i.test(html)) return { signedIn: false, name: '' };
+    let name = '';
+    const m = html.match(/"(?:identityDisplayName|memberFirstName|firstName)"\s*:\s*"([^"]{1,60})"/);
+    if (m) name = m[1].replace(/\\u[0-9a-f]{4}/gi, '').trim();
+    return { signedIn: true, name };
+  } catch { return { signedIn: false, name: '' }; }
 }
 
 // Why did the page not yield a job? Inspect the grabbed HTML BEFORE spending a credit.
@@ -153,6 +201,9 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const [dockOpen, setDockOpen] = useState(false);
   const [companyHint, setCompanyHint] = useState(false);   // reached the company site after a LinkedIn apply
   const [tipHidden, setTipHidden] = useState(false);       // "tap a result, then Fetch job" tip on a results page
+  const [liSession, setLiSession] = useState<{ signedIn: boolean; name: string } | null>(null);   // null = not checked yet
+  const applyWantRef = useRef(false);                      // an Apply-here tap waiting on the dirty-form probe
+  const applyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Google sometimes answers a search with its own human-check page (/sorry). We do NOT try to get
   // around that — the user completes it themselves if they want to. We just stop pretending the page
   // is results, and offer the same query on another engine, exactly as they'd do in their browser.
@@ -165,10 +216,14 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const savedUrlsRef = useRef<Set<string>>(new Set());   // don't double-charge the same posting
   const fetchIdRef = useRef(0);                          // per-fetch nonce (stale grabs are ignored)
   const grabTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Translate (manual only here — no auto-detect). Same shared scripts the apply WebView uses.
-  const [webTranslated, setWebTranslated] = useState(false);
+  // Translate is ON by default and re-applies itself on EVERY page — you shouldn't have to ask for
+  // English again each time you open a result. Pages that are already English cost nothing: the scan
+  // is local, and `looksAlreadyEnglish` skips the round trip entirely.
+  const [webTranslated, setWebTranslated] = useState(true);
   const [webTranslating, setWebTranslating] = useState(false);
-  const xlateOnRef = useRef(false);
+  const xlateOnRef = useRef(true);
+  const xlateDirtyRef = useRef(false);   // page changed mid-pass → run once more when it finishes
+  const xlateSettleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const xlateGenRef = useRef(0);       // discard replies from a superseded pass
   const xlateBusyRef = useRef(false);  // a pass is mid-flight — ignore the DOM churn it causes
   const webLoadingRef = useRef(false); // don't scan while a page load is in flight
@@ -209,6 +264,15 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     try { webRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(homeUrl)}; true;`); } catch {}
   }, [homeUrl]);
 
+  // Re-check on every dock open: the user may have just signed in (or been signed out) since the
+  // last look. Cheap enough not to cache, and always current when the row is actually on screen.
+  useEffect(() => {
+    if (!dockOpen) return;
+    let alive = true;
+    linkedInSession().then((r) => { if (alive) setLiSession(r); });
+    return () => { alive = false; };
+  }, [dockOpen]);
+
   // While a fetch is running, back/close are BLOCKED — leaving the page mid-grab loses the fetch.
   const guardBusy = useCallback((): boolean => {
     if (!fetchingRef.current) return false;
@@ -224,7 +288,12 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
       onClose();
       return true;
     });
-    return () => { sub.remove(); if (grabTimerRef.current) clearTimeout(grabTimerRef.current); };
+    return () => {
+      sub.remove();
+      if (grabTimerRef.current) clearTimeout(grabTimerRef.current);
+      if (xlateSettleRef.current) clearTimeout(xlateSettleRef.current);
+      if (applyTimerRef.current) clearTimeout(applyTimerRef.current);
+    };
   }, [onClose, guardBusy]);
 
   // Draggable bubble (same pattern as the Help assistant): drag moves it, a TAP opens the dock.
@@ -313,20 +382,32 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     doGrab();
   }, [doGrab]);
 
+  // Hand the page to the apply tools. On a page with nothing typed (browsing results, reading a
+  // posting) this just goes — the old unconditional "this will reopen the page" confirm was friction
+  // on every single tap. The warning is kept for the one case it is actually true: a part-filled form.
+  const goApply = useCallback(() => {
+    onApplyHere?.(currentUrlRef.current, currentTitleRef.current);
+  }, [onApplyHere]);
   const applyHere = useCallback(() => {
     if (guardBusy()) return;
     setDockOpen(false);
-    // Be honest: the apply tools live on another screen, so this reopens the page in a fresh browser
-    // and iOS cannot carry a page's typed-in state across two web views. Warn before destroying work.
-    Alert.alert(
-      'Open the apply tools?',
-      'This reopens this page with Auto Fill, uploads and your saved details.\n\nAnything you have already typed on this page won’t carry over — you’d need to re-enter it.',
-      [
-        { text: 'Stay here', style: 'cancel' },
-        { text: 'Open apply tools', onPress: () => onApplyHere?.(currentUrlRef.current, currentTitleRef.current) },
-      ],
-    );
-  }, [onApplyHere, guardBusy]);
+    applyWantRef.current = true;
+    if (applyTimerRef.current) clearTimeout(applyTimerRef.current);
+    // If the page never answers (blank tab, hostile CSP) just go — never strand the user on a tap.
+    applyTimerRef.current = setTimeout(() => { if (applyWantRef.current) { applyWantRef.current = false; goApply(); } }, 700);
+    try { webRef.current?.injectJavaScript(DIRTY_FORM_JS); }
+    catch { applyWantRef.current = false; if (applyTimerRef.current) clearTimeout(applyTimerRef.current); goApply(); }
+  }, [guardBusy, goApply]);
+
+  // Open the page in the phone's OWN browser. Always available: sometimes a site simply behaves
+  // better there, and sometimes you just want the page in the browser you normally use.
+  const openInBrowser = useCallback(() => {
+    if (guardBusy()) return;
+    setDockOpen(false);
+    const u = currentUrlRef.current;
+    if (!u || !/^https?:\/\//i.test(u)) return;
+    WebBrowser.openBrowserAsync(u).catch(() => { Linking.openURL(u).catch(() => {}); });
+  }, [guardBusy]);
 
   // Sign in to LinkedIn INSIDE the app's own browser. iOS keeps Safari / SFSafariViewController /
   // the LinkedIn app in separate cookie jars the app can't read, which is why "Log in with LinkedIn"
@@ -351,6 +432,19 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     if (payload && payload.__cvf && payload.type === 'AUTH_POPUP') { beginAuthFlow(String(payload.url || ''), String(payload.from || '')); return; }
     if (payload && payload.__cvf && payload.type === 'AUTH_DONE') { returnFromAuth(600); return; }
 
+    if (payload && payload.__cvf && payload.type === 'FORM_DIRTY') {
+      if (!applyWantRef.current) return;
+      applyWantRef.current = false;
+      if (applyTimerRef.current) { clearTimeout(applyTimerRef.current); applyTimerRef.current = null; }
+      if (!payload.dirty) { goApply(); return; }
+      Alert.alert(
+        'You’ve started filling this form',
+        'The apply tools open this page in their own browser, and iOS can’t carry what you’ve typed across — you’d need to enter it again there.',
+        [{ text: 'Stay here', style: 'cancel' }, { text: 'Open apply tools', onPress: goApply }],
+      );
+      return;
+    }
+
     // ── translation (shared bridge; works even where a page's CSP blocks Google's widget) ──
     if (payload && payload.__cvf && payload.type === 'XLATE_ITEMS') {
       if (payload.gen !== xlateGenRef.current || !xlateOnRef.current) return;
@@ -360,6 +454,11 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
       xlateBusyRef.current = true;
       (async () => {
         const stale = () => gen !== xlateGenRef.current || !xlateOnRef.current;
+        if (looksAlreadyEnglish(items)) {          // nothing to do — don't spend a round trip saying so
+          xlateBusyRef.current = false;
+          setWebTranslating(false);
+          return;
+        }
         let applied = 0;
         try {
           applied = await runXlatePasses(
@@ -370,6 +469,9 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           );
         } finally { xlateBusyRef.current = false; }
         if (stale()) return;
+        // The page rendered more while we were working (lazy sections, infinite scroll). We ignored
+        // those signals during the pass so they couldn't cancel it — so honour them now.
+        if (xlateDirtyRef.current) { xlateDirtyRef.current = false; setTimeout(() => runXlate('settle'), 250); return; }
         if (!applied) {
           setWebTranslating(false);
           Alert.alert('Translation unavailable', "We couldn't translate this page right now. You can open it in your phone's browser to translate it there.");
@@ -380,7 +482,11 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     // Only the FINAL round ends the pass — earlier rounds are progress, not completion.
     if (payload && payload.__cvf && payload.type === 'XLATE_APPLIED') { if (payload.gen === xlateGenRef.current && payload.final) setWebTranslating(false); return; }
     // Our own writes churn the DOM, so a mid-pass "dirty" would restart (and cancel) the pass.
-    if (payload && payload.__cvf && payload.type === 'XLATE_DIRTY') { if (xlateOnRef.current && !webLoadingRef.current && !xlateBusyRef.current) runXlate('spa'); return; }
+    if (payload && payload.__cvf && payload.type === 'XLATE_DIRTY') {
+      if (!xlateOnRef.current || webLoadingRef.current) return;
+      if (xlateBusyRef.current) { xlateDirtyRef.current = true; return; }   // handled when the pass ends
+      runXlate('spa'); return;
+    }
 
     if (!payload || !payload.__cvbf || !fetchingRef.current) return;
     if (payload.id !== fetchIdRef.current) return;   // stale grab from an earlier, abandoned fetch
@@ -457,7 +563,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         [{ text: 'OK', style: 'cancel' }, { text: 'Retry', onPress: () => { setTimeout(doGrab, 300); } }],
       );
     }
-  }, [fetchCost, onFetched, doGrab, runXlate]);
+  }, [fetchCost, onFetched, doGrab, runXlate, goApply]);
 
   let host = ''; try { host = new URL(currentUrl).hostname.replace(/^www\./, ''); } catch {}
   const onSearchPage = isSearchEngineUrl(currentUrl);
@@ -552,7 +658,12 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         onLoadStart={() => { setPageLoading(true); webLoadingRef.current = true; }}
         onLoadEnd={() => {
           setPageLoading(false); webLoadingRef.current = false;
-          if (xlateOnRef.current) setTimeout(() => runXlate('load'), 400);   // re-apply / flush a mid-load tap
+          if (!xlateOnRef.current) return;
+          setTimeout(() => runXlate('load'), 400);            // re-apply / flush a mid-load tap
+          // Job pages routinely paint their body after load. One late sweep catches that without a
+          // polling loop; anything later still arrives via the MutationObserver.
+          if (xlateSettleRef.current) clearTimeout(xlateSettleRef.current);
+          xlateSettleRef.current = setTimeout(() => runXlate('settle'), 2200);
         }}
         injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + XLATE_WATCH_JS}
         injectedJavaScriptForMainFrameOnly={false}
@@ -608,11 +719,28 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
                 <Text style={styles.dockItemSub}>AI auto-fill + resume</Text>
               </TouchableOpacity>
             </View>
-            <TouchableOpacity style={styles.dockLinkRow} onPress={signInLinkedIn} activeOpacity={0.8}>
-              <Ionicons name="logo-linkedin" size={16} color="#0A66C2" />
-              <Text style={styles.dockLinkTx}>Sign in to LinkedIn (so job sites recognise you)</Text>
+            <TouchableOpacity style={styles.dockLinkRow} onPress={openInBrowser} activeOpacity={0.8}>
+              <Ionicons name="open-outline" size={16} color="#22D3EE" />
+              <Text style={styles.dockLinkTx}>Open this page in your browser</Text>
               <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.4)" />
             </TouchableOpacity>
+            {/* Only offer a sign-in when there ISN'T one. Once the shared cookie jar has a LinkedIn
+                session, say so instead — the old always-on "Sign in to LinkedIn" read as broken. */}
+            {liSession?.signedIn ? (
+              <View style={[styles.dockLinkRow, styles.dockLinkRowFlat]}>
+                <Ionicons name="logo-linkedin" size={16} color="#0A66C2" />
+                <Text style={styles.dockLinkTx} numberOfLines={1}>
+                  {liSession.name ? `Signed in to LinkedIn as ${liSession.name}` : 'Signed in to LinkedIn'}
+                </Text>
+                <Ionicons name="checkmark-circle" size={16} color="#34D399" />
+              </View>
+            ) : (
+              <TouchableOpacity style={styles.dockLinkRow} onPress={signInLinkedIn} activeOpacity={0.8}>
+                <Ionicons name="logo-linkedin" size={16} color="#0A66C2" />
+                <Text style={styles.dockLinkTx}>{liSession === null ? 'Sign in to LinkedIn (so job sites recognise you)' : 'Signed out of LinkedIn — sign in again'}</Text>
+                <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.4)" />
+              </TouchableOpacity>
+            )}
             <Text style={styles.dockHint}>Open a specific job first, then fetch it or apply with auto-fill.</Text>
           </Pressable>
         </Pressable>
@@ -682,4 +810,5 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)',
   },
   dockLinkTx: { flex: 1, fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.85)' },
+  dockLinkRowFlat: { marginTop: 8, backgroundColor: 'rgba(16,185,129,0.10)', borderColor: 'rgba(16,185,129,0.22)' },
 });

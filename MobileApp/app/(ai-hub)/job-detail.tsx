@@ -2675,6 +2675,15 @@ export default function JobDetailScreen() {
     }
   };
 
+  // Hand the page the user is looking at to the phone's own browser (SFSafariViewController /
+  // Chrome Custom Tabs). Uses the LIVE url, not the job's original one — after a board→ATS hop the
+  // live page is the one they mean.
+  const openCurrentInBrowser = () => {
+    const u = currentUrlRef.current || effectiveApplyUrl || '';
+    if (!u || !/^https?:\/\//i.test(u)) { Alert.alert('Nothing to open', 'Open the job page first.'); return; }
+    WebBrowser.openBrowserAsync(u).catch(() => { Linking.openURL(u).catch(() => {}); });
+  };
+
   // Canonical id for all cover-letter + status writes (falls back to the param id).
   const jid = capturedJobId || job.id;
 
@@ -4368,6 +4377,8 @@ export default function JobDetailScreen() {
                 { key: 'autofill', icon: 'flash', label: 'Auto Fill', sub: 'Fill the form', colors: ['#7C6BFF', '#4F8DFF'], onPress: startAutofill },
                 { key: 'upload', icon: 'cloud-upload', label: 'Upload', sub: 'Résumé & cover', colors: ['#0EA5E9', '#2563EB'], onPress: () => setFilePick({ key: '__manual__', accept: '', label: 'Attach your résumé or cover letter' }) },
                 { key: 'details', icon: 'copy-outline', label: 'My details', sub: 'Copy to a field', colors: ['#10B981', '#059669'], onPress: openSmart },
+                // Always offer the phone's own browser: some sites simply behave better there.
+                { key: 'browser', icon: 'open-outline', label: 'Open in browser', sub: 'Your phone’s browser', colors: ['#64748B', '#334155'], onPress: openCurrentInBrowser },
               ]}
             />
           )}

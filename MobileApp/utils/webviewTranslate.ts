@@ -128,6 +128,36 @@ export const XLATE_RESTORE_JS = `(function(){
 
 export type XlateItem = { i: string; t: string };
 
+// Is this page ALREADY English? With translation on by default we'd otherwise pay a round trip on
+// every page just to be handed the same words back — and on an English search that is every page.
+// Deliberately conservative: it only says "already English" on a strong signal, so a Dutch or German
+// page sprinkled with English job titles still gets translated.
+const EN_WORDS = /\b(the|and|for|with|you|your|are|our|will|this|that|from|have|has|about|more|all|not|can|who|what|when|apply|jobs?|work|team|role|company|experience|skills|search|sign|home|contact|us|we|to|of|in|on|at|is|be|as|by|it|or|an|a)\b/gi;
+// Counting English words alone is not enough: "in", "an", "at", "us" are common in German and Dutch
+// too, and a government site peppered with English loanwords scored as English (bund.de did). So
+// also look for function words English simply doesn't have — those are decisive.
+const FOREIGN_WORDS = /\b(der|die|das|und|für|fur|mit|von|nicht|sich|auch|eine|einen|einem|bei|aus|dem|den|des|sind|wir|ihre|oder|über|uber|zum|zur|werden|kann|nach|wird|beim|unter|zwischen|het|een|voor|van|niet|onze|naar|bij|ook|maar|worden|deze|zijn|wordt|le|la|les|des|une|pour|avec|dans|vous|nous|est|sur|par|plus|aux|leur|cette|sont|el|los|las|para|con|una|por|que|como|más|mas|del|il|lo|gli|della|delle|nel|sono|anche|dei|se|di|da|em|não|nao|uma|dos)\b/gi;
+// Anything outside Latin-1 basic + Latin Extended-A is a different script entirely — never English.
+const NON_LATIN = /[Ѐ-ӿͰ-Ͽ֐-׿؀-ۿऀ-ॿ一-鿿぀-ヿ가-힯]/;
+// Letters English simply does not use. A page carrying many of these is not an English page.
+const FOREIGN_LETTERS = /[àâäãåçéèêëîïìíñóòôöõøùûüúýÿœæßđłşžčćšğı]/gi;
+
+export function looksAlreadyEnglish(items: XlateItem[]): boolean {
+  // Judge the PROSE, not the chrome — one-word nav labels look the same in most languages.
+  const prose = items.map((i) => i.t).filter((t) => t.split(/\s+/).length >= 4);
+  if (prose.length < 4) return false;                       // too little to be sure → translate
+  const text = prose.join(' ');
+  if (NON_LATIN.test(text)) return false;
+  const words = text.split(/\s+/).length;
+  if (words < 40) return false;
+  const foreign = (text.match(FOREIGN_LETTERS) || []).length;
+  if (foreign / Math.max(1, text.length) > 0.004) return false;   // accents well above English's stray loanwords
+  const foreignWords = (text.match(FOREIGN_WORDS) || []).length;
+  if (foreignWords / words >= 0.02) return false;             // function words English doesn't have
+  const english = (text.match(EN_WORDS) || []).length;
+  return english / words >= 0.18;                            // English prose sits far above this
+}
+
 // How a scan's strings get to the backend. Chunks match the server's own sub-batching, so each
 // request comes back in a few seconds rather than one slow all-or-nothing call.
 export const XLATE_CHUNK = 40;

@@ -192,6 +192,27 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   console.log('\nbatching (runXlatePasses)');
   const { runXlatePasses, XLATE_CHUNK, XLATE_PARALLEL } = loadModule();
 
+  // ── already-English detection ────────────────────────────────────────────
+  // Translation is ON by default, so every page would otherwise pay a round trip just to be handed
+  // its own words back. A FALSE POSITIVE here is the bad one: a foreign page that silently doesn't
+  // translate. The trap case is prose in another language stuffed with English tech words.
+  const { looksAlreadyEnglish } = loadModule();
+  const mk = (arr) => arr.map((t, i) => ({ i: String(i), t }));
+  const EN = mk(['We are looking for a full stack engineer to join our platform team in Amsterdam.', 'You will design, build and operate the services that power our customer facing products.', 'The role involves close collaboration with product managers and designers every week.', 'Experience with TypeScript, Node and Postgres is helpful but it is not required at all.', 'We offer a competitive salary, flexible hours and the option to work from home.']);
+  const DE = mk(['Wir suchen eine erfahrene Entwicklerin für unser Plattform-Team in Berlin.', 'Sie entwerfen und betreiben die Dienste, die unsere Produkte für Kunden antreiben.', 'Die Rolle umfasst eine enge Zusammenarbeit mit Produktmanagern und Designern.', 'Erfahrung mit TypeScript und Postgres ist hilfreich, aber nicht zwingend erforderlich.', 'Wir bieten ein gutes Gehalt und die Möglichkeit, von zu Hause aus zu arbeiten.']);
+  const NL = mk(['Wij zoeken een ervaren ontwikkelaar voor ons platformteam in Amsterdam.', 'Je ontwerpt en beheert de diensten die onze producten voor klanten mogelijk maken.', 'De rol omvat nauwe samenwerking met productmanagers en ontwerpers.', 'Ervaring met TypeScript en Postgres is handig maar niet strikt noodzakelijk.', 'Wij bieden een goed salaris en de mogelijkheid om vanuit huis te werken.']);
+  const FR = mk(['Nous recherchons un ingénieur expérimenté pour rejoindre notre équipe plateforme.', 'Vous concevrez et exploiterez les services qui alimentent nos produits clients.', 'Le poste implique une collaboration étroite avec les chefs de produit et les designers.', 'Une expérience avec TypeScript et Postgres est utile mais pas obligatoire.', 'Nous offrons un bon salaire et la possibilité de travailler depuis chez vous.']);
+  const NLMIX = mk(['Wij zoeken een senior full stack developer met ervaring in React en Node.js.', 'Je werkt met TypeScript, Docker, Kubernetes en AWS in een agile scrum team.', 'De rol omvat code reviews, pair programming en continuous deployment naar productie.', 'Ervaring met microservices, REST APIs en GraphQL is een sterke pre voor deze functie.', 'Wij bieden remote work, een laptop naar keuze en een goed salaris.']);
+  ok('English prose → skip the round trip', looksAlreadyEnglish(EN) === true);
+  ok('German prose → translate', looksAlreadyEnglish(DE) === false);
+  ok('Dutch prose → translate', looksAlreadyEnglish(NL) === false);
+  ok('French prose → translate', looksAlreadyEnglish(FR) === false);
+  ok('Dutch stuffed with English tech words → still translate', looksAlreadyEnglish(NLMIX) === false);
+  ok('too little prose to judge → translate, never guess', looksAlreadyEnglish(mk(['Apply now', 'Save', 'Home'])) === false);
+  ok('empty scan → translate', looksAlreadyEnglish([]) === false);
+  ok('the live page under test is not mistaken for English', looksAlreadyEnglish(m1 ? m1.items : []) === false);
+
+
   // 300 occurrences of only 3 distinct strings — a page's repeated nav/labels.
   const rep = Array.from({ length: 300 }, (_, i) => ({ i: String(i), t: ['Bewerben', 'Speichern', 'Vollzeit'][i % 3] }));
   let sent = 0, calls = 0;
