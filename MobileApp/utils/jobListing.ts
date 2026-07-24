@@ -47,12 +47,18 @@ const JOB_QUERY_RE = /[?&](jl|vjk|jk|jobid|joblistingid|jobkey|currentjobid)=[\w
 // plainly instead of asking "is one job open?" and then extracting nonsense from a page of links.
 // Host-anchored on purpose: `sites.google.com` / `docs.google.com` can legitimately HOST a posting,
 // so only the search front-ends themselves count.
-const SEARCH_HOST = /^(www\.|consent\.)?(google\.[a-z.]{2,}|bing\.com|duckduckgo\.com|search\.brave\.com|ecosia\.org|startpage\.com|yandex\.[a-z.]{2,}|baidu\.com)$/i;
+const SEARCH_HOST = /^(www\.|consent\.|lite\.|html\.|cn\.|r\.)?(google\.[a-z.]{2,}|bing\.com|duckduckgo\.com|search\.brave\.com|ecosia\.org|startpage\.com|yandex\.[a-z.]{2,}|baidu\.com)$/i;
 const SEARCH_HOST_YAHOO = /^([a-z]{2}\.)?search\.yahoo\.[a-z.]{2,}$/i;
+// …and these engines HOST real job pages on the same domain — google.com/about/careers is Google's
+// own careers site (careers.google.com redirects there). Blocking Fetch on those was flatly wrong:
+// the user IS on the job page, with no override available.
+const SEARCH_HOST_JOB_PATH = /^\/(about\/careers|careers|jobs|about\/jobs|talent)\b/i;
 export function isSearchEngineUrl(u: string): boolean {
   try {
-    const h = new URL(String(u || '')).hostname.toLowerCase();
-    return SEARCH_HOST.test(h) || SEARCH_HOST_YAHOO.test(h);
+    const url = new URL(String(u || ''));
+    const h = url.hostname.toLowerCase();
+    if (!SEARCH_HOST.test(h) && !SEARCH_HOST_YAHOO.test(h)) return false;
+    return !SEARCH_HOST_JOB_PATH.test(url.pathname);
   } catch { return false; }
 }
 

@@ -188,6 +188,31 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   const s3 = await page.evaluate(() => (document.body.innerText || ''));
   ok('multi-round pass restores fully', s3.indexOf('P1[') < 0 && s3.indexOf('P2[') < 0);
 
+  // ── a SUPERSEDED pass must give its strings back ──────────────────────────
+  // The scan marks every node it collects in a `seen` WeakSet. If a pass is superseded before it
+  // writes (a second pass starts, or the user navigates), those nodes used to stay marked forever —
+  // so the next scan returned nothing and the page sat permanently untranslated with no error.
+  // This is what auto-translate's 2.2s "settle" sweep was doing to its own 400ms pass.
+  console.log('\nsuperseded pass');
+  await run(RESTORE);
+  await bridge();
+  await run(SCAN(10));
+  const sA = (await msgs()).find((m) => m.type === 'XLATE_ITEMS');
+  ok('first scan collects the page', !!sA && sA.n > 50, sA && sA.n);
+  await bridge();
+  await run(SCAN(11));                       // supersede it WITHOUT applying anything
+  const sB = (await msgs()).find((m) => m.type === 'XLATE_ITEMS');
+  ok('a superseded scan releases its strings for the next pass',
+     !!sB && sB.n >= Math.floor((sA ? sA.n : 0) * 0.8), { first: sA && sA.n, second: sB && sB.n });
+  // …and a pass that DID write must not hand the same strings out again.
+  const mapB = {}; (sB ? sB.items : []).forEach((it) => { mapB[it.i] = 'SUP[' + it.t.slice(0, 10) + ']'; });
+  await run(APPLY(11, mapB, true));
+  await bridge();
+  await run(SCAN(12));
+  const sC = (await msgs()).find((m) => m.type === 'XLATE_ITEMS');
+  ok('an APPLIED pass does not re-offer what it already wrote', !!sC && sC.n < Math.max(4, (sB ? sB.n : 0) * 0.25), { applied: sB && sB.n, after: sC && sC.n });
+  await run(RESTORE);
+
   // ── batching: dedupe + progressive rounds (the real shipped function) ─────
   console.log('\nbatching (runXlatePasses)');
   const { runXlatePasses, XLATE_CHUNK, XLATE_PARALLEL } = loadModule();

@@ -24,7 +24,7 @@ import { isListingUrl, isSearchEngineUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../utils/webviewAuth';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../utils/webviewTranslate';
-import { PAGE_TEXT_FN } from '../utils/webviewPageText';
+import { PAGE_TEXT_FN, FORM_TOUCH_JS } from '../utils/webviewPageText';
 
 const NOT_COMPANY_RE = /linkedin\.com|licdn\.com|lnkd\.in|google\.[a-z.]+|bing\.com|duckduckgo|accounts\.|login\.|signin\.|auth[0-9]?\.|appleid\.apple|facebook\.com|about:blank/i;
 
@@ -99,7 +99,9 @@ const grabNowJs = (id: number) => `(function(){
 const DIRTY_FORM_JS = `(function(){
   function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
   try{
-    var els = document.querySelectorAll('input,textarea,select'), dirty = false;
+    // The recorder is the reliable signal (see FORM_TOUCH_JS) and covers frames + contenteditable.
+    var dirty = !!window.__cvfDirty;
+    var els = dirty ? [] : document.querySelectorAll('input,textarea,select');
     for (var i = 0; i < els.length; i++) {
       var el = els[i], t = String(el.type || '').toLowerCase();
       if (t === 'hidden' || t === 'submit' || t === 'button' || t === 'reset' || t === 'image') continue;
@@ -150,7 +152,8 @@ export function platformOf(u: string): string {
 // the same cookie store as our WebViews (NSHTTPCookieStorage on iOS, the WebView CookieManager via
 // ForwardingCookieHandler on Android), so one credentialed request answers it honestly.
 // Returns the member's name when the feed hands it over, else just signed-in/out.
-async function linkedInSession(): Promise<{ signedIn: boolean; name: string }> {
+type LiSession = { signedIn: boolean; name: string } | 'unknown';
+async function linkedInSession(): Promise<LiSession> {
   try {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), 8000);
@@ -166,7 +169,7 @@ async function linkedInSession(): Promise<{ signedIn: boolean; name: string }> {
     const m = html.match(/"(?:identityDisplayName|memberFirstName|firstName)"\s*:\s*"([^"]{1,60})"/);
     if (m) name = m[1].replace(/\\u[0-9a-f]{4}/gi, '').trim();
     return { signedIn: true, name };
-  } catch { return { signedIn: false, name: '' }; }
+  } catch { return 'unknown'; }   // offline / timeout / LinkedIn blocked us — that is NOT a sign-out
 }
 
 // Why did the page not yield a job? Inspect the grabbed HTML BEFORE spending a credit.
@@ -180,7 +183,7 @@ function diagnosePage(html: string): 'login' | 'challenge' | null {
   return null;
 }
 
-export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onApplyHere, homeUrl }: {
+export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onApplyHere, homeUrl, backRef }: {
   url: string;
   fetchCost: number;
   onClose: () => void;
@@ -189,6 +192,8 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   // Where "start over" goes — the search-results page this browsing session began at. Set by the
   // Google job search; without it the user has to tap back a dozen times to run another search.
   homeUrl?: string;
+  // A host <Modal> hands us its Android back press here (the Modal intercepts the key itself).
+  backRef?: React.MutableRefObject<(() => boolean) | null>;
 }) {
   const webRef = useRef<WebView>(null);
   const insets = useSafeAreaInsets();
@@ -201,7 +206,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const [dockOpen, setDockOpen] = useState(false);
   const [companyHint, setCompanyHint] = useState(false);   // reached the company site after a LinkedIn apply
   const [tipHidden, setTipHidden] = useState(false);       // "tap a result, then Fetch job" tip on a results page
-  const [liSession, setLiSession] = useState<{ signedIn: boolean; name: string } | null>(null);   // null = not checked yet
+  const [liSession, setLiSession] = useState<LiSession | null>(null);   // null = not checked yet, 'unknown' = couldn't tell
   const applyWantRef = useRef(false);                      // an Apply-here tap waiting on the dirty-form probe
   const applyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Google sometimes answers a search with its own human-check page (/sorry). We do NOT try to get
@@ -233,6 +238,10 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const runXlate = useCallback((_why = 'toggle') => {
     if (!webRef.current || !xlateOnRef.current) return;
     if (webLoadingRef.current) { setWebTranslating(true); return; }   // remembered; flushed on load-end
+    // ⚠️ NEVER start a pass on top of a running one. Bumping the generation makes the in-flight pass
+    // stale, and its already-scanned strings stay marked "seen" — so the page ends up permanently
+    // untranslated with no error. This is what the 2.2s settle sweep was doing to the 400ms one.
+    if (xlateBusyRef.current) { xlateDirtyRef.current = true; return; }
     const gen = ++xlateGenRef.current;
     setWebTranslating(true);
     try { webRef.current.injectJavaScript(xlateScanJS(gen)); } catch { setWebTranslating(false); }
@@ -280,21 +289,32 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     return true;
   }, []);
 
+  // ONE back decision, used by the top-bar chevron, the Android hardware key, and — because a RN
+  // <Modal> swallows the hardware key on Android and calls onRequestClose instead — by the host
+  // Modal too (see the backRef prop). Without that, one back press tore down a whole browsing
+  // session five pages deep, mid-fetch, ignoring the "fetching in progress" guard.
+  const handleBack = useCallback(() => {
+    if (fetchingRef.current) { guardBusy(); return true; }
+    if (canGoBackRef.current) { webRef.current?.goBack(); return true; }
+    onClose();
+    return true;
+  }, [onClose, guardBusy]);
+  useEffect(() => { if (backRef) backRef.current = handleBack; }, [backRef, handleBack]);
+
   // Android hardware back: blocked while fetching; else web-history back first, then close.
   useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (fetchingRef.current) { guardBusy(); return true; }
-      if (canGoBackRef.current) { webRef.current?.goBack(); return true; }
-      onClose();
-      return true;
-    });
-    return () => {
-      sub.remove();
-      if (grabTimerRef.current) clearTimeout(grabTimerRef.current);
-      if (xlateSettleRef.current) clearTimeout(xlateSettleRef.current);
-      if (applyTimerRef.current) clearTimeout(applyTimerRef.current);
-    };
-  }, [onClose, guardBusy]);
+    const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
+    return () => { sub.remove(); };
+  }, [handleBack]);
+
+  // Timers die with the COMPONENT, not with the BackHandler effect. That effect depends on `onClose`,
+  // which the Discover screen passes as an inline arrow — so it tears down on every parent re-render,
+  // and clearing the apply/fetch watchdogs there silently disarmed them mid-flight.
+  useEffect(() => () => {
+    if (grabTimerRef.current) clearTimeout(grabTimerRef.current);
+    if (xlateSettleRef.current) clearTimeout(xlateSettleRef.current);
+    if (applyTimerRef.current) clearTimeout(applyTimerRef.current);
+  }, []);
 
   // Draggable bubble (same pattern as the Help assistant): drag moves it, a TAP opens the dock.
   const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
@@ -655,7 +675,12 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           else if (nav.url && /^https?:\/\//i.test(nav.url) && sawLinkedInRef.current && !NOT_COMPANY_RE.test(nav.url)) setCompanyHint(true);
           else setCompanyHint(false);
         }}
-        onLoadStart={() => { setPageLoading(true); webLoadingRef.current = true; }}
+        onLoadStart={() => {
+          setPageLoading(true); webLoadingRef.current = true;
+          // New document: nothing from the old page's pass can apply to it, and its records are gone.
+          xlateGenRef.current += 1; xlateBusyRef.current = false; xlateDirtyRef.current = false;
+          if (xlateSettleRef.current) { clearTimeout(xlateSettleRef.current); xlateSettleRef.current = null; }
+        }}
         onLoadEnd={() => {
           setPageLoading(false); webLoadingRef.current = false;
           if (!xlateOnRef.current) return;
@@ -665,7 +690,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           if (xlateSettleRef.current) clearTimeout(xlateSettleRef.current);
           xlateSettleRef.current = setTimeout(() => runXlate('settle'), 2200);
         }}
-        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + XLATE_WATCH_JS}
+        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + XLATE_WATCH_JS + '\n' + FORM_TOUCH_JS}
         injectedJavaScriptForMainFrameOnly={false}
         onMessage={(e) => onMessage(e.nativeEvent.data)}
         javaScriptEnabled
@@ -726,7 +751,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
             </TouchableOpacity>
             {/* Only offer a sign-in when there ISN'T one. Once the shared cookie jar has a LinkedIn
                 session, say so instead — the old always-on "Sign in to LinkedIn" read as broken. */}
-            {liSession?.signedIn ? (
+            {liSession && liSession !== 'unknown' && liSession.signedIn ? (
               <View style={[styles.dockLinkRow, styles.dockLinkRowFlat]}>
                 <Ionicons name="logo-linkedin" size={16} color="#0A66C2" />
                 <Text style={styles.dockLinkTx} numberOfLines={1}>
@@ -737,7 +762,8 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
             ) : (
               <TouchableOpacity style={styles.dockLinkRow} onPress={signInLinkedIn} activeOpacity={0.8}>
                 <Ionicons name="logo-linkedin" size={16} color="#0A66C2" />
-                <Text style={styles.dockLinkTx}>{liSession === null ? 'Sign in to LinkedIn (so job sites recognise you)' : 'Signed out of LinkedIn — sign in again'}</Text>
+                {/* Only claim they're signed OUT when the probe actually proved it. */}
+                <Text style={styles.dockLinkTx}>{liSession === null || liSession === 'unknown' ? 'Sign in to LinkedIn (so job sites recognise you)' : 'Signed out of LinkedIn — sign in again'}</Text>
                 <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.4)" />
               </TouchableOpacity>
             )}

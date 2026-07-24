@@ -28,3 +28,50 @@ function cvfMainText(){
     return best;
   }catch(e){ return ''; }
 }`;
+
+// Did the user actually TYPE something into this page?
+//
+// ⚠️ You cannot answer this by comparing `value` to `defaultValue`. React sets the DOM's
+// defaultValue to the controlled value on every update (react-dom updateInput/updateTextarea), so
+// on a React-built form — Greenhouse, Ashby, Workday, i.e. most application forms — the two are
+// identical the instant the user types and the page looks untouched. Verified live on both.
+//
+// So record user INTENT instead: a capturing input/change listener can't be undone by any framework.
+// This runs in EVERY frame (injectedJavaScriptForMainFrameOnly={false}), and because only the main
+// frame has the postMessage bridge, subframes report upward with window.parent.postMessage.
+export const FORM_TOUCH_JS = `(function(){
+  if (window.__cvfTouchInit) return; window.__cvfTouchInit = true;
+  window.__cvfDirty = false;
+  function isSearchBox(el){
+    try{
+      if (!el) return false;
+      var n = String(el.name || el.id || '').toLowerCase();
+      var t = String(el.getAttribute && el.getAttribute('type') || '').toLowerCase();
+      // A search box is how you USE a site, not work you'd be upset to lose.
+      return t === 'search' || /^(q|s|search|query|keywords?|kw)$/.test(n);
+    }catch(e){ return false; }
+  }
+  function mark(e){
+    try{
+      var el = e && e.target;
+      if (!el || isSearchBox(el)) return;
+      var tag = String(el.tagName || '').toUpperCase();
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT' && !el.isContentEditable) return;
+      window.__cvfDirty = true;
+      try { if (window.parent && window.parent !== window) window.parent.postMessage({ __cvfDirty: 1 }, '*'); } catch(e2){}
+    }catch(e3){}
+  }
+  try{
+    document.addEventListener('input', mark, true);
+    document.addEventListener('change', mark, true);
+    // A frame telling us its user typed — keep passing it up to the main frame.
+    window.addEventListener('message', function(ev){
+      try{
+        if (ev && ev.data && ev.data.__cvfDirty) {
+          window.__cvfDirty = true;
+          if (window.parent && window.parent !== window) window.parent.postMessage({ __cvfDirty: 1 }, '*');
+        }
+      }catch(e4){}
+    }, false);
+  }catch(e5){}
+})(); true;`;

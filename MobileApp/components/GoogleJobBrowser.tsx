@@ -15,7 +15,7 @@
 //
 // ⚠️ BrowseFetch is a full-screen overlay VIEW, never its own <Modal> — a Modal dismissed from
 // inside another Modal hard-crashed iOS (build 87). It is mounted directly as this Modal's content.
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import { Modal } from 'react-native';
 import { useEventCosts } from '../hooks/useEventCosts';
 import BrowseFetch from './BrowseFetch';
@@ -40,16 +40,21 @@ export default function GoogleJobBrowser({ visible, query, onClose, onApplyHere 
   const { costOf } = useEventCosts();
   const fetchCost = costOf('live_fetch') ?? 0;
   const home = useMemo(() => googleSearchUrl(query), [query]);
+  // On Android a <Modal> intercepts the hardware back key and calls onRequestClose — the
+  // BackHandler inside BrowseFetch never sees it. Route the press into BrowseFetch's own decision
+  // so back means "previous page", not "throw away the whole search".
+  const backRef = useRef<(() => boolean) | null>(null);
 
   if (!visible) return null;
   return (
-    <Modal visible animationType="slide" onRequestClose={onClose}>
+    <Modal visible animationType="slide" onRequestClose={() => { if (!backRef.current || !backRef.current()) onClose(); }}>
       <BrowseFetch
         // Re-key on the query so a new search always starts a fresh browsing session rather than
         // resuming wherever the last one wandered off to.
         key={home}
         url={home}
         homeUrl={home}
+        backRef={backRef}
         fetchCost={fetchCost}
         onClose={onClose}
         // Saving is BrowseFetch's own job (it stores server-side and shows "Saved ✓"); the parent

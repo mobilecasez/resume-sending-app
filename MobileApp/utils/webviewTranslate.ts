@@ -26,6 +26,17 @@ export const xlateScanJS = (gen: number): string => `(function(){
     var ATTRS=['aria-label','title','placeholder','alt'];
     var st=window.${XLATE_MARK}||(window.${XLATE_MARK}={targets:[],seen:null});
     if(!st.seen||typeof WeakSet==='undefined'){ try{ st.seen=new WeakSet(); }catch(e){ st.seen=null; } }
+    // A previous pass was SUPERSEDED before it wrote anything (a newer pass started, or the user
+    // navigated). Its strings are still marked "seen", so without this they could never be collected
+    // again and that part of the page would stay untranslated forever with no error. Give them back.
+    if(st.pending&&st.pending.length){
+      for(var q=0;q<st.pending.length;q++){
+        var pr=st.pending[q]; if(!pr||pr.__cvfDone) continue;
+        try{ if(st.seen){ if(pr.k==='t'&&pr.n) st.seen.delete(pr.n); else if(pr.e) st.seen.delete(pr.e); } }catch(e){}
+        try{ if(pr.k==='a'&&pr.e&&pr.e.__cvfA) pr.e.__cvfA[pr.a]=0; }catch(e){}
+      }
+      st.pending=null;
+    }
     var fresh=[], items=[];
     function want(s){ return s.length>=2 && /[A-Za-z\\u00C0-\\u024F\\u0400-\\u04FF\\u0370-\\u03FF]/.test(s); }
     function push(rec,text){ rec.orig=text; fresh.push(rec); items.push({i:String(fresh.length-1), t:text}); }
@@ -140,22 +151,26 @@ const FOREIGN_WORDS = /\b(der|die|das|und|für|fur|mit|von|nicht|sich|auch|eine|
 // Anything outside Latin-1 basic + Latin Extended-A is a different script entirely — never English.
 const NON_LATIN = /[Ѐ-ӿͰ-Ͽ֐-׿؀-ۿऀ-ॿ一-鿿぀-ヿ가-힯]/;
 // Letters English simply does not use. A page carrying many of these is not an English page.
-const FOREIGN_LETTERS = /[àâäãåçéèêëîïìíñóòôöõøùûüúýÿœæßđłşžčćšğı]/gi;
+// ⚠️ NOT global: this is used with .test() per word, and a /g regex carries lastIndex between calls.
+const FOREIGN_LETTERS = /[àâäãåçéèêëîïìíñóòôöõøùûüúýÿœæßđłşžčćšğı]/i;
 
 export function looksAlreadyEnglish(items: XlateItem[]): boolean {
   // Judge the PROSE, not the chrome — one-word nav labels look the same in most languages.
   const prose = items.map((i) => i.t).filter((t) => t.split(/\s+/).length >= 4);
   if (prose.length < 4) return false;                       // too little to be sure → translate
   const text = prose.join(' ');
-  if (NON_LATIN.test(text)) return false;
-  const words = text.split(/\s+/).length;
-  if (words < 40) return false;
-  const foreign = (text.match(FOREIGN_LETTERS) || []).length;
-  if (foreign / Math.max(1, text.length) > 0.004) return false;   // accents well above English's stray loanwords
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length < 40) return false;
+  // Measure per WORD, not per character. A single "Zürich", "José" or a footer language list used to
+  // be enough to call an English page foreign — which then paid for a full translation of English.
+  const nonLatinWords = words.filter((w) => NON_LATIN.test(w)).length;
+  if (nonLatinWords / words.length >= 0.02) return false;          // a real non-Latin page, not one stray glyph
+  const accentedWords = words.filter((w) => FOREIGN_LETTERS.test(w)).length;
+  if (accentedWords / words.length >= 0.05) return false;          // well past English's stray loanwords/names
   const foreignWords = (text.match(FOREIGN_WORDS) || []).length;
-  if (foreignWords / words >= 0.02) return false;             // function words English doesn't have
+  if (foreignWords / words.length >= 0.02) return false;           // function words English doesn't have
   const english = (text.match(EN_WORDS) || []).length;
-  return english / words >= 0.18;                            // English prose sits far above this
+  return english / words.length >= 0.18;                           // English prose sits far above this
 }
 
 // How a scan's strings get to the backend. Chunks match the server's own sub-batching, so each
