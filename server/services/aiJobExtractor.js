@@ -454,7 +454,7 @@ function _htmlToText(s) {
 }
 const _wmMap = (s) => { const v = String(s || '').toLowerCase(); if (/remote|telework|home\s?office/.test(v)) return 'Remote'; if (/hybrid/.test(v)) return 'Hybrid'; if (/office|on-?site|vor ort/.test(v)) return 'On-site'; return null; };
 
-async function llmExtractDetailOne(text, sourceUrl, employerHint) {
+async function llmExtractDetailOne(text, sourceUrl, employerHint, corrective) {
   const model = geminiModel();
   if (!model || !text) return null;
   const prompt = `You are a meticulous, multilingual job-posting extraction engine. From the SINGLE job posting below, produce ONE complete job record in English. Translate any non-English content into professional English. Be COMPREHENSIVE — capture EVERY responsibility, task, and requirement as its own clear bullet (full phrases are fine — do NOT compress to one-word tags, and do NOT drop any). Never invent; use only what is in the text.
@@ -463,6 +463,32 @@ INPUT
 • Employer (hint): ${employerHint || '(infer from the text)'}
 • Source URL: ${sourceUrl}
 
+WHAT THE TEXT ACTUALLY IS
+It is a whole web page, not a clean posting. Alongside the job it normally also contains:
+• site chrome — top navigation, cookie/consent notices, newsletter and contact forms, footer links;
+• a "more open roles" / "similar jobs" strip — SHORT cards that each hold only another role's title,
+  a one-line marketing tagline (e.g. "Code. Build. Deploy. Scale impact.") and an "Apply now" link.
+  The card for THIS SAME role is often in that strip too.
+
+Extract ONLY the MAIN posting: the long prose section, normally under headings such as About the
+Role / Job Description / Responsibilities / Duties / What you'll do / Requirements / Qualifications /
+Your profile / Benefits (or their non-English equivalents). Hard rules:
+• NEVER take Summary, Skills or Responsibilities from a card tagline, a heading, a navigation item,
+  a footer or a form. A responsibility is a real duty ("Design and ship the payments API") — never a
+  bare verb ("Code", "Build", "Deploy") and never a slogan ("Innovate end-to-end", "Scale impact").
+• A phrase followed by a link marker like [/some/path] is a LINK to another page: it belongs to the
+  strip, not to this posting.
+• "Job Title" is the posting's OWN heading — the role this page is for. If the body prose names a
+  different role than the heading (some sites reuse boilerplate), keep the HEADING as the title but
+  still take Summary/Responsibilities/Skills from that body. Report what the page actually says;
+  never invent content to make the body fit the heading.
+• If the page genuinely has no descriptive body, return empty arrays — do not fill them from taglines.
+${corrective ? `
+CORRECTION — your previous answer for this page was rejected. It returned slogan-like bullets or an
+empty summary, which means you read the "more open roles" card strip instead of the posting body.
+Re-read the text, find the longest prose section (About the Role / Responsibilities / Requirements /
+Benefits), and take every bullet from THERE, in full sentences.
+` : ''}
 Return ONLY one JSON object (no markdown, no fences), starting with '{' and ending with '}':
 {
   "Job Title": "English title",
@@ -472,7 +498,7 @@ Return ONLY one JSON object (no markdown, no fences), starting with '{' and endi
   "Work Mode": "Remote" | "Hybrid" | "Office" | "N/A",
   "Salary": "salary text or N/A",
   "Experience": "e.g. '3+ years' or N/A",
-  "Summary": "2-3 sentence plain-English overview of the role",
+  "Summary": "4-6 sentence plain-English overview of the role, drawn from the posting body — what the team does, what the person will own, and what is expected of them",
   "Skills": ["each required skill / technology / qualification as a bullet"],
   "Responsibilities": ["each responsibility, task, and requirement as a clear English bullet — be exhaustive"]
 }
@@ -492,6 +518,27 @@ JOB POSTING TEXT:
     }
   }
   return null;
+}
+
+// Does the page carry a real posting BODY (not just cards)? Cheap, language-aware check.
+const _BODY_HEADINGS = /(about the role|about this role|about the job|job description|the role|responsibilities|duties|what you.{0,4}ll do|what you will do|requirements|qualifications|your profile|who you are|we offer|benefits|aufgaben|anforderungen|profil|wir bieten|functie|taken|vereisten|missions?|profil recherch)/i;
+// The extractor sometimes answers from the "more open roles" card strip instead of the posting body
+// — verified on growtheroses.co.uk, where a full About the Role / Responsibilities / Requirements /
+// Benefits body was ignored in favour of the card tagline "Code. Build. Deploy. Innovate end-to-end.
+// Scale impact." (the exact bullets a user reported). Slogans are short and verb-only, so the shape
+// is detectable without another AI call: flag it and give the model ONE corrective attempt.
+function _detailLooksThin(rich, input) {
+  if (!rich) return false;
+  const body = String(input || '');
+  if (body.length < 800 || !_BODY_HEADINGS.test(body)) return false;   // page really has no body — nothing better to get
+  const resp = Array.isArray(rich.Responsibilities)
+    ? rich.Responsibilities.map((r) => String(r || '').trim()).filter(Boolean)
+    : [];
+  const summary = String(rich.Summary || '').trim();
+  if (!resp.length) return true;
+  const terse = resp.filter((r) => r.split(/\s+/).length <= 3).length;
+  if (terse / resp.length >= 0.5) return true;                          // "Code" / "Build" / "Deploy"
+  return resp.length < 4 && summary.length < 160;                       // a tagline dressed up as a summary
 }
 
 async function richDetailFromHtml(html, sourceUrl, employerHint) {
@@ -514,8 +561,15 @@ async function richDetailFromHtml(html, sourceUrl, employerHint) {
     ? ('FULL JOB DESCRIPTION:\n' + ldDesc + '\n\n---\nPAGE CONTEXT:\n' + body.slice(0, 6000))
     : body;
   if (!input.trim()) return null;
-  const rich = await llmExtractDetailOne(input.slice(0, 30000), sourceUrl, employerHint || (ld && ld.employer_name) || '');
+  const clipped = input.slice(0, 30000);
+  const hint = employerHint || (ld && ld.employer_name) || '';
+  let rich = await llmExtractDetailOne(clipped, sourceUrl, hint);
   if (!rich) return null;
+  if (_detailLooksThin(rich, clipped)) {
+    const second = await llmExtractDetailOne(clipped, sourceUrl, hint, true);
+    // Keep the retry only if it actually did better — never trade a real answer for a worse one.
+    if (second && !_detailLooksThin(second, clipped)) rich = second;
+  }
   const na = (v) => { const s = String(v == null ? '' : v).trim(); return (!s || /^n\/?a$/i.test(s)) ? '' : s; };
   const pick = (a, b) => na(a) || na(b) || '';
   const arr = (v) => Array.isArray(v) ? [...new Set(v.map((x) => String(x).trim()).filter((x) => x && !/^n\/?a$/i.test(x)))] : [];

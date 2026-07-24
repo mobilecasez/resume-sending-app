@@ -26,6 +26,27 @@ function domainOf(u) { try { return new URL(String(u)).hostname.replace(/^www\./
 const arr = (v) => Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
 const str = (v) => String(v == null ? '' : v).trim();
 
+// Real posting bodies sit under headings like these; a card strip or nav bar never has them.
+const BODY_HEADINGS = /(about the role|about this role|about the job|job description|the role|responsibilities|duties|what you.{0,4}ll do|what you will do|requirements|qualifications|your profile|who you are|we offer|benefits|aufgaben|anforderungen|profil|wir bieten|functie|taken|vereisten|missions?|profil recherch)/i;
+
+// A page's "more open roles" strip is a list of SHORT cards — a title plus a marketing tagline.
+// When the AI reads those instead of the posting body it emits slogan bullets ("Code", "Build",
+// "Deploy" — reported live on growtheroses.co.uk) and a one-line description. Slogans are short and
+// verb-only, so the shape is detectable without another AI call; flag it and spend ONE retry.
+function looksThin(out, pageText) {
+  if (!out) return false;
+  const body = String(pageText || '');
+  if (body.length < 800 || !BODY_HEADINGS.test(body)) return false;   // page really has no body — nothing better to get
+  const resp = Array.isArray(out.responsibilities)
+    ? out.responsibilities.map((r) => String(r || '').trim()).filter(Boolean)
+    : [];
+  const desc = String(out.description || '').trim();
+  if (!resp.length) return true;
+  const terse = resp.filter((r) => r.split(/\s+/).length <= 3).length;
+  if (terse / resp.length >= 0.5) return true;
+  return resp.length < 4 && desc.length < 160;
+}
+
 // AI-extract structured details from the job page's visible text. Cheap flash-lite, JSON only.
 async function extractFromText(text, hint) {
   const key = process.env.GEMINI_API_KEY;
@@ -38,21 +59,47 @@ async function extractFromText(text, hint) {
     model: process.env.GEMINI_FLASH_LITE_MODEL || 'gemini-2.5-flash-lite',
     generationConfig: { responseMimeType: 'application/json', temperature: 0.1, maxOutputTokens: 4096 },
   });
-  const prompt = `You extract a job posting from the plain text of a job/careers web page.
+  const build = (corrective) => `You extract a job posting from the plain text of a job/careers web page.
 Return ONLY a JSON object with EXACTLY these keys:
 "title" (string), "company" (string), "location" (string),
 "employment_type" (Full-time/Part-time/Contract/Internship or ""),
 "work_mode" ("Onsite"|"Hybrid"|"Remote"|""), "salary" (string or ""), "seniority" (string or ""),
-"skills" (array of strings), "responsibilities" (array of short bullet strings),
-"description" (a clean plain-text summary of the role, max ~150 words),
+"skills" (array of strings), "responsibilities" (array of bullet strings — full duties, never one-word tags),
+"description" (a clean plain-text overview of the role drawn from the posting body — what the team does, what the person will own and what is expected of them; ~150-250 words),
 "contact_email" (string or ""), "contact_name" (string or ""), "contact_role" (string or "").
 Rules: use ONLY facts present in the text; use "" or [] when absent; never invent. JSON only, no markdown.
 If the page explains how to apply by email (e.g. "To apply, send your CV to X", "email us at Y", "apply via Z", "contact <name> at <email>"), put that address in contact_email, the person's name (if any) in contact_name, and their title in contact_role. Use ONLY an email literally present in the text.
-${hint ? 'KNOWN (may help disambiguate, prefer page text over this): ' + hint + '\n' : ''}
+
+THIS IS A WHOLE WEB PAGE, not a clean posting. It normally also carries navigation, cookie notices,
+contact/newsletter forms, a footer, and a "more open roles" / "similar jobs" strip — short cards that
+hold only another role's title, a one-line marketing tagline and an "Apply now" link. The card for
+THIS SAME role is often in that strip too.
+Take "description", "responsibilities" and "skills" ONLY from the MAIN posting body: the long prose
+under headings like About the Role / Job Description / Responsibilities / What you'll do /
+Requirements / Qualifications / Benefits (or their non-English equivalents). Never build them from a
+card tagline, a heading, a nav item or a footer — a responsibility is a real duty ("Design and ship
+the payments API"), never a bare verb ("Code", "Build", "Deploy") or a slogan ("Scale impact").
+"title" is the posting's OWN heading — the role this page is for. If the body prose names a different
+role than the heading (some sites reuse boilerplate), keep the HEADING as "title" but still take
+"description"/"responsibilities"/"skills" from that body: report what the page actually says, and
+never invent content to fit the heading.
+${corrective ? `
+CORRECTION — your previous answer was rejected: it returned slogan-like bullets or a one-line
+description, which means you read the card strip instead of the posting body. Re-read the text, find
+the longest prose section, and take every bullet from THERE, in full sentences.
+` : ''}${hint ? 'THE LISTING CARD SAID (a hint only — the page text always wins, and never invent content to match it): ' + hint + '\n' : ''}
 JOB PAGE TEXT:
 ${t}`;
-  const callOnce = async () => JSON.parse((await model.generateContent(prompt)).response.text());
-  try { return await callOnce(); } catch { try { return await callOnce(); } catch { return null; } }
+  const callOnce = async (corrective) => JSON.parse((await model.generateContent(build(corrective))).response.text());
+  let out = null;
+  try { out = await callOnce(false); } catch { try { out = await callOnce(false); } catch { return null; } }
+  if (looksThin(out, t)) {
+    try {
+      const second = await callOnce(true);
+      if (second && !looksThin(second, t)) out = second;   // keep the retry ONLY if it did better
+    } catch { /* keep the first answer */ }
+  }
+  return out;
 }
 
 // POST /api/ai-hub/jobs/capture

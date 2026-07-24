@@ -939,6 +939,28 @@ function parseJsonArray(text) {
     return JSON.parse(t.slice(start, end + 1));
 }
 
+// parseJsonObject's start..lastIndexOf('}') span breaks when the model appends junk AFTER a
+// complete object — observed live on translate batches: `…"59":"Easy Apply"}\nrisky re"}\n"}`.
+// The naive span swallows the tail and JSON.parse throws on a reply that was actually fine.
+// Scan braces (string- and escape-aware) to find where the FIRST object really closes.
+function parseJsonObjectLoose(text) {
+    const t = String(text || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const start = t.indexOf('{');
+    if (start === -1) throw new Error('No JSON object found');
+    try { return JSON.parse(t.slice(start, t.lastIndexOf('}') + 1)); } catch (_) {}
+    let depth = 0, inStr = false, esc = false;
+    for (let k = start; k < t.length; k += 1) {
+        const c = t[k];
+        if (esc) { esc = false; continue; }
+        if (c === '\\') { if (inStr) esc = true; continue; }
+        if (c === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (c === '{') depth += 1;
+        else if (c === '}') { depth -= 1; if (depth === 0) return JSON.parse(t.slice(start, k + 1)); }
+    }
+    throw new Error('Unterminated JSON object');
+}
+
 // ─── Opt-4: Phase-1 without Gemini when sitemap links are available ───────────
 
 /**
@@ -4151,53 +4173,109 @@ ${JSON.stringify(fields, null, 2)}`;
 // Translate a batch of short UI text snippets to English (used by the apply-WebView's "bridge"
 // translator when a site's CSP blocks Google's in-page widget). Stateless, no DB, free.
 // Body: { items: [{ i, t }], target? }  →  { translations: { "<i>": "<english>" } }
+//
+// This used to be ONE Gemini call for the whole batch, retried twice back-to-back with no backoff.
+// Measured on the prod key: 60 max-length snippets = ~23s per call and an intermittent 503 "high
+// demand" — and since the app fires four of these concurrently, a page-wide translation could have
+// EVERY chunk fail at once, which is exactly the "took a long time then Translation unavailable"
+// users saw. Now: small sub-batches (fast, well under the app's socket timeout), bounded
+// concurrency, exponential backoff on transient errors, and PARTIAL success — one bad sub-batch
+// costs its own snippets, not the whole page.
+const XL_MAX_ITEMS = 25;       // snippets per Gemini call
+const XL_MAX_CHARS = 6000;     // …or this many characters, whichever comes first
+const XL_CONCURRENCY = 3;      // sub-batches in flight
+const XL_DEADLINE_MS = 24000;  // stop starting retries after this (app gives up at 30s)
+
+function xlSubBatches(items) {
+    const out = [];
+    let cur = [], chars = 0;
+    for (const it of items) {
+        if (cur.length && (cur.length >= XL_MAX_ITEMS || chars + it.t.length > XL_MAX_CHARS)) { out.push(cur); cur = []; chars = 0; }
+        cur.push(it); chars += it.t.length;
+    }
+    if (cur.length) out.push(cur);
+    return out;
+}
+
 async function translateBatch(req, res) {
     try {
         const raw = Array.isArray(req.body && req.body.items) ? req.body.items : [];
         const items = raw
-            .slice(0, 120)                                         // cap per call (the app chunks larger pages)
-            .map(it => ({ i: String(it && it.i), t: String(it && it.t == null ? '' : it.t).slice(0, 600) }))
+            .slice(0, 240)                                         // cap per call (the app chunks larger pages)
+            // 600 used to silently TRUNCATE any paragraph longer than that — the page then showed a
+            // half-sentence where the original was complete. 1500 covers real job-description nodes;
+            // sub-batching keeps each call small regardless.
+            .map(it => ({ i: String(it && it.i), t: String(it && it.t == null ? '' : it.t).slice(0, 1500) }))
             .filter(it => it.i && it.t.trim().length);
         if (!items.length) return res.json({ translations: {} });
 
         const model = geminiModel(false, GEMINI_LITE_MODEL);
-        const prompt = `You translate snippets of visible website text into natural English.
+        const promptFor = (batch) => `You translate snippets of visible website text into natural English.
 Return ONLY a JSON object that maps each snippet's "i" (as a string key) to its English translation.
 
 Rules:
 - If a snippet is already English, return it unchanged.
 - Keep proper nouns as-is (people, companies, city/country names, brands, technologies like "Python", "SAP", "Berlin"), and keep numbers, emails, URLs unchanged.
 - Translate each snippet independently and concisely — do NOT merge snippets, add commentary, or change meaning.
+- Translate the WHOLE snippet, however long — never shorten, summarise or cut a snippet short.
 - Every input "i" MUST appear as a key in the output.
 - JSON only, no markdown.
 
 SNIPPETS (JSON array of {i,t}):
-${JSON.stringify(items)}`;
+${JSON.stringify(batch)}`;
 
-        async function callOnce() {
-            const result = await model.generateContent({
-                contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                generationConfig: { responseMimeType: 'application/json', temperature: 0.2, maxOutputTokens: 8192 },
-            });
-            return parseJsonObject(result.response.text());
-        }
-
-        let out = null;
-        try { out = await callOnce(); } catch (e1) {
-            try { out = await callOnce(); } catch (e2) {
-                console.error('[aiHub] translateBatch AI error:', e2.message);
-                return res.status(502).json({ error: 'Translation failed.' });
+        const deadline = Date.now() + XL_DEADLINE_MS;
+        async function translateOne(batch) {
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+                try {
+                    const result = await model.generateContent({
+                        contents: [{ role: 'user', parts: [{ text: promptFor(batch) }] }],
+                        generationConfig: { responseMimeType: 'application/json', temperature: 0.2, maxOutputTokens: 8192 },
+                    });
+                    const out = parseJsonObjectLoose(result.response.text());
+                    if (out && typeof out === 'object') return out;
+                    throw new Error('empty JSON object');
+                } catch (e) {
+                    const msg = String((e && e.message) || '');
+                    // A malformed/short reply is worth one more go too — the model is non-deterministic.
+                    const retryable = /\b429\b|\b50[0234]\b|rate|quota|overload|unavailable|high demand|temporarily|timeout|deadline|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|JSON|json/i.test(msg);
+                    if (attempt < 2 && retryable && Date.now() < deadline) {
+                        await new Promise((r) => setTimeout(r, 700 * Math.pow(2, attempt)));
+                        continue;
+                    }
+                    console.error('[aiHub] translateBatch sub-batch failed:', msg.slice(0, 200));
+                    return null;
+                }
             }
+            return null;
         }
-        if (!out || typeof out !== 'object') return res.status(502).json({ error: 'Translation failed.' });
 
-        // Only return clean strings; fall back to the original snippet for any missing/blank value.
+        const batches = xlSubBatches(items);
+        const results = new Array(batches.length).fill(null);
+        let next = 0;
+        await Promise.all(Array.from({ length: Math.min(XL_CONCURRENCY, batches.length) }, async () => {
+            for (;;) {
+                const k = next; next += 1;
+                if (k >= batches.length) return;
+                results[k] = await translateOne(batches[k]);
+            }
+        }));
+
+        // PARTIAL is a success: keys we could not translate are simply absent, and the page keeps
+        // its original text there instead of the whole translation being thrown away.
         const translations = {};
-        for (const it of items) {
-            const v = out[it.i];
-            translations[it.i] = (typeof v === 'string' && v.trim()) ? v : it.t;
-        }
-        return res.json({ translations });
+        let okBatches = 0;
+        batches.forEach((batch, k) => {
+            const out = results[k];
+            if (!out) return;
+            okBatches += 1;
+            for (const it of batch) {
+                const v = out[it.i];
+                translations[it.i] = (typeof v === 'string' && v.trim()) ? v : it.t;
+            }
+        });
+        if (!okBatches) return res.status(502).json({ error: 'Translation failed.' });
+        return res.json({ translations, partial: okBatches < batches.length });
     } catch (error) {
         console.error('[aiHub] translateBatch error:', error.message);
         return res.status(500).json({ error: 'Translation failed.' });
