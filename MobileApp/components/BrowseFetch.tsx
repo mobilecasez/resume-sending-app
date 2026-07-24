@@ -22,7 +22,8 @@ import { fetchJobDetail, saveCard, translateBatch, type LiveJobCard } from '../s
 import { isListingUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../utils/webviewAuth';
-import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS } from '../utils/webviewTranslate';
+import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, type XlateItem } from '../utils/webviewTranslate';
+import { PAGE_TEXT_FN } from '../utils/webviewPageText';
 
 const NOT_COMPANY_RE = /linkedin\.com|licdn\.com|lnkd\.in|google\.[a-z.]+|bing\.com|duckduckgo|accounts\.|login\.|signin\.|auth[0-9]?\.|appleid\.apple|facebook\.com|about:blank/i;
 
@@ -47,6 +48,7 @@ const BROWSER_UA = Platform.OS === 'android'
 //  • innerText survives SPA/shadow-DOM rendering that never shows up in outerHTML at all.
 //  • if the body still looks empty (SPA mid-render), wait one short beat and grab again.
 const grabNowJs = (id: number) => `(function(){
+  ${PAGE_TEXT_FN}
   function collect(){
     var html = '';
     try {
@@ -57,6 +59,8 @@ const grabNowJs = (id: number) => `(function(){
     } catch (e) { try { html = document.documentElement.outerHTML || ''; } catch (e2) { html = ''; } }
     var text = '';
     try { text = (document.body && document.body.innerText) || ''; } catch (e) {}
+    var mainText = '';
+    try { mainText = cvfMainText(); } catch (e) {}
     try {
       var fr = document.querySelectorAll('iframe');
       for (var k = 0; k < fr.length && k < 4; k++) {
@@ -69,14 +73,14 @@ const grabNowJs = (id: number) => `(function(){
         } catch (e) {}   // cross-origin frame — unreachable, that's fine
       }
     } catch (e) {}
-    return { html: String(html).slice(0, 220000), text: String(text).slice(0, 40000) };
+    return { html: String(html).slice(0, 220000), text: String(text).slice(0, 40000), mainText: String(mainText).slice(0, 40000) };
   }
   function send(){
     try {
       var c = collect();
       window.ReactNativeWebView.postMessage(JSON.stringify({
         __cvbf: true, id: ${id}, url: location.href, title: String(document.title || ''),
-        html: c.html, text: c.text
+        html: c.html, text: c.text, mainText: c.mainText
       }));
     } catch (e) {}
   }
@@ -157,6 +161,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const [webTranslating, setWebTranslating] = useState(false);
   const xlateOnRef = useRef(false);
   const xlateGenRef = useRef(0);       // discard replies from a superseded pass
+  const xlateBusyRef = useRef(false);  // a pass is mid-flight — ignore the DOM churn it causes
   const webLoadingRef = useRef(false); // don't scan while a page load is in flight
 
   const platform = platformOf(currentUrl);
@@ -316,27 +321,33 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     // ── translation (shared bridge; works even where a page's CSP blocks Google's widget) ──
     if (payload && payload.__cvf && payload.type === 'XLATE_ITEMS') {
       if (payload.gen !== xlateGenRef.current || !xlateOnRef.current) return;
-      const items: { i: string; t: string }[] = Array.isArray(payload.items) ? payload.items : [];
+      const items: XlateItem[] = Array.isArray(payload.items) ? payload.items : [];
       if (!items.length) { setWebTranslating(false); return; }
       const gen = payload.gen;
+      xlateBusyRef.current = true;
       (async () => {
-        const map: Record<string, string> = {};
+        const stale = () => gen !== xlateGenRef.current || !xlateOnRef.current;
+        let applied = 0;
         try {
-          const CH = 60, chunks: { i: string; t: string }[][] = [];
-          for (let k = 0; k < items.length; k += CH) chunks.push(items.slice(k, k + CH));
-          for (let k = 0; k < chunks.length; k += 4) {
-            const part = await Promise.all(chunks.slice(k, k + 4).map((c) => translateBatch(c)));
-            part.forEach((m) => Object.assign(map, m));
-          }
-          if (gen !== xlateGenRef.current || !xlateOnRef.current) return;
-          if (Object.keys(map).length && webRef.current) webRef.current.injectJavaScript(xlateApplyJS(gen, map));
-          else { setWebTranslating(false); Alert.alert('Translation unavailable', "We couldn't translate this page right now. You can open it in your phone's browser to translate it there."); }
-        } catch { setWebTranslating(false); }
+          applied = await runXlatePasses(
+            items,
+            (batch) => translateBatch(batch),
+            (map, final) => { try { webRef.current?.injectJavaScript(xlateApplyJS(gen, map, final)); } catch {} },
+            stale,
+          );
+        } finally { xlateBusyRef.current = false; }
+        if (stale()) return;
+        if (!applied) {
+          setWebTranslating(false);
+          Alert.alert('Translation unavailable', "We couldn't translate this page right now. You can open it in your phone's browser to translate it there.");
+        }
       })();
       return;
     }
-    if (payload && payload.__cvf && payload.type === 'XLATE_APPLIED') { if (payload.gen === xlateGenRef.current) setWebTranslating(false); return; }
-    if (payload && payload.__cvf && payload.type === 'XLATE_DIRTY') { if (xlateOnRef.current && !webLoadingRef.current) runXlate('spa'); return; }
+    // Only the FINAL round ends the pass — earlier rounds are progress, not completion.
+    if (payload && payload.__cvf && payload.type === 'XLATE_APPLIED') { if (payload.gen === xlateGenRef.current && payload.final) setWebTranslating(false); return; }
+    // Our own writes churn the DOM, so a mid-pass "dirty" would restart (and cancel) the pass.
+    if (payload && payload.__cvf && payload.type === 'XLATE_DIRTY') { if (xlateOnRef.current && !webLoadingRef.current && !xlateBusyRef.current) runXlate('spa'); return; }
 
     if (!payload || !payload.__cvbf || !fetchingRef.current) return;
     if (payload.id !== fetchIdRef.current) return;   // stale grab from an earlier, abandoned fetch
@@ -377,7 +388,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
       } catch { return false; }
     };
     try {
-      const job = await fetchJobDetail(srcUrl, String(payload.html || ''), '', String(payload.text || ''));
+      const job = await fetchJobDetail(srcUrl, String(payload.html || ''), '', String(payload.text || ''), String(payload.mainText || ''));
       clearStages();
       if (payload.id !== fetchIdRef.current) return;   // a newer fetch superseded this one
       fetchingRef.current = false; setFetching(false); setStage(null);

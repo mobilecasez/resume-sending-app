@@ -26,9 +26,22 @@ const fill = (b, gen, map) => b
   .split('${JSON.stringify(map)}').join(JSON.stringify(map || {}));
 
 const SCAN = (gen) => fill(body('xlateScanJS'), gen);
-const APPLY = (gen, map) => fill(body('xlateApplyJS'), gen, map);
+const APPLY = (gen, map, final = true) => fill(body('xlateApplyJS'), gen, map).split('${FIN}').join(final ? '1' : '0');
 const RESTORE = fill(body('XLATE_RESTORE_JS'), 0);
 const WATCH = fill(body('XLATE_WATCH_JS'), 0);
+
+// runXlatePasses is real TypeScript, so compile the module once and require the output — testing a
+// hand-written JS copy of the batching logic would prove nothing about what actually ships.
+function loadModule() {
+  const ts = require('typescript');
+  const src = TS.replace(/\bexport\s+type\s+[\s\S]*?;\n/g, '');
+  const js = ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2019 } }).outputText;
+  const out = path.join(require('os').tmpdir(), 'cvf-webviewTranslate-' + process.pid + '.js');
+  fs.writeFileSync(out, js);
+  const mod = require(out);
+  try { fs.unlinkSync(out); } catch (_) {}
+  return mod;
+}
 
 let pass = 0, fail = 0;
 const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else { fail++; console.log('  ✗ ' + n + (extra !== undefined ? '  → ' + JSON.stringify(extra) : '')); } };
@@ -106,6 +119,135 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   await page.waitForTimeout(1400);
   const dirty = (await msgs()).some((m) => m.type === 'XLATE_DIRTY');
   ok('new content triggers a re-translate signal', dirty, await msgs());
+
+  // ── progressive apply: a long page is written back round by round ─────────
+  // The whole point is that the user sees text land instead of a spinner that either works or
+  // doesn't. So a NON-final round must write its share, keep the pass open, and say it isn't done.
+  console.log('\nprogressive apply (round by round)');
+  await run(RESTORE);
+  await bridge();
+  await run(SCAN(3));
+  const m3 = (await msgs()).find((m) => m.type === 'XLATE_ITEMS');
+  const its = m3 ? m3.items : [];
+  // Split by TEXT-node records only — the tail of a scan is mostly aria-label/title/alt, which never
+  // shows up in innerText, so slicing the raw item list would test nothing about what the user sees.
+  const textIdx = await page.evaluate((M) => ((window[M] && window[M].pending) || [])
+    .map((r, i) => (r && r.k === 't' ? i : -1)).filter((i) => i >= 0), MARK);
+  ok('scan records text nodes separately from attributes', textIdx.length > 20, textIdx.length);
+  const cut = Math.floor(textIdx.length / 2);
+  const byI = {}; its.forEach((it) => { byI[it.i] = it.t; });
+  const r1 = {}; textIdx.slice(0, cut).forEach((i) => { r1[String(i)] = 'P1[' + String(byI[String(i)] || '').slice(0, 12) + ']'; });
+  const r2 = {}; textIdx.slice(cut).forEach((i) => { r2[String(i)] = 'P2[' + String(byI[String(i)] || '').slice(0, 12) + ']'; });
+
+  await run(APPLY(3, r1, false));
+  const a1 = (await msgs()).filter((m) => m.type === 'XLATE_APPLIED').pop();
+  const s1 = await page.evaluate((MARK) => ({
+    hasP1: (document.body.innerText || '').indexOf('P1[') >= 0,
+    hasP2: (document.body.innerText || '').indexOf('P2[') >= 0,
+    pendingKept: !!(window[MARK] && window[MARK].pending),
+    on: !!(window[MARK] && window[MARK].on),
+  }), MARK);
+  ok('round 1 writes its share immediately', s1.hasP1, s1);
+  ok('round 1 does NOT report the pass finished', !!a1 && !a1.final, a1);
+  ok('round 1 keeps the pass open (pending survives)', s1.pendingKept, s1);
+  ok('round 1 leaves the SPA watcher asleep (st.on still false)', !s1.on, s1);
+
+  // Read the records themselves, not innerText: a scan also captures text inside hidden subtrees,
+  // which innerText legitimately omits, so only the nodes prove every record was written.
+  const wrote = (which, idxs) => page.evaluate(({ W, I }) => {
+    const list = window.__testPending || [];
+    let hit = 0;
+    I.forEach((i) => { const r = list[i]; if (r && r.n && String(r.n.nodeValue || '').indexOf(W) >= 0) hit++; });
+    return { hit, of: I.length };
+  }, { W: which, I: idxs });
+
+  // Keep a handle on the record list: the final round clears st.pending, and st.targets is a
+  // different (concatenated) array whose indices no longer match the scan's.
+  await page.evaluate((M) => { window.__testPending = window[M].pending; }, MARK);
+  await run(APPLY(3, r2, true));
+  const a2 = (await msgs()).filter((m) => m.type === 'XLATE_APPLIED').pop();
+  const w2 = await wrote('P2[', textIdx.slice(cut));
+  const w1 = await wrote('P1[', textIdx.slice(0, cut));
+  const s2 = await page.evaluate((MARK) => ({
+    pendingCleared: !(window[MARK] && window[MARK].pending),
+    on: !!(window[MARK] && window[MARK].on),
+  }), MARK);
+  ok('final round writes the rest', w2.hit === w2.of, w2);
+  ok('round 1 text survives round 2', w1.hit === w1.of, w1);
+  ok('final round reports the pass finished', !!a2 && !!a2.final, a2);
+  ok('final round closes the pass and wakes the watcher', s2.pendingCleared && s2.on, s2);
+
+  // Re-sending an already-written key must not translate the translation.
+  const before = await page.evaluate(() => (document.body.innerText || '').indexOf('P1[P1[') >= 0);
+  await run(APPLY(3, r1, true));
+  const doubled = await page.evaluate(() => (document.body.innerText || '').indexOf('P1[P1[') >= 0);
+  ok('a repeated key is never written twice', !before && !doubled);
+
+  // Everything must still restore cleanly after a multi-round pass.
+  await run(RESTORE);
+  const s3 = await page.evaluate(() => (document.body.innerText || ''));
+  ok('multi-round pass restores fully', s3.indexOf('P1[') < 0 && s3.indexOf('P2[') < 0);
+
+  // ── batching: dedupe + progressive rounds (the real shipped function) ─────
+  console.log('\nbatching (runXlatePasses)');
+  const { runXlatePasses, XLATE_CHUNK, XLATE_PARALLEL } = loadModule();
+
+  // 300 occurrences of only 3 distinct strings — a page's repeated nav/labels.
+  const rep = Array.from({ length: 300 }, (_, i) => ({ i: String(i), t: ['Bewerben', 'Speichern', 'Vollzeit'][i % 3] }));
+  let sent = 0, calls = 0;
+  const rounds = [];
+  const n1 = await runXlatePasses(
+    rep,
+    async (batch) => { calls++; sent += batch.length; const m = {}; batch.forEach((b) => { m[b.i] = 'X:' + b.t; }); return m; },
+    (map, final) => rounds.push({ n: Object.keys(map).length, final }),
+    () => false,
+  );
+  ok('dedupe: 300 occurrences cost one call', calls === 1, { calls, sent });
+  ok('dedupe: only the 3 distinct strings are sent', sent === 3, { sent });
+  ok('dedupe: every occurrence still gets written', n1 === 300, { n1 });
+  ok('dedupe: exactly one round, marked final', rounds.length === 1 && rounds[0].final && rounds[0].n === 300, rounds);
+
+  // A long page must arrive in several rounds, only the last marked final.
+  const many = Array.from({ length: XLATE_CHUNK * XLATE_PARALLEL * 2 }, (_, i) => ({ i: String(i), t: 'unique-' + i }));
+  const rounds2 = [];
+  const n2 = await runXlatePasses(
+    many,
+    async (batch) => { const m = {}; batch.forEach((b) => { m[b.i] = 'X:' + b.t; }); return m; },
+    (map, final) => rounds2.push({ n: Object.keys(map).length, final }),
+    () => false,
+  );
+  ok('long page is written in several rounds', rounds2.length === 2, rounds2.map((r) => r.n));
+  ok('only the last round is final', rounds2.filter((r) => r.final).length === 1 && rounds2[rounds2.length - 1].final, rounds2);
+  ok('every string is written', n2 === many.length, { n2 });
+
+  // One failed chunk must cost only its own strings — never the whole page.
+  const rounds3 = [];
+  let seq = 0;
+  const n3 = await runXlatePasses(
+    many,
+    async (batch) => { seq++; if (seq === 1) throw new Error('boom'); const m = {}; batch.forEach((b) => { m[b.i] = 'X:' + b.t; }); return m; },
+    (map, final) => rounds3.push({ n: Object.keys(map).length, final }),
+    () => false,
+  );
+  ok('a failed chunk costs only its own strings', n3 === many.length - XLATE_CHUNK, { n3, expected: many.length - XLATE_CHUNK });
+  ok('a partly translated page is still applied', rounds3.length > 0 && rounds3.some((r) => r.n > 0), rounds3);
+
+  // Total failure must apply NOTHING, so the caller can show an honest error.
+  const rounds4 = [];
+  const n4 = await runXlatePasses(many, async () => { throw new Error('down'); }, (map, final) => rounds4.push({ map, final }), () => false);
+  ok('total failure writes nothing (caller alerts)', n4 === 0 && rounds4.length === 0, { n4, rounds: rounds4.length });
+
+  // Toggling off mid-pass must stop the writes.
+  const rounds5 = [];
+  let stale = false;
+  const n5 = await runXlatePasses(
+    many,
+    async (batch) => { const m = {}; batch.forEach((b) => { m[b.i] = 'X:' + b.t; }); return m; },
+    (map, final) => { rounds5.push(final); stale = true; },
+    () => stale,
+  );
+  ok('toggling off mid-pass stops further rounds', rounds5.length === 1, rounds5);
+  ok('a cancelled pass still reports what it wrote', n5 > 0 && n5 < many.length, { n5 });
 
   await browser.close();
   console.log('\n' + pass + ' passed, ' + fail + ' failed');

@@ -26,6 +26,15 @@ function domainOf(u) { try { return new URL(String(u)).hostname.replace(/^www\./
 const arr = (v) => Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
 const str = (v) => String(v == null ? '' : v).trim();
 
+// Headings are often styled uppercase, and the AI copies what it reads — so a page whose <h1> is
+// text-transform:uppercase gave us "FULL-STACK SOFTWARE ENGINEER (GROWTH)" as the job title. Only
+// touch a title that is ENTIRELY caps; leave genuine acronyms ("Senior QA Engineer") alone.
+function fixShoutyTitle(s) {
+  const t = str(s);
+  if (t.length < 9 || t !== t.toUpperCase() || !/[A-Z]/.test(t)) return t;
+  return t.toLowerCase().replace(/(^|[\s(/&-])([a-z])/g, (m, p, c) => p + c.toUpperCase());
+}
+
 // Real posting bodies sit under headings like these; a card strip or nav bar never has them.
 const BODY_HEADINGS = /(about the role|about this role|about the job|job description|the role|responsibilities|duties|what you.{0,4}ll do|what you will do|requirements|qualifications|your profile|who you are|we offer|benefits|aufgaben|anforderungen|profil|wir bieten|functie|taken|vereisten|missions?|profil recherch)/i;
 
@@ -45,6 +54,16 @@ function looksThin(out, pageText) {
   const terse = resp.filter((r) => r.split(/\s+/).length <= 3).length;
   if (terse / resp.length >= 0.5) return true;
   return resp.length < 4 && desc.length < 160;
+}
+
+// The app sends the WHOLE page's visible text plus, when the page marks one up, just its main/article
+// region. Prefer the narrow one — but only when it plainly holds the posting itself, so a site whose
+// <main> wraps a sidebar (or nothing) still falls back to everything we used to read.
+function pickPostingText(full, main) {
+  const f = String(full || '');
+  const m = String(main || '');
+  if (m.length >= 600 && m.length <= f.length && BODY_HEADINGS.test(m)) return m;
+  return f;
 }
 
 // AI-extract structured details from the job page's visible text. Cheap flash-lite, JSON only.
@@ -120,11 +139,12 @@ async function captureJob(req, res) {
 
     // AI-extract ONLY when we lack substance — keeps the common (already-rich) case free.
     const needExtract = (responsibilities.length < 2 || !description || !title || !company);
-    if (needExtract && str(b.pageText).length >= 120) {
+    const postingText = pickPostingText(b.pageText, b.mainText);
+    if (needExtract && str(postingText).length >= 120) {
       const hint = [title && ('title=' + title), company && ('company=' + company)].filter(Boolean).join('; ');
-      const out = await extractFromText(b.pageText, hint);
+      const out = await extractFromText(postingText, hint);
       if (out && typeof out === 'object') {
-        title       = title       || str(out.title);
+        title       = title       || fixShoutyTitle(out.title);
         company     = company     || str(out.company);
         location    = location    || str(out.location);
         jobType     = jobType     || str(out.employment_type);
@@ -217,4 +237,4 @@ async function captureJob(req, res) {
 // extractFromText is also reused by discover's fetch-detail as its SPA/iframe-proof fallback:
 // a job board that renders into an iframe or late-hydrates isn't in the page's outerHTML, but IS
 // in its visible text. Same bounded cost (1 call + 1 retry, 12k cap).
-module.exports = { captureJob, extractFromText };
+module.exports = { captureJob, extractFromText, pickPostingText };

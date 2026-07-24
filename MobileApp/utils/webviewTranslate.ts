@@ -72,26 +72,35 @@ export const xlateScanJS = (gen: number): string => `(function(){
 })(); true;`;
 
 // Write the translations back. Originals stay on each record so "off" can restore them.
-export const xlateApplyJS = (gen: number, map: Record<string, string>): string => `(function(){
+// Called ONCE PER ROUND, not once per page: a long page is translated in several rounds and each is
+// written as it lands, so the text fills in visibly instead of the user staring at a spinner for a
+// minute. Only the last round (`final`) closes the pass — until then `st.pending` must survive, and
+// `st.on` stays false so our own DOM writes don't wake the MutationObserver and cancel the pass.
+export const xlateApplyJS = (gen: number, map: Record<string, string>, final = true): string => {
+  const FIN = final ? '1' : '0';
+  return `(function(){
   try{
     var st=window.${XLATE_MARK}; if(!st||st.gen!==${gen}||!st.pending) return;
-    var M=${JSON.stringify(map)}, list=st.pending, done=0;
+    var M=${JSON.stringify(map)}, list=st.pending, done=0, fresh=[];
     for(var k in M){
-      var r=list[+k]; if(!r||M[k]==null||M[k]==='') continue;
+      var r=list[+k]; if(!r||M[k]==null||M[k]===''||r.__cvfDone) continue;
       try{
+        var wrote=false;
         if(r.k==='t'&&r.n&&r.n.nodeValue!=null){
           var o=r.n.nodeValue, L=(o.match(/^\\s*/)||[''])[0], T=(o.match(/\\s*$/)||[''])[0];
-          r.n.nodeValue=L+M[k]+T; done++;
-        } else if(r.k==='a'&&r.e){ r.e.setAttribute(r.a, M[k]); done++; }
-        else if(r.k==='v'&&r.e){ r.e.value=M[k]; done++; }
+          r.n.nodeValue=L+M[k]+T; wrote=true;
+        } else if(r.k==='a'&&r.e){ r.e.setAttribute(r.a, M[k]); wrote=true; }
+        else if(r.k==='v'&&r.e){ r.e.value=M[k]; wrote=true; }
+        if(wrote){ r.__cvfDone=1; fresh.push(r); done++; }
       }catch(e){}
     }
-    st.targets=(st.targets||[]).concat(list);
-    st.pending=null; st.on=true;
+    st.targets=(st.targets||[]).concat(fresh);
+    if(${FIN}){ st.pending=null; st.on=true; }
     document.documentElement.setAttribute('data-cvf-xlated','1');
-    try{ var o2={type:'XLATE_APPLIED', gen:${gen}, count:done}; o2.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o2)); }catch(e){}
+    try{ var o2={type:'XLATE_APPLIED', gen:${gen}, count:done, final:${FIN}}; o2.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o2)); }catch(e){}
   }catch(e){}
 })(); true;`;
+};
 
 // Put the page back to its original language IN PLACE — no reload, so nothing the user typed is lost.
 export const XLATE_RESTORE_JS = `(function(){
@@ -116,6 +125,64 @@ export const XLATE_RESTORE_JS = `(function(){
     document.documentElement.removeAttribute('data-cvf-xlated');
   }catch(e){}
 })(); true;`;
+
+export type XlateItem = { i: string; t: string };
+
+// How a scan's strings get to the backend. Chunks match the server's own sub-batching, so each
+// request comes back in a few seconds rather than one slow all-or-nothing call.
+export const XLATE_CHUNK = 40;
+export const XLATE_PARALLEL = 3;
+
+// Run one full translation pass and write each round back as it arrives.
+//
+// DEDUPE is the big win: a page repeats the same strings constantly — nav items, "Apply", "Save",
+// section labels, every job card's "Full time" — and on a LinkedIn job page that repetition is most
+// of the payload. Translating each DISTINCT string once and fanning the answer back to every
+// occurrence cuts both the wait and the number of calls, with identical output.
+//
+// Returns how many occurrences were written. 0 means the whole pass failed and the caller should say
+// so; anything above 0 is a success, even if some chunks fell over — a partly translated page beats
+// an error over a page that was mostly readable.
+export async function runXlatePasses(
+  items: XlateItem[],
+  translate: (batch: XlateItem[]) => Promise<Record<string, string>>,
+  onRound: (map: Record<string, string>, final: boolean) => void,
+  stale: () => boolean,
+): Promise<number> {
+  const byText = new Map<string, string[]>();
+  for (const it of items) {
+    const seen = byText.get(it.t);
+    if (seen) seen.push(it.i); else byText.set(it.t, [it.i]);
+  }
+  const uniq: XlateItem[] = [];
+  const owners: string[][] = [];
+  byText.forEach((idxs, t) => { uniq.push({ i: String(uniq.length), t }); owners.push(idxs); });
+
+  const chunks: XlateItem[][] = [];
+  for (let k = 0; k < uniq.length; k += XLATE_CHUNK) chunks.push(uniq.slice(k, k + XLATE_CHUNK));
+
+  let applied = 0;
+  for (let k = 0; k < chunks.length; k += XLATE_PARALLEL) {
+    if (stale()) return applied;
+    const parts = await Promise.all(chunks.slice(k, k + XLATE_PARALLEL).map((c) => translate(c).catch(() => ({}))));
+    if (stale()) return applied;
+    const fan: Record<string, string> = {};
+    for (const part of parts) {
+      for (const uk of Object.keys(part || {})) {
+        const owner = owners[+uk];
+        const v = (part as Record<string, string>)[uk];
+        if (!owner || typeof v !== 'string' || !v) continue;
+        for (const orig of owner) fan[orig] = v;
+      }
+    }
+    const n = Object.keys(fan).length;
+    const isLast = k + XLATE_PARALLEL >= chunks.length;
+    applied += n;
+    // Never mark the page translated on a pass that wrote nothing at all — the caller alerts instead.
+    if (n || (isLast && applied > 0)) onRound(fan, isLast);
+  }
+  return applied;
+}
 
 // Tell RN when the page renders new content, so an SPA view keeps getting translated while ON.
 export const XLATE_WATCH_JS = `(function(){

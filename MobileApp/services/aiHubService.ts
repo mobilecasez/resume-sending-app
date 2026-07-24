@@ -275,7 +275,10 @@ export async function translateBatch(items: { i: string; t: string }[]): Promise
     const response = await axios.post(
       `${API_BASE_URL}/ai-hub/translate-batch`,
       { items },
-      { headers, timeout: 30000 }   // a stalled request must reject so the translate spinner clears
+      // A stalled request must reject so the translate spinner clears. 45s, not 30: the server now
+      // sub-batches and retries transient Gemini failures internally, and cutting it off at 30 threw
+      // away work that was about to land.
+      { headers, timeout: 45000 }
     );
     return (response.data?.translations ?? {}) as Record<string, string>;
   } catch {
@@ -745,6 +748,7 @@ export type CaptureJobInput = {
   description?: string;
   matchScore?: number | null;
   pageText?: string;    // the job page's visible innerText (for AI extraction when card fields are thin)
+  mainText?: string;    // just the main/article region, when the page marks one up (less nav/footer/other-role noise)
   track?: boolean;      // true → add to My Jobs (fired on Generate-CL / successful submit)
 };
 export type CapturedJob = {
@@ -1143,12 +1147,14 @@ export async function liveSearchJobs(query: string): Promise<{ parsed: AiSearchP
 }
 
 /** Fetch ONE job's full details from the on-device-scraped page HTML → stores it → returns a rich card. */
-export async function fetchJobDetail(url: string, html: string, company?: string, pageText?: string): Promise<LiveJobCard | null> {
+export async function fetchJobDetail(url: string, html: string, company?: string, pageText?: string, mainText?: string): Promise<LiveJobCard | null> {
   const headers = await getAuthHeader();
   try {
     // pageText = the page's VISIBLE text. SPA / iframe-hosted boards render the job where outerHTML
     // can't see it, so the server falls back to extracting from this when the HTML yields nothing.
-    const { data } = await axios.post(`${API_BASE_URL}/discover/fetch-detail`, { url, html, company: company || '', pageText: pageText || '' }, { headers, timeout: 45000 });
+    // mainText = just the main/article region when the page marks one up, so the extractor isn't
+    // reading the nav, the footer and the "more open roles" cards alongside the posting.
+    const { data } = await axios.post(`${API_BASE_URL}/discover/fetch-detail`, { url, html, company: company || '', pageText: pageText || '', mainText: mainText || '' }, { headers, timeout: 45000 });
     return data?.success && data.job ? (data.job as LiveJobCard) : null;
   } catch (e: any) {
     if (axios.isAxiosError(e) && e.response?.status === 402) {

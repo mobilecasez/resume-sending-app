@@ -749,7 +749,13 @@ async function fetchDetail(req, res) {
   try {
     const url = String((req.body && req.body.url) || '').trim();
     const html = (req.body && req.body.html) || '';
-    const pageText = String((req.body && req.body.pageText) || '');   // the page's VISIBLE text (SPA/iframe-proof)
+    // The page's VISIBLE text (SPA/iframe-proof). mainText is the same page narrowed to its
+    // main/article region when it has one, so the extractor isn't weighing the nav, the footer and
+    // the "more open roles" cards against the posting; pickPostingText falls back when it isn't one.
+    const pageText = jobCapture.pickPostingText(
+      String((req.body && req.body.pageText) || ''),
+      String((req.body && req.body.mainText) || ''),
+    );
     const employerHint = String((req.body && req.body.company) || '').trim();
     if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Missing/invalid url' });
     const haveHtml = !!(html && html.length > 200);

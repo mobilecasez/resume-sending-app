@@ -42,7 +42,8 @@ import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import { canonicalJobUrl, isAuthUrl } from '../../utils/jobUrl';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../../utils/webviewAuth';
-import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS } from '../../utils/webviewTranslate';
+import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, type XlateItem } from '../../utils/webviewTranslate';
+import { PAGE_TEXT_FN } from '../../utils/webviewPageText';
 import type { Contact, Job, Employer } from '../../types/aiHub';
 
 // Lightweight CLIENT-SIDE check: should we offer "Translate to English" for this
@@ -153,12 +154,13 @@ const GRAB_JOB_TEXT_JS = `(function(){ try {
 // never trips the once-per-session cover-letter prefetch. Also carries a rough login/challenge signal
 // so we can tell the user why a protected page couldn't be read instead of a blank failure.
 const FETCH_PAGE_JS = `(function(){ try {
+  ${PAGE_TEXT_FN}
   var t = (document.body && document.body.innerText) || '';
   var low = t.slice(0, 4000).toLowerCase();
   var wall = (/log ?in|sign ?in|please sign|create an account/.test(low) && t.length < 1200)
     ? 'login'
     : (/verify you are human|are you a robot|captcha|unusual traffic|checking your browser/.test(low) ? 'challenge' : '');
-  var o = { type:'FETCH_PAGE', text:String(t).slice(0,16000), title:String(document.title||''), url:String(location.href||''), wall:wall };
+  var o = { type:'FETCH_PAGE', text:String(t).slice(0,16000), mainText:String(cvfMainText()).slice(0,16000), title:String(document.title||''), url:String(location.href||''), wall:wall };
   o.__cvf = true; window.ReactNativeWebView.postMessage(JSON.stringify(o));
 } catch(e){} })(); true;`;
 
@@ -1962,6 +1964,7 @@ export default function JobDetailScreen() {
   // SPA render re-applies it. A tap while the page is still loading is remembered, not dropped.
   const xlateOnRef      = useRef(false);
   const xlateGenRef     = useRef(0);      // discard replies from a superseded pass
+  const xlateBusyRef    = useRef(false);  // a pass is mid-flight — ignore the DOM churn it causes
   const xlatePendingRef = useRef(false);  // tapped mid-load → run once the load finishes
   const webLoadingRef   = useRef(false);
   const submitMarkedRef = useRef(false);                          // fire the "Applied" mark only once per session
@@ -2615,7 +2618,7 @@ export default function JobDetailScreen() {
   };
 
   // Runs once the grabbed page text comes back (from fetchThisPage). Captures + tracks it.
-  const captureFetchedPage = async (liveUrl: string, pageText: string, wall: string) => {
+  const captureFetchedPage = async (liveUrl: string, pageText: string, wall: string, mainText = '') => {
     if (fetchTimerRef.current) { clearTimeout(fetchTimerRef.current); fetchTimerRef.current = null; }
     const host = (() => { try { return new URL(liveUrl).hostname.replace(/^www\./, ''); } catch { return ''; } })();
     if (wall === 'login') { setFetchState('idle'); Alert.alert('Sign in first', `${host || 'This site'} wants you logged in before it shows the job. Log in on this page — your session is remembered — then tap Fetch job again.`); return; }
@@ -2633,7 +2636,7 @@ export default function JobDetailScreen() {
         location: '', jobType: '', workMode: null, experience: '', salary: '',
         responsibilities: [], skills: [],
         matchScore: typeof (job as any).matchScore === 'number' ? (job as any).matchScore : null,
-        pageText, track: true,
+        pageText, mainText, track: true,
       } as any);
       if (r && r.jobId) {
         // Feed the cover-letter path too, so a follow-up Generate uses this job's real details.
@@ -3052,7 +3055,7 @@ export default function JobDetailScreen() {
       fetchWantRef.current = false;
       const liveUrl = String(msg.url || currentUrlRef.current || '');
       lastPageTextRef.current = String(msg.text || '');
-      void captureFetchedPage(liveUrl, String(msg.text || ''), String(msg.wall || ''));
+      void captureFetchedPage(liveUrl, String(msg.text || ''), String(msg.wall || ''), String(msg.mainText || ''));
       return;
     }
 
@@ -3089,34 +3092,36 @@ export default function JobDetailScreen() {
     // button values, shadow DOM). Translate server-side in chunks, then write it back in place.
     if (msg.type === 'XLATE_ITEMS') {
       if (msg.gen !== xlateGenRef.current || !xlateOnRef.current) return;   // superseded / turned off
-      const items: { i: string; t: string }[] = Array.isArray(msg.items) ? msg.items : [];
+      const items: XlateItem[] = Array.isArray(msg.items) ? msg.items : [];
       if (!items.length) { setWebTranslating(false); return; }
       const gen = msg.gen;
+      xlateBusyRef.current = true;
       (async () => {
-        const map: Record<string, string> = {};
+        const stale = () => gen !== xlateGenRef.current || !xlateOnRef.current;
+        let applied = 0;
         try {
-          const CH = 60, chunks: { i: string; t: string }[][] = [];
-          for (let k = 0; k < items.length; k += CH) chunks.push(items.slice(k, k + CH));
-          for (let k = 0; k < chunks.length; k += 4) {
-            const part = await Promise.all(chunks.slice(k, k + 4).map((c) => translateBatch(c)));
-            part.forEach((m) => Object.assign(map, m));
-          }
-          if (gen !== xlateGenRef.current || !xlateOnRef.current) return;   // user toggled off meanwhile
-          if (Object.keys(map).length && applyWebRef.current) {
-            applyWebRef.current.injectJavaScript(xlateApplyJS(gen, map));
-          } else {
-            setWebTranslating(false);
-            Alert.alert('Translation unavailable', "We couldn't translate this page right now. You can open it in your phone's browser to translate it there.");
-          }
-        } catch {
+          // Deduped, chunked and written back round by round, so a long page fills in as it goes
+          // instead of spinning until every chunk is home.
+          applied = await runXlatePasses(
+            items,
+            (batch) => translateBatch(batch),
+            (map, final) => { try { applyWebRef.current?.injectJavaScript(xlateApplyJS(gen, map, final)); } catch {} },
+            stale,
+          );
+        } finally { xlateBusyRef.current = false; }
+        if (stale()) return;                                                // user toggled off meanwhile
+        if (!applied) {
           setWebTranslating(false);
+          Alert.alert('Translation unavailable', "We couldn't translate this page right now. You can open it in your phone's browser to translate it there.");
         }
       })();
       return;
     }
-    if (msg.type === 'XLATE_APPLIED') { if (msg.gen === xlateGenRef.current) setWebTranslating(false); return; }
-    // SPA rendered new content while translation is on → translate the new bits too.
-    if (msg.type === 'XLATE_DIRTY') { if (xlateOnRef.current && !webLoadingRef.current) runXlate('spa'); return; }
+    // Only the FINAL round ends the pass — earlier rounds are progress, not completion.
+    if (msg.type === 'XLATE_APPLIED') { if (msg.gen === xlateGenRef.current && msg.final) setWebTranslating(false); return; }
+    // SPA rendered new content while translation is on → translate the new bits too. Skipped while a
+    // pass runs: the DOM churn would be our OWN writes, and restarting would cancel the pass.
+    if (msg.type === 'XLATE_DIRTY') { if (xlateOnRef.current && !webLoadingRef.current && !xlateBusyRef.current) runXlate('spa'); return; }
 
     // Smart-copy: remember which field the user focused, so the popup leads with the
     // right value (works independently of an auto-fill run).
