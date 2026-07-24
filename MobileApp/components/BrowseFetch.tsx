@@ -10,7 +10,7 @@
 //
 // ⚠️ Deliberately NOT a <Modal>: it renders as a full-screen overlay VIEW inside the caller's modal.
 // A Modal nested inside another Modal crashed the app on iOS when dismissed (v3.3 build 87).
-import React, { useRef, useState, useCallback, useEffect } from 'react';
+import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated, PanResponder, Alert, Dimensions, BackHandler, Pressable, Platform,
 } from 'react-native';
@@ -19,7 +19,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchJobDetail, saveCard, translateBatch, type LiveJobCard } from '../services/aiHubService';
-import { isListingUrl } from '../utils/jobListing';
+import { isListingUrl, isSearchEngineUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../utils/webviewAuth';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, type XlateItem } from '../utils/webviewTranslate';
@@ -106,6 +106,7 @@ const normUrl = (u: string) => {
 // Which job platform is this page on? Shown in the dock + used in failure messages.
 export function platformOf(u: string): string {
   const s = String(u || '').toLowerCase();
+  if (isSearchEngineUrl(u)) { try { return new URL(u).hostname.replace(/^www\./, '').replace(/\..*$/, '').replace(/^./, (c) => c.toUpperCase()); } catch { return 'Search'; } }
   if (/linkedin\.com|lnkd\.in/.test(s)) return 'LinkedIn';
   if (/naukri\.com/.test(s)) return 'Naukri';
   if (/indeed\./.test(s)) return 'Indeed';
@@ -131,12 +132,15 @@ function diagnosePage(html: string): 'login' | 'challenge' | null {
   return null;
 }
 
-export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onApplyHere }: {
+export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onApplyHere, homeUrl }: {
   url: string;
   fetchCost: number;
   onClose: () => void;
   onFetched: (job: LiveJobCard | null, sourceUrl: string) => void;
   onApplyHere?: (applyUrl: string, pageTitle: string) => void;
+  // Where "start over" goes — the search-results page this browsing session began at. Set by the
+  // Google job search; without it the user has to tap back a dozen times to run another search.
+  homeUrl?: string;
 }) {
   const webRef = useRef<WebView>(null);
   const insets = useSafeAreaInsets();
@@ -148,6 +152,11 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const [justSaved, setJustSaved] = useState(false);
   const [dockOpen, setDockOpen] = useState(false);
   const [companyHint, setCompanyHint] = useState(false);   // reached the company site after a LinkedIn apply
+  const [tipHidden, setTipHidden] = useState(false);       // "tap a result, then Fetch job" tip on a results page
+  // Google sometimes answers a search with its own human-check page (/sorry). We do NOT try to get
+  // around that — the user completes it themselves if they want to. We just stop pretending the page
+  // is results, and offer the same query on another engine, exactly as they'd do in their browser.
+  const [engineWall, setEngineWall] = useState(false);
   const sawLinkedInRef = useRef(false);
   const currentUrlRef = useRef(url);
   const currentTitleRef = useRef('');
@@ -181,6 +190,24 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     if (next) runXlate('toggle-on');
     else { xlateGenRef.current++; setWebTranslating(false); try { webRef.current.injectJavaScript(XLATE_RESTORE_JS); } catch {} }
   }, [runXlate]);
+
+  // The query this browsing session started from, so a blocked engine can be swapped for another one.
+  const homeQuery = useMemo(() => {
+    try { return new URL(String(homeUrl || '')).searchParams.get('q') || ''; } catch { return ''; }
+  }, [homeUrl]);
+  const searchElsewhere = useCallback(() => {
+    if (!homeQuery || !webRef.current) return;
+    const alt = 'https://duckduckgo.com/?q=' + encodeURIComponent(homeQuery);
+    try { webRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(alt)}; true;`); } catch {}
+  }, [homeQuery]);
+
+  // "Start a new search" — jump straight back to the results page this session began at, instead of
+  // tapping back through every company site the user opened along the way.
+  const goHome = useCallback(() => {
+    if (!homeUrl || !webRef.current) return;
+    if (fetchingRef.current) { Alert.alert('Fetching in progress', 'Please wait a few seconds — your job is being read and saved.'); return; }
+    try { webRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(homeUrl)}; true;`); } catch {}
+  }, [homeUrl]);
 
   // While a fetch is running, back/close are BLOCKED — leaving the page mid-grab loses the fetch.
   const guardBusy = useCallback((): boolean => {
@@ -263,6 +290,12 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     if (fetchingRef.current) return;
     setDockOpen(false);
     const u = currentUrlRef.current;
+    // A page of search results is never a job. Say that outright — the generic "is one job open?"
+    // confirm let people fetch the Google page itself and get nonsense back.
+    if (isSearchEngineUrl(u)) {
+      Alert.alert('Open a job first', 'These are search results. Tap a result to open the actual job page, then tap Fetch job to save it.');
+      return;
+    }
     if (savedUrlsRef.current.has(normUrl(u))) {
       Alert.alert('Already saved', 'This job is already in your Saved Jobs.');
       return;
@@ -427,6 +460,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   }, [fetchCost, onFetched, doGrab, runXlate]);
 
   let host = ''; try { host = new URL(currentUrl).hostname.replace(/^www\./, ''); } catch {}
+  const onSearchPage = isSearchEngineUrl(currentUrl);
 
   return (
     <View style={[StyleSheet.absoluteFillObject, styles.root, { paddingTop: Math.max(insets.top, 14) }]}>
@@ -439,6 +473,11 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           <Text style={styles.host} numberOfLines={1}>{platform}</Text>
           <Text style={styles.hint} numberOfLines={1}>{host}</Text>
         </View>
+        {!!homeUrl && !onSearchPage && (
+          <TouchableOpacity onPress={goHome} style={[styles.navBtn, fetching && styles.navBtnOff]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="search" size={17} color={fetching ? '#94A3B8' : '#0F172A'} />
+          </TouchableOpacity>
+        )}
         <TouchableOpacity onPress={toggleTranslate} style={[styles.navBtn, webTranslated && styles.navBtnActive]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           {webTranslating
             ? <ActivityIndicator size="small" color="#06B6D4" />
@@ -451,6 +490,27 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           <Ionicons name="close" size={20} color={fetching ? '#94A3B8' : '#0F172A'} />
         </TouchableOpacity>
       </View>
+      {engineWall && (
+        <View style={styles.wallBar}>
+          <Ionicons name="shield-outline" size={15} color="#92400E" />
+          <Text style={styles.wallTx} numberOfLines={3}>This search engine is asking you to confirm you’re human. Finish the check on the page — or search somewhere else.</Text>
+          {!!homeQuery && (
+            <TouchableOpacity onPress={searchElsewhere} style={styles.wallBtn} activeOpacity={0.85}>
+              <Text style={styles.wallBtnTx}>Try DuckDuckGo</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+      {/* On the results page the robot bubble has nothing to fetch yet, so say what to do with it.
+          Dismissible, and it comes back on the next search — it costs one tap and answers the only
+          question a first-time user has here. */}
+      {onSearchPage && !tipHidden && (
+        <TouchableOpacity style={styles.tipBar} activeOpacity={0.9} onPress={() => setTipHidden(true)}>
+          <Ionicons name="hand-left-outline" size={15} color="#0F172A" />
+          <Text style={styles.tipTx} numberOfLines={2}>Tap any result to open it. Once you’re on the job’s own page, tap the robot → <Text style={styles.tipBold}>Fetch job</Text> to save it.</Text>
+          <Ionicons name="close" size={14} color="#64748B" />
+        </TouchableOpacity>
+      )}
       {companyHint && (
         <TouchableOpacity style={styles.hintBar} activeOpacity={0.9} onPress={() => { setCompanyHint(false); fetchCurrent(); }}>
           <Ionicons name="business" size={15} color="#fff" />
@@ -472,6 +532,10 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
                 && !/\/(login|signin|sign-in|oauth2?|auth|callback|sso)(\/|$|\?)/i.test(nav.url)
                 && nav.url !== preAuthUrlRef.current) returnFromAuth(1200);
           }
+          // Google answers some searches with its own human-check page instead of results. We never
+          // try to get past it — we just stop calling it results, so the user isn't left staring at a
+          // screen that looks broken, and can pick another engine if they'd rather not bother.
+          setEngineWall(/\/sorry\/|\/recaptcha\//i.test(String(nav.url || '')));
           currentUrlRef.current = nav.url; canGoBackRef.current = nav.canGoBack;
           currentTitleRef.current = String(nav.title || '');
           setCurrentUrl(nav.url); setCanGoBack(nav.canGoBack);
@@ -586,6 +650,13 @@ const styles = StyleSheet.create({
   progress: { position: 'absolute', top: 100, alignSelf: 'center', zIndex: 5, backgroundColor: '#fff', borderRadius: 14, padding: 8, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 10, elevation: 6 },
   hintBar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 10, marginBottom: 8, backgroundColor: '#2563EB', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
   hintTx: { flex: 1, color: '#fff', fontSize: 12.5, fontWeight: '700', lineHeight: 16 },
+  tipBar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 10, marginBottom: 8, backgroundColor: '#fff', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: '#E2E8F0' },
+  tipTx: { flex: 1, color: '#334155', fontSize: 12, fontWeight: '600', lineHeight: 16 },
+  tipBold: { fontWeight: '800', color: '#0F172A' },
+  wallBar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 10, marginBottom: 8, backgroundColor: '#FEF3C7', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: '#FDE68A' },
+  wallTx: { flex: 1, color: '#92400E', fontSize: 12, fontWeight: '600', lineHeight: 16 },
+  wallBtn: { backgroundColor: '#92400E', borderRadius: 9, paddingHorizontal: 10, paddingVertical: 6 },
+  wallBtnTx: { color: '#fff', fontSize: 11.5, fontWeight: '800' },
   fabWrap: { position: 'absolute', right: 14, bottom: Math.min(SH * 0.16, 140), zIndex: 30 },
   fabInner: { alignItems: 'center' },
   fabCircle: { width: 58, height: 58, borderRadius: 29, alignItems: 'center', justifyContent: 'center', shadowColor: '#0B0F22', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.3, shadowRadius: 14, elevation: 10 },

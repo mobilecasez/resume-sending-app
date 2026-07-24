@@ -25,7 +25,7 @@ import { logEvent } from '../../services/firebaseAnalytics';
 import HelpAssistant from '../../components/HelpAssistant';
 import SilentWebSearch from '../../components/SilentWebSearch';
 import { useEventCosts } from '../../hooks/useEventCosts';
-import LiveJobSearch from '../../components/LiveJobSearch';
+import GoogleJobBrowser from '../../components/GoogleJobBrowser';
 import SavedJobsList from '../../components/SavedJobsList';
 
 const T = {
@@ -571,7 +571,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
       {!embedded && <HelpAssistant />}
       {xrayUrls.length > 0 && <SilentWebSearch key={xraySeq} urls={xrayUrls} onResult={onXrayResult} />}
       {/* On close, tell the parent so the Saved count/summary refresh (fetching happens here, not on the Saved tab). */}
-      <LiveJobSearch visible={liveOpen} query={liveQuery} onClose={() => { setLiveOpen(false); onSavedChange?.(); }} onApplyHere={openApplyHere} />
+      <GoogleJobBrowser visible={liveOpen} query={liveQuery} onClose={() => { setLiveOpen(false); onSavedChange?.(); }} onApplyHere={openApplyHere} />
     </>
   );
 

@@ -43,6 +43,19 @@ const LISTING_RE: RegExp[] = [
 // `?vjk=`/`?jk=`, LinkedIn `?currentJobId=`, generic `jobId=`/`jobListingId=`/`jobkey=`.
 const JOB_QUERY_RE = /[?&](jl|vjk|jk|jobid|joblistingid|jobkey|currentjobid)=[\w-]/i;
 
+// A WEB-SEARCH results page. The user browses these to FIND a job, so "Fetch job" here must say so
+// plainly instead of asking "is one job open?" and then extracting nonsense from a page of links.
+// Host-anchored on purpose: `sites.google.com` / `docs.google.com` can legitimately HOST a posting,
+// so only the search front-ends themselves count.
+const SEARCH_HOST = /^(www\.|consent\.)?(google\.[a-z.]{2,}|bing\.com|duckduckgo\.com|search\.brave\.com|ecosia\.org|startpage\.com|yandex\.[a-z.]{2,}|baidu\.com)$/i;
+const SEARCH_HOST_YAHOO = /^([a-z]{2}\.)?search\.yahoo\.[a-z.]{2,}$/i;
+export function isSearchEngineUrl(u: string): boolean {
+  try {
+    const h = new URL(String(u || '')).hostname.toLowerCase();
+    return SEARCH_HOST.test(h) || SEARCH_HOST_YAHOO.test(h);
+  } catch { return false; }
+}
+
 export function isListingUrl(u: string): boolean {
   const s = String(u || '');
   if (!s) return false;
