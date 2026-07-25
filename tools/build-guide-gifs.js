@@ -42,6 +42,11 @@ const CLIPS = [
       { t: 11.75, x: 0.265, y: 0.735, note: 'Fetch job (dock)' },
       { t: 14.10, x: 0.750, y: 0.846, note: 'View & Apply' },
     ],
+    holds: [
+      { t: 13.10, ms: 1100, note: 'Saved ✓' },
+      { t: 14.70, ms: 1200, note: 'cover letter written' },
+      { t: 16.60, ms: 1400, note: 'the finished letter' },
+    ],
   },
   {
     // The robot on a real application form → Auto Fill → submitted.
@@ -51,6 +56,11 @@ const CLIPS = [
     taps: [
       { t: 13.85, x: 0.882, y: 0.816, note: 'the robot → Job tools' },
       { t: 14.70, x: 0.729, y: 0.624, note: 'Auto Fill' },
+    ],
+    holds: [
+      { t: 15.60, ms: 1300, note: 'the form filled + review' },
+      { t: 16.90, ms: 1100, note: 'résumé attached' },
+      { t: 18.30, ms: 1500, note: 'application submitted' },
     ],
   },
   {
@@ -62,6 +72,10 @@ const CLIPS = [
       { t: 3.50, x: 0.500, y: 0.484, note: 'Generate My Resume with AI' },
       { t: 9.05, x: 0.500, y: 0.830, note: 'Download PDF' },
     ],
+    holds: [
+      { t: 5.60, ms: 1300, note: 'the résumé the AI wrote' },
+      { t: 8.05, ms: 1200, note: 'pick a country format' },
+    ],
   },
   {
     // Fill the profile once — it feeds every application.
@@ -72,8 +86,77 @@ const CLIPS = [
       { t: 7.78, x: 0.500, y: 0.600, note: 'Generate Signature from Name' },
       { t: 9.90, x: 0.500, y: 0.505, note: 'Save Changes' },   // the page has scrolled by now
     ],
+    holds: [
+      { t: 8.60, ms: 1200, note: 'signature styles' },
+      { t: 10.35, ms: 1400, note: 'profile saved' },
+    ],
   },
 ];
+
+
+// ─── Per-frame pacing ────────────────────────────────────────────────────────
+// A constant frame rate is wrong for a guide: scrolling through text can fly by, but a button press
+// and the result it produces need time to register. GIF stores a delay PER FRAME, so we encode at a
+// constant rate and then rewrite the delays — fast through the scrolling, slow into each tap, and a
+// real pause on the tap itself and on the result.
+//
+// The delays live in each frame's Graphic Control Extension. Walk the GIF structurally rather than
+// scanning for the 21 F9 04 signature: that byte sequence occurs inside LZW image data too, and
+// patching a false positive corrupts the file.
+function retimeGif(file, delaysMs) {
+  const b = fs.readFileSync(file);
+  let p = 6;                                            // header "GIF89a"
+  const packed = b[p + 4];
+  p += 7;
+  if (packed & 0x80) p += 3 * (1 << ((packed & 7) + 1)); // global colour table
+  const skipSubBlocks = () => { while (b[p] !== 0x00) p += 1 + b[p]; p += 1; };
+  let frame = 0, patched = 0;
+  while (p < b.length) {
+    const marker = b[p];
+    if (marker === 0x3B) break;                          // trailer
+    if (marker === 0x21) {                               // extension
+      const label = b[p + 1];
+      p += 2;
+      if (label === 0xF9 && b[p] === 4) {                // graphic control extension
+        const cs = Math.max(2, Math.round((delaysMs[Math.min(frame, delaysMs.length - 1)] || 80) / 10));
+        b.writeUInt16LE(cs, p + 2);                      // delay, in centiseconds
+        patched += 1;
+      }
+      skipSubBlocks();
+    } else if (marker === 0x2C) {                        // image descriptor
+      const ipacked = b[p + 9];
+      p += 10;
+      if (ipacked & 0x80) p += 3 * (1 << ((ipacked & 7) + 1));  // local colour table
+      p += 1;                                            // LZW minimum code size
+      skipSubBlocks();
+      frame += 1;
+    } else break;                                        // unknown block — stop rather than corrupt
+  }
+  fs.writeFileSync(file, b);
+  const total = delaysMs.slice(0, patched).reduce((a, c) => a + c, 0);
+  return { patched, frames: frame, seconds: total / 1000 };
+}
+
+// Fast by default; slower approaching a tap; a real pause ON the tap and ON its result.
+const PACE = { base: 75, approach: 130, tap: 620, result: 950, last: 1300 };
+function buildDelays(count, taps, span, fps, holds) {
+  const d = new Array(count).fill(PACE.base);
+  for (const t of taps) {
+    if (!t.ok) continue;
+    const from = Math.max(0, t.idx - Math.round(span * 0.6));
+    for (let k = 0; k < span && from + k < count; k += 1) d[from + k] = PACE.approach;
+    const peak = Math.min(count - 1, from + Math.round(span * 0.45));
+    d[peak] = PACE.tap;                                     // hold on the press itself
+    const result = Math.min(count - 1, t.idx + Math.round(fps * 0.45));
+    d[result] = Math.max(d[result], PACE.result);           // …and on what it produced
+  }
+  for (const h of (holds || [])) {
+    if (h.idx == null || h.idx < 0 || h.idx >= count) continue;
+    d[h.idx] = Math.max(d[h.idx], h.ms);                    // linger on a payoff nobody tapped for
+  }
+  d[count - 1] = PACE.last;                                 // a beat before the loop restarts
+  return d;
+}
 
 const sh = (cmd, args) => execFileSync(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -132,6 +215,9 @@ async function build(clip, verify) {
     report.push({ ...tap, ok: true, idx, cx, cy });
   }
 
+  const holds = (clip.holds || []).map((h) => ({ ...h, idx: Math.round(((h.t - clip.start) / clip.speed) * FPS) }))
+    .filter((h) => h.idx >= 0 && h.idx < frames.length);
+
   // 3. composite ripple, then round the corners over WHITE (the explainer card is white — this beats
   //    GIF's 1-bit transparency, which leaves the corners jagged).
   const mask = roundMask(OUT_W, OUT_H, RADIUS);
@@ -166,9 +252,12 @@ async function build(clip, verify) {
     }
   }
 
+  const timing = retimeGif(gif, buildDelays(frames.length, report, span, FPS, holds));
+
   const kb = Math.round(fs.statSync(gif).size / 1024);
-  console.log(`${clip.slug.padEnd(22)} ${frames.length}f  ${OUT_W}x${OUT_H}  ${kb} KB`);
-  report.forEach((r) => console.log(`   ${r.ok ? '·' : '✗'} ${String(r.t).padStart(5)}s  ${r.note}${r.ok ? ` → (${r.cx},${r.cy})` : `  SKIPPED: ${r.why}`}`));
+  console.log(`${clip.slug.padEnd(22)} ${frames.length}f  ${OUT_W}x${OUT_H}  ${kb} KB  ${timing.seconds.toFixed(1)}s (retimed ${timing.patched}/${timing.frames})`);
+  report.forEach((r) => console.log(`   ${r.ok ? '·' : '✗'} tap  ${String(r.t).padStart(5)}s  ${r.note}${r.ok ? ` → (${r.cx},${r.cy})` : `  SKIPPED: ${r.why}`}`));
+  holds.forEach((h) => console.log(`   ⏸ hold ${String(h.t).padStart(5)}s  ${h.note}  ${h.ms}ms`));
   return { slug: clip.slug, kb, report };
 }
 
