@@ -29,6 +29,7 @@ import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
+import { File as FSFile, Paths } from 'expo-file-system';
 import { track } from '../../services/analytics';
 import { downloadAsync, cacheDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -2088,7 +2089,10 @@ export default function JobDetailScreen() {
   const [clRegion,       setClRegion]       = useState('');
   const [resumeExpanded, setResumeExpanded] = useState(false);
   const [clExpanded,     setClExpanded]     = useState(false);
-  const [preview,        setPreview]        = useState<{ image: string; title: string; ratio: number } | null>(null);
+  // `image` = a rendered template preview. `fileUri` = the ACTUAL attachment shown in a WebView
+  // (iOS renders PDFs natively), used when there is no Resume-Builder resume to render a template
+  // from — previewing the real file beats refusing to preview anything.
+  const [preview,        setPreview]        = useState<{ image?: string; fileUri?: string; mime?: string; note?: string; title: string; ratio: number } | null>(null);
   const [previewBusy,    setPreviewBusy]    = useState<string | null>(null);
 
   // ── Smart-copy control (in-WebView floating helper) ──
@@ -3330,18 +3334,44 @@ export default function JobDetailScreen() {
         path = '/cover-letter/preview-templates';
         body = { region: rgn, coverLetterHtml, companyName: companyNameCL || employer.name, companyAddress: companyAddressCL || '' };
       }
-      const unavailable = () => Alert.alert(
-        'Preview unavailable',
-        kind === 'resume'
-          ? 'Build a resume in the Resume Builder to preview it. Your uploaded resume will still be attached.'
-          : 'Could not render the cover-letter preview.',
-      );
+      // No Resume-Builder resume means no template to render — but the user still has a resume, and
+      // it is the one we will attach. Show THAT instead of refusing: it is the more useful answer to
+      // "what am I about to send?" anyway.
+      const previewActualFile = async (): Promise<boolean> => {
+        if (kind !== 'resume') return false;
+        try {
+          const f = await loadFile('resume', region);
+          if (!f?.base64) return false;
+          const ext = /officedocument|msword/i.test(String(f.mime || '')) ? '.docx' : '.pdf';
+          const file = new FSFile(Paths.cache, `cvapplyr_resume_preview${ext}`);
+          try { if (file.exists) file.delete(); } catch {}
+          file.create({ overwrite: true });
+          file.write(f.base64, { encoding: 'base64' });
+          setPreview({
+            fileUri: file.uri,
+            mime: String(f.mime || 'application/pdf'),
+            title: 'Resume preview',
+            ratio: 0.72,
+            note: 'This is the resume that will be attached.',
+          });
+          return true;
+        } catch { return false; }
+      };
+      const unavailable = async () => {
+        if (await previewActualFile()) return;
+        Alert.alert(
+          'Preview unavailable',
+          kind === 'resume'
+            ? 'We couldn’t render your resume right now. Your uploaded resume will still be attached.'
+            : 'Could not render the cover-letter preview.',
+        );
+      };
       // Rendered as a background job — survives the app being minimized.
       let data: any;
       try { data = await postAndPoll(path, body, token); }
-      catch { unavailable(); return; }
+      catch { await unavailable(); return; }
       const p = data?.previews?.[0];
-      if (!p?.image) { unavailable(); return; }
+      if (!p?.image) { await unavailable(); return; }
       const ratio = p.width && p.height ? p.width / p.height : 0.72;
       setPreview({ image: p.image, title: kind === 'resume' ? 'Resume preview' : 'Cover letter preview', ratio });
     } catch {
@@ -3374,19 +3404,49 @@ export default function JobDetailScreen() {
           <View style={s.webHeaderCenter}><Text style={s.webHeaderTitle} numberOfLines={1}>{preview.title || 'Preview'}</Text></View>
           <View style={{ width: 36 }} />
         </View>
-        <ScrollView
-          style={s.previewScroll}
-          contentContainerStyle={[s.previewScrollContent, { paddingBottom: 24 + insets.bottom }]}
-          maximumZoomScale={3}
-          minimumZoomScale={1}
-          showsVerticalScrollIndicator
-        >
-          <Image
-            source={{ uri: preview.image }}
-            style={{ width: '100%', aspectRatio: preview.ratio || 0.72, backgroundColor: '#fff' }}
-            resizeMode="contain"
-          />
-        </ScrollView>
+        {!!preview.note && (
+          <View style={s.previewNote}>
+            <Ionicons name="information-circle-outline" size={14} color="#2563EB" />
+            <Text style={s.previewNoteTx} numberOfLines={2}>{preview.note}</Text>
+          </View>
+        )}
+        {preview.fileUri ? (
+          // The real attachment. iOS renders PDFs natively in a WebView; if a format can't be shown
+          // the user still has "Open in your app" below rather than a dead end.
+          <View style={{ flex: 1 }}>
+            <WebView
+              source={{ uri: preview.fileUri }}
+              style={{ flex: 1, backgroundColor: '#fff' }}
+              originWhitelist={['*']}
+              allowFileAccess
+              allowFileAccessFromFileURLs
+              allowUniversalAccessFromFileURLs
+              startInLoadingState
+            />
+            <TouchableOpacity
+              style={[s.previewOpenBtn, { marginBottom: 12 + insets.bottom }]}
+              activeOpacity={0.85}
+              onPress={() => { const u = preview.fileUri; if (u) { void (async () => { try { if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(u); } catch {} })(); } }}
+            >
+              <Ionicons name="open-outline" size={16} color="#fff" />
+              <Text style={s.previewOpenTx}>Open in another app</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <ScrollView
+            style={s.previewScroll}
+            contentContainerStyle={[s.previewScrollContent, { paddingBottom: 24 + insets.bottom }]}
+            maximumZoomScale={3}
+            minimumZoomScale={1}
+            showsVerticalScrollIndicator
+          >
+            <Image
+              source={{ uri: preview.image }}
+              style={{ width: '100%', aspectRatio: preview.ratio || 0.72, backgroundColor: '#fff' }}
+              resizeMode="contain"
+            />
+          </ScrollView>
+        )}
       </View>
     );
   };
@@ -5002,6 +5062,10 @@ const s = StyleSheet.create({
   appliedToastCard:{ flexDirection: 'row', alignItems: 'center', gap: 9, maxWidth: 460, backgroundColor: '#16A34A', paddingVertical: 11, paddingHorizontal: 14, borderRadius: 14, shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 12, shadowOffset: { width: 0, height: 5 }, elevation: 7 },
   appliedToastText:{ flex: 1, color: '#fff', fontSize: 13.5, fontWeight: '700', lineHeight: 18 },
   previewOverlay:       { ...StyleSheet.absoluteFillObject, backgroundColor: T.surface, zIndex: 60 },
+  previewNote: { flexDirection: 'row', alignItems: 'center', gap: 7, marginHorizontal: 14, marginBottom: 8, backgroundColor: '#EFF6FF', borderRadius: 10, paddingHorizontal: 11, paddingVertical: 8, borderWidth: 1, borderColor: '#DBEAFE' },
+  previewNoteTx: { flex: 1, fontSize: 11.5, fontWeight: '600', color: '#1D4ED8' },
+  previewOpenBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginHorizontal: 14, marginTop: 10, height: 44, borderRadius: 13, backgroundColor: '#0F172A' },
+  previewOpenTx: { fontSize: 13.5, fontWeight: '800', color: '#fff' },
   previewScroll:        { flex: 1, backgroundColor: '#54607a' },
   previewScrollContent: { padding: 14, alignItems: 'center' },
   webNav: {

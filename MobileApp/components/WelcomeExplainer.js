@@ -10,12 +10,30 @@ const { width: SW, height: SH } = Dimensions.get('window');
 const CARD_W = Math.min(SW * 0.9, 440);
 const CARD_H = Math.min(SH * 0.76, 720);
 
+// Short screen recordings of the real app, with a ripple where each control is tapped, so the guide
+// SHOWS the flow instead of describing it. Built by tools/build-guide-gifs.js from the clips in
+// Videos/July 2026/Edited — re-run it (with --verify) if the UI changes.
 export const TUTORIAL_SLIDES = [
-  { img: require('../assets/onboarding/slide-01.png') },   // Search any company
-  { img: require('../assets/onboarding/slide-02.png') },   // Live jobs
-  { img: require('../assets/onboarding/slide-03.png') },   // Know who's hiring
-  { img: require('../assets/onboarding/slide-04.png') },   // Apply on portal / email
-  { img: require('../assets/onboarding/cover-letter-sample.png'), caption: 'AI cover letters, tailored to each role & region', sub: 'Generated in seconds — download as PDF or edit before you apply.' },
+  {
+    img: require('../assets/onboarding/guide-fetch-job.gif'),
+    caption: 'Find a job on Google — and save it in one tap',
+    sub: 'Search the real Google inside the app. Open any result, tap the robot → Fetch job, and CVApplyr reads the posting and writes your cover letter.',
+  },
+  {
+    img: require('../assets/onboarding/guide-auto-fill.gif'),
+    caption: 'Auto Fill any application form',
+    sub: 'On the company\u2019s own form, tap the robot → Auto Fill. It reads the whole form, fills your details and attaches your r\u00e9sum\u00e9 — you review, then submit.',
+  },
+  {
+    img: require('../assets/onboarding/guide-resume-builder.gif'),
+    caption: 'Build a r\u00e9sum\u00e9 the AI writes for you',
+    sub: 'Paste your story or reuse your uploaded r\u00e9sum\u00e9. Pick a country format and download it as PDF or Word.',
+  },
+  {
+    img: require('../assets/onboarding/guide-profile.gif'),
+    caption: 'Fill your profile once',
+    sub: 'Your details, r\u00e9sum\u00e9 and signature power every application and cover letter from then on.',
+  },
 ];
 
 // Reusable swipeable carousel of the guide slides — used by the intro popup AND the help assistant's
@@ -28,14 +46,14 @@ export function SlideCarousel({ slides = TUTORIAL_SLIDES, pageW, imgH = 360 }) {
     <View>
       <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false} onMomentumScrollEnd={onScroll} scrollEventThrottle={16} style={{ flexGrow: 0 }}>
         {slides.map((s, i) => (
-          <View key={i} style={{ width: w, alignItems: 'center', justifyContent: 'flex-start' }}>
+          <View key={i} style={{ width: w, height: imgH, alignItems: 'center', justifyContent: 'flex-start' }}>
             {s.caption ? (
               <View style={cs.capWrap}>
                 <Text style={cs.caption}>{s.caption}</Text>
                 {s.sub ? <Text style={cs.capSub}>{s.sub}</Text> : null}
               </View>
             ) : null}
-            <Image source={s.img} style={{ width: w - 16, height: imgH - (s.caption ? 60 : 0) }} resizeMode="contain" />
+            <Image source={s.img} style={{ flex: 1, width: w - 16 }} resizeMode="contain" />
           </View>
         ))}
       </ScrollView>
@@ -69,12 +87,14 @@ export default function WelcomeExplainer({ visible, onClose, onExplore }) {
             {TUTORIAL_SLIDES.map((s, i) => (
               <View key={i} style={[styles.slide, { width: CARD_W, height: IMG_H }]}>
                 {s.caption ? (
-                  <View style={styles.capWrapAbs}>
+                  <View style={styles.capWrap}>
                     <Text style={styles.captionAbs}>{s.caption}</Text>
                     {s.sub ? <Text style={styles.capSubAbs}>{s.sub}</Text> : null}
                   </View>
                 ) : null}
-                <Image source={s.img} style={{ width: CARD_W - 24, height: IMG_H - (s.caption ? 66 : 8) }} resizeMode="contain" />
+                <View style={styles.slideMedia}>
+                  <Image source={s.img} style={styles.slideImg} resizeMode="contain" />
+                </View>
               </View>
             ))}
           </ScrollView>
@@ -110,7 +130,10 @@ const styles = StyleSheet.create({
   card: { backgroundColor: '#fff', borderRadius: 26, paddingTop: 44, paddingBottom: 18, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 20 }, shadowOpacity: 0.35, shadowRadius: 40, elevation: 20 },
   skip: { position: 'absolute', top: 12, right: 14, zIndex: 5, paddingVertical: 6, paddingHorizontal: 12, backgroundColor: 'rgba(11,17,32,0.05)', borderRadius: 100 },
   skipText: { color: '#5B6B8A', fontSize: 13, fontWeight: '700' },
-  slide: { alignItems: 'center', justifyContent: 'center' },
+  slide: { alignItems: 'center', justifyContent: 'flex-start', paddingHorizontal: 12 },
+  capWrap: { paddingHorizontal: 8, paddingTop: 2, paddingBottom: 10, alignItems: 'center' },
+  slideMedia: { flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' },
+  slideImg: { flex: 1, width: '100%' },
   capWrapAbs: { position: 'absolute', top: 4, left: 20, right: 20, zIndex: 2, alignItems: 'center' },
   captionAbs: { color: '#0B1120', fontSize: 19, fontWeight: '800', letterSpacing: -0.3, textAlign: 'center' },
   capSubAbs: { color: '#5B6B8A', fontSize: 12.5, textAlign: 'center', marginTop: 6, lineHeight: 18 },
