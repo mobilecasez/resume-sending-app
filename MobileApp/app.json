@@ -31,7 +31,7 @@
     },
     "android": {
       "package": "com.cvapplyr.mobile",
-      "versionCode": 20,
+      "versionCode": 57,
       "intentFilters": [
         {
           "action": "VIEW",
