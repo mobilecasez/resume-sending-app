@@ -15,24 +15,24 @@ const CARD_H = Math.min(SH * 0.76, 720);
 // Videos/July 2026/Edited — re-run it (with --verify) if the UI changes.
 export const TUTORIAL_SLIDES = [
   {
-    img: require('../assets/onboarding/guide-fetch-job.gif'),
-    caption: 'Find a job on Google — and save it in one tap',
-    sub: 'Search the real Google inside the app. Open any result, tap the robot → Fetch job, and CVApplyr reads the posting and writes your cover letter.',
-  },
-  {
-    img: require('../assets/onboarding/guide-auto-fill.gif'),
-    caption: 'Auto Fill any application form',
-    sub: 'On the company\u2019s own form, tap the robot → Auto Fill. It reads the whole form, fills your details and attaches your r\u00e9sum\u00e9 — you review, then submit.',
+    img: require('../assets/onboarding/guide-profile.gif'),
+    caption: 'Start with your profile',
+    sub: 'Your details, r\u00e9sum\u00e9 and signature are filled in once — every application and cover letter after this uses them.',
   },
   {
     img: require('../assets/onboarding/guide-resume-builder.gif'),
-    caption: 'Build a r\u00e9sum\u00e9 the AI writes for you',
-    sub: 'Paste your story or reuse your uploaded r\u00e9sum\u00e9. Pick a country format and download it as PDF or Word.',
+    caption: 'Upload a r\u00e9sum\u00e9, or let the AI write one',
+    sub: 'Paste your story or reuse the r\u00e9sum\u00e9 you uploaded. Pick a country format and download it as PDF or Word.',
   },
   {
-    img: require('../assets/onboarding/guide-profile.gif'),
-    caption: 'Fill your profile once',
-    sub: 'Your details, r\u00e9sum\u00e9 and signature power every application and cover letter from then on.',
+    img: require('../assets/onboarding/guide-fetch-job.gif'),
+    caption: 'Find a job on Google — save it in one tap',
+    sub: 'Search the real Google inside the app. Open any result, tap the robot \u2192 Fetch job, and CVApplyr reads the posting and writes your cover letter.',
+  },
+  {
+    img: require('../assets/onboarding/guide-auto-fill.gif'),
+    caption: 'Apply with Auto Fill',
+    sub: 'On the company\u2019s own form, tap the robot \u2192 Auto Fill. It reads the whole form, fills your details and attaches your r\u00e9sum\u00e9 — you review, then submit.',
   },
 ];
 

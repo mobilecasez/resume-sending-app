@@ -43,10 +43,11 @@ const CLIPS = [
       { t: 14.10, x: 0.750, y: 0.846, note: 'View & Apply' },
     ],
     holds: [
-      { t: 13.10, ms: 1100, note: 'Saved ✓' },
-      { t: 14.70, ms: 1200, note: 'cover letter written' },
-      { t: 16.60, ms: 1400, note: 'the finished letter' },
+      { t: 13.10, ms: 1600, note: 'Saved ✓' },
+      { t: 14.70, ms: 2000, note: 'cover letter written' },
+      { t: 16.60, ms: 2600, note: 'the finished letter' },
     ],
+    slow: [{ from: 14.3, to: 17.8, ms: 280, note: 'the cover letter' }],
   },
   {
     // The robot on a real application form → Auto Fill → submitted.
@@ -58,10 +59,11 @@ const CLIPS = [
       { t: 14.70, x: 0.729, y: 0.624, note: 'Auto Fill' },
     ],
     holds: [
-      { t: 15.60, ms: 1300, note: 'the form filled + review' },
-      { t: 16.90, ms: 1100, note: 'résumé attached' },
-      { t: 18.30, ms: 1500, note: 'application submitted' },
+      { t: 15.60, ms: 2000, note: 'the form filled + review' },
+      { t: 16.90, ms: 1600, note: 'résumé attached' },
+      { t: 18.30, ms: 2600, note: 'application submitted' },
     ],
+    slow: [{ from: 15.1, to: 18.6, ms: 280, note: 'the filled form + submit' }],
   },
   {
     // Tell your story → AI writes the resume → pick a format → download.
@@ -73,8 +75,12 @@ const CLIPS = [
       { t: 9.05, x: 0.500, y: 0.830, note: 'Download PDF' },
     ],
     holds: [
-      { t: 5.60, ms: 1300, note: 'the résumé the AI wrote' },
-      { t: 8.05, ms: 1200, note: 'pick a country format' },
+      { t: 5.60, ms: 2400, note: 'the résumé the AI wrote' },
+      { t: 8.05, ms: 1800, note: 'pick a country format' },
+    ],
+    slow: [
+      { from: 4.0, to: 6.6, ms: 300, note: 'the résumé the AI wrote' },
+      { from: 7.6, to: 9.6, ms: 260, note: 'formats + download' },
     ],
   },
   {
@@ -87,9 +93,10 @@ const CLIPS = [
       { t: 9.90, x: 0.500, y: 0.505, note: 'Save Changes' },   // the page has scrolled by now
     ],
     holds: [
-      { t: 8.60, ms: 1200, note: 'signature styles' },
-      { t: 10.35, ms: 1400, note: 'profile saved' },
+      { t: 8.60, ms: 1600, note: 'signature styles' },
+      { t: 10.35, ms: 2400, note: 'profile saved' },
     ],
+    slow: [{ from: 9.5, to: 10.6, ms: 260, note: 'saved confirmation' }],
   },
 ];
 
@@ -137,10 +144,17 @@ function retimeGif(file, delaysMs) {
   return { patched, frames: frame, seconds: total / 1000 };
 }
 
-// Fast by default; slower approaching a tap; a real pause ON the tap and ON its result.
-const PACE = { base: 75, approach: 130, tap: 620, result: 950, last: 1300 };
-function buildDelays(count, taps, span, fps, holds) {
+// Quick through scrolling; slower approaching a tap; a real pause ON the tap and a long one on what
+// it produced. A `slow` range (below) drops a whole RESULT SECTION — a written cover letter, a
+// generated résumé — to a readable rate, because a result is something you read, not a single frame
+// you glance at.
+const PACE = { base: 110, approach: 200, tap: 900, result: 1600, last: 1800 };
+function buildDelays(count, taps, span, fps, holds, slows) {
   const d = new Array(count).fill(PACE.base);
+  // Result sections first, so a tap's own pauses can still raise them further.
+  for (const r of (slows || [])) {
+    for (let i = Math.max(0, r.from); i <= Math.min(count - 1, r.to); i += 1) d[i] = Math.max(d[i], r.ms);
+  }
   for (const t of taps) {
     if (!t.ok) continue;
     const from = Math.max(0, t.idx - Math.round(span * 0.6));
@@ -215,8 +229,10 @@ async function build(clip, verify) {
     report.push({ ...tap, ok: true, idx, cx, cy });
   }
 
-  const holds = (clip.holds || []).map((h) => ({ ...h, idx: Math.round(((h.t - clip.start) / clip.speed) * FPS) }))
+  const toIdx = (t) => Math.round(((t - clip.start) / clip.speed) * FPS);
+  const holds = (clip.holds || []).map((h) => ({ ...h, idx: toIdx(h.t) }))
     .filter((h) => h.idx >= 0 && h.idx < frames.length);
+  const slows = (clip.slow || []).map((r) => ({ ...r, from: toIdx(r.from), to: toIdx(r.to) }));
 
   // 3. composite ripple, then round the corners over WHITE (the explainer card is white — this beats
   //    GIF's 1-bit transparency, which leaves the corners jagged).
@@ -252,12 +268,13 @@ async function build(clip, verify) {
     }
   }
 
-  const timing = retimeGif(gif, buildDelays(frames.length, report, span, FPS, holds));
+  const timing = retimeGif(gif, buildDelays(frames.length, report, span, FPS, holds, slows));
 
   const kb = Math.round(fs.statSync(gif).size / 1024);
   console.log(`${clip.slug.padEnd(22)} ${frames.length}f  ${OUT_W}x${OUT_H}  ${kb} KB  ${timing.seconds.toFixed(1)}s (retimed ${timing.patched}/${timing.frames})`);
   report.forEach((r) => console.log(`   ${r.ok ? '·' : '✗'} tap  ${String(r.t).padStart(5)}s  ${r.note}${r.ok ? ` → (${r.cx},${r.cy})` : `  SKIPPED: ${r.why}`}`));
   holds.forEach((h) => console.log(`   ⏸ hold ${String(h.t).padStart(5)}s  ${h.note}  ${h.ms}ms`));
+  slows.forEach((r) => console.log(`   ▷ slow ${String(r.note).padEnd(26)} frames ${r.from}-${r.to} @ ${r.ms}ms`));
   return { slug: clip.slug, kb, report };
 }
 
