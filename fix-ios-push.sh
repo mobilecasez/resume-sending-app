@@ -1,37 +1,39 @@
 #!/bin/bash
-# ─────────────────────────────────────────────────────────────────────────────
-# FIX iOS PUSH NOTIFICATIONS — run this in your Terminal:
+# ═════════════════════════════════════════════════════════════════════════════
+#  FIX iOS PUSH NOTIFICATIONS   —   run this in Terminal:
 #
-#     bash "/Users/rishisamadhiya/Desktop/Files/Personal/Shopify Apps/resume-sending-app/fix-ios-push.sh"
+#      bash "/Users/rishisamadhiya/Desktop/Files/Personal/Shopify Apps/resume-sending-app/fix-ios-push.sh"
 #
-# WHY: the Expo project moved to @zsellr02s-team on 2026-07-18 and the APNs key never came with it.
-# Expo now rejects EVERY iOS push with:
-#     "Could not find APNs credentials for com.cvapplyr.mobile (@zsellr02s-team/cvapplyr)"
-# Nothing is delivered — not the admin install/sign-up alerts, and not the reply, follow-up or
-# digest notifications the 35 users with a registered device should be getting.
+#  Takes about 2 minutes. No build is produced and no build quota is used.
+# ═════════════════════════════════════════════════════════════════════════════
 #
-# WHY YOU HAVE TO RUN IT: minting an APNs key needs a real Apple ID login + 2FA. The App Store
-# Connect API key is enough to build and submit, but Apple will not let it create a push key —
-# verified: the automated run stops at an "Apple ID:" prompt.
+#  THE PROBLEM
+#  Expo rejects every iOS push with:
+#      "Could not find APNs credentials for com.cvapplyr.mobile (@zsellr02s-team/cvapplyr)"
+#  The Expo project moved to @zsellr02s-team on 18 July and no APNs key was ever created on it.
+#  I checked every Expo account we have (zsellr02s-team, zsellr, zsellr01, zsellr_01) — none holds
+#  a push key that could be copied over, so a new one has to be made at Apple.
 #
-# WHAT IT DOES (~2 minutes, no build is consumed):
-#   1. temporarily turns push-credential setup ON in eas.json
-#   2. starts an interactive EAS build so Expo provisions credentials
-#   3. Apple asks for your Apple ID + password + a 2FA code -> enter them
-#   4. answer  Y  to "...set up Push Notifications for your project?"
-#   5. answer  Y  to "...generate a new Apple Push Notifications service key?"
-#   6. once the key is created, press Ctrl-C — the key is already uploaded to Expo and the
-#      build itself is not needed
-#   7. eas.json is put back the way it was, automatically
+#  WHY YOU HAVE TO DO IT
+#  Apple only lets a real Apple ID session (with 2FA) create a push key. The App Store Connect API
+#  key builds and submits fine but is refused for this — the automated attempt stops at "Apple ID:".
 #
-# WARNING: if it ever asks about the DISTRIBUTION CERTIFICATE or the PROVISIONING PROFILE, press
-# Ctrl-C and tell me. Those are already correct, and regenerating one can break signing for future
-# builds (Apple caps distribution certificates at 3 per account).
+#  WHAT TO DO WHEN IT OPENS  (use arrow keys + Enter)
+#     1.  "What do you want to do?"        →  Build Credentials: Manage everything needed to build
+#     2.  Apple asks for your Apple ID, password, and a 2FA code  →  enter them
+#     3.  "What do you want to do?"        →  Push Notifications: Manage your Apple Push Notifications Key
+#     4.  choose                            →  Set up a new push key
+#     5.  "Generate a new Apple Push Notifications Key?"  →  Y
+#     6.  when it shows the new Key ID, press  Ctrl-C  — you are done
 #
-# NO REBUILD IS NEEDED AFTERWARDS. The key lives on Expo's servers, so phones already out there —
-# including yours — start receiving pushes as soon as it is uploaded. Tell me when it's done and
-# I'll send a test push and read Apple's delivery receipt back to confirm it actually landed.
-# ─────────────────────────────────────────────────────────────────────────────
+#  ⚠️  Do NOT pick any "Distribution Certificate" or "Provisioning Profile" option. Those are
+#      already correct; changing one can break signing for every future build.
+#
+#  AFTER
+#  No rebuild is needed. The key lives on Expo's servers, so every phone already out there —
+#  including yours — can receive pushes as soon as it exists. Tell me and I'll fire a real push and
+#  read Apple's delivery receipt back to prove it landed.
+# ═════════════════════════════════════════════════════════════════════════════
 set -e
 ROOT="/Users/rishisamadhiya/Desktop/Files/Personal/Shopify Apps/resume-sending-app"
 cd "$ROOT/MobileApp"
@@ -40,18 +42,27 @@ export PATH="/Users/rishisamadhiya/.nvm/versions/node/v22.22.2/bin:$PATH"
 export EXPO_TOKEN="m8Qsqq3NNv7QUONeRTLlJ2dkVVl0C8nQH--DJpPL"
 export EXPO_APPLE_TEAM_ID="P38822Z963"
 export EXPO_APPLE_TEAM_TYPE="COMPANY_OR_ORGANIZATION"
-# NOTE: EXPO_ASC_API_KEY_PATH is deliberately NOT set. With the API-key session Apple refuses to
-# create a push key; leaving it unset makes EAS use the Apple ID cookie login, which can.
+# EXPO_ASC_API_KEY_PATH is deliberately NOT set: with the API-key session Apple refuses to create a
+# push key. Unset, EAS falls back to the Apple ID cookie login, which is allowed to.
 
+# The push options are hidden unless this is on; put it back however the script exits.
 restore() { sed -i '' 's/"promptToConfigurePushNotifications": true/"promptToConfigurePushNotifications": false/' eas.json 2>/dev/null || true; }
 trap restore EXIT
-
 sed -i '' 's/"promptToConfigurePushNotifications": false/"promptToConfigurePushNotifications": true/' eas.json
 
-echo ""
-echo "→ Provisioning the APNs push key for @zsellr02s-team/cvapplyr"
-echo "→ Answer Y to the two Push Notifications questions."
-echo "→ Press Ctrl-C once the push key is created — the build does NOT need to finish."
-echo ""
+cat <<'GUIDE'
 
-/opt/homebrew/bin/eas build --platform ios --profile production --no-wait || true
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  1. Build Credentials: Manage everything needed to build             │
+  │  2. sign in with your Apple ID + 2FA when asked                      │
+  │  3. Push Notifications: Manage your Apple Push Notifications Key     │
+  │  4. Set up a new push key                                            │
+  │  5. answer  Y                                                        │
+  │  6. Ctrl-C once it prints the new Key ID                             │
+  │                                                                      │
+  │  Do NOT touch Distribution Certificate / Provisioning Profile.       │
+  └──────────────────────────────────────────────────────────────────────┘
+
+GUIDE
+
+/opt/homebrew/bin/eas credentials -p ios || true
