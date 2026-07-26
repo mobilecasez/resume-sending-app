@@ -7,8 +7,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
 const { width: SW, height: SH } = Dimensions.get('window');
-const CARD_W = Math.min(SW * 0.9, 440);
-const CARD_H = Math.min(SH * 0.76, 720);
+// Bigger than it was (0.9/0.76 of a small screen left the phone recording too small to read).
+const CARD_W = Math.min(SW * 0.94, 480);
+const CARD_H = Math.min(SH * 0.86, 820);
 
 // Short screen recordings of the real app, with a ripple where each control is tapped, so the guide
 // SHOWS the flow instead of describing it. Built by tools/build-guide-gifs.js from the clips in
