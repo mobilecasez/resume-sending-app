@@ -8,6 +8,12 @@
 // scaled to fit. So each shot is a WIDE BAND cropped around the control the step is about, with the
 // same cyan ring the GIFs use. That is the part of the screen the user needs to find.
 //
+// ⚠️ A hard cut through a band lands mid-row and slices a menu item or a heading in half, which reads
+// as broken text rather than as "there is more below". Two things fix that:
+//   - the top and bottom ~12% FADE TO WHITE, so a clipped row dissolves into the card instead of
+//     being chopped off;
+//   - TOP_MIN keeps every band below the status bar / notch, which is pure noise in a help card.
+//
 // Usage: node tools/build-guide-steps.js [--verify]
 'use strict';
 const { execFileSync } = require('child_process');
@@ -20,8 +26,11 @@ const OUT_DIR = path.join(__dirname, '..', 'MobileApp', 'assets', 'onboarding', 
 const TMP = path.join(require('os').tmpdir(), 'cvf-guide-steps');
 
 const CROP = { x: 712, y: 0, w: 496, h: 1080 };   // the phone inside the 1920x1080 canvas
-const BAND_H = 300;                                // the slice of phone height each shot shows
+const BAND_H = 340;                                // the slice of phone height each shot shows
+const TOP_MIN = 96;                                // never start above this — that is the status bar
 const OUT_W = 440;                                 // rendered ~2x the on-screen width in the card
+const FADE_TOP = 0.11;                             // fraction of the band that dissolves into white
+const FADE_BOTTOM = 0.13;
 
 const V = {
   profile: 'Profile Update.mov',
@@ -59,7 +68,9 @@ const SHOTS = [
   { id: 'apply-robot',     v: 'apply',   t: 13.8, y: 0.78, ring: [0.882, 0.816] },
   { id: 'apply-autofill',  v: 'apply',   t: 14.4, y: 0.62, ring: [0.729, 0.624] },
   { id: 'apply-review',    v: 'apply',   t: 15.7, y: 0.55 },
-  { id: 'apply-attached',  v: 'apply',   t: 17.0, y: 0.55 },
+  // 17.8, not 17.0: at 17.0 the résumé preview is open, which does not show what the step describes.
+  // Here the "Attached ✓" confirmation and the filled Documents rows are both visible.
+  { id: 'apply-attached',  v: 'apply',   t: 17.8, y: 0.58 },
   { id: 'apply-done',      v: 'apply',   t: 18.4, y: 0.20 },
 ];
 
@@ -77,6 +88,27 @@ const ringSvg = (w, h, cx, cy) => {
 const roundMask = (w, h, r) => Buffer.from(
   `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><rect width="${w}" height="${h}" rx="${r}" ry="${r}" fill="#fff"/></svg>`);
 
+// White gradients over the cut edges: a half-visible row fades out instead of being sliced through.
+const edgeFade = (w, h) => {
+  const ft = Math.round(h * FADE_TOP);
+  const fb = Math.round(h * FADE_BOTTOM);
+  return Buffer.from(
+    `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
+       <defs>
+         <linearGradient id="t" x1="0" y1="0" x2="0" y2="1">
+           <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+           <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+         </linearGradient>
+         <linearGradient id="b" x1="0" y1="0" x2="0" y2="1">
+           <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+           <stop offset="1" stop-color="#ffffff" stop-opacity="1"/>
+         </linearGradient>
+       </defs>
+       <rect x="0" y="0" width="${w}" height="${ft}" fill="url(#t)"/>
+       <rect x="0" y="${h - fb}" width="${w}" height="${fb}" fill="url(#b)"/>
+     </svg>`);
+};
+
 (async () => {
   fs.rmSync(TMP, { recursive: true, force: true });
   fs.mkdirSync(TMP, { recursive: true });
@@ -93,13 +125,22 @@ const roundMask = (w, h, r) => Buffer.from(
     sh('ffmpeg', ['-v', 'error', '-i', src, '-ss', String(s.t),
       '-vf', `crop=${CROP.w}:${CROP.h}:${CROP.x}:${CROP.y}`, '-frames:v', '1', full, '-y']);
 
-    // the band, clamped so it never runs off the top or bottom of the screen
+    // the band, clamped so it never runs off the bottom and never shows the status bar
     let top = Math.round(s.y * CROP.h - BAND_H / 2);
+    top = Math.max(TOP_MIN, Math.min(CROP.h - BAND_H, top));
+    // ⚠️ The ring must never land in an edge fade — a half-dissolved target is worse than showing a
+    // strip of status bar, so this clamp OVERRIDES TOP_MIN when the control sits near the top.
+    if (s.ring) {
+      const ry = s.ring[1] * CROP.h;
+      top = Math.min(top, Math.round(ry - (FADE_TOP * BAND_H + 26)));
+      top = Math.max(top, Math.round(ry + FADE_BOTTOM * BAND_H + 26 - BAND_H));
+    }
     top = Math.max(0, Math.min(CROP.h - BAND_H, top));
     let img = sharp(full).extract({ left: 0, top, width: CROP.w, height: BAND_H });
 
     const outH = Math.round((BAND_H / CROP.w) * OUT_W / 2) * 2;
     let buf = await img.resize(OUT_W, outH, { fit: 'fill', kernel: 'lanczos3' }).png().toBuffer();
+    buf = await sharp(buf).composite([{ input: edgeFade(OUT_W, outH) }]).png().toBuffer();
 
     if (s.ring) {
       const cx = Math.round(s.ring[0] * OUT_W);

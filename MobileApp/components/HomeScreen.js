@@ -1392,8 +1392,12 @@ export default function HomeScreen({
     })();
     return () => { alive = false; };
   }, [explainerKey, API_BASE]);
+  // Bumped on dismiss so the help button rings and names itself — the popup has just been animated
+  // into it, and this is the moment that lands the point ("that button is where the guide went").
+  const [helpAttention, setHelpAttention] = useState(0);
   const dismissExplainer = useCallback(async () => {
     setShowExplainer(false);
+    setHelpAttention((n) => n + 1);
     // When forced on for testing, DON'T persist the "seen" flag, so it shows again next launch.
     try { if (explainerKey && !alwaysIntroRef.current) await AsyncStorage.setItem(explainerKey, '1'); } catch {}
   }, [explainerKey]);
@@ -2013,7 +2017,7 @@ export default function HomeScreen({
       />
 
       {/* ── FLOATING AI HELP ASSISTANT (draggable) ────────── */}
-      {!showExplainer && <HelpAssistant />}
+      {!showExplainer && <HelpAssistant attention={helpAttention} />}
 
       {/* ── SIDE MENU MODAL ──────────────────────────────── */}
       <Modal visible={showSettings} transparent animationType="none" onRequestClose={() => setShowSettings(false)}>
