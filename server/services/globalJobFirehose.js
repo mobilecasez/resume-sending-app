@@ -98,8 +98,20 @@ async function runFirehose({ limit } = {}) {
   const results = await ats.mapLimit(list, CONCURRENCY, ingestOne);
   const jobsSaved = results.reduce((s, r) => s + (r.jobs || 0), 0);
   const boardsOk = results.filter((r) => (r.jobs || 0) > 0).length;
-  const summary = { sources: list.length, boardsOk, jobsSaved, seconds: Math.round((Date.now() - t0) / 1000) };
-  console.log(`[firehose] DONE: ${boardsOk}/${list.length} boards, ${jobsSaved} jobs, ${summary.seconds}s`);
+
+  // National feeds ride along with every pass. Only the last few days are swept — the backfill is a
+  // one-off — so this stays cheap. Isolated in a try/catch: a national feed being down must never
+  // cost us the board results we already have.
+  let nationalSaved = 0;
+  if (String(process.env.FIREHOSE_NATIONAL_FEEDS || '1') !== '0') {
+    try {
+      const se = await ingestJobTechSE({ lookbackDays: parseInt(process.env.JOBTECH_SE_LOOKBACK_DAYS || '4', 10) });
+      nationalSaved += se.saved || 0;
+    } catch (e) { console.warn('[firehose] jobtech-se failed:', e.message); }
+  }
+
+  const summary = { sources: list.length, boardsOk, jobsSaved, nationalSaved, seconds: Math.round((Date.now() - t0) / 1000) };
+  console.log(`[firehose] DONE: ${boardsOk}/${list.length} boards, ${jobsSaved} jobs + ${nationalSaved} from national feeds, ${summary.seconds}s`);
   try {
     await dbConfig.run(
       `INSERT INTO system_schedule (job_key, last_run_at, last_summary) VALUES ('global_job_firehose', NOW(), ?)
@@ -209,6 +221,106 @@ async function ingestArbeitsagentur({ keywords = [], location = '', maxPages = 3
   return { source: 'arbeitsagentur', pages, saved, jobs: collected };
 }
 
+// ── Sweden: JobTech / Arbetsförmedlingen JobSearch (official open API, no key) ───
+// The Swedish Public Employment Service publishes every ad in Platsbanken as open data. Same greenlist
+// reasoning as job-room and arbeitsagentur: public, keyless, official, and each ad keeps its own apply
+// URL. One source covers the whole Swedish market — ~40k live ads, including the non-tech roles that
+// company ATS boards never carry.
+//
+// ⚠️ The API refuses offset >= ~2000 (400), so ONE query can only ever reach the first 2,000 ads —
+// and there are ~40k live. Sweeping therefore has to be PARTITIONED, by publication-date window:
+// `published-after` + `published-before` bound a slice, and a slice too big for the cap is split in
+// half until it fits. Region looked like the natural axis but is not: Stockholm alone holds 9,828 ads,
+// far past the cap. (Region also takes a taxonomy concept_id, not the county name — passing the label
+// returns 0 hits, silently.)
+const SE_URL = 'https://jobsearch.api.jobtechdev.se/search';
+const SE_OFFSET_CAP = 1900;                 // last offset the API still answers
+const SE_MIN_WINDOW_MS = 60 * 60 * 1000;    // stop splitting at 1 hour
+function seToJob(h) {
+  const a = h.workplace_address || {};
+  const location = [a.municipality || a.city, a.region, 'Sweden'].filter(Boolean).join(', ');
+  // Prefer the employer's own application URL; fall back to the Platsbanken ad.
+  const apply = (h.application_details && h.application_details.url) || h.webpage_url || '';
+  const scope = h.scope_of_work || {};
+  const part = (scope.min != null && scope.max != null && scope.max < 100) ? `${scope.min}-${scope.max}%` : '';
+  const desc = (h.description && (h.description.text || h.description.text_formatted)) || '';
+  return {
+    job_url: apply,
+    title: String(h.headline || '').trim(),
+    employer_name: String((h.employer && (h.employer.name || h.employer.workplace)) || '').trim(),
+    location,
+    job_type: [(h.employment_type && h.employment_type.label) || '', part].filter(Boolean).join(' · '),
+    salary: (h.salary_description || (h.salary_type && h.salary_type.label)) || null,
+    responsibilities: desc ? [String(desc).replace(/\s+/g, ' ').trim().slice(0, 900)] : [],
+    skills: [],
+  };
+}
+const seStamp = (d) => new Date(d).toISOString().slice(0, 19);
+// Retried: over a long sweep a single transient network blip is near-certain, and without a retry it
+// would abandon the rest of that window — losing a whole day of ads to one dropped packet.
+async function seSearch(from, to, { limit = 100, offset = 0, tries = 3 } = {}) {
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  qs.set('published-after', seStamp(from));
+  qs.set('published-before', seStamp(to));
+  let last;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 800 * attempt));
+    try {
+      const r = await fetch(`${SE_URL}?${qs.toString()}`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20000) });
+      if (!r.ok) { last = new Error('HTTP ' + r.status); if (r.status >= 400 && r.status < 500) break; continue; }
+      const j = await r.json();
+      return { total: (j.total && j.total.value) || 0, hits: Array.isArray(j.hits) ? j.hits : [] };
+    } catch (e) { last = e; }
+  }
+  throw last || new Error('se-search failed');
+}
+
+// One window: page through it, splitting in half first if it cannot fit under the offset cap.
+async function seSweepWindow(from, to, state) {
+  let head;
+  try { head = await seSearch(from, to, { limit: 1 }); state.calls++; }
+  catch (e) { console.warn('[jobtech-se] window probe failed:', e.message); return; }
+  if (!head.total) return;
+
+  if (head.total > SE_OFFSET_CAP) {
+    if (to - from > SE_MIN_WINDOW_MS) {
+      const mid = new Date(from.getTime() + Math.floor((to - from) / 2));
+      await seSweepWindow(from, mid, state);
+      await seSweepWindow(mid, to, state);
+      return;
+    }
+    // Cannot split further — say so rather than quietly dropping the remainder.
+    state.truncated += head.total - SE_OFFSET_CAP;
+    console.warn(`[jobtech-se] ${seStamp(from)}..${seStamp(to)} has ${head.total} ads in one hour; only ${SE_OFFSET_CAP} reachable`);
+  }
+
+  for (let offset = 0; offset <= SE_OFFSET_CAP; offset += 100) {
+    let page;
+    try { page = await seSearch(from, to, { limit: 100, offset }); state.calls++; }
+    catch (e) { console.warn('[jobtech-se] page error:', e.message); break; }
+    if (!page.hits.length) break;
+    const jobs = page.hits.map(seToJob).filter((j) => j.job_url && j.title);
+    state.collected.push(...jobs);
+    state.saved += await saveJobs(jobs, 'jobtech-se', 'Sweden');
+    if (page.hits.length < 100) break;
+  }
+}
+
+// `lookbackDays` is how far back to sweep. A routine pass wants a small number (only what is new since
+// last time); a first-time backfill wants ~120, because an ad stays live until its deadline.
+async function ingestJobTechSE({ lookbackDays = 3, windowHours = 24 } = {}) {
+  const state = { saved: 0, calls: 0, truncated: 0, collected: [] };
+  const now = Date.now();
+  const start = now - lookbackDays * 86400000;
+  const step = windowHours * 3600 * 1000;
+  const t0 = Date.now();
+  for (let w = now; w > start; w -= step) {
+    await seSweepWindow(new Date(Math.max(start, w - step)), new Date(w), state);
+  }
+  console.log(`[jobtech-se] ${state.calls} calls over ${lookbackDays}d → ${state.saved} SE jobs saved in ${Math.round((Date.now() - t0) / 1000)}s${state.truncated ? ` (⚠ ${state.truncated} unreachable)` : ''}`);
+  return { source: 'jobtech-se', calls: state.calls, saved: state.saved, truncated: state.truncated, jobs: state.collected };
+}
+
 // ── France Travail (Pôle Emploi) — free OAuth key (FRANCE_TRAVAIL_ID/SECRET) ─────
 // Dormant until the (free) client id/secret are set in env; then unlocks the whole FR market.
 let _ftToken = null, _ftExp = 0;
@@ -249,4 +361,4 @@ async function ingestFranceTravail({ keywords = [], maxRange = 149 } = {}) {
   return { source: 'francetravail', saved, jobs: collected };
 }
 
-module.exports = { runFirehose, startGlobalJobFirehose, ingestOne, saveJobs, SOURCES, ingestJobRoom, ingestArbeitsagentur, ingestFranceTravail };
+module.exports = { runFirehose, startGlobalJobFirehose, ingestOne, saveJobs, SOURCES, ingestJobRoom, ingestArbeitsagentur, ingestFranceTravail, ingestJobTechSE };
