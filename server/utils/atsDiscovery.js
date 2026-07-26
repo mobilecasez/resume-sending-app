@@ -13,6 +13,12 @@ const http = require('http');
 
 const UA = 'Mozilla/5.0 (compatible; CVApplyrBot/1.0; +https://cvapplyr.com)';
 const TIMEOUT = 12000;
+// ⚠️ Destroying a request over this cap MUST pass an Error. `req.destroy()` with no argument emits no
+// 'error' event, so the promise below would never settle — the caller just hangs until some outer
+// timeout writes the board off as empty. That silently cost us the very biggest boards: Coupang's
+// board is 12.1 MB and Bayada's 29 MB, and both reported zero jobs for exactly this reason.
+const MAX_BYTES = 26_000_000;
+const tooLarge = (url) => new Error(`response over ${Math.round(MAX_BYTES / 1e6)}MB from ${url}`);
 
 function fetchText(url, redirects = 0) {
   return new Promise((resolve, reject) => {
@@ -29,7 +35,7 @@ function fetchText(url, redirects = 0) {
       if (r.statusCode !== 200) { r.resume(); return reject(new Error('HTTP ' + r.statusCode)); }
       let d = '';
       r.setEncoding('utf8');
-      r.on('data', (c) => { d += c; if (d.length > 12_000_000) req.destroy(); });
+      r.on('data', (c) => { d += c; if (d.length > MAX_BYTES) req.destroy(tooLarge(url)); });
       r.on('end', () => resolve(d));
     });
     req.on('error', reject);
@@ -52,7 +58,7 @@ function postJson(url, body) {
     const req = lib.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': UA, 'Content-Length': data.length }, timeout: TIMEOUT }, (r) => {
       if (r.statusCode !== 200) { r.resume(); return reject(new Error('HTTP ' + r.statusCode)); }
       let d = ''; r.setEncoding('utf8');
-      r.on('data', (c) => { d += c; if (d.length > 12_000_000) req.destroy(); });
+      r.on('data', (c) => { d += c; if (d.length > MAX_BYTES) req.destroy(tooLarge(url)); });
       r.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
     });
     req.on('error', reject);
@@ -380,7 +386,17 @@ const adapters = [
       return validToken(t) ? t : false;
     },
     async fetch(c) {
-      const data = await fetchJson(`https://boards-api.greenhouse.io/v1/boards/${c.token}/jobs?content=true`);
+      // `content=true` inlines every description, which on a huge board runs to tens of MB. If that
+      // is too big to take, fall back to the plain listing: titles, locations and apply links with no
+      // description still beats losing the whole employer.
+      let data;
+      try {
+        data = await fetchJson(`https://boards-api.greenhouse.io/v1/boards/${c.token}/jobs?content=true`);
+      } catch (e) {
+        if (!/response over/.test(e.message)) throw e;
+        console.warn(`[atsDiscovery] greenhouse ${c.token}: ${e.message} — retrying without descriptions`);
+        data = await fetchJson(`https://boards-api.greenhouse.io/v1/boards/${c.token}/jobs`);
+      }
       const jobs = (data && Array.isArray(data.jobs)) ? data.jobs : [];
       const company = resolveCompany(c.html, c.token, c.origin);
       return jobs.filter((j) => j.title).map((j) => {
