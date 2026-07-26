@@ -197,7 +197,10 @@ const cs = StyleSheet.create({
 });
 
 const styles = StyleSheet.create({
-  root: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 16 },
+  // ⚠️ No padding here. Yoga adds a parent's padding to an absolutely positioned child's offsets, so
+  // padding would push the ghost button 16pt away from where the real one actually sits. The card is
+  // already ≤90% of the screen, so it never needs the breathing room.
+  root: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   // A separate layer from the card so the dim can fade out while the card is still in flight.
   backdropFill: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(6,10,25,0.72)' },
   ghost: { position: 'absolute', right: HELP_FAB.right, bottom: HELP_FAB.bottom, width: HELP_FAB.size, height: HELP_FAB.size },
