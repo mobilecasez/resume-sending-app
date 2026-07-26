@@ -2,7 +2,6 @@
   "cli": {
     "version": ">= 16.0.0",
     "appVersionSource": "local",
-    "_promptToConfigurePushNotifications": "KEEP THIS true. With it false, every build since the 2026-07-18 Expo account move silently skipped push-credential setup, and all iOS notifications were dead for 8 days with nothing reporting it. True means a build without push credentials FAILS loudly instead — which is what we want. It does not prompt while the key exists.",
     "promptToConfigurePushNotifications": true
   },
   "build": {
