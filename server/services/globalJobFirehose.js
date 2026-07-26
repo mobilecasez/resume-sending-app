@@ -7,6 +7,7 @@
 const ats = require('../utils/atsDiscovery');
 const dbConfig = require('../../db-config');
 const { classifyTitle } = require('../utils/jobTaxonomy');
+const { resolveCountry } = require('../utils/jobLocation');
 
 let SOURCES = [];
 try { SOURCES = require('../data/global_job_sources.json'); } catch (e) { console.warn('[firehose] no sources file:', e.message); }
@@ -35,10 +36,15 @@ const INSERT_HEAD = `INSERT INTO global_jobs
 
 function jobParams(j, source, region) {
   const tax = classifyTitle(j.title);   // deterministic field / role / seniority — no AI
+  // A source that publishes its OWN field taxonomy (see SE_FIELD_MAP) knows better than an
+  // English-title regex does; `field_hint` lets it say so.
+  if (j.field_hint) tax.field = j.field_hint;
   return [clip(j.job_url, 1990), clip(j.title, 490), clip(j.employer_name, 290), domainOf(j.job_url),
     clip(j.location, 490), workModeOf(j.location), clip(j.job_type, 110), clip(j.salary, 250),
     clip(j.experience, 250), JSON.stringify(Array.isArray(j.responsibilities) ? j.responsibilities : []),
-    JSON.stringify(Array.isArray(j.skills) ? j.skills : []), clip(source, 55), clip(region, 78),
+    // country comes from the JOB's location, not the board's label — a London-HQ company still posts
+    // roles in Singapore, and several board labels are prose notes rather than country names.
+    JSON.stringify(Array.isArray(j.skills) ? j.skills : []), clip(source, 55), clip(resolveCountry(j.location, region), 78),
     clip(tax.field, 58), clip(tax.roleCategory, 88), clip(tax.seniority, 28)];
 }
 
@@ -236,6 +242,31 @@ async function ingestArbeitsagentur({ keywords = [], location = '', maxPages = 3
 const SE_URL = 'https://jobsearch.api.jobtechdev.se/search';
 const SE_OFFSET_CAP = 1900;                 // last offset the API still answers
 const SE_MIN_WINDOW_MS = 60 * 60 * 1000;    // stop splitting at 1 hour
+// ⚠️ classifyTitle() is English regex, so every Swedish title ("Förskollärare", "Lageroperatör")
+// lands in "Other" — which would bury ~26k ads in one useless bucket and break the field filter for
+// them. The feed ships its own official 21-field occupation taxonomy, so use that instead of guessing:
+// exact, deterministic, and free.
+const SE_FIELD_MAP = {
+  'Data/IT': 'IT & Software',
+  'Försäljning, inköp, marknadsföring': 'Sales & Business Development',
+  'Hälso- och sjukvård': 'Healthcare & Clinical',
+  'Pedagogik': 'Education & Training',
+  'Administration, ekonomi, juridik': 'Administrative & Office',
+  'Transport, distribution, lager': 'Supply Chain & Logistics',
+  'Industriell tillverkning': 'Manufacturing & Production',
+  'Bygg och anläggning': 'Skilled Trades & Field Service',
+  'Installation, drift, underhåll': 'Skilled Trades & Field Service',
+  'Hantverk': 'Skilled Trades & Field Service',
+  'Yrken med teknisk inriktning': 'Mechanical / Electrical / Civil Engineering',
+  'Naturvetenskap': 'Science & Research',
+  'Kultur, media, design': 'Design & UX',
+  'Chefer och verksamhetsledare': 'Operations & Strategy',
+  'Yrken med social inriktning': 'Healthcare & Clinical',
+  // No good home in our field list — left to fall through to "Other" deliberately:
+  // Militära yrken, Kropps- och skönhetsvård, Naturbruk, Säkerhet och bevakning,
+  // Hotell/restaurang/storhushåll, Sanering och renhållning.
+};
+
 function seToJob(h) {
   const a = h.workplace_address || {};
   const location = [a.municipality || a.city, a.region, 'Sweden'].filter(Boolean).join(', ');
@@ -253,6 +284,7 @@ function seToJob(h) {
     salary: (h.salary_description || (h.salary_type && h.salary_type.label)) || null,
     responsibilities: desc ? [String(desc).replace(/\s+/g, ' ').trim().slice(0, 900)] : [],
     skills: [],
+    field_hint: SE_FIELD_MAP[(h.occupation_field && h.occupation_field.label) || ''] || null,
   };
 }
 const seStamp = (d) => new Date(d).toISOString().slice(0, 19);
