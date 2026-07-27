@@ -1295,6 +1295,572 @@ export async function adminDeactivateOverride(requestId: number): Promise<void> 
   await axios.post(`${API_BASE_URL}/admin/employer-requests/${requestId}/deactivate`, {}, { headers });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Admin USER OPS — a 360° view of ONE user + targeted / segment push sends.
+// Backend: server/routes/adminUserOpsRoutes.js (every route behind authenticateAdmin),
+// logic in server/services/adminUserOps.js. Read-mostly; the two POSTs actually reach
+// real phones, so read the guard-rail comments on them before wiring a button.
+// ADDITIVE — nothing above this line was changed.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * These endpoints answer with a real explanation ("User not found (or soft-deleted)",
+ * "kind must be one of: …") — an admin screen is useless if it can only say
+ * "Request failed with status code 404", so surface the server's own message.
+ * The HTTP status is attached as `.status` for callers that need to branch on 404.
+ */
+function adminErr(error: unknown, fallback: string): Error {
+  if (axios.isAxiosError(error)) {
+    const d = error.response?.data as { error?: string; message?: string } | undefined;
+    const e: any = new Error(d?.error || d?.message || error.message || fallback);
+    e.status = error.response?.status;
+    return e;
+  }
+  return new Error(fallback);
+}
+
+// ── 1. GET /api/admin/users/:id/overview ────────────────────────────────────────
+export type AdminOverviewUser = {
+  id: number; full_name: string | null; email: string; phone_number: string | null;
+  date_of_birth: string | null; address: string | null; city: string | null; country: string | null;
+  gender: string | null; nationality: string | null; oauth_provider: string | null; role: string | null;
+  created_at: string; last_seen_at: string | null;
+  registration_ip: string | null; last_login_ip: string | null;
+};
+export type AdminUserAsset = { has: boolean; url: string | null; filename: string | null };
+export type AdminUserAssets = { resume: AdminUserAsset; photo: AdminUserAsset; signature: AdminUserAsset };
+export type AdminCreditTxn = { amount: number | null; type: string | null; created_at: string; description: string | null };
+export type AdminUserCredits = {
+  remaining: number; total: number; expiry_date: string | null;
+  last_purchase_date: string | null; recent: AdminCreditTxn[];
+};
+export type AdminUserResumeMeta = {
+  parse_status: string | null; summary: string | null; skills: string[]; technical_skills: string[];
+  soft_skills: string[]; experience_years: number | null; job_titles: string[]; industries: string[];
+  education: any[]; languages: string[]; parsed_at: string | null;
+};
+export type AdminUserActivityCounts = {
+  saved_jobs: number;
+  /** ⚠️ A UNION of two records of the SAME act — see fetchAdminUserActivity('applications').meta. */
+  applications: number;
+  cover_letters: number; searches: number; events_30d: number;
+  first_event: string | null; last_event: string | null;
+};
+/** The five notification_preferences columns. false = the user opted OUT of that category. */
+export type AdminNotifyPrefs = {
+  replies: boolean; application_updates: boolean; reminders: boolean; digest: boolean; marketing: boolean;
+};
+export type AdminUserPush = { has_token: boolean; platform: string | null; preferences: AdminNotifyPrefs };
+export type AdminUserCompleteness = { percent: number; missing: string[] };
+export type AdminUserNotification = {
+  type: string | null; title: string | null; message: string | null; created_at: string; is_read: boolean;
+};
+export type AdminSendLogEntry = {
+  template_key: string; title: string | null; created_at: string; sent_by: number | null;
+  sent_by_email: string | null; push_ok: boolean; push_error: string | null; batch_id: string | null;
+};
+export type AdminUserInsights = {
+  field: string | null; role_category: string | null; strong_matches: number;
+  top_match: AdminMatchedJob | null; days_since_last_seen: number | null;
+  days_since_signup: number | null; has_parsed_resume: boolean;
+};
+export type AdminUserOverview = {
+  success: boolean;
+  user: AdminOverviewUser;
+  assets: AdminUserAssets;
+  credits: AdminUserCredits;
+  resume: AdminUserResumeMeta;
+  activity: AdminUserActivityCounts;
+  push: AdminUserPush;
+  completeness: AdminUserCompleteness;
+  recent_notifications: AdminUserNotification[];
+  admin_sends: AdminSendLogEntry[];
+  /** Derived signals, so the screen needs no second round-trip. */
+  insights?: AdminUserInsights;
+  /** Server-authored caveats about the numbers above — worth rendering verbatim. */
+  notes?: string[];
+};
+
+/** Everything about one user: profile, files, credits, résumé, activity counts, push state. */
+export async function fetchAdminUserOverview(userId: number | string): Promise<AdminUserOverview> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(`${API_BASE_URL}/admin/users/${userId}/overview`, { headers, timeout: 30000 });
+    return data as AdminUserOverview;
+  } catch (error: unknown) {
+    throw adminErr(error, 'Failed to load user overview');
+  }
+}
+
+// ── 2. GET /api/admin/users/:id/files/:kind ─────────────────────────────────────
+export type AdminFileKind = 'resume' | 'photo' | 'signature';
+
+/**
+ * The absolute URL that streams a user's file. The route is admin-only, so a bare
+ * `<Image source={{ uri }}>` / WebView `source={{ uri }}` gets a 401 — the caller MUST attach the
+ * Authorization header itself (see adminAuthHeaderValue / adminFileSource below).
+ * (overview.assets.*.url is the server-relative path; prefer this.)
+ */
+export function adminFileUrl(userId: number | string, kind: AdminFileKind): string {
+  return `${API_BASE_URL}/admin/users/${userId}/files/${kind}`;
+}
+
+/**
+ * The raw `Authorization` header VALUE ("Bearer …") for the signed-in admin, or null when there is
+ * no session. Exists so an <Image> / WebView can authenticate against the file route:
+ *   `<Image source={{ uri, headers: { Authorization: value } }} />`
+ */
+export async function adminAuthHeaderValue(): Promise<string | null> {
+  const h = (await getAuthHeader()) as { Authorization?: string };
+  return h.Authorization || null;
+}
+
+/**
+ * Ready-made `source` for <Image> / WebView pointing at a user's file, with the admin header
+ * already attached. Returns null when there is no session (nothing would authenticate).
+ */
+export async function adminFileSource(
+  userId: number | string,
+  kind: AdminFileKind,
+): Promise<{ uri: string; headers: Record<string, string> } | null> {
+  const auth = await adminAuthHeaderValue();
+  if (!auth) return null;
+  return { uri: adminFileUrl(userId, kind), headers: { Authorization: auth } };
+}
+
+// ── 3. GET /api/admin/users/:id/matched-jobs ────────────────────────────────────
+export type AdminMatchedJob = {
+  id: string; job_url: string; url: string; title: string | null;
+  employer_name: string | null; company: string | null; employer_domain: string | null;
+  location: string | null; work_mode: string | null; job_type: string | null;
+  salary: string | null; experience: string | null; skills: string[];
+  field: string | null; role_category: string | null; seniority: string | null;
+  country: string | null; last_seen: string | null;
+  match: number | null;   // 0..100, the same score the user's own Explore feed shows
+};
+export type AdminMatchedJobsResponse = {
+  success: boolean;
+  /** true = no parsed résumé skills; the app shows this user no match scores either. */
+  noProfile: boolean;
+  jobs: AdminMatchedJob[];
+  total?: number;
+  strongMatches?: number;
+  reason?: string;
+  scope?: string;
+  matchFloor?: number;
+  /**
+   * ⚠️ false = NOTHING cleared the 10% floor and these are an unfiltered admin-only view (a job here
+   * can score 0%). Never quote a match % / "top match" from a non-advertisable result in a
+   * notification or in copy the user will see.
+   */
+  advertisable?: boolean;
+  userField?: string | null;
+  candidatePool?: number;
+  note?: string;
+  unavailable?: string;
+};
+
+/** Global jobs ranked by THIS user's own résumé match (same pool + formula as their Explore feed). */
+export async function fetchAdminUserMatchedJobs(
+  userId: number | string,
+  limit = 20,
+): Promise<AdminMatchedJobsResponse> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(`${API_BASE_URL}/admin/users/${userId}/matched-jobs`, {
+      headers, params: { limit }, timeout: 45000,
+    });
+    return data as AdminMatchedJobsResponse;
+  } catch (error: unknown) {
+    throw adminErr(error, 'Failed to load matched jobs');
+  }
+}
+
+// ── 4. GET /api/admin/users/:id/activity?kind= ──────────────────────────────────
+export type AdminActivityKind = 'cover_letters' | 'saved_jobs' | 'applications' | 'credits' | 'searches';
+
+export type AdminActivityCoverLetter = {
+  id: number; company_name: string | null; position: string | null; website_url: string | null;
+  status: string | null; created_at: string; preview: string;
+};
+export type AdminActivitySavedJob = {
+  job_url: string | null; title: string | null; employer_name: string | null;
+  location: string | null; saved_at: string;
+};
+export type AdminActivityApplication = {
+  id: string;
+  /** Which record this row came from — 'email' and 'cover_letter' can describe the SAME application. */
+  source: 'email' | 'cover_letter' | 'job_match';
+  company_name: string | null; position: string | null; title: string | null;
+  job_url: string | null; status: string | null; created_at: string;
+  reply_received: boolean | null;
+};
+export type AdminActivityCredit = {
+  id: number; credits_used: number; action_type: string | null;
+  company_name: string | null; position: string | null; created_at: string;
+};
+export type AdminActivitySearch = {
+  id: string | null; created_at: string; platform: string | null; app_version: string | null;
+  country: string | null; query: string | null; location: string | null; company: string | null;
+  props: Record<string, any>;
+};
+export type AdminActivityItemMap = {
+  cover_letters: AdminActivityCoverLetter;
+  saved_jobs: AdminActivitySavedJob;
+  applications: AdminActivityApplication;
+  credits: AdminActivityCredit;
+  searches: AdminActivitySearch;
+};
+export type AdminActivityMeta = {
+  /**
+   * ⚠️ RENDER THIS. For `applications` it explains that `total` is a UNION of an emailed application
+   * AND its cover letter marked 'applied', so one real application can be counted twice — the bare
+   * total must never be labelled "applications made". `sources` has the per-source split.
+   */
+  note?: string;
+  sources?: Record<string, number>;
+  match_statuses_seen?: string[];
+  match_statuses_counted?: string[];
+  total_credits_used?: number;
+};
+export type AdminActivityResponse<K extends AdminActivityKind = AdminActivityKind> = {
+  success: boolean;
+  kind: K;
+  total: number;
+  offset: number;
+  limit: number;
+  items: AdminActivityItemMap[K][];
+  /** true = this page does NOT contain everything there is. */
+  truncated: boolean;
+  limit_capped?: boolean;
+  max_limit?: number;
+  meta?: AdminActivityMeta;
+  /** The source table is absent on this deployment — an empty list here means "unknown", not "none". */
+  unavailable?: string;
+};
+
+/**
+ * The ITEMS behind the overview's counts. `limit` is clamped to 100 server-side (`limit_capped`
+ * says when the ask was clamped). Generic on `kind`, so `items` comes back typed per kind.
+ */
+export async function fetchAdminUserActivity<K extends AdminActivityKind>(
+  userId: number | string,
+  kind: K,
+  limit = 25,
+  offset = 0,
+): Promise<AdminActivityResponse<K>> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(`${API_BASE_URL}/admin/users/${userId}/activity`, {
+      headers, params: { kind, limit, offset }, timeout: 30000,
+    });
+    return data as AdminActivityResponse<K>;
+  } catch (error: unknown) {
+    throw adminErr(error, `Failed to load ${kind} activity`);
+  }
+}
+
+// ── 5. GET /api/admin/users/:id/cover-letters/:letterId ─────────────────────────
+export type AdminCoverLetter = {
+  id: number; company_name: string | null; position: string | null; website_url: string | null;
+  status: string | null; created_at: string; updated_at: string | null;
+  html: string;   // already server-sanitized (scripts / inline handlers stripped)
+  text: string;   // plain-text version, for copy-paste or <Text> rendering
+  sanitized: boolean;   // true = script-ish markup WAS found and removed
+};
+
+/** One full cover letter, scoped to its owner (a wrong-owner id is a plain 404). */
+export async function fetchAdminCoverLetter(
+  userId: number | string,
+  letterId: number | string,
+): Promise<AdminCoverLetter> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(
+      `${API_BASE_URL}/admin/users/${userId}/cover-letters/${letterId}`,
+      { headers, timeout: 30000 },
+    );
+    return data.letter as AdminCoverLetter;
+  } catch (error: unknown) {
+    throw adminErr(error, 'Failed to load cover letter');
+  }
+}
+
+// ── 6. GET /api/admin/notify/templates ──────────────────────────────────────────
+/** A category that is NOT one of these cannot be opt-out-gated, so the server refuses to send it. */
+export type AdminNotifyCategory = keyof AdminNotifyPrefs;
+export type AdminTemplateRelevance = 'suggested' | 'available' | 'not_applicable';
+export type AdminNotifyTemplate = {
+  key: string;
+  label: string;
+  description: string;
+  /** Normally an AdminNotifyCategory; a template with anything else is reported in `warning`. */
+  category: string;
+  /** Copy rendered for THIS user (or generic when no userId was passed) — pre-fill, not an override. */
+  title: string;
+  body: string;
+  route: string | null;
+  params: Record<string, any>;
+  needsJob: boolean;
+  relevance: AdminTemplateRelevance;
+  reason: string;
+};
+export type AdminNotifyTemplatesResponse = {
+  success: boolean;
+  templates: AdminNotifyTemplate[];
+  userId: number | null;
+  /** false = the copy above is the GENERIC render (no user context was resolved). */
+  userKnown: boolean;
+  categories: string[];
+  /** Present when some template's category is not a preferences column — opt-outs can't gate it. */
+  warning?: string;
+};
+
+/**
+ * The template catalogue. Pass `userId` to get per-user relevance AND per-user rendered copy;
+ * pass `jobId` as well for the templates that target one specific job (`needsJob`).
+ */
+export async function fetchAdminNotifyTemplates(
+  userId?: number | string | null,
+  jobId?: string | null,
+): Promise<AdminNotifyTemplatesResponse> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(`${API_BASE_URL}/admin/notify/templates`, {
+      headers, params: { userId: userId ?? '', jobId: jobId ?? '' }, timeout: 30000,
+    });
+    return data as AdminNotifyTemplatesResponse;
+  } catch (error: unknown) {
+    throw adminErr(error, 'Failed to load notification templates');
+  }
+}
+
+// ── 7. POST /api/admin/users/:id/notify — sends to a REAL phone ─────────────────
+/** Server caps: title 200 chars, body 500. */
+export type AdminNotifyOverrides = { title?: string; body?: string };
+
+/**
+ * ⚠️ Only pass an override the admin ACTUALLY EDITED. The copy boxes are pre-filled with the
+ * template's rendered text; posting that same text back turns a personalised send into a literal
+ * one. This drops empty / whitespace-only fields and returns null when nothing was edited, so the
+ * body can omit `overrides` entirely and let the server personalise.
+ */
+function cleanAdminOverrides(o?: AdminNotifyOverrides | null): AdminNotifyOverrides | null {
+  const title = typeof o?.title === 'string' ? o.title.trim() : '';
+  const body = typeof o?.body === 'string' ? o.body.trim() : '';
+  const out: AdminNotifyOverrides = {};
+  if (title) out.title = title;
+  if (body) out.body = body;
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * Why a send did not reach the phone. opted_out / no_token / recently_sent / bad_template_category
+ * arrive on a `success: true` response (the request worked, the rails stopped the send);
+ * unknown_template / user_not_found / job_not_found come back as a THROWN error (4xx).
+ */
+export type AdminNotifySkipReason =
+  | 'opted_out' | 'no_token' | 'recently_sent' | 'bad_template_category'
+  | 'unknown_template' | 'user_not_found' | 'job_not_found';
+
+export type AdminUserNotifyResult = {
+  /** ⚠️ The REQUEST succeeded. It does NOT mean a notification was delivered — check push.ok. */
+  success: boolean;
+  push: { ok: boolean; error?: string };
+  /** Non-null = BLOCKED by the rails. Report this distinctly; never show a green tick for it. */
+  skipped: AdminNotifySkipReason | null;
+  logId: number | null;
+  /** The copy that actually went out — null whenever nothing was delivered. */
+  sent: { title: string; body: string; route: string | null; params: Record<string, any> } | null;
+};
+
+/**
+ * Send ONE template to ONE user. Delivered ⇔ `push.ok === true`; a `skipped` reason with
+ * `success: true` means the request was fine and the send was deliberately withheld
+ * (opted out / no push token / the same template already went out inside 72h).
+ */
+export async function sendAdminUserNotification(
+  userId: number | string,
+  opts: { key: string; jobId?: string | null; overrides?: AdminNotifyOverrides | null },
+): Promise<AdminUserNotifyResult> {
+  try {
+    const headers = await getAuthHeader();
+    const overrides = cleanAdminOverrides(opts.overrides);
+    const body: { key: string; jobId?: string; overrides?: AdminNotifyOverrides } = { key: opts.key };
+    if (opts.jobId) body.jobId = String(opts.jobId);
+    if (overrides) body.overrides = overrides;
+    const { data } = await axios.post(`${API_BASE_URL}/admin/users/${userId}/notify`, body, {
+      headers, timeout: 45000,
+    });
+    return data as AdminUserNotifyResult;
+  } catch (error: unknown) {
+    throw adminErr(error, 'Failed to send notification');
+  }
+}
+
+// ── 8. GET /api/admin/segments ──────────────────────────────────────────────────
+export type AdminSegment = {
+  key: string; label: string; description: string;
+  count: number | null;          // null + `error` = the count query failed; don't render it as 0
+  available?: boolean;           // false = a table this segment needs is absent on this deployment
+  suggests?: string[];           // template keys that fit this segment
+  error?: string;
+};
+
+/** The segment catalogue with live counts. */
+export async function fetchAdminSegments(): Promise<AdminSegment[]> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(`${API_BASE_URL}/admin/segments`, { headers, timeout: 45000 });
+    return (data && data.segments) || [];
+  } catch (error: unknown) {
+    throw adminErr(error, 'Failed to load segments');
+  }
+}
+
+// ── 9. GET /api/admin/segments/:key/users ───────────────────────────────────────
+export type AdminSegmentUser = {
+  id: number; full_name: string | null; email: string; created_at: string;
+  last_seen_at: string | null;   // derived from app_events (users.last_seen_at is never written)
+  has_push: boolean; completeness: number;
+  opted_out: boolean; recently_sent: boolean;   // per the templateKey passed in, else always false
+};
+export type AdminSegmentExclusions = { no_token: number; opted_out: number; recently_sent: number };
+export type AdminSegmentUsersResponse = {
+  success: boolean;
+  key: string;
+  label?: string;
+  total: number;                       // everyone in the segment
+  sendableTotal?: number;              // …minus the exclusions below
+  excluded?: AdminSegmentExclusions;   // counted over the WHOLE segment, not just this page
+  sendableOnly?: boolean;
+  templateKey?: string | null;
+  users: AdminSegmentUser[];
+  limit?: number;
+  truncated?: boolean;
+  truncation_note?: string;
+  /** Plain-English exclusion breakdown from the server — render it rather than re-deriving it. */
+  exclusion_note?: string;
+  last_seen_note?: string;
+  error?: string;
+};
+
+/** Who is in a segment. Pass `templateKey` to get real per-template opt-out / 72h-dedupe flags. */
+export async function fetchAdminSegmentUsers(
+  key: string,
+  opts: { limit?: number; templateKey?: string | null } = {},
+): Promise<AdminSegmentUsersResponse> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(`${API_BASE_URL}/admin/segments/${encodeURIComponent(key)}/users`, {
+      headers,
+      params: { limit: opts.limit ?? 200, templateKey: opts.templateKey || '' },
+      timeout: 45000,
+    });
+    return data as AdminSegmentUsersResponse;
+  } catch (error: unknown) {
+    throw adminErr(error, 'Failed to load segment users');
+  }
+}
+
+// ── 10. POST /api/admin/segments/:key/notify — the BULK send ────────────────────
+export type AdminSegmentNotifyBase = {
+  success: boolean;
+  segment: string;
+  templateKey: string;
+  category: string;
+  totalMatching: number;        // everyone in the segment
+  sendableTotal: number;        // …who can actually be sent to
+  remainingAfterThisRun: number;
+  recipients: number;           // how many this run selected
+  reachable: number;
+  skipped: AdminSegmentExclusions;
+  runtimeSkipped: AdminSegmentExclusions;
+  cap: number;
+  selectionLimit: number;
+  truncated: boolean;
+  exclusion_note?: string;
+  truncation_note?: string;
+};
+export type AdminSegmentNotifyPreview = AdminSegmentNotifyBase & {
+  dryRun: true;
+  /** The copy as the FIRST reachable recipient would receive it. */
+  preview: { title: string; body: string; route: string | null; params: Record<string, any> };
+  note?: string;
+};
+export type AdminSegmentNotifyResult = AdminSegmentNotifyBase & {
+  dryRun: false;
+  batchId: string;
+  sent: number;
+  failed: number;
+  failures: { userId: number; reason: string }[];
+  stateTier?: 'light' | 'basic' | 'full';
+};
+
+// The two request bodies are SEPARATE types on purpose: the preview body has no `confirm` field at
+// all, so TypeScript's excess-property check rejects any attempt to smuggle one in. That is why
+// preview and send are two functions rather than one function with a boolean — a caller cannot
+// accidentally flip a preview into a mass send by passing the wrong argument.
+type SegmentPreviewBody = { templateKey: string; overrides?: AdminNotifyOverrides; maxRecipients?: number };
+type SegmentSendBody = SegmentPreviewBody & { confirm: true };
+
+/**
+ * DRY RUN. Sends NOTHING and is structurally incapable of it — `confirm` never appears in the body.
+ * Returns who would be reached, what is excluded and why, and the exact copy that would go out.
+ */
+export async function previewAdminSegmentNotify(
+  key: string,
+  opts: { templateKey: string; overrides?: AdminNotifyOverrides | null; maxRecipients?: number },
+): Promise<AdminSegmentNotifyPreview> {
+  try {
+    const headers = await getAuthHeader();
+    const overrides = cleanAdminOverrides(opts.overrides);
+    const body: SegmentPreviewBody = { templateKey: opts.templateKey };
+    if (overrides) body.overrides = overrides;
+    if (opts.maxRecipients != null) body.maxRecipients = opts.maxRecipients;
+    const { data } = await axios.post(
+      `${API_BASE_URL}/admin/segments/${encodeURIComponent(key)}/notify`,
+      body,   // ⚠️ NO `confirm` — adding one here turns every preview into a mass send.
+      { headers, timeout: 60000 },
+    );
+    // Defence in depth: without `confirm` the server always answers dryRun:true. An explicit false
+    // would mean pushes went out under a "preview" button, and the caller must not paint it as one.
+    if (data && data.dryRun === false) {
+      throw new Error('Preview returned a REAL send result — treat this as a send that already happened, not a preview.');
+    }
+    return data as AdminSegmentNotifyPreview;
+  } catch (error: unknown) {
+    if (error instanceof Error && !axios.isAxiosError(error)) throw error;
+    throw adminErr(error, 'Failed to preview the segment notification');
+  }
+}
+
+/**
+ * THE REAL BULK SEND — pushes land on real phones. Always run previewAdminSegmentNotify first and
+ * make the admin confirm the recipient count. Opt-outs, the 72h per-template dedupe and the
+ * recipient cap are enforced server-side; `sent` / `failed` / `skipped` report what happened.
+ */
+export async function sendAdminSegmentNotify(
+  key: string,
+  opts: { templateKey: string; overrides?: AdminNotifyOverrides | null; maxRecipients?: number },
+): Promise<AdminSegmentNotifyResult> {
+  try {
+    const headers = await getAuthHeader();
+    const overrides = cleanAdminOverrides(opts.overrides);
+    const body: SegmentSendBody = { templateKey: opts.templateKey, confirm: true };
+    if (overrides) body.overrides = overrides;
+    if (opts.maxRecipients != null) body.maxRecipients = opts.maxRecipients;
+    const { data } = await axios.post(
+      `${API_BASE_URL}/admin/segments/${encodeURIComponent(key)}/notify`,
+      body,
+      { headers, timeout: 180000 },   // a capped batch of up to 500 sends serially in workers
+    );
+    return data as AdminSegmentNotifyResult;
+  } catch (error: unknown) {
+    throw adminErr(error, 'Failed to run the segment notification');
+  }
+}
+
 const aiHubService = {
   analyzeWishlist,
   fetchJobMatches,

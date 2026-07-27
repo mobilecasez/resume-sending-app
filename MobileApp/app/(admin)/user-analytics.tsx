@@ -135,7 +135,12 @@ function JourneyCard({ j, onPress }: { j: UserJourney; onPress: () => void }) {
 }
 
 // ─── timeline sheet ───
-function TimelineSheet({ journey, onClose }: { journey: UserJourney | null; onClose: () => void }) {
+function TimelineSheet({ journey, onClose, onOpenProfile }: {
+  journey: UserJourney | null;
+  onClose: () => void;
+  /** only called for journeys that have a real user_id — anonymous devices have no profile */
+  onOpenProfile: (userId: number | string) => void;
+}) {
   const [data, setData] = useState<UserTimeline | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(false);
@@ -176,12 +181,32 @@ function TimelineSheet({ journey, onClose }: { journey: UserJourney | null; onCl
             </LinearGradient>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={styles.sheetTitle} numberOfLines={1}>{title}</Text>
-              {!!journey?.email && <Text style={styles.sheetSub} numberOfLines={1}>{journey.email}</Text>}
+              {journey?.email
+                ? <Text style={styles.sheetSub} numberOfLines={1}>{journey.email}</Text>
+                : isUser ? null : <Text style={styles.sheetSub} numberOfLines={1}>Anonymous device — no profile</Text>}
             </View>
             <TouchableOpacity onPress={onClose} style={styles.sheetClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
               <Ionicons name="close" size={18} color={C.ink} />
             </TouchableOpacity>
           </View>
+
+          {/* full profile — only for journeys tied to a real account */}
+          {isUser && journey?.user_id != null && (
+            <TouchableOpacity
+              onPress={() => onOpenProfile(journey.user_id as number | string)}
+              activeOpacity={0.85}
+              style={styles.profileBtnWrap}
+            >
+              <LinearGradient
+                colors={[C.blue, C.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                style={styles.profileBtn}
+              >
+                <Ionicons name="person-circle-outline" size={17} color="#fff" />
+                <Text style={styles.profileBtnText}>Open full profile (User 360)</Text>
+                <Ionicons name="arrow-forward" size={15} color="rgba(255,255,255,0.9)" />
+              </LinearGradient>
+            </TouchableOpacity>
+          )}
 
           {loading ? (
             <View style={{ paddingVertical: 60, alignItems: 'center' }}><ActivityIndicator color={C.blue} size="large" /></View>
@@ -352,6 +377,14 @@ export default function UserAnalyticsScreen() {
 
   const onRefresh = useCallback(async () => { setRefreshing(true); await load(query.trim()); setRefreshing(false); }, [query, load]);
 
+  // Close the sheet BEFORE navigating — a native <Modal> stays above a pushed screen on iOS.
+  const openProfile = useCallback((userId: number | string) => {
+    setSelected(null);
+    setTimeout(() => {
+      router.push({ pathname: '/(admin)/user-360', params: { userId: String(userId) } });
+    }, Platform.OS === 'ios' ? 260 : 0);
+  }, [router]);
+
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
@@ -433,7 +466,11 @@ export default function UserAnalyticsScreen() {
         </ScrollView>
       )}
 
-      <TimelineSheet journey={selected} onClose={() => setSelected(null)} />
+      <TimelineSheet
+        journey={selected}
+        onClose={() => setSelected(null)}
+        onOpenProfile={openProfile}
+      />
     </SafeAreaView>
   );
 }
@@ -486,6 +523,10 @@ const styles = StyleSheet.create({
   sheetTitle: { fontSize: 16, fontWeight: '800', color: C.ink },
   sheetSub: { fontSize: 12, color: C.textMuted, marginTop: 1 },
   sheetClose: { width: 32, height: 32, borderRadius: 16, backgroundColor: C.surface, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.border },
+
+  profileBtnWrap: { marginHorizontal: 16, marginTop: 12 },
+  profileBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 46, borderRadius: 14 },
+  profileBtnText: { color: '#fff', fontSize: 14, fontWeight: '800', letterSpacing: -0.2 },
 
   summaryRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 14 },
   summaryCell: { flex: 1, backgroundColor: C.surface, borderRadius: 14, borderWidth: 1, borderColor: C.border, paddingVertical: 12, alignItems: 'center' },
