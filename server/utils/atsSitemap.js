@@ -33,7 +33,10 @@ function fetchText(url, redirects = 0) {
       if (r.statusCode !== 200) { r.resume(); return reject(new Error('HTTP ' + r.statusCode)); }
       let d = '';
       r.setEncoding('utf8');
-      r.on('data', (c) => { d += c; if (d.length > 8_000_000) req.destroy(); });
+      // ⚠️ destroy WITH an Error. A bare req.destroy() emits no 'error' event, so this promise
+      // never settles and every caller awaiting it hangs until its own timeout — the exact defect
+      // that made oversized boards report ZERO jobs instead of failing loudly.
+      r.on('data', (c) => { d += c; if (d.length > 8_000_000) req.destroy(new Error(`sitemap over 8MB from ${url}`)); });
       r.on('end', () => resolve(d));
     });
     req.on('error', reject);
@@ -85,10 +88,40 @@ const extractLocs = (xml) => [...xml.matchAll(locRe)].map((m) => m[1]);
 // Job-detail URL patterns across common ATS vendors (incl. Breezy /p/<hash>-<slug>).
 const isJobUrl = (u) => /\/(job|jobs|career|careers|position|opening|vacancy|stelle)\/[^/]+\/\d|\/job\/|\/jobs\/[a-z0-9-]{6,}|\/p\/[a-z0-9]{8,}/i.test(u);
 
+/**
+ * Where does this host actually keep its sitemap?
+ *
+ * We only ever guessed /sitemap.xml. That is a guess, and robots.txt is the answer: the standard
+ * `Sitemap:` directive exists precisely so nobody has to guess. Revolut is the case that surfaced
+ * it — https://www.revolut.com/sitemap.xml is a 404, while its robots.txt names
+ * https://www.revolut.com/sitemap-index.xml. We were reading the 404 and concluding "no sitemap".
+ * Reading robots.txt first costs one small request and is what the site asked us to do.
+ */
+async function sitemapCandidates(host) {
+  const out = [];
+  try {
+    const robots = await fetchText(`https://${host}/robots.txt`);
+    for (const m of String(robots).matchAll(/^\s*sitemap:\s*(\S+)/gim)) {
+      const u = m[1].trim();
+      if (/^https?:\/\//i.test(u) && !out.includes(u)) out.push(u);
+    }
+  } catch { /* no robots.txt is normal — fall through to the conventional paths */ }
+  for (const p of ['sitemap.xml', 'sitemap_index.xml', 'sitemap-index.xml']) {
+    const u = `https://${host}/${p}`;
+    if (!out.includes(u)) out.push(u);
+  }
+  return out.slice(0, 6);
+}
+
 async function jobUrlsForHost(host, limit) {
-  let xml;
-  try { xml = await fetchText(`https://${host}/sitemap.xml`); } catch { return []; }
-  if (!/<(urlset|sitemapindex)/i.test(xml)) return [];
+  let xml = null;
+  for (const cand of await sitemapCandidates(host)) {
+    try {
+      const body = await fetchText(cand);
+      if (/<(urlset|sitemapindex)/i.test(body)) { xml = body; break; }
+    } catch { /* try the next candidate */ }
+  }
+  if (!xml) return [];
   const locs = extractLocs(xml);
   let jobUrls = locs.filter(isJobUrl);
   if (jobUrls.length === 0 && /<sitemapindex/i.test(xml)) {

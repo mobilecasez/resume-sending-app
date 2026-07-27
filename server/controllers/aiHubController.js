@@ -14,6 +14,7 @@ const {
 const { smartScrape, stripHtmlToText } = require('../utils/playwrightScraper');
 const { discoverSitemapJobUrls, parseAtsJobPage, fetchJobPage, assessDetailQuality } = require('../utils/atsSitemap');
 const { detectAndFetchAts, findEmbeddedAts, mapLimit } = require('../utils/atsDiscovery');
+const pageFetch = require('../utils/pageFetch');   // retry + bot-check detection (see the Revolut note there)
 const employerFix = require('../services/employerFix');
 const detailRecipeStore = require('../services/detailRecipe');
 const aiJobExtractor = require('../services/aiJobExtractor');
@@ -407,12 +408,19 @@ async function scrapePage(url, origin, usePuppeteer = false) {
                 await browser.close().catch(() => {});
             }
         } else {
-            const resp = await axios.get(url, {
-                timeout: 12000, maxContentLength: 2 * 1024 * 1024, headers: HTTP_HEADERS,
-            });
-            html = resp.data;
-            // Capture post-redirect URL (handles www. redirect etc.)
-            finalUrl = resp.request?.res?.responseUrl || resp.config?.url || url;
+            // Retry transient refusals and bot-check interstitials instead of treating the first
+            // 403 as final. Revolut's careers page answered 403 with a "quick security check"
+            // interstitial and 200 with the real 599-role listing on the very next request; the
+            // old single-shot axios call took the 403 and the pipeline went on to guess. When the
+            // site really won't serve us, `blocked` comes back true and travels up to the caller
+            // so the failure is reported rather than papered over.
+            const res = await pageFetch.fetchHtml(url, { tries: 3, timeout: 12000 });
+            if (!res.ok) {
+                return { pageText: '', markdown: '', dataScripts: '', structuredData: [], links: [],
+                         rawHtml: '', blocked: res.blocked, blockReason: res.reason };
+            }
+            html = res.html;
+            finalUrl = res.url || url;   // post-redirect URL (handles the www. hop)
         }
 
         const $ = cheerio.load(html);
@@ -595,6 +603,77 @@ async function fetchJobLinksFromSitemap(baseUrl) {
  */
 const SECTION_SLUG_RE = /^(culture|benefits|culture[\-_]benefits?|culture[\-_]and[\-_]benefits?|mission|principles?|mission[\-_]principles?|values?|academy|technician[\-_]academy|overview|how[\-_]to[\-_]join|before[\-_]you[\-_]join|team|about[\-_]us?|life[\-_]at|working[\-_]at|perks?|why[\-_]us|why[\-_]join|diversity|inclusion|dei|events?|gallery|faq|contact|apply|application|rewards|compensation|story|history|join[\-_]us|open[\-_]jobs?|open[\-_]positions?|all[\-_]jobs?|all[\-_]vacancies|all[\-_]openings?|vacancies|opportunities|explore|locations?|departments?|find[\-_]jobs?|search|results|filter|categories?|tags?|page|home|index|roles?|career|careers)$/i;
 
+// ── Did the user paste ONE job posting rather than a careers listing? ────────────────────────────
+// This is half of the Revolut bug. Someone pasted
+//   https://www.revolut.com/careers/position/phone-support-specialist-spanish-<uuid>/
+// and every stage downstream assumed it was a LISTING and went hunting for a set of jobs on it.
+// Nothing here ever asks "is this page itself a job?", so the pipeline wandered off to the careers
+// index, got refused, and settled for one unrelated card with no description.
+//
+// A pasted posting is a perfectly good request — it is arguably the most precise one a user can
+// make — so answer it directly: parse THAT posting, with its real description.
+const SINGLE_JOB_PATH = /\/(?:careers?|jobs?|job[-_]?(?:details?|posting|opening)|vacature|vacancies|vacancy|stelle|stellen|offre|offres|position|positions|opening|openings|apply)\/[^/]{6,}/i;
+
+// ATS hosts whose posting URLs carry no job-ish path segment at all — Lever is /<company>/<uuid>.
+// Matching on the host is the only way to recognise those.
+const ATS_POSTING_HOST = /(^|\.)(?:lever\.co|greenhouse\.io|ashbyhq\.com|myworkdayjobs\.com|recruitee\.com|smartrecruiters\.com|workable\.com|personio\.de|teamtailor\.com|breezy\.hr)$/i;
+
+/**
+ * Cheap, no network: could this URL plausibly BE one posting? Gate before spending a fetch.
+ *
+ * A false positive is the expensive direction — calling a whole careers section "one job" hides
+ * every other opening while looking like a success — so the slug must carry an IDENTIFIER (uuid or
+ * a run of digits) or be wordy enough (4+ hyphenated words) that no department index would match.
+ * "/careers/engineering" and "/careers/life-at-acme" must both fail; tools/test-single-posting.js
+ * pins that boundary.
+ */
+function looksLikeSingleJobUrl(url) {
+    try {
+        const u = new URL(url);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+        const path = u.pathname.replace(/\/+$/, '');
+        const segs = path.split('/').filter(Boolean);
+        if (segs.length < 2) return false;                       // /careers is an index, not a posting
+        const host = u.hostname.replace(/^www\./, '');
+        if (!SINGLE_JOB_PATH.test(path + '/') && !ATS_POSTING_HOST.test(host)) return false;
+        const last = segs[segs.length - 1];
+        return /[0-9a-f]{8}-[0-9a-f]{4}/i.test(last)     // uuid
+            || /\d{4,}/.test(last)                        // requisition number
+            || last.split('-').filter(Boolean).length >= 4;   // a genuinely wordy role slug
+    } catch { return false; }
+}
+
+/**
+ * Fetch a suspected posting and parse it. Returns:
+ *   { job }                  — a real posting with a usable description
+ *   { blocked: true, reason } — the site refused us; the caller must SAY SO, not guess
+ *   null                      — readable, but not a single posting (fall through to listing flow)
+ */
+async function extractSingleJobPosting(url) {
+    if (!looksLikeSingleJobUrl(url)) return null;
+    const res = await pageFetch.fetchHtml(url, { tries: 3, timeout: 14000 }).catch(() => null);
+    if (!res) return null;
+    if (!res.ok) return res.blocked ? { blocked: true, reason: res.reason } : null;
+
+    const html = res.html;
+    // Two independent confirmations that this page IS one posting. JSON-LD is decisive; the og:type
+    // fallback covers sites that describe the posting without schema.org.
+    const hasJobLd = /"@type"\s*:\s*"JobPosting"/i.test(html);
+    const hasJobOg = /<meta[^>]+property="og:type"[^>]+content="(?:job|website\.job|job_posting)"/i.test(html);
+
+    let job;
+    try { job = parseAtsJobPage(html, res.url || url); } catch { return null; }
+    if (!job || !job.title) return null;
+
+    const desc = String(job.description || '').trim();
+    // Without schema.org confirmation, demand real prose — otherwise a category page with a wordy
+    // slug would masquerade as a posting and we would report one job where there are dozens.
+    if (!hasJobLd && !hasJobOg && desc.length < 400) return null;
+    if (desc.length < 120) return null;
+
+    return { job: { ...job, job_url: res.url || url, _singlePosting: true } };
+}
+
 function looksLikeJobDetailUrl(url, listingUrl) {
     try {
         const u = new URL(url);
@@ -665,7 +744,7 @@ async function fetchCareersPageData(url, { light = false } = {}) {
                     }
                 } catch {}
             }
-            return { pageText: pg.pageText, rawHtml: pg.rawHtml || '', jobLinks: finalLinks };
+            return { pageText: pg.pageText, rawHtml: pg.rawHtml || '', jobLinks: finalLinks, blocked: !!pg.blocked, blockReason: pg.blockReason || null };
         }
 
         let primary = await scrapePage(url, origin, false);
@@ -695,11 +774,11 @@ async function fetchCareersPageData(url, { light = false } = {}) {
                     const paginated = await scrapeWithPagination(url, origin, neededBrowser);
                     if (paginated.length > jobDetailLinks.length) {
                         console.log(`[aiHub] Pagination expanded: ${jobDetailLinks.length} → ${paginated.length} jobs`);
-                        return { pageText: primary.pageText, rawHtml: primary.rawHtml || '', jobLinks: paginated };
+                        return { pageText: primary.pageText, rawHtml: primary.rawHtml || '', jobLinks: paginated, blocked: !!primary.blocked, blockReason: primary.blockReason || null };
                     }
                 } catch (e) { console.log(`[aiHub] Pagination error: ${e.message}`); }
             }
-            return { pageText: primary.pageText, rawHtml: primary.rawHtml || '', jobLinks: jobDetailLinks };
+            return { pageText: primary.pageText, rawHtml: primary.rawHtml || '', jobLinks: jobDetailLinks, blocked: !!primary.blocked, blockReason: primary.blockReason || null };
         }
 
         // LIGHT mode: stop here — skip the expensive sub-section / fallback-URL / career-page
@@ -707,7 +786,7 @@ async function fetchCareersPageData(url, { light = false } = {}) {
         // and cost minutes). The caller goes straight to sitemap + the AI extractor, which do
         // their own smarter, faster discovery. The heavy cascade is reserved as a last resort.
         if (light) {
-            return { pageText: primary.pageText, rawHtml: primary.rawHtml || '', jobLinks: jobDetailLinks };
+            return { pageText: primary.pageText, rawHtml: primary.rawHtml || '', jobLinks: jobDetailLinks, blocked: !!primary.blocked, blockReason: primary.blockReason || null };
         }
 
         // ── Sub-section scraping ──────────────────────────────────────────────────
@@ -835,7 +914,7 @@ async function fetchCareersPageData(url, { light = false } = {}) {
         }
 
         console.log(`[aiHub] No individual job links found — Gemini will use Google Search`);
-        return { pageText: primary.pageText, rawHtml: primary.rawHtml || '', jobLinks: [] };
+        return { pageText: primary.pageText, rawHtml: primary.rawHtml || '', jobLinks: [], blocked: !!primary.blocked, blockReason: primary.blockReason || null };
     } catch (err) {
         console.log(`[aiHub] fetchCareersPageData error (${err.message})`);
         return { pageText: '', rawHtml: '', jobLinks: [] };
@@ -2428,9 +2507,27 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
             }
         } catch (e) { console.error('[aiHub] override lookup error:', e.message); }
 
+        // ── Did the user paste ONE posting? Answer THAT, don't go looking for a list. ──
+        // Ahead of the cache on purpose: "here is the job I want" is a different request from
+        // "show me this employer's board", and serving a cached board instead silently ignores
+        // what was actually asked. Costs one HTTP fetch, and only when the URL already looks like
+        // a posting (looksLikeSingleJobUrl is a pure string test).
+        let singlePosting = null;
+        if (isUrl) {
+            const sp = await extractSingleJobPosting(scrapeUrl).catch(() => null);
+            if (sp && sp.blocked) {
+                console.log(`[aiHub] "${scrapeUrl}" refused us (${sp.reason}) — not treating it as a posting`);
+            } else if (sp && sp.job) {
+                singlePosting = sp.job;
+                console.log(`[aiHub] Single posting recognised: "${singlePosting.title}" @ ${scrapeUrl} (${String(singlePosting.description || '').length} chars of description)`);
+            }
+        }
+
         // ── Opt-5: Cache check — serve from DB if employer was scraped recently ──
         const domain = extractDomain(scrapeUrl);
-        const cachedEmployer = await jobService.getRecentEmployerData(domain, CACHE_TTL_HOURS);
+        // A recognised single posting SKIPS the cache: the cached board would answer a question
+        // the user did not ask.
+        const cachedEmployer = singlePosting ? null : await jobService.getRecentEmployerData(domain, CACHE_TTL_HOURS);
         if (cachedEmployer) {
             console.log(`[aiHub] Cache hit for "${domain}" (scraped within ${CACHE_TTL_HOURS}h) — skipping all AI calls`);
             await jobService.trackUserEmployer(userId, cachedEmployer.id);
@@ -2461,6 +2558,16 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         let atsApiResult = overrideJobs
             ? { ats: 'override', companyName: overrideJobs.companyName || domainName, jobs: overrideJobs.jobs }
             : null;
+        // The pasted posting IS the result. Feeding it in here means it inherits everything the
+        // normal path already does — employer upsert, detail enrichment, match scoring — instead of
+        // needing a parallel code path that would drift.
+        if (!atsApiResult && singlePosting) {
+            atsApiResult = {
+                ats: 'single-posting',
+                companyName: singlePosting.employer_name || domainName,
+                jobs: [singlePosting],
+            };
+        }
         if (!atsApiResult) {
             try {
                 const careersAts = await aiJobExtractor.detectAtsOnCareers(scrapeUrl);
@@ -2641,7 +2748,22 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         //    title-only cards with no description/company. Those must NOT suppress the real
         //    fallback. pageBlocked = essentially nothing came back from the page.
         const titledJobs = rawJobs.filter(j => j && j.title);
-        const pageBlocked = (pageData.text || '').trim().length < 200 && (pageData.rawHtml || '').length < 1500;
+        // ⚠️ This test used to read `pageData.text`, a field fetchCareersPageData has NEVER returned
+        // (it returns `pageText`). So the first clause was permanently `'' .length < 200` — true —
+        // and the whole test silently collapsed to "is the HTML under 1500 bytes?". That inverted
+        // its meaning for the one case it exists to catch: a bot-check interstitial ships a HUGE
+        // scripted payload with no text (Revolut's is 873 KB of HTML around 107 characters), so it
+        // sailed through as "not blocked" and a guessed job card was kept and shown to the user.
+        //
+        // Now: the fetch layer's own verdict wins when it has one, and the shape test uses the real
+        // text field with no size ceiling on the markup.
+        const pageTextLen = String(pageData.pageText || '').trim().length;
+        const pageBlocked = !!pageData.blocked
+            || (pageTextLen < 200 && (pageData.rawHtml || '').length > 20000)   // scripted wall, no content
+            || (pageTextLen < 200 && (pageData.rawHtml || '').length < 1500);   // nothing came back at all
+        if (pageBlocked) {
+            console.log(`[aiHub] Page looks BLOCKED for "${domain}" (text=${pageTextLen}b html=${(pageData.rawHtml || '').length}b${pageData.blockReason ? `, ${pageData.blockReason}` : ''})`);
+        }
         if (!resolved && (titledJobs.length === 0 || pageBlocked)) {
             const grounded = await groundedDeepCrawl(domainName || domain, scrapeUrl).catch(() => []);
             if (grounded.length) {
@@ -2671,6 +2793,12 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
         const careersUrl = listingData.careers_page_url || scrapeUrl || companyInput;
         const name = listingData.company_name || companyInput;
         const logoColor = logoColorFor(name);
+
+        // The employer card's headline count must equal what we actually have. Most paths derive
+        // sub_info from rawJobs.length, but the legacy AI path returns whatever the model claimed —
+        // Revolut's card read "31 open roles" above a single job. Junk-filtering also shrinks the
+        // list after sub_info was set. One line, applied to every path, keeps the label honest.
+        listingData.sub_info = `${rawJobs.length} open role${rawJobs.length === 1 ? '' : 's'}`;
 
         // Persist employer + link to user
         const employerDbId = await jobService.upsertEmployer(domain, name, listingData.sub_info, logoColor, (name[0] || '?').toUpperCase());
@@ -5337,4 +5465,7 @@ module.exports = {
     groundedDiscover,
     groundingCacheGet,
     groundingCacheSet,
+    // exported for tools/test-single-posting.js — the pure gate in front of the posting fetch
+    looksLikeSingleJobUrl,
+    extractSingleJobPosting,
 };
