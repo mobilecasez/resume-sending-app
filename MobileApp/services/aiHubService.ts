@@ -1874,6 +1874,147 @@ export async function sendAdminSegmentNotify(
   }
 }
 
+// ── Admin: résumé profile, searches, and a no-charge cover-letter render ────────
+// See server/services/adminResumeView.js and adminSearchView.js for why these exist rather than the
+// page just streaming the uploaded file / listing app_events.
+
+export type AdminResumeEntry = {
+  title: string; org: string; period: string; detail: string; location?: string; kind?: string;
+};
+export type AdminResumeFile = {
+  has_file: boolean; stored_path: string | null; filename: string | null; ext: string | null;
+};
+export type AdminResumeProfile = {
+  available: boolean;
+  reason?: string;
+  detail?: string;
+  parse_error?: string | null;
+  source?: 'builder' | 'parsed';
+  source_label?: string;
+  updated_at?: string | null;
+  identity?: { full_name: string; email: string; phone: string; location: string; headline?: string; links?: string[] };
+  summary?: string;
+  skills?: string[];
+  technical_skills?: string[];
+  soft_skills?: string[];
+  experience_years?: number | null;
+  experience_summary?: string;
+  experience?: AdminResumeEntry[];
+  education?: AdminResumeEntry[];
+  projects?: AdminResumeEntry[];
+  certifications?: string[];
+  languages?: string[];
+  achievements?: string[];
+  job_titles?: string[];
+  industries?: string[];
+  parse_status?: string | null;
+  parsed_at?: string | null;
+  raw_text?: string;
+  file?: AdminResumeFile;
+  can_render_pdf?: boolean;
+};
+
+export type AdminSearchVerdict = { code: string; label: string; tone: 'good' | 'warn' | 'bad' };
+export type AdminSearchRow = {
+  kind: 'employer' | 'event';
+  id: string;
+  employer_id: string | null;
+  async_job_id: string | null;
+  query: string;
+  query_is_exact: boolean;
+  employer: string | null;
+  domain: string | null;
+  sub_info?: string;
+  job_count: number;
+  with_url: number;
+  with_detail: number;
+  status: string;
+  created_at: string;
+  last_scraped_at?: string | null;
+  platform?: string | null;
+  app_version?: string | null;
+  verdict: AdminSearchVerdict;
+};
+export type AdminSearchList = {
+  total: number;
+  counts: { searches: number; produced_nothing: number; single_job: number; healthy: number };
+  items: AdminSearchRow[];
+};
+export type AdminSearchJob = {
+  id: string; title: string; location: string; experience: string; salary: string;
+  job_type: string; work_mode: string; urgent: boolean; is_active: boolean;
+  skills: string[]; responsibilities: string[]; job_url: string | null;
+  url_is_synthetic: boolean; has_detail: boolean; created_at: string;
+};
+export type AdminSearchJobs = {
+  employer: { id: string; name: string; domain: string; sub_info: string; last_scraped_at: string | null } | null;
+  total: number;
+  summary: { with_real_url: number; with_detail: number; with_skills: number };
+  jobs: AdminSearchJob[];
+};
+export type AdminTestLetter = {
+  success: boolean; coverLetter: string; jobTitle: string; companyName: string;
+  creditsUsed: number; adminTest?: boolean;
+  inputs?: { resume_chars: number; resume_source: string; job_skills: string; job_responsibilities: string | null; employer: string | null };
+};
+
+export async function fetchAdminResumeProfile(userId: number | string): Promise<AdminResumeProfile> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(`${API_BASE}/admin/users/${userId}/resume-profile`, { headers, timeout: 30000 });
+    return data as AdminResumeProfile;
+  } catch (error: unknown) {
+    throw adminErr(error, 'Failed to load the résumé profile');
+  }
+}
+
+/** The rendered-PDF URL. Needs the admin header, so pair it with adminAuthHeaderValue(). */
+export function adminResumePdfUrl(userId: number | string, template?: string): string {
+  const q = template ? `?template=${encodeURIComponent(template)}` : '';
+  return `${API_BASE}/admin/users/${userId}/resume-pdf${q}`;
+}
+
+export async function fetchAdminSearches(userId: number | string, limit = 50): Promise<AdminSearchList> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(`${API_BASE}/admin/users/${userId}/searches`, {
+      headers, params: { limit }, timeout: 30000,
+    });
+    return data as AdminSearchList;
+  } catch (error: unknown) {
+    throw adminErr(error, 'Failed to load searches');
+  }
+}
+
+export async function fetchAdminSearchJobs(
+  userId: number | string, employerId: string, limit = 50,
+): Promise<AdminSearchJobs> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.get(`${API_BASE}/admin/users/${userId}/searches/${employerId}/jobs`, {
+      headers, params: { limit }, timeout: 30000,
+    });
+    return data as AdminSearchJobs;
+  } catch (error: unknown) {
+    throw adminErr(error, 'Failed to load the jobs for that search');
+  }
+}
+
+/** Generates on the USER's résumé, charges nobody, stores nothing. 90s: it is a live model call. */
+export async function adminTestCoverLetter(
+  userId: number | string, jobId: string,
+): Promise<AdminTestLetter> {
+  try {
+    const headers = await getAuthHeader();
+    const { data } = await axios.post(`${API_BASE}/admin/users/${userId}/test-cover-letter`, { jobId }, {
+      headers, timeout: 90000,
+    });
+    return data as AdminTestLetter;
+  } catch (error: unknown) {
+    throw adminErr(error, 'Failed to generate a test cover letter');
+  }
+}
+
 const aiHubService = {
   analyzeWishlist,
   fetchJobMatches,

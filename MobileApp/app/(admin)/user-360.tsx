@@ -19,7 +19,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
-  SafeAreaView, RefreshControl, Modal, Pressable, Platform, TextInput, Image, Linking,
+  SafeAreaView, RefreshControl, Modal, Pressable, Platform, TextInput, Image, Linking, Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -37,7 +37,13 @@ import {
   type AdminActivitySearch, type AdminActivityItemMap, type AdminCoverLetter,
   type AdminNotifyTemplate, type AdminNotifyTemplatesResponse, type AdminUserNotifyResult,
   type AdminFileKind, type AdminPushBlock,
+  fetchAdminResumeProfile, adminResumePdfUrl,
+  fetchAdminSearches, fetchAdminSearchJobs, adminTestCoverLetter,
+  type AdminResumeProfile, type AdminResumeEntry,
+  type AdminSearchRow, type AdminSearchList, type AdminSearchJobs, type AdminSearchJob,
+  type AdminTestLetter,
 } from '../../services/aiHubService';
+import * as Clipboard from 'expo-clipboard';
 
 // ─── tokens (shared with store-analytics.tsx / user-analytics.tsx) ───
 const C = {
@@ -341,9 +347,177 @@ const TABS: { k: AdminActivityKind; label: string; icon: IconName; empty: string
   { k: 'saved_jobs', label: 'Saved jobs', icon: 'bookmark-outline', empty: 'Nothing saved yet.', seedKey: 'saved_jobs' },
   { k: 'applications', label: 'Applications', icon: 'paper-plane-outline', empty: 'No applications tracked yet.', seedKey: 'applications' },
   { k: 'credits', label: 'Credit usage', icon: 'cash-outline', empty: 'No credits spent yet.', seedKey: null },
-  { k: 'searches', label: 'Searches', icon: 'search-outline', empty: 'No searches recorded yet.', seedKey: 'searches' },
+  // 'searches' deliberately absent: it lived on app_events and could only ever render the word
+  // "Search" with no query and no outcome. The "What they searched" section above replaces it with
+  // the durable record — see SearchesSection.
 ];
 const APP_SRC: Record<string, string> = { email: 'emailed', cover_letter: 'cover letter', job_match: 'in-app' };
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Copy
+// ═══════════════════════════════════════════════════════════════════════════════
+// An admin reading "the user searched https://www.revolut.com/careers/position/…-a0d040ce-…" cannot
+// act on it until they can paste it somewhere. Retyping a uuid is not a workflow. Every value that
+// is worth reproducing — a searched URL, an apply link, an email, a résumé summary — gets one of
+// these, with a visible acknowledgement, because a copy button that gives no feedback gets pressed
+// three times and the user still isn't sure.
+function CopyBtn({ value, label, compact }: { value?: string | null; label?: string; compact?: boolean }) {
+  const [done, setDone] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const go = async () => {
+    try { await Clipboard.setStringAsync(text); } catch { return; }
+    setDone(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setDone(false), 1400);
+  };
+  return (
+    <TouchableOpacity
+      onPress={go}
+      activeOpacity={0.7}
+      style={[s.copyBtn, compact && s.copyBtnSm, done && s.copyBtnOk]}
+      accessibilityRole="button"
+      accessibilityLabel={`Copy ${label || 'value'}`}
+      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+    >
+      <Ionicons name={done ? 'checkmark' : 'copy-outline'} size={compact ? 11 : 13} color={done ? '#047857' : C.textMuted} />
+      {!compact ? <Text style={[s.copyTxt, done && s.copyTxtOk]}>{done ? 'Copied' : 'Copy'}</Text> : null}
+    </TouchableOpacity>
+  );
+}
+
+/** A labelled value with its own copy control — the workhorse of the résumé and search views. */
+function CopyLine({ label, value, mono }: { label: string; value?: string | null; mono?: boolean }) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  return (
+    <View style={s.copyLine}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={s.copyLineL}>{label}</Text>
+        <Text style={[s.copyLineV, mono && s.mono]} selectable>{text}</Text>
+      </View>
+      <CopyBtn value={text} label={label} compact />
+    </View>
+  );
+}
+
+/** Chips for a string list, with one control that copies the whole list. */
+function ChipList({ title, items, tone }: { title: string; items?: string[] | null; tone?: string }) {
+  const list = (items || []).filter(Boolean);
+  if (!list.length) return null;
+  return (
+    <View style={{ marginTop: 12 }}>
+      <View style={s.chipHead}>
+        <Text style={s.rsLabel}>{title} · {list.length}</Text>
+        <CopyBtn value={list.join(', ')} label={title} compact />
+      </View>
+      <View style={s.chips}>
+        {list.map((x, i) => (
+          <View key={`${x}-${i}`} style={[s.rsChip, tone ? { borderColor: tone } : null]}>
+            <Text style={s.rsChipT}>{x}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Searches — the query, the outcome, and a way in
+// ═══════════════════════════════════════════════════════════════════════════════
+// The old Searches tab read app_events and rendered every row as the word "Search": the typed value
+// lives under props.company, not props.query, so it was never displayed. An admin could see THAT a
+// search happened and nothing else. This shows what was typed (copyable), how many jobs came back,
+// how many of those are actually usable, and a one-line verdict — which is the whole Revolut
+// investigation reduced to a row you can read.
+function SearchesSection({ userId, who, onOpen }: {
+  userId: string; who: string; onOpen: (row: AdminSearchRow) => void;
+}) {
+  const [data, setData] = useState<AdminSearchList | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  const load = useCallback(() => {
+    setErr(null);
+    fetchAdminSearches(userId, 100).then(setData).catch((e: any) => setErr(e?.message || 'Could not load searches'));
+  }, [userId]);
+  useEffect(() => { load(); }, [load]);
+
+  const rows = data ? (expanded ? data.items : data.items.slice(0, 8)) : [];
+  const toneOf = (t: string) => (t === 'good' ? C.emerald : t === 'warn' ? C.amber : C.rose);
+
+  return (
+    <Section title="What they searched" sub="Every query, what it returned, and whether the result was usable.">
+      {err ? <RetryBox text={err} onRetry={load} />
+        : !data ? <Skel text="Loading searches…" />
+        : !data.items.length ? <Empty icon="search-outline" text="This user has never run a search." />
+        : (
+          <>
+            <View style={s.chips}>
+              <Chip label="searches" value={String(data.counts.searches)} tone={C.blueDeep} />
+              <Chip label="returned nothing" value={String(data.counts.produced_nothing)} tone={data.counts.produced_nothing ? C.rose : C.emerald} />
+              <Chip label="only 1 job" value={String(data.counts.single_job)} tone={data.counts.single_job ? C.amber : C.emerald} />
+              <Chip label="healthy" value={String(data.counts.healthy)} tone={C.emerald} />
+            </View>
+
+            {rows.map((r) => (
+              <View key={r.id} style={s.srchRow}>
+                <View style={s.srchTop}>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={[s.srchQ, s.mono]} numberOfLines={2} selectable>{r.query || '(empty query)'}</Text>
+                    <Text style={s.srchSub}>
+                      {r.employer ? `${r.employer} · ` : ''}{dateLabel(r.created_at)}
+                      {r.kind === 'event' ? ' · never reached an employer' : ''}
+                    </Text>
+                  </View>
+                  <CopyBtn value={r.query} label="the query" compact />
+                </View>
+
+                <View style={s.srchBar}>
+                  <View style={[s.srchDot, { backgroundColor: toneOf(r.verdict.tone) }]} />
+                  <Text style={[s.srchVerdict, { color: toneOf(r.verdict.tone) }]} numberOfLines={2}>{r.verdict.label}</Text>
+                </View>
+
+                {r.kind === 'employer' && r.job_count > 0 ? (
+                  <TouchableOpacity style={s.srchOpen} onPress={() => onOpen(r)} activeOpacity={0.8}>
+                    <Ionicons name="albums-outline" size={13} color={C.blue} />
+                    <Text style={s.srchOpenT}>
+                      Open {r.job_count} job{r.job_count === 1 ? '' : 's'} · test a cover letter
+                    </Text>
+                    <Ionicons name="chevron-forward" size={13} color={C.blue} />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            ))}
+
+            {data.items.length > 8 ? (
+              <TouchableOpacity onPress={() => setExpanded((v) => !v)} activeOpacity={0.7} style={s.srchMore}>
+                <Text style={s.srchMoreT}>
+                  {expanded ? 'Show fewer' : `Show all ${data.items.length} searches`}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </>
+        )}
+    </Section>
+  );
+}
+
+/** One experience/education/project row. */
+function EntryRow({ e }: { e: AdminResumeEntry }) {
+  return (
+    <View style={s.entry}>
+      <View style={s.entryTop}>
+        <Text style={s.entryT} numberOfLines={2}>{e.title || '—'}</Text>
+        {e.period ? <Text style={s.entryP}>{e.period}</Text> : null}
+      </View>
+      {e.org ? <Text style={s.entryO} numberOfLines={2}>{e.org}{e.location ? ` · ${e.location}` : ''}</Text> : null}
+      {e.detail ? <Text style={s.entryD}>{e.detail}</Text> : null}
+    </View>
+  );
+}
 
 function ActivityRow({ kind, row, onOpenLetter }: {
   kind: AdminActivityKind; row: ActivityItem; onOpenLetter: (r: AdminActivityCoverLetter) => void;
@@ -574,6 +748,8 @@ type ConfirmPayload = {
   run: () => Promise<AdminUserNotifyResult>;
 };
 type Overlay =
+  | { kind: 'resume'; who: string }
+  | { kind: 'searchJobs'; row: AdminSearchRow; who: string }
   | { kind: 'doc'; doc: AdminFileKind; label: string; sub: string }
   | { kind: 'letter'; meta: AdminActivityCoverLetter; letter: AdminCoverLetter | null; loading: boolean; error: string | null }
   | ConfirmPayload;
@@ -659,6 +835,327 @@ function DocViewer({ ov, userId, onClose }: { ov: Extract<Overlay, { kind: 'doc'
         ) : null}
         {state === 'ready' ? <Text style={[s.mono, s.docUrl]} numberOfLines={1}>{adminFileUrl(userId, ov.doc)}</Text> : null}
       </View>
+    </OverlayShell>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Résumé — the readable profile, not the raw file
+// ═══════════════════════════════════════════════════════════════════════════════
+// The uploaded PDF used to go straight into a WebView, which is why "the résumé won't open":
+// Android's system WebView cannot display PDFs, and this viewer is deliberately hardened because it
+// renders a stranger's uploaded file inside a screen holding an admin token. What an admin actually
+// needs is the PARSED résumé — the same text the matcher and the cover-letter writer consume. If it
+// reads thin here, that IS the problem, and the PDF would have hidden it.
+function ResumeProfileViewer({ ov, userId, onClose }: {
+  ov: Extract<Overlay, { kind: 'resume' }>; userId: string; onClose: () => void;
+}) {
+  const [p, setP] = useState<AdminResumeProfile | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try { const d = await fetchAdminResumeProfile(userId); if (alive) setP(d); }
+      catch (e: any) { if (alive) setErr(e?.message || 'Could not load the résumé'); }
+    })();
+    return () => { alive = false; };
+  }, [userId]);
+
+  // The PDF is fetched WITH the admin header and handed to the OS viewer — the header is why this
+  // cannot just be Linking.openURL(url), which would arrive unauthenticated and 401.
+  const openPdf = useCallback(async () => {
+    setPdfBusy(true);
+    try {
+      const auth = await adminAuthHeaderValue();
+      if (!auth) { Alert.alert('Session expired', 'Sign in again to render the PDF.'); return; }
+      const res = await fetch(adminResumePdfUrl(userId), { headers: { Authorization: auth } });
+      if (!res.ok) {
+        let msg = `The server could not render a PDF (HTTP ${res.status}).`;
+        try { const b = await res.json(); if (b?.detail || b?.error) msg = b.detail || b.error; } catch { /* not json */ }
+        Alert.alert('No PDF', msg);
+        return;
+      }
+      const blob = await res.blob();
+      const dataUri: string = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onloadend = () => resolve(String(r.result || ''));
+        r.onerror = reject;
+        r.readAsDataURL(blob);
+      });
+      const FileSystem = require('expo-file-system');
+      const base64 = dataUri.split(',')[1] || '';
+      const path = `${FileSystem.cacheDirectory}resume-${userId}.pdf`;
+      await FileSystem.writeAsStringAsync(path, base64, { encoding: 'base64' });
+      const Sharing = require('expo-sharing');
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(path, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
+      } else {
+        Alert.alert('Saved', `Rendered to ${path}`);
+      }
+    } catch (e: any) {
+      Alert.alert('Could not open the PDF', e?.message || 'Unknown error');
+    } finally { setPdfBusy(false); }
+  }, [userId]);
+
+  const idy = p?.identity;
+  return (
+    <OverlayShell title="Résumé" sub={ov.who} onClose={onClose}>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 28 }} showsVerticalScrollIndicator={false}>
+        {err ? (
+          <RetryBox text={err} onRetry={() => { setErr(null); setP(null); fetchAdminResumeProfile(userId).then(setP).catch((e) => setErr(e?.message || 'failed')); }} />
+        ) : !p ? (
+          <Skel text="Reading the résumé…" />
+        ) : !p.available ? (
+          <>
+            <Note tone={C.rose} text={p.detail || 'There is nothing parsed to show for this user.'} />
+            {p.parse_error ? <CopyLine label="Parser error" value={p.parse_error} mono /> : null}
+            {p.file?.has_file ? (
+              <>
+                <CopyLine label="Stored file" value={p.file.filename} mono />
+                <Text style={s.footnote}>
+                  The raw upload is still available from the Documents section. It is the parsed text that is
+                  missing, and that is what matching and cover letters run on — so this user is effectively
+                  invisible to both until it is re-uploaded.
+                </Text>
+              </>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <View style={s.rsHead}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={s.rsName}>{idy?.full_name || '—'}</Text>
+                {idy?.headline ? <Text style={s.rsHeadline}>{idy.headline}</Text> : null}
+                <Text style={s.rsSrc}>{p.source_label}{p.parsed_at ? ` · ${dateLabel(p.parsed_at)}` : ''}</Text>
+              </View>
+              <TouchableOpacity
+                style={[s.pdfBtn, pdfBusy && s.sendBtnOff]}
+                onPress={openPdf}
+                disabled={pdfBusy}
+                activeOpacity={0.85}
+              >
+                {pdfBusy ? <ActivityIndicator color="#fff" size="small" />
+                  : <><Ionicons name="document-outline" size={14} color="#fff" /><Text style={s.pdfBtnT}>PDF</Text></>}
+              </TouchableOpacity>
+            </View>
+
+            <View style={s.rsCard}>
+              <CopyLine label="Email" value={idy?.email} mono />
+              <CopyLine label="Phone" value={idy?.phone} mono />
+              <CopyLine label="Location" value={idy?.location} />
+              {(idy?.links || []).map((l, i) => <CopyLine key={i} label="Link" value={l} mono />)}
+            </View>
+
+            {p.summary ? (
+              <View style={s.rsCard}>
+                <View style={s.chipHead}>
+                  <Text style={s.rsLabel}>Summary</Text>
+                  <CopyBtn value={p.summary} label="summary" compact />
+                </View>
+                <Text style={s.rsBody} selectable>{p.summary}</Text>
+              </View>
+            ) : null}
+
+            {p.experience_years != null || p.experience_summary ? (
+              <View style={s.rsCard}>
+                <Text style={s.rsLabel}>
+                  Experience{p.experience_years != null ? ` · ${p.experience_years} yrs` : ''}
+                </Text>
+                {p.experience_summary ? <Text style={s.rsBody} selectable>{p.experience_summary}</Text> : null}
+              </View>
+            ) : null}
+
+            {(p.experience || []).length ? (
+              <View style={s.rsCard}>
+                <Text style={s.rsLabel}>Experience · {p.experience!.length}</Text>
+                {p.experience!.map((e, i) => <EntryRow key={i} e={e} />)}
+              </View>
+            ) : null}
+
+            {(p.education || []).length ? (
+              <View style={s.rsCard}>
+                <Text style={s.rsLabel}>Education · {p.education!.length}</Text>
+                {p.education!.map((e, i) => <EntryRow key={i} e={e} />)}
+              </View>
+            ) : null}
+
+            {(p.projects || []).length ? (
+              <View style={s.rsCard}>
+                <Text style={s.rsLabel}>Projects · {p.projects!.length}</Text>
+                {p.projects!.map((e, i) => <EntryRow key={i} e={e} />)}
+              </View>
+            ) : null}
+
+            <View style={s.rsCard}>
+              <ChipList title="Skills" items={p.skills} />
+              <ChipList title="Technical" items={p.technical_skills} tone={C.blue} />
+              <ChipList title="Soft skills" items={p.soft_skills} />
+              <ChipList title="Languages" items={p.languages} />
+              <ChipList title="Certifications" items={p.certifications} />
+              <ChipList title="Previous titles" items={p.job_titles} />
+              <ChipList title="Industries" items={p.industries} />
+            </View>
+
+            {p.raw_text ? (
+              <View style={s.rsCard}>
+                <View style={s.chipHead}>
+                  <Text style={s.rsLabel}>Extracted text · {p.raw_text.length} characters</Text>
+                  <CopyBtn value={p.raw_text} label="raw text" compact />
+                </View>
+                <TouchableOpacity onPress={() => setShowRaw((v) => !v)} activeOpacity={0.7}>
+                  <Text style={s.rsToggle}>{showRaw ? 'Hide' : 'Show'} everything the parser read</Text>
+                </TouchableOpacity>
+                {showRaw ? <Text style={[s.rsBody, s.mono, { marginTop: 8 }]} selectable>{p.raw_text}</Text> : null}
+              </View>
+            ) : null}
+
+            <Text style={s.footnote}>
+              This is the résumé as the MATCHER and the COVER-LETTER writer see it — not a picture of the
+              uploaded file. Gaps here are gaps in what the product can use.
+            </Text>
+          </>
+        )}
+      </ScrollView>
+    </OverlayShell>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// The jobs one search produced — and a cover letter written from them
+// ═══════════════════════════════════════════════════════════════════════════════
+function SearchJobsViewer({ ov, userId, onClose }: {
+  ov: Extract<Overlay, { kind: 'searchJobs' }>; userId: string; onClose: () => void;
+}) {
+  const [data, setData] = useState<AdminSearchJobs | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [letter, setLetter] = useState<AdminTestLetter | null>(null);
+  const [letterFor, setLetterFor] = useState<string | null>(null);
+  const [letterErr, setLetterErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const employerId = ov.row.employer_id;
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!employerId) { setErr('This search never produced an employer, so there are no jobs to open.'); return; }
+      try { const d = await fetchAdminSearchJobs(userId, employerId); if (alive) setData(d); }
+      catch (e: any) { if (alive) setErr(e?.message || 'Could not load the jobs'); }
+    })();
+    return () => { alive = false; };
+  }, [userId, employerId]);
+
+  const runLetter = useCallback(async (job: AdminSearchJob) => {
+    setBusy(true); setLetterErr(null); setLetter(null); setLetterFor(job.id);
+    try { setLetter(await adminTestCoverLetter(userId, job.id)); }
+    catch (e: any) { setLetterErr(e?.message || 'Generation failed'); }
+    finally { setBusy(false); }
+  }, [userId]);
+
+  return (
+    <OverlayShell title={ov.row.employer || 'Search results'} sub={ov.who} onClose={onClose}>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 28 }} showsVerticalScrollIndicator={false}>
+        <View style={s.rsCard}>
+          <CopyLine label="What the user searched" value={ov.row.query} mono />
+          {!ov.row.query_is_exact ? (
+            <Text style={s.footnote}>
+              The exact text has been pruned from the job queue — this is the domain it resolved to.
+            </Text>
+          ) : null}
+          <View style={[s.chips, { marginTop: 8 }]}>
+            <Chip label="jobs" value={String(ov.row.job_count)} tone={ov.row.job_count ? C.emerald : C.rose} />
+            <Chip label="real apply link" value={`${ov.row.with_url}/${ov.row.job_count}`} tone={ov.row.with_url ? C.emerald : C.rose} />
+            <Chip label="with description" value={`${ov.row.with_detail}/${ov.row.job_count}`} tone={ov.row.with_detail ? C.emerald : C.rose} />
+          </View>
+        </View>
+
+        {err ? <Note tone={C.rose} text={err} />
+          : !data ? <Skel text="Loading the jobs this search produced…" />
+          : !data.jobs.length ? <Empty icon="briefcase-outline" text="This search stored no jobs at all." />
+          : (
+            <>
+              {data.jobs.map((j) => (
+                <View key={j.id} style={s.jobCard}>
+                  <View style={s.jobTop}>
+                    <Text style={s.jobT} numberOfLines={3}>{j.title || 'Untitled'}</Text>
+                    {j.urgent ? <View style={s.urgent}><Text style={s.urgentT}>URGENT</Text></View> : null}
+                  </View>
+                  <View style={s.jobMeta}>
+                    {j.location ? <Text style={s.jobM}>{j.location}</Text> : null}
+                    {j.job_type ? <Text style={s.jobM}>· {j.job_type}</Text> : null}
+                    {j.work_mode ? <Text style={s.jobM}>· {j.work_mode}</Text> : null}
+                    {j.salary ? <Text style={s.jobM}>· {j.salary}</Text> : null}
+                    {j.experience ? <Text style={s.jobM}>· {j.experience}</Text> : null}
+                  </View>
+
+                  {/* The two shapes of "the search technically worked but the result is useless". */}
+                  {j.url_is_synthetic ? (
+                    <Note tone={C.rose} text="No real apply link — this job points at the listing page, so the user cannot actually apply." />
+                  ) : null}
+                  {!j.has_detail ? (
+                    <Note tone={C.amber} text="No description was captured, so the cover letter has nothing about this role to work with." />
+                  ) : null}
+
+                  {j.responsibilities.length ? (
+                    <View style={{ marginTop: 8 }}>
+                      {j.responsibilities.slice(0, 6).map((r, i) => (
+                        <Text key={i} style={s.jobBullet}>• {r}</Text>
+                      ))}
+                    </View>
+                  ) : null}
+
+                  {j.skills.length ? (
+                    <View style={[s.chips, { marginTop: 8 }]}>
+                      {j.skills.slice(0, 12).map((sk, i) => (
+                        <View key={i} style={s.rsChip}><Text style={s.rsChipT}>{sk}</Text></View>
+                      ))}
+                    </View>
+                  ) : null}
+
+                  <View style={s.jobActions}>
+                    {j.job_url ? <CopyBtn value={j.job_url} label="apply link" /> : null}
+                    <TouchableOpacity
+                      style={[s.testBtn, (busy && letterFor === j.id) && s.sendBtnOff]}
+                      disabled={busy}
+                      onPress={() => runLetter(j)}
+                      activeOpacity={0.85}
+                    >
+                      {busy && letterFor === j.id
+                        ? <ActivityIndicator color={C.blue} size="small" />
+                        : <><Ionicons name="sparkles-outline" size={13} color={C.blue} /><Text style={s.testBtnT}>Test cover letter</Text></>}
+                    </TouchableOpacity>
+                  </View>
+
+                  {letterFor === j.id && letterErr ? <Note tone={C.rose} text={letterErr} /> : null}
+                  {letterFor === j.id && letter ? (
+                    <View style={s.letterBox}>
+                      <View style={s.chipHead}>
+                        <Text style={s.rsLabel}>
+                          Written from this user’s résumé · nobody was charged
+                        </Text>
+                        <CopyBtn value={letter.coverLetter} label="cover letter" compact />
+                      </View>
+                      {letter.inputs ? (
+                        <Text style={s.footnote}>
+                          Inputs: {letter.inputs.resume_chars} chars of résumé ({letter.inputs.resume_source})
+                          {letter.inputs.job_skills ? ` · skills: ${String(letter.inputs.job_skills).slice(0, 60)}` : ''}
+                        </Text>
+                      ) : null}
+                      <Text style={s.letterTxt} selectable>{letter.coverLetter}</Text>
+                    </View>
+                  ) : null}
+                </View>
+              ))}
+              <Text style={s.footnote}>
+                {data.summary.with_real_url} of {data.total} have a real apply link · {data.summary.with_detail} have a
+                description · {data.summary.with_skills} have skills. A search that returns titles with neither is the
+                shape of an unreadable careers page.
+              </Text>
+            </>
+          )}
+      </ScrollView>
     </OverlayShell>
   );
 }
@@ -1319,13 +1816,21 @@ export default function User360Screen() {
 
               {/* ── 4. DOCUMENTS ──────────────────────────────────────────── */}
               <Section title="Documents" sub="Served from the admin-only file endpoint.">
+                {/* Opens the PARSED résumé, not the raw upload — see ResumeProfileViewer for why. */}
                 <DocRow
                   icon="document-text-outline"
                   label="Résumé"
                   sub={ov.assets?.resume?.has ? (ov.assets.resume.filename || 'uploaded file') : 'No résumé uploaded'}
+                  present={!!ov.assets?.resume?.has || !!ov.resume?.parse_status}
+                  onOpen={() => setOverlay({ kind: 'resume', who: whoName })}
+                />
+                <DocRow
+                  icon="cloud-download-outline"
+                  label="Raw uploaded file"
+                  sub={ov.assets?.resume?.has ? 'The original, exactly as uploaded' : 'Nothing on file'}
                   present={!!ov.assets?.resume?.has}
                   onOpen={() => setOverlay({
-                    kind: 'doc', doc: 'resume', label: 'Résumé',
+                    kind: 'doc', doc: 'resume', label: 'Résumé (raw file)',
                     sub: ov.assets?.resume?.filename || `resume-user-${userId}`,
                   })}
                 />
@@ -1347,6 +1852,9 @@ export default function User360Screen() {
 
               {/* ── 5. RÉSUMÉ INSIGHT ─────────────────────────────────────── */}
               <ResumeSection ov={ov} />
+
+              {/* ── 5b. WHAT THEY SEARCHED, AND WHETHER IT WORKED ──────────── */}
+              <SearchesSection userId={userId} who={whoName} onOpen={(row) => setOverlay({ kind: 'searchJobs', row, who: whoName })} />
 
               {/* ── 6. EVERYTHING THEY HAVE DONE ──────────────────────────── */}
               <Section title="Everything they have done" sub="The actual items behind the counters above — open a tab to load it.">
@@ -1541,7 +2049,11 @@ export default function User360Screen() {
             if (overlay.kind === 'confirm') cancelConfirm(); else setOverlay(null);
           }}
         >
-          {overlay.kind === 'doc' ? (
+          {overlay.kind === 'resume' ? (
+            <ResumeProfileViewer ov={overlay} userId={userId} onClose={() => setOverlay(null)} />
+          ) : overlay.kind === 'searchJobs' ? (
+            <SearchJobsViewer ov={overlay} userId={userId} onClose={() => setOverlay(null)} />
+          ) : overlay.kind === 'doc' ? (
             <DocViewer ov={overlay} userId={userId} onClose={() => setOverlay(null)} />
           ) : overlay.kind === 'letter' ? (
             <LetterViewer ov={overlay} onClose={() => setOverlay(null)} />
@@ -1785,6 +2297,98 @@ function JobRow({ job, result, busy, onSend }: {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 const s = StyleSheet.create({
+  // ── copy controls ──────────────────────────────────────────────────────────
+  copyBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: '#F1F5F9', borderColor: '#E2E8F0', borderWidth: 1,
+    borderRadius: 8, paddingHorizontal: 9, paddingVertical: 6,
+  },
+  copyBtnSm: { paddingHorizontal: 7, paddingVertical: 5, borderRadius: 7 },
+  copyBtnOk: { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' },
+  copyTxt: { fontSize: 11, fontWeight: '800', color: '#64748B' },
+  copyTxtOk: { color: '#047857' },
+  copyLine: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#F1F5F9',
+  },
+  copyLineL: { fontSize: 10, fontWeight: '800', color: '#94A3B8', letterSpacing: 0.5, textTransform: 'uppercase' },
+  copyLineV: { fontSize: 13, fontWeight: '600', color: '#0B0F22', marginTop: 2 },
+
+  // ── résumé profile ─────────────────────────────────────────────────────────
+  rsHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 14 },
+  rsName: { fontSize: 20, fontWeight: '900', color: '#0B0F22', letterSpacing: -0.4 },
+  rsHeadline: { fontSize: 13, fontWeight: '700', color: '#475569', marginTop: 2 },
+  rsSrc: { fontSize: 11, fontWeight: '700', color: '#94A3B8', marginTop: 4 },
+  rsCard: {
+    backgroundColor: '#FFFFFF', borderColor: '#E7EDF5', borderWidth: 1,
+    borderRadius: 14, padding: 13, marginBottom: 12,
+  },
+  rsLabel: { fontSize: 10.5, fontWeight: '900', color: '#64748B', letterSpacing: 0.6, textTransform: 'uppercase' },
+  rsBody: { fontSize: 13.5, color: '#1E293B', lineHeight: 20, marginTop: 6 },
+  rsToggle: { fontSize: 12, fontWeight: '800', color: '#2563EB', marginTop: 6 },
+  rsChip: {
+    backgroundColor: '#F8FAFC', borderColor: '#E2E8F0', borderWidth: 1,
+    borderRadius: 20, paddingHorizontal: 10, paddingVertical: 5,
+  },
+  rsChipT: { fontSize: 11.5, fontWeight: '700', color: '#334155' },
+  chipHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  entry: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
+  entryTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  entryT: { flex: 1, fontSize: 13.5, fontWeight: '800', color: '#0B0F22' },
+  entryP: { fontSize: 11, fontWeight: '700', color: '#94A3B8' },
+  entryO: { fontSize: 12.5, fontWeight: '600', color: '#475569', marginTop: 2 },
+  entryD: { fontSize: 12.5, color: '#475569', lineHeight: 18, marginTop: 4 },
+  pdfBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#2563EB',
+    borderRadius: 10, paddingHorizontal: 13, height: 36, minWidth: 74, justifyContent: 'center',
+  },
+  pdfBtnT: { fontSize: 12.5, fontWeight: '900', color: '#FFFFFF' },
+
+  // ── searches ───────────────────────────────────────────────────────────────
+  srchRow: {
+    backgroundColor: '#FFFFFF', borderColor: '#E7EDF5', borderWidth: 1,
+    borderRadius: 12, padding: 11, marginTop: 8,
+  },
+  srchTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  srchQ: { fontSize: 12.5, fontWeight: '700', color: '#0B0F22', lineHeight: 17 },
+  srchSub: { fontSize: 11, fontWeight: '600', color: '#94A3B8', marginTop: 3 },
+  srchBar: { flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 8 },
+  srchDot: { width: 7, height: 7, borderRadius: 4 },
+  srchVerdict: { flex: 1, fontSize: 11.5, fontWeight: '800' },
+  srchOpen: {
+    flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 9,
+    backgroundColor: '#EFF6FF', borderColor: '#BFDBFE', borderWidth: 1,
+    borderRadius: 9, paddingHorizontal: 10, paddingVertical: 8,
+  },
+  srchOpenT: { flex: 1, fontSize: 12, fontWeight: '800', color: '#2563EB' },
+  srchMore: { alignItems: 'center', paddingVertical: 11 },
+  srchMoreT: { fontSize: 12, fontWeight: '800', color: '#2563EB' },
+
+  // ── job cards inside a search ──────────────────────────────────────────────
+  jobCard: {
+    backgroundColor: '#FFFFFF', borderColor: '#E7EDF5', borderWidth: 1,
+    borderRadius: 14, padding: 13, marginBottom: 11,
+  },
+  jobTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  jobT: { flex: 1, fontSize: 15, fontWeight: '900', color: '#0B0F22', letterSpacing: -0.2, lineHeight: 20 },
+  urgent: { backgroundColor: '#FEE2E2', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
+  urgentT: { fontSize: 9, fontWeight: '900', color: '#B91C1C', letterSpacing: 0.4 },
+  jobMeta: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 5 },
+  jobM: { fontSize: 11.5, fontWeight: '600', color: '#64748B' },
+  jobBullet: { fontSize: 12.5, color: '#334155', lineHeight: 19, marginTop: 2 },
+  jobActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 11, flexWrap: 'wrap' },
+  testBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#EFF6FF', borderColor: '#BFDBFE', borderWidth: 1,
+    borderRadius: 9, paddingHorizontal: 11, paddingVertical: 8, minWidth: 120, justifyContent: 'center',
+  },
+  testBtnT: { fontSize: 12, fontWeight: '800', color: '#2563EB' },
+  letterBox: {
+    marginTop: 11, backgroundColor: '#F8FAFC', borderColor: '#E2E8F0', borderWidth: 1,
+    borderRadius: 11, padding: 11,
+  },
+  letterTxt: { fontSize: 13, color: '#1E293B', lineHeight: 20, marginTop: 8 },
+
   safe: { flex: 1, backgroundColor: C.bg, paddingTop: Platform.OS === 'android' ? 28 : 0 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12 },
   centerT: { color: C.textMuted, fontSize: 13, fontWeight: '600' },

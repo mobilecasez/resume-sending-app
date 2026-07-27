@@ -275,6 +275,7 @@
        +'<div class="grid2"><div class="card" id="cProfile"><div class="sect">Profile details</div><div class="skel">Loading…</div></div>'
        +'<div class="card" id="cDocs"><div class="sect">Documents</div><div class="skel">Loading…</div></div></div>'
        +'<div class="card" id="cResume"><div class="sect">Résumé insight</div><div class="skel">Loading…</div></div>'
+       +'<div class="card" id="cSearch"><div class="sect">What they searched</div><div class="skel">Loading…</div></div>'
        +'<div class="card" id="cActivity"><div class="sect">Everything they have done</div><div class="skel">Loading…</div></div>'
        +'<div class="card" id="cJobs"><div class="sect">Best matched jobs</div><div class="skel">Loading…</div></div>'
        +'<div class="card" id="cNotify"><div class="sect">Send a notification</div><div class="skel">Loading templates…</div></div>'
@@ -307,7 +308,7 @@
         return;
       }
       OV=d;
-      renderHead(d); renderGlance(d); renderProfile(d); renderDocs(d); renderResume(d); renderHistory(d);
+      renderHead(d); renderGlance(d); renderProfile(d); renderDocs(d); renderResume(d); renderHistory(d); renderSearches();
       initActivity(d.activity||{});
       var nm=d.user.full_name||d.user.email||('User '+UID);
       document.getElementById('sub').innerHTML='Everything about <b>'+esc(nm)+'</b> — profile, documents, résumé insight, every cover letter / saved job / application / credit spend, best-matching jobs and one-tap notifications.';
@@ -437,6 +438,146 @@
       if(s.has) fileBlobUrl('signature').then(function(u){ var t=document.getElementById('thSign'); if(u&&t){ t.textContent=''; var im=document.createElement('img'); im.src=u; im.alt='Signature'; t.appendChild(im); } });
     }
 
+    // ── Copy ─────────────────────────────────────────────────────────────────
+    // An admin cannot act on "the user searched https://…/position/…-a0d040ce-…" until they can
+    // paste it. One delegated handler serves every copy button on the page, so adding a new one is
+    // just markup. Values ride in a data attribute (escaped) rather than an inline onclick, which
+    // would break on any query containing a quote.
+    function cpBtn(value, label){
+      var v = String(value == null ? '' : value);
+      if(!v.trim()) return '';
+      return '<button class="tbtn sm ghost cpy" data-cp="'+esc(v)+'" title="Copy '+esc(label||'')+'">Copy</button>';
+    }
+    document.addEventListener('click', function(ev){
+      var b = ev.target && ev.target.closest ? ev.target.closest('.cpy') : null;
+      if(!b) return;
+      var v = b.getAttribute('data-cp') || '';
+      var done = function(){ var t=b.textContent; b.textContent='Copied'; b.disabled=true;
+        setTimeout(function(){ b.textContent=t; b.disabled=false; }, 1400); };
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(v).then(done, function(){});
+      } else {
+        // http:// origins and older browsers have no async clipboard — this fallback is why the
+        // button still works when the page is opened over a plain-HTTP tunnel.
+        var ta=document.createElement('textarea'); ta.value=v; ta.style.position='fixed'; ta.style.opacity='0';
+        document.body.appendChild(ta); ta.select();
+        try{ document.execCommand('copy'); done(); }catch(e){}
+        ta.remove();
+      }
+    }, true);
+
+    // ── What they searched ───────────────────────────────────────────────────
+    // Replaces a list that could only say "a search happened": the typed value lives under
+    // props.company in app_events, so it was never rendered. See server/services/adminSearchView.js.
+    var SEARCHES=null;
+    async function renderSearches(){
+      var d = await api('/admin/users/'+UID+'/searches?limit=100');
+      if(!d) return;
+      if(!d.success){ set('cSearch','<div class="sect">What they searched</div><div class="empty">'+esc(d.error||'Could not load searches')+'</div>'); return; }
+      SEARCHES=d;
+      var c=d.counts||{};
+      var head='<div class="sect">What they searched</div>'
+        +'<div class="chips" style="margin-top:0;">'
+        +'<span class="chip">searches <b>'+num(c.searches)+'</b></span>'
+        +'<span class="pill '+(c.produced_nothing?'r':'g')+'">returned nothing: '+num(c.produced_nothing)+'</span>'
+        +'<span class="pill '+(c.single_job?'a':'g')+'">only 1 job: '+num(c.single_job)+'</span>'
+        +'<span class="pill g">healthy: '+num(c.healthy)+'</span></div>';
+      var items=arr(d.items);
+      if(!items.length){ set('cSearch', head+'<div class="empty">This user has never run a search.</div>'); return; }
+      var rows=items.map(function(r,i){
+        var tone = r.verdict && r.verdict.tone === 'good' ? 'g' : (r.verdict && r.verdict.tone === 'warn' ? 'a' : 'r');
+        var open = (r.kind==='employer' && r.job_count>0)
+          ? '<button class="tbtn sm" data-sjobs="'+esc(r.employer_id)+'" data-si="'+i+'">Open '+num(r.job_count)+' job'+(r.job_count===1?'':'s')+' · test a cover letter</button>'
+          : '';
+        return '<div class="doc" style="align-items:flex-start;flex-wrap:wrap;">'
+          +'<div style="flex:1;min-width:0;">'
+            +'<div class="mono" style="font-size:12.5px;word-break:break-all;">'+esc(r.query||'(empty query)')+'</div>'
+            +'<div class="muted" style="font-size:11.5px;margin-top:3px;">'+esc([r.employer, fmtDay(r.created_at), r.kind==='event'?'never reached an employer':''].filter(Boolean).join(' · '))+'</div>'
+            +'<div style="margin-top:6px;"><span class="pill '+tone+'">'+esc((r.verdict&&r.verdict.label)||'')+'</span></div>'
+          +'</div>'
+          +'<div style="display:flex;gap:6px;flex-wrap:wrap;">'+cpBtn(r.query,'the query')+open+'</div>'
+          +'<div id="sj'+i+'" style="flex-basis:100%;"></div></div>';
+      }).join('');
+      set('cSearch', head+rows);
+      var box=document.getElementById('cSearch');
+      Array.prototype.forEach.call(box.querySelectorAll('[data-sjobs]'), function(b){
+        b.onclick=function(){ openSearchJobs(b.getAttribute('data-sjobs'), b.getAttribute('data-si'), b); };
+      });
+    }
+
+    async function openSearchJobs(employerId, idx, btn){
+      var host=document.getElementById('sj'+idx);
+      if(!host) return;
+      if(host.getAttribute('data-open')==='1'){ host.innerHTML=''; host.setAttribute('data-open','0'); btn.textContent=btn.getAttribute('data-lbl')||btn.textContent; return; }
+      btn.setAttribute('data-lbl', btn.textContent);
+      btn.disabled=true; host.innerHTML='<div class="skel">Loading the jobs this search produced…</div>';
+      var d = await api('/admin/users/'+UID+'/searches/'+encodeURIComponent(employerId)+'/jobs?limit=60');
+      btn.disabled=false;
+      if(!d || !d.success){ host.innerHTML='<div class="empty">'+esc((d&&d.error)||'Could not load the jobs')+'</div>'; return; }
+      host.setAttribute('data-open','1');
+      var jobs=arr(d.jobs), sum=d.summary||{};
+      if(!jobs.length){ host.innerHTML='<div class="empty">This search stored no jobs at all.</div>'; return; }
+      host.innerHTML='<div class="muted" style="font-size:11.5px;margin:10px 0 6px;">'
+          +num(sum.with_real_url)+' of '+num(d.total)+' have a real apply link · '+num(sum.with_detail)+' have a description · '+num(sum.with_skills)+' have skills</div>'
+        +jobs.map(function(j,k){
+          var warn='';
+          if(j.url_is_synthetic) warn+='<div class="note">No real apply link — this job points at the listing page, so the user cannot apply.</div>';
+          if(!j.has_detail) warn+='<div class="note">No description was captured, so a cover letter has nothing about this role to work from.</div>';
+          var meta=[j.location,j.job_type,j.work_mode,j.salary,j.experience].filter(has).join(' · ');
+          var bul=arr(j.responsibilities).slice(0,6).map(function(x){ return '<div style="font-size:12.5px;line-height:1.55;">• '+esc(x)+'</div>'; }).join('');
+          var sk=arr(j.skills).slice(0,12).map(function(x){ return '<span class="chip">'+esc(x)+'</span>'; }).join('');
+          return '<div class="doc" style="flex-direction:column;align-items:stretch;gap:6px;">'
+            +'<div style="font-weight:800;font-size:14px;">'+esc(j.title||'Untitled')+(j.urgent?' <span class="pill r">URGENT</span>':'')+'</div>'
+            +(meta?('<div class="muted" style="font-size:11.5px;">'+esc(meta)+'</div>'):'')
+            +warn
+            +(bul?('<div style="margin-top:4px;">'+bul+'</div>'):'')
+            +(sk?('<div class="chips" style="margin-top:4px;">'+sk+'</div>'):'')
+            +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">'
+              +(j.job_url?cpBtn(j.job_url,'apply link'):'')
+              +'<button class="tbtn sm" data-cl="'+esc(j.id)+'" data-clh="cl'+idx+'_'+k+'">Test cover letter</button></div>'
+            +'<div id="cl'+idx+'_'+k+'"></div></div>';
+        }).join('');
+      Array.prototype.forEach.call(host.querySelectorAll('[data-cl]'), function(b){
+        b.onclick=function(){ runTestLetter(b.getAttribute('data-cl'), b.getAttribute('data-clh'), b); };
+      });
+    }
+
+    async function runTestLetter(jobId, hostId, btn){
+      var host=document.getElementById(hostId); if(!host) return;
+      btn.disabled=true; var old=btn.textContent; btn.textContent='Writing…';
+      host.innerHTML='<div class="skel">Generating from this user’s résumé…</div>';
+      var d = await postApi('/admin/users/'+UID+'/test-cover-letter', { jobId: jobId });
+      btn.disabled=false; btn.textContent=old;
+      if(!d || !d.coverLetter){ host.innerHTML='<div class="note">'+esc((d&&(d.error||d.message))||'Generation failed')+'</div>'; return; }
+      var inp=d.inputs||{};
+      host.innerHTML='<div class="pv" style="margin-top:8px;">'
+        +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">'
+          +'<div class="pl">Written from this user’s résumé · nobody was charged</div>'+cpBtn(d.coverLetter,'cover letter')+'</div>'
+        +(inp.resume_chars!=null?('<div class="muted" style="font-size:11px;margin-top:4px;">Inputs: '+num(inp.resume_chars)+' chars of résumé ('+esc(inp.resume_source||'')+')'+(inp.job_skills?(' · skills: '+esc(String(inp.job_skills).slice(0,70))):'')+'</div>'):'')
+        +'<div style="white-space:pre-wrap;font-size:13px;line-height:1.6;margin-top:8px;">'+esc(d.coverLetter)+'</div></div>';
+    }
+
+    // The rendered PDF needs the admin header, so — like every other admin file here — it is
+    // fetched and turned into a blob URL rather than linked directly.
+    async function openResumePdf(btn){
+      if(!btn || btn.disabled) return;
+      var old=btn.textContent; btn.disabled=true; btn.textContent='Rendering…';
+      var win=null; try{ win=window.open('', '_blank'); }catch(e){}   // opened inside the click so popup blockers allow it
+      try{
+        var r = await fetch(API_BASE+'/api/admin/users/'+UID+'/resume-pdf', { headers:{ 'Authorization':'Bearer '+authToken } });
+        if(!r.ok){
+          var msg='The server could not render a PDF (HTTP '+r.status+').';
+          try{ var j=await r.json(); if(j && (j.detail||j.error)) msg=j.detail||j.error; }catch(e){}
+          if(win) win.close();
+          alert(msg);
+          return;
+        }
+        var u=URL.createObjectURL(await r.blob());
+        if(win) win.location=u; else window.open(u,'_blank');
+      }catch(e){ if(win) win.close(); alert('Could not render the PDF: '+((e&&e.message)||'unknown error')); }
+      finally{ btn.disabled=false; btn.textContent=old; }
+    }
+
     function renderResume(d){
       var r=d.resume||{};
       var st=String(r.parse_status||'none').toLowerCase();
@@ -458,6 +599,8 @@
         return;
       }
       set('cResume','<div class="sect">Résumé insight</div>'
+        +'<div class="rowend" style="margin-top:0;margin-bottom:8px;"><button class="tbtn sm" id="rsPdf">Generate PDF</button>'
+        +cpBtn(r.summary,'summary')+cpBtn(arr(r.skills).join(', '),'skills')+'</div>'
         +'<div class="chips" style="margin-top:0;"><span class="pill '+cls+'">parse: '+esc(st)+'</span>'
         +(r.experience_years!=null&&r.experience_years!==''?('<span class="chip">Experience <b>'+esc(r.experience_years)+' yrs</b></span>'):'')
         +(r.parsed_at?('<span class="chip">Parsed <b>'+esc(fmtDay(r.parsed_at))+'</b></span>'):'')+'</div>'
@@ -469,6 +612,8 @@
         +block('Industries', inds, 15)
         +(edu.length?block('Education', edu, 10):'')
         +(langs.length?block('Languages', langs, 10):''));
+      var pdfBtn=document.getElementById('rsPdf');
+      if(pdfBtn) pdfBtn.onclick=function(){ openResumePdf(pdfBtn); };
     }
 
     function renderHistory(d){
