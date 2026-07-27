@@ -131,6 +131,15 @@
        sandbox="" — no allow-scripts, no allow-same-origin — so a crafted letter cannot run
        script, cannot reach this document, and cannot read the admin JWT out of localStorage. */
     .clframe { width:100%; height:60vh; min-height:300px; border:1px solid var(--line); border-radius:12px; background:#fff; display:block; }
+    .prodwarn { background:rgba(251,191,36,.10); border:1px solid rgba(251,191,36,.45); border-radius:12px; padding:12px; margin-top:14px; }
+    .prodwarn .pwT { font-size:13px; font-weight:800; color:#ffd98a; }
+    .prodwarn .pwB { font-size:12px; color:#e8c98f; margin-top:4px; line-height:17px; }
+    .prodwarn .pwL { display:block; font-size:11.5px; font-weight:800; color:#ffd98a; letter-spacing:.5px; margin:12px 0 6px; }
+    .prodwarn .pwL b { font-family:ui-monospace,Menlo,monospace; }
+    .prodwarn .pwI { width:100%; box-sizing:border-box; background:#0e1729; border:1.5px solid #4a3a1e; border-radius:10px; padding:11px 13px; color:var(--ink); font-size:15px; font-weight:800; letter-spacing:2px; outline:none; }
+    .prodwarn .pwI.ok { border-color:#34d399; background:rgba(52,211,153,.07); }
+    .prodwarn .pwI.bad { border-color:#fb7185; }
+    .prodwarn .pwH { font-size:11.5px; color:#e8c98f; margin-top:6px; }
   </style>
 </head>
 <body>
@@ -798,6 +807,7 @@
     // Every send lands on a real person's phone, so nothing leaves this page without an explicit
     // confirmation that names the user and shows the exact text that will be delivered.
     var SENDING=false;                       // one send at a time, page-wide
+    var CONFIRM_WORD='SEND';                 // same word as the native screens
     function userLabel(){
       var u=(OV&&OV.user)||{};
       return { name: u.full_name||u.email||('User '+UID), email: u.email||'', id: String(u.id!=null?u.id:UID) };
@@ -827,19 +837,53 @@
         pv.appendChild(el('div','pb', o.body||''));
         box.appendChild(pv);
         if(o.note) box.appendChild(el('div','muted', o.note)).style.fontSize='11px';
+        // ⚠️ PRODUCTION + type-to-confirm. A dialog with only a button becomes muscle memory by the
+        // third send — the admin stops reading and confirms by reflex, which is exactly when the
+        // wrong template reaches the wrong person. Typing a word cannot be done by reflex.
+        var warn=el('div','prodwarn');
+        warn.appendChild(el('div','pwT','⚠ This is the live production database'));
+        warn.appendChild(el('div','pwB', who.name+' will receive this on their real device. It cannot be recalled once sent.'));
+        var lab=el('label','pwL'); lab.setAttribute('for','sendType');
+        lab.appendChild(document.createTextNode('Type '));
+        var strong=document.createElement('b'); strong.textContent=CONFIRM_WORD; lab.appendChild(strong);
+        lab.appendChild(document.createTextNode(' to confirm'));
+        warn.appendChild(lab);
+        var typeIn=document.createElement('input');
+        typeIn.type='text'; typeIn.id='sendType'; typeIn.className='pwI'; typeIn.autocomplete='off';
+        typeIn.spellcheck=false; typeIn.placeholder=CONFIRM_WORD;
+        typeIn.setAttribute('aria-label','Type '+CONFIRM_WORD+' to confirm sending');
+        warn.appendChild(typeIn);
+        var hint=el('div','pwH','The send button stays disabled until this matches.');
+        warn.appendChild(hint);
+        box.appendChild(warn);
+
         var acts=el('div','acts');
         var cancel=el('button','tbtn ghost','Cancel'); cancel.id='sendCancel';
         var shortName = who.name.length>28 ? (who.name.slice(0,27)+'…') : who.name;   // the full name is spelled out above
         var go=el('button','tbtn danger','Send to '+shortName); go.id='sendGo';
+        go.disabled=true;
+        function syncGate(){
+          var okNow = typeIn.value.trim()===CONFIRM_WORD;
+          go.disabled = !okNow;
+          typeIn.className = 'pwI' + (okNow ? ' ok' : (typeIn.value.trim() ? ' bad' : ''));
+          hint.textContent = okNow
+            ? 'Confirmed — the send button is now active.'
+            : (typeIn.value.trim() ? ('Does not match — type ' + CONFIRM_WORD + ' exactly.')
+                                   : 'The send button stays disabled until this matches.');
+        }
+        typeIn.addEventListener('input', syncGate);
         cancel.onclick=function(){ finish(false); };
-        go.onclick=function(){ go.disabled=true; cancel.disabled=true; go.textContent='Sending…'; finish(true); };  // one-way door: cannot be clicked twice
+        go.onclick=function(){
+          if(typeIn.value.trim()!==CONFIRM_WORD) return;      // the real gate, not just `disabled`
+          go.disabled=true; cancel.disabled=true; typeIn.disabled=true; go.textContent='Sending…'; finish(true);
+        };  // one-way door: cannot be clicked twice
         acts.appendChild(cancel); acts.appendChild(go); box.appendChild(acts);
         mask.appendChild(box);
         mask.onclick=function(ev){ if(ev.target===mask) finish(false); };
         function onKey(ev){ if(ev.key==='Escape'){ ev.preventDefault(); finish(false); } }
         document.addEventListener('keydown', onKey, true);
         document.body.appendChild(mask);
-        try{ cancel.focus(); }catch(e){}
+        try{ typeIn.focus(); }catch(e){}
       });
     }
 

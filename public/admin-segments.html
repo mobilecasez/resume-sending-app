@@ -89,6 +89,20 @@
     .step.done { color:var(--grn); }
     .hiddenlist { font-size:11.5px; color:var(--mut); margin-top:6px; line-height:1.5; }
     .hiddenlist b { color:var(--ink); }
+    .mask { position:fixed; inset:0; background:rgba(6,10,25,.72); display:flex; align-items:center; justify-content:center; padding:18px; z-index:60; }
+    .modal { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:18px; width:100%; max-width:520px; max-height:88vh; overflow:auto; }
+    .modal h3 { margin:0 0 8px; font-size:17px; font-weight:800; }
+    .acts { display:flex; gap:10px; margin-top:16px; }
+    .acts .tbtn { flex:1; height:46px; }
+    .prodwarn { background:rgba(251,191,36,.10); border:1px solid rgba(251,191,36,.45); border-radius:12px; padding:12px; margin-top:14px; }
+    .prodwarn .pwT { font-size:13px; font-weight:800; color:#ffd98a; }
+    .prodwarn .pwB { font-size:12px; color:#e8c98f; margin-top:4px; line-height:17px; }
+    .prodwarn .pwL { display:block; font-size:11.5px; font-weight:800; color:#ffd98a; letter-spacing:.5px; margin:12px 0 6px; }
+    .prodwarn .pwL b { font-family:ui-monospace,Menlo,monospace; }
+    .prodwarn .pwI { width:100%; box-sizing:border-box; background:#0e1729; border:1.5px solid #4a3a1e; border-radius:10px; padding:11px 13px; color:var(--ink); font-size:15px; font-weight:800; letter-spacing:2px; outline:none; }
+    .prodwarn .pwI.ok { border-color:#34d399; background:rgba(52,211,153,.07); }
+    .prodwarn .pwI.bad { border-color:#fb7185; }
+    .prodwarn .pwH { font-size:11.5px; color:#e8c98f; margin-top:6px; }
   </style>
 </head>
 <body>
@@ -579,6 +593,69 @@
       updateSendButton();
     }
 
+    // ── The last gate before many real phones ────────────────────────────────
+    var CONFIRM_WORD='SEND';                 // same word as the native screens
+    function mkEl(tag, cls, text){ var e=document.createElement(tag); if(cls) e.className=cls; if(text!=null) e.textContent=text; return e; }
+    function confirmBulkSend(o){
+      o=o||{};
+      return new Promise(function(resolve){
+        var done=false;
+        function finish(v){ if(done) return; done=true; try{ document.removeEventListener('keydown', onKey, true); }catch(e){} try{ mask.remove(); }catch(e){} resolve(v); }
+        var mask=mkEl('div','mask'); var box=mkEl('div','modal');
+        box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true');
+        box.appendChild(mkEl('h3', null, 'Send to '+num(o.count)+' real '+(o.count===1?'person':'people')+'?'));
+        box.appendChild(mkEl('div','muted','Segment: '+o.segment));
+        box.appendChild(mkEl('div','muted','Template: '+o.template));
+        if(o.title||o.body){
+          var pv=mkEl('div','skipbox');
+          pv.appendChild(mkEl('div','skiphead','Exactly what is delivered'));
+          var inner=mkEl('div'); inner.style.padding='9px 10px';
+          var tt=mkEl('div',null,o.title||'—'); tt.style.fontWeight='800'; tt.style.fontSize='13px';
+          var bb=mkEl('div','muted',o.body||'—'); bb.style.marginTop='4px'; bb.style.fontSize='12.5px';
+          inner.appendChild(tt); inner.appendChild(bb); pv.appendChild(inner); box.appendChild(pv);
+        }
+        var warn=mkEl('div','prodwarn');
+        warn.appendChild(mkEl('div','pwT','⚠ This is the live production database'));
+        warn.appendChild(mkEl('div','pwB', num(o.count)+' real '+(o.count===1?'person':'people')+' will receive this on their device immediately. It cannot be recalled once sent.'));
+        var lab=mkEl('label','pwL'); lab.setAttribute('for','bulkType');
+        lab.appendChild(document.createTextNode('Type '));
+        var st=document.createElement('b'); st.textContent=CONFIRM_WORD; lab.appendChild(st);
+        lab.appendChild(document.createTextNode(' to confirm'));
+        warn.appendChild(lab);
+        var ti=document.createElement('input');
+        ti.type='text'; ti.id='bulkType'; ti.className='pwI'; ti.autocomplete='off'; ti.spellcheck=false;
+        ti.placeholder=CONFIRM_WORD; ti.setAttribute('aria-label','Type '+CONFIRM_WORD+' to confirm sending');
+        warn.appendChild(ti);
+        var hint=mkEl('div','pwH','The send button stays disabled until this matches.');
+        warn.appendChild(hint); box.appendChild(warn);
+
+        var acts=mkEl('div','acts');
+        var cancel=mkEl('button','tbtn ghost','Cancel');
+        var go=mkEl('button','tbtn send','Send to '+num(o.count));
+        go.disabled=true;
+        ti.addEventListener('input', function(){
+          var okNow = ti.value.trim()===CONFIRM_WORD;
+          go.disabled=!okNow;
+          ti.className='pwI'+(okNow?' ok':(ti.value.trim()?' bad':''));
+          hint.textContent = okNow ? 'Confirmed — the send button is now active.'
+            : (ti.value.trim() ? ('Does not match — type '+CONFIRM_WORD+' exactly.')
+                               : 'The send button stays disabled until this matches.');
+        });
+        cancel.onclick=function(){ finish(false); };
+        go.onclick=function(){
+          if(ti.value.trim()!==CONFIRM_WORD) return;     // the real gate, not just `disabled`
+          go.disabled=true; cancel.disabled=true; ti.disabled=true; go.textContent='Sending…'; finish(true);
+        };
+        acts.appendChild(cancel); acts.appendChild(go); box.appendChild(acts);
+        mask.appendChild(box);
+        mask.onclick=function(ev){ if(ev.target===mask) finish(false); };
+        function onKey(ev){ if(ev.key==='Escape'){ ev.preventDefault(); finish(false); } }
+        document.addEventListener('keydown', onKey, true);
+        document.body.appendChild(mask);
+        try{ ti.focus(); }catch(e){}
+      });
+    }
+
     // ── Real send (requires a valid preview + an explicit confirm) ───────────
     async function runSend(){
       if(denied) return;
@@ -588,10 +665,17 @@
       var n=S.sendCount;
       if(!n){ invalidatePreview('nobody to send to'); return; }
       var t=tplByKey(S.tplKey);
-      var msg='Send "'+((t&&t.label)||S.tplKey)+'" to '+n+' real user'+(n===1?'':'s')
-        +' in the "'+S.segLabel+'" segment?\n\n'
-        +'They get a push notification on their phone immediately. This cannot be undone.';
-      if(!window.confirm(msg)) return;
+      // ⚠️ NOT window.confirm. A browser confirm is one reflex click on the same spot, and this
+      // reaches many real phones at once. The dialog below makes the admin TYPE the word first, and
+      // states plainly that this is the production database.
+      var ok = await confirmBulkSend({
+        template: (t&&t.label)||S.tplKey,
+        segment: S.segLabel,
+        count: n,
+        title: (S.preview && S.preview.preview && S.preview.preview.title) || '',
+        body: (S.preview && S.preview.preview && S.preview.preview.body) || '',
+      });
+      if(!ok) return;
       // Re-check after the modal, then send the EXACT payload that was previewed (not a fresh read
       // of the form) so the copy that goes out is provably the copy that was reviewed.
       if(!S.preview || !S.previewPayload || S.previewSig!==sig()){ invalidatePreview('the message changed after the preview'); return; }

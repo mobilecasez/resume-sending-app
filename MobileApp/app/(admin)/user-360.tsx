@@ -26,6 +26,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { WebView } from 'react-native-webview';
 import LiveTargetWarning from '../../components/LiveTargetWarning';
+import TypeToConfirm, { confirmSatisfied } from '../../components/TypeToConfirm';
 import {
   fetchAdminUserOverview, fetchAdminUserMatchedJobs, fetchAdminUserActivity,
   fetchAdminCoverLetter, fetchAdminNotifyTemplates, sendAdminUserNotification,
@@ -708,10 +709,14 @@ function LetterViewer({ ov, onClose }: { ov: Extract<Overlay, { kind: 'letter' }
   );
 }
 
-function ConfirmSheet({ ov, sending, onCancel, onGo }: {
-  ov: ConfirmPayload; sending: boolean; onCancel: () => void; onGo: () => void;
+function ConfirmSheet({ ov, sending, typed, onTyped, onCancel, onGo }: {
+  ov: ConfirmPayload; sending: boolean; typed: string; onTyped: (v: string) => void;
+  onCancel: () => void; onGo: () => void;
 }) {
   const shortWho = ov.who.length > 26 ? `${ov.who.slice(0, 25)}…` : ov.who;
+  // The typed word is the ONLY thing that unlocks the send. Reading the preview above is optional;
+  // typing is not.
+  const unlocked = confirmSatisfied(typed);
   return (
     <View style={s.confirmWrap}>
       <Pressable style={{ flex: 1 }} onPress={sending ? undefined : onCancel} />
@@ -739,12 +744,18 @@ function ConfirmSheet({ ov, sending, onCancel, onGo }: {
             <Text style={s.pvB}>{ov.body || '—'}</Text>
           </View>
           <Text style={s.confirmEdit}>{ov.editNote}</Text>
+          <TypeToConfirm value={typed} onChange={onTyped} audience={ov.who} disabled={sending} />
         </ScrollView>
         <View style={s.confirmActions}>
           <TouchableOpacity style={[s.cancelBtn, sending && s.sendBtnOff]} disabled={sending} onPress={onCancel} activeOpacity={0.85}>
             <Text style={s.cancelBtnT}>Cancel</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[s.dangerBtn, sending && s.sendBtnOff]} disabled={sending} onPress={onGo} activeOpacity={0.85}>
+          <TouchableOpacity
+            style={[s.dangerBtn, (sending || !unlocked) && s.sendBtnOff]}
+            disabled={sending || !unlocked}
+            onPress={onGo}
+            activeOpacity={0.85}
+          >
             {sending
               ? <ActivityIndicator color="#fff" size="small" />
               : <><Ionicons name="send" size={14} color="#fff" /><Text style={s.dangerBtnT} numberOfLines={1}>Send to {shortWho}</Text></>}
@@ -789,6 +800,9 @@ export default function User360Screen() {
   const [activeTab, setActiveTab] = useState<AdminActivityKind>('cover_letters');
 
   const [overlay, setOverlay] = useState<Overlay | null>(null);
+  // Cleared every time the sheet opens or closes, so a previous confirmation can never
+  // carry over and unlock the NEXT send without the admin typing again.
+  const [confirmTyped, setConfirmTyped] = useState('');
   const [sending, setSending] = useState(false);
   const [results, setResults] = useState<Record<string, Outcome>>({});
   const alive = useRef(true);
@@ -962,6 +976,7 @@ export default function User360Screen() {
     const editNote = req.titleEdited || req.bodyEdited
       ? `${which} sent as an override — exactly this wording, with no per-user personalisation for ${both ? 'either field' : 'that field'}.`
       : 'Nothing was edited, so no override is sent — the server renders this template for this user at send time (the preview above is that render).';
+    setConfirmTyped('');
     setOverlay({
       kind: 'confirm',
       heading: 'Send this notification?',
@@ -987,6 +1002,7 @@ export default function User360Screen() {
     const tpl = arr(tpls?.templates).find((t) => t.key === 'specific_job');
     const na = tpl && tpl.relevance === 'not_applicable' ? (tpl.reason || 'Not applicable for this user right now.') : null;
     const notAdvertisable = matched?.advertisable === false;
+    setConfirmTyped('');
     setOverlay({
       kind: 'confirm',
       heading: 'Send this job?',
@@ -1006,6 +1022,9 @@ export default function User360Screen() {
   const runConfirmed = useCallback(async () => {
     const p = overlay && overlay.kind === 'confirm' ? overlay : null;
     if (!p || sending) return;
+    // Re-check the typed word HERE too, not just on the button's disabled prop — a disabled prop is
+    // a UI hint, this is the actual gate.
+    if (!confirmSatisfied(confirmTyped)) return;
     setSending(true);
     let out: Outcome;
     try {
@@ -1017,12 +1036,14 @@ export default function User360Screen() {
     if (!alive.current) return;
     setSending(false);
     setResults((r) => ({ ...r, [p.targetId]: out }));
+    setConfirmTyped('');
     setOverlay(null);
     if (out.kind !== 'failed') refreshHistory();
-  }, [overlay, sending, refreshHistory]);
+  }, [overlay, sending, refreshHistory, confirmTyped]);
 
   const cancelConfirm = useCallback(() => {
     const p = overlay && overlay.kind === 'confirm' ? overlay : null;
+    setConfirmTyped('');
     setOverlay(null);
     if (p) {
       setResults((r) => ({
@@ -1512,7 +1533,7 @@ export default function User360Screen() {
           ) : overlay.kind === 'letter' ? (
             <LetterViewer ov={overlay} onClose={() => setOverlay(null)} />
           ) : (
-            <ConfirmSheet ov={overlay} sending={sending} onCancel={cancelConfirm} onGo={runConfirmed} />
+            <ConfirmSheet ov={overlay} sending={sending} typed={confirmTyped} onTyped={setConfirmTyped} onCancel={cancelConfirm} onGo={runConfirmed} />
           )}
         </Modal>
       ) : null}

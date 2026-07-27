@@ -26,6 +26,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useRouter } from 'expo-router';
 import LiveTargetWarning from '../../components/LiveTargetWarning';
+import TypeToConfirm, { confirmSatisfied } from '../../components/TypeToConfirm';
 import {
   fetchAdminSegments, fetchAdminSegmentUsers, fetchAdminNotifyTemplates,
   previewAdminSegmentNotify, sendAdminSegmentNotify,
@@ -420,6 +421,8 @@ export default function SegmentsScreen() {
   const [disarmReason, setDisarmReason] = useState<string>('no preview has been run yet');
   const [previewing, setPreviewing] = useState(false);
   const [sending, setSending] = useState(false);
+  const [confirming, setConfirming] = useState<ArmedPreview | null>(null);
+  const [confirmTyped, setConfirmTyped] = useState('');
   const [result, setResult] = useState<ResultView | null>(null);
   const [denied, setDenied] = useState<string | null>(null);
   const [hardLock, setHardLock] = useState<string | null>(null);
@@ -702,22 +705,26 @@ export default function SegmentsScreen() {
     }
   }, [disarm, gate, selectedTemplate, segLabel, segKey, tplKey, loadSegments, loadUsers]);
 
+  // ⚠️ Deliberately NOT Alert.alert. A system alert is dismissed by reflex — one tap on the same
+  // spot every time — and this action reaches many real phones at once. The overlay below makes the
+  // admin type the word before the button exists at all.
   const onSendPress = useCallback(() => {
     const snapshot = armedRef.current;
     if (!canSend || !snapshot) return;
-    const n = snapshot.sendCount;
-    const tplLabel = selectedTemplate?.label || snapshot.payload.templateKey;
-    Alert.alert(
-      `Send to ${fmt(n)} real ${plural(n, 'person', 'people')}?`,
-      `Template: ${tplLabel}\nSegment: ${segLabel}\nCopy: ${personalisationShort(snapshot.mode)}\n\n` +
-      `${fmt(n)} ${plural(n, 'person', 'people')} will get a push notification on their phone immediately. This cannot be undone.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: `Send to ${fmt(n)}`, style: 'destructive', onPress: () => { doSend(snapshot); } },
-      ],
-      { cancelable: true },
-    );
-  }, [canSend, selectedTemplate, segLabel, doSend]);
+    setConfirmTyped('');
+    setConfirming(snapshot);
+  }, [canSend]);
+
+  const cancelConfirm = useCallback(() => { setConfirming(null); setConfirmTyped(''); }, []);
+
+  const goConfirmed = useCallback(() => {
+    const snapshot = confirming;
+    // The real gate, not just the button's disabled prop.
+    if (!snapshot || !confirmSatisfied(confirmTyped)) return;
+    setConfirming(null);
+    setConfirmTyped('');
+    doSend(snapshot);
+  }, [confirming, confirmTyped, doSend]);
 
   // ── render helpers ───────────────────────────────────────────────────────────
   const visibleUsers = useMemo(() => {
@@ -1222,6 +1229,56 @@ export default function SegmentsScreen() {
         onPick={onPickTemplate}
         onClose={() => setPickerOpen(false)}
       />
+
+      {/* ⚠️ An absolute overlay, NOT a <Modal>. TemplatePicker above is already a Modal, and stacking
+          RN Modals is the failure that hard-crashed iOS in build 87. An overlay also cannot be
+          swiped away by accident the way a sheet can. */}
+      {confirming ? (
+        <View style={styles.confirmOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={sending ? undefined : cancelConfirm} />
+          <View style={styles.confirmCard}>
+            <ScrollView contentContainerStyle={{ padding: 18 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <Text style={styles.confirmH}>
+                Send to {fmt(confirming.sendCount)} real {plural(confirming.sendCount, 'person', 'people')}
+              </Text>
+              <Text style={styles.confirmSub}>
+                Segment: {segLabel}{'\n'}
+                Template: {selectedTemplate?.label || confirming.payload.templateKey}{'\n'}
+                Copy: {personalisationShort(confirming.mode)}
+              </Text>
+
+              <View style={styles.confirmPv}>
+                <Text style={styles.confirmPvL}>DELIVERED TITLE</Text>
+                <Text style={styles.confirmPvT}>{confirming.data?.preview?.title || "—"}</Text>
+                <Text style={[styles.confirmPvL, { marginTop: 10 }]}>DELIVERED BODY</Text>
+                <Text style={styles.confirmPvB}>{confirming.data?.preview?.body || "—"}</Text>
+              </View>
+
+              <TypeToConfirm
+                value={confirmTyped}
+                onChange={setConfirmTyped}
+                disabled={sending}
+                audience={`${fmt(confirming.sendCount)} ${plural(confirming.sendCount, 'person', 'people')} in “${segLabel}”`}
+              />
+            </ScrollView>
+            <View style={styles.confirmActions}>
+              <TouchableOpacity style={styles.confirmCancel} disabled={sending} onPress={cancelConfirm} activeOpacity={0.85}>
+                <Text style={styles.confirmCancelT}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.confirmGo, (sending || !confirmSatisfied(confirmTyped)) && styles.confirmGoOff]}
+                disabled={sending || !confirmSatisfied(confirmTyped)}
+                onPress={goConfirmed}
+                activeOpacity={0.85}
+              >
+                {sending
+                  ? <ActivityIndicator color="#fff" size="small" />
+                  : <><Ionicons name="send" size={14} color="#fff" /><Text style={styles.confirmGoT}>Send now</Text></>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -1374,4 +1431,19 @@ const styles = StyleSheet.create({
   tplRoute: { fontSize: 10, color: C.blueDeep, marginTop: 5, fontWeight: '700' },
   hiddenRow: { flexDirection: 'row', gap: 6 },
   hiddenText: { flex: 1, fontSize: 11, color: C.textMuted, lineHeight: 16 },
+
+  confirmOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(8,12,26,0.62)', justifyContent: 'center', padding: 18, zIndex: 50 },
+  confirmCard: { backgroundColor: C.surface, borderRadius: 20, maxHeight: '86%', overflow: 'hidden' },
+  confirmH: { fontSize: 18, fontWeight: '800', color: C.ink, letterSpacing: -0.3 },
+  confirmSub: { fontSize: 12.5, color: C.textMuted, marginTop: 8, lineHeight: 19 },
+  confirmPv: { backgroundColor: C.bgSoft, borderRadius: 13, padding: 13, marginTop: 14 },
+  confirmPvL: { fontSize: 10, fontWeight: '800', color: C.textFaint, letterSpacing: 0.7 },
+  confirmPvT: { fontSize: 14, fontWeight: '800', color: C.ink, marginTop: 4 },
+  confirmPvB: { fontSize: 12.5, color: C.textMuted, marginTop: 4, lineHeight: 18 },
+  confirmActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: C.border },
+  confirmCancel: { flex: 1, height: 48, borderRadius: 13, backgroundColor: C.bgSoft, alignItems: 'center', justifyContent: 'center' },
+  confirmCancelT: { fontSize: 14, fontWeight: '800', color: C.ink },
+  confirmGo: { flex: 1.35, height: 48, borderRadius: 13, backgroundColor: '#E11D48', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  confirmGoOff: { backgroundColor: '#D8B4BE' },
+  confirmGoT: { fontSize: 14, fontWeight: '800', color: '#fff' },
 });
