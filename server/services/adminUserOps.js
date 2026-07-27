@@ -1035,7 +1035,12 @@ async function getSegmentUsers(key, limit = 200, templateKey = null, opts = {}) 
   // in a statement into a positional placeholder (db-config.js:72). A `?` inside a regex literal is
   // silently turned into `$n`, which both corrupts the pattern and shifts every real parameter after
   // it. The suite caught this as "no_token: 2" for users holding perfectly valid tokens.
-  const hasPush = `(u.expo_push_token ~ '^(ExpoPushToken|ExponentPushToken)\\[')`;
+  // ⚠️ COALESCE is load-bearing: `NULL ~ regex` yields NULL, not FALSE, and NULL then poisons every
+  // aggregate below — `COUNT(*) FILTER (WHERE NOT has_push)` skips a NULL, so users with no token at
+  // all silently vanished from BOTH the excluded buckets and the sendable count. The preview reported
+  // "72 in segment, 24 sendable, 0 excluded", which is self-contradictory and understates who cannot
+  // be reached. Verified on live data: 51 tokenless users were being counted as nothing at all.
+  const hasPush = `(COALESCE(u.expo_push_token, '') ~ '^(ExpoPushToken|ExponentPushToken)\\[')`;
   const optedOut = cat && hasPrefs ? `COALESCE(p.${cat} = FALSE, FALSE)` : 'FALSE';
   const recently = tpl && hasLog
     ? `EXISTS (SELECT 1 FROM admin_notification_log l WHERE l.user_id = u.id AND l.template_key = ${P(tpl.key)}
