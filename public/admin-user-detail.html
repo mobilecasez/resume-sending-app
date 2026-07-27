@@ -97,13 +97,55 @@
     .li .d { color:var(--mut); font-size:11px; margin-top:3px; }
     .hd { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
     .skel { color:var(--mut); font-size:13px; padding:10px 0; }
+
+    /* ── Admin nav strip ─────────────────────────────────────────────────────
+       This page is standalone (it deliberately does NOT load /js/app-header.js),
+       so the admin menu is spelled out here as plain static links. Nothing here
+       is user data, so it stays in the markup rather than being built by JS —
+       it survives an API failure and the Access-Denied state. */
+    .anav { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 14px; }
+    .anav a, .anav .here { font-size:12px; font-weight:700; text-decoration:none; border-radius:999px;
+                           padding:5px 11px; border:1px solid var(--line); background:#0e1729; color:var(--mut); white-space:nowrap; }
+    .anav a:hover { border-color:var(--cyan); color:var(--ink); }
+    .anav .here { background:rgba(6,182,212,.15); border-color:var(--cyan); color:var(--ink); }
+
+    /* ── Activity tabs ───────────────────────────────────────────────────── */
+    .tabs { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
+    .tab { background:#0e1729; border:1px solid var(--line); color:var(--mut); border-radius:999px;
+           padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; font-family:inherit; }
+    .tab:hover { border-color:var(--cyan); color:var(--ink); }
+    .tab[aria-selected="true"] { background:rgba(6,182,212,.15); border-color:var(--cyan); color:var(--ink); }
+    .tab .tc { font-size:11.5px; margin-left:2px; color:var(--mut); }
+    .tab[aria-selected="true"] .tc { color:var(--cyan); }
+    .arow { display:flex; align-items:flex-start; gap:12px; padding:11px 0; border-bottom:1px solid rgba(34,48,77,.55); flex-wrap:wrap; }
+    .arow:last-child { border-bottom:none; }
+    .arow .main { flex:1; min-width:200px; }
+    .at { font-weight:700; font-size:13.5px; overflow-wrap:anywhere; }
+    .am { color:var(--mut); font-size:11.5px; margin-top:2px; overflow-wrap:anywhere; }
+    .am a { color:var(--cyan); text-decoration:none; }
+    .apv { color:var(--mut); font-size:12px; line-height:1.45; margin-top:5px; overflow-wrap:anywhere; }
+    .more { display:flex; align-items:center; justify-content:center; gap:10px; margin-top:12px; }
+    .shown { color:var(--mut); font-size:11.5px; margin-top:10px; }
+    .modal.wide { max-width:920px; }
+    /* User-generated cover-letter HTML is rendered here and NOWHERE else. The frame is
+       sandbox="" — no allow-scripts, no allow-same-origin — so a crafted letter cannot run
+       script, cannot reach this document, and cannot read the admin JWT out of localStorage. */
+    .clframe { width:100%; height:60vh; min-height:300px; border:1px solid var(--line); border-radius:12px; background:#fff; display:block; }
   </style>
 </head>
 <body>
   <div class="wrap">
+    <nav class="anav" id="anav" aria-label="Admin sections">
+      <a href="/admin-store-analytics">📊 Store Analytics</a>
+      <a href="/admin-user-analytics">🧭 User Analytics</a>
+      <a href="/admin-segments">🎯 Segments</a>
+      <a href="/admin-registered-users">🧑‍💻 Registered Users</a>
+      <a href="/admin-users">💳 User Credits</a>
+      <span class="here" aria-current="page">👤 User 360</span>
+    </nav>
     <a class="back" href="/admin-user-analytics">← User Analytics</a>
     <h1>User 360</h1>
-    <div class="sub" id="sub">Everything about one user — profile, documents, résumé insight, best-matching jobs and one-tap notifications.</div>
+    <div class="sub" id="sub">Everything about one user — profile, documents, résumé insight, every cover letter / saved job / application / credit spend they have made, best-matching jobs and one-tap notifications.</div>
     <div id="root" class="stack"><div class="card"><div class="skel">Loading…</div></div></div>
   </div>
 
@@ -111,7 +153,16 @@
     // ── Auth (same pattern as admin-user-analytics.html) ─────────────────────
     var qToken=null, qUser=null;
     try{ var QS=new URLSearchParams(location.search); qToken=QS.get('token'); qUser=QS.get('userId')||QS.get('id'); }catch(e){}
-    if (qToken){ try{ localStorage.setItem('authToken', qToken); }catch(e){} }
+    // Consume ?token= then REMOVE it from the address bar: a token left in the URL leaks through
+    // browser history, the Referer header on every outbound link, bookmarks and shared screenshots.
+    // Same-document replaceState keeps the page state intact.
+    if (qToken){
+      try{ localStorage.setItem('authToken', qToken); }catch(e){}
+      try{
+        var _u=new URL(location.href); _u.searchParams.delete('token');
+        history.replaceState(null, '', _u.pathname + (_u.search||'') + (_u.hash||''));
+      }catch(e){}
+    }
     var authToken = qToken || localStorage.getItem('authToken');
     if (!authToken){ window.location.href='/login'; }
     var API_BASE = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://localhost:3000' : 'https://cvapplyr.com';
@@ -215,6 +266,7 @@
        +'<div class="grid2"><div class="card" id="cProfile"><div class="sect">Profile details</div><div class="skel">Loading…</div></div>'
        +'<div class="card" id="cDocs"><div class="sect">Documents</div><div class="skel">Loading…</div></div></div>'
        +'<div class="card" id="cResume"><div class="sect">Résumé insight</div><div class="skel">Loading…</div></div>'
+       +'<div class="card" id="cActivity"><div class="sect">Everything they have done</div><div class="skel">Loading…</div></div>'
        +'<div class="card" id="cJobs"><div class="sect">Best matched jobs</div><div class="skel">Loading…</div></div>'
        +'<div class="card" id="cNotify"><div class="sect">Send a notification</div><div class="skel">Loading templates…</div></div>'
        +'<div class="grid2"><div class="card" id="cNotifHist"><div class="sect">Recent notifications</div><div class="skel">Loading…</div></div>'
@@ -242,12 +294,14 @@
       if(!d.success || !d.user){
         set('cHead','<div class="empty">'+esc(d.error||('User '+UID+' not found.'))+'</div>');
         ['cGlance','cProfile','cDocs','cResume','cNotifHist','cSendHist'].forEach(function(x){ fail(x,'','Unavailable.'); });
+        initActivity(null);          // separate endpoint — still worth trying, it may well answer
         return;
       }
       OV=d;
       renderHead(d); renderGlance(d); renderProfile(d); renderDocs(d); renderResume(d); renderHistory(d);
+      initActivity(d.activity||{});
       var nm=d.user.full_name||d.user.email||('User '+UID);
-      document.getElementById('sub').innerHTML='Everything about <b>'+esc(nm)+'</b> — profile, documents, résumé insight, best-matching jobs and one-tap notifications.';
+      document.getElementById('sub').innerHTML='Everything about <b>'+esc(nm)+'</b> — profile, documents, résumé insight, every cover letter / saved job / application / credit spend, best-matching jobs and one-tap notifications.';
       try{ document.title=nm+' · CVApplyr Admin'; }catch(e){}
     }
 
@@ -422,6 +476,285 @@
     async function refreshHistory(){
       var d = await api('/api/admin/users/'+UID+'/overview');
       if(d && d.success){ OV=d; renderHistory(d); renderGlance(d); }
+    }
+
+    // ── 5½ : everything they have done ───────────────────────────────────────
+    // "At a glance" answers HOW MANY; this answers WHICH ONES. Tabbed and lazy: a tab is
+    // fetched the first time it is opened and then cached, so opening the page costs exactly
+    // one activity request (the first tab) instead of five.
+    //   GET /api/admin/users/:id/activity?kind=<k>&limit=25&offset=0
+    var ACT_PAGE=25;
+    var ACT_TABS=[
+      { k:'cover_letters', label:'Cover letters', seed:'cover_letters', empty:'No cover letters generated yet.' },
+      { k:'saved_jobs',    label:'Saved jobs',    seed:'saved_jobs',    empty:'Nothing saved yet.' },
+      { k:'applications',  label:'Applications',  seed:'applications',  empty:'No applications tracked yet.' },
+      { k:'credits',       label:'Credit usage',  seed:null,            empty:'No credits spent yet.' },
+      { k:'searches',      label:'Searches',      seed:'searches',      empty:'No searches recorded yet.' }
+    ];
+    var AS={}, ACT_ACTIVE=null;
+
+    // The activity endpoint is owned by another module, so the envelope is read tolerantly
+    // (items / rows / <kind> / data) rather than hard-failing on one key name.
+    function actItems(d,k){ if(!d) return []; var v=d.items; if(v==null) v=d.rows; if(v==null) v=d[k]; if(v==null) v=d.data; return arr(v); }
+    function actTotal(d){
+      var c=[d&&d.total, d&&d.count, d&&d.totalCount];
+      for(var i=0;i<c.length;i++){ if(c[i]!=null && isFinite(Number(c[i]))) return Number(c[i]); }
+      return null;
+    }
+    function tabIndex(k){ for(var i=0;i<ACT_TABS.length;i++){ if(ACT_TABS[i].k===k) return i; } return -1; }
+    function tabDef(k){ var i=tabIndex(k); return i<0?null:ACT_TABS[i]; }
+
+    // Status text comes from the DB (free-form), so it is classified by shape and always escaped.
+    function stPill(s){
+      s=String(s==null?'':s).trim(); if(!s) return '';
+      var l=s.toLowerCase();
+      var c = /(sent|delivered|applied|complete|success|done|hired|accept)/.test(l) ? 'g'
+            : (/(fail|error|reject|declin|cancel|expire)/.test(l) ? 'r'
+            : (/(draft|pending|generat|progress|review|saved|new|queue)/.test(l) ? 'a' : 'n'));
+      return '<span class="pill '+c+'">'+esc(s.replace(/_/g,' '))+'</span>';
+    }
+
+    // app_events.props is JSON — it may arrive parsed or as a string.
+    var PK_Q=['query','q','keyword','keywords','search','searchTerm','search_term','term','text','title','role'];
+    var PK_L=['location','city','country','place','where','region'];
+    function propsOf(p){
+      if(p==null) return {};
+      if(typeof p==='object') return p;
+      if(typeof p==='string'){ try{ var j=JSON.parse(p); return (j && typeof j==='object') ? j : { value:p }; }catch(e){ return { value:p }; } }
+      return { value:String(p) };
+    }
+    function pickKey(o,keys){ for(var i=0;i<keys.length;i++){ var v=o[keys[i]]; if(has(v) && typeof v!=='object') return String(v); } return ''; }
+    // COSMETIC ONLY — this is not a sanitiser and nothing depends on it for safety. If the server
+    // hands back a raw-HTML preview, this makes it read as a sentence instead of a wall of escaped
+    // tags; the result still goes through esc() before it reaches innerHTML.
+    var ENTS={ '&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&#39;':"'",'&nbsp;':' ' };
+    function plain(s){
+      return String(s==null?'':s)
+        .replace(/<[^>]*>/g,' ')
+        .replace(/&(amp|lt|gt|quot|#39|nbsp);/gi, function(m){ return ENTS[m.toLowerCase()] || m; });
+    }
+    function restBits(o,skip){
+      var out=[];
+      Object.keys(o||{}).forEach(function(k){
+        if(skip.indexOf(k)>=0) return;
+        var v=o[k]; if(v==null || v==='') return;
+        if(typeof v==='object'){ try{ v=JSON.stringify(v); }catch(e){ v='[object]'; } }
+        out.push(String(k).replace(/_/g,' ')+': '+String(v));
+      });
+      return clip(out.slice(0,6).join(' · '), 200);
+    }
+
+    // Row renderers. Every server value goes through esc(); numbers go through num()/Math.round
+    // so the only unescaped markup here is markup this file wrote itself.
+    var ACT_ROW={
+      cover_letters: function(r){
+        var url=safeUrl(r.website_url);
+        var meta=[r.company_name, fmtDT(r.created_at)].filter(has).map(esc).join(' · ');
+        return '<div class="arow"><div class="main">'
+          +'<div class="at">'+esc(has(r.position)?r.position:'Cover letter')+' '+stPill(r.status)+'</div>'
+          +'<div class="am">'+meta+(url?((meta?' · ':'')+'<a href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">open site ↗</a>'):'')+'</div>'
+          +(has(r.preview)?('<div class="apv">'+esc(clip(plain(r.preview),240))+'</div>'):'')
+          +'</div>'
+          +(has(r.id)?('<button class="tbtn sm ghost" data-cl="'+esc(r.id)+'">View letter</button>'):'')
+          +'</div>';
+      },
+      saved_jobs: function(r){
+        var url=safeUrl(r.job_url);
+        var bits=[r.employer_name, r.location].filter(has).map(esc);
+        if(r.saved_at) bits.push(esc('saved '+(ago(r.saved_at)||fmtDT(r.saved_at))));
+        return '<div class="arow"><div class="main">'
+          +'<div class="at">'+esc(has(r.title)?r.title:'Untitled role')+'</div>'
+          +'<div class="am">'+bits.join(' · ')+(url?((bits.length?' · ':'')+'<a href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">open posting ↗</a>'):'')+'</div>'
+          +'</div></div>';
+      },
+      applications: function(r){
+        // Field names must match what activityApplications actually returns: company_name (not
+        // employer_name), created_at (not updated_at), and NO match score at all — applications come
+        // from application_history / applied cover letters, neither of which stores one. Reading the
+        // wrong names rendered every row as "NaN%" over an empty meta line.
+        var SRC={ email:'emailed', cover_letter:'cover letter', match:'in-app' };
+        var src = has(r.source) ? '<span class="pill n">'+esc(SRC[r.source]||r.source)+'</span>' : '';
+        var url = safeUrl(r.job_url);
+        var meta=[r.company_name, r.created_at?fmtDT(r.created_at):''].filter(has).map(esc).join(' · ');
+        var reply = r.reply_received===true ? ' <span class="pill g">replied</span>' : '';
+        return '<div class="arow"><div class="main">'
+          +'<div class="at">'+esc(has(r.title)?r.title:(has(r.position)?r.position:'Untitled role'))+' '+stPill(r.status)+reply+'</div>'
+          +'<div class="am">'+(meta||'—')+' '+src
+          +(url?(' · <a href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">open posting ↗</a>'):'')
+          +'</div></div></div>';
+      },
+      credits: function(r){
+        var n=Number(r.credits_used); n=isFinite(n)?n:0;
+        var meta=[r.company_name, r.position, fmtDT(r.created_at)].filter(has).map(esc).join(' · ');
+        return '<div class="arow"><div class="badge '+(n>0?'a':'n')+'">'+(n>0?('−'+num(n)):num(n))+'</div>'
+          +'<div class="main"><div class="at">'+esc(String(r.action_type||'credit use').replace(/_/g,' '))+'</div>'
+          +'<div class="am">'+(meta||'—')+'</div></div></div>';
+      },
+      searches: function(r){
+        var p=propsOf(r.props);
+        var q=pickKey(p,PK_Q), loc=pickKey(p,PK_L);
+        var rest=restBits(p, PK_Q.concat(PK_L));
+        var meta=[loc, fmtDT(r.created_at)].filter(has).map(esc).join(' · ');
+        return '<div class="arow"><div class="main">'
+          +'<div class="at">'+esc(has(q)?q:'Search')+'</div>'
+          +'<div class="am">'+(meta||'—')+'</div>'
+          +(rest?('<div class="apv mono">'+esc(rest)+'</div>'):'')
+          +'</div></div>';
+      }
+    };
+
+    function initActivity(seed){
+      seed=seed||{};
+      ACT_TABS.forEach(function(t){
+        var n = t.seed ? Number(seed[t.seed]) : NaN;
+        AS[t.k]={ rows:[], total:null, seed:(isFinite(n)&&seed[t.seed]!=null)?n:null, loaded:false, loading:false, done:false, error:null };
+      });
+      var tabs=ACT_TABS.map(function(t,i){
+        return '<button class="tab" type="button" role="tab" id="atab_'+i+'" aria-selected="false" aria-controls="actBody" data-tab="'+esc(t.k)+'">'
+          +esc(t.label)+' <span class="tc" id="atc_'+i+'"></span></button>';   // real space: the label must not read "Cover letters29" to a screen reader
+      }).join('');
+      set('cActivity','<div class="sect">Everything they have done</div>'
+        +'<div class="muted" style="font-size:12.5px;margin:-6px 0 12px;">The actual items behind the counters above — open a tab to load it.</div>'
+        +'<div class="tabs" role="tablist" aria-label="User activity">'+tabs+'</div>'
+        +'<div id="actBody" role="tabpanel" aria-live="polite"></div>');
+      var box=document.getElementById('cActivity');
+      Array.prototype.forEach.call(box.querySelectorAll('[data-tab]'), function(b){
+        b.onclick=function(){ selectTab(b.getAttribute('data-tab')); };
+      });
+      ACT_TABS.forEach(function(t){ paintCount(t.k); });
+      selectTab(ACT_TABS[0].k);
+    }
+
+    function paintCount(k){
+      var i=tabIndex(k), s=AS[k]; if(i<0||!s) return;
+      var c=document.getElementById('atc_'+i); if(!c) return;
+      var n = (s.total!=null) ? s.total : s.seed;
+      c.textContent = (n==null) ? '' : num(n);
+    }
+
+    function selectTab(k){
+      if(!AS[k]) return;
+      ACT_ACTIVE=k;
+      ACT_TABS.forEach(function(t,i){ var b=document.getElementById('atab_'+i); if(b) b.setAttribute('aria-selected', t.k===k?'true':'false'); });
+      if(!AS[k].loaded && !AS[k].loading) loadTab(k,false); else paintPanel(k);
+    }
+
+    async function loadTab(k, more){
+      var s=AS[k]; if(!s || s.loading) return;
+      s.loading=true; if(ACT_ACTIVE===k) paintPanel(k);
+      var off = more ? s.rows.length : 0;
+      var d = await api('/api/admin/users/'+UID+'/activity?kind='+encodeURIComponent(k)+'&limit='+ACT_PAGE+'&offset='+off);
+      s.loading=false;
+      if(!d) return;                                   // 401/403 — the denied state is already on screen
+      if(d.success===false){ s.loaded=true; s.error=d.error||'Could not load this list.'; if(ACT_ACTIVE===k) paintPanel(k); return; }
+      var items=actItems(d,k);
+      s.rows = more ? s.rows.concat(items) : items;
+      var t=actTotal(d);
+      s.total = (t==null) ? s.rows.length : Math.max(t, s.rows.length);
+      // A short page means the server ran out of rows; a known total ends it too.
+      s.done = (items.length < ACT_PAGE) || (s.rows.length >= s.total);
+      s.loaded=true; s.error=null;
+      // The server explains anything the raw numbers would misrepresent (see meta.note) — carry it
+      // through instead of showing a bare total the admin would read as fact.
+      s.meta = d.meta || null;
+      s.truncated = d.truncated===true;
+      paintCount(k);
+      if(ACT_ACTIVE===k) paintPanel(k);
+    }
+
+    function paintPanel(k){
+      var body=document.getElementById('actBody'); if(!body) return;
+      var s=AS[k], t=tabDef(k)||{};
+      if(!s) return;
+      if(s.loading && !s.rows.length){ body.innerHTML='<div class="skel">Loading '+esc(String(t.label||'').toLowerCase())+'…</div>'; return; }
+      if(s.error){ body.innerHTML='<div class="empty">'+esc(s.error)+'</div>'; return; }
+      if(!s.rows.length){ body.innerHTML='<div class="empty">'+esc(t.empty||'Nothing here yet.')+'</div>'; return; }
+      var rows=s.rows.map(function(r){ return ACT_ROW[k](r||{}); }).join('');
+      // ⚠️ Never present a total the server has told us not to trust. For `applications` the total is
+      // a UNION of two records of the same act (an emailed application AND its "applied" cover
+      // letter), so 87 rows is nothing like 87 applications — the server says so in meta.note and it
+      // has to reach the screen, or the headline number quietly lies.
+      var noteTxt = s.meta && s.meta.note ? String(s.meta.note) : '';
+      var srcTxt = '';
+      if (s.meta && s.meta.sources && typeof s.meta.sources==='object') {
+        var parts=Object.keys(s.meta.sources).map(function(x){ return esc(x.replace(/_/g,' '))+' '+num(s.meta.sources[x]); });
+        if (parts.length>1) srcTxt = parts.join(' + ');
+      }
+      var metaBox = (noteTxt||srcTxt)
+        ? '<div class="note" style="margin:8px 0 2px;">'+(srcTxt?('<b>'+srcTxt+'</b><br>'):'')+esc(noteTxt)+'</div>' : '';
+      var shown='<div class="shown">Showing '+num(s.rows.length)+(s.total!=null?(' of '+num(s.total)+' record'+(s.total===1?'':'s')):'')+'</div>';
+      rows = metaBox + rows;
+      var more=s.done ? '' : ('<div class="more"><button class="tbtn sm ghost" type="button" id="actMore"'+(s.loading?' disabled':'')+'>'+(s.loading?'Loading…':'Load more')+'</button></div>');
+      body.innerHTML=rows+shown+more;
+      var mb=document.getElementById('actMore');
+      if(mb) mb.onclick=function(){ loadTab(k,true); };
+      Array.prototype.forEach.call(body.querySelectorAll('[data-cl]'), function(b){
+        b.onclick=function(){ openLetter(b.getAttribute('data-cl'), b); };
+      });
+    }
+
+    // ── Cover letter viewer ──────────────────────────────────────────────────
+    // The letter body is USER-GENERATED HTML. It is treated as hostile: it never touches
+    // innerHTML and only ever reaches an iframe with sandbox="" via .srcdoc — no allow-scripts
+    // and no allow-same-origin — so a crafted letter cannot execute and cannot reach this
+    // document, which is where the admin's JWT lives (localStorage).
+    var LETTER_OPEN=false;
+    function findLetter(id){
+      var rows=(AS.cover_letters&&AS.cover_letters.rows)||[];
+      for(var i=0;i<rows.length;i++){ if(rows[i] && String(rows[i].id)===String(id)) return rows[i]; }
+      return null;
+    }
+    async function openLetter(id, btn){
+      if(!id || LETTER_OPEN) return;
+      var old = btn ? btn.textContent : '';
+      if(btn){ btn.disabled=true; btn.textContent='Opening…'; }
+      var d = await api('/api/admin/users/'+UID+'/cover-letters/'+encodeURIComponent(id));
+      if(btn){ btn.disabled=false; btn.textContent=old; }
+      if(!d) return;                                   // denied state already rendered
+      if(d.success===false){
+        if(btn){ btn.textContent=String(d.error||'Not available'); setTimeout(function(){ btn.textContent=old; },2600); }
+        return;
+      }
+      var L=d.letter||d.cover_letter||d;
+      var html=L.cover_letter_html||L.html||d.cover_letter_html||d.html||'';
+      showLetter(findLetter(id)||L||{}, String(html==null?'':html));
+    }
+    function showLetter(meta, html){
+      meta=meta||{};
+      LETTER_OPEN=true;
+      var closed=false;
+      function close(){ if(closed) return; closed=true; LETTER_OPEN=false; try{ document.removeEventListener('keydown', onKey, true); }catch(e){} try{ mask.remove(); }catch(e){} }
+      var mask=el('div','mask');
+      var box=el('div','modal wide'); box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true'); box.setAttribute('aria-label','Cover letter');
+      var hd=el('div','hd');
+      var left=el('div'); left.style.minWidth='0';
+      left.appendChild(el('h3', null, meta.position || meta.company_name || 'Cover letter'));
+      var sb=el('div','muted'); sb.style.fontSize='12.5px'; sb.style.overflowWrap='anywhere';
+      sb.textContent=[meta.company_name, meta.status, fmtDT(meta.created_at)].filter(has).join(' · ');
+      left.appendChild(sb);
+      var x=el('button','tbtn sm ghost','Close'); x.id='clClose';
+      hd.appendChild(left); hd.appendChild(x); box.appendChild(hd);
+      if(!String(html).trim()){
+        box.appendChild(el('div','empty','This letter has no stored HTML.'));
+      } else {
+        var fr=document.createElement('iframe');
+        fr.className='clframe'; fr.id='clFrame';
+        fr.setAttribute('sandbox','');                     // EXACTLY empty: no allow-scripts, no allow-same-origin
+        fr.setAttribute('referrerpolicy','no-referrer');
+        fr.setAttribute('title','Cover letter preview (sandboxed)');
+        fr.srcdoc = html;                                  // property assignment — never innerHTML
+        box.appendChild(fr);
+        var ft=el('div','muted','Rendered in a sandboxed frame — scripts, forms and navigation inside the letter are disabled.');
+        ft.style.fontSize='11px'; ft.style.marginTop='8px';
+        box.appendChild(ft);
+      }
+      x.onclick=close;
+      mask.onclick=function(ev){ if(ev.target===mask) close(); };
+      function onKey(ev){ if(ev.key==='Escape'){ ev.preventDefault(); close(); } }
+      document.addEventListener('keydown', onKey, true);
+      mask.appendChild(box);
+      document.body.appendChild(mask);
+      try{ x.focus(); }catch(e){}
     }
 
     // ── 6 : best matched jobs ────────────────────────────────────────────────

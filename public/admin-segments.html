@@ -14,6 +14,12 @@
     .sub { color:var(--mut); font-size:13px; margin-bottom:18px; }
     a.back { color:var(--cyan); text-decoration:none; font-size:13px; }
     .muted { color:var(--mut); }
+    /* Admin nav strip — these analytics pages are standalone (no app-header.js), so without this
+       row Segments/Registered Users/User Credits are unreachable from here. */
+    .adminnav { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0 14px; }
+    .adminnav a { font-size:12px; font-weight:700; color:var(--mut); background:var(--card); border:1px solid var(--line); border-radius:999px; padding:6px 12px; text-decoration:none; white-space:nowrap; }
+    .adminnav a:hover { border-color:var(--cyan); color:var(--ink); }
+    .adminnav a.cur { background:rgba(6,182,212,.14); border-color:var(--cyan); color:#bdf1fb; }
     /* min-width:0 on the tracks is what actually lets the table's scroll container shrink.
        Without it a grid item's min-width defaults to auto = its content width, the 1fr track
        inflates to the table's natural width and the whole PAGE scrolls sideways on a phone. */
@@ -89,6 +95,13 @@
   <div class="wrap">
     <a class="back" href="/admin-user-analytics">← User Analytics</a>
     <h1>Segments</h1>
+    <nav class="adminnav" aria-label="Admin pages">
+      <a href="/admin-store-analytics">📊 Store Analytics</a>
+      <a href="/admin-user-analytics">🧭 User Analytics</a>
+      <a href="/admin-segments" class="cur" aria-current="page">🎯 Segments</a>
+      <a href="/admin-registered-users">🧑‍💻 Registered Users</a>
+      <a href="/admin-users">👤 User Credits</a>
+    </nav>
     <div class="sub">Pick a segment, see exactly who is in it, preview the send, then confirm. Soft-deleted users are excluded everywhere. Nothing is sent without a preview first.</div>
 
     <div class="grid">
@@ -125,7 +138,16 @@
 
   <script>
     var qToken=null; try{ qToken=new URLSearchParams(location.search).get('token'); }catch(e){}
-    if (qToken){ try{ localStorage.setItem('authToken', qToken); }catch(e){} }
+    // Consume ?token= then REMOVE it from the address bar: a token left in the URL leaks through
+    // browser history, the Referer header on every outbound link, bookmarks and shared screenshots.
+    // Same-document replaceState keeps the page state intact.
+    if (qToken){
+      try{ localStorage.setItem('authToken', qToken); }catch(e){}
+      try{
+        var _u=new URL(location.href); _u.searchParams.delete('token');
+        history.replaceState(null, '', _u.pathname + (_u.search||'') + (_u.hash||''));
+      }catch(e){}
+    }
     var authToken = qToken || localStorage.getItem('authToken');
     if (!authToken){ window.location.href='/login'; }
     var API_BASE = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://localhost:3000' : 'https://cvapplyr.com';
@@ -381,7 +403,10 @@
       document.getElementById('tplSel').addEventListener('change', function(e){
         S.tplKey=e.target.value||null;
         var t=tplByKey(S.tplKey);
+        // Remember what the template rendered WITHOUT a user, so curOverrides() can tell "the admin
+        // typed this" apart from "this is just the placeholder we showed them".
         S.title=(t&&t.title)||''; S.body=(t&&t.body)||'';
+        S.seedTitle=S.title; S.seedBody=S.body;
         document.getElementById('tTitle').value=S.title;
         document.getElementById('tBody').value=S.body;
         renderTplInfo();
@@ -415,12 +440,20 @@
       if(v>MAX_CEILING) v=MAX_CEILING;   // never let the page ask for more than the ceiling
       return v;
     }
+    // ⚠️ Only send an override the ADMIN actually typed.
+    // The inputs are pre-filled with the template rendered WITHOUT a user, so it says things like
+    // "Your best job matches are ready" instead of "3 strong matches waiting". Sending that back as
+    // an override told the server "use this exact text for everyone", which silently threw away the
+    // per-recipient personalisation on every single segment send. Untouched fields must go as
+    // nothing at all, so the server renders each user's own copy.
     function curOverrides(){
       var o={};
-      if(String(S.title||'').trim()) o.title=String(S.title).trim();
-      if(String(S.body||'').trim()) o.body=String(S.body).trim();
+      var t=String(S.title==null?'':S.title), b=String(S.body==null?'':S.body);
+      if(t.trim() && t!==String(S.seedTitle==null?'':S.seedTitle)) o.title=t.trim();
+      if(b.trim() && b!==String(S.seedBody==null?'':S.seedBody)) o.body=b.trim();
       return o;
     }
+    function usingSeedCopy(){ return !curOverrides().title && !curOverrides().body; }
     // Signature of everything that changes WHO gets WHAT. A preview is only valid for its own
     // signature. Raw (untrimmed) title/body on purpose: any keystroke must disarm Send.
     function sig(){
@@ -514,9 +547,16 @@
         : '<div class="rc"><div class="n">'+num(d.totalMatching)+'</div><div class="l">match the segment</div></div>';
       var pv=d.preview||{};
       var pvBox=(pv.title||pv.body)
-        ? '<div class="skipbox"><div class="skiphead">Exactly what they will see</div>'
+        ? '<div class="skipbox"><div class="skiphead">'
+          // Two genuinely different promises, so say which one applies. Untouched copy is personalised
+          // per recipient by the server; edited copy is sent verbatim to everyone.
+          +(usingSeedCopy() ? 'Example — each person gets their own version' : 'Exactly what every recipient will see')
+          +'</div>'
           +'<div style="padding:9px 10px;font-size:12.5px;"><b>'+esc(pv.title||'')+'</b><div class="muted" style="margin-top:3px;">'+esc(pv.body||'')+'</div>'
           +(pv.route?('<div class="chips"><span class="chip">opens <b>'+esc(pv.route)+'</b>'+(pv.params&&Object.keys(pv.params).length?(' '+esc(JSON.stringify(pv.params))):'')+'</span></div>'):'')
+          +(usingSeedCopy()
+            ? '<div class="muted" style="margin-top:6px;font-size:11.5px;">You have not edited the wording, so names, counts and job titles are filled in per person. Editing either field sends that exact text to everyone instead.</div>'
+            : '')
           +'</div></div>' : '';
 
       res.innerHTML='<div style="margin-top:14px;" class="okbox">Dry run only — nothing was sent.</div>'

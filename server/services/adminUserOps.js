@@ -686,6 +686,452 @@ async function getUserFile(userId, kind) {
   return { path: abs, filename: path.basename(abs), mime: MIME[ext] || 'application/octet-stream' };
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// 2b) GET /api/admin/users/:id/activity?kind=...   — the ITEMS, not the counts
+//
+// getUserOverview already answers "how many cover letters does this user have".
+// This answers "WHAT do they say" / "WHICH jobs did they save" / "WHAT did they spend
+// credits on" — one paged list per kind, so the admin can actually read the work
+// the user produced instead of staring at a number.
+//
+// ⚠️ db-config rewrites EVERY '?' in a statement into a positional placeholder
+// (db-config.js:72/91/110 — `sql.replace(/\?/g, ...)`). A '?' inside a SQL string
+// literal, a SQL regex, or a jsonb '?' operator therefore becomes a phantom $1 and
+// silently shifts every real parameter after it. There is not a single '?' in any
+// SQL below, and there must never be. (JS regexes in this file never reach the DB,
+// so non-greedy quantifiers in JS-side helpers are safe.)
+// ═════════════════════════════════════════════════════════════════════════════
+const ACTIVITY_KINDS = ['cover_letters', 'saved_jobs', 'applications', 'credits', 'searches'];
+const ACTIVITY_DEFAULT_LIMIT = 25;
+const ACTIVITY_MAX_LIMIT = 100;   // hard ceiling; a bigger ask is clamped and reported
+const PREVIEW_CHARS = 220;
+
+// ── HTML → plain text (cover-letter previews) ────────────────────────────────
+const ENTITIES = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', ndash: '–', mdash: '—',
+  hellip: '…', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', bull: '•',
+};
+function decodeEntities(input) {
+  return String(input).replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, g) => {
+    const k = String(g).toLowerCase();
+    if (k[0] === '#') {
+      const code = k[1] === 'x' ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10);
+      if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff) return m;
+      try { return String.fromCodePoint(code); } catch (e) { return m; }
+    }
+    return Object.prototype.hasOwnProperty.call(ENTITIES, k) ? ENTITIES[k] : m;
+  });
+}
+function htmlToText(html) {
+  let s = String(html == null ? '' : html);
+  s = s.replace(/<!--[\s\S]*?-->/g, ' ');
+  s = s.replace(/<(script|style|head)\b[\s\S]*?<\/\1\s*>/gi, ' ');
+  s = s.replace(/<br\s*\/?\s*>/gi, '\n');
+  s = s.replace(/<\/\s*(p|div|li|tr|h[1-6]|section|article|blockquote|table)\s*>/gi, '\n');
+  s = s.replace(/<[^>]*>/g, ' ');
+  s = decodeEntities(s);
+  s = s.replace(/\r/g, '').replace(/[^\S\n]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n');
+  return s.trim();
+}
+// First ~n characters as one line, cut on a word boundary when that leaves something.
+// GUARANTEE: the returned string contains no '<' or '>' — htmlToText strips tags but then DECODES
+// entities, so a letter containing "&lt;script&gt;" would otherwise hand a live tag back to a page
+// that renders the preview with innerHTML. Angle brackets are dropped rather than re-escaped so the
+// contract holds however the consumer inserts it.
+function previewOf(html, n = PREVIEW_CHARS) {
+  const t = htmlToText(html).replace(/[<>]/g, ' ')
+    .replace(/\n+/g, ' ').replace(/ {2,}/g, ' ').trim();
+  if (t.length <= n) return t;
+  const cut = t.slice(0, n);
+  const onWord = cut.replace(/\s+\S*$/, '');
+  return (onWord.length >= n * 0.6 ? onWord : cut).trimEnd() + '…';
+}
+// The stored letter is AI-generated text that lands in an admin page's innerHTML, so strip the
+// script-ish surface before it ever leaves the server. Admin-only, but stored XSS is stored XSS.
+function sanitizeLetterHtml(html) {
+  const before = String(html == null ? '' : html);
+  let out = before;
+  out = out.replace(/<(script|iframe|object|embed|form|link|meta|base|svg)\b[\s\S]*?<\/\1\s*>/gi, '');
+  out = out.replace(/<(script|iframe|object|embed|form|link|meta|base)\b[^>]*>/gi, '');
+  out = out.replace(/\son[a-z]+\s*=\s*"[^"]*"/gi, ' ');
+  out = out.replace(/\son[a-z]+\s*=\s*'[^']*'/gi, ' ');
+  out = out.replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, ' ');
+  out = out.replace(/\s(href|src|xlink:href)\s*=\s*("|')\s*javascript:[^"']*\2/gi, ' $1="#"');
+  return { html: out, sanitized: out !== before };
+}
+
+// ── saved-job card JSON (jsonb, but be paranoid: string / double-encoded / array / null) ──
+function parseCard(card) {
+  let v = card;
+  for (let i = 0; i < 2 && typeof v === 'string'; i += 1) {
+    const s = v.trim();
+    if (!s) return {};
+    try { v = JSON.parse(s); } catch (e) { return {}; }
+  }
+  if (Array.isArray(v)) v = v.find((x) => x && typeof x === 'object' && !Array.isArray(x)) || {};
+  return v && typeof v === 'object' ? v : {};
+}
+// First non-empty string among `keys`. Tolerates the three shapes a scraped card actually uses for
+// one logical value: a plain string, {name|city|…}, and ["Munich", "Berlin"]. Depth-capped, so a
+// deeply nested blob costs nothing and can never recurse away.
+const NESTED_KEYS = ['name', 'label', 'title', 'city', 'text', 'value'];
+function cardStr(obj, keys, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 2) return null;
+  for (const k of keys) {
+    const v = obj[k];
+    if (v == null) continue;
+    if (typeof v === 'string') { const s = v.trim(); if (s) return s; }
+    else if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+    else if (Array.isArray(v)) {
+      for (const e of v) {
+        if (typeof e === 'string' && e.trim()) return e.trim();
+        if (typeof e === 'number' && Number.isFinite(e)) return String(e);
+        if (e && typeof e === 'object') {
+          const s = cardStr(e, NESTED_KEYS, depth + 1);
+          if (s) return s;
+        }
+      }
+    } else if (typeof v === 'object') {
+      const s = cardStr(v, NESTED_KEYS, depth + 1);
+      if (s) return s;
+    }
+  }
+  return null;
+}
+const CARD_TITLE_KEYS = ['title', 'job_title', 'jobTitle', 'position', 'role', 'name'];
+const CARD_EMPLOYER_KEYS = ['employer_name', 'employerName', 'company', 'company_name', 'companyName',
+  'employer', 'organization', 'org'];
+const CARD_LOCATION_KEYS = ['location', 'job_location', 'city', 'place', 'where', 'country'];
+// Last resort so a card with no title is not a blank row: "…/senior-backend-engineer" → that phrase.
+function titleFromUrl(u) {
+  const raw = String(u || '').trim();
+  if (!raw) return null;
+  let seg = '';
+  try { seg = new URL(raw).pathname.split('/').filter(Boolean).pop() || ''; }
+  catch (e) { seg = raw.split('#')[0].split('/').filter(Boolean).pop() || ''; }
+  seg = seg.split('#')[0];
+  let s;
+  try { s = decodeURIComponent(seg); } catch (e) { s = seg; }
+  s = s.replace(/\.(html?|aspx|php|jsp)$/i, '').replace(/[-_+]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (s.length < 3 || /^\d+$/.test(s)) return null;
+  return s.slice(0, 120);
+}
+
+// ── per-kind fetchers ────────────────────────────────────────────────────────
+// q()/g() swallow SQL errors and hand back null. For a COUNT (which always yields a row) and for
+// q() (which yields [] when there is simply nothing) a null is therefore a REAL FAILURE, never
+// "no data" — so it is escalated to a 500 rather than being drawn as an honest-looking empty list.
+const FAILED = (what) => ({ failed: what });
+
+async function activityCoverLetters(id, limit, offset) {
+  if (!(await tableExists('job_cover_letters'))) {
+    return { total: 0, items: [], unavailable: 'job_cover_letters table is not present' };
+  }
+  const [c, rows] = await Promise.all([
+    g(`SELECT COUNT(*)::int AS n FROM job_cover_letters WHERE user_id = $1`, [id]),
+    q(`SELECT id, company_name, position, website_url, status, created_at, cover_letter_html
+         FROM job_cover_letters
+        WHERE user_id = $1
+        ORDER BY created_at DESC NULLS LAST, id DESC
+        LIMIT $2 OFFSET $3`, [id, limit, offset]),
+  ]);
+  if (!c || rows === null) return FAILED('cover_letters query failed');
+  return {
+    total: int(c.n),
+    items: rows.map((r) => ({
+      id: r.id,
+      company_name: r.company_name || null,
+      position: r.position || null,
+      website_url: r.website_url || null,
+      status: r.status || null,
+      created_at: r.created_at,
+      preview: previewOf(r.cover_letter_html),
+    })),
+  };
+}
+
+async function activitySavedJobs(id, limit, offset) {
+  if (!(await tableExists('user_saved_jobs'))) {
+    return { total: 0, items: [], unavailable: 'user_saved_jobs table is not present' };
+  }
+  const [c, rows] = await Promise.all([
+    g(`SELECT COUNT(*)::int AS n FROM user_saved_jobs WHERE user_id = $1`, [id]),
+    q(`SELECT id, job_url, card, saved_at
+         FROM user_saved_jobs
+        WHERE user_id = $1
+        ORDER BY saved_at DESC NULLS LAST, id DESC
+        LIMIT $2 OFFSET $3`, [id, limit, offset]),
+  ]);
+  if (!c || rows === null) return FAILED('saved_jobs query failed');
+  return {
+    total: int(c.n),
+    items: rows.map((r) => {
+      // A malformed / null / string card must degrade to nulls, never throw.
+      let card = {};
+      try { card = parseCard(r.card); } catch (e) { card = {}; }
+      const url = r.job_url || cardStr(card, ['job_url', 'jobUrl', 'url', 'link', 'id']) || null;
+      return {
+        job_url: url,
+        title: cardStr(card, CARD_TITLE_KEYS) || titleFromUrl(url),
+        employer_name: cardStr(card, CARD_EMPLOYER_KEYS),
+        location: cardStr(card, CARD_LOCATION_KEYS),
+        saved_at: r.saved_at,
+      };
+    }),
+  };
+}
+
+// ⚠️ VERIFIED ON PROD 2026-07-27: user_job_matches.status has exactly ONE distinct value across the
+// whole table — 'new' (4844/4844 rows) — and no server code ever writes it (it is a DEFAULT that is
+// never updated; jobService.js only ever upserts user_id/job_id/match_score/scored_at). So
+// "user_job_matches rows whose status marks an application" is an empty set today and would render
+// this tab permanently blank. The application record actually lives in:
+//   • application_history  — a real emailed application (72 rows for user 1), with reply tracking
+//   • job_cover_letters.status = 'applied' — the in-app "I applied" mark (15 rows for user 1)
+// Both are unioned below, each row tagged with its `source`. The user_job_matches branch is kept
+// and driven by the statuses ACTUALLY present at runtime, so the day the app starts writing
+// status='applied' those rows appear here on their own, with no code change.
+const APPLIED_MATCH_STATUS = /^(applied|apply|applied_external|application_sent|application_submitted|submitted)$/i;
+
+async function activityApplications(id, limit, offset) {
+  const [hasAH, hasJCL, hasUJM, hasEmployers] = await Promise.all([
+    tableExists('application_history'), tableExists('job_cover_letters'),
+    tableExists('user_job_matches'), tableExists('employers'),
+  ]);
+
+  // Which user_job_matches statuses (if any) really mark an application, for THIS user, right now.
+  let statusesSeen = [];
+  let statusesCounted = [];
+  if (hasUJM) {
+    const rows = await q(`SELECT DISTINCT status FROM user_job_matches WHERE user_id = $1`, [id]);
+    if (rows === null) return FAILED('user_job_matches status probe failed');
+    statusesSeen = rows.map((r) => r.status).filter((s) => s != null).map(String);
+    statusesCounted = statusesSeen.filter((s) => APPLIED_MATCH_STATUS.test(s.trim()));
+  }
+
+  const params = [];
+  const P = (v) => { params.push(v); return '$' + params.length; };
+  const branches = [];
+
+  if (hasAH) {
+    branches.push(
+      `SELECT 'email'::text AS source,
+              ah.id::text AS ref_id,
+              ah.company_name::text AS company_name,
+              ah.position::text AS position,
+              NULL::text AS job_url,
+              'sent'::text AS status,
+              ah.sent_date AS occurred_at,
+              (COALESCE(ah.reply_received, 0) > 0) AS reply_received
+         FROM application_history ah
+        WHERE ah.user_id = ${P(id)} AND ah.deleted_at IS NULL`);
+  }
+  if (hasJCL) {
+    branches.push(
+      `SELECT 'cover_letter'::text AS source,
+              jcl.id::text AS ref_id,
+              jcl.company_name::text AS company_name,
+              jcl.position::text AS position,
+              jcl.website_url::text AS job_url,
+              jcl.status::text AS status,
+              COALESCE(jcl.updated_at, jcl.created_at) AS occurred_at,
+              NULL::boolean AS reply_received
+         FROM job_cover_letters jcl
+        WHERE jcl.user_id = ${P(id)} AND jcl.status = 'applied'`);
+  }
+  if (hasUJM && statusesCounted.length) {
+    // LEFT JOINs: a match whose job row was hard-deleted still shows up, just without a title.
+    branches.push(
+      `SELECT 'job_match'::text AS source,
+              m.job_id::text AS ref_id,
+              ${hasEmployers ? 'e.name::text' : 'NULL::text'} AS company_name,
+              j.title::text AS position,
+              j.job_url::text AS job_url,
+              m.status::text AS status,
+              COALESCE(m.updated_at, m.created_at) AS occurred_at,
+              NULL::boolean AS reply_received
+         FROM user_job_matches m
+         LEFT JOIN jobs j ON j.id = m.job_id
+         ${hasEmployers ? 'LEFT JOIN employers e ON e.id = j.employer_id' : ''}
+        WHERE m.user_id = ${P(id)} AND m.status = ANY(${P(statusesCounted)}::text[])`);
+  }
+
+  const note = 'user_job_matches.status is a DEFAULT \'new\' column that no code ever updates, so it '
+    + 'records no applications. These rows come from application_history (a sent application) and '
+    + 'job_cover_letters marked \'applied\'. One real application can appear under BOTH sources — '
+    + 'see meta.sources for the per-source split rather than reading `total` as "applications made".';
+
+  if (!branches.length) {
+    return {
+      total: 0, items: [],
+      unavailable: 'no application source table is present',
+      meta: { sources: {}, match_statuses_seen: statusesSeen, match_statuses_counted: statusesCounted, note },
+    };
+  }
+
+  const union = branches.join('\n       UNION ALL\n');
+  const branchParams = params.slice();
+  const [bySource, rows] = await Promise.all([
+    q(`SELECT source, COUNT(*)::int AS n FROM (${union}) t GROUP BY source`, branchParams),
+    q(`SELECT * FROM (${union}) t
+        ORDER BY t.occurred_at DESC NULLS LAST, t.source ASC, t.ref_id DESC
+        LIMIT $${branchParams.length + 1} OFFSET $${branchParams.length + 2}`,
+      branchParams.concat([limit, offset])),
+  ]);
+  if (bySource === null || rows === null) return FAILED('applications union query failed');
+
+  const sources = {};
+  let total = 0;
+  for (const r of bySource) { sources[r.source] = int(r.n); total += int(r.n); }
+
+  return {
+    total,
+    items: rows.map((r) => ({
+      id: r.ref_id,
+      source: r.source,
+      company_name: r.company_name || null,
+      position: r.position || null,
+      title: r.position || null,          // alias: the spec calls this "the title"
+      job_url: r.job_url || null,
+      status: r.status || null,
+      created_at: r.occurred_at,
+      reply_received: r.reply_received == null ? null : !!r.reply_received,
+    })),
+    meta: { sources, match_statuses_seen: statusesSeen, match_statuses_counted: statusesCounted, note },
+  };
+}
+
+async function activityCredits(id, limit, offset) {
+  if (!(await tableExists('credit_usage_history'))) {
+    return { total: 0, items: [], unavailable: 'credit_usage_history table is not present' };
+  }
+  const [c, rows] = await Promise.all([
+    g(`SELECT COUNT(*)::int AS n, COALESCE(SUM(credits_used), 0)::int AS spent
+         FROM credit_usage_history WHERE user_id = $1`, [id]),
+    q(`SELECT id, credits_used, action_type, company_name, position, created_at
+         FROM credit_usage_history
+        WHERE user_id = $1
+        ORDER BY created_at DESC NULLS LAST, id DESC
+        LIMIT $2 OFFSET $3`, [id, limit, offset]),
+  ]);
+  if (!c || rows === null) return FAILED('credits query failed');
+  return {
+    total: int(c.n),
+    meta: { total_credits_used: int(c.spent) },
+    items: rows.map((r) => ({
+      id: r.id,
+      credits_used: int(r.credits_used),
+      action_type: r.action_type || null,
+      company_name: r.company_name || null,
+      position: r.position || null,
+      created_at: r.created_at,
+    })),
+  };
+}
+
+async function activitySearches(id, limit, offset) {
+  if (!(await tableExists('app_events'))) {
+    return { total: 0, items: [], unavailable: 'app_events table is not present' };
+  }
+  const [c, rows] = await Promise.all([
+    g(`SELECT COUNT(*)::int AS n FROM app_events WHERE user_id = $1 AND event = 'job_search'`, [id]),
+    q(`SELECT id, props, platform, app_version, country, created_at
+         FROM app_events
+        WHERE user_id = $1 AND event = 'job_search'
+        ORDER BY created_at DESC NULLS LAST, id DESC
+        LIMIT $2 OFFSET $3`, [id, limit, offset]),
+  ]);
+  if (!c || rows === null) return FAILED('searches query failed');
+  return {
+    total: int(c.n),
+    meta: { note: 'app_events only goes back to 2026-06-29 — older searches were never recorded.' },
+    items: rows.map((r) => {
+      let props = {};
+      try { props = parseCard(r.props); } catch (e) { props = {}; }
+      return {
+        id: r.id == null ? null : String(r.id),   // bigint: pg hands this back as a string
+        created_at: r.created_at,
+        platform: r.platform || null,
+        app_version: r.app_version || null,
+        country: r.country || null,
+        query: cardStr(props, ['query', 'q', 'keyword', 'keywords', 'search', 'term', 'title', 'role']),
+        location: cardStr(props, CARD_LOCATION_KEYS),
+        company: cardStr(props, ['company', 'employer', 'employer_name', 'url', 'website']),
+        props,
+      };
+    }),
+  };
+}
+
+// GET /api/admin/users/:id/activity?kind=&limit=&offset=
+async function getUserActivity(userId, kind, opts = {}) {
+  const u = await loadUser(userId);                 // excludes soft-deleted, exactly like the rest
+  if (!u) return { notFound: true };
+  const k = String(kind || '').trim().toLowerCase();
+  if (!ACTIVITY_KINDS.includes(k)) return { badKind: true, kinds: ACTIVITY_KINDS };
+
+  const asked = Math.floor(int(opts.limit, ACTIVITY_DEFAULT_LIMIT)) || ACTIVITY_DEFAULT_LIMIT;
+  const limit = Math.min(Math.max(asked, 1), ACTIVITY_MAX_LIMIT);
+  const offset = Math.max(Math.floor(int(opts.offset, 0)), 0);
+
+  let out;
+  if (k === 'cover_letters') out = await activityCoverLetters(u.id, limit, offset);
+  else if (k === 'saved_jobs') out = await activitySavedJobs(u.id, limit, offset);
+  else if (k === 'applications') out = await activityApplications(u.id, limit, offset);
+  else if (k === 'credits') out = await activityCredits(u.id, limit, offset);
+  else out = await activitySearches(u.id, limit, offset);
+
+  if (out.failed) return { dbError: out.failed };
+
+  const items = out.items || [];
+  const total = int(out.total, 0);
+  return {
+    kind: k,
+    total,
+    offset,
+    limit,
+    items,
+    // Honest: true whenever this response does NOT contain everything there is.
+    truncated: offset + items.length < total,
+    limit_capped: asked > ACTIVITY_MAX_LIMIT,
+    max_limit: ACTIVITY_MAX_LIMIT,
+    ...(out.meta ? { meta: out.meta } : {}),
+    ...(out.unavailable ? { unavailable: out.unavailable } : {}),
+  };
+}
+
+// GET /api/admin/users/:id/cover-letters/:letterId — the full letter, scoped to its owner.
+// The user_id predicate is what makes this safe: an admin cannot walk letter ids across accounts
+// by accident, and a wrong-owner id is a plain 404 that leaks nothing about the real owner.
+async function getUserCoverLetter(userId, letterId) {
+  const u = await loadUser(userId);
+  if (!u) return { notFound: true };
+  const lid = Math.floor(int(letterId, 0));
+  if (!Number.isInteger(lid) || lid <= 0) return { notFound: true };
+  if (!(await tableExists('job_cover_letters'))) return { notFound: true };
+  const r = await g(
+    `SELECT id, company_name, position, website_url, status, created_at, updated_at, cover_letter_html
+       FROM job_cover_letters
+      WHERE id = $1 AND user_id = $2
+      LIMIT 1`, [lid, u.id]);
+  if (!r) return { notFound: true };
+  const clean = sanitizeLetterHtml(r.cover_letter_html);
+  return {
+    letter: {
+      id: r.id,
+      company_name: r.company_name || null,
+      position: r.position || null,
+      website_url: r.website_url || null,
+      status: r.status || null,
+      created_at: r.created_at,
+      updated_at: r.updated_at || null,
+      html: clean.html,
+      text: htmlToText(r.cover_letter_html),   // for copy-paste / plain rendering
+      sanitized: clean.sanitized,              // true when script-ish markup was stripped
+    },
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 4) GET /api/admin/notify/templates?userId=N
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1210,10 +1656,13 @@ async function notifySegment({ key, templateKey, overrides, confirm, maxRecipien
 module.exports = {
   DEDUPE_HOURS, DEFAULT_MAX_RECIPIENTS, ABSOLUTE_MAX_RECIPIENTS, MIN_MATCH,
   SEGMENT_LIST_CEILING, RESERVATION_TTL_MIN,
+  ACTIVITY_KINDS, ACTIVITY_DEFAULT_LIMIT, ACTIVITY_MAX_LIMIT,
   hashJobUrlId, urlAliasIds, resolveGlobalJobHash,
   loadUser, buildUserState, completenessOf,
   // exported for the test suite: the pure helpers whose edge cases are the bugs
   _int: int, stateTierFor, lightUserState, stateForTemplate, bestJobsFor, resumeContext,
+  htmlToText, previewOf, sanitizeLetterHtml, parseCard, cardStr, titleFromUrl,
+  getUserActivity, getUserCoverLetter,
   getUserOverview, getUserFile, getMatchedJobs, resolveJob,
   listTemplates, sendToUser,
   listSegments, getSegmentUsers, getSegment, notifySegment,

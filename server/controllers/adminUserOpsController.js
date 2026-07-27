@@ -60,6 +60,56 @@ async function getMatchedJobs(req, res) {
   }
 }
 
+// 3b) GET /api/admin/users/:id/activity?kind=cover_letters&limit=25&offset=0
+// The ITEMS behind the overview's counts. `kind` is validated in the service against one
+// allow-list so the route and the service can never drift apart.
+async function getActivity(req, res) {
+  const id = idOf(req);
+  if (!id) return res.status(400).json({ error: 'Invalid user id' });
+  try {
+    const data = await ops.getUserActivity(id, req.query.kind, {
+      limit: req.query.limit,
+      offset: req.query.offset,
+    });
+    if (data.notFound) return res.status(404).json({ error: 'User not found (or soft-deleted)' });
+    if (data.badKind) {
+      return res.status(400).json({
+        error: `kind must be one of: ${data.kinds.join(', ')}`,
+        kinds: data.kinds,
+      });
+    }
+    // A query that ERRORED must not be drawn as a convincing empty list.
+    if (data.dbError) {
+      console.error('[adminUserOps] activity query failed:', data.dbError);
+      return res.status(500).json({ error: 'Failed to load user activity', detail: data.dbError });
+    }
+    res.json({ success: true, ...data });
+  } catch (e) {
+    console.error('[adminUserOps] activity:', e.message);
+    res.status(500).json({ error: 'Failed to load user activity' });
+  }
+}
+
+// 3c) GET /api/admin/users/:id/cover-letters/:letterId — one full letter, scoped to its owner
+async function getCoverLetter(req, res) {
+  const id = idOf(req);
+  if (!id) return res.status(400).json({ error: 'Invalid user id' });
+  const letterId = parseInt(req.params.letterId, 10);
+  if (!Number.isFinite(letterId) || letterId <= 0) {
+    return res.status(400).json({ error: 'Invalid cover letter id' });
+  }
+  try {
+    const data = await ops.getUserCoverLetter(id, letterId);
+    // Same 404 for "no such letter", "letter belongs to someone else" and "user is soft-deleted" —
+    // the response must not confirm that an id exists under another account.
+    if (data.notFound) return res.status(404).json({ error: 'Cover letter not found for this user' });
+    res.json({ success: true, letter: data.letter });
+  } catch (e) {
+    console.error('[adminUserOps] cover letter:', e.message);
+    res.status(500).json({ error: 'Failed to load cover letter' });
+  }
+}
+
 // 4) GET /api/admin/notify/templates?userId=N&jobId=gj_x
 async function getTemplates(req, res) {
   try {
@@ -163,6 +213,6 @@ async function notifySegmentUsers(req, res) {
 }
 
 module.exports = {
-  getOverview, getFile, getMatchedJobs, getTemplates, notifyUser,
+  getOverview, getFile, getMatchedJobs, getActivity, getCoverLetter, getTemplates, notifyUser,
   getSegments, getSegmentUsers, notifySegmentUsers,
 };
