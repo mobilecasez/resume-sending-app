@@ -71,10 +71,18 @@ another figure. (`.split` stacks to text-then-image on mobile.)
   Keep the 100px on `.article` (not on body) so the title clears the fixed header.
 
 ## Hero image + comments (every article now has these — copy from the exemplar)
-- **Hero image:** generate ONE realistic AI hero with Imagen 4 (existing `GEMINI_API_KEY`): POST
-  `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-fast-generate-001:predict` with an
+- **Hero image:** ⚠️ **2026-07-27 — the Imagen 4 `:predict` endpoints now 404 for this project**
+  ("no longer available to new users"), and the **local `.env` `GEMINI_API_KEY` is out of prepay credits
+  (429)**. Use the **prod** key and the current Gemini image model instead:
+  `K=$(railway variables --service "CVApplyr Website" --kv | grep '^GEMINI_API_KEY=' | cut -d= -f2-)` then POST
+  `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key=$K`
+  with `{contents:[{parts:[{text: PROMPT}]}], generationConfig:{responseModalities:["IMAGE"], imageConfig:{aspectRatio:"16:9"}}}`
+  and read the image from `candidates[0].content.parts[].inlineData.data` (base64 JPEG). Use an
   editorial-photo prompt relevant to the topic (suffix: "no text, no UI, no logos, soft natural light,
-  realistic"), `aspectRatio:"16:9"`; downscale to 1200px-wide JPG (~q82) and save as
+  realistic"). **ALWAYS look at the generated image before shipping it** — these models happily render
+  legible calendars/whiteboards/brand marks despite the negative prompt; add explicit negatives
+  ("no calendars, no posters, no writing of any kind, no brand marks") and regenerate. Downscale to
+  1200px-wide JPG (~q82) with `sips -Z 1200 -s format jpeg -s formatOptions 82 in.jpg --out out.jpg` and save as
   `public/articles/img/hero-<slug>.jpg`. Embed it as the FIRST figure under the `.meta` line:
   `<figure class="hero"><img src="/articles/img/hero-<slug>.jpg" alt="<descriptive keyword alt>" width="1200" height="675" loading="eager"></figure>`.
   Point `og:image`, `twitter:image` and the Article JSON-LD `image` at this hero. (Imagen has a per-minute
@@ -147,6 +155,25 @@ British/US English within a piece.
 23. job-search-after-a-layoff — "Job Searching After a Layoff: A Calm, Fast Playbook"
 24. new-grad-job-search-no-experience — "New-Grad Job Search: Stand Out With No Experience"
 25. career-change-job-search — "Career Change: How to Apply When Switching Fields"
+### Added after the original backlog was exhausted
+26. explain-employment-gaps-resume — ✅ published (2026-07-20)
+27. how-long-does-it-take-to-find-a-job — ✅ published (2026-07-27)
+
+**The original 25 are all published.** From here every run invents its own topic (see below).
 
 When the backlog runs low, invent a new high-search-intent topic about a job-application problem
 CVApplyr solves, append it here with a slug, and write it.
+
+### Candidate topics for upcoming runs (unwritten — take the first one each run, then append more)
+28. apply-if-you-dont-meet-requirements — "Should You Apply If You Don't Meet All the Requirements?"
+29. job-application-forms-take-forever — "Why Job Application Forms Take So Long (and How to Cut It to Minutes)"
+30. linkedin-easy-apply-worth-it — "Is LinkedIn Easy Apply Worth It? What Actually Happens to Those Applications"
+31. how-to-follow-up-without-being-annoying — "How to Follow Up Without Being Annoying"
+32. best-time-to-apply-for-jobs — "Is There a Best Time to Apply for a Job? What Actually Matters"
+
+## ⚠️ Finish the run — a half-shipped article is worse than none
+The 2026-07-20 run deployed `explain-employment-gaps-resume.html` but never generated its hero image,
+never added the index card, never added the sitemap entry, and never committed the file — so it sat live
+with a broken hero and no way to reach it. Before finishing, confirm ALL of: hero JPG exists on disk,
+index card inserted, sitemap `<url>` added, `git status` clean for `public/articles`, and the live
+article URL **and** the live hero image URL both return 200.
