@@ -988,6 +988,39 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE user_job_url_overrides ALTER COLUMN job_id TYPE TEXT USING job_id::text`);
         console.log('✅ Migration 025: user_job_url_overrides synthetic-id support done');
 
+        // ── Migration 026: admin_notification_log — audit trail for admin-triggered notifications ──
+        // Every push an admin fires (at one user or a whole segment) is written here BEFORE it can be
+        // repeated: the 72h "never send the same template to the same user twice" rule reads this table,
+        // and so does the per-user "what have we already sent them" panel. Skipped sends are logged too
+        // (push_ok = FALSE + push_error = 'opted_out' | 'no_token' | 'stale_token' | 'send_failed') so a
+        // silent non-delivery is impossible to miss. `params` also carries the deep-link jobUrl, which is
+        // the cheap way back from a synthetic 'gj_…' job id to its global_jobs row.
+        await col(`CREATE TABLE IF NOT EXISTS admin_notification_log (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER,
+            template_key VARCHAR(60),
+            title TEXT,
+            body TEXT,
+            route VARCHAR(80),
+            params JSONB,
+            sent_by INTEGER,
+            batch_id VARCHAR(40),
+            push_ok BOOLEAN,
+            push_error TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_admin_notif_log_user_tpl ON admin_notification_log(user_id, template_key, created_at DESC)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_admin_notif_log_batch ON admin_notification_log(batch_id)`);
+        // The 72h dedupe is a RESERVATION, not a check-then-act: adminUserOps.reserveSend inserts the
+        // row with push_ok NULL ("in flight") BEFORE the push leaves, so two overlapping admin clicks
+        // race on THIS index and exactly one of them wins — WHERE NOT EXISTS alone cannot decide it,
+        // because both READ COMMITTED snapshots can see an empty table. The window itself cannot live
+        // in the index (predicates must be IMMUTABLE, so NOW() is not allowed); the in-flight NULL
+        // state is what makes the race decidable, and reserveSend expires abandoned reservations.
+        await col(`CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_notif_log_inflight
+                     ON admin_notification_log(user_id, template_key) WHERE push_ok IS NULL`);
+        console.log('✅ Migration 026: admin_notification_log done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

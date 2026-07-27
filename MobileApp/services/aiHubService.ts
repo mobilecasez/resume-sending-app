@@ -1098,6 +1098,20 @@ export async function fetchDiscoverJobs(
   return data;
 }
 
+/** ONE feed job by its synthetic 'gj_…' id — used when a tapped notification deep-links to a
+ *  specific job. Returns null when the posting is gone (404) so the caller can say so instead of
+ *  showing an error. */
+export async function fetchDiscoverJobById(id: string): Promise<DiscoverJob | null> {
+  const headers = await getAuthHeader();
+  try {
+    const { data } = await axios.get(`${API_BASE_URL}/discover/job/${encodeURIComponent(id)}`, { headers, timeout: 20000 });
+    return data?.success && data.job ? (data.job as DiscoverJob) : null;
+  } catch (e: any) {
+    if (axios.isAxiosError(e) && e.response?.status === 404) return null;
+    throw e;
+  }
+}
+
 export type AiSearchParsed = { keywords: string[]; field: string | null; location: string | null; workMode: string | null; seniority: string | null };
 export type AiXray = { sites: string[]; terms: string[]; query: string; perSite: string[] };
 export type AiSearchResponse = {

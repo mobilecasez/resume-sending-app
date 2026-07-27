@@ -15,10 +15,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import SortControl from '../../components/SortControl';
 import {
   fetchDiscoverJobs, fetchDiscoverFacets, aiSearchJobs, hydrateJobUrls, loadAllJobStatuses,
+  fetchDiscoverJobById,
   type DiscoverJob, type DiscoverFacets, type AiSearchParsed, type AiXray,
 } from '../../services/aiHubService';
 import { logEvent } from '../../services/firebaseAnalytics';
@@ -183,7 +184,7 @@ function FChip({ label, on, onPress }: { label: string; on: boolean; onPress: ()
 
 // Reusable Explore feed. `embedded` renders JUST the feed (no SafeAreaView / top bar / Explore|Saved
 // sub-tabs) so the Job Hub can mount it as its "Search" tab; the standalone /(discover) route wraps it.
-export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embedded?: boolean; onStats?: (s: { total: number; remote: number; fields: number; regions: number }) => void; onSavedChange?: () => void }) {
+export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialSort }: { embedded?: boolean; onStats?: (s: { total: number; remote: number; fields: number; regions: number }) => void; onSavedChange?: () => void; initialSort?: 'match' | 'recent' }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { costOf } = useEventCosts();
@@ -201,7 +202,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
   const [savedCount, setSavedCount] = useState(0);
   const [liveOpen, setLiveOpen] = useState(false);   // "Look for live jobs on Google" modal
   const [liveQuery, setLiveQuery] = useState('');
-  const [sort, setSort] = useState<'match' | 'recent'>('match');
+  const [sort, setSort] = useState<'match' | 'recent'>(initialSort === 'recent' ? 'recent' : 'match');
   const [mode, setMode] = useState('');          // work_mode
   const [skill, setSkill] = useState('');
   const [country, setCountry] = useState('');
@@ -607,7 +608,57 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange }: { embe
   );
 }
 
-export default function DiscoverScreen() { return <ExploreFeed />; }
+// The standalone /(discover) route. It also accepts the deep-link params a tapped notification
+// carries: `jobId` (open that ONE job's detail, exactly like tapping its feed card) and `sort`.
+export default function DiscoverScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams<{ jobId?: string | string[]; sort?: string | string[] }>();
+  const first = (v?: string | string[]) => (Array.isArray(v) ? v[0] : v) || '';
+  const jobId = first(params?.jobId).trim();
+  const sortParam = first(params?.sort).trim().toLowerCase();
+  const [opening, setOpening] = useState(false);
+  // The jobId we have ALREADY acted on. The param stays in the route forever (it's still there when
+  // the user comes back from job-detail, and on every unrelated re-render), so without this the
+  // screen would re-open the job again and again.
+  const openedRef = useRef<string>('');
+
+  useEffect(() => {
+    if (!jobId || openedRef.current === jobId) return;
+    openedRef.current = jobId;
+    let cancelled = false;
+    setOpening(true);
+    fetchDiscoverJobById(jobId)
+      .then((dj) => {
+        if (cancelled) return;
+        if (!dj) {
+          // Gone (unlisted / expired) — stay on the feed rather than showing a dead screen.
+          Alert.alert('Job no longer listed', 'That opening has been taken down. Here are the latest jobs instead.');
+          return;
+        }
+        router.push({ pathname: '/(ai-hub)/job-detail', params: toJobHubParams(dj) });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        Alert.alert('Could not open that job', 'Check your connection and try again — the feed below is still up to date.');
+      })
+      .finally(() => { if (!cancelled) setOpening(false); });
+    return () => { cancelled = true; };
+  }, [jobId, router]);
+
+  return (
+    <View style={{ flex: 1 }}>
+      <ExploreFeed initialSort={sortParam === 'recent' ? 'recent' : sortParam === 'match' ? 'match' : undefined} />
+      {opening && (
+        <View style={styles.openingOverlay} pointerEvents="auto">
+          <View style={styles.openingCard}>
+            <ActivityIndicator color={T.blue} />
+            <Text style={styles.openingText}>Opening job…</Text>
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
 
 function FilterSection({ title, items, value, onPick, allLabel, onAll, labelFor, highlight }:
   { title: string; items: string[]; value: string; onPick: (v: string) => void; allLabel?: string; onAll?: () => void; labelFor?: (v: string) => string; highlight?: string }) {
@@ -625,6 +676,9 @@ function FilterSection({ title, items, value, onPick, allLabel, onAll, labelFor,
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: T.bg },
+  openingOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(11,15,34,0.35)', alignItems: 'center', justifyContent: 'center' },
+  openingCard: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: T.surface, borderRadius: 14, paddingHorizontal: 18, paddingVertical: 14, borderWidth: 1, borderColor: T.border },
+  openingText: { fontSize: 14, fontWeight: '700', color: T.ink },
   topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingTop: Platform.OS === 'android' ? 30 : 6, paddingBottom: 8 },
   backBtn: { width: 38, height: 38, borderRadius: 12, backgroundColor: T.surface, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: T.border },
   topTitle: { fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.3 },

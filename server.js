@@ -58,6 +58,7 @@ const adminUsersRoutes = require('./server/routes/adminUsersRoutes');
 const employerFixRoutes = require('./server/routes/employerFixRoutes');
 const adminStoreAnalyticsRoutes = require('./server/routes/adminStoreAnalyticsRoutes');
 const adminNotifyRoutes = require('./server/routes/adminNotifyRoutes');
+const adminUserOpsRoutes = require('./server/routes/adminUserOpsRoutes');
 const adminGlobalJobsRoutes = require('./server/routes/adminGlobalJobsRoutes');
 const discoverRoutes = require('./server/routes/discoverRoutes');
 const analyticsRoutes = require('./server/routes/analyticsRoutes');
@@ -3993,6 +3994,7 @@ app.use('/api', adminUsersRoutes);
 app.use('/api', employerFixRoutes);
 app.use('/api', adminStoreAnalyticsRoutes);
 app.use('/api', adminNotifyRoutes);
+app.use('/api', adminUserOpsRoutes);   // admin user 360° view + targeted / segment push sends
 app.use('/api', adminGlobalJobsRoutes);
 app.use('/api', discoverRoutes);
 app.use('/api', require('./server/routes/appConfigRoutes'));

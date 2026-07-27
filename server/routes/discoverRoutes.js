@@ -13,5 +13,6 @@ router.post('/discover/fetch-detail', authenticateToken, ctrl.fetchDetail); // o
 router.get('/discover/saved-jobs', authenticateToken, ctrl.savedJobs);      // the user's fetched/saved jobs
 router.post('/discover/saved-jobs/remove', authenticateToken, ctrl.unsaveJob);
 router.post('/discover/save-card', authenticateToken, ctrl.saveCard);       // fallback: save basic card w/o fetch
+router.get('/discover/job/:id', authenticateToken, ctrl.getGlobalJobById);  // ONE job by 'gj_…' id (tapped push → that exact job)
 
 module.exports = router;

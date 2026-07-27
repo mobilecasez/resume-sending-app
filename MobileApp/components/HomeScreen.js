@@ -1392,6 +1392,28 @@ export default function HomeScreen({
     })();
     return () => { alive = false; };
   }, [explainerKey, API_BASE]);
+  // ── Finish a notification deep link that needs THIS screen ────────────────────────────────────
+  // A tapped "complete your profile" / "see how it works" push can only get halfway on its own:
+  // pushRouting writes the request, but App.js's profile screen and the intro guide are BOTH reached
+  // from here (setScreen / setShowExplainer) and from nowhere else. Without this the deep link
+  // silently does nothing. Running on focus also covers the cold start, where the tap launched the
+  // app and Home mounts only after the notification was already handled.
+  useFocusEffect(useCallback(() => {
+    let alive = true;
+    (async () => {
+      let pending = null;
+      try { pending = await require('../services/pushRouting').takePendingNav(); } catch { pending = null; }
+      if (!alive || !pending) return;
+      if (pending.handoff === 'help') {
+        try { await AsyncStorage.removeItem('help_open_tutorial'); } catch {}
+        setShowExplainer(true);            // the guide the notification promised
+      } else if (setScreen) {
+        setScreen('profile');              // App.js then reads onboarding_focus_target for the section
+      }
+    })();
+    return () => { alive = false; };
+  }, [setScreen]));
+
   // Bumped on dismiss so the help button rings and names itself — the popup has just been animated
   // into it, and this is the moment that lands the point ("that button is where the guide went").
   const [helpAttention, setHelpAttention] = useState(0);

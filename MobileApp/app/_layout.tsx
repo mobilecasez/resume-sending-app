@@ -1,8 +1,10 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { AppState, Alert } from 'react-native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { track } from '../services/analytics';
+import { addNotificationResponseListener } from '../services/pushNotificationService';
+import { handleNotificationResponse, handleColdStartNotification } from '../services/pushRouting';
 
 // Keep the splash screen visible until we explicitly hide it
 SplashScreen.preventAutoHideAsync();
@@ -31,10 +33,46 @@ if (globalAny.ErrorUtils && !globalAny.__cvErrorGuard) {
   });
 }
 
+// Cold start: App.js restores the session asynchronously after this layout mounts. Give it a moment
+// before navigating, so the tap's destination isn't stomped by the post-restore screen change.
+const COLD_START_DELAY_MS = 1200;
+
 export default function RootLayout() {
+  const router = useRouter();
+  const routerRef = useRef(router);
+  useEffect(() => { routerRef.current = router; }, [router]);
+
   useEffect(() => {
     // Hide the splash screen once the layout (and first screen) has mounted
     SplashScreen.hideAsync();
+  }, []);
+
+  // ── NOTIFICATION TAPS ───────────────────────────────────────────────────────────────────────
+  // Two paths, one handler (services/pushRouting.ts de-dupes so a tap is never acted on twice):
+  //  • WARM  — app already running: the response listener fires.
+  //  • COLD  — the tap LAUNCHED the app: the listener never fires, so read the launch response once.
+  // Everything is guarded (the listener helper returns null without the native module) so a build
+  // without expo-notifications still boots — this is the ROOT layout, a throw here kills the app.
+  useEffect(() => {
+    let cancelled = false;
+    let sub: any = null;
+    try {
+      sub = addNotificationResponseListener((response: any) => {
+        if (cancelled) return;
+        handleNotificationResponse(response, routerRef.current).catch(() => {});
+      });
+    } catch { sub = null; }
+
+    const t = setTimeout(() => {
+      if (cancelled) return;
+      handleColdStartNotification(routerRef.current).catch(() => {});
+    }, COLD_START_DELAY_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+      try { sub?.remove?.(); } catch { /* nothing to remove */ }
+    };
   }, []);
 
   // First-party analytics — report app opens + foreground returns so the admin dashboard shows

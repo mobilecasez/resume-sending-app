@@ -53,6 +53,8 @@
     .sw.on::after { left:21px; }
     .tbtn { background:var(--blue); color:#fff; border:none; border-radius:10px; padding:9px 14px; font-size:13px; font-weight:700; cursor:pointer; }
     .tbtn:disabled { opacity:.6; cursor:default; }
+    .openprof { flex:none; font-size:11.5px; font-weight:700; color:#9cc0ff; background:#0e1729; border:1px solid var(--line); border-radius:999px; padding:4px 9px; text-decoration:none; white-space:nowrap; }
+    .openprof:hover { border-color:var(--cyan); color:#fff; }
   </style>
 </head>
 <body>
@@ -106,13 +108,17 @@
         var name=u.full_name||u.email||('Anon '+String(u.uid).slice(0,10));
         var prov=u.provider?('<span class="pill b">'+esc(u.provider)+'</span> '):'';
         var plat=u.platform?('· '+esc(u.platform)):'';
+        // Registered users also get a direct link to their full admin profile page.
+        var prof = u.user_id ? ('<a class="openprof" href="/admin-user-detail?userId='+encodeURIComponent(u.user_id)+'" title="Open full profile">Profile →</a>') : '';
         return '<div class="urow" data-uid="'+esc(u.user_id||'')+'" data-anon="'+esc(u.user_id?'':u.uid)+'">'
           +'<div class="av" style="background:'+color(u.uid)+'">'+esc(initials(u.full_name,u.email))+'</div>'
           +'<div style="min-width:0;flex:1;"><div class="uname">'+esc(name)+'</div>'
-          +'<div class="umeta">'+prov+num(u.events)+' events · '+ago(u.last_seen)+' '+plat+'</div></div></div>';
+          +'<div class="umeta">'+prov+num(u.events)+' events · '+ago(u.last_seen)+' '+plat+'</div></div>'+prof+'</div>';
       }).join('');
       Array.prototype.forEach.call(el.querySelectorAll('.urow'), function(row){
-        row.addEventListener('click', function(){
+        row.addEventListener('click', function(ev){
+          // The "Profile →" link navigates on its own — don't also swap the timeline underneath it.
+          if (ev.target && ev.target.closest && ev.target.closest('.openprof')) return;
           Array.prototype.forEach.call(el.querySelectorAll('.urow'), function(r){ r.classList.remove('active'); });
           row.classList.add('active');
           loadTimeline(row.getAttribute('data-uid'), row.getAttribute('data-anon'));
@@ -138,7 +144,8 @@
           +'<span class="chip">Signature '+(p.has_signature?'<b>✓</b>':'✗')+'</span></div>';
         head='<div class="prof"><div class="av" style="width:44px;height:44px;font-size:17px;background:'+color(uid)+'">'+esc(initials(p.full_name,p.email))+'</div>'
           +'<div><div class="nm">'+esc(p.full_name||p.email||('User '+uid))+'</div>'
-          +'<div class="muted" style="font-size:12.5px;">'+esc(p.email||'')+' · id '+esc(String(p.id))+'</div></div></div>'+chips;
+          +'<div class="muted" style="font-size:12.5px;">'+esc(p.email||'')+' · id '+esc(String(p.id))+'</div></div>'
+          +'<a class="openprof" style="margin-left:auto;padding:7px 12px;font-size:12.5px;" href="/admin-user-detail?userId='+encodeURIComponent(p.id)+'">Open full profile →</a></div>'+chips;
       } else {
         head='<div class="prof"><div class="av" style="width:44px;height:44px;font-size:17px;background:'+color(anon)+'">?</div>'
           +'<div><div class="nm">Anonymous device</div><div class="muted" style="font-size:12.5px;">'+esc(anon||'')+' (not signed in)</div></div></div>';

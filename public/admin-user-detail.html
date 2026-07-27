@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>User 360 · CVApplyr Admin</title>
+  <style>
+    :root { --bg:#0b1120; --card:#131c31; --line:#22304d; --ink:#e8eefb; --mut:#8ea2c4; --cyan:#06b6d4; --blue:#3b82f6; --grn:#34d399; --amb:#fbbf24; --red:#fb7185; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { max-width:1200px; margin:0 auto; padding:20px 16px 60px; }
+    h1 { font-size:22px; font-weight:800; letter-spacing:-.4px; margin:0 0 2px; }
+    .sub { color:var(--mut); font-size:13px; margin-bottom:18px; }
+    a.back { color:var(--cyan); text-decoration:none; font-size:13px; }
+    .muted { color:var(--mut); }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; }
+    .stack { display:flex; flex-direction:column; gap:16px; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    @media (max-width:820px){ .grid2 { grid-template-columns:1fr; } }
+    .sect { font-size:11.5px; font-weight:800; letter-spacing:.7px; text-transform:uppercase; color:var(--mut); margin:0 0 12px; }
+    .av { width:34px; height:34px; border-radius:10px; flex:none; display:flex; align-items:center; justify-content:center; font-weight:800; color:#fff; font-size:14px; overflow:hidden; }
+    .av img { width:100%; height:100%; object-fit:cover; display:block; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; }
+    .pill.g{ background:rgba(52,211,153,.14); color:var(--grn);} .pill.b{ background:rgba(59,130,246,.16); color:#9cc0ff;}
+    .pill.a{ background:rgba(251,191,36,.15); color:var(--amb);} .pill.r{ background:rgba(251,113,133,.15); color:var(--red);}
+    .pill.c{ background:rgba(6,182,212,.15); color:var(--cyan);} .pill.n{ background:#0e1729; color:var(--mut); border:1px solid var(--line); }
+    .prof { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+    .prof .nm { font-size:19px; font-weight:800; letter-spacing:-.3px; overflow-wrap:anywhere; }
+    .prof .muted { overflow-wrap:anywhere; }
+    .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+    .chip { background:#0e1729; border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-size:11.5px; color:var(--mut); }
+    .chip b { color:var(--ink); }
+    .chip.miss { border-color:rgba(251,191,36,.4); color:var(--amb); }
+    .rollup { display:flex; flex-wrap:wrap; gap:8px; }
+    .rc { background:#0e1729; border:1px solid var(--line); border-radius:12px; padding:9px 12px; min-width:104px; flex:1; }
+    .rc .n { font-size:18px; font-weight:800; } .rc .l { font-size:11px; color:var(--mut); margin-top:1px; }
+    .rc .s { font-size:11px; color:var(--mut); margin-top:2px; }
+    .kv { display:flex; align-items:flex-start; gap:10px; padding:8px 0; border-bottom:1px solid rgba(34,48,77,.55); }
+    .kv:last-child { border-bottom:none; }
+    .kv .k { width:118px; flex:none; color:var(--mut); font-size:12.5px; padding-top:1px; }
+    .kv .v { flex:1; font-size:13.5px; font-weight:600; word-break:break-word; }
+    .kv .v.blank { color:var(--mut); font-weight:500; }
+    .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--amb); margin-left:6px; vertical-align:middle; }
+    .doc { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid rgba(34,48,77,.55); }
+    .doc:last-child { border-bottom:none; }
+    .thumb { width:52px; height:52px; border-radius:12px; flex:none; background:#0e1729; border:1px solid var(--line); display:flex; align-items:center; justify-content:center; font-size:20px; overflow:hidden; }
+    .thumb img { width:100%; height:100%; object-fit:contain; display:block; background:#0e1729; }
+    .tbtn { background:var(--blue); color:#fff; border:none; border-radius:10px; padding:9px 14px; font-size:13px; font-weight:700; cursor:pointer; }
+    .tbtn:disabled { opacity:.55; cursor:default; }
+    .tbtn.ghost { background:transparent; border:1px solid var(--line); color:var(--ink); }
+    .tbtn.sm { padding:7px 11px; font-size:12px; border-radius:9px; }
+    .tbtn.go { background:var(--cyan); color:#052b33; }
+    .jrow { display:flex; align-items:center; gap:12px; padding:11px 0; border-bottom:1px solid rgba(34,48,77,.55); flex-wrap:wrap; }
+    .jrow:last-child { border-bottom:none; }
+    .badge { width:50px; height:36px; border-radius:10px; flex:none; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:13px; }
+    .badge.g { background:rgba(52,211,153,.14); color:var(--grn); } .badge.a { background:rgba(251,191,36,.15); color:var(--amb); }
+    .badge.n { background:#0e1729; color:var(--mut); border:1px solid var(--line); }
+    .jt { font-weight:700; font-size:13.5px; overflow-wrap:anywhere; }
+    .jm { color:var(--mut); font-size:11.5px; margin-top:2px; overflow-wrap:anywhere; }
+    .jm a { color:var(--cyan); text-decoration:none; }
+    .tcard { background:#0e1729; border:1px solid var(--line); border-radius:14px; padding:12px; }
+    .tcard.sug { border-color:var(--cyan); box-shadow:0 0 0 1px rgba(6,182,212,.22) inset; }
+    .tcard.na { opacity:.55; }
+    .tcard .th { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:2px; }
+    .tcard .tn { font-weight:800; font-size:14px; }
+    .tcard .tdesc { color:var(--mut); font-size:12px; margin:2px 0 8px; }
+    .tcard .reason { color:var(--amb); font-size:11.5px; margin-bottom:8px; }
+    .tgrid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    @media (max-width:820px){ .tgrid { grid-template-columns:1fr; } }
+    .lbl { font-size:11px; color:var(--mut); font-weight:700; text-transform:uppercase; letter-spacing:.5px; margin:8px 0 4px; }
+    .fin, .fta { width:100%; padding:9px 11px; border-radius:10px; border:1px solid var(--line); background:#0b1120; color:var(--ink); font-size:13px; outline:none; font-family:inherit; }
+    .fin:focus, .fta:focus { border-color:var(--cyan); }
+    .fta { min-height:64px; resize:vertical; line-height:1.45; }
+    .mono { font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#9cc0ff; word-break:break-word; }
+    .rowend { display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+    .res { font-size:12.5px; font-weight:700; }
+    .res.ok { color:var(--grn); } .res.bad { color:var(--red); } .res.warn { color:var(--amb); } .res.mut { color:var(--mut); font-weight:600; }
+    .cnt { font-weight:700; color:var(--mut); text-transform:none; letter-spacing:0; margin-left:6px; }
+    .cnt.near { color:var(--amb); } .cnt.over { color:var(--red); }
+    .mask { position:fixed; inset:0; background:rgba(4,8,18,.74); display:flex; align-items:center; justify-content:center; padding:18px; z-index:60; }
+    .modal { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; max-width:520px; width:100%; max-height:88vh; overflow:auto; box-shadow:0 24px 60px rgba(0,0,0,.55); }
+    .modal h3 { margin:0 0 4px; font-size:16px; font-weight:800; }
+    .modal .who { font-size:13px; margin-bottom:6px; overflow-wrap:anywhere; }
+    .modal .who b { color:var(--cyan); }
+    .modal .acts { display:flex; gap:10px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap; }
+    .pv { background:#0b1120; border:1px solid var(--line); border-radius:12px; padding:10px 12px; margin-top:8px; }
+    .pv .pl { font-size:10.5px; font-weight:800; letter-spacing:.6px; text-transform:uppercase; color:var(--mut); margin-bottom:3px; }
+    .pv .pt { font-size:14px; font-weight:800; overflow-wrap:anywhere; }
+    .pv .pb { font-size:13px; line-height:1.45; margin-top:6px; overflow-wrap:anywhere; }
+    .tbtn.danger { background:var(--red); color:#3b0713; }
+    .lnk { color:var(--cyan); font-size:12px; cursor:pointer; text-decoration:underline; }
+    .empty { color:var(--mut); text-align:center; padding:34px 0; font-size:13px; }
+    .note { background:rgba(251,191,36,.09); border:1px solid rgba(251,191,36,.35); color:var(--amb); border-radius:12px; padding:9px 12px; font-size:12.5px; margin-bottom:12px; }
+    .li { padding:9px 0; border-bottom:1px solid rgba(34,48,77,.55); }
+    .li:last-child { border-bottom:none; }
+    .li .t { font-weight:700; font-size:13px; } .li .m { color:var(--mut); font-size:12px; margin-top:2px; word-break:break-word; }
+    .li .d { color:var(--mut); font-size:11px; margin-top:3px; }
+    .hd { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+    .skel { color:var(--mut); font-size:13px; padding:10px 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="/admin-user-analytics">← User Analytics</a>
+    <h1>User 360</h1>
+    <div class="sub" id="sub">Everything about one user — profile, documents, résumé insight, best-matching jobs and one-tap notifications.</div>
+    <div id="root" class="stack"><div class="card"><div class="skel">Loading…</div></div></div>
+  </div>
+
+  <script>
+    // ── Auth (same pattern as admin-user-analytics.html) ─────────────────────
+    var qToken=null, qUser=null;
+    try{ var QS=new URLSearchParams(location.search); qToken=QS.get('token'); qUser=QS.get('userId')||QS.get('id'); }catch(e){}
+    if (qToken){ try{ localStorage.setItem('authToken', qToken); }catch(e){} }
+    var authToken = qToken || localStorage.getItem('authToken');
+    if (!authToken){ window.location.href='/login'; }
+    var API_BASE = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://localhost:3000' : 'https://cvapplyr.com';
+    var UID = (qUser && /^\d+$/.test(String(qUser).trim())) ? String(qUser).trim() : null;
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    // Everything on this page (names, emails, filenames, job titles, employer names, résumé skills,
+    // notification copy) is user-supplied, so NOTHING reaches innerHTML without going through esc().
+    // Single quote and backtick are escaped too, so esc() is safe inside single-quoted attributes.
+    var ESCMAP={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'};
+    function esc(s){ return String(s==null?'':s).replace(/[&<>"'`]/g,function(c){ return ESCMAP[c]; }); }
+    // Mirrors server/services/notifyTemplates.js clip() exactly (whitespace collapsed, trimmed,
+    // ellipsised at n) so the confirm preview and the counters show the delivered text, not the typed one.
+    var LIM={ title:90, body:200 };
+    function clip(s,n){ var t=String(s==null?'':s).replace(/\s+/g,' ').trim(); return t.length>n ? t.slice(0,n-1).replace(/\s+$/,'')+'…' : t; }
+    function normLen(s){ return String(s==null?'':s).replace(/\s+/g,' ').trim().length; }
+    function num(n){ return (n==null||isNaN(n))?'0':Number(n).toLocaleString(); }
+    function initials(n,e){ n=(n||'').trim(); if(n) return n.split(/\s+/).map(function(x){return x[0];}).slice(0,2).join('').toUpperCase(); return (e||'?').slice(0,2).toUpperCase(); }
+    var COLORS=['#06b6d4','#3b82f6','#8b5cf6','#34d399','#fbbf24','#fb7185','#f472b6','#22d3ee'];
+    function color(k){ var h=0,s=String(k||'x'); for(var i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return COLORS[h%COLORS.length]; }
+    function ago(ts){ if(!ts) return ''; var d=(Date.now()-new Date(ts).getTime())/1000; if(isNaN(d)) return ''; if(d<60) return Math.floor(d)+'s ago'; if(d<3600) return Math.floor(d/60)+'m ago'; if(d<86400) return Math.floor(d/3600)+'h ago'; return Math.floor(d/86400)+'d ago'; }
+    function fmtDay(ts){ if(!ts) return ''; try{ var d=new Date(ts); if(isNaN(d.getTime())) return ''; return d.toLocaleDateString([], {year:'numeric',month:'short',day:'numeric'}); }catch(e){ return ''; } }
+    function fmtDT(ts){ if(!ts) return ''; try{ var d=new Date(ts); if(isNaN(d.getTime())) return ''; return d.toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }catch(e){ return ''; } }
+    function safeUrl(u){ u=String(u||''); return /^https?:\/\//i.test(u) ? u : ''; }
+    function has(v){ return v!=null && String(v).trim()!==''; }
+    function arr(v){ if(Array.isArray(v)) return v; if(typeof v==='string'){ try{ var p=JSON.parse(v); return Array.isArray(p)?p:[]; }catch(e){ return v.trim()?v.split(/\s*,\s*/):[]; } } return []; }
+
+    // ── API ──────────────────────────────────────────────────────────────────
+    var denied=false;
+    function renderDenied(){
+      if(denied) return; denied=true;
+      document.getElementById('sub').textContent='';
+      document.getElementById('root').innerHTML='<div class="card"><div class="empty"><div style="font-size:15px;font-weight:800;color:var(--ink);margin-bottom:6px;">Admin access required</div>'
+        +'<div>This page is only available to admin accounts. Sign in as an admin, or re-open it from the admin menu.</div>'
+        +'<div style="margin-top:14px;"><a class="back" href="/login">Go to login →</a></div></div></div>';
+    }
+    async function api(path){
+      try{
+        var r = await fetch(API_BASE+path, { headers:{ 'Authorization':'Bearer '+authToken } });
+        if(r.status===401||r.status===403){ renderDenied(); return null; }
+        if(!r.ok){ return { success:false, error:'HTTP '+r.status }; }
+        return await r.json();
+      }catch(e){ return { success:false, error:(e&&e.message)||'Network error' }; }
+    }
+    async function postApi(path, body){
+      try{
+        var r = await fetch(API_BASE+path, { method:'POST', headers:{ 'Authorization':'Bearer '+authToken, 'Content-Type':'application/json' }, body:JSON.stringify(body||{}) });
+        if(r.status===401||r.status===403){ renderDenied(); return { success:false, error:'Admin access required' }; }
+        var j=null; try{ j=await r.json(); }catch(e){}
+        if(!j) return { success:false, error:'HTTP '+r.status };
+        return j;
+      }catch(e){ return { success:false, error:(e&&e.message)||'Network error' }; }
+    }
+
+    // Admin files need the Authorization header, so a plain href cannot work —
+    // fetch the bytes and hand the tab a blob: URL instead.
+    var blobCache={};
+    async function fileBlobUrl(kind){
+      if(blobCache[kind]!==undefined) return blobCache[kind];
+      try{
+        var r = await fetch(API_BASE+'/api/admin/users/'+UID+'/files/'+kind, { headers:{ 'Authorization':'Bearer '+authToken } });
+        if(r.status===401||r.status===403){ renderDenied(); blobCache[kind]=null; return null; }
+        if(!r.ok){ blobCache[kind]=null; return null; }
+        var b=await r.blob(); var u=URL.createObjectURL(b); blobCache[kind]=u; return u;
+      }catch(e){ blobCache[kind]=null; return null; }
+    }
+    async function openFile(kind, btn){
+      if(!btn || btn.disabled) return;
+      var old=btn.textContent; btn.disabled=true; btn.textContent='Opening…';
+      var win=null; try{ win=window.open('', '_blank'); }catch(e){}          // opened inside the click so popup blockers allow it
+      var u=await fileBlobUrl(kind);
+      if(!u){ if(win){ try{ win.close(); }catch(e){} } btn.textContent='Not available'; setTimeout(function(){ btn.textContent=old; btn.disabled=false; },2200); return; }
+      if(win){ try{ win.location.href=u; }catch(e){ win=null; } }
+      if(!win){ var a=document.createElement('a'); a.href=u; a.target='_blank'; a.rel='noopener'; document.body.appendChild(a); a.click(); a.remove(); }
+      btn.textContent=old; btn.disabled=false;
+    }
+    async function downloadFile(kind, filename, btn){
+      if(!btn || btn.disabled) return;
+      var old=btn.textContent; btn.disabled=true; btn.textContent='…';
+      var u=await fileBlobUrl(kind);
+      if(!u){ btn.textContent='N/A'; setTimeout(function(){ btn.textContent=old; btn.disabled=false; },2200); return; }
+      var a=document.createElement('a'); a.href=u; a.download=filename||(kind+'-user-'+UID); document.body.appendChild(a); a.click(); a.remove();
+      btn.textContent=old; btn.disabled=false;
+    }
+
+    function ring(p){
+      p = Math.max(0, Math.min(100, Math.round(Number(p)||0)));
+      var C=201.06, off=(C*(1-p/100)).toFixed(1);
+      var col = p>=80?'#34d399':(p>=50?'#fbbf24':'#fb7185');
+      return '<svg width="78" height="78" viewBox="0 0 78 78" role="img" aria-label="Profile completeness '+p+' percent">'
+        +'<circle cx="39" cy="39" r="32" fill="none" stroke="#22304d" stroke-width="7"></circle>'
+        +'<circle cx="39" cy="39" r="32" fill="none" stroke="'+col+'" stroke-width="7" stroke-linecap="round" stroke-dasharray="'+C+'" stroke-dashoffset="'+off+'" transform="rotate(-90 39 39)"></circle>'
+        +'<text x="39" y="44" text-anchor="middle" font-size="17" font-weight="800" fill="#e8eefb">'+p+'%</text></svg>';
+    }
+
+    // ── Page shell ───────────────────────────────────────────────────────────
+    function shell(){
+      document.getElementById('root').innerHTML =
+        '<div class="card" id="cHead"><div class="skel">Loading user…</div></div>'
+       +'<div class="card" id="cGlance"><div class="sect">At a glance</div><div class="skel">Loading…</div></div>'
+       +'<div class="grid2"><div class="card" id="cProfile"><div class="sect">Profile details</div><div class="skel">Loading…</div></div>'
+       +'<div class="card" id="cDocs"><div class="sect">Documents</div><div class="skel">Loading…</div></div></div>'
+       +'<div class="card" id="cResume"><div class="sect">Résumé insight</div><div class="skel">Loading…</div></div>'
+       +'<div class="card" id="cJobs"><div class="sect">Best matched jobs</div><div class="skel">Loading…</div></div>'
+       +'<div class="card" id="cNotify"><div class="sect">Send a notification</div><div class="skel">Loading templates…</div></div>'
+       +'<div class="grid2"><div class="card" id="cNotifHist"><div class="sect">Recent notifications</div><div class="skel">Loading…</div></div>'
+       +'<div class="card" id="cSendHist"><div class="sect">Admin sends</div><div class="skel">Loading…</div></div></div>';
+    }
+    function set(id, html){ var el=document.getElementById(id); if(el) el.innerHTML=html; }
+    function fail(id, title, msg){ set(id, '<div class="sect">'+esc(title)+'</div><div class="empty">'+esc(msg||'Could not load.')+'</div>'); }
+
+    function askForUser(){
+      document.getElementById('root').innerHTML='<div class="card"><div class="sect">Pick a user</div>'
+        +'<div class="muted" style="font-size:13px;margin-bottom:10px;">Open this page as <span class="mono">/admin-user-detail?userId=N</span>, or type a user id below.</div>'
+        +'<div style="display:flex;gap:10px;flex-wrap:wrap;"><input id="uidIn" class="fin" style="max-width:220px;" placeholder="User id, e.g. 62" inputmode="numeric">'
+        +'<button class="tbtn" id="uidGo">Open</button></div>'
+        +'<div style="margin-top:14px;"><a class="back" href="/admin-user-analytics">← Browse all users</a></div></div>';
+      function go(){ var v=(document.getElementById('uidIn').value||'').trim(); if(/^\d+$/.test(v)) location.search='?userId='+encodeURIComponent(v); }
+      document.getElementById('uidGo').onclick=go;
+      document.getElementById('uidIn').addEventListener('keydown', function(e){ if(e.key==='Enter') go(); });
+    }
+
+    // ── 1 + 2 + 3 + 4 + 5 + 8 : the overview payload ─────────────────────────
+    var OV=null;
+    async function loadOverview(){
+      var d = await api('/api/admin/users/'+UID+'/overview');
+      if(!d) return;                                  // 401/403 already rendered
+      if(!d.success || !d.user){
+        set('cHead','<div class="empty">'+esc(d.error||('User '+UID+' not found.'))+'</div>');
+        ['cGlance','cProfile','cDocs','cResume','cNotifHist','cSendHist'].forEach(function(x){ fail(x,'','Unavailable.'); });
+        return;
+      }
+      OV=d;
+      renderHead(d); renderGlance(d); renderProfile(d); renderDocs(d); renderResume(d); renderHistory(d);
+      var nm=d.user.full_name||d.user.email||('User '+UID);
+      document.getElementById('sub').innerHTML='Everything about <b>'+esc(nm)+'</b> — profile, documents, résumé insight, best-matching jobs and one-tap notifications.';
+      try{ document.title=nm+' · CVApplyr Admin'; }catch(e){}
+    }
+
+    function renderHead(d){
+      var u=d.user||{}, c=d.completeness||{}, a=d.assets||{};
+      var nm=u.full_name||u.email||('User '+UID);
+      var prov=has(u.oauth_provider)?('<span class="pill b">'+esc(u.oauth_provider)+'</span>'):'<span class="pill n">email signup</span>';
+      var role=(String(u.role||'').toLowerCase()==='admin')?'<span class="pill c">admin</span>':'';
+      var seen=u.last_seen_at||(d.activity&&d.activity.last_event)||null;
+      var seenLbl=u.last_seen_at?'Last seen':'Last event';
+      var missing=arr(c.missing);
+      var mchips=missing.length
+        ? missing.map(function(m){ return '<span class="chip miss">'+esc(String(m).replace(/_/g,' '))+'</span>'; }).join('')
+        : '<span class="chip"><b>Nothing missing</b></span>';
+      var avatar = (a.photo && a.photo.has)
+        ? '<div class="av" id="avBox" style="width:64px;height:64px;border-radius:16px;font-size:22px;background:'+color(UID)+';">'+esc(initials(u.full_name,u.email))+'</div>'
+        : '<div class="av" style="width:64px;height:64px;border-radius:16px;font-size:22px;background:'+color(UID)+';">'+esc(initials(u.full_name,u.email))+'</div>';
+      set('cHead',
+        '<div class="hd" style="margin-bottom:0;align-items:flex-start;">'
+        +'<div class="prof">'+avatar
+          +'<div style="min-width:0;">'
+            +'<div class="nm">'+esc(nm)+'</div>'
+            +'<div class="muted" style="font-size:12.5px;margin-top:2px;">'+esc(u.email||'—')+' · id '+esc(String(u.id!=null?u.id:UID))+'</div>'
+            +'<div class="chips">'+prov+role
+              +'<span class="chip">Joined <b>'+esc(fmtDay(u.created_at)||'—')+'</b></span>'
+              +'<span class="chip">'+esc(seenLbl)+' <b>'+esc(seen?(ago(seen)||fmtDay(seen)):'never')+'</b></span>'
+            +'</div>'
+          +'</div>'
+        +'</div>'
+        +'<div style="display:flex;align-items:center;gap:12px;">'+ring(c.percent)
+          +'<div style="max-width:320px;"><div class="muted" style="font-size:11.5px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;">Profile completeness</div>'
+          +'<div class="chips">'+mchips+'</div></div>'
+        +'</div></div>');
+      if(a.photo && a.photo.has){
+        fileBlobUrl('photo').then(function(u2){
+          var box=document.getElementById('avBox');
+          if(u2 && box){ box.textContent=''; var im=document.createElement('img'); im.src=u2; im.alt='Profile photo'; box.appendChild(im); }
+        });
+      }
+    }
+
+    function renderGlance(d){
+      var cr=d.credits||{}, ac=d.activity||{}, ph=d.push||{};
+      // nHtml is markup on purpose — every call site below builds it from num() (Number-coerced)
+      // or a literal, never from raw server text. Label and sub are escaped.
+      function tile(nHtml,l,s){ return '<div class="rc"><div class="n">'+nHtml+'</div><div class="l">'+esc(l)+'</div>'+(s?('<div class="s">'+esc(s)+'</div>'):'')+'</div>'; }
+      var reach = ph.has_token ? '<span style="color:var(--grn);">Yes</span>' : '<span style="color:var(--red);">No</span>';
+      var tiles = tile(num(cr.remaining)+'<span class="muted" style="font-size:12px;font-weight:600;"> / '+num(cr.total)+'</span>','Credits', cr.expiry_date?('expires '+fmtDay(cr.expiry_date)):(cr.last_purchase_date?('last buy '+fmtDay(cr.last_purchase_date)):'no expiry set'))
+        + tile(num(ac.saved_jobs),'Saved jobs')
+        + tile(num(ac.applications),'Applications')
+        + tile(num(ac.cover_letters),'Cover letters')
+        + tile(num(ac.searches),'Searches')
+        + tile(num(ac.events_30d),'Events · 30d', ac.first_event?('first '+fmtDay(ac.first_event)):'')
+        + tile(reach,'Push reachable', ph.platform?String(ph.platform):(ph.has_token?'':'no token'));
+      var recent=arr(cr.recent).slice(0,4).map(function(x){
+        var amt=Number(x.amount)||0; var sign=amt>0?'+':'';
+        return '<span class="chip"><b>'+esc(sign+amt)+'</b> '+esc(x.type||x.description||'credit')+' · '+esc(fmtDay(x.created_at))+'</span>';
+      }).join('');
+      set('cGlance','<div class="sect">At a glance</div><div class="rollup">'+tiles+'</div>'
+        +(recent?('<div class="chips" style="margin-top:10px;">'+recent+'</div>'):''));
+    }
+
+    function renderProfile(d){
+      var u=d.user||{};
+      function row(k,v,important){
+        var ok=has(v);
+        return '<div class="kv"><div class="k">'+esc(k)+'</div><div class="v'+(ok?'':' blank')+'">'+(ok?esc(v):'—')+(!ok&&important?'<span class="dot" title="Missing — needed for applications"></span>':'')+'</div></div>';
+      }
+      var loc=[u.city,u.country].filter(has).join(', ');
+      var ips=[];
+      if(has(u.registration_ip)) ips.push('signup '+u.registration_ip);
+      if(has(u.last_login_ip)) ips.push('last login '+u.last_login_ip);
+      set('cProfile','<div class="sect">Profile details</div>'
+        +row('Phone', u.phone_number, true)
+        +row('Date of birth', u.date_of_birth?fmtDay(u.date_of_birth):'', true)
+        +row('Address', u.address, true)
+        +row('City / country', loc, true)
+        +row('Gender', u.gender, false)
+        +row('Nationality', u.nationality, false)
+        +(ips.length?('<div class="muted" style="font-size:11px;margin-top:10px;">'+esc(ips.join(' · '))+'</div>'):'')
+        +'<div class="muted" style="font-size:11px;margin-top:6px;"><span class="dot"></span> amber = blank field that blocks a complete application</div>');
+    }
+
+    function renderDocs(d){
+      var a=d.assets||{};
+      var r=a.resume||{}, p=a.photo||{}, s=a.signature||{};
+      function line(icon, label, sub, kind, present, thumbId, dl){
+        var right = present
+          ? '<button class="tbtn sm ghost" data-open="'+esc(kind)+'">Open</button>'+(dl?(' <button class="tbtn sm ghost" data-dl="'+esc(kind)+'" data-fn="'+esc(dl)+'">Download</button>'):'')
+          : '<span class="pill r">missing</span>';
+        return '<div class="doc"><div class="thumb"'+(thumbId?(' id="'+esc(thumbId)+'"'):'')+'>'+icon+'</div>'
+          +'<div style="flex:1;min-width:0;"><div style="font-weight:700;font-size:13.5px;">'+esc(label)+'</div>'
+          +'<div class="muted" style="font-size:11.5px;margin-top:2px;word-break:break-all;">'+esc(sub)+'</div></div>'
+          +'<div style="display:flex;gap:6px;flex-wrap:wrap;">'+right+'</div></div>';
+      }
+      set('cDocs','<div class="sect">Documents</div>'
+        +line('📄','Résumé', r.has?(r.filename||'uploaded file'):'No résumé uploaded', 'resume', !!r.has, null, r.filename||('resume-user-'+UID))
+        +line('🖼️','Profile photo', p.has?'Uploaded':'No photo', 'photo', !!p.has, 'thPhoto', '')
+        +line('✍️','Signature', s.has?'Uploaded':'No signature', 'signature', !!s.has, 'thSign', ''));
+      var box=document.getElementById('cDocs');
+      Array.prototype.forEach.call(box.querySelectorAll('[data-open]'), function(b){ b.onclick=function(){ openFile(b.getAttribute('data-open'), b); }; });
+      Array.prototype.forEach.call(box.querySelectorAll('[data-dl]'), function(b){ b.onclick=function(){ downloadFile(b.getAttribute('data-dl'), b.getAttribute('data-fn'), b); }; });
+      if(p.has) fileBlobUrl('photo').then(function(u){ var t=document.getElementById('thPhoto'); if(u&&t){ t.textContent=''; var im=document.createElement('img'); im.src=u; im.alt='Profile photo'; t.appendChild(im); } });
+      if(s.has) fileBlobUrl('signature').then(function(u){ var t=document.getElementById('thSign'); if(u&&t){ t.textContent=''; var im=document.createElement('img'); im.src=u; im.alt='Signature'; t.appendChild(im); } });
+    }
+
+    function renderResume(d){
+      var r=d.resume||{};
+      var st=String(r.parse_status||'none').toLowerCase();
+      var cls = st==='done'?'g':(st==='failed'||st==='error'?'r':(st==='none'?'n':'a'));
+      var skills=arr(r.skills), tech=arr(r.technical_skills), soft=arr(r.soft_skills);
+      var titles=arr(r.job_titles), inds=arr(r.industries), edu=arr(r.education), langs=arr(r.languages);
+      function chips(list, max){
+        list=(list||[]).filter(has);
+        if(!list.length) return '<span class="muted" style="font-size:12.5px;">—</span>';
+        var shown=list.slice(0,max||40).map(function(x){ return '<span class="chip"><b>'+esc(typeof x==='object'?(x.name||x.title||x.degree||JSON.stringify(x)):x)+'</b></span>'; }).join('');
+        if(list.length>(max||40)) shown+='<span class="chip">+'+(list.length-(max||40))+' more</span>';
+        return shown;
+      }
+      function block(t,list,max){ return '<div class="lbl">'+esc(t)+'</div><div class="chips" style="margin-top:0;">'+chips(list,max)+'</div>'; }
+      if(st!=='done' && !skills.length && !tech.length){
+        set('cResume','<div class="sect">Résumé insight</div>'
+          +'<div class="chips" style="margin-top:0;"><span class="pill '+cls+'">'+esc(st)+'</span></div>'
+          +'<div class="empty">No parsed résumé yet — job matching and personalised nudges stay generic until one is uploaded and parsed.</div>');
+        return;
+      }
+      set('cResume','<div class="sect">Résumé insight</div>'
+        +'<div class="chips" style="margin-top:0;"><span class="pill '+cls+'">parse: '+esc(st)+'</span>'
+        +(r.experience_years!=null&&r.experience_years!==''?('<span class="chip">Experience <b>'+esc(r.experience_years)+' yrs</b></span>'):'')
+        +(r.parsed_at?('<span class="chip">Parsed <b>'+esc(fmtDay(r.parsed_at))+'</b></span>'):'')+'</div>'
+        +(has(r.summary)?('<div class="muted" style="font-size:12.5px;line-height:1.5;margin-top:10px;">'+esc(r.summary)+'</div>'):'')
+        +block('Skills', skills, 30)
+        +(tech.length?block('Technical skills', tech, 30):'')
+        +(soft.length?block('Soft skills', soft, 20):'')
+        +block('Job titles', titles, 15)
+        +block('Industries', inds, 15)
+        +(edu.length?block('Education', edu, 10):'')
+        +(langs.length?block('Languages', langs, 10):''));
+    }
+
+    function renderHistory(d){
+      var ns=arr(d.recent_notifications), ss=arr(d.admin_sends);
+      set('cNotifHist','<div class="sect">Recent notifications</div>'+(ns.length
+        ? ns.map(function(n){
+            return '<div class="li"><div class="t">'+esc(n.title||n.type||'Notification')+(n.is_read?'':' <span class="pill c">unread</span>')+'</div>'
+              +(has(n.message)?('<div class="m">'+esc(n.message)+'</div>'):'')
+              +'<div class="d">'+esc(n.type||'')+' · '+esc(fmtDT(n.created_at))+'</div></div>';
+          }).join('')
+        : '<div class="empty">No notifications yet.</div>'));
+      set('cSendHist','<div class="sect">Admin sends</div>'+(ss.length
+        ? ss.map(function(s){
+            // A log row with push_ok=false is NOT always "in-app only": the rails log opted_out and
+            // no_token rows before anything is written or delivered, so those must read as blocked.
+            var err=String(s.push_error||'');
+            // Every reason the rails record BEFORE anything is delivered. Anything in this map was
+            // blocked — nothing went to the phone and, for most of them, nothing was written in-app
+            // either. Only a genuine push failure (a delivery error from Expo) is "in-app only".
+            var BLOCKED={ opted_out:'opted out of this category', no_token:'no push token',
+                          recently_sent:'already sent in the last 72h', job_not_found:'the job no longer exists',
+                          bad_template_category:'template misconfigured', unknown_template:'unknown template',
+                          user_not_found:'user not found', reservation_abandoned:'send was interrupted' };
+            var ok = s.push_ok===true
+              ? '<span class="pill g">delivered</span>'
+              : (BLOCKED[err] ? '<span class="pill r">blocked · '+esc(BLOCKED[err])+'</span>'
+                  : '<span class="pill a">in-app only'+(err?(' · '+esc(err)):'')+'</span>');
+            return '<div class="li"><div class="t">'+esc(s.title||s.template_key||'Send')+' '+ok+'</div>'
+              +'<div class="d">'+esc(s.template_key||'')+' · '+esc(fmtDT(s.created_at))+(has(s.sent_by_email)?(' · by '+esc(s.sent_by_email)):(has(s.sent_by)?(' · by '+esc(s.sent_by)):''))+'</div></div>';
+          }).join('')
+        : '<div class="empty">Nothing sent to this user yet.</div>'));
+    }
+
+    async function refreshHistory(){
+      var d = await api('/api/admin/users/'+UID+'/overview');
+      if(d && d.success){ OV=d; renderHistory(d); renderGlance(d); }
+    }
+
+    // ── 6 : best matched jobs ────────────────────────────────────────────────
+    var JOBS=[];
+    async function loadJobs(){
+      var d = await api('/api/admin/users/'+UID+'/matched-jobs?limit=20');
+      if(!d) return;
+      if(!d.success){ fail('cJobs','Best matched jobs', d.error||'Could not load matches.'); return; }
+      if(d.noProfile){
+        set('cJobs','<div class="sect">Best matched jobs</div>'
+          +'<div class="note">No parsed résumé for this user, so there is nothing to match against. Match scores are hidden until a résumé is uploaded and parsed.</div>'
+          +'<div class="empty">Try the “upload your résumé” nudge below.</div>');
+        return;
+      }
+      var jobs=arr(d.jobs);
+      JOBS=jobs;                                    // kept so the confirm dialog can preview the exact push text
+      if(!jobs.length){ set('cJobs','<div class="sect">Best matched jobs</div><div class="empty">No matching jobs in the feed right now.</div>'); return; }
+      var rows=jobs.map(function(j, i){
+        var m=Number(j.match); var mv=isNaN(m)?null:Math.round(m);
+        var bc = mv==null?'n':(mv>=70?'g':(mv>=40?'a':'n'));
+        var meta=[j.employer_name, j.location, j.work_mode, j.job_type, j.field, j.salary].filter(has).map(esc).join(' · ');
+        var url=safeUrl(j.url);
+        var sk=arr(j.skills).filter(has).slice(0,6).map(function(s){ return '<span class="chip">'+esc(s)+'</span>'; }).join('');
+        return '<div class="jrow">'
+          +'<div class="badge '+bc+'">'+(mv==null?'—':(mv+'%'))+'</div>'
+          +'<div style="flex:1;min-width:180px;"><div class="jt">'+esc(j.title||'Untitled role')+'</div>'
+            +'<div class="jm">'+meta+(url?(' · <a href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">open posting ↗</a>'):'')+'</div>'
+            +(sk?('<div class="chips" style="margin-top:5px;">'+sk+'</div>'):'')+'</div>'
+          +'<div style="display:flex;align-items:center;gap:10px;">'
+            +'<span class="res" id="jr_'+i+'"></span>'
+            +'<button class="tbtn sm go" data-job="'+esc(j.id||'')+'" data-i="'+i+'">Send this job</button></div></div>';
+      }).join('');
+      set('cJobs','<div class="sect">Best matched jobs <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:600;">· same score the user sees</span></div>'+rows);
+      var box=document.getElementById('cJobs');
+      Array.prototype.forEach.call(box.querySelectorAll('[data-job]'), function(b){
+        b.onclick=function(){ sendJob(b.getAttribute('data-job'), b.getAttribute('data-i'), b); };
+      });
+    }
+
+    // ── Confirmation ─────────────────────────────────────────────────────────
+    // Every send lands on a real person's phone, so nothing leaves this page without an explicit
+    // confirmation that names the user and shows the exact text that will be delivered.
+    var SENDING=false;                       // one send at a time, page-wide
+    function userLabel(){
+      var u=(OV&&OV.user)||{};
+      return { name: u.full_name||u.email||('User '+UID), email: u.email||'', id: String(u.id!=null?u.id:UID) };
+    }
+    function el(tag, cls, text){ var e=document.createElement(tag); if(cls) e.className=cls; if(text!=null) e.textContent=text; return e; }
+    function confirmSend(o){
+      o=o||{};
+      return new Promise(function(resolve){
+        var done=false;
+        function finish(v){ if(done) return; done=true; try{ document.removeEventListener('keydown', onKey, true); }catch(e){} try{ mask.remove(); }catch(e){} resolve(v); }
+        var who=userLabel();
+        var mask=el('div','mask'); mask.id='sendMask';
+        var box=el('div','modal'); box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true');
+        box.appendChild(el('h3', null, 'Send this notification?'));
+        var w=el('div','who'); w.appendChild(document.createTextNode('This goes straight to the phone of '));
+        var b=document.createElement('b'); b.textContent=who.name; w.appendChild(b);
+        w.appendChild(document.createTextNode((who.email?(' · '+who.email):'')+' · user id '+who.id+'.'));
+        box.appendChild(w);
+        if(o.template) box.appendChild(el('div','muted','Template: '+o.template+(o.route?('  ·  opens '+o.route):''))).style.fontSize='12px';
+        if(o.naReason) box.appendChild(el('div','note','Marked NOT APPLICABLE for this user — '+o.naReason));
+        if(o.noToken) box.appendChild(el('div','note','This user has no push token. Nothing will reach the phone; at best it is stored in-app.'));
+        if(o.clipped) box.appendChild(el('div','note','Shortened to the delivery limits ('+LIM.title+' title / '+LIM.body+' body). The preview below is what is actually delivered.'));
+        var pv=el('div','pv');
+        pv.appendChild(el('div','pl','Delivered title'));
+        pv.appendChild(el('div','pt', o.title||''));
+        pv.appendChild(el('div','pl','Delivered body')).style.marginTop='8px';
+        pv.appendChild(el('div','pb', o.body||''));
+        box.appendChild(pv);
+        if(o.note) box.appendChild(el('div','muted', o.note)).style.fontSize='11px';
+        var acts=el('div','acts');
+        var cancel=el('button','tbtn ghost','Cancel'); cancel.id='sendCancel';
+        var shortName = who.name.length>28 ? (who.name.slice(0,27)+'…') : who.name;   // the full name is spelled out above
+        var go=el('button','tbtn danger','Send to '+shortName); go.id='sendGo';
+        cancel.onclick=function(){ finish(false); };
+        go.onclick=function(){ go.disabled=true; cancel.disabled=true; go.textContent='Sending…'; finish(true); };  // one-way door: cannot be clicked twice
+        acts.appendChild(cancel); acts.appendChild(go); box.appendChild(acts);
+        mask.appendChild(box);
+        mask.onclick=function(ev){ if(ev.target===mask) finish(false); };
+        function onKey(ev){ if(ev.key==='Escape'){ ev.preventDefault(); finish(false); } }
+        document.addEventListener('keydown', onKey, true);
+        document.body.appendChild(mask);
+        try{ cancel.focus(); }catch(e){}
+      });
+    }
+
+    // Mirrors the server's specific_job template (notifyTemplates.js) so the preview is the real text.
+    function jobPreview(j){
+      j=j||{};
+      var m=Number(j.match); m=isFinite(m)?m:0;
+      var title = clip(m ? (m+'% match: '+(j.title||'')) : ('New role for you: '+(j.title||'')), LIM.title);
+      var bits=[j.employer_name, j.location, j.work_mode, j.salary].filter(has);
+      var line=bits.join(' · ');
+      var body = clip(line ? (line+'. Tap to see the full role and apply.') : 'Tap to see the full role and apply.', 180);
+      return { title:title, body:body };
+    }
+    function tplByKey(k){ for(var i=0;i<TPL.length;i++){ if(TPL[i] && TPL[i].key===k) return TPL[i]; } return null; }
+
+    async function sendJob(jobId, i, btn){
+      if(!btn || btn.disabled) return;
+      if(!jobId){ return; }
+      if(SENDING) return;
+      var res=document.getElementById('jr_'+i);
+      var job=(JOBS&&JOBS[Number(i)])||{};
+      var pv=jobPreview(job);
+      var t=tplByKey('specific_job')||{};
+      var na = String(t.relevance||'')==='not_applicable' ? (t.reason||'Not applicable for this user right now.') : '';
+      var old=btn.textContent;
+      btn.disabled=true;
+      if(res){ res.className='res'; res.textContent=''; }
+      var goAhead = await confirmSend({
+        title: pv.title, body: pv.body, template: 'One specific job', route: '/(discover)',
+        naReason: na, noToken: !!(OV && OV.push && OV.push.has_token===false),
+        note: 'Rendered from this job row — the server renders the same template for job id '+String(jobId)+'.',
+      });
+      if(!goAhead){ btn.disabled=false; btn.textContent=old; if(res){ res.className='res mut'; res.textContent='Cancelled — nothing sent.'; } return; }
+      if(SENDING){ btn.disabled=false; btn.textContent=old; return; }
+      SENDING=true; btn.textContent='Sending…';
+      var out;
+      try{ out = await postApi('/api/admin/users/'+UID+'/notify', { key:'specific_job', jobId:jobId }); }
+      finally { SENDING=false; }
+      var o=showResult(res, out);
+      btn.textContent = o.btn || old;
+      setTimeout(function(){ btn.textContent=old; btn.disabled=false; }, o.btn ? 4000 : 1200);
+      if(o.kind!=='failed') refreshHistory();
+    }
+
+    // The API answers success:true for opted_out / no_token / recently_sent — the REQUEST succeeded,
+    // the send did not. Those come back as `skipped` and must never read as a delivery.
+    var SKIP_COPY={
+      opted_out:     'Blocked — user opted out of this category. Nothing delivered, nothing saved in-app.',
+      no_token:      'Blocked — no push token on file. Nothing delivered, nothing saved in-app.',
+      recently_sent: 'Blocked — this template already reached the user in the last 72h. Nothing sent.',
+      job_not_found: 'Blocked — the job could not be resolved. Nothing sent.',
+    };
+    function outcomeOf(out){
+      if(!out || !out.success) return { kind:'failed', cls:'bad', btn:null, text:'Failed — '+String((out&&out.error)||'unknown error')+'. Nothing sent.' };
+      var sk = out.skipped ? String(out.skipped) : '';
+      if(sk) return { kind:'blocked', cls:'bad', btn:'Not sent', text:(SKIP_COPY[sk] || ('Blocked — '+sk.replace(/_/g,' ')+'. Nothing sent.')) };
+      var p=out.push||{};
+      if(p.ok) return { kind:'delivered', cls:'ok', btn:'Sent ✓', text:'Delivered to the phone ✓' };
+      return { kind:'inapp', cls:'warn', btn:'In-app only', text:'Saved in-app only · push NOT delivered'+(p.error?(' ('+String(p.error)+')'):'') };
+    }
+    function showResult(el2, out){
+      var o=outcomeOf(out);
+      if(el2){ el2.className='res '+o.cls; el2.textContent=o.text; }
+      return o;
+    }
+
+    // ── 7 : notification templates ───────────────────────────────────────────
+    var TPL=[];
+    async function loadTemplates(){
+      var d = await api('/api/admin/notify/templates?userId='+encodeURIComponent(UID));
+      if(!d) return;
+      if(!d.success){ fail('cNotify','Send a notification', d.error||'Could not load templates.'); return; }
+      TPL=arr(d.templates);
+      var ph=(OV&&OV.push)||{};
+      var prefs=ph.preferences||{};
+      var prefChips=Object.keys(prefs).length
+        ? ('<div class="chips" style="margin-top:0;">'+Object.keys(prefs).map(function(k){
+            var on=prefs[k]!==false;
+            return '<span class="chip">'+esc(String(k).replace(/_/g,' '))+' <b style="color:'+(on?'#34d399':'#fb7185')+';">'+(on?'on':'off')+'</b></span>';
+          }).join('')+'</div>') : '';
+      var warn = ph.has_token===false
+        ? '<div class="note">This user has no push token — anything sent is stored in-app only and will not reach their phone.</div>' : '';
+      if(!TPL.length){
+        set('cNotify','<div class="sect">Send a notification</div>'+prefChips+warn+'<div class="empty">No templates available for this user.</div>');
+        return;
+      }
+      var order={ suggested:0, available:1, not_applicable:2 };
+      var idx=TPL.map(function(t,i){ return i; });
+      idx.sort(function(a,b){
+        var ra=order[String(TPL[a].relevance||'available')]; var rb=order[String(TPL[b].relevance||'available')];
+        if(ra===undefined) ra=1; if(rb===undefined) rb=1;
+        return ra-rb || a-b;
+      });
+      // Suggested first (visually distinct), then everything else, then n/a.
+      var html='';
+      ['suggested','available','not_applicable'].forEach(function(rel){
+        var members=idx.filter(function(i){ var r=String((TPL[i]||{}).relevance||'available'); if(rel==='available') return r!=='suggested'&&r!=='not_applicable'; return r===rel; });
+        if(!members.length) return;
+        var lbl = rel==='suggested' ? 'Suggested for this user' : (rel==='not_applicable' ? 'Not applicable right now' : 'Other templates');
+        html += '<div class="lbl" style="margin-top:16px;">'+esc(lbl)+'</div><div class="tgrid">'+members.map(function(i){ return card(TPL[i], i, rel); }).join('')+'</div>';
+      });
+      set('cNotify','<div class="sect">Send a notification</div>'
+        +'<div class="muted" style="font-size:12.5px;margin-bottom:8px;">Edit the exact wording, then confirm — every send asks first, and shows the exact text that will land on the phone. '
+        +'Titles are delivered at most '+LIM.title+' characters and bodies '+LIM.body+'; the counters show what the server actually counts. '
+        +'Sends can still be blocked by the rails (opt-out, no push token, or the same template already sent in the last 72h) — the result line says which.</div>'
+        +prefChips+warn+html);
+      wireTemplates();
+    }
+
+    function card(t, i, rel){
+      t=t||{};
+      var na = rel==='not_applicable';
+      var tag = rel==='suggested' ? '<span class="pill c">Suggested</span>' : (na?'<span class="pill n">n/a</span>':'');
+      var cat = has(t.category)?('<span class="chip">'+esc(t.category)+'</span>'):'';
+      var route = has(t.route)?('<div class="mono" style="margin-top:8px;">'+esc(t.route)+(t.params?(' · '+esc(JSON.stringify(t.params))):'')+'</div>'):'';
+      return '<div class="tcard'+(rel==='suggested'?' sug':'')+(na?' na':'')+'" id="tc_'+i+'">'
+        +'<div class="th"><div class="tn">'+esc(t.label||t.key||'Template')+'</div>'+tag+cat+'</div>'
+        +(has(t.description)?('<div class="tdesc">'+esc(t.description)+'</div>'):'')
+        +(has(t.reason)?('<div class="reason">'+esc(t.reason)+'</div>'):'')
+        // maxlength is the REAL delivery limit (server clips title to 90 / body to 200), so nothing
+        // the admin types can be silently cut; the counter shows the whitespace-collapsed length the server counts.
+        +'<div class="lbl">Title <span class="cnt" id="tcT_'+i+'"></span></div><input class="fin" id="tt_'+i+'" value="'+esc(t.title||'')+'" maxlength="'+LIM.title+'">'
+        +'<div class="lbl">Body <span class="cnt" id="tcB_'+i+'"></span></div><textarea class="fta" id="tb_'+i+'" maxlength="'+LIM.body+'">'+esc(t.body||'')+'</textarea>'
+        +route
+        +'<div class="rowend"><button class="tbtn sm" id="ts_'+i+'" data-send="'+i+'"'+(na?' disabled':'')+'>Send</button>'
+        +(na?('<span class="lnk" data-unlock="'+i+'">Send anyway</span>'):'')
+        +'<span class="res" id="tr_'+i+'"></span></div></div>';
+    }
+
+    var UNLOCKED={};                      // template index → admin explicitly chose "send anyway"
+    function wireCount(inputId, cntId, lim){
+      var inp=document.getElementById(inputId), c=document.getElementById(cntId);
+      if(!inp || !c) return;
+      function upd(){
+        var n=normLen(inp.value);
+        c.textContent=n+'/'+lim+(n>lim?' — will be cut':'');
+        c.className='cnt'+(n>lim?' over':(n>lim-15?' near':''));
+      }
+      inp.addEventListener('input', upd); inp.addEventListener('change', upd); upd();
+    }
+    function wireTemplates(){
+      var box=document.getElementById('cNotify');
+      Array.prototype.forEach.call(box.querySelectorAll('[data-send]'), function(b){
+        b.onclick=function(){ sendTemplate(b.getAttribute('data-send'), b); };
+      });
+      Array.prototype.forEach.call(box.querySelectorAll('[data-unlock]'), function(l){
+        l.onclick=function(){
+          var i=l.getAttribute('data-unlock');
+          UNLOCKED[String(Number(i))]=true;
+          var b=document.getElementById('ts_'+i); if(b) b.disabled=false;
+          var c=document.getElementById('tc_'+i); if(c) c.classList.remove('na');
+          l.remove();
+        };
+      });
+      TPL.forEach(function(t,i){ wireCount('tt_'+i,'tcT_'+i,LIM.title); wireCount('tb_'+i,'tcB_'+i,LIM.body); });
+    }
+
+    async function sendTemplate(i, btn){
+      if(!btn || btn.disabled) return;
+      if(SENDING) return;
+      var idx=Number(i); var t=TPL[idx]; if(!t) return;
+      var ti=document.getElementById('tt_'+idx), bi=document.getElementById('tb_'+idx), res=document.getElementById('tr_'+idx);
+      // The disabled attribute alone was not a guard — this refuses the send itself unless the
+      // admin used "Send anyway", so calling sendTemplate() directly cannot bypass it either.
+      if(String(t.relevance||'')==='not_applicable' && !UNLOCKED[String(idx)]){
+        if(res){ res.className='res bad'; res.textContent='Not applicable for this user — use “Send anyway” first.'; }
+        return;
+      }
+      var rawT=(ti&&ti.value)||'', rawB=(bi&&bi.value)||'';
+      var title=clip(rawT, LIM.title), body=clip(rawB, LIM.body);
+      if(!title || !body){ if(res){ res.className='res bad'; res.textContent='Title and body are required.'; } return; }
+      var old=btn.textContent;
+      btn.disabled=true;
+      if(res){ res.className='res'; res.textContent=''; }
+      var goAhead = await confirmSend({
+        title: title, body: body, template: t.label||t.key, route: t.route,
+        clipped: (normLen(rawT)>LIM.title || normLen(rawB)>LIM.body),
+        naReason: String(t.relevance||'')==='not_applicable' ? (t.reason||'Not applicable for this user right now.') : '',
+        noToken: !!(OV && OV.push && OV.push.has_token===false),
+      });
+      if(!goAhead){ btn.disabled=false; btn.textContent=old; if(res){ res.className='res mut'; res.textContent='Cancelled — nothing sent.'; } return; }
+      if(SENDING){ btn.disabled=false; btn.textContent=old; return; }
+      SENDING=true; btn.textContent='Sending…';
+      var out;
+      // Post the clipped text, so what the admin confirmed is byte-for-byte what the server delivers.
+      try{ out = await postApi('/api/admin/users/'+UID+'/notify', { key:t.key, overrides:{ title:title, body:body } }); }
+      finally { SENDING=false; }
+      var o=showResult(res, out);
+      btn.textContent = o.btn || old;
+      setTimeout(function(){ btn.textContent=old; btn.disabled=false; }, o.btn ? 4000 : 1200);
+      if(o.kind!=='failed') refreshHistory();
+    }
+
+    // ── Boot ─────────────────────────────────────────────────────────────────
+    if(!UID){ askForUser(); }
+    else {
+      shell();
+      loadOverview().then(function(){ if(!denied) loadTemplates(); });
+      loadJobs();
+    }
+    window.addEventListener('beforeunload', function(){
+      Object.keys(blobCache).forEach(function(k){ if(blobCache[k]) { try{ URL.revokeObjectURL(blobCache[k]); }catch(e){} } });
+    });
+  </script>
+</body>
+</html>

@@ -926,4 +926,66 @@ async function unsaveJob(req, res) {
   } catch (e) { console.error('[discover] unsave:', e.message); res.status(500).json({ error: 'Could not remove' }); }
 }
 
-module.exports = { discoverJobs, discoverFacets, aiSearch, hydrateUrls, liveSearch, fetchDetail, savedJobs, unsaveJob, saveCard };
+// ─── GET /discover/job/:id — ONE feed job, by its synthetic 'gj_…' id or its raw job_url ────────
+// Why this exists: a tapped push notification carries an id, not a whole job card (Expo caps the
+// payload at ~4 KiB), so the app needs a way to turn that id back into the full job. `global_jobs`
+// has no gj_ column and cannot index one — the hash is minted client-side from job_url — so the
+// resolution lives in adminUserOps.resolveGlobalJobHash (log lookup first, then a cached hash scan).
+// Required lazily: adminUserOps requires this controller back for matchExprSql.
+async function getGlobalJobById(req, res) {
+  try {
+    const raw = String(req.params.id || '').trim();
+    if (!raw) return res.status(400).json({ error: 'Missing job id' });
+
+    const ops = require('../services/adminUserOps');
+    let url = null;
+    let truncated = false;
+    if (/^gj_/i.test(raw)) {
+      const r = await ops.resolveGlobalJobHash(raw);
+      url = r.job_url;
+      truncated = r.truncated;
+    } else {
+      url = raw;   // a raw job_url (URL-encoded in the path) also works
+    }
+    if (!url) {
+      return res.status(404).json({
+        error: 'Job not found',
+        ...(truncated ? { truncated: true, note: 'The id scan hit its 60,000-row ceiling without a match — the job may be older than the scanned window.' } : {}),
+      });
+    }
+
+    const resume = await getResume(req.user && req.user.id);
+    const userSkills = skillsOf(resume);
+    const noProfile = userSkills.length === 0;
+    const params = [];
+    const P = (v) => { params.push(v); return '$' + params.length; };
+    const matchExpr = noProfile ? 'NULL::int' : matchExprSql(P(userSkills));
+    const FIELDS = `job_url, title, employer_name, employer_domain, location, work_mode, job_type, salary, experience, responsibilities, skills, source, country, field, role_category, seniority, is_active, last_seen`;
+    const r = await dbConfig.get(
+      `SELECT ${FIELDS}, ${matchExpr} AS match FROM global_jobs WHERE job_url = ${P(url)} LIMIT 1`, params);
+    if (!r) return res.status(404).json({ error: 'Job not found' });
+
+    res.json({
+      success: true, noProfile,
+      job: {
+        id: r.job_url, gj_id: ops.hashJobUrlId(r.job_url),
+        title: r.title, company: r.employer_name, employer_name: r.employer_name,
+        employer_domain: r.employer_domain, location: r.location, work_mode: r.work_mode,
+        job_type: r.job_type, salary: r.salary, experience: r.experience,
+        responsibilities: Array.isArray(r.responsibilities) ? r.responsibilities : [],
+        skills: Array.isArray(r.skills) ? r.skills : [], job_url: r.job_url, source: r.source,
+        country: r.country, field: r.field, role_category: r.role_category, seniority: r.seniority,
+        is_active: r.is_active !== false, last_seen: r.last_seen,
+        match: r.match == null ? null : Number(r.match),
+      },
+    });
+  } catch (e) {
+    console.error('[discover] job-by-id:', e.message);
+    res.status(500).json({ error: 'Failed to load job' });
+  }
+}
+
+module.exports = { discoverJobs, discoverFacets, aiSearch, hydrateUrls, liveSearch, fetchDetail, savedJobs, unsaveJob, saveCard, getGlobalJobById,
+  // Exported for reuse ONLY (behaviour unchanged): the admin "matched jobs" view scores jobs with the
+  // EXACT same expression + résumé-skill normalisation as the user's own feed, so the two never drift.
+  matchExprSql, getResume, skillsOf };

@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Segments · CVApplyr Admin</title>
+  <style>
+    :root { --bg:#0b1120; --card:#131c31; --line:#22304d; --ink:#e8eefb; --mut:#8ea2c4; --cyan:#06b6d4; --blue:#3b82f6; --grn:#34d399; --amb:#fbbf24; --red:#fb7185; }
+    * { box-sizing:border-box; }
+    html, body { max-width:100%; overflow-x:hidden; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { max-width:1200px; margin:0 auto; padding:20px 16px 60px; }
+    h1 { font-size:22px; font-weight:800; letter-spacing:-.4px; margin:0 0 2px; }
+    .sub { color:var(--mut); font-size:13px; margin-bottom:18px; }
+    a.back { color:var(--cyan); text-decoration:none; font-size:13px; }
+    .muted { color:var(--mut); }
+    /* min-width:0 on the tracks is what actually lets the table's scroll container shrink.
+       Without it a grid item's min-width defaults to auto = its content width, the 1fr track
+       inflates to the table's natural width and the whole PAGE scrolls sideways on a phone. */
+    .grid { display:grid; grid-template-columns: 340px minmax(0,1fr); gap:16px; align-items:start; }
+    .grid > * { min-width:0; }
+    @media (max-width:820px){ .grid { grid-template-columns:minmax(0,1fr); } }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; min-width:0; }
+    .search { width:100%; max-width:100%; padding:11px 13px; border-radius:11px; border:1px solid var(--line); background:#0e1729; color:var(--ink); font-size:14px; outline:none; }
+    .search:focus { border-color:var(--cyan); }
+    .ulist { margin-top:10px; max-height:70vh; overflow:auto; }
+    .urow { display:flex; align-items:center; gap:10px; padding:10px; border-radius:11px; cursor:pointer; border:1px solid transparent; }
+    .urow:hover { background:#0e1729; }
+    .urow.active { background:#0e1729; border-color:var(--cyan); }
+    .av { width:34px; height:34px; border-radius:10px; flex:none; display:flex; align-items:center; justify-content:center; font-weight:800; color:#fff; font-size:14px; }
+    .uname { font-weight:700; font-size:13.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .umeta { color:var(--mut); font-size:11.5px; margin-top:1px; overflow-wrap:anywhere; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; }
+    .pill.g{ background:rgba(52,211,153,.14); color:var(--grn);} .pill.b{ background:rgba(59,130,246,.16); color:#9cc0ff;}
+    .pill.a{ background:rgba(251,191,36,.15); color:var(--amb);} .pill.r{ background:rgba(251,113,133,.15); color:var(--red);}
+    .pill.n{ background:#0e1729; color:var(--mut); border:1px solid var(--line); }
+    .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; min-width:0; }
+    .chip { background:#0e1729; border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-size:11.5px; color:var(--mut); max-width:100%; overflow-wrap:anywhere; }
+    .chip b { color:var(--ink); }
+    .rollup { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
+    .rc { background:#0e1729; border:1px solid var(--line); border-radius:12px; padding:8px 12px; min-width:112px; }
+    .rc .n { font-size:18px; font-weight:800; overflow-wrap:anywhere; } .rc .l { font-size:11px; color:var(--mut); }
+    .rc.ok .n { color:var(--grn); } .rc.warn .n { color:var(--amb); } .rc.bad .n { color:var(--red); }
+    .empty { color:var(--mut); text-align:center; padding:40px 0; }
+    .tbtn { background:var(--blue); color:#fff; border:none; border-radius:10px; padding:9px 14px; font-size:13px; font-weight:700; cursor:pointer; }
+    .tbtn:disabled { opacity:.6; cursor:default; }
+    .tbtn.ghost { background:#0e1729; border:1px solid var(--line); color:var(--ink); }
+    .tbtn.send { background:#e11d48; }
+    .tbtn.send:disabled { background:#3a2233; color:#8b7a86; }
+    .hdrow { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .h2 { font-weight:800; font-size:15px; }
+    .tblwrap { margin-top:10px; max-width:100%; max-height:46vh; overflow:auto; -webkit-overflow-scrolling:touch; border:1px solid var(--line); border-radius:12px; }
+    /* The table keeps a readable minimum and scrolls INSIDE .tblwrap instead of widening the page. */
+    table.tbl { width:100%; min-width:680px; border-collapse:collapse; font-size:12.5px; }
+    table.tbl th { position:sticky; top:0; background:#0e1729; color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.5px; text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); white-space:nowrap; z-index:1; }
+    table.tbl td { padding:9px 10px; border-bottom:1px solid rgba(34,48,77,.6); vertical-align:middle; }
+    table.tbl td:nth-child(2) { overflow-wrap:anywhere; }                       /* email — the one unbreakable token */
+    table.tbl td:nth-child(3), table.tbl td:nth-child(4), table.tbl td:last-child { white-space:nowrap; }
+    table.tbl tr:last-child td { border-bottom:none; }
+    table.tbl tr:hover td { background:#0e1729; }
+    table.tbl a.ul { color:#9cc0ff; text-decoration:none; font-weight:700; }
+    table.tbl a.ul:hover { text-decoration:underline; }
+    .dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
+    .dot.on { background:var(--grn); box-shadow:0 0 0 3px rgba(52,211,153,.16); }
+    .dot.off { background:#3a4762; }
+    .field { margin-top:12px; min-width:0; }
+    .lbl { font-size:11.5px; color:var(--mut); font-weight:700; text-transform:uppercase; letter-spacing:.5px; margin-bottom:5px; }
+    select.search { appearance:none; -webkit-appearance:none; background-image:linear-gradient(45deg,transparent 50%,#8ea2c4 50%),linear-gradient(135deg,#8ea2c4 50%,transparent 50%); background-position:calc(100% - 18px) 50%,calc(100% - 13px) 50%; background-size:5px 5px,5px 5px; background-repeat:no-repeat; padding-right:36px; }
+    textarea.search { resize:vertical; min-height:96px; font-family:inherit; line-height:1.45; }
+    .warn { background:rgba(251,113,133,.08); border:1px solid rgba(251,113,133,.3); border-radius:12px; padding:10px 12px; font-size:12.5px; color:#ffc6ce; overflow-wrap:anywhere; }
+    .note { background:rgba(251,191,36,.08); border:1px solid rgba(251,191,36,.3); border-radius:12px; padding:9px 12px; font-size:12.5px; color:#ffe0a3; margin-top:10px; overflow-wrap:anywhere; }
+    .okbox { background:rgba(52,211,153,.08); border:1px solid rgba(52,211,153,.3); border-radius:12px; padding:10px 12px; font-size:12.5px; color:#b6f2dc; overflow-wrap:anywhere; }
+    .skiprow { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:7px 10px; border-bottom:1px solid rgba(34,48,77,.6); font-size:12.5px; }
+    .skiprow span { min-width:0; overflow-wrap:anywhere; }
+    .skiprow:last-child { border-bottom:none; }
+    .skipbox { border:1px solid var(--line); border-radius:12px; margin-top:10px; overflow:hidden; }
+    .skiphead { background:#0e1729; padding:8px 10px; font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.5px; font-weight:700; }
+    .actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:14px; }
+    .steps { display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--mut); flex-wrap:wrap; min-width:0; }
+    .step { display:inline-flex; align-items:center; gap:6px; }
+    .step .b { width:18px; height:18px; border-radius:50%; background:#0e1729; border:1px solid var(--line); display:inline-flex; align-items:center; justify-content:center; font-size:10.5px; font-weight:800; }
+    .step.done .b { background:rgba(52,211,153,.16); border-color:rgba(52,211,153,.45); color:var(--grn); }
+    .step.done { color:var(--grn); }
+    .hiddenlist { font-size:11.5px; color:var(--mut); margin-top:6px; line-height:1.5; }
+    .hiddenlist b { color:var(--ink); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="/admin-user-analytics">← User Analytics</a>
+    <h1>Segments</h1>
+    <div class="sub">Pick a segment, see exactly who is in it, preview the send, then confirm. Soft-deleted users are excluded everywhere. Nothing is sent without a preview first.</div>
+
+    <div class="grid">
+      <!-- LEFT: segments -->
+      <div class="card">
+        <div class="hdrow"><div class="h2">Segments</div><button id="segReload" class="tbtn ghost" style="padding:6px 10px;font-size:12px;">Refresh</button></div>
+        <div class="muted" style="font-size:12px;margin-top:3px;">Live counts, computed on load.</div>
+        <div id="seglist" class="ulist"><div class="muted" style="padding:16px;">Loading segments…</div></div>
+      </div>
+
+      <!-- RIGHT: users + send -->
+      <div>
+        <div class="card" id="usersCard" style="margin-bottom:16px;">
+          <div class="empty">Select a segment on the left to see who is in it.</div>
+        </div>
+
+        <div class="card" id="sendCard">
+          <div class="hdrow">
+            <div>
+              <div class="h2">📣 Send to this segment</div>
+              <div class="muted" style="font-size:12px;margin-top:2px;">Preview first — the Send button stays locked until a preview has run for the exact selection below.</div>
+            </div>
+          </div>
+
+          <div class="warn" style="margin-top:12px;">⚠️ This sends a real push notification to real people's phones. Opted-out users and anyone who already got this template in the last 72h are skipped automatically.</div>
+
+          <div id="sendBody">
+            <div class="empty">Select a segment first.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    var qToken=null; try{ qToken=new URLSearchParams(location.search).get('token'); }catch(e){}
+    if (qToken){ try{ localStorage.setItem('authToken', qToken); }catch(e){} }
+    var authToken = qToken || localStorage.getItem('authToken');
+    if (!authToken){ window.location.href='/login'; }
+    var API_BASE = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://localhost:3000' : 'https://cvapplyr.com';
+
+    function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+    function num(n){ return (n==null||isNaN(n))?'0':Number(n).toLocaleString(); }
+    function ago(ts){ if(!ts) return ''; var d=(Date.now()-new Date(ts).getTime())/1000; if(d<0) return 'just now'; if(d<60) return Math.floor(d)+'s ago'; if(d<3600) return Math.floor(d/60)+'m ago'; if(d<86400) return Math.floor(d/3600)+'h ago'; return Math.floor(d/86400)+'d ago'; }
+    function fmtDay(ts){ try{ return ts? new Date(ts).toLocaleDateString([], {month:'short',day:'numeric',year:'numeric'}) : '—'; }catch(e){ return '—'; } }
+    var COLORS=['#06b6d4','#3b82f6','#8b5cf6','#34d399','#fbbf24','#fb7185','#f472b6','#22d3ee'];
+    function color(k){ var h=0,s=String(k||'x'); for(var i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return COLORS[h%COLORS.length]; }
+
+    async function api(path){
+      try{
+        var r=await fetch(API_BASE+path,{headers:{'Authorization':'Bearer '+authToken}});
+        if(r.status===401||r.status===403){
+          var je=await r.json().catch(function(){ return null; });
+          return {__err:(je&&(je.error||je.message))||'Admin access required.', __auth:true, __status:r.status};
+        }
+        var j=await r.json().catch(function(){ return null; });
+        if(!r.ok) return {__err:(j&&(j.error||j.message))||('Request failed ('+r.status+')')};
+        if(j&&j.success===false) return {__err:(j.error||j.message||'Request failed.')};
+        return j||{__err:'Empty response.'};
+      }catch(e){ return {__err:'Network error: '+e.message}; }
+    }
+    async function postApi(path, body){
+      try{
+        var r=await fetch(API_BASE+path,{method:'POST',headers:{'Authorization':'Bearer '+authToken,'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+        if(r.status===401||r.status===403){
+          var je=await r.json().catch(function(){ return null; });
+          return {__err:(je&&(je.error||je.message))||'Admin access required.', __auth:true, __status:r.status};
+        }
+        var j=await r.json().catch(function(){ return null; });
+        if(!r.ok) return {__err:(j&&(j.error||j.message))||('Request failed ('+r.status+')')};
+        if(j&&j.success===false) return {__err:(j.error||j.message||'Request failed.')};
+        return j||{__err:'Empty response.'};
+      }catch(e){ return {__err:'Network error: '+e.message}; }
+    }
+
+    // ── State ────────────────────────────────────────────────────────────────
+    var MAX_DEFAULT=500, MAX_CEILING=2000;
+    var segments=[], templates=[], hiddenTemplates=[], tplLoaded=false, tplLoading=false, tplError=null, tplWarning=null;
+    var denied=false;                 // a 401/403 anywhere puts the page into a dead, unmistakable denied state
+    var previewGen=0;                 // bumped on EVERY state change — an in-flight preview with a stale gen is thrown away
+    var previewing=false;             // one preview request at a time
+    var S = { segKey:null, segLabel:'', segCount:0, tplKey:null, title:'', body:'', max:MAX_DEFAULT,
+              preview:null, previewSig:null, previewPayload:null, previewSeg:null,
+              sendCount:0, sending:false, lockWhy:'' };
+
+    // ── Access denied ────────────────────────────────────────────────────────
+    // A 401/403 must NOT leave an operational-looking page behind. Everything is torn down.
+    function showDenied(msg){
+      if(denied) return true;
+      denied=true;
+      invalidatePreview('access denied');
+      var w=document.querySelector('.wrap');
+      if(!w) return true;
+      w.innerHTML='<div id="deniedCard" class="card" style="max-width:560px;margin:48px auto;text-align:center;">'
+        +'<div style="font-size:42px;line-height:1;">🔒</div>'
+        +'<h1 style="margin-top:12px;">Access denied</h1>'
+        +'<div class="warn" style="margin-top:12px;text-align:left;">'+esc(msg||'Admin privileges are required for this page.')+'</div>'
+        +'<div class="muted" style="font-size:12.5px;margin-top:12px;text-align:left;">No segment, user or template data was loaded, and nothing can be sent from this page. '
+        +'Sign in with an admin account and reload.</div>'
+        +'<div class="actions" style="justify-content:center;">'
+        +'<a class="tbtn" href="/login" style="text-decoration:none;">Sign in</a>'
+        +'<button id="deniedRetry" class="tbtn ghost">Reload</button></div></div>';
+      var r=document.getElementById('deniedRetry');
+      if(r) r.addEventListener('click', function(){ location.reload(); });
+      return true;
+    }
+    function gate(d){ return !!(d && d.__auth && showDenied(d.__err)); }
+
+    // ── Segments ─────────────────────────────────────────────────────────────
+    async function loadSegments(){
+      if(denied) return;
+      var el=document.getElementById('seglist'); if(!el) return;
+      el.innerHTML='<div class="muted" style="padding:16px;">Loading segments…</div>';
+      var d=await api('/api/admin/segments');
+      if(gate(d)) return;
+      el=document.getElementById('seglist'); if(!el) return;      // re-query after the await
+      if(d.__err){
+        el.innerHTML='<div class="empty">'+esc(d.__err)+'</div>'
+          +'<div style="text-align:center;padding-bottom:12px;"><button id="segRetry" class="tbtn ghost">Retry</button></div>';
+        var sr=document.getElementById('segRetry'); if(sr) sr.addEventListener('click', loadSegments);
+        return;
+      }
+      segments=(d.segments||[]);
+      if(!segments.length){ el.innerHTML='<div class="empty">No segments defined.</div>'; return; }
+      el.innerHTML=segments.map(function(s){
+        var c=Number(s.count||0);
+        var cls=c>0?'b':'n';
+        return '<div class="urow" data-key="'+esc(s.key)+'">'
+          +'<div class="av" style="background:'+color(s.key)+'">'+esc(String(s.label||s.key).replace(/[^A-Za-z]/g,'').slice(0,2).toUpperCase()||'SG')+'</div>'
+          +'<div style="min-width:0;flex:1;"><div class="uname">'+esc(s.label||s.key)+'</div>'
+          +'<div class="umeta">'+esc(s.description||'')+'</div></div>'
+          +'<span class="pill '+cls+'">'+num(c)+'</span></div>';
+      }).join('');
+      Array.prototype.forEach.call(el.querySelectorAll('.urow'), function(row){
+        var k=row.getAttribute('data-key');
+        row.addEventListener('click', function(){
+          Array.prototype.forEach.call(el.querySelectorAll('.urow'), function(r){ r.classList.remove('active'); });
+          row.classList.add('active');
+          selectSegment(k);
+        });
+        // Keep the current selection highlighted after a refresh.
+        if(S.segKey && k===S.segKey) row.classList.add('active');
+      });
+    }
+
+    function selectSegment(key){
+      if(denied) return;
+      var seg=segments.filter(function(s){ return s.key===key; })[0] || {key:key,label:key,count:0};
+      S.segKey=key; S.segLabel=seg.label||key; S.segCount=Number(seg.count||0);
+      invalidatePreview('segment changed');
+      loadSegmentUsers(key);
+      renderSendForm();
+    }
+
+    // ── Users in segment ─────────────────────────────────────────────────────
+    async function loadSegmentUsers(key){
+      if(denied) return;
+      var c=document.getElementById('usersCard'); if(!c) return;
+      c.innerHTML='<div class="empty">Loading users…</div>';
+      var d=await api('/api/admin/segments/'+encodeURIComponent(key)+'/users?limit=200');
+      if(gate(d)) return;
+      if(S.segKey!==key) return;                                  // a newer selection won — write nothing
+      c=document.getElementById('usersCard'); if(!c) return;      // re-query after the await
+      if(d.__err){ c.innerHTML='<div class="empty">'+esc(d.__err)+'</div>'; return; }
+      var users=d.users||[], total=(d.total==null?users.length:Number(d.total));
+      var reach=users.filter(function(u){ return !!u.has_push; }).length;
+      var head='<div class="hdrow"><div><div class="h2">'+esc(S.segLabel)+'</div>'
+        +'<div class="muted" style="font-size:12px;margin-top:2px;">'+num(total)+' user'+(total===1?'':'s')+' in this segment · '+num(reach)+' of the '+num(users.length)+' shown are push-reachable</div></div>'
+        +'<div class="chips" style="margin-top:0;"><span class="chip">key <b>'+esc(key)+'</b></span></div></div>';
+      // The server's own words come first and are never overwritten with something reassuring.
+      var truncNote='';
+      if(d.truncation_note) truncNote+='<div class="note">'+esc(d.truncation_note)+'</div>';
+      else if(d.truncated) truncNote+='<div class="note">The server flagged this list as truncated (truncated=true) but returned no explanation — assume users are missing from the table below.</div>';
+      else if(users.length<total) truncNote+='<div class="note">Showing the first '+num(users.length)+' of '+num(total)+' users. Counts and sends still use the full segment.</div>';
+      if(!users.length){ c.innerHTML=head+truncNote+'<div class="empty">No users currently match this segment.</div>'; return; }
+      var rows=users.map(function(u){
+        var name=u.full_name||u.email||('User '+u.id);
+        var comp=(u.completeness==null?null:Number(u.completeness));
+        var compPill=comp==null?'<span class="pill n">—</span>'
+          :('<span class="pill '+(comp>=80?'g':comp>=40?'a':'r')+'">'+comp+'%</span>');
+        return '<tr>'
+          +'<td><a class="ul" href="/admin-user-detail?userId='+encodeURIComponent(u.id)+'">'+esc(name)+'</a>'
+          +'<div class="muted" style="font-size:11px;">id '+esc(String(u.id))+'</div></td>'
+          +'<td class="muted">'+esc(u.email||'—')+'</td>'
+          +'<td class="muted">'+esc(fmtDay(u.created_at))+'</td>'
+          +'<td class="muted">'+esc(u.last_seen_at?ago(u.last_seen_at):'—')+'</td>'
+          +'<td style="text-align:center;"><span class="dot '+(u.has_push?'on':'off')+'" title="'+(u.has_push?'Push reachable':'No push token — cannot be reached')+'"></span></td>'
+          +'<td>'+compPill+'</td>'
+          +'<td style="text-align:right;"><a class="ul" href="/admin-user-detail?userId='+encodeURIComponent(u.id)+'">Open →</a></td>'
+          +'</tr>';
+      }).join('');
+      c.innerHTML=head+truncNote
+        +'<div class="tblwrap"><table class="tbl"><thead><tr>'
+        +'<th>Name</th><th>Email</th><th>Joined</th><th>Last seen</th><th style="text-align:center;">Push</th><th>Profile</th><th></th>'
+        +'</tr></thead><tbody>'+rows+'</tbody></table></div>'
+        +(d.last_seen_note?('<div class="muted" style="font-size:11.5px;margin-top:8px;">'+esc(d.last_seen_note)+'</div>'):'');
+    }
+
+    // ── Templates ────────────────────────────────────────────────────────────
+    // Only templates the segment endpoint will actually accept are offered. The server rejects
+    // (400) any template with needsJob, and any whose category is not a notification_preferences
+    // column (opt-outs could not be honoured). Offering those is a guaranteed dead end.
+    function partitionTemplates(all, prefCats){
+      var keep=[], hidden=[];
+      (all||[]).forEach(function(t){
+        var why=null;
+        if(t.needsJob) why='needs one specific job — the server refuses to send it to a segment';
+        else if(prefCats && prefCats.length && prefCats.indexOf(t.category)<0) why='category "'+(t.category||'—')+'" is not an opt-out column, so the server refuses it (opt-outs could not be honoured)';
+        else if(t.relevance==='not_applicable') why='not applicable'+(t.reason?(' — '+t.reason):'');
+        if(why) hidden.push({key:t.key, label:t.label||t.key, why:why});
+        else keep.push(t);
+      });
+      return {keep:keep, hidden:hidden};
+    }
+    async function loadTemplates(){
+      tplLoading=true; tplError=null;
+      var d=await api('/api/admin/notify/templates');
+      tplLoading=false;
+      if(d.__auth){ showDenied(d.__err); return d.__err; }
+      if(d.__err){ templates=[]; hiddenTemplates=[]; tplLoaded=false; tplError=d.__err; return d.__err; }
+      var part=partitionTemplates(d.templates||[], Array.isArray(d.categories)?d.categories:null);
+      templates=part.keep; hiddenTemplates=part.hidden;
+      tplWarning=d.warning||null;
+      tplLoaded=true; tplError=null;
+      return null;
+    }
+    function tplByKey(k){ return templates.filter(function(t){ return t.key===k; })[0]||null; }
+    async function retryTemplates(){
+      var btn=document.getElementById('tplRetry');
+      if(btn){ btn.disabled=true; btn.textContent='Retrying…'; }
+      await loadTemplates();
+      renderSendForm();
+    }
+
+    // ── Send form ────────────────────────────────────────────────────────────
+    function renderSendForm(){
+      if(denied) return;
+      var b=document.getElementById('sendBody'); if(!b) return;
+
+      if(!tplLoaded){
+        if(tplLoading){ b.innerHTML='<div class="empty">Loading templates…</div>'; return; }
+        b.innerHTML='<div class="empty" style="padding:26px 0 10px;">Templates could not be loaded.'
+          +(tplError?('<div class="muted" style="font-size:12px;margin-top:6px;">'+esc(tplError)+'</div>'):'')
+          +'</div><div style="text-align:center;"><button id="tplRetry" class="tbtn">Retry loading templates</button></div>';
+        var rt=document.getElementById('tplRetry'); if(rt) rt.addEventListener('click', retryTemplates);
+        return;
+      }
+      if(!S.segKey){ b.innerHTML='<div class="empty">Select a segment first.</div>'; return; }
+
+      var hiddenNote=hiddenTemplates.length
+        ? '<div class="hiddenlist">'+num(hiddenTemplates.length)+' template'+(hiddenTemplates.length===1?' is':'s are')+' hidden because a segment send would be rejected: '
+          +hiddenTemplates.map(function(h){ return '<b>'+esc(h.label)+'</b> ('+esc(h.why)+')'; }).join('; ')+'.</div>'
+        : '';
+      var warnNote=tplWarning?('<div class="note">'+esc(tplWarning)+'</div>'):'';
+
+      if(!templates.length){
+        b.innerHTML='<div class="empty" style="padding:26px 0 10px;">No template can be sent to a segment.</div>'
+          +warnNote+hiddenNote
+          +'<div style="text-align:center;margin-top:12px;"><button id="tplRetry" class="tbtn ghost">Reload templates</button></div>';
+        var rt2=document.getElementById('tplRetry'); if(rt2) rt2.addEventListener('click', retryTemplates);
+        return;
+      }
+
+      // A template that disappeared between reloads must not stay selected.
+      if(S.tplKey && !tplByKey(S.tplKey)){ S.tplKey=null; S.preview=null; S.previewSig=null; S.previewPayload=null; S.sendCount=0; S.lockWhy='template no longer available'; }
+
+      var cats={}, order=[];
+      templates.forEach(function(t){ var c=t.category||'other'; if(!cats[c]){ cats[c]=[]; order.push(c); } cats[c].push(t); });
+      var opts='<option value="">— choose a template —</option>'+order.map(function(c){
+        return '<optgroup label="'+esc(c)+'">'+cats[c].map(function(t){
+          return '<option value="'+esc(t.key)+'"'+(t.key===S.tplKey?' selected':'')+'>'+esc(t.label||t.key)+'</option>';
+        }).join('')+'</optgroup>';
+      }).join('');
+
+      b.innerHTML=''
+        +warnNote
+        +'<div class="field"><div class="lbl">Template</div><select id="tplSel" class="search">'+opts+'</select>'
+        +'<div id="tplInfo" class="muted" style="font-size:12px;margin-top:6px;"></div>'+hiddenNote+'</div>'
+        +'<div class="field"><div class="lbl">Title</div><input id="tTitle" class="search" maxlength="120" placeholder="Notification title" autocomplete="off" value="'+esc(S.title)+'"></div>'
+        +'<div class="field"><div class="lbl">Body</div><textarea id="tBody" class="search" maxlength="400" placeholder="Notification body">'+esc(S.body)+'</textarea></div>'
+        +'<div class="field" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">'
+        +'<div style="flex:1;min-width:180px;"><div class="lbl">Max recipients (hard cap '+MAX_CEILING+')</div>'
+        +'<input id="tMax" class="search" type="number" min="1" max="'+MAX_CEILING+'" value="'+esc(S.max)+'"></div></div>'
+        +'<div class="actions">'
+        +'<button id="btnPreview" class="tbtn">Preview</button>'
+        +'<button id="btnSend" class="tbtn send" disabled>Send</button>'
+        +'<div id="stepbar" class="steps"></div></div>'
+        +'<div id="result"></div>';
+
+      document.getElementById('tplSel').addEventListener('change', function(e){
+        S.tplKey=e.target.value||null;
+        var t=tplByKey(S.tplKey);
+        S.title=(t&&t.title)||''; S.body=(t&&t.body)||'';
+        document.getElementById('tTitle').value=S.title;
+        document.getElementById('tBody').value=S.body;
+        renderTplInfo();
+        invalidatePreview('template changed');
+        var r=document.getElementById('result'); if(r) r.innerHTML='';
+      });
+      document.getElementById('tTitle').addEventListener('input', function(e){ S.title=e.target.value; invalidatePreview('title edited'); });
+      document.getElementById('tBody').addEventListener('input', function(e){ S.body=e.target.value; invalidatePreview('body edited'); });
+      document.getElementById('tMax').addEventListener('input', function(e){ S.max=e.target.value; invalidatePreview('recipient cap changed'); });
+      document.getElementById('tMax').addEventListener('change', function(e){ S.max=curMax(); e.target.value=S.max; invalidatePreview('recipient cap changed'); });
+      document.getElementById('btnPreview').addEventListener('click', runPreview);
+      document.getElementById('btnSend').addEventListener('click', runSend);
+
+      renderTplInfo();
+      setPreviewBusy(previewing);   // a preview still in flight keeps the fresh button honest
+      updateSendButton();
+    }
+
+    function renderTplInfo(){
+      var el=document.getElementById('tplInfo'); if(!el) return;
+      var t=tplByKey(S.tplKey);
+      if(!t){ el.innerHTML='Pick what you want to say. Title and body stay editable.'; return; }
+      var rel=t.relevance?('<span class="pill '+(t.relevance==='suggested'?'g':t.relevance==='not_applicable'?'r':'b')+'">'+esc(t.relevance)+'</span> '):'';
+      var route=t.route?('<span class="chip">opens <b>'+esc(t.route)+'</b>'+(t.params&&Object.keys(t.params).length?(' '+esc(JSON.stringify(t.params))):'')+'</span>'):'';
+      el.innerHTML=rel+esc(t.description||'')+(t.reason?(' <span class="muted">· '+esc(t.reason)+'</span>'):'')+(route?('<div class="chips">'+route+'</div>'):'');
+    }
+
+    function curMax(){
+      var v=parseInt(S.max,10);
+      if(!v||isNaN(v)||v<1) v=MAX_DEFAULT;
+      if(v>MAX_CEILING) v=MAX_CEILING;   // never let the page ask for more than the ceiling
+      return v;
+    }
+    function curOverrides(){
+      var o={};
+      if(String(S.title||'').trim()) o.title=String(S.title).trim();
+      if(String(S.body||'').trim()) o.body=String(S.body).trim();
+      return o;
+    }
+    // Signature of everything that changes WHO gets WHAT. A preview is only valid for its own
+    // signature. Raw (untrimmed) title/body on purpose: any keystroke must disarm Send.
+    function sig(){
+      return [S.segKey||'', S.tplKey||'', String(S.title==null?'':S.title), String(S.body==null?'':S.body), curMax()].join('\u0001');
+    }
+    function invalidatePreview(why){
+      previewGen++;                       // any in-flight preview is now stale and can never arm Send
+      S.preview=null; S.previewSig=null; S.previewPayload=null; S.previewSeg=null;
+      S.sendCount=0; S.lockWhy=why||'';
+      updateSendButton();
+    }
+    function setPreviewBusy(on){
+      var b=document.getElementById('btnPreview'); if(!b) return;   // always re-queried, never captured
+      b.disabled=!!on; b.textContent=on?'Previewing…':'Preview';
+    }
+    function updateSendButton(){
+      var btn=document.getElementById('btnSend'); if(!btn) return;   // always re-queried, never captured
+      var hasPrev=!!(S.preview && S.previewSig && S.previewSig===sig());
+      var valid=!!(hasPrev && S.sendCount>0 && !S.sending && !denied);
+      btn.disabled=!valid;
+      btn.setAttribute('data-armed', valid?'1':'0');
+      btn.textContent=S.sending?'Sending…':(valid?('Send to '+num(S.sendCount)+' user'+(S.sendCount===1?'':'s')):'Send');
+      var steps=document.getElementById('stepbar');
+      if(steps){
+        steps.innerHTML='<span class="step'+(S.tplKey?' done':'')+'"><span class="b">1</span>Template</span>'
+          +'<span class="muted">→</span>'
+          +'<span class="step'+(hasPrev?' done':'')+'"><span class="b">2</span>Preview</span>'
+          +'<span class="muted">→</span>'
+          +'<span class="step"><span class="b">3</span>Confirm &amp; send</span>'
+          +(!hasPrev&&S.lockWhy?('<span class="muted" style="margin-left:6px;">· send locked ('+esc(S.lockWhy)+') — run Preview again</span>'):'');
+      }
+    }
+
+    // ── Preview (dry run — sends nothing) ────────────────────────────────────
+    async function runPreview(){
+      if(denied) return;
+      var res=document.getElementById('result');
+      if(!S.segKey){ if(res) res.innerHTML='<div class="note">Select a segment first.</div>'; return; }
+      if(!S.tplKey){ if(res) res.innerHTML='<div class="note">Pick a template first.</div>'; return; }
+      if(previewing) return;
+
+      previewing=true;
+      setPreviewBusy(true);
+      var myGen=previewGen, mySig=sig(), mySeg=S.segKey;
+      var payload={ templateKey:S.tplKey, overrides:curOverrides(), maxRecipients:curMax() };
+      var d=await postApi('/api/admin/segments/'+encodeURIComponent(mySeg)+'/notify', payload);
+      previewing=false;
+
+      // EVERYTHING below re-queries the DOM: the send form may have been re-rendered while the
+      // request was in flight, which detaches the nodes captured before the await.
+      setPreviewBusy(false);
+      res=document.getElementById('result');
+
+      if(gate(d)) return;
+      // A newer selection/edit happened while this was in flight → this answer describes copy or an
+      // audience that is no longer on screen. It must never arm Send.
+      if(myGen!==previewGen || mySig!==sig() || mySeg!==S.segKey){
+        invalidatePreview('the selection changed while the preview was running');
+        if(res) res.innerHTML='<div class="note">The selection changed while previewing — that result was discarded. Run Preview again.</div>';
+        return;
+      }
+      if(d.__err){ invalidatePreview('preview failed'); if(res) res.innerHTML='<div class="warn" style="margin-top:12px;">Preview failed: '+esc(d.__err)+'</div>'; return; }
+      if(d.dryRun===false || d.sent!=null){
+        // Server treated this as a real send even though confirm was not set — surface it loudly.
+        invalidatePreview('unexpected response');
+        if(res) res.innerHTML='<div class="warn" style="margin-top:12px;">⚠️ The server did not return a dry run. Nothing further will be sent from this page — check the API before retrying.<br><span class="muted">'+esc(JSON.stringify(d).slice(0,400))+'</span></div>';
+        return;
+      }
+      if(!res){ invalidatePreview('the preview panel was replaced before the result arrived'); return; }  // never arm without a visible preview
+
+      var sk=d.skipped||{};
+      var noTok=Number(sk.no_token||0), opted=Number(sk.opted_out||0), recent=Number(sk.recently_sent||0);
+      var skipTotal=noTok+opted+recent;
+      var recipients=Number(d.recipients||0);
+      var reachable=(d.reachable==null)?Math.max(0,recipients-skipTotal):Number(d.reachable);
+      var capUsed=(d.cap==null)?curMax():Number(d.cap);
+      S.preview=d; S.previewSig=mySig; S.previewPayload=payload; S.previewSeg=mySeg; S.sendCount=reachable; S.lockWhy='';
+
+      // ⚠️ No "numbers don't add up" heuristic here any more. The server now excludes unreachable
+      // users in SQL BEFORE applying the cap, so `recipients` and `reachable` are the same number and
+      // `skipped` counts the WHOLE segment, not this batch. The old check compared those two
+      // different populations and would therefore fire a false alarm on every single preview.
+      var mismatch='';
+      // The server's cap explanation is shown verbatim — never swapped for a generic reassurance.
+      var capNote='';
+      if(d.truncation_note) capNote+='<div class="note">'+esc(d.truncation_note)+'</div>';
+      else if(d.truncated) capNote+='<div class="note">The server flagged this preview as truncated (truncated=true) but returned no explanation — users beyond the cap are NOT included.</div>';
+      else if(recipients>=capUsed) capNote+='<div class="note">Capped at the max-recipients limit ('+num(capUsed)+'). Users beyond the cap are NOT included in this send.</div>';
+
+      var totalCard=(d.totalMatching==null)?''
+        : '<div class="rc"><div class="n">'+num(d.totalMatching)+'</div><div class="l">match the segment</div></div>';
+      var pv=d.preview||{};
+      var pvBox=(pv.title||pv.body)
+        ? '<div class="skipbox"><div class="skiphead">Exactly what they will see</div>'
+          +'<div style="padding:9px 10px;font-size:12.5px;"><b>'+esc(pv.title||'')+'</b><div class="muted" style="margin-top:3px;">'+esc(pv.body||'')+'</div>'
+          +(pv.route?('<div class="chips"><span class="chip">opens <b>'+esc(pv.route)+'</b>'+(pv.params&&Object.keys(pv.params).length?(' '+esc(JSON.stringify(pv.params))):'')+'</span></div>'):'')
+          +'</div></div>' : '';
+
+      res.innerHTML='<div style="margin-top:14px;" class="okbox">Dry run only — nothing was sent.</div>'
+        +'<div class="rollup">'
+        +totalCard
+        +'<div class="rc ok"><div class="n">'+num(reachable)+'</div><div class="l">will receive it now</div></div>'
+        +((d.sendableTotal!=null&&Number(d.sendableTotal)>reachable)
+          ? '<div class="rc"><div class="n">'+num(d.sendableTotal)+'</div><div class="l">sendable in total</div></div>' : '')
+        +'<div class="rc warn"><div class="n">'+num(skipTotal)+'</div><div class="l">excluded from the segment</div></div>'
+        +'</div>'
+        +pvBox
+        // Label these honestly: they are counted across the WHOLE segment, not dropped from this
+        // batch. Reading them as "dropped from this send" would badly overstate the batch — a 10k
+        // segment with 9k tokenless users would look like a 500-person send that lost 9,000 people.
+        +'<div class="skipbox"><div class="skiphead">Excluded across the whole segment (not just this batch)</div>'
+        +'<div class="skiprow"><span>📵 No push token on file — the app was never opened with notifications allowed</span><b>'+num(noTok)+'</b></div>'
+        +'<div class="skiprow"><span>🚫 Opted out of this notification category</span><b>'+num(opted)+'</b></div>'
+        +'<div class="skiprow"><span>⏱️ Already got this template in the last 72h</span><b>'+num(recent)+'</b></div>'
+        +'</div>'+mismatch+capNote;
+      updateSendButton();
+    }
+
+    // ── Real send (requires a valid preview + an explicit confirm) ───────────
+    async function runSend(){
+      if(denied) return;
+      var btn=document.getElementById('btnSend');
+      if(!btn || btn.disabled || S.sending) return;
+      if(!S.preview || !S.previewPayload || !S.previewSig || S.previewSig!==sig()){ invalidatePreview('the message changed after the preview'); return; }
+      var n=S.sendCount;
+      if(!n){ invalidatePreview('nobody to send to'); return; }
+      var t=tplByKey(S.tplKey);
+      var msg='Send "'+((t&&t.label)||S.tplKey)+'" to '+n+' real user'+(n===1?'':'s')
+        +' in the "'+S.segLabel+'" segment?\n\n'
+        +'They get a push notification on their phone immediately. This cannot be undone.';
+      if(!window.confirm(msg)) return;
+      // Re-check after the modal, then send the EXACT payload that was previewed (not a fresh read
+      // of the form) so the copy that goes out is provably the copy that was reviewed.
+      if(!S.preview || !S.previewPayload || S.previewSig!==sig()){ invalidatePreview('the message changed after the preview'); return; }
+
+      var sendPayload={ templateKey:S.previewPayload.templateKey, overrides:S.previewPayload.overrides,
+                        maxRecipients:S.previewPayload.maxRecipients, confirm:true };
+      var sendSeg=S.previewSeg;
+      S.sending=true; updateSendButton();
+      var d=await postApi('/api/admin/segments/'+encodeURIComponent(sendSeg)+'/notify', sendPayload);
+      S.sending=false;
+      var res=document.getElementById('result');   // re-query AFTER the await
+      // Whatever happened, a fresh preview is required before another send (no accidental double-send).
+      invalidatePreview('already sent');
+      if(gate(d)) return;
+      if(!res) return;
+      if(d.__err){ res.innerHTML='<div class="warn" style="margin-top:12px;">Send failed: '+esc(d.__err)+'</div>'; return; }
+      var sk=d.skipped, skTxt;
+      if(sk&&typeof sk==='object') skTxt=Object.keys(sk).map(function(k){ return esc(k.replace(/_/g,' '))+' '+num(sk[k]); }).join(' · ');
+      else skTxt=num(sk||0);
+      res.innerHTML='<div class="okbox" style="margin-top:14px;">✅ Sent. Run a new preview before sending again.</div>'
+        +'<div class="rollup">'
+        +'<div class="rc ok"><div class="n">'+num(d.sent)+'</div><div class="l">sent</div></div>'
+        +'<div class="rc bad"><div class="n">'+num(d.failed)+'</div><div class="l">failed</div></div>'
+        +'</div>'
+        // Same correction as the preview: these are segment-wide exclusions, not people this batch
+        // dropped. Shown as a sentence rather than a headline number so it cannot be misread as
+        // "your send lost N users".
+        +(skTxt?('<div class="note">Excluded across the whole segment (they were never in this batch): '+skTxt+'.</div>'):'')
+        +(d.batchId?('<div class="chips"><span class="chip">batch <b>'+esc(String(d.batchId))+'</b></span></div>'):'')
+        +(d.truncation_note?('<div class="note">'+esc(d.truncation_note)+'</div>')
+          :(d.truncated?'<div class="note">The server flagged this send as truncated (truncated=true) but returned no explanation — some matching users were not sent to.</div>':''));
+      loadSegments(); // counts may have moved
+    }
+
+    // ── Boot ─────────────────────────────────────────────────────────────────
+    document.getElementById('segReload').addEventListener('click', loadSegments);
+    (async function(){
+      await loadTemplates();
+      await loadSegments();
+      renderSendForm();   // shows the template error + Retry when the catalogue failed to load
+    })();
+  </script>
+</body>
+</html>
