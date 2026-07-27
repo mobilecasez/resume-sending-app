@@ -146,6 +146,82 @@ function publicUser(u) {
 const hasToken = (u) => /^Expo(nent)?PushToken\[/.test(String((u && u.expo_push_token) || ''));
 
 // ─────────────────────────────────────────────────────────────────────────────
+// WHY does a user have no push token?
+// ─────────────────────────────────────────────────────────────────────────────
+// "No push token" is a symptom, and on its own it sent the admin looking for a fault that isn't
+// there. The three causes need three different answers, and only one of them is ours to fix:
+//
+//   never_opened_app  — signed up on the website, never installed the app. Nothing to fix.
+//   android_no_fcm    — every Android build up to and including 3.3 shipped WITHOUT a Firebase
+//                       config (app.json had no `android.googleServicesFile`), so the device could
+//                       not register with FCM and getExpoPushTokenAsync() failed. This was silent:
+//                       the client swallows the error and returns null. It is why 0 of 12 Android
+//                       users had a token while iOS sat at ~73%. Fixed going forward; the user has
+//                       to install the fixed build for it to take effect.
+//   notifications_off — the app could register and simply wasn't allowed to. On iOS the system
+//                       prompt appears once, so a denial is permanent until they change it in
+//                       Settings. Nothing we can send will change it.
+//
+// ANDROID_FCM_MIN_VERSION is the first Android release that carries google-services.json. Below it,
+// an Android user with no token is explained by the bug; at or above it, they genuinely declined.
+//
+// 3.4 is exact, not a guess: it is the version in app.json when the fix landed, versions only ever
+// increase, and no Android 3.4 was ever built before the fix (Android shipped 3.3 / versionCode 57 —
+// the only 3.4 in app_events is iOS). So every Android build numbered 3.4+ has the config and every
+// build below it does not. Env-overridable in case the fix is first released under a later number.
+const ANDROID_FCM_MIN_VERSION = String(process.env.ANDROID_FCM_MIN_VERSION || '3.4');
+
+/** Numeric-segment compare, missing segments = 0. Returns <0, 0, >0. Non-numeric junk sorts as 0. */
+function compareVersions(a, b) {
+  const pa = String(a || '').split('.');
+  const pb = String(b || '').split('.');
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = parseInt(pa[i], 10) || 0;
+    const nb = parseInt(pb[i], 10) || 0;
+    if (na !== nb) return na - nb;
+  }
+  return 0;
+}
+
+/**
+ * Pure. Given a user state, returns null when push works, otherwise { code, label, detail, fixable }.
+ * `fixable` = can the ADMIN do anything about it, or is it the user's device setting?
+ */
+function pushBlockReason(state) {
+  if (!state || state.hasPushToken) return null;
+  const platform = String(state.platform || '').toLowerCase();
+
+  if (!state.lastEvent && !state.firstEvent) {
+    return {
+      code: 'never_opened_app',
+      label: 'Never opened the mobile app',
+      detail: 'This account was created on the website and has never opened the app, so no device has '
+        + 'ever registered for push. Nothing sent here can reach a phone.',
+      fixable: false,
+    };
+  }
+
+  if (platform === 'android' && compareVersions(state.appVersion, ANDROID_FCM_MIN_VERSION) < 0) {
+    return {
+      code: 'android_no_fcm',
+      label: `Android ${state.appVersion || 'build'} could not register for push`,
+      detail: `Android builds before ${ANDROID_FCM_MIN_VERSION} shipped without the Firebase config, so the app `
+        + 'could never obtain a push token — this affected every Android user, not just this one. It is '
+        + `fixed in ${ANDROID_FCM_MIN_VERSION}; this user will become reachable once they update.`,
+      fixable: false,
+    };
+  }
+
+  return {
+    code: 'notifications_off',
+    label: 'Notifications are switched off on their device',
+    detail: 'The app can register for push on this build, so the token is missing because permission was '
+      + 'declined. On iOS the system asks once, so only the user can reverse it in Settings.',
+    fixable: false,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // completeness — 7 slots, identical definition to the SQL version used in segment lists
 // ─────────────────────────────────────────────────────────────────────────────
 const COMPLETENESS_SLOTS = [
@@ -385,7 +461,7 @@ const LIGHT_STATE_FIELDS = ['userId', 'fullName', 'firstName', 'email', 'created
 const MATCH_STATE_FIELDS = ['strongMatches', 'matchedJobCount', 'topMatch'];
 // Needs cheap-but-real queries (counts, résumé metadata, credits, the field's weekly job count).
 const DB_STATE_FIELDS = ['hasParsedResume', 'parseStatus', 'resumeSkillCount', 'field', 'roleCategory',
-  'credits', 'creditsExpireInDays', 'platform', 'savedJobs', 'coverLetters', 'coverLetters7d',
+  'credits', 'creditsExpireInDays', 'platform', 'appVersion', 'savedJobs', 'coverLetters', 'coverLetters7d',
   'appliedCoverLetters', 'applications', 'applications7d', 'searches', 'events30d', 'firstEvent',
   'lastEvent', 'daysSinceLastSeen', 'newJobsThisWeek', 'pendingApplication'];
 
@@ -406,7 +482,7 @@ function lightUserState(u) {
     completeness: completenessOf(u),
     hasPushToken: hasToken(u),
     hasParsedResume: false, parseStatus: null, resumeSkillCount: 0, field: null, roleCategory: null,
-    credits: 0, creditsExpireInDays: null, platform: null, savedJobs: 0, coverLetters: 0,
+    credits: 0, creditsExpireInDays: null, platform: null, appVersion: null, savedJobs: 0, coverLetters: 0,
     coverLetters7d: 0, appliedCoverLetters: 0, applications: 0, applications7d: 0, searches: 0,
     events30d: 0, firstEvent: null, lastEvent: null, daysSinceLastSeen: null,
     strongMatches: 0, matchedJobCount: 0, topMatch: null, newJobsThisWeek: 0, pendingApplication: null,
@@ -473,7 +549,8 @@ async function buildUserState(userIdOrRow, opts = {}) {
     (await tableExists('app_events')) ? g(`SELECT COUNT(*)::int n FROM app_events WHERE user_id = $1 AND event = 'job_search'`, [id]) : null,
     (await tableExists('app_events')) ? g(`SELECT MAX(created_at) AS last, MIN(created_at) AS first,
              COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days')::int n30,
-             (SELECT platform FROM app_events WHERE user_id = $1 AND platform IS NOT NULL ORDER BY created_at DESC LIMIT 1) AS platform
+             (SELECT platform FROM app_events WHERE user_id = $1 AND platform IS NOT NULL ORDER BY created_at DESC LIMIT 1) AS platform,
+             (SELECT app_version FROM app_events WHERE user_id = $1 AND app_version IS NOT NULL ORDER BY created_at DESC LIMIT 1) AS app_version
              FROM app_events WHERE user_id = $1`, [id]) : null,
     (await tableExists('application_history'))
       ? g(`SELECT company_name, GREATEST(0, EXTRACT(DAY FROM (NOW() - sent_date))::int) AS days
@@ -536,6 +613,7 @@ async function buildUserState(userIdOrRow, opts = {}) {
     creditsExpireInDays: expireInDays,
     hasPushToken: hasToken(u),
     platform: lastEvent ? lastEvent.platform || null : null,
+    appVersion: lastEvent ? lastEvent.app_version || null : null,
     savedJobs: saved ? int(saved.n) : 0,
     coverLetters: letters ? int(letters.n) : 0,
     coverLetters7d: letters ? int(letters.n7) : 0,
@@ -632,6 +710,10 @@ async function getUserOverview(userId) {
     push: {
       has_token: state.hasPushToken,
       platform: state.platform,
+      app_version: state.appVersion,
+      // null when push works. Otherwise the CAUSE, so the admin screen can stop saying only that a
+      // token is missing and say why — see pushBlockReason().
+      block: pushBlockReason(state),
       preferences: prefs,
     },
     completeness: state.completeness,
@@ -1661,6 +1743,7 @@ module.exports = {
   loadUser, buildUserState, completenessOf,
   // exported for the test suite: the pure helpers whose edge cases are the bugs
   _int: int, stateTierFor, lightUserState, stateForTemplate, bestJobsFor, resumeContext,
+  pushBlockReason, compareVersions, ANDROID_FCM_MIN_VERSION,
   htmlToText, previewOf, sanitizeLetterHtml, parseCard, cardStr, titleFromUrl,
   getUserActivity, getUserCoverLetter,
   getUserOverview, getUserFile, getMatchedJobs, resolveJob,

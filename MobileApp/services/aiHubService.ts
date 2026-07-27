@@ -1355,7 +1355,15 @@ export type AdminUserActivityCounts = {
 export type AdminNotifyPrefs = {
   replies: boolean; application_updates: boolean; reminders: boolean; digest: boolean; marketing: boolean;
 };
-export type AdminUserPush = { has_token: boolean; platform: string | null; preferences: AdminNotifyPrefs };
+/** Why push cannot reach this user. null when it can. `fixable` = is it an admin's to fix at all. */
+export type AdminPushBlock = {
+  code: 'never_opened_app' | 'android_no_fcm' | 'notifications_off';
+  label: string; detail: string; fixable: boolean;
+};
+export type AdminUserPush = {
+  has_token: boolean; platform: string | null; app_version?: string | null;
+  block?: AdminPushBlock | null; preferences: AdminNotifyPrefs;
+};
 export type AdminUserCompleteness = { percent: number; missing: string[] };
 export type AdminUserNotification = {
   type: string | null; title: string | null; message: string | null; created_at: string; is_read: boolean;

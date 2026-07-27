@@ -352,6 +352,26 @@
       }
     }
 
+    // WHY push cannot reach this user, from the server's push.block. Returns '' when it can.
+    // The `||` fallback covers a page served ahead of the deployed API, where block is absent.
+    function pushBlock(){
+      var ph=(OV&&OV.push)||{};
+      if(ph.has_token!==false) return null;
+      return ph.block || { code:'notifications_off', label:'No push token on file',
+                           detail:'Nothing will reach the phone.', fixable:false };
+    }
+    function pushBlockText(suffix){
+      var b=pushBlock(); if(!b) return '';
+      return String(b.label)+' — '+String(b.detail)+(suffix?(' '+suffix):'');
+    }
+    /** The short form for the "Push reachable" tile. */
+    function pushBlockTag(ph){
+      var b=pushBlock(); if(!b) return ph.platform?String(ph.platform):'';
+      if(b.code==='never_opened_app') return 'app never opened';
+      if(b.code==='android_no_fcm') return ('android '+(ph.app_version||'')+' · no FCM').replace('  ',' ');
+      return 'notifications off';
+    }
+
     function renderGlance(d){
       var cr=d.credits||{}, ac=d.activity||{}, ph=d.push||{};
       // nHtml is markup on purpose — every call site below builds it from num() (Number-coerced)
@@ -364,7 +384,7 @@
         + tile(num(ac.cover_letters),'Cover letters')
         + tile(num(ac.searches),'Searches')
         + tile(num(ac.events_30d),'Events · 30d', ac.first_event?('first '+fmtDay(ac.first_event)):'')
-        + tile(reach,'Push reachable', ph.platform?String(ph.platform):(ph.has_token?'':'no token'));
+        + tile(reach,'Push reachable', pushBlockTag(ph));
       var recent=arr(cr.recent).slice(0,4).map(function(x){
         var amt=Number(x.amount)||0; var sign=amt>0?'+':'';
         return '<span class="chip"><b>'+esc(sign+amt)+'</b> '+esc(x.type||x.description||'credit')+' · '+esc(fmtDay(x.created_at))+'</span>';
@@ -828,7 +848,7 @@
         box.appendChild(w);
         if(o.template) box.appendChild(el('div','muted','Template: '+o.template+(o.route?('  ·  opens '+o.route):''))).style.fontSize='12px';
         if(o.naReason) box.appendChild(el('div','note','Marked NOT APPLICABLE for this user — '+o.naReason));
-        if(o.noToken) box.appendChild(el('div','note','This user has no push token. Nothing will reach the phone; at best it is stored in-app.'));
+        if(o.blockText) box.appendChild(el('div','note','Will not reach their phone — '+o.blockText+' It is still stored in-app.'));
         if(o.clipped) box.appendChild(el('div','note','Shortened to the delivery limits ('+LIM.title+' title / '+LIM.body+' body). The preview below is what is actually delivered.'));
         var pv=el('div','pv');
         pv.appendChild(el('div','pl','Delivered title'));
@@ -913,7 +933,7 @@
       if(res){ res.className='res'; res.textContent=''; }
       var goAhead = await confirmSend({
         title: pv.title, body: pv.body, template: 'One specific job', route: '/(discover)',
-        naReason: na, noToken: !!(OV && OV.push && OV.push.has_token===false),
+        naReason: na, blockText: pushBlockText(),
         note: 'Rendered from this job row — the server renders the same template for job id '+String(jobId)+'.',
       });
       if(!goAhead){ btn.disabled=false; btn.textContent=old; if(res){ res.className='res mut'; res.textContent='Cancelled — nothing sent.'; } return; }
@@ -964,8 +984,8 @@
             var on=prefs[k]!==false;
             return '<span class="chip">'+esc(String(k).replace(/_/g,' '))+' <b style="color:'+(on?'#34d399':'#fb7185')+';">'+(on?'on':'off')+'</b></span>';
           }).join('')+'</div>') : '';
-      var warn = ph.has_token===false
-        ? '<div class="note">This user has no push token — anything sent is stored in-app only and will not reach their phone.</div>' : '';
+      var warn = pushBlockText('Anything sent is stored in-app only.');
+      warn = warn ? ('<div class="note">'+esc(warn)+'</div>') : '';
       if(!TPL.length){
         set('cNotify','<div class="sect">Send a notification</div>'+prefChips+warn+'<div class="empty">No templates available for this user.</div>');
         return;
@@ -1062,7 +1082,7 @@
         title: title, body: body, template: t.label||t.key, route: t.route,
         clipped: (normLen(rawT)>LIM.title || normLen(rawB)>LIM.body),
         naReason: String(t.relevance||'')==='not_applicable' ? (t.reason||'Not applicable for this user right now.') : '',
-        noToken: !!(OV && OV.push && OV.push.has_token===false),
+        blockText: pushBlockText(),
       });
       if(!goAhead){ btn.disabled=false; btn.textContent=old; if(res){ res.className='res mut'; res.textContent='Cancelled — nothing sent.'; } return; }
       if(SENDING){ btn.disabled=false; btn.textContent=old; return; }

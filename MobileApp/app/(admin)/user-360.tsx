@@ -36,7 +36,7 @@ import {
   type AdminActivitySavedJob, type AdminActivityApplication, type AdminActivityCredit,
   type AdminActivitySearch, type AdminActivityItemMap, type AdminCoverLetter,
   type AdminNotifyTemplate, type AdminNotifyTemplatesResponse, type AdminUserNotifyResult,
-  type AdminFileKind,
+  type AdminFileKind, type AdminPushBlock,
 } from '../../services/aiHubService';
 
 // ─── tokens (shared with store-analytics.tsx / user-analytics.tsx) ───
@@ -568,7 +568,7 @@ type ConfirmPayload = {
   heading: string; who: string; whoSub: string;
   title: string; body: string;
   templateLabel: string; route: string | null;
-  naReason: string | null; noToken: boolean; clipped: boolean;
+  naReason: string | null; block: AdminPushBlock | null; clipped: boolean;
   editNote: string; extraNote: string | null;
   targetId: string;
   run: () => Promise<AdminUserNotifyResult>;
@@ -733,7 +733,7 @@ function ConfirmSheet({ ov, sending, typed, onTyped, onCancel, onGo }: {
           </Text>
 
           {ov.naReason ? <Note tone={C.rose} text={`Marked NOT APPLICABLE for this user — ${ov.naReason}`} /> : null}
-          {ov.noToken ? <Note tone={C.rose} text="This user has no push token. Nothing will reach the phone; at best it is stored in-app." /> : null}
+          {ov.block ? <Note tone={C.rose} text={`Will not reach their phone — ${ov.block.label.toLowerCase()}. ${ov.block.detail} It is still stored in-app.`} /> : null}
           {ov.clipped ? <Note text={`Shortened to the delivery limits (${LIM.title} title / ${LIM.body} body). The preview below is what is actually delivered.`} /> : null}
           {ov.extraNote ? <Note tone={C.blueDeep} text={ov.extraNote} /> : null}
 
@@ -964,7 +964,16 @@ export default function User360Screen() {
   const whoName = user?.full_name || user?.email || (userId ? `User ${userId}` : 'this user');
   const whoSub = [user?.email && user?.full_name ? user.email : null, `user id ${user?.id ?? userId}`]
     .filter(Boolean).join(' · ');
-  const noToken = ov?.push?.has_token === false;
+  // WHY push cannot land, not just THAT it cannot. The server explains it; the `||` fallback covers
+  // an app newer than the deployed server, where `block` is simply absent.
+  const block: AdminPushBlock | null = ov?.push?.has_token === false
+    ? (ov?.push?.block || {
+        code: 'notifications_off',
+        label: 'No push token on file',
+        detail: 'Nothing will reach the phone.',
+        fixable: false,
+      })
+    : null;
 
   const askTemplateSend = useCallback((req: SendRequest) => {
     const { tpl } = req;
@@ -983,7 +992,7 @@ export default function User360Screen() {
       who: whoName, whoSub,
       title: req.title, body: req.body,
       templateLabel: tpl.label || tpl.key, route: tpl.route,
-      naReason: na, noToken, clipped: req.clipped,
+      naReason: na, block, clipped: req.clipped,
       editNote, extraNote: tpls?.userKnown === false
         ? 'The template catalogue came back WITHOUT user context, so this copy is the generic render, not a personalised one.'
         : null,
@@ -995,7 +1004,7 @@ export default function User360Screen() {
           : null,
       }),
     });
-  }, [whoName, whoSub, noToken, tpls, userId]);
+  }, [whoName, whoSub, block, tpls, userId]);
 
   const askJobSend = useCallback((job: AdminMatchedJob) => {
     const pv = jobPreview(job);
@@ -1009,7 +1018,7 @@ export default function User360Screen() {
       who: whoName, whoSub,
       title: pv.title, body: pv.body,
       templateLabel: tpl?.label || 'One specific job', route: tpl?.route || '/(discover)',
-      naReason: na, noToken, clipped: false,
+      naReason: na, block, clipped: false,
       editNote: `Mirrors the server's specific_job template — the server renders the final wording for job ${job.id}. No override is sent.`,
       extraNote: notAdvertisable
         ? 'These match scores are the UNFILTERED admin fallback (nothing cleared the 10% floor). A score from this list must not be quoted to the user — the delivered push may still contain one.'
@@ -1017,7 +1026,7 @@ export default function User360Screen() {
       targetId: `job:${job.id}`,
       run: () => sendAdminUserNotification(userId, { key: 'specific_job', jobId: job.id }),
     });
-  }, [tpls, matched, whoName, whoSub, noToken, userId]);
+  }, [tpls, matched, whoName, whoSub, block, userId]);
 
   const runConfirmed = useCallback(async () => {
     const p = overlay && overlay.kind === 'confirm' ? overlay : null;
@@ -1247,7 +1256,11 @@ export default function User360Screen() {
                   <Stat
                     n={ov.push?.has_token ? 'Yes' : 'No'}
                     label="Push reachable"
-                    sub={ov.push?.platform ? String(ov.push.platform) : ov.push?.has_token ? '' : 'no token'}
+                    sub={block
+                      ? (block.code === 'never_opened_app' ? 'app never opened'
+                        : block.code === 'android_no_fcm' ? `android ${ov.push?.app_version || ''} · no FCM`.trim()
+                        : 'notifications off')
+                      : (ov.push?.platform ? String(ov.push.platform) : '')}
                     tone={ov.push?.has_token ? C.emerald : C.rose}
                     icon="notifications-outline"
                   />
@@ -1420,8 +1433,8 @@ export default function User360Screen() {
                   <RetryBox text={tplErr} onRetry={loadTemplates} />
                 ) : (
                   <>
-                    {noToken ? (
-                      <Note tone={C.rose} text="This user has no push token — anything sent is stored in-app only and will not reach their phone." />
+                    {block ? (
+                      <Note tone={C.rose} text={`${block.label} — ${block.detail} Anything sent is stored in-app only.`} />
                     ) : null}
                     {tpls?.userKnown === false ? (
                       <Note tone={C.rose} text="The copy below is the GENERIC render — the server could not resolve this user, so nothing here is personalised." />
