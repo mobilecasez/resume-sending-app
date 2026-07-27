@@ -26,13 +26,21 @@ export default function TypeToConfirm({
   onChange,
   word = CONFIRM_WORD,
   audience,
+  headline,
+  detail,
   disabled = false,
 }: {
   value: string;
   onChange: (v: string) => void;
   word?: string;
   /** Who receives this, in plain words — e.g. "Rishi Samadhiya" or "24 people in ‘No résumé yet’". */
-  audience: string;
+  audience?: string;
+  /** Override the warning for a caller whose action is not "a message goes to someone". Without
+   *  this, the send-specific wording ("will receive this on their real device") would be a lie on
+   *  any other screen — and a warning that is not true is worse than none, because it teaches the
+   *  reader to skim. */
+  headline?: string;
+  detail?: string;
   disabled?: boolean;
 }) {
   const ok = confirmSatisfied(value, word);
@@ -42,9 +50,9 @@ export default function TypeToConfirm({
       <View style={s.warnRow}>
         <Ionicons name="warning" size={18} color="#7A2E0E" style={{ marginTop: 1 }} />
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={s.warnT}>This is the live production database</Text>
+          <Text style={s.warnT}>{headline || 'This is the live production database'}</Text>
           <Text style={s.warnB}>
-            {audience} will receive this on their real device. It cannot be recalled once sent.
+            {detail || `${audience || 'They'} will receive this on their real device. It cannot be recalled once sent.`}
           </Text>
         </View>
       </View>

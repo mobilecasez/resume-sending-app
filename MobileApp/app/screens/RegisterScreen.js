@@ -12,9 +12,12 @@ import {
 } from 'react-native';
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
-import config from '../../config';
+import { API_BASE } from '../../config';
 
-const { API_BASE_URL } = config;
+// The base url is read live at every request below (`${API_BASE}`) instead of being snapshotted
+// into a module-scope const. Destructuring it at import time froze it before the admin environment
+// override could be loaded, so this screen would keep talking to the previous backend while the
+// rest of the app talked to the new one — a session split across production and local.
 
 export default function RegisterScreen({ navigation }) {
   const [name, setName] = useState('');
@@ -41,7 +44,7 @@ export default function RegisterScreen({ navigation }) {
 
     setLoading(true);
     try {
-      const response = await axios.post(`${API_BASE_URL}/api/auth/register`, {
+      const response = await axios.post(`${API_BASE}/api/auth/register`, {
         name,
         email,
         password,

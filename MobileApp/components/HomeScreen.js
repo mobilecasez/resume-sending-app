@@ -2063,6 +2063,7 @@ export default function HomeScreen({
               { icon: 'people-outline', title: 'Registered Users', sub: 'Signups, sign-in type & usage', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/registered-users'); } },
               { icon: 'compass-outline', title: 'User Analytics', sub: 'Per-user journey timelines', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/user-analytics'); } },
               { icon: 'megaphone-outline', title: 'Segments', sub: 'Target user groups with a push', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/segments'); } },
+              { icon: 'git-branch-outline', title: 'Environment', sub: 'Point this device at another backend', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/environment'); } },
             ] : []).concat([
               null,
               { icon: 'document-text-outline', title: 'Terms & Conditions', sub: 'View terms of service',   onPress: () => { setShowSettings(false); setScreen('terms'); } },

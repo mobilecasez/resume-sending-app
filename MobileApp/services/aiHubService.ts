@@ -7,7 +7,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE } from '../config';
 import type { Contact, Employer, Job } from '../types/aiHub';
 
-const API_BASE_URL = `${API_BASE}`;
+// Every request below interpolates `${API_BASE}` directly. That is deliberate: API_BASE is a live
+// ES module binding, so each call reads whichever backend is selected NOW. It must never be copied
+// into a module-scope const — that snapshots the value at import time, which happens before the
+// stored admin environment override can be read, so this file would keep calling the old backend
+// while the rest of the app called the new one. A session split across two databases is the exact
+// failure this avoids.
 
 async function getAuthHeader(): Promise<{ Authorization: string } | Record<string, never>> {
   try {
@@ -65,7 +70,7 @@ function pollUntilDone<T>(
       }
 
       try {
-        const { data } = await axios.get(`${API_BASE_URL}/ai-hub/job-status/${jobId}`, { headers });
+        const { data } = await axios.get(`${API_BASE}/ai-hub/job-status/${jobId}`, { headers });
         notFoundStrikes = 0;
 
         if (data.status === 'completed') {
@@ -111,7 +116,7 @@ export async function analyzeWishlist(
   try {
     const headers = await getAuthHeader();
     const response = await axios.post(
-      `${API_BASE_URL}/ai-hub/analyze-wishlist`,
+      `${API_BASE}/ai-hub/analyze-wishlist`,
       { companies },
       { headers }
     );
@@ -138,7 +143,7 @@ export async function fetchJobMatches(
   try {
     const headers = await getAuthHeader();
 
-    const response = await axios.get(`${API_BASE_URL}/ai-hub/jobs`, {
+    const response = await axios.get(`${API_BASE}/ai-hub/jobs`, {
       params: { company: companyName },
       headers,
     });
@@ -196,7 +201,7 @@ export async function verifyEmail(
   try {
     const headers = await getAuthHeader();
     const response = await axios.post(
-      `${API_BASE_URL}/ai-hub/verify-email`,
+      `${API_BASE}/ai-hub/verify-email`,
       { email },
       { headers }
     );
@@ -219,7 +224,7 @@ export async function addContactToJob(
   try {
     const headers = await getAuthHeader();
     const response = await axios.post(
-      `${API_BASE_URL}/ai-hub/jobs/${jobId}/contacts`,
+      `${API_BASE}/ai-hub/jobs/${jobId}/contacts`,
       contact,
       { headers }
     );
@@ -252,7 +257,7 @@ export async function translateJob(jobId: string, fields?: Record<string, any>):
   try {
     const headers = await getAuthHeader();
     const response = await axios.post(
-      `${API_BASE_URL}/ai-hub/jobs/${jobId}/translate`,
+      `${API_BASE}/ai-hub/jobs/${jobId}/translate`,
       fields ? { fields } : {},   // Explore/live jobs aren't in the DB → send their text so translate works
       { headers }
     );
@@ -273,7 +278,7 @@ export async function translateBatch(items: { i: string; t: string }[]): Promise
     if (!items || !items.length) return {};
     const headers = await getAuthHeader();
     const response = await axios.post(
-      `${API_BASE_URL}/ai-hub/translate-batch`,
+      `${API_BASE}/ai-hub/translate-batch`,
       { items },
       // A stalled request must reject so the translate spinner clears. 45s, not 30: the server now
       // sub-batches and retries transient Gemini failures internally, and cutting it off at 30 threw
@@ -303,7 +308,7 @@ export function isLinkedInJobUrl(url: string): boolean {
 export async function extractLinkedInJob(url: string, content: string): Promise<LinkedInJob> {
   const headers = await getAuthHeader();
   const response = await axios.post(
-    `${API_BASE_URL}/ai-hub/linkedin/extract`,
+    `${API_BASE}/ai-hub/linkedin/extract`,
     { url, content },
     { headers }
   );
@@ -314,7 +319,7 @@ export async function extractLinkedInJob(url: string, content: string): Promise<
 export async function addLinkedInJob(url: string, content: string): Promise<LinkedInJob> {
   const headers = await getAuthHeader();
   const response = await axios.post(
-    `${API_BASE_URL}/ai-hub/linkedin/add`,
+    `${API_BASE}/ai-hub/linkedin/add`,
     { url, content },
     { headers }
   );
@@ -329,7 +334,7 @@ export async function getJobContacts(jobId: string): Promise<Contact[]> {
   try {
     const headers = await getAuthHeader();
     const { data } = await axios.get(
-      `${API_BASE_URL}/ai-hub/jobs/${jobId}/contacts`,
+      `${API_BASE}/ai-hub/jobs/${jobId}/contacts`,
       { headers }
     );
     return (data?.contacts ?? data ?? []) as Contact[];
@@ -346,7 +351,7 @@ export async function getJobUrlOverride(jobId: string): Promise<string | null> {
   try {
     const headers = await getAuthHeader();
     const { data } = await axios.get(
-      `${API_BASE_URL}/ai-hub/jobs/${jobId}/url-override`,
+      `${API_BASE}/ai-hub/jobs/${jobId}/url-override`,
       { headers }
     );
     return data?.url ?? null;
@@ -364,7 +369,7 @@ export async function updateJobUrl(jobId: string, url: string): Promise<string> 
   try {
     const headers = await getAuthHeader();
     const { data } = await axios.post(
-      `${API_BASE_URL}/ai-hub/jobs/${jobId}/url-override`,
+      `${API_BASE}/ai-hub/jobs/${jobId}/url-override`,
       { url },
       { headers }
     );
@@ -387,7 +392,7 @@ export type SmartFillData = { fields: SmartFillField[]; resumeSummary: string; s
 export async function getSmartFillData(): Promise<SmartFillData> {
   try {
     const headers = await getAuthHeader();
-    const { data } = await axios.get(`${API_BASE_URL}/ai-hub/smart-fill-data`, { headers });
+    const { data } = await axios.get(`${API_BASE}/ai-hub/smart-fill-data`, { headers });
     return {
       fields: Array.isArray(data?.fields) ? data.fields : [],
       resumeSummary: typeof data?.resumeSummary === 'string' ? data.resumeSummary : '',
@@ -407,7 +412,7 @@ export async function getSmartFillData(): Promise<SmartFillData> {
 export async function getMotivationLines(): Promise<string[]> {
   try {
     const headers = await getAuthHeader();
-    const { data } = await axios.get(`${API_BASE_URL}/ai-hub/motivation`, { headers, timeout: 20000 });
+    const { data } = await axios.get(`${API_BASE}/ai-hub/motivation`, { headers, timeout: 20000 });
     return Array.isArray(data?.lines) ? data.lines.filter((l: any) => typeof l === 'string' && l.trim()) : [];
   } catch {
     return [];
@@ -424,7 +429,7 @@ export async function recordAutofillMemory(
   try {
     if (!Array.isArray(answers) || answers.length === 0) return;
     const headers = await getAuthHeader();
-    await axios.post(`${API_BASE_URL}/ai-hub/autofill-memory`, { answers }, { headers });
+    await axios.post(`${API_BASE}/ai-hub/autofill-memory`, { answers }, { headers });
   } catch { /* learning is best-effort */ }
 }
 
@@ -475,7 +480,7 @@ export async function fetchDashboard(): Promise<DashboardEntry[]> {
     const cached = etag ? await getCachedDashboard() : null;
     const headers: Record<string, string> = { ...auth };
     if (etag && cached) headers['If-None-Match'] = etag;   // only revalidate when we can serve the cache
-    const response = await axios.get(`${API_BASE_URL}/ai-hub/dashboard`, {
+    const response = await axios.get(`${API_BASE}/ai-hub/dashboard`, {
       headers,
       validateStatus: (s) => (s >= 200 && s < 300) || s === 304,
     });
@@ -507,7 +512,7 @@ export async function fetchEmployerJobs(
 ): Promise<{ jobs: Job[]; total: number; offset: number }> {
   try {
     const headers = await getAuthHeader();
-    const r = await axios.get(`${API_BASE_URL}/ai-hub/dashboard/employer/${employerId}/jobs`, {
+    const r = await axios.get(`${API_BASE}/ai-hub/dashboard/employer/${employerId}/jobs`, {
       headers, params: { offset, limit }, timeout: 30000,
     });
     return { jobs: r.data?.jobs || [], total: r.data?.total || 0, offset: r.data?.offset ?? offset };
@@ -523,7 +528,7 @@ export async function fetchEmployerJobs(
 export async function fetchJobFull(jobId: string): Promise<{ job: Job; employer?: Employer } | null> {
   try {
     const headers = await getAuthHeader();
-    const r = await axios.get(`${API_BASE_URL}/ai-hub/jobs/${jobId}/full`, { headers, timeout: 20000 });
+    const r = await axios.get(`${API_BASE}/ai-hub/jobs/${jobId}/full`, { headers, timeout: 20000 });
     return r.data && r.data.job ? r.data : null;
   } catch {
     return null;
@@ -542,7 +547,7 @@ export async function fetchJobMatchScores(
     if (!jobIds || !jobIds.length) return { scores: {} };
     const headers = await getAuthHeader();
     const response = await axios.post(
-      `${API_BASE_URL}/ai-hub/match-scores`,
+      `${API_BASE}/ai-hub/match-scores`,
       { jobIds },
       { headers, timeout: 60000 },
     );
@@ -563,7 +568,7 @@ export async function fetchCreditBalance(): Promise<number> {
   try {
     const headers = await getAuthHeader();
     // Credits routes are mounted at /api (not /api/credits), so path is /api/user/credits
-    const response = await axios.get(`${API_BASE_URL}/user/credits`, { headers });
+    const response = await axios.get(`${API_BASE}/user/credits`, { headers });
     // Response shape: { success, balance, credits: { remaining, ... } }
     return response.data.credits?.remaining ?? response.data.balance ?? 0;
   } catch {
@@ -581,7 +586,7 @@ export async function deductSearchCredits(amount: number): Promise<number> {
     // Send the event key so the SERVER decides the (admin-configurable) cost; `amount`
     // stays as a backward-compatible fallback.
     const response = await axios.post(
-      `${API_BASE_URL}/ai-hub/deduct-credits`,
+      `${API_BASE}/ai-hub/deduct-credits`,
       { amount, eventKey: 'company_search' },
       { headers }
     );
@@ -600,7 +605,7 @@ export async function deductSearchCredits(amount: number): Promise<number> {
 export async function removeDashboardItem(jobId: string): Promise<void> {
   try {
     const headers = await getAuthHeader();
-    await axios.delete(`${API_BASE_URL}/ai-hub/dashboard/${jobId}`, {
+    await axios.delete(`${API_BASE}/ai-hub/dashboard/${jobId}`, {
       headers,
     });
   } catch (error: unknown) {
@@ -630,7 +635,7 @@ export async function getRecruiters(employerId: string): Promise<Recruiter[]> {
   try {
     const headers = await getAuthHeader();
     const response = await axios.get(
-      `${API_BASE_URL}/ai-hub/employers/${employerId}/recruiters`,
+      `${API_BASE}/ai-hub/employers/${employerId}/recruiters`,
       { headers }
     );
     return response.data.recruiters ?? [];
@@ -648,7 +653,7 @@ export async function findRecruiters(
   const headers = await getAuthHeader();
   // Runs as a background job (up to ~60s of Gemini search) — survives the app being minimized.
   const { data } = await axios.post(
-    `${API_BASE_URL}/ai-hub/employers/${employerId}/find-recruiters`,
+    `${API_BASE}/ai-hub/employers/${employerId}/find-recruiters`,
     { __async: true },
     { headers, timeout: 30000 }
   );
@@ -665,7 +670,7 @@ export async function findRecruiterEmails(
   const headers = await getAuthHeader();
   // Background job (up to ~120s of SMTP verification) — survives the app being minimized.
   const { data } = await axios.post(
-    `${API_BASE_URL}/ai-hub/employers/${employerId}/find-emails`,
+    `${API_BASE}/ai-hub/employers/${employerId}/find-emails`,
     { __async: true },
     { headers, timeout: 30000 }
   );
@@ -693,14 +698,14 @@ export async function saveJobCoverLetter(jobId: string, data: {
 }): Promise<void> {
   try {
     const headers = await getAuthHeader();
-    await axios.post(`${API_BASE_URL}/ai-hub/jobs/${jobId}/cover-letter`, data, { headers });
+    await axios.post(`${API_BASE}/ai-hub/jobs/${jobId}/cover-letter`, data, { headers });
   } catch {}
 }
 
 export async function loadJobCoverLetter(jobId: string): Promise<JobCLRecord | null> {
   try {
     const headers = await getAuthHeader();
-    const { data } = await axios.get(`${API_BASE_URL}/ai-hub/jobs/${jobId}/cover-letter`, { headers });
+    const { data } = await axios.get(`${API_BASE}/ai-hub/jobs/${jobId}/cover-letter`, { headers });
     return data.coverLetter ?? null;
   } catch { return null; }
 }
@@ -708,14 +713,14 @@ export async function loadJobCoverLetter(jobId: string): Promise<JobCLRecord | n
 export async function updateJobCLStatus(jobId: string, status: 'generated' | 'downloaded' | 'applied'): Promise<void> {
   try {
     const headers = await getAuthHeader();
-    await axios.patch(`${API_BASE_URL}/ai-hub/jobs/${jobId}/cover-letter/status`, { status }, { headers });
+    await axios.patch(`${API_BASE}/ai-hub/jobs/${jobId}/cover-letter/status`, { status }, { headers });
   } catch {}
 }
 
 export async function loadJobStatuses(employerId: string): Promise<Record<string, string>> {
   try {
     const headers = await getAuthHeader();
-    const { data } = await axios.get(`${API_BASE_URL}/ai-hub/employers/${employerId}/job-statuses`, { headers });
+    const { data } = await axios.get(`${API_BASE}/ai-hub/employers/${employerId}/job-statuses`, { headers });
     return data.statuses ?? {};
   } catch { return {}; }
 }
@@ -724,7 +729,7 @@ export async function loadJobStatuses(employerId: string): Promise<Record<string
 export async function loadAllJobStatuses(): Promise<Record<string, string>> {
   try {
     const headers = await getAuthHeader();
-    const { data } = await axios.get(`${API_BASE_URL}/ai-hub/job-statuses`, { headers, timeout: 20000 });
+    const { data } = await axios.get(`${API_BASE}/ai-hub/job-statuses`, { headers, timeout: 20000 });
     return data.statuses ?? {};
   } catch { return {}; }
 }
@@ -762,7 +767,7 @@ export async function captureJob(
 ): Promise<{ jobId: string; job: CapturedJob; tracked: boolean } | null> {
   try {
     const headers = await getAuthHeader();
-    const { data } = await axios.post(`${API_BASE_URL}/ai-hub/jobs/capture`, input, { headers, timeout: 30000 });
+    const { data } = await axios.post(`${API_BASE}/ai-hub/jobs/capture`, input, { headers, timeout: 30000 });
     if (data && data.jobId) return { jobId: String(data.jobId), job: data.job as CapturedJob, tracked: !!data.tracked };
     return null;
   } catch {
@@ -793,7 +798,7 @@ export async function startJobCoverLetter(
   // server swap in the FULL stored list, so letter quality never depends on client hydration.
   if (jobId) body.jobId = jobId;
   const response = await axios.post(
-    `${API_BASE_URL}/generate-cover-letter-details`,
+    `${API_BASE}/generate-cover-letter-details`,
     body,
     { headers, timeout: 30000 }
   );
@@ -828,7 +833,7 @@ export async function pollJobCoverLetter(
         return;
       }
       try {
-        const { data } = await axios.get(`${API_BASE_URL}/job-status/${jobId}`, { headers });
+        const { data } = await axios.get(`${API_BASE}/job-status/${jobId}`, { headers });
         gone = 0;
         if (data.status === 'completed') {
           resolve(data.data);
@@ -865,7 +870,7 @@ let _eventCostsCache: Record<string, number> | null = null;
 export async function fetchEventCosts(force = false): Promise<Record<string, number>> {
   if (_eventCostsCache && !force) return _eventCostsCache;
   try {
-    const { data } = await axios.get(`${API_BASE_URL}/ai-event-costs`);
+    const { data } = await axios.get(`${API_BASE}/ai-event-costs`);
     _eventCostsCache = (data && data.costs) || {};
     return _eventCostsCache!;
   } catch {
@@ -876,7 +881,7 @@ export async function fetchEventCosts(force = false): Promise<Record<string, num
 /** Admin: full catalog (requires admin token). */
 export async function fetchAdminAiEvents(): Promise<AiEventCost[]> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/admin/ai-event-costs`, { headers });
+  const { data } = await axios.get(`${API_BASE}/admin/ai-event-costs`, { headers });
   return (data && data.events) || [];
 }
 
@@ -884,7 +889,7 @@ export async function fetchAdminAiEvents(): Promise<AiEventCost[]> {
  *  testSelf=true sends ONLY to the admin's own device (ignores filters) for previewing before a mass send. */
 export async function sendRewardNudge(nudgeKey: string, dryRun: boolean, testSelf = false): Promise<{ wouldTarget?: number; sent?: number; targeted?: number; credits?: number; test?: boolean; reason?: string; error?: string }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.post(`${API_BASE_URL}/admin/reward-nudge`, { nudgeKey, dryRun, testSelf }, { headers, timeout: 30000 });
+  const { data } = await axios.post(`${API_BASE}/admin/reward-nudge`, { nudgeKey, dryRun, testSelf }, { headers, timeout: 30000 });
   return data || {};
 }
 
@@ -921,14 +926,14 @@ export type StoreAnalytics = {
 };
 export async function fetchStoreAnalytics(): Promise<StoreAnalytics> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/admin/store-analytics`, { headers });
+  const { data } = await axios.get(`${API_BASE}/admin/store-analytics`, { headers });
   return data;
 }
 
 /** Admin: run an uninstall-detection sweep (silent push + receipts → DeviceNotRegistered). */
 export async function runUninstallSweep(): Promise<{ checked: number; uninstalled: number; pendingReceipts: number }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.post(`${API_BASE_URL}/admin/uninstall-sweep`, {}, { headers, timeout: 30000 });
+  const { data } = await axios.post(`${API_BASE}/admin/uninstall-sweep`, {}, { headers, timeout: 30000 });
   return data;
 }
 
@@ -964,7 +969,7 @@ export async function fetchUsersList(
   opts: { q?: string; limit?: number; offset?: number } = {},
 ): Promise<UsersListResponse> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/admin/users-list`, {
+  const { data } = await axios.get(`${API_BASE}/admin/users-list`, {
     headers,
     params: { q: opts.q || '', limit: opts.limit ?? 50, offset: opts.offset ?? 0 },
     timeout: 30000,
@@ -1010,7 +1015,7 @@ export async function fetchUserJourneys(
   opts: { q?: string; limit?: number } = {},
 ): Promise<{ users: UserJourney[] }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/admin/user-journeys`, {
+  const { data } = await axios.get(`${API_BASE}/admin/user-journeys`, {
     headers,
     params: { q: opts.q || '', limit: opts.limit ?? 60 },
     timeout: 30000,
@@ -1023,7 +1028,7 @@ export async function fetchUserTimeline(
   opts: { userId?: number | string | null; anonId?: string | null; limit?: number } = {},
 ): Promise<UserTimeline> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/admin/user-timeline`, {
+  const { data } = await axios.get(`${API_BASE}/admin/user-timeline`, {
     headers,
     params: { userId: opts.userId ?? '', anonId: opts.anonId ?? '', limit: opts.limit ?? 300 },
     timeout: 30000,
@@ -1037,21 +1042,21 @@ export type AdminNotifySettings = { installs: boolean; registrations: boolean; p
 /** Admin: current push-alert toggles. */
 export async function fetchAdminNotifySettings(): Promise<AdminNotifySettings> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/admin/notification-settings`, { headers, timeout: 20000 });
+  const { data } = await axios.get(`${API_BASE}/admin/notification-settings`, { headers, timeout: 20000 });
   return data.settings || { installs: true, registrations: true, purchases: true };
 }
 
 /** Admin: update one or more push-alert toggles. Returns the saved settings. */
 export async function updateAdminNotifySettings(patch: Partial<AdminNotifySettings>): Promise<AdminNotifySettings> {
   const headers = await getAuthHeader();
-  const { data } = await axios.put(`${API_BASE_URL}/admin/notification-settings`, patch, { headers, timeout: 20000 });
+  const { data } = await axios.put(`${API_BASE}/admin/notification-settings`, patch, { headers, timeout: 20000 });
   return data.settings || { installs: true, registrations: true, purchases: true };
 }
 
 /** Admin: fire a test push to all admin devices. */
 export async function sendAdminTestNotification(): Promise<{ sent: number; admins?: number }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.post(`${API_BASE_URL}/admin/notification-test`, {}, { headers, timeout: 20000 });
+  const { data } = await axios.post(`${API_BASE}/admin/notification-test`, {}, { headers, timeout: 20000 });
   return (data && data.result) || { sent: 0 };
 }
 
@@ -1094,7 +1099,7 @@ export async function fetchDiscoverJobs(
     field: opts.field || '', role_category: opts.role_category || '', sort: opts.sort || 'match',
   };
   if (opts.min_match != null) params.min_match = opts.min_match;
-  const { data } = await axios.get(`${API_BASE_URL}/discover/jobs`, { headers, params, timeout: 25000 });
+  const { data } = await axios.get(`${API_BASE}/discover/jobs`, { headers, params, timeout: 25000 });
   return data;
 }
 
@@ -1104,7 +1109,7 @@ export async function fetchDiscoverJobs(
 export async function fetchDiscoverJobById(id: string): Promise<DiscoverJob | null> {
   const headers = await getAuthHeader();
   try {
-    const { data } = await axios.get(`${API_BASE_URL}/discover/job/${encodeURIComponent(id)}`, { headers, timeout: 20000 });
+    const { data } = await axios.get(`${API_BASE}/discover/job/${encodeURIComponent(id)}`, { headers, timeout: 20000 });
     return data?.success && data.job ? (data.job as DiscoverJob) : null;
   } catch (e: any) {
     if (axios.isAxiosError(e) && e.response?.status === 404) return null;
@@ -1124,7 +1129,7 @@ export type AiSearchResponse = {
  *  through the 24-ATS engine and ingests the jobs into the network. Returns how many were added. */
 export async function hydrateJobUrls(urls: string[], query?: string): Promise<{ boards: number; hydrated: number; ingested: number }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.post(`${API_BASE_URL}/discover/hydrate-urls`, { urls, query: query || '' }, { headers, timeout: 45000 });
+  const { data } = await axios.post(`${API_BASE}/discover/hydrate-urls`, { urls, query: query || '' }, { headers, timeout: 45000 });
   return data;
 }
 
@@ -1134,7 +1139,7 @@ export async function aiSearchJobs(query: string, offset = 0, limit = 20, refres
   const headers = await getAuthHeader();
   try {
     // `refresh` = an internal re-run (e.g. after silent web hydration) → backend skips the credit charge.
-    const { data } = await axios.post(`${API_BASE_URL}/discover/ai-search`, { query, offset, limit, refresh }, { headers, timeout: 30000 });
+    const { data } = await axios.post(`${API_BASE}/discover/ai-search`, { query, offset, limit, refresh }, { headers, timeout: 30000 });
     return data;
   } catch (e: any) {
     if (axios.isAxiosError(e) && e.response?.status === 402) {
@@ -1156,7 +1161,7 @@ export type LiveJobCard = {
  *  city/country) via Google-Search grounding, which can run ~40-50s for a novel query — so allow 75s. */
 export async function liveSearchJobs(query: string): Promise<{ parsed: AiSearchParsed | null; cards: LiveJobCard[]; count: number }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.post(`${API_BASE_URL}/discover/live-search`, { query }, { headers, timeout: 75000 });
+  const { data } = await axios.post(`${API_BASE}/discover/live-search`, { query }, { headers, timeout: 75000 });
   return { parsed: data?.parsed ?? null, cards: (data?.cards ?? []) as LiveJobCard[], count: data?.count ?? 0 };
 }
 
@@ -1168,7 +1173,7 @@ export async function fetchJobDetail(url: string, html: string, company?: string
     // can't see it, so the server falls back to extracting from this when the HTML yields nothing.
     // mainText = just the main/article region when the page marks one up, so the extractor isn't
     // reading the nav, the footer and the "more open roles" cards alongside the posting.
-    const { data } = await axios.post(`${API_BASE_URL}/discover/fetch-detail`, { url, html, company: company || '', pageText: pageText || '', mainText: mainText || '' }, { headers, timeout: 45000 });
+    const { data } = await axios.post(`${API_BASE}/discover/fetch-detail`, { url, html, company: company || '', pageText: pageText || '', mainText: mainText || '' }, { headers, timeout: 45000 });
     return data?.success && data.job ? (data.job as LiveJobCard) : null;
   } catch (e: any) {
     if (axios.isAxiosError(e) && e.response?.status === 402) {
@@ -1185,25 +1190,25 @@ export type SavedJobCard = LiveJobCard & { saved_at?: string };
 // The user's Saved Jobs — every posting fetched via live search is stored server-side.
 export async function fetchSavedJobs(): Promise<{ jobs: SavedJobCard[]; count: number }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/discover/saved-jobs`, { headers, timeout: 20000 });
+  const { data } = await axios.get(`${API_BASE}/discover/saved-jobs`, { headers, timeout: 20000 });
   return { jobs: (data?.jobs ?? []) as SavedJobCard[], count: data?.count ?? 0 };
 }
 
 export async function removeSavedJob(url: string): Promise<void> {
   const headers = await getAuthHeader();
-  await axios.post(`${API_BASE_URL}/discover/saved-jobs/remove`, { url }, { headers, timeout: 15000 });
+  await axios.post(`${API_BASE}/discover/saved-jobs/remove`, { url }, { headers, timeout: 15000 });
 }
 
 // Save a card directly (fallback when detail-fetch fails) so every selected job still lands in Saved Jobs.
 export async function saveCard(card: LiveJobCard): Promise<void> {
   const headers = await getAuthHeader();
-  await axios.post(`${API_BASE_URL}/discover/save-card`, { card }, { headers, timeout: 15000 });
+  await axios.post(`${API_BASE}/discover/save-card`, { card }, { headers, timeout: 15000 });
 }
 
 /** Filter chips for the feed. Pass `field` to get the role categories within that field. */
 export async function fetchDiscoverFacets(field?: string): Promise<DiscoverFacets> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/discover/facets`, {
+  const { data } = await axios.get(`${API_BASE}/discover/facets`, {
     headers, params: { field: field || '' }, timeout: 20000,
   });
   return data;
@@ -1213,7 +1218,7 @@ export async function fetchDiscoverFacets(field?: string): Promise<DiscoverFacet
 export async function updateAiEventCost(eventKey: string, credits: number, isActive: boolean): Promise<void> {
   const headers = await getAuthHeader();
   await axios.put(
-    `${API_BASE_URL}/admin/ai-event-costs/${encodeURIComponent(eventKey)}`,
+    `${API_BASE}/admin/ai-event-costs/${encodeURIComponent(eventKey)}`,
     { credits, is_active: isActive ? 1 : 0 },
     { headers }
   );
@@ -1226,14 +1231,14 @@ export type AdminUser = { id: number; email: string; full_name: string; credits_
 /** Admin: typeahead search users by email substring. */
 export async function adminSearchUsers(q: string): Promise<AdminUser[]> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/admin/users/search`, { params: { q }, headers });
+  const { data } = await axios.get(`${API_BASE}/admin/users/search`, { params: { q }, headers });
   return (data && data.users) || [];
 }
 
 /** Admin: set a user's remaining credits; returns the new balance. */
 export async function adminSetUserCredits(userId: number, credits: number): Promise<number> {
   const headers = await getAuthHeader();
-  const { data } = await axios.put(`${API_BASE_URL}/admin/users/${userId}/credits`, { credits }, { headers });
+  const { data } = await axios.put(`${API_BASE}/admin/users/${userId}/credits`, { credits }, { headers });
   return data?.credits_remaining ?? credits;
 }
 
@@ -1251,48 +1256,48 @@ export type EmployerFixRequest = {
 /** User: ask us to learn an employer we couldn't fetch. Returns the request id. */
 export async function submitEmployerFixRequest(employerInput: string): Promise<{ requestId: number; status: string }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.post(`${API_BASE_URL}/ai-hub/fix-requests`, { employerInput }, { headers });
+  const { data } = await axios.post(`${API_BASE}/ai-hub/fix-requests`, { employerInput }, { headers });
   return { requestId: data?.requestId, status: data?.status || 'investigating' };
 }
 
 /** User: poll a fix request's status (app re-runs the search when 'resolved'). */
 export async function getFixRequestStatus(id: number): Promise<{ status: string; jobCount: number; resolved: boolean }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/ai-hub/fix-requests/${id}`, { headers });
+  const { data } = await axios.get(`${API_BASE}/ai-hub/fix-requests/${id}`, { headers });
   return { status: data?.status, jobCount: data?.jobCount || 0, resolved: !!data?.resolved };
 }
 
 /** Admin: list every employer fix request with its active fix. */
 export async function adminListEmployerRequests(): Promise<EmployerFixRequest[]> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/admin/employer-requests`, { headers });
+  const { data } = await axios.get(`${API_BASE}/admin/employer-requests`, { headers });
   return (data && data.requests) || [];
 }
 
 /** Admin: run / re-run the diagnostic agent ("rethink") on a request. */
 export async function adminInvestigateRequest(id: number): Promise<any> {
   const headers = await getAuthHeader();
-  const { data } = await axios.post(`${API_BASE_URL}/admin/employer-requests/${id}/investigate`, {}, { headers });
+  const { data } = await axios.post(`${API_BASE}/admin/employer-requests/${id}/investigate`, {}, { headers });
   return data?.result;
 }
 
 /** Admin: full version history for a request's domain. */
 export async function adminOverrideHistory(id: number): Promise<{ domain: string; overrides: EmployerFixOverride[] }> {
   const headers = await getAuthHeader();
-  const { data } = await axios.get(`${API_BASE_URL}/admin/employer-requests/${id}/overrides`, { headers });
+  const { data } = await axios.get(`${API_BASE}/admin/employer-requests/${id}/overrides`, { headers });
   return { domain: data?.domain, overrides: (data && data.overrides) || [] };
 }
 
 /** Admin: roll back / re-apply a specific override version. */
 export async function adminActivateOverride(overrideId: number): Promise<void> {
   const headers = await getAuthHeader();
-  await axios.post(`${API_BASE_URL}/admin/employer-overrides/${overrideId}/activate`, {}, { headers });
+  await axios.post(`${API_BASE}/admin/employer-overrides/${overrideId}/activate`, {}, { headers });
 }
 
 /** Admin: turn the fix OFF for a request's domain. */
 export async function adminDeactivateOverride(requestId: number): Promise<void> {
   const headers = await getAuthHeader();
-  await axios.post(`${API_BASE_URL}/admin/employer-requests/${requestId}/deactivate`, {}, { headers });
+  await axios.post(`${API_BASE}/admin/employer-requests/${requestId}/deactivate`, {}, { headers });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1385,7 +1390,7 @@ export type AdminUserOverview = {
 export async function fetchAdminUserOverview(userId: number | string): Promise<AdminUserOverview> {
   try {
     const headers = await getAuthHeader();
-    const { data } = await axios.get(`${API_BASE_URL}/admin/users/${userId}/overview`, { headers, timeout: 30000 });
+    const { data } = await axios.get(`${API_BASE}/admin/users/${userId}/overview`, { headers, timeout: 30000 });
     return data as AdminUserOverview;
   } catch (error: unknown) {
     throw adminErr(error, 'Failed to load user overview');
@@ -1402,7 +1407,7 @@ export type AdminFileKind = 'resume' | 'photo' | 'signature';
  * (overview.assets.*.url is the server-relative path; prefer this.)
  */
 export function adminFileUrl(userId: number | string, kind: AdminFileKind): string {
-  return `${API_BASE_URL}/admin/users/${userId}/files/${kind}`;
+  return `${API_BASE}/admin/users/${userId}/files/${kind}`;
 }
 
 /**
@@ -1467,7 +1472,7 @@ export async function fetchAdminUserMatchedJobs(
 ): Promise<AdminMatchedJobsResponse> {
   try {
     const headers = await getAuthHeader();
-    const { data } = await axios.get(`${API_BASE_URL}/admin/users/${userId}/matched-jobs`, {
+    const { data } = await axios.get(`${API_BASE}/admin/users/${userId}/matched-jobs`, {
       headers, params: { limit }, timeout: 45000,
     });
     return data as AdminMatchedJobsResponse;
@@ -1551,7 +1556,7 @@ export async function fetchAdminUserActivity<K extends AdminActivityKind>(
 ): Promise<AdminActivityResponse<K>> {
   try {
     const headers = await getAuthHeader();
-    const { data } = await axios.get(`${API_BASE_URL}/admin/users/${userId}/activity`, {
+    const { data } = await axios.get(`${API_BASE}/admin/users/${userId}/activity`, {
       headers, params: { kind, limit, offset }, timeout: 30000,
     });
     return data as AdminActivityResponse<K>;
@@ -1577,7 +1582,7 @@ export async function fetchAdminCoverLetter(
   try {
     const headers = await getAuthHeader();
     const { data } = await axios.get(
-      `${API_BASE_URL}/admin/users/${userId}/cover-letters/${letterId}`,
+      `${API_BASE}/admin/users/${userId}/cover-letters/${letterId}`,
       { headers, timeout: 30000 },
     );
     return data.letter as AdminCoverLetter;
@@ -1626,7 +1631,7 @@ export async function fetchAdminNotifyTemplates(
 ): Promise<AdminNotifyTemplatesResponse> {
   try {
     const headers = await getAuthHeader();
-    const { data } = await axios.get(`${API_BASE_URL}/admin/notify/templates`, {
+    const { data } = await axios.get(`${API_BASE}/admin/notify/templates`, {
       headers, params: { userId: userId ?? '', jobId: jobId ?? '' }, timeout: 30000,
     });
     return data as AdminNotifyTemplatesResponse;
@@ -1689,7 +1694,7 @@ export async function sendAdminUserNotification(
     const body: { key: string; jobId?: string; overrides?: AdminNotifyOverrides } = { key: opts.key };
     if (opts.jobId) body.jobId = String(opts.jobId);
     if (overrides) body.overrides = overrides;
-    const { data } = await axios.post(`${API_BASE_URL}/admin/users/${userId}/notify`, body, {
+    const { data } = await axios.post(`${API_BASE}/admin/users/${userId}/notify`, body, {
       headers, timeout: 45000,
     });
     return data as AdminUserNotifyResult;
@@ -1711,7 +1716,7 @@ export type AdminSegment = {
 export async function fetchAdminSegments(): Promise<AdminSegment[]> {
   try {
     const headers = await getAuthHeader();
-    const { data } = await axios.get(`${API_BASE_URL}/admin/segments`, { headers, timeout: 45000 });
+    const { data } = await axios.get(`${API_BASE}/admin/segments`, { headers, timeout: 45000 });
     return (data && data.segments) || [];
   } catch (error: unknown) {
     throw adminErr(error, 'Failed to load segments');
@@ -1752,7 +1757,7 @@ export async function fetchAdminSegmentUsers(
 ): Promise<AdminSegmentUsersResponse> {
   try {
     const headers = await getAuthHeader();
-    const { data } = await axios.get(`${API_BASE_URL}/admin/segments/${encodeURIComponent(key)}/users`, {
+    const { data } = await axios.get(`${API_BASE}/admin/segments/${encodeURIComponent(key)}/users`, {
       headers,
       params: { limit: opts.limit ?? 200, templateKey: opts.templateKey || '' },
       timeout: 45000,
@@ -1819,7 +1824,7 @@ export async function previewAdminSegmentNotify(
     if (overrides) body.overrides = overrides;
     if (opts.maxRecipients != null) body.maxRecipients = opts.maxRecipients;
     const { data } = await axios.post(
-      `${API_BASE_URL}/admin/segments/${encodeURIComponent(key)}/notify`,
+      `${API_BASE}/admin/segments/${encodeURIComponent(key)}/notify`,
       body,   // ⚠️ NO `confirm` — adding one here turns every preview into a mass send.
       { headers, timeout: 60000 },
     );
@@ -1851,7 +1856,7 @@ export async function sendAdminSegmentNotify(
     if (overrides) body.overrides = overrides;
     if (opts.maxRecipients != null) body.maxRecipients = opts.maxRecipients;
     const { data } = await axios.post(
-      `${API_BASE_URL}/admin/segments/${encodeURIComponent(key)}/notify`,
+      `${API_BASE}/admin/segments/${encodeURIComponent(key)}/notify`,
       body,
       { headers, timeout: 180000 },   // a capped batch of up to 500 sends serially in workers
     );

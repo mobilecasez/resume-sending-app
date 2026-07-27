@@ -11,9 +11,12 @@ import {
 } from 'react-native';
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
-import config from '../../config';
+import { API_BASE } from '../../config';
 
-const { API_BASE_URL } = config;
+// The base url is read live at every request below (`${API_BASE}`) instead of being snapshotted
+// into a module-scope const. Destructuring it at import time froze it before the admin environment
+// override could be loaded, so this screen would keep talking to the previous backend while the
+// rest of the app talked to the new one — a session split across production and local.
 
 export default function ProfileScreen({ navigation }) {
   const [user, setUser] = useState(null);
@@ -51,7 +54,7 @@ export default function ProfileScreen({ navigation }) {
 
       // Fetch full profile from backend
       if (token) {
-        const response = await axios.get(`${API_BASE_URL}/api/users/profile`, {
+        const response = await axios.get(`${API_BASE}/api/users/profile`, {
           headers: { Authorization: `Bearer ${token}` },
         });
 
@@ -91,7 +94,7 @@ export default function ProfileScreen({ navigation }) {
       };
 
       const response = await axios.post(
-        `${API_BASE_URL}/api/users/profile/update`,
+        `${API_BASE}/api/users/profile/update`,
         updateData,
         {
           headers: { Authorization: `Bearer ${token}` },

@@ -12,9 +12,12 @@ import {
 } from 'react-native';
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
-import config from '../../config';
+import { API_BASE } from '../../config';
 
-const { API_BASE_URL } = config;
+// The base url is read live at every request below (`${API_BASE}`) instead of being snapshotted
+// into a module-scope const. Destructuring it at import time froze it before the admin environment
+// override could be loaded, so this screen would keep talking to the previous backend while the
+// rest of the app talked to the new one — a session split across production and local.
 
 export default function ApplicationsScreen({ navigation }) {
   const [applications, setApplications] = useState([]);
@@ -31,7 +34,7 @@ export default function ApplicationsScreen({ navigation }) {
       const token = await SecureStore.getItemAsync('authToken');
 
       if (token) {
-        const response = await axios.get(`${API_BASE_URL}/api/applications`, {
+        const response = await axios.get(`${API_BASE}/api/applications`, {
           headers: { Authorization: `Bearer ${token}` },
         });
 
@@ -60,7 +63,7 @@ export default function ApplicationsScreen({ navigation }) {
         onPress: async () => {
           try {
             const token = await SecureStore.getItemAsync('authToken');
-            await axios.delete(`${API_BASE_URL}/api/applications/${id}`, {
+            await axios.delete(`${API_BASE}/api/applications/${id}`, {
               headers: { Authorization: `Bearer ${token}` },
             });
             loadApplications();

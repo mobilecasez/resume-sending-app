@@ -13,9 +13,12 @@ import {
 } from 'react-native';
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
-import config from '../../config';
+import { API_BASE } from '../../config';
 
-const { API_BASE_URL } = config;
+// The base url is read live at every request below (`${API_BASE}`) instead of being snapshotted
+// into a module-scope const. Destructuring it at import time froze it before the admin environment
+// override could be loaded, so this screen would keep talking to the previous backend while the
+// rest of the app talked to the new one — a session split across production and local.
 
 export default function GenerateCoverLetterScreen() {
   const [formData, setFormData] = useState({
@@ -42,7 +45,7 @@ export default function GenerateCoverLetterScreen() {
       const token = await SecureStore.getItemAsync('authToken');
 
       const response = await axios.post(
-        `${API_BASE_URL}/api/generate-cover-letter`,
+        `${API_BASE}/api/generate-cover-letter`,
         formData,
         {
           headers: { Authorization: `Bearer ${token}` },
@@ -71,7 +74,7 @@ export default function GenerateCoverLetterScreen() {
       const token = await SecureStore.getItemAsync('authToken');
 
       const response = await axios.post(
-        `${API_BASE_URL}/api/save-cover-letter`,
+        `${API_BASE}/api/save-cover-letter`,
         {
           ...formData,
           coverLetter: generatedLetter,
