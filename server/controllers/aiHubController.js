@@ -4072,7 +4072,15 @@ async function generateJobCoverLetter(req, res) {
         const skillsList = skills.map(s => s.name).join(', ') || 'Not specified';
 
         // Check credits (admin-configurable cost)
-        const jclCost = await getEventCost('job_cover_letter');
+        //
+        // `req.adminTest` is set ONLY by the admin "generate a test cover letter" route, which runs
+        // this exact handler so what the admin reviews is byte-for-byte what the user would get —
+        // a lookalike reimplementation would drift and then the test would stop proving anything.
+        // The one thing it must not do is bill a real person for an admin's curiosity, so the
+        // charge (and only the charge) is skipped. It is set server-side on a synthetic request; no
+        // client can send it.
+        const adminTest = req.adminTest === true;
+        const jclCost = adminTest ? 0 : await getEventCost('job_cover_letter');
         const credits = await dbConfig.get(`SELECT credits_remaining FROM user_credits WHERE user_id = $1`, [userId]);
         if (jclCost > 0 && (!credits || credits.credits_remaining < jclCost)) {
             return res.status(402).json({ error: `Insufficient credits. ${jclCost} credit(s) required.` });
@@ -4124,7 +4132,17 @@ Return ONLY the cover letter text in English — no explanation, no markdown, no
             coverLetter: coverLetterText,
             jobTitle: job.title,
             companyName: employer?.name || '',
-            creditsUsed: 1,
+            creditsUsed: jclCost,
+            adminTest,
+            // What the letter was actually written FROM. An admin checking "is this working" needs
+            // to see the inputs, because a bland letter is usually a thin résumé, not a bad prompt.
+            inputs: adminTest ? {
+                resume_chars: resumeText.length,
+                resume_source: resumeMeta.parsed_text ? 'parsed_text' : 'raw_text',
+                job_skills: skillsList,
+                job_responsibilities: job.responsibilities ? String(job.responsibilities).slice(0, 400) : null,
+                employer: employer?.name || null,
+            } : undefined,
         });
 
     } catch (error) {

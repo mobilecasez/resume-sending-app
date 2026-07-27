@@ -24,6 +24,17 @@ router.get('/admin/users/:id/matched-jobs', authenticateAdmin, ctrl.getMatchedJo
 router.get('/admin/users/:id/activity', authenticateAdmin, ctrl.getActivity);
 router.get('/admin/users/:id/cover-letters/:letterId', authenticateAdmin, ctrl.getCoverLetter);
 
+// Résumé, readable: the parsed profile plus a PDF rendered from it. The raw file stays available
+// at /files/resume, but it is no longer the only way in — see services/adminResumeView.js.
+router.get('/admin/users/:id/resume-profile', authenticateAdmin, ctrl.getResumeProfile);
+router.get('/admin/users/:id/resume-pdf', authenticateAdmin, ctrl.getResumePdf);
+
+// Searches with their outcomes, the jobs one search produced, and a no-charge cover-letter render
+// against a real job using that user's own résumé.
+router.get('/admin/users/:id/searches', authenticateAdmin, ctrl.getSearches);
+router.get('/admin/users/:id/searches/:employerId/jobs', authenticateAdmin, ctrl.getSearchJobs);
+router.post('/admin/users/:id/test-cover-letter', authenticateAdmin, ctrl.testCoverLetter);
+
 router.get('/admin/notify/templates', authenticateAdmin, ctrl.getTemplates);
 router.post('/admin/users/:id/notify', authenticateAdmin, ctrl.notifyUser);
 

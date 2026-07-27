@@ -4,11 +4,116 @@
 'use strict';
 
 const ops = require('../services/adminUserOps');
+const resumeView = require('../services/adminResumeView');
+const searchView = require('../services/adminSearchView');
 
 const idOf = (req) => {
   const n = parseInt(req.params.id, 10);
   return Number.isFinite(n) && n > 0 ? n : null;
 };
+
+// ── Résumé: the readable profile, and a PDF of it ────────────────────────────
+// GET /api/admin/users/:id/resume-profile
+async function getResumeProfile(req, res) {
+  const id = idOf(req);
+  if (!id) return res.status(400).json({ error: 'Invalid user id' });
+  try {
+    const data = await resumeView.getResumeProfile(id);
+    if (data.reason === 'user_not_found') return res.status(404).json({ error: 'User not found (or soft-deleted)' });
+    res.json({ success: true, ...data });
+  } catch (e) {
+    console.error('[adminUserOps] resume-profile:', e.message);
+    res.status(500).json({ error: 'Failed to load résumé profile' });
+  }
+}
+
+// GET /api/admin/users/:id/resume-pdf
+// Renders the SAME templates users get, from whichever source we hold. This is the answer to
+// "the résumé won't open": a PDF the admin can actually read, instead of a raw upload that
+// Android's WebView cannot display and that the hardened viewer is right to refuse to run.
+async function getResumePdf(req, res) {
+  const id = idOf(req);
+  if (!id) return res.status(400).json({ error: 'Invalid user id' });
+  try {
+    const profile = await resumeView.getResumeProfile(id);
+    if (!profile.available) {
+      return res.status(404).json({
+        error: 'Nothing to render',
+        reason: profile.reason,
+        detail: profile.detail || null,
+      });
+    }
+    const { renderPdf } = require('../utils/resumeRenderer');
+    const resumeData = resumeView.toTemplateResume(profile);
+    // 'ats' is the plainest, most legible template and needs no photo — the right default when the
+    // point is to READ what we hold on this candidate rather than to style it. ?template= overrides
+    // it, validated against the real list so a typo can't reach the renderer.
+    const { TEMPLATE_IDS } = require('../utils/resumeTemplates');
+    const want = String(req.query.template || '').trim();
+    const tpl = TEMPLATE_IDS.includes(want) ? want : 'ats';
+    const buf = await renderPdf(tpl, resumeData, { mode: 'a4' });
+    const safe = String((profile.identity && profile.identity.full_name) || `user_${id}`)
+      .replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '') || `user_${id}`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${safe}_resume.pdf"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(buf);
+  } catch (e) {
+    console.error('[adminUserOps] resume-pdf:', e.message);
+    res.status(500).json({ error: 'Failed to render the résumé PDF', detail: e.message });
+  }
+}
+
+// ── Searches: what was typed, what came back, and whether it worked ──────────
+// GET /api/admin/users/:id/searches
+async function getSearches(req, res) {
+  const id = idOf(req);
+  if (!id) return res.status(400).json({ error: 'Invalid user id' });
+  try {
+    res.json({ success: true, ...await searchView.listSearches(id, req.query.limit, req.query.offset) });
+  } catch (e) {
+    console.error('[adminUserOps] searches:', e.message);
+    res.status(500).json({ error: 'Failed to load searches' });
+  }
+}
+
+// GET /api/admin/users/:id/searches/:employerId/jobs
+async function getSearchJobs(req, res) {
+  const id = idOf(req);
+  if (!id) return res.status(400).json({ error: 'Invalid user id' });
+  try {
+    const data = await searchView.searchJobs(id, req.params.employerId, req.query.limit);
+    if (data.error === 'bad_request') return res.status(400).json({ error: 'Invalid request' });
+    // Scoping matters here: an admin browsing user A must not be able to page through employer
+    // records that only user B ever searched, by swapping the id in the URL.
+    if (data.error === 'not_this_users_search') return res.status(404).json({ error: 'This user did not search that employer' });
+    res.json({ success: true, ...data });
+  } catch (e) {
+    console.error('[adminUserOps] search jobs:', e.message);
+    res.status(500).json({ error: 'Failed to load the jobs for that search' });
+  }
+}
+
+// POST /api/admin/users/:id/test-cover-letter   { jobId }
+// Runs the REAL generator on the REAL user's résumé so the admin sees exactly what the user would.
+// Two things it must not do, both enforced here rather than in the generator: bill the user, and
+// leave a record behind. `adminTest` is set server-side; a client cannot ask for a free letter.
+async function testCoverLetter(req, res) {
+  const id = idOf(req);
+  if (!id) return res.status(400).json({ error: 'Invalid user id' });
+  const jobId = String((req.body && req.body.jobId) || '').trim();
+  if (!jobId) return res.status(400).json({ error: 'jobId is required' });
+  try {
+    const { generateJobCoverLetter } = require('./aiHubController');
+    // A synthetic request carrying the TARGET user's identity — the letter must be written from
+    // their résumé, not the admin's.
+    const fakeReq = { user: { id }, params: { jobId }, body: {}, adminTest: true };
+    await generateJobCoverLetter(fakeReq, res);
+  } catch (e) {
+    console.error('[adminUserOps] test cover letter:', e.message);
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to generate a test cover letter', detail: e.message });
+  }
+}
 
 // 1) GET /api/admin/users/:id/overview
 async function getOverview(req, res) {
@@ -215,4 +320,5 @@ async function notifySegmentUsers(req, res) {
 module.exports = {
   getOverview, getFile, getMatchedJobs, getActivity, getCoverLetter, getTemplates, notifyUser,
   getSegments, getSegmentUsers, notifySegmentUsers,
+  getResumeProfile, getResumePdf, getSearches, getSearchJobs, testCoverLetter,
 };
