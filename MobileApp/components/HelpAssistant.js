@@ -146,6 +146,45 @@ const COACH_STAGES = [
     msg: 'Your letter is ready — let Auto Fill do the application form for you. Here’s how.' },
 ];
 
+// Which stage to raise FIRST depends on where the user is standing: on the Jobs page the flow they
+// came for is find → cover letter → Auto Fill, so those outrank an unfinished profile there.
+const CONTEXT_ORDER = {
+  home:   ['profile', 'resume', 'finishing', 'find', 'cover', 'apply'],
+  jobs:   ['find', 'cover', 'apply', 'profile', 'resume', 'finishing'],
+  resume: ['resume', 'profile', 'finishing', 'find', 'cover', 'apply'],
+  cover:  ['cover', 'apply', 'find', 'profile', 'resume', 'finishing'],
+};
+
+// Copy for the ALWAYS_SHOW_GUIDE tour: the stage is already DONE, so the incomplete-stage wording
+// ("your profile is incomplete") would be a lie — these are neutral "here's how it works" lines.
+const TOUR_MSG = {
+  profile: 'Here’s how to set up your profile — it powers every application and letter.',
+  resume: 'Here’s how to upload your résumé, or let the AI build one for you.',
+  finishing: 'Here’s how to add your photo and signature to your applications.',
+  find: 'Let me show you how to search a job on Google and fetch it into the app.',
+  cover: 'Here’s how to generate a cover letter written from the real job posting.',
+  apply: 'Here’s how to apply with Auto Fill — it fills the whole form for you.',
+};
+
+// The current stage for this screen. Normal mode: the first UNMET stage not yet nudged this
+// session (dismissing one lets the next unmet stage speak on the next screen visit). With the
+// server's ALWAYS_SHOW_GUIDE flag on, the coach never goes silent: once everything is met it
+// still walks the stages in context order with the neutral tour wording (testing/demo).
+function pickStage(st, context, always) {
+  const order = CONTEXT_ORDER[context] || CONTEXT_ORDER.home;
+  const stages = order.map((k) => COACH_STAGES.find((c) => c.key === k)).filter(Boolean);
+  for (const c of stages) {
+    let unmet = false;
+    try { unmet = c.when(st); } catch {}
+    if (unmet && !shared.coachShown[c.key]) return c;
+  }
+  if (!always) return null;
+  for (const c of stages) {
+    if (!shared.coachShown[c.key]) return { ...c, msg: TOUR_MSG[c.key] || c.msg };
+  }
+  return null;
+}
+
 // ── State shared across every mounted instance (Home + each router layout) ──────────────────────
 // One dragged position, one "already nudged" ledger, and a stack that names the TOPMOST instance —
 // the only one allowed to speak, so a popup never fires twice from two layers at once.
@@ -158,6 +197,8 @@ const shared = {
   coachShown: {},            // stage key → nudged this app session
   coachAt: 0,                // last status fetch (ms) — throttles refetch across instances
   coachStatus: null,         // last computed status snapshot
+  guideAlways: null,         // server ALWAYS_SHOW_GUIDE flag (null = not fetched yet)
+  guideAt: 0,
 };
 const notify = () => { shared.listeners.forEach((fn) => { try { fn(); } catch {} }); };
 
@@ -167,6 +208,22 @@ const clampPos = (p) => ({
   x: Math.max(-(SW - HELP_FAB.right - HELP_FAB.size - 6), Math.min(HELP_FAB.right - 6, p.x)),
   y: Math.max(-(SH - HELP_FAB.bottom - HELP_FAB.size - 190), Math.min(HELP_FAB.bottom - 28, p.y)),
 });
+
+// Server-controlled "never go silent" switch (env ALWAYS_SHOW_GUIDE on Railway → /app-config).
+// Lets the guide be demoed on a fully-set-up account without a rebuild.
+async function loadGuideFlag() {
+  const now = Date.now();
+  if (shared.guideAlways != null && now - shared.guideAt < 60000) return shared.guideAlways;
+  shared.guideAt = now;
+  try {
+    const { API_BASE } = require('../config');
+    if (!API_BASE) { shared.guideAlways = false; return false; }
+    const r = await fetch(`${API_BASE}/app-config`);
+    const cfg = r.ok ? await r.json() : null;
+    shared.guideAlways = !!(cfg && cfg.alwaysShowGuide);
+  } catch { if (shared.guideAlways == null) shared.guideAlways = false; }
+  return shared.guideAlways;
+}
 
 async function loadCoachStatus(force = false) {
   const now = Date.now();
@@ -228,7 +285,9 @@ function StepList({ title, intro, steps, onZoom, onWatch }) {
 
 // `attention` — bump it (any changing number) to make the button announce itself. HomeScreen bumps it
 // when the first-run guide is dismissed, right after the guide has visibly flown into this button.
-export default function HelpAssistant({ attention = 0 }) {
+// `context` — which screen family hosts this instance ('home' | 'jobs' | 'resume' | 'cover'); it
+// decides which coach stage speaks first there (on Jobs: find → cover → apply before profile).
+export default function HelpAssistant({ attention = 0, context = 'home' }) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState('home');   // home | answer | tutorial
   const [answer, setAnswer] = useState(null);  // {title, intro, steps, video}
@@ -319,13 +378,20 @@ export default function HelpAssistant({ attention = 0 }) {
     if (!isTop || open) return undefined;
     let alive = true;
     const t = setTimeout(async () => {
-      const st = await loadCoachStatus();
-      if (!alive || !st) return;
-      const stage = COACH_STAGES.find((c) => { try { return c.when(st); } catch { return false; } });
-      if (stage && !shared.coachShown[stage.key]) setCoach(stage);
+      const [always, st] = await Promise.all([loadGuideFlag(), loadCoachStatus()]);
+      if (!alive) return;
+      // Unknown status (offline / signed out) → silent, UNLESS the demo flag is on — then tour a
+      // synthetic "everything done" state so the walkthrough still runs.
+      const base = st || (always ? {
+        setup: { profile: true, resume: true, photo: true, signature: true },
+        savedCount: 1, statusCount: 1, hasCoverLetter: true, hasApplied: true,
+      } : null);
+      if (!base) return;
+      const stage = pickStage(base, context, always);
+      if (stage) setCoach(stage);
     }, hint ? 5200 : 1800);   // let the "guide lives here" hint finish first
     return () => { alive = false; clearTimeout(t); };
-  }, [isTop, open, hint, attention]);
+  }, [isTop, open, hint, attention, context]);
 
   // Typing animation — the message writes itself out, which is what makes the popup feel alive.
   useEffect(() => {

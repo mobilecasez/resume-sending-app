@@ -38,7 +38,7 @@ export default function AIHubLayout() {
     </Stack>
     {/* The guide follows the user through the app. WebViews (apply browser, Google browser) are
         Modals, so they cover the button on their own — exactly the "hide while browsing" rule. */}
-    <HelpAssistant />
+    <HelpAssistant context="jobs" />
     </View>
   );
 }

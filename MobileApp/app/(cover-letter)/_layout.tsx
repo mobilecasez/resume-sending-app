@@ -11,7 +11,7 @@ export default function CoverLetterLayout() {
         <Stack.Screen name="templates" />
       </Stack>
       {/* The guide follows the user through the app. */}
-      <HelpAssistant />
+      <HelpAssistant context="cover" />
     </View>
   );
 }

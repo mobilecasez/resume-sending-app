@@ -12,7 +12,7 @@ export default function DiscoverLayout() {
         <Stack.Screen name="saved" options={{ headerShown: false }} />
       </Stack>
       {/* The guide follows the user; WebView modals cover it automatically. */}
-      <HelpAssistant />
+      <HelpAssistant context="jobs" />
     </View>
   );
 }

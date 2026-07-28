@@ -14,7 +14,7 @@ export default function ResumeBuilderLayout() {
         <Stack.Screen name="templates" />
       </Stack>
       {/* The guide follows the user through the app. */}
-      <HelpAssistant />
+      <HelpAssistant context="resume" />
     </View>
   );
 }
