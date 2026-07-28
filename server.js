@@ -3994,7 +3994,10 @@ app.use('/api', adminUsersRoutes);
 app.use('/api', employerFixRoutes);
 app.use('/api', adminStoreAnalyticsRoutes);
 app.use('/api', adminNotifyRoutes);
-app.use('/api', adminUserOpsRoutes);   // admin user 360° view + targeted / segment push sends
+app.use('/api', adminUserOpsRoutes);
+// In-app support: user issue reports + 1:1 chat with staff. User routes are scoped to the caller's
+// own threads inside the service; admin routes are authenticateAdmin. See supportRoutes.js.
+app.use('/api', require('./server/routes/supportRoutes'));
 app.use('/api', adminGlobalJobsRoutes);
 app.use('/api', discoverRoutes);
 app.use('/api', require('./server/routes/appConfigRoutes'));

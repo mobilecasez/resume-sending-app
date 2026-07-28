@@ -1021,6 +1021,56 @@ async function runPostgresMigrations(db) {
                      ON admin_notification_log(user_id, template_key) WHERE push_ok IS NULL`);
         console.log('✅ Migration 026: admin_notification_log done');
 
+        // ── Migration 027: in-app support (issue reports + 1:1 chat with staff) ──
+        // A user picks what is going wrong from a short list of cards, optionally adds detail, and
+        // that opens a thread. Admins get an instant push and answer in the same thread.
+        //
+        // Two columns exist purely to keep the hot queries cheap: last_message_at (so both inboxes
+        // sort without touching support_messages) and the two unread counters (so a badge is a
+        // column read, not a COUNT over every message ever sent). They are maintained on write.
+        //
+        // ON DELETE CASCADE on user_id is deliberate: when an account is really deleted, their
+        // support history goes with it. Keeping a stranger's complaint after they have gone is not
+        // a feature.
+        await col(`CREATE TABLE IF NOT EXISTS support_threads (
+            id               SERIAL PRIMARY KEY,
+            user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            issue_key        VARCHAR(60) NOT NULL,
+            subject          VARCHAR(200),
+            status           VARCHAR(20) NOT NULL DEFAULT 'open',
+            last_message_at  TIMESTAMPTZ DEFAULT NOW(),
+            last_sender      VARCHAR(10),
+            last_body        TEXT,
+            user_unread      INTEGER NOT NULL DEFAULT 0,
+            admin_unread     INTEGER NOT NULL DEFAULT 0,
+            user_muted       BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at       TIMESTAMPTZ DEFAULT NOW(),
+            updated_at       TIMESTAMPTZ DEFAULT NOW()
+        )`);
+        await col(`CREATE TABLE IF NOT EXISTS support_messages (
+            id             BIGSERIAL PRIMARY KEY,
+            thread_id      INTEGER NOT NULL REFERENCES support_threads(id) ON DELETE CASCADE,
+            sender         VARCHAR(10) NOT NULL,
+            sender_user_id INTEGER,
+            body           TEXT NOT NULL,
+            created_at     TIMESTAMPTZ DEFAULT NOW()
+        )`);
+        // The user's own list, and the admin inbox. Both sort on last_message_at so neither has to
+        // aggregate support_messages — the admin inbox query in particular must not be O(all
+        // messages) on every paint.
+        await col(`CREATE INDEX IF NOT EXISTS idx_support_threads_user
+                     ON support_threads(user_id, last_message_at DESC)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_support_threads_inbox
+                     ON support_threads(status, last_message_at DESC)`);
+        // Newest-first paging within one thread.
+        await col(`CREATE INDEX IF NOT EXISTS idx_support_messages_thread
+                     ON support_messages(thread_id, id DESC)`);
+        // One OPEN thread per user per issue, so tapping the same card twice continues the
+        // conversation instead of starting a second one an admin has to notice separately.
+        await col(`CREATE UNIQUE INDEX IF NOT EXISTS uq_support_open_thread
+                     ON support_threads(user_id, issue_key) WHERE status = 'open'`);
+        console.log('✅ Migration 027: support_threads + support_messages done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);
