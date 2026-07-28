@@ -2,9 +2,12 @@
 
 import { Stack } from 'expo-router';
 import React from 'react';
+import { View } from 'react-native';
+import HelpAssistant from '../../components/HelpAssistant';
 
 export default function AIHubLayout() {
   return (
+    <View style={{ flex: 1 }}>
     <Stack
       screenOptions={{
         contentStyle: { backgroundColor: '#0B1120' },
@@ -33,5 +36,9 @@ export default function AIHubLayout() {
         }}
       />
     </Stack>
+    {/* The guide follows the user through the app. WebViews (apply browser, Google browser) are
+        Modals, so they cover the button on their own — exactly the "hide while browsing" rule. */}
+    <HelpAssistant />
+    </View>
   );
 }

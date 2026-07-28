@@ -1,26 +1,37 @@
 // AI Hub — in-app help assistant. Safe to delete without affecting the existing app.
-// A draggable floating button (hold to move anywhere) that opens a guided assistant: ask a question
-// in plain words → scripted, step-by-step answers (no AI/LLM cost), each step carrying a screenshot
-// of the control it names. A "View tutorial" button replays the intro guide (SlideCarousel).
+// A draggable floating button (drag to move anywhere — the spot is remembered) that opens a guided
+// assistant: ask a question in plain words → scripted, step-by-step answers (no AI/LLM cost), each
+// step carrying a FULL screenshot of that moment with a cyan ring on the control it names.
+// A "Watch tutorial" link on every topic jumps to that topic's video in the guide carousel.
+//
+// It is also a proactive coach: it knows how far the user's setup has come (profile → résumé →
+// photo/signature → first job fetched → cover letter → applied) and speaks up from the button with
+// a small glass popup ("Hey — your profile is incomplete…", typed out character by character) until
+// the journey is complete. After that it stays silent and waits to be tapped.
+//
+// The button is mounted on Home AND in the router layouts, so it follows the user through the app;
+// module-level shared state below makes those instances feel like ONE button (same dragged position,
+// each nudge shown once per session, only the topmost instance speaks).
 // Pure StyleSheet + Ionicons + expo-linear-gradient.
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, Modal, TouchableOpacity, TextInput, ScrollView, Animated, PanResponder,
   Dimensions, Platform, Keyboard, Image, Easing,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SlideCarousel, HELP_FAB } from './WelcomeExplainer';
 
 const { width: SW, height: SH } = Dimensions.get('window');
-// Small enough to sit in a step card without pushing the text off the screen, big enough to
-// recognise the control at a glance. Anything that needs reading is one tap away (tap to enlarge).
-const SHOT_W = Math.min(SW - 140, 240);
-const SHOT_RATIO = 440 / 302;   // the size tools/build-guide-steps.js writes
+// Full phone-frame screenshots (tools/build-guide-steps.js writes 320x696) — shown whole, never
+// cropped. Small enough in the card to keep a five-step answer scannable; tap to read full size.
+const SHOT_RATIO = 320 / 696;
+const SHOT_W = Math.min(Math.round(SW * 0.42), 168);
 
 // ── Scripted knowledge base ─────────────────────────────────────────────────
-// A step can carry a SHOT — a real screenshot of that moment, cropped to the control it is about and
-// ringed. Built by tools/build-guide-steps.js from the same recordings as the onboarding GIFs, so the
+// A step can carry a SHOT — the full screen at that moment, ringed the way the tutorial rings it.
+// Built by tools/build-guide-steps.js from the same recordings as the onboarding GIFs, so the
 // guide SHOWS the app as it is now instead of describing a version of it.
 const STEP = (icon, text, shot) => ({ icon, text, shot });
 const SHOT = {
@@ -50,9 +61,10 @@ const SHOT = {
 };
 
 // Ordered the way a new user actually goes: set up -> resume -> find a job -> letter -> apply.
+// `video` = index of this topic's slide in the tutorial carousel (WelcomeExplainer.TUTORIAL_SLIDES).
 const KB = [
   {
-    id: 'profile', label: 'Set up my profile', icon: 'person-circle-outline',
+    id: 'profile', label: 'Set up my profile', icon: 'person-circle-outline', video: 0,
     match: /\bprofile|account|signature|detail|set ?up|start\b/i,
     title: 'Set up your profile first',
     intro: 'Everything else reuses this — your details, résumé and signature go onto every form and letter.',
@@ -65,7 +77,7 @@ const KB = [
     ],
   },
   {
-    id: 'resume', label: 'Build or upload a résumé', icon: 'document-text-outline',
+    id: 'resume', label: 'Build or upload a résumé', icon: 'document-text-outline', video: 1,
     match: /\bresume|résumé|\bcv\b|upload|builder\b/i,
     title: 'Get a résumé the AI writes for you',
     intro: 'Already uploaded one to your profile? The builder can merge it with your story instead of starting over.',
@@ -78,19 +90,19 @@ const KB = [
     ],
   },
   {
-    id: 'find', label: 'Find a job', icon: 'search-outline',
+    id: 'find', label: 'Find a job', icon: 'search-outline', video: 2,
     match: /\bfind|search|discover|explore|look(ing)? for|browse|google\b/i,
     title: 'Find a job on Google, inside the app',
     intro: 'This is the real Google — the same results you would get in your phone’s browser.',
     steps: [
-      STEP('globe-outline', 'Type what you want (“dotnet jobs in netherlands”) and tap “Search live on Google”.', SHOT.findSearch),
+      STEP('globe-outline', 'On the Jobs tab, type what you want (“dotnet jobs in netherlands”) and tap “Google Search”.', SHOT.findSearch),
       STEP('open-outline', 'Real Google results open in the app. Tap any result to read the job.', SHOT.findResults),
       STEP('sparkles-outline', 'Once you are on the job’s own page, tap the robot → “Fetch job”. CVApplyr reads the posting and saves it.', SHOT.findFetch),
       STEP('bookmark-outline', 'It lands in Saved Jobs with the full details filled in.', SHOT.findSaved),
     ],
   },
   {
-    id: 'cover', label: 'Generate a cover letter', icon: 'mail-outline',
+    id: 'cover', label: 'Generate a cover letter', icon: 'mail-outline', video: 2,
     match: /\bcover ?letter|letter|motivation\b/i,
     title: 'A cover letter written from the real posting',
     steps: [
@@ -101,7 +113,7 @@ const KB = [
     ],
   },
   {
-    id: 'apply', label: 'Apply with Auto Fill', icon: 'flash-outline',
+    id: 'apply', label: 'Apply with Auto Fill', icon: 'flash-outline', video: 3,
     match: /\bapply|application|applying|auto ?fill|form\b/i,
     title: 'Let Auto Fill do the form',
     intro: 'Works on the company’s own application form — Greenhouse, Workday, Personio and the rest.',
@@ -117,13 +129,81 @@ const KB = [
 
 const GREETING = "Hi! I'm your CVApplyr assistant. Ask me anything — like how to apply, how to find a job, or how to make a cover letter.";
 
-// One card per step: the instruction on top, a small screenshot of that exact control below it.
-// Full-width shots crowded the text and made a five-step answer a long scroll, so the shot is inset
-// under the text at about a third of the card's height — tap it to read it full size.
-function StepList({ title, intro, steps, onZoom }) {
+// ── Proactive coach: what to say at each point of the journey ───────────────────────────────────
+// Ordered checks; the FIRST unmet one is the current stage. `topic` = the KB page "Show me how" opens.
+const COACH_STAGES = [
+  { key: 'profile', topic: 'profile', when: (s) => !s.setup.profile,
+    msg: 'Hey! Your profile is incomplete. Please update it to continue — tap below and I’ll show you how.' },
+  { key: 'resume', topic: 'resume', when: (s) => !s.setup.resume,
+    msg: 'Nice, profile done! Now add your résumé — upload one or let the AI build it. It powers everything here.' },
+  { key: 'finishing', topic: 'profile', when: (s) => !s.setup.photo || !s.setup.signature,
+    msg: 'Almost set! Add your photo and signature — they go on your applications and cover letters.' },
+  { key: 'find', topic: 'find', when: (s) => s.savedCount === 0 && s.statusCount === 0,
+    msg: 'You’re all set up! Let me show you how to search a job on Google and fetch it into the app.' },
+  { key: 'cover', topic: 'cover', when: (s) => !s.hasCoverLetter,
+    msg: 'You’ve saved a job — now let the AI write its cover letter from the real posting. Here’s how.' },
+  { key: 'apply', topic: 'apply', when: (s) => !s.hasApplied,
+    msg: 'Your letter is ready — let Auto Fill do the application form for you. Here’s how.' },
+];
+
+// ── State shared across every mounted instance (Home + each router layout) ──────────────────────
+// One dragged position, one "already nudged" ledger, and a stack that names the TOPMOST instance —
+// the only one allowed to speak, so a popup never fires twice from two layers at once.
+const POS_KEY = 'help_fab_pos_v1';
+const shared = {
+  pos: { x: 0, y: 0 },
+  posLoaded: false,
+  stack: [],                 // instance ids, last = topmost/visible
+  listeners: new Set(),      // notified on pos/stack changes
+  coachShown: {},            // stage key → nudged this app session
+  coachAt: 0,                // last status fetch (ms) — throttles refetch across instances
+  coachStatus: null,         // last computed status snapshot
+};
+const notify = () => { shared.listeners.forEach((fn) => { try { fn(); } catch {} }); };
+
+// Keep the button on-screen wherever it is dropped. The top margin leaves room for the coach popup
+// that grows ~170px ABOVE the button — without it a top-dragged button speaks off-screen.
+const clampPos = (p) => ({
+  x: Math.max(-(SW - HELP_FAB.right - HELP_FAB.size - 6), Math.min(HELP_FAB.right - 6, p.x)),
+  y: Math.max(-(SH - HELP_FAB.bottom - HELP_FAB.size - 190), Math.min(HELP_FAB.bottom - 28, p.y)),
+});
+
+async function loadCoachStatus(force = false) {
+  const now = Date.now();
+  if (!force && shared.coachStatus && now - shared.coachAt < 45000) return shared.coachStatus;
+  shared.coachAt = now;
+  try {
+    const svc = require('../services/aiHubService');
+    const [setup, saved, statuses] = await Promise.all([
+      svc.fetchSetupStatus(),
+      svc.fetchSavedJobs().catch(() => ({ count: 0 })),
+      svc.loadAllJobStatuses(),
+    ]);
+    if (!setup) return null;   // signed out / offline → unknown, stay silent
+    const vals = Object.values(statuses || {});
+    shared.coachStatus = {
+      setup,
+      savedCount: saved?.count || 0,
+      statusCount: vals.length,
+      hasCoverLetter: vals.some((v) => v === 'generated' || v === 'downloaded' || v === 'applied'),
+      hasApplied: vals.some((v) => v === 'applied'),
+    };
+    return shared.coachStatus;
+  } catch { return null; }
+}
+
+// One card per step: the instruction on top, the full ringed screen under it — tap to enlarge.
+function StepList({ title, intro, steps, onZoom, onWatch }) {
   return (
     <View>
       {!!title && <Text style={s.answerTitle}>{title}</Text>}
+      {!!onWatch && (
+        <TouchableOpacity style={s.watchBtn} activeOpacity={0.85} onPress={onWatch}>
+          <Ionicons name="play-circle" size={17} color="#fff" />
+          <Text style={s.watchText}>Watch video tutorial</Text>
+          <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.8)" />
+        </TouchableOpacity>
+      )}
       {!!intro && <Text style={s.answerIntro}>{intro}</Text>}
       {steps.map((st, i) => (
         <View key={i} style={s.stepCard}>
@@ -132,11 +212,11 @@ function StepList({ title, intro, steps, onZoom }) {
             <View style={s.stepIcon}><Ionicons name={st.icon} size={13} color="#3B82F6" /></View>
             <Text style={s.stepText}>{st.text}</Text>
           </View>
-          {/* Cropped to just the control this step is about, ringed the way the tutorial rings it —
-              so "tap the robot" is something you can recognise, not only read. */}
+          {/* The whole screen at that moment, ringed the way the tutorial rings it — full image,
+              never cropped (cropped bands read as broken screenshots). */}
           {!!st.shot && (
             <TouchableOpacity activeOpacity={0.85} style={s.shotWrap} onPress={() => onZoom && onZoom(st, i + 1)}>
-              <Image source={st.shot} style={s.stepShot} resizeMode="cover" />
+              <Image source={st.shot} style={s.stepShot} resizeMode="contain" />
               <View style={s.shotZoom}><Ionicons name="expand-outline" size={11} color="#fff" /></View>
             </TouchableOpacity>
           )}
@@ -151,14 +231,39 @@ function StepList({ title, intro, steps, onZoom }) {
 export default function HelpAssistant({ attention = 0 }) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState('home');   // home | answer | tutorial
-  const [answer, setAnswer] = useState(null);  // {title, steps}
+  const [answer, setAnswer] = useState(null);  // {title, intro, steps, video}
+  const [tutorialAt, setTutorialAt] = useState(0);   // which slide the tutorial opens on
   const [input, setInput] = useState('');
   const [notFound, setNotFound] = useState(false);
   const [zoom, setZoom] = useState(null);      // {shot, text, n} — a step screenshot at full size
 
-  // Draggable floating button
-  const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  // ── Draggable floating button — position shared + remembered ───────────────────────────────────
+  const pan = useRef(new Animated.ValueXY(shared.pos)).current;
   const moved = useRef(false);
+  const id = useRef('fab_' + Math.random().toString(36).slice(2)).current;
+  const [, force] = useState(0);
+  const isTop = shared.stack.length === 0 || shared.stack[shared.stack.length - 1] === id;
+
+  useEffect(() => {
+    shared.stack.push(id);
+    const onChange = () => { pan.setValue(shared.pos); force((n) => n + 1); };
+    shared.listeners.add(onChange);
+    if (!shared.posLoaded) {
+      shared.posLoaded = true;
+      AsyncStorage.getItem(POS_KEY).then((r) => {
+        if (!r) return;
+        try { const p = clampPos(JSON.parse(r)); shared.pos = p; notify(); } catch {}
+      }).catch(() => {});
+    }
+    notify();
+    return () => {
+      const i = shared.stack.indexOf(id);
+      if (i >= 0) shared.stack.splice(i, 1);
+      shared.listeners.delete(onChange);
+      notify();
+    };
+  }, []);
+
   const responder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -174,7 +279,12 @@ export default function HelpAssistant({ attention = 0 }) {
       },
       onPanResponderRelease: () => {
         pan.flattenOffset();
-        if (!moved.current) setOpen(true);   // tap (not drag) → open
+        if (!moved.current) { setOpen(true); return; }   // tap (not drag) → open
+        // Snap inside the screen, remember the spot, and tell the other instances.
+        const p = clampPos({ x: pan.x.__getValue(), y: pan.y.__getValue() });
+        shared.pos = p;
+        Animated.spring(pan, { toValue: p, friction: 7, useNativeDriver: false }).start(() => notify());
+        AsyncStorage.setItem(POS_KEY, JSON.stringify(p)).catch(() => {});
       },
     })
   ).current;
@@ -200,12 +310,59 @@ export default function HelpAssistant({ attention = 0 }) {
   // Opening the assistant is the lesson learnt — stop nagging.
   useEffect(() => { if (open) setHint(false); }, [open]);
 
+  // ── Proactive coach ────────────────────────────────────────────────────────────────────────────
+  // Only the topmost instance speaks; each stage nudges once per app session and comes back on the
+  // next launch until that stage is done. Completing a stage mid-session lets the NEXT nudge fire.
+  const [coach, setCoach] = useState(null);      // the stage being shown, or null
+  const [typed, setTyped] = useState('');
+  useEffect(() => {
+    if (!isTop || open) return undefined;
+    let alive = true;
+    const t = setTimeout(async () => {
+      const st = await loadCoachStatus();
+      if (!alive || !st) return;
+      const stage = COACH_STAGES.find((c) => { try { return c.when(st); } catch { return false; } });
+      if (stage && !shared.coachShown[stage.key]) setCoach(stage);
+    }, hint ? 5200 : 1800);   // let the "guide lives here" hint finish first
+    return () => { alive = false; clearTimeout(t); };
+  }, [isTop, open, hint, attention]);
+
+  // Typing animation — the message writes itself out, which is what makes the popup feel alive.
+  useEffect(() => {
+    if (!coach) { setTyped(''); return undefined; }
+    setTyped('');
+    let i = 0;
+    const msg = coach.msg;
+    const t = setInterval(() => {
+      i += 2;
+      setTyped(msg.slice(0, i));
+      if (i >= msg.length) clearInterval(t);
+    }, 26);
+    return () => clearInterval(t);
+  }, [coach]);
+
+  const dismissCoach = useCallback(() => {
+    if (coach) shared.coachShown[coach.key] = true;
+    setCoach(null);
+  }, [coach]);
+  const coachShowHow = useCallback(() => {
+    if (!coach) return;
+    const topic = KB.find((t) => t.id === coach.topic);
+    shared.coachShown[coach.key] = true;
+    setCoach(null);
+    if (topic) {
+      setAnswer({ title: topic.title, intro: topic.intro, steps: topic.steps, video: topic.video });
+      setView('answer');
+      setOpen(true);
+    }
+  }, [coach]);
+
   // Always clear the zoom on the way out, or reopening the assistant lands straight back on the
   // enlarged screenshot the user closed the sheet from.
   const closeSheet = () => { setZoom(null); setOpen(false); };
   const goHome = () => { setView('home'); setAnswer(null); setNotFound(false); setInput(''); setZoom(null); };
   const showTopic = (t) => {
-    setAnswer({ title: t.title, intro: t.intro, steps: t.steps }); setView('answer'); setNotFound(false);
+    setAnswer({ title: t.title, intro: t.intro, steps: t.steps, video: t.video }); setView('answer'); setNotFound(false);
   };
   const ask = (text) => {
     const q = (text != null ? text : input).trim();
@@ -217,6 +374,11 @@ export default function HelpAssistant({ attention = 0 }) {
   };
 
   const suggestions = useMemo(() => KB.map((t) => ({ id: t.id, label: t.label, icon: t.icon, t })), []);
+
+  // The popup hangs off the button, so it follows wherever the button was dragged. When the button
+  // sits in the LEFT half of the screen the popup grows to the right of it instead.
+  const fabCx = SW - HELP_FAB.right - HELP_FAB.size / 2 + shared.pos.x;
+  const coachOnLeft = fabCx < SW / 2;
 
   return (
     <>
@@ -245,10 +407,38 @@ export default function HelpAssistant({ attention = 0 }) {
 
       {/* Deliberately NOT inside the draggable wrapper: that wrapper answers every touch in its
           bounds, so a bubble parented to it would become a large invisible "open help" target. */}
-      {!open && hint && (
-        <View style={s.hint} pointerEvents="none">
+      {!open && hint && !coach && (
+        <Animated.View style={[s.hint, { transform: pan.getTranslateTransform() }]} pointerEvents="none">
           <Text style={s.hintText}>Your guide lives here — open it any time</Text>
-        </View>
+        </Animated.View>
+      )}
+
+      {/* ── Coach popup — glass card that types its message, anchored to the button ── */}
+      {!open && !!coach && (
+        <Animated.View
+          style={[s.coach, coachOnLeft ? s.coachLeft : s.coachRight, { transform: pan.getTranslateTransform() }]}
+        >
+          <View style={s.coachGlass}>
+            <View style={s.coachHead}>
+              <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.coachIcon}>
+                <Ionicons name="sparkles" size={12} color="#fff" />
+              </LinearGradient>
+              <Text style={s.coachTitle}>Your guide</Text>
+              <TouchableOpacity onPress={dismissCoach} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Ionicons name="close" size={16} color="rgba(255,255,255,0.65)" />
+              </TouchableOpacity>
+            </View>
+            <Text style={s.coachMsg}>
+              {typed}
+              {typed.length < (coach?.msg?.length || 0) ? <Text style={s.coachCaret}>▍</Text> : null}
+            </Text>
+            <TouchableOpacity style={s.coachCta} activeOpacity={0.85} onPress={coachShowHow}>
+              <Ionicons name="play-circle-outline" size={15} color="#67E8F9" />
+              <Text style={s.coachCtaText}>Tap here to see how</Text>
+              <Ionicons name="arrow-forward" size={13} color="#67E8F9" />
+            </TouchableOpacity>
+          </View>
+        </Animated.View>
       )}
 
       <Modal
@@ -294,7 +484,7 @@ export default function HelpAssistant({ attention = 0 }) {
                       <Ionicons name="chevron-forward" size={16} color="#B6C2D9" />
                     </TouchableOpacity>
                   ))}
-                  <TouchableOpacity style={s.tutorialBtn} activeOpacity={0.9} onPress={() => setView('tutorial')}>
+                  <TouchableOpacity style={s.tutorialBtn} activeOpacity={0.9} onPress={() => { setTutorialAt(0); setView('tutorial'); }}>
                     <Ionicons name="play-circle-outline" size={18} color="#3B82F6" />
                     <Text style={s.tutorialText}>View tutorial</Text>
                   </TouchableOpacity>
@@ -305,6 +495,7 @@ export default function HelpAssistant({ attention = 0 }) {
                 <StepList
                   title={answer.title} intro={answer.intro} steps={answer.steps}
                   onZoom={(st, n) => setZoom({ shot: st.shot, text: st.text, n })}
+                  onWatch={typeof answer.video === 'number' ? () => { setTutorialAt(answer.video); setView('tutorial'); } : null}
                 />
               )}
 
@@ -312,7 +503,7 @@ export default function HelpAssistant({ attention = 0 }) {
                 <View style={s.tutorialStage}>
                   {/* Full sheet width and as tall as the sheet allows — at 340 the phone recording
                       was scaled down to about a third of its size and the UI in it was unreadable. */}
-                  <SlideCarousel pageW={Math.min(SW, 520) - 24} imgH={Math.min(SH * 0.56, 560)} />
+                  <SlideCarousel pageW={Math.min(SW, 520) - 24} imgH={Math.min(SH * 0.56, 560)} initialIndex={tutorialAt} />
                 </View>
               )}
               <View style={{ height: 10 }} />
@@ -371,6 +562,26 @@ const s = StyleSheet.create({
   },
   hintText: { color: '#fff', fontSize: 12.5, fontWeight: '700', lineHeight: 17 },
 
+  // ── Coach popup — dark glass so it reads on both the navy and the light screens ──
+  coach: { position: 'absolute', bottom: HELP_FAB.bottom + HELP_FAB.size + 12, width: Math.min(SW * 0.74, 300), zIndex: 999 },
+  coachRight: { right: HELP_FAB.right },
+  coachLeft: { right: undefined, left: HELP_FAB.right },
+  coachGlass: {
+    backgroundColor: 'rgba(13,20,40,0.88)', borderRadius: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.16)',
+    paddingHorizontal: 14, paddingTop: 11, paddingBottom: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.35, shadowRadius: 22, elevation: 12,
+  },
+  coachHead: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 7 },
+  coachIcon: { width: 22, height: 22, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  coachTitle: { flex: 1, fontSize: 11, fontWeight: '800', color: 'rgba(255,255,255,0.72)', letterSpacing: 0.7, textTransform: 'uppercase' },
+  coachMsg: { fontSize: 13.5, color: '#FFFFFF', lineHeight: 20, fontWeight: '600' },
+  coachCaret: { color: '#67E8F9', fontWeight: '400' },
+  coachCta: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 11, height: 38,
+    borderRadius: 12, backgroundColor: 'rgba(103,232,249,0.12)', borderWidth: 1, borderColor: 'rgba(103,232,249,0.35)',
+  },
+  coachCtaText: { fontSize: 12.5, fontWeight: '800', color: '#67E8F9' },
+
   overlay: { flex: 1, backgroundColor: 'rgba(6,10,25,0.5)', justifyContent: 'flex-end' },
   sheet: { backgroundColor: '#F4F7FC', borderTopLeftRadius: 26, borderTopRightRadius: 26, maxHeight: SH * 0.92, paddingBottom: Platform.OS === 'ios' ? 28 : 14 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 18, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(11,15,34,0.06)' },
@@ -394,10 +605,15 @@ const s = StyleSheet.create({
 
   answerIntro: { fontSize: 12.5, color: '#5B6B8A', lineHeight: 18, marginBottom: 14, marginLeft: 2 },
   answerTitle: { fontSize: 16.5, fontWeight: '800', color: '#0B0F22', marginBottom: 8, marginLeft: 2, letterSpacing: -0.2 },
+  watchBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 42,
+    borderRadius: 13, backgroundColor: '#2563EB', marginBottom: 12,
+  },
+  watchText: { fontSize: 13.5, fontWeight: '800', color: '#fff' },
   tutorialStage: { marginHorizontal: -16, paddingTop: 4, alignItems: 'center' },
 
   // One card per step. The shot is inset under the text (not full-bleed) so the instruction stays the
-  // thing you read first and a five-step answer still fits on a screen or two.
+  // thing you read first; it is the FULL screen so nothing looks sliced off.
   stepCard: { backgroundColor: '#fff', borderRadius: 16, borderWidth: 1, borderColor: 'rgba(11,15,34,0.06)', padding: 13, marginBottom: 10 },
   stepRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9 },
   stepNum: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#0B1120', alignItems: 'center', justifyContent: 'center' },
@@ -415,7 +631,8 @@ const s = StyleSheet.create({
   zoomCard: { width: '100%', maxWidth: 520, backgroundColor: '#fff', borderRadius: 20, padding: 14 },
   zoomHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, marginBottom: 12 },
   zoomText: { flex: 1, fontSize: 13.5, color: '#334155', lineHeight: 20, fontWeight: '600' },
-  zoomImg: { width: '100%', aspectRatio: SHOT_RATIO, borderRadius: 12, backgroundColor: '#F1F5F9' },
+  // Portrait full-screen shot — height-capped so card + caption + button always fit on screen.
+  zoomImg: { alignSelf: 'center', height: Math.min(SH * 0.56, 620), aspectRatio: SHOT_RATIO, maxWidth: '100%', borderRadius: 12, backgroundColor: '#F1F5F9' },
   zoomClose: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, height: 44, marginTop: 12, borderRadius: 13, backgroundColor: '#0B1120' },
   zoomCloseText: { color: '#fff', fontSize: 14, fontWeight: '800' },
 

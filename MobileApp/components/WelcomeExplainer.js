@@ -47,14 +47,20 @@ export const TUTORIAL_SLIDES = [
 ];
 
 // Reusable swipeable carousel of the guide slides — used by the intro popup AND the help assistant's
-// "View tutorial". `pageW` = page width; `imgH` = image height.
-export function SlideCarousel({ slides = TUTORIAL_SLIDES, pageW, imgH = 360 }) {
+// "View tutorial". `pageW` = page width; `imgH` = image height. `initialIndex` opens the carousel
+// on a specific slide (the "Watch tutorial" link on a help topic jumps to that topic's video).
+export function SlideCarousel({ slides = TUTORIAL_SLIDES, pageW, imgH = 360, initialIndex = 0 }) {
   const w = pageW || Math.min(SW * 0.82, 380);
-  const [page, setPage] = useState(0);
+  const [page, setPage] = useState(initialIndex);
+  const ref = useRef(null);
+  // contentOffset as a prop only works on iOS; scrolling on mount covers Android too.
+  useEffect(() => {
+    if (initialIndex > 0) setTimeout(() => ref.current?.scrollTo({ x: initialIndex * w, animated: false }), 0);
+  }, []);
   const onScroll = (e) => { const i = Math.round(e.nativeEvent.contentOffset.x / w); if (i !== page) setPage(i); };
   return (
     <View>
-      <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false} onMomentumScrollEnd={onScroll} scrollEventThrottle={16} style={{ flexGrow: 0 }}>
+      <ScrollView ref={ref} horizontal pagingEnabled showsHorizontalScrollIndicator={false} onMomentumScrollEnd={onScroll} scrollEventThrottle={16} style={{ flexGrow: 0 }}>
         {slides.map((s, i) => (
           <View key={i} style={{ width: w, height: imgH, alignItems: 'center', justifyContent: 'flex-start' }}>
             {s.caption ? (

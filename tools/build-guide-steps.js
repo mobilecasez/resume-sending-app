@@ -4,15 +4,10 @@
 // "Ask AI" and a Generate-Cover-Letter button that no longer work that way). These are real frames
 // from the same recordings the onboarding GIFs come from, so the guide can SHOW each step.
 //
-// A whole phone screen is 496x1080 — far too tall to sit inside a help card, and unreadable when
-// scaled to fit. So each shot is a WIDE BAND cropped around the control the step is about, with the
-// same cyan ring the GIFs use. That is the part of the screen the user needs to find.
-//
-// ⚠️ A hard cut through a band lands mid-row and slices a menu item or a heading in half, which reads
-// as broken text rather than as "there is more below". Two things fix that:
-//   - the top and bottom ~12% FADE TO WHITE, so a clipped row dissolves into the card instead of
-//     being chopped off;
-//   - TOP_MIN keeps every band below the status bar / notch, which is pure noise in a help card.
+// Each shot is the FULL phone frame (496x1080) with the same cyan ring the GIFs use marking the
+// control the step is about. The shots used to be 340px bands cropped around the control — user
+// feedback was that the cropped slices looked broken ("the images you are showing are cropped..
+// better to show full images"), so the whole screen ships and the ring does the pointing.
 //
 // Usage: node tools/build-guide-steps.js [--verify]
 'use strict';
@@ -26,11 +21,10 @@ const OUT_DIR = path.join(__dirname, '..', 'MobileApp', 'assets', 'onboarding', 
 const TMP = path.join(require('os').tmpdir(), 'cvf-guide-steps');
 
 const CROP = { x: 712, y: 0, w: 496, h: 1080 };   // the phone inside the 1920x1080 canvas
-const BAND_H = 340;                                // the slice of phone height each shot shows
-const TOP_MIN = 96;                                // never start above this — that is the status bar
-const OUT_W = 440;                                 // rendered ~2x the on-screen width in the card
-const FADE_TOP = 0.11;                             // fraction of the band that dissolves into white
-const FADE_BOTTOM = 0.13;
+// Full-frame output. 320 wide keeps 23 PNGs at a sane bundle cost while staying ~2x the width the
+// card renders them at; the tap-to-zoom view is where fine text gets read.
+const OUT_W = 320;
+const OUT_H = Math.round((CROP.h / CROP.w) * OUT_W / 2) * 2;
 
 const V = {
   profile: 'Profile Update.mov',
@@ -88,27 +82,6 @@ const ringSvg = (w, h, cx, cy) => {
 const roundMask = (w, h, r) => Buffer.from(
   `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><rect width="${w}" height="${h}" rx="${r}" ry="${r}" fill="#fff"/></svg>`);
 
-// White gradients over the cut edges: a half-visible row fades out instead of being sliced through.
-const edgeFade = (w, h) => {
-  const ft = Math.round(h * FADE_TOP);
-  const fb = Math.round(h * FADE_BOTTOM);
-  return Buffer.from(
-    `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
-       <defs>
-         <linearGradient id="t" x1="0" y1="0" x2="0" y2="1">
-           <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
-           <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-         </linearGradient>
-         <linearGradient id="b" x1="0" y1="0" x2="0" y2="1">
-           <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
-           <stop offset="1" stop-color="#ffffff" stop-opacity="1"/>
-         </linearGradient>
-       </defs>
-       <rect x="0" y="0" width="${w}" height="${ft}" fill="url(#t)"/>
-       <rect x="0" y="${h - fb}" width="${w}" height="${fb}" fill="url(#b)"/>
-     </svg>`);
-};
-
 (async () => {
   fs.rmSync(TMP, { recursive: true, force: true });
   fs.mkdirSync(TMP, { recursive: true });
@@ -125,48 +98,31 @@ const edgeFade = (w, h) => {
     sh('ffmpeg', ['-v', 'error', '-i', src, '-ss', String(s.t),
       '-vf', `crop=${CROP.w}:${CROP.h}:${CROP.x}:${CROP.y}`, '-frames:v', '1', full, '-y']);
 
-    // the band, clamped so it never runs off the bottom and never shows the status bar
-    let top = Math.round(s.y * CROP.h - BAND_H / 2);
-    top = Math.max(TOP_MIN, Math.min(CROP.h - BAND_H, top));
-    // ⚠️ The ring must never land in an edge fade — a half-dissolved target is worse than showing a
-    // strip of status bar, so this clamp OVERRIDES TOP_MIN when the control sits near the top.
-    if (s.ring) {
-      const ry = s.ring[1] * CROP.h;
-      top = Math.min(top, Math.round(ry - (FADE_TOP * BAND_H + 26)));
-      top = Math.max(top, Math.round(ry + FADE_BOTTOM * BAND_H + 26 - BAND_H));
-    }
-    top = Math.max(0, Math.min(CROP.h - BAND_H, top));
-    let img = sharp(full).extract({ left: 0, top, width: CROP.w, height: BAND_H });
-
-    const outH = Math.round((BAND_H / CROP.w) * OUT_W / 2) * 2;
-    let buf = await img.resize(OUT_W, outH, { fit: 'fill', kernel: 'lanczos3' }).png().toBuffer();
-    buf = await sharp(buf).composite([{ input: edgeFade(OUT_W, outH) }]).png().toBuffer();
+    // full frame — no band cropping; the ring points at the control instead
+    let buf = await sharp(full).resize(OUT_W, OUT_H, { fit: 'fill', kernel: 'lanczos3' }).png().toBuffer();
 
     if (s.ring) {
       const cx = Math.round(s.ring[0] * OUT_W);
-      const cy = Math.round(((s.ring[1] * CROP.h) - top) / BAND_H * outH);
-      // only draw when the control is actually inside the band we cropped
-      if (cy > -10 && cy < outH + 10) buf = await sharp(buf).composite([{ input: ringSvg(OUT_W, outH, cx, cy) }]).png().toBuffer();
-      else console.warn(`  ! ${s.id}: ring is outside the band (cy=${cy}) — not drawn`);
+      const cy = Math.round(s.ring[1] * OUT_H);
+      buf = await sharp(buf).composite([{ input: ringSvg(OUT_W, OUT_H, cx, cy) }]).png().toBuffer();
     }
 
-    const rounded = await sharp(buf).composite([{ input: roundMask(OUT_W, outH, 14), blend: 'dest-in' }]).png().toBuffer();
+    const rounded = await sharp(buf).composite([{ input: roundMask(OUT_W, OUT_H, 18), blend: 'dest-in' }]).png().toBuffer();
     const out = path.join(OUT_DIR, s.id + '.png');
-    await sharp({ create: { width: OUT_W, height: outH, channels: 4, background: '#ffffff' } })
+    await sharp({ create: { width: OUT_W, height: OUT_H, channels: 4, background: '#ffffff' } })
       .composite([{ input: rounded }]).png({ quality: 88, compressionLevel: 9 }).toFile(out);
 
     const kb = Math.round(fs.statSync(out).size / 1024);
     total += kb;
     sheet.push({ input: out });
-    console.log(`${s.id.padEnd(18)} ${OUT_W}x${outH}  ${kb} KB${s.ring ? '  (ring)' : ''}`);
+    console.log(`${s.id.padEnd(18)} ${OUT_W}x${OUT_H}  ${kb} KB${s.ring ? '  (ring)' : ''}`);
   }
   console.log(`\n${SHOTS.length} step shots, ${total} KB total → ${OUT_DIR}`);
 
   if (process.argv.includes('--verify')) {
-    const cols = 4, rowsN = Math.ceil(sheet.length / cols);
-    const h = Math.round((BAND_H / CROP.w) * OUT_W / 2) * 2;
-    await sharp({ create: { width: OUT_W * cols, height: h * rowsN, channels: 3, background: '#0B1120' } })
-      .composite(sheet.map((t, i) => ({ input: t.input, left: (i % cols) * OUT_W, top: Math.floor(i / cols) * h })))
+    const cols = 6, rowsN = Math.ceil(sheet.length / cols);
+    await sharp({ create: { width: OUT_W * cols, height: OUT_H * rowsN, channels: 3, background: '#0B1120' } })
+      .composite(sheet.map((t, i) => ({ input: t.input, left: (i % cols) * OUT_W, top: Math.floor(i / cols) * OUT_H })))
       .png().toFile(path.join(TMP, 'verify-steps.png'));
     console.log('verification sheet →', path.join(TMP, 'verify-steps.png'));
   }

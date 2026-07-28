@@ -50,6 +50,22 @@ const CLIPS = [
     slow: [{ from: 14.3, to: 17.8, ms: 280, note: 'the cover letter' }],
   },
   {
+    // The Google-search flow ALONE, at NORMAL speed — the first-visit popup on the Jobs page plays
+    // this, where the user needs time to actually read it (the combined fetch-job guide runs 1.45x).
+    slug: 'guide-google-search',
+    file: 'Fetch Job and Generate Cover Letter.mov',
+    start: 1.6, end: 14.0, speed: 1.0,
+    taps: [
+      { t: 3.05,  x: 0.347, y: 0.489, note: 'Google Search' },
+      { t: 11.75, x: 0.265, y: 0.735, note: 'Fetch job (dock)' },
+    ],
+    holds: [
+      { t: 4.80, ms: 1800, note: 'real Google results' },
+      { t: 13.10, ms: 2400, note: 'Saved ✓' },
+    ],
+    slow: [{ from: 3.3, to: 5.4, ms: 260, note: 'results load' }],
+  },
+  {
     // The robot on a real application form → Auto Fill → submitted.
     slug: 'guide-auto-fill',
     file: 'Apply Job with Auto Fill.mov',

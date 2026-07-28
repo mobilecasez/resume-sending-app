@@ -12,8 +12,9 @@
 // screen gets a normal back arrow that returns to the list.
 import { Stack, useRouter } from 'expo-router';
 import React, { useCallback } from 'react';
-import { TouchableOpacity, Platform } from 'react-native';
+import { TouchableOpacity, Platform, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import HelpAssistant from '../../components/HelpAssistant';
 
 function HeaderClose({ mode }: { mode: 'close' | 'back' }) {
   const router = useRouter();
@@ -42,23 +43,27 @@ function HeaderClose({ mode }: { mode: 'close' | 'back' }) {
 
 export default function SupportLayout() {
   return (
-    <Stack
-      screenOptions={{
-        headerStyle: { backgroundColor: '#0B1120' },
-        headerTintColor: '#FFFFFF',
-        headerTitleStyle: { fontWeight: '800' },
-        contentStyle: { backgroundColor: '#F0F4FA' },
-        headerBackVisible: false,   // we supply our own on both screens
-      }}
-    >
-      <Stack.Screen
-        name="index"
-        options={{ title: 'Help & support', headerLeft: () => <HeaderClose mode="close" /> }}
-      />
-      <Stack.Screen
-        name="thread"
-        options={{ title: 'Support', headerLeft: () => <HeaderClose mode="back" /> }}
-      />
-    </Stack>
+    <View style={{ flex: 1 }}>
+      <Stack
+        screenOptions={{
+          headerStyle: { backgroundColor: '#0B1120' },
+          headerTintColor: '#FFFFFF',
+          headerTitleStyle: { fontWeight: '800' },
+          contentStyle: { backgroundColor: '#F0F4FA' },
+          headerBackVisible: false,   // we supply our own on both screens
+        }}
+      >
+        <Stack.Screen
+          name="index"
+          options={{ title: 'Help & support', headerLeft: () => <HeaderClose mode="close" /> }}
+        />
+        <Stack.Screen
+          name="thread"
+          options={{ title: 'Support', headerLeft: () => <HeaderClose mode="back" /> }}
+        />
+      </Stack>
+      {/* The guide follows the user through the app. */}
+      <HelpAssistant />
+    </View>
   );
 }

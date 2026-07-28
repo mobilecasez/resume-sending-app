@@ -1290,9 +1290,10 @@ export default function AIHubScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { costs } = useEventCosts();
-  // Deep-link support: /(ai-hub)?tab=search lands on the Search/Explore tab (the home "Explore Jobs" CTA).
+  // Deep-link support: /(ai-hub)?tab=myjobs lands on My Jobs (the "Jobs Dashboard" menu entry).
+  // The DEFAULT is Search — tapping "Jobs" should land the user where they can look for a job.
   const params = useLocalSearchParams<{ tab?: string }>();
-  const initialTab = params?.tab === 'search' || params?.tab === 'saved' || params?.tab === 'myjobs' ? params.tab : 'myjobs';
+  const initialTab = params?.tab === 'search' || params?.tab === 'saved' || params?.tab === 'myjobs' ? params.tab : 'search';
   const [hubTab, setHubTab] = useState<'search' | 'myjobs' | 'saved'>(initialTab);   // unified Job Hub tabs
   const [myJobsSort, setMyJobsSort] = useState<'match' | 'recent'>('match');   // My Jobs sort (best match / newest)
   const [hubSavedCount, setHubSavedCount] = useState(0);
@@ -2856,7 +2857,9 @@ const styles = StyleSheet.create({
   ccBusyRing: { width: 22, height: 22, borderRadius: 11, borderWidth: 2.5, borderColor: 'rgba(255,255,255,0.3)', borderTopColor: '#fff' },
 
   // Inline filter header (above the first job of the selected company)
-  filterHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: -16, marginBottom: 8, paddingHorizontal: 2 },
+  // ⚠️ No negative marginTop here: with the My Jobs sort control rendered directly above, -16 pulled
+  // this row up INTO it and "Filter" sat on top of "Best match" (user-reported overlap).
+  filterHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 0, marginBottom: 8, paddingHorizontal: 2 },
   filterCountText: { fontSize: 12, fontWeight: '700', color: T.textMuted },
   tipNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: 'rgba(16,185,129,0.10)', borderWidth: 1, borderColor: 'rgba(16,185,129,0.32)', borderRadius: 12, paddingVertical: 10, paddingHorizontal: 12, marginTop: 12 },
   tipNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: '#047857', fontWeight: '600' },

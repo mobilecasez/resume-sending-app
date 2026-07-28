@@ -734,6 +734,19 @@ export async function loadAllJobStatuses(): Promise<Record<string, string>> {
   } catch { return {}; }
 }
 
+// First-run setup completeness (profile / résumé / photo / signature booleans the server derives on
+// GET /users/profile). Drives the help assistant's proactive guide. Null = not signed in / offline —
+// callers must treat null as "unknown" and stay silent, never as "nothing is set up".
+export type SetupStatus = { profile: boolean; resume: boolean; photo: boolean; signature: boolean; complete: boolean };
+export async function fetchSetupStatus(): Promise<SetupStatus | null> {
+  try {
+    const headers = await getAuthHeader();
+    if (!(headers as any).Authorization) return null;
+    const { data } = await axios.get(`${API_BASE}/users/profile`, { headers, timeout: 15000 });
+    return (data && data.setup) ? data.setup as SetupStatus : null;
+  } catch { return null; }
+}
+
 // ── Universal job capture ──────────────────────────────────────────────────────
 // Persist a live/web job's REAL details (AI-extracted from the page text when thin) so the cover
 // letter is written from the actual posting, and — when track:true — the job appears in My Jobs.

@@ -10,6 +10,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, ActivityIndicator,
   SafeAreaView, RefreshControl, Platform, Animated, Easing, Modal, Pressable, ScrollView, Alert,
+  Keyboard, PanResponder, Image, Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -23,7 +24,6 @@ import {
   type DiscoverJob, type DiscoverFacets, type AiSearchParsed, type AiXray,
 } from '../../services/aiHubService';
 import { logEvent } from '../../services/firebaseAnalytics';
-import HelpAssistant from '../../components/HelpAssistant';
 import SilentWebSearch from '../../components/SilentWebSearch';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import GoogleJobBrowser from '../../components/GoogleJobBrowser';
@@ -182,6 +182,63 @@ function FChip({ label, on, onPress }: { label: string; on: boolean; onPress: ()
   return <TouchableOpacity onPress={onPress} style={[styles.fChip, on && styles.fChipOn]} activeOpacity={0.8}><Text style={[styles.fChipText, on && styles.fChipTextOn]} numberOfLines={1}>{label}</Text></TouchableOpacity>;
 }
 
+// ── Movable circular Filters button ────────────────────────────────────────────────────────────────
+// Floats where the old header filter button sat (right side, just under the search bar) but the user
+// can drag it anywhere — the spot is remembered across screens and launches. Tap (not drag) opens
+// the Filters sheet.
+const { width: SCW, height: SCH } = Dimensions.get('window');
+const FFAB = { size: 48, right: 12, top: 118 };
+let filterFabPos = { x: 0, y: 0 };                    // module cache so every mount agrees instantly
+const FFAB_KEY = 'discover_filter_fab_v1';
+const clampFfab = (p: { x: number; y: number }) => ({
+  x: Math.max(-(SCW - FFAB.right - FFAB.size - 6), Math.min(FFAB.right - 6, p.x)),
+  y: Math.max(-FFAB.top + 6, Math.min(SCH - FFAB.top - FFAB.size - 160, p.y)),
+});
+function FilterFab({ active, count, onPress }: { active: boolean; count: number; onPress: () => void }) {
+  const pan = useRef(new Animated.ValueXY(filterFabPos)).current;
+  const moved = useRef(false);
+  useEffect(() => {
+    AsyncStorage.getItem(FFAB_KEY).then((r) => {
+      if (!r) return;
+      try { const p = clampFfab(JSON.parse(r)); filterFabPos = p; pan.setValue(p); } catch {}
+    }).catch(() => {});
+  }, []);
+  const responder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 4 || Math.abs(g.dy) > 4,
+      onPanResponderGrant: () => {
+        moved.current = false;
+        pan.setOffset({ x: (pan.x as any).__getValue(), y: (pan.y as any).__getValue() });
+        pan.setValue({ x: 0, y: 0 });
+      },
+      onPanResponderMove: (_e, g) => {
+        if (Math.abs(g.dx) > 4 || Math.abs(g.dy) > 4) moved.current = true;
+        pan.setValue({ x: g.dx, y: g.dy });
+      },
+      onPanResponderRelease: () => {
+        pan.flattenOffset();
+        if (!moved.current) { onPressRef.current(); return; }
+        const p = clampFfab({ x: (pan.x as any).__getValue(), y: (pan.y as any).__getValue() });
+        filterFabPos = p;
+        Animated.spring(pan, { toValue: p, friction: 7, useNativeDriver: false }).start();
+        AsyncStorage.setItem(FFAB_KEY, JSON.stringify(p)).catch(() => {});
+      },
+    })
+  ).current;
+  // The responder is created once; onPress changes across renders — read it through a ref.
+  const onPressRef = useRef(onPress);
+  onPressRef.current = onPress;
+  return (
+    <Animated.View style={[styles.filterFab, { transform: pan.getTranslateTransform() }]} {...responder.panHandlers}>
+      <View style={[styles.filterFabBtn, active && styles.filterFabBtnOn]}>
+        <Ionicons name="options-outline" size={20} color={active ? '#fff' : T.blueDeep} />
+        {active && <View style={styles.filterDot}><Text style={styles.filterDotTx}>{count}</Text></View>}
+      </View>
+    </Animated.View>
+  );
+}
+
 // Reusable Explore feed. `embedded` renders JUST the feed (no SafeAreaView / top bar / Explore|Saved
 // sub-tabs) so the Job Hub can mount it as its "Search" tab; the standalone /(discover) route wraps it.
 export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialSort }: { embedded?: boolean; onStats?: (s: { total: number; remote: number; fields: number; regions: number }) => void; onSavedChange?: () => void; initialSort?: 'match' | 'recent' }) {
@@ -233,6 +290,17 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
   // Recent searches (last 5) — shown in a popup when the search box is focused.
   const [recent, setRecent] = useState<string[]>([]);
   const [showRecent, setShowRecent] = useState(false);
+  // Local network search now lives in the Filters sheet (the top button is Google Search).
+  const [localQ, setLocalQ] = useState('');
+  // First visit to the Jobs page → play the Google-search video once, at readable speed.
+  const [searchIntro, setSearchIntro] = useState(false);
+  useEffect(() => {
+    AsyncStorage.getItem('jobs_search_intro_v1').then((r) => { if (r !== '1') setSearchIntro(true); }).catch(() => {});
+  }, []);
+  const dismissSearchIntro = useCallback(() => {
+    setSearchIntro(false);
+    AsyncStorage.setItem('jobs_search_intro_v1', '1').catch(() => {});
+  }, []);
   useEffect(() => { AsyncStorage.getItem('discover_recent_v1').then((r) => { if (!r) return; try { const a = JSON.parse(r); if (Array.isArray(a)) setRecent(a.filter((x) => typeof x === 'string').slice(0, 5)); } catch {} }); }, []);
   const pushRecent = useCallback((q: string) => {
     const t = String(q || '').trim(); if (!t) return;
@@ -403,14 +471,17 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
     setAiActive(false); setAiParsed(null); setAiResults([]); setAiTotal(0); setQuery('');
     setXrayUrls([]); setWebPhase(''); setWebNote('');
   }, []);
-  // Always-on "Live jobs on Google": use whatever is CURRENTLY typed first (so tapping this straight after
-  // typing works without pressing "Ask AI" — the earlier bug preferred the stale last-searched text); fall
-  // back to the last AI-searched query when the box is empty. If neither exists, nudge them to type.
-  const openLive = useCallback(() => {
-    const q = (query.trim() || lastQueryRef.current || '').trim();
-    if (q) { setLiveQuery(q); setLiveOpen(true); }
-    else { searchRef.current?.focus(); }
-  }, [query]);
+  // The ONE search button: "Google Search" — opens the real Google (in-app) for what's typed. Uses
+  // whatever is CURRENTLY typed first; falls back to the last search when the box is empty. If
+  // neither exists, nudge them to type. (Local network search lives in the Filters sheet now.)
+  const openGoogle = useCallback((text?: string) => {
+    const q = ((text != null ? text : query).trim() || lastQueryRef.current || '').trim();
+    if (!q) { searchRef.current?.focus(); return; }
+    Keyboard.dismiss();
+    pushRecent(q); setShowRecent(false);
+    setLiveQuery(q); setLiveOpen(true);
+    logEvent('google_search_opened');
+  }, [query, pushRecent]);
 
   const pickField = (f: string) => { const nf = f === field ? '' : f; setField(nf); setRoleCat(''); };
 
@@ -422,10 +493,10 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
       {!embedded && <HeroCard facets={facets} total={total} />}
       <View style={styles.searchWrap}>
         <Ionicons name="search" size={16} color={T.blueDeep} />
-        <TextInput ref={searchRef} value={query} onChangeText={setQuery} placeholder="Search jobs — title, skill, location" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" onFocus={() => setShowRecent(true)} onBlur={() => setTimeout(() => setShowRecent(false), 150)} onSubmitEditing={() => runAiSearch(query)} />
+        <TextInput ref={searchRef} value={query} onChangeText={setQuery} placeholder="Search jobs — title, skill, location" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" onFocus={() => setShowRecent(true)} onBlur={() => setTimeout(() => setShowRecent(false), 150)} onSubmitEditing={() => openGoogle()} />
         {query.length > 0 && <TouchableOpacity onPress={() => setQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Ionicons name="close-circle" size={17} color={T.textFaint} /></TouchableOpacity>}
-        <TouchableOpacity onPress={() => runAiSearch(query)} disabled={!query.trim() || aiLoading} style={[styles.askAiBtn, (!query.trim() || aiLoading) && { opacity: 0.5 }]} activeOpacity={0.85}>
-          {aiLoading ? <ActivityIndicator size="small" color="#fff" /> : <><Ionicons name="search" size={13} color="#fff" /><Text style={styles.askAiText}>Search</Text></>}
+        <TouchableOpacity onPress={() => openGoogle()} disabled={!query.trim()} style={[styles.askAiBtn, !query.trim() && { opacity: 0.5 }]} activeOpacity={0.85}>
+          <Ionicons name="logo-google" size={13} color="#fff" /><Text style={styles.askAiText}>Google Search</Text>
         </TouchableOpacity>
       </View>
 
@@ -437,7 +508,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
             <TouchableOpacity onPress={() => { setRecent([]); AsyncStorage.removeItem('discover_recent_v1').catch(() => {}); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={styles.recentClear}>Clear</Text></TouchableOpacity>
           </View>
           {recent.map((r, i) => (
-            <TouchableOpacity key={r + i} style={styles.recentRow} activeOpacity={0.7} onPress={() => { setQuery(r); setShowRecent(false); searchRef.current?.blur(); runAiSearch(r); }}>
+            <TouchableOpacity key={r + i} style={styles.recentRow} activeOpacity={0.7} onPress={() => { setQuery(r); setShowRecent(false); searchRef.current?.blur(); openGoogle(r); }}>
               <Ionicons name="time-outline" size={15} color={T.textFaint} />
               <Text style={styles.recentRowTx} numberOfLines={1}>{r}</Text>
               <Ionicons name="arrow-forward" size={14} color={T.textFaint} />
@@ -475,19 +546,8 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
         </View>
       )}
 
-      {/* One action row: green "Search live on Google" (flex) + a compact Filters button. Always visible. */}
-      <View style={styles.actionRow}>
-        <TouchableOpacity onPress={openLive} activeOpacity={0.85} style={styles.liveBar}>
-          <Ionicons name="globe-outline" size={15} color="#059669" />
-          <Text style={styles.liveBarText}>Search live on Google</Text>
-          <Ionicons name="arrow-forward" size={14} color="#059669" />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => setShowFilters(true)} style={[styles.liveFilterBtn, (activeCount > 0 || !!field) && styles.liveFilterBtnOn]} activeOpacity={0.85}>
-          <Ionicons name="options-outline" size={18} color={(activeCount > 0 || !!field) ? '#fff' : T.blueDeep} />
-          {(activeCount > 0 || !!field) && <View style={styles.filterDot}><Text style={styles.filterDotTx}>{activeCount + (field ? 1 : 0)}</Text></View>}
-        </TouchableOpacity>
-      </View>
-
+      {/* The green "Search live on Google" bar used to sit here — the top Google Search button does
+          that job now, and the Filters button floats (movable) instead of taking a header row. */}
       {!aiActive && (<>
       {noProfile && (
         <View style={styles.hintBox}><Ionicons name="information-circle-outline" size={15} color={T.blueDeep} /><Text style={styles.hintText}>Upload your résumé in Account Settings to see match scores and your-field jobs.</Text></View>
@@ -502,7 +562,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
       </View>
       </>)}
     </View>
-  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, webPhase, webNote, runAiSearch, clearAiSearch, openLive, recent, showRecent]);
+  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, webPhase, webNote, runAiSearch, clearAiSearch, openGoogle, recent, showRecent]);
 
   // Only blank to a spinner on the FIRST load (no data yet). A re-load triggered by facets setting the
   // field must NOT clear the screen — that was the "shows page → blank → reloads" flicker on the tab.
@@ -521,7 +581,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
       removeClippedSubviews initialNumToRender={6} windowSize={9}
       contentContainerStyle={{ padding: 12, paddingBottom: insets.bottom + (embedded ? 96 : 80) }}
       ListEmptyComponent={aiActive
-        ? <View style={styles.empty}>{aiLoading ? <ActivityIndicator color={T.blue} /> : <><Ionicons name="search-outline" size={40} color={T.textFaint} /><Text style={styles.emptyText}>No matches in the network yet — try different words, or tap “Search live on Google” above.</Text></>}</View>
+        ? <View style={styles.empty}>{aiLoading ? <ActivityIndicator color={T.blue} /> : <><Ionicons name="search-outline" size={40} color={T.textFaint} /><Text style={styles.emptyText}>No matches in the network yet — try different words, or tap “Google Search” above to search the live web.</Text></>}</View>
         : <View style={styles.empty}><Ionicons name={error ? 'cloud-offline-outline' : 'briefcase-outline'} size={40} color={T.textFaint} /><Text style={styles.emptyText}>{error || (query || activeCount || field ? 'No jobs match — try “All fields” or clear filters.' : 'No jobs yet — check back soon.')}</Text></View>}
       ListFooterComponent={
         <View>
@@ -544,7 +604,28 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
               <Text style={styles.sheetTitle}>Filters</Text>
               <TouchableOpacity onPress={clearFilters}><Text style={styles.clearText}>Clear all</Text></TouchableOpacity>
             </View>
-            <ScrollView style={{ maxHeight: 460 }} showsVerticalScrollIndicator={false}>
+            <ScrollView style={{ maxHeight: 460 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              {/* Free-text LOCAL search — scans our own saved job network (the top button is Google). */}
+              <View style={styles.fSection}>
+                <Text style={styles.fSectionTitle}>Search our job network</Text>
+                <View style={styles.localRow}>
+                  <Ionicons name="search" size={15} color={T.blueDeep} />
+                  <TextInput
+                    value={localQ} onChangeText={setLocalQ}
+                    placeholder="e.g. react developer in Berlin" placeholderTextColor={T.textFaint}
+                    style={styles.localInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search"
+                    onSubmitEditing={() => { const q = localQ.trim(); if (q) { setShowFilters(false); runAiSearch(q); } }}
+                  />
+                  <TouchableOpacity
+                    onPress={() => { const q = localQ.trim(); if (q) { setShowFilters(false); runAiSearch(q); } }}
+                    disabled={!localQ.trim() || aiLoading}
+                    style={[styles.localBtn, (!localQ.trim() || aiLoading) && { opacity: 0.5 }]} activeOpacity={0.85}
+                  >
+                    {aiLoading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.localBtnTx}>Search</Text>}
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.localHint}>AI search across {fmt(facets?.total || total || 0)} jobs already in the network</Text>
+              </View>
               <FilterSection title="Sort" items={['Best match', 'Recent']} value={sort === 'recent' ? 'Recent' : 'Best match'} onPick={(v) => setSort(v === 'Recent' ? 'recent' : 'match')} />
               <FilterSection
                 title="Field" allLabel="All fields"
@@ -569,10 +650,36 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
           </View>
         </View>
       </Modal>
-      {!embedded && <HelpAssistant />}
       {xrayUrls.length > 0 && <SilentWebSearch key={xraySeq} urls={xrayUrls} onResult={onXrayResult} />}
       {/* On close, tell the parent so the Saved count/summary refresh (fetching happens here, not on the Saved tab). */}
       <GoogleJobBrowser visible={liveOpen} query={liveQuery} onClose={() => { setLiveOpen(false); onSavedChange?.(); }} onApplyHere={openApplyHere} />
+
+      {/* First landing on the Jobs page → SHOW the Google-search flow once, at a readable speed. */}
+      <Modal visible={searchIntro} transparent animationType="fade" onRequestClose={dismissSearchIntro}>
+        <View style={styles.introOverlay}>
+          <View style={styles.introCard}>
+            <View style={styles.introHead}>
+              <Ionicons name="logo-google" size={17} color={T.blueDeep} />
+              <Text style={styles.introTitle}>Search jobs on Google</Text>
+              <TouchableOpacity onPress={dismissSearchIntro} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Ionicons name="close" size={20} color={T.textFaint} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.introSub}>
+              Type what you want, tap “Google Search”, and the real Google opens inside the app. Open a job, tap the robot → Fetch job — it lands in Saved Jobs.
+            </Text>
+            <Image
+              source={require('../../assets/onboarding/guide-google-search.gif')}
+              style={styles.introGif} resizeMode="contain"
+            />
+            <TouchableOpacity style={styles.introBtn} onPress={dismissSearchIntro} activeOpacity={0.9}>
+              <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.introBtnGrad}>
+                <Text style={styles.introBtnTx}>Got it — let me try</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 
@@ -581,6 +688,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
     return (
       <View style={{ flex: 1, backgroundColor: T.bg }}>
         {feedContent}
+        <FilterFab active={activeCount > 0 || !!field} count={activeCount + (field ? 1 : 0)} onPress={() => setShowFilters(true)} />
         {overlays}
       </View>
     );
@@ -603,6 +711,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
         ))}
       </View>
       {tab === 'saved' ? <SavedJobsList onCountChange={setSavedCount} /> : feedContent}
+      {tab !== 'saved' && <FilterFab active={activeCount > 0 || !!field} count={activeCount + (field ? 1 : 0)} onPress={() => setShowFilters(true)} />}
       {overlays}
     </SafeAreaView>
   );
@@ -796,16 +905,30 @@ const styles = StyleSheet.create({
   applySheetText: { color: '#fff', fontSize: 15, fontWeight: '800' },
 
   // always-on floating "Live jobs on Google" pill (bottom-center; clears the help FAB at bottom-right)
-  liveFabWrap: { position: 'absolute', left: 0, right: 0, bottom: Platform.OS === 'ios' ? 30 : 22, alignItems: 'center', zIndex: 998 },
-  liveFabShadow: { borderRadius: 100, shadowColor: '#2563EB', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.4, shadowRadius: 12, elevation: 8 },
-  liveFab: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, height: 50, borderRadius: 100 },
-  liveFabText: { color: '#fff', fontSize: 14.5, fontWeight: '800', letterSpacing: -0.2 },
-  // Green "Search live on Google" + compact filter share one row.
-  actionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
-  liveBar: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: 'rgba(16,185,129,0.10)', borderWidth: 1, borderColor: 'rgba(16,185,129,0.35)', borderRadius: 12, height: 44, paddingHorizontal: 12 },
-  liveBarText: { fontSize: 13, color: '#047857', fontWeight: '800' },
-  liveFilterBtn: { width: 44, height: 44, borderRadius: 12, backgroundColor: T.surface, borderWidth: 1, borderColor: T.border, alignItems: 'center', justifyContent: 'center' },
-  liveFilterBtnOn: { backgroundColor: T.blueDeep, borderColor: T.blueDeep },
+  // Movable circular Filters button — floats near where the old header filter button sat.
+  filterFab: { position: 'absolute', right: FFAB.right, top: FFAB.top, zIndex: 997 },
+  filterFabBtn: {
+    width: FFAB.size, height: FFAB.size, borderRadius: FFAB.size / 2, backgroundColor: T.surface,
+    borderWidth: 1, borderColor: T.border, alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#0F172A', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.18, shadowRadius: 12, elevation: 7,
+  },
+  filterFabBtnOn: { backgroundColor: T.blueDeep, borderColor: T.blueDeep },
+  // Local network search inside the Filters sheet.
+  localRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F4F7FC', borderWidth: 1, borderColor: T.border, borderRadius: 12, paddingHorizontal: 12, height: 46 },
+  localInput: { flex: 1, fontSize: 13.5, color: T.ink, paddingVertical: 0 },
+  localBtn: { backgroundColor: T.blueDeep, borderRadius: 9, paddingHorizontal: 13, height: 34, alignItems: 'center', justifyContent: 'center' },
+  localBtnTx: { color: '#fff', fontSize: 12.5, fontWeight: '800' },
+  localHint: { fontSize: 11, color: T.textFaint, fontWeight: '600', marginTop: 6, marginLeft: 2 },
+  // First-visit "how searching works" popup.
+  introOverlay: { flex: 1, backgroundColor: 'rgba(6,10,25,0.6)', alignItems: 'center', justifyContent: 'center', padding: 20 },
+  introCard: { width: '100%', maxWidth: 420, backgroundColor: '#fff', borderRadius: 22, padding: 16 },
+  introHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  introTitle: { flex: 1, fontSize: 16, fontWeight: '800', color: T.ink, letterSpacing: -0.2 },
+  introSub: { fontSize: 12.5, color: T.textMuted, lineHeight: 18, marginBottom: 10 },
+  introGif: { width: '100%', height: Math.min(SCH * 0.5, 480), borderRadius: 14, backgroundColor: '#F1F5F9' },
+  introBtn: { marginTop: 12, borderRadius: 14, overflow: 'hidden' },
+  introBtnGrad: { height: 48, alignItems: 'center', justifyContent: 'center' },
+  introBtnTx: { color: '#fff', fontSize: 14.5, fontWeight: '800' },
   filterDot: { position: 'absolute', top: -5, right: -5, minWidth: 18, height: 18, borderRadius: 9, backgroundColor: '#FB923C', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, borderWidth: 1.5, borderColor: '#fff' },
   filterDotTx: { fontSize: 10, fontWeight: '800', color: '#fff' },
   countRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8 },
