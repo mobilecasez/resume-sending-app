@@ -4050,12 +4050,32 @@ async function generateJobCoverLetter(req, res) {
             });
         }
 
+        // Read the row WITHOUT filtering on status, so we can say what is actually wrong. The old
+        // code filtered on parse_status='done' and answered every miss with "Resume not processed
+        // yet. Please wait and try again." — which was false for the two cases that matter: a
+        // permanent parse failure (waiting never helps) and a résumé that was never parsed at all.
         const resumeMeta = await dbConfig.get(
-            `SELECT * FROM resume_metadata WHERE user_id = $1 AND parse_status = 'done' ORDER BY created_at DESC LIMIT 1`,
+            `SELECT * FROM resume_metadata WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
             [userId]
         );
-        if (!resumeMeta) {
-            return res.status(400).json({ error: 'Resume not processed yet. Please wait and try again.' });
+        if (!resumeMeta || resumeMeta.parse_status !== 'done') {
+            const st = resumeMeta ? String(resumeMeta.parse_status || '') : 'none';
+            if (st === 'pending') {
+                return res.status(400).json({
+                    error: 'Your résumé is still being read',
+                    message: 'This usually takes under a minute. Try again shortly.',
+                    parseStatus: st, retryable: true,
+                });
+            }
+            return res.status(400).json({
+                error: 'We could not read your résumé',
+                message: st === 'error'
+                    ? 'Something in the file could not be read, so there is nothing to write a cover letter from. Please upload it again — a text-based PDF works best.'
+                    : 'No résumé has been processed for your account yet. Please upload one in Profile.',
+                action: 'upload_resume',
+                parseStatus: st || 'none',
+                retryable: false,
+            });
         }
 
         // Load job + employer details

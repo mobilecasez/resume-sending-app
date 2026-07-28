@@ -99,19 +99,45 @@ async function saveParsed(userId, rawText, parsed) {
     );
 }
 
+// ─── transient vs permanent failure ──────────────────────────────────────────
+//
+// This distinction is the whole bug. Every failure used to be written as parse_status='error',
+// which nothing ever retries — so ONE 503 from Gemini ("This model is currently experiencing high
+// demand. Spikes in demand are usually temporary") permanently bricked that user's résumé. The app
+// then told them "Resume not processed yet. Please wait and try again", which could never become
+// true no matter how long they waited. On production this had already happened to 3 users, out of
+// 10 who have a résumé on file with no usable parse.
+//
+// A model being busy is not the same fact as a PDF being unreadable. They now get different states.
+const TRANSIENT = /\b(429|500|502|503|504)\b|high demand|overload|unavailable|rate.?limit|quota|deadline exceeded|timeout|timed out|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed/i;
+
+/** True when trying the exact same thing later could plausibly succeed. */
+function isTransientError(message) {
+    const m = String(message || '');
+    // "prepayment credits are depleted" arrives as a 429 but is NOT transient — retrying burns
+    // attempts against a wall until somebody tops the account up. Treat it as needing a human.
+    if (/credits are depleted|billing|payment required|API key not valid|API_KEY_INVALID|PERMISSION_DENIED/i.test(m)) return false;
+    return TRANSIENT.test(m);
+}
+
 /**
  * Mark the row as failed.
+ *
+ * `retryable` rows keep parse_status='pending' so the sweeper picks them up and the user is not
+ * told anything false; only genuinely hopeless input becomes 'error'. parse_error is recorded
+ * either way so an admin can see what happened.
  */
-async function saveError(userId, errMessage) {
+async function saveError(userId, errMessage, retryable = false) {
     ensureDbConnection();
+    const status = retryable ? 'pending' : 'error';
     await dbConfig.run(
         `INSERT INTO resume_metadata (user_id, parse_status, parse_error, created_at, updated_at)
-         VALUES (?, 'error', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
          ON CONFLICT (user_id) DO UPDATE
-             SET parse_status = 'error',
+             SET parse_status = EXCLUDED.parse_status,
                  parse_error  = EXCLUDED.parse_error,
                  updated_at   = CURRENT_TIMESTAMP`,
-        [userId, errMessage]
+        [userId, status, errMessage]
     );
 }
 
@@ -125,12 +151,40 @@ async function extractTextFromPDF(absolutePath) {
 
 // ─── ai parsing ──────────────────────────────────────────────────────────────
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Call the model, retrying transient failures with exponential backoff.
+ *
+ * There was no retry at all before: a single 503 ended the parse and the user's résumé was written
+ * off. "Spikes in demand are usually temporary" is Google telling us to try again — so we do, four
+ * times over roughly half a minute, which costs nothing on the happy path and rescues the overwhelming
+ * majority of these. A failure that survives all four attempts is re-thrown for the caller to
+ * classify; a permanent one (bad key, depleted billing) is thrown immediately rather than retried.
+ */
+async function generateWithRetry(model, prompt, attempts = 4) {
+    let last;
+    for (let i = 0; i < attempts; i++) {
+        try {
+            return await model.generateContent(prompt);
+        } catch (err) {
+            last = err;
+            const msg = err && err.message;
+            if (!isTransientError(msg) || i === attempts - 1) throw err;
+            const wait = 1500 * Math.pow(2, i) + Math.floor(Math.random() * 400);   // 1.5s, 3s, 6s (+jitter)
+            console.warn(`[resumeParser] transient AI failure (attempt ${i + 1}/${attempts}), retrying in ${wait}ms: ${String(msg).slice(0, 120)}`);
+            await sleep(wait);
+        }
+    }
+    throw last;
+}
+
 async function parseWithGemini(rawText) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error('GEMINI_API_KEY not set');
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const model = genAI.getGenerativeModel({ model: process.env.GEMINI_FLASH_MODEL || 'gemini-2.5-flash' });
 
     const prompt = `You are a resume parsing assistant. Analyse the resume text below and return ONLY a valid JSON object (no markdown, no explanation) with exactly these fields:
 
@@ -170,7 +224,7 @@ Resume text:
 ${rawText.slice(0, 12000)}
 """`;
 
-    const result   = await model.generateContent(prompt);
+    const result   = await generateWithRetry(model, prompt);
     const response = result.response;
     let   text     = response.text().trim();
 
@@ -254,13 +308,54 @@ async function _parseResume(userId, relativeResumePath) {
         console.log(`[resumeParser] Metadata and normalized skills saved for user ${userId} ✅`);
 
     } catch (err) {
-        console.error(`[resumeParser] Failed for user ${userId}:`, err.message);
+        const retryable = isTransientError(err && err.message);
+        console.error(`[resumeParser] Failed for user ${userId} (${retryable ? 'TRANSIENT — will retry' : 'permanent'}):`, err.message);
         try {
-            await saveError(userId, err.message);
+            await saveError(userId, err.message, retryable);
         } catch (dbErr) {
             console.error(`[resumeParser] Could not save error state for user ${userId}:`, dbErr.message);
         }
     }
 }
 
-module.exports = { triggerResumeParsingBackground };
+// ─── sweeper ─────────────────────────────────────────────────────────────────
+//
+// Retries résumés left in a retryable state. Two populations:
+//   • rows this run marked 'pending' after exhausting the in-process backoff;
+//   • rows written as 'error' by the OLD code, whose parse_error is plainly a transient model
+//     failure. Those users uploaded a perfectly good CV and have been sitting unusable ever since —
+//     invisible to matching and unable to generate a cover letter — so they are worth reclaiming.
+//
+// Deliberately small and slow: this competes with live traffic for the same model quota, and a
+// thundering retry during an outage is what turns a blip into an incident.
+async function retryStuckResumes({ limit = 5, includeOldErrors = true, log = console } = {}) {
+    ensureDbConnection();
+    const rows = await dbConfig.query(
+        `SELECT m.user_id, m.parse_status, m.parse_error, u.resume_path
+           FROM resume_metadata m
+           JOIN users u ON u.id = m.user_id
+          WHERE u.deleted_at IS NULL
+            AND COALESCE(u.resume_path, '') <> ''
+            AND (
+                  m.parse_status = 'pending'
+                  OR ($1 AND m.parse_status = 'error' AND COALESCE(m.parse_error, '') <> '')
+                )
+            AND m.updated_at < NOW() - INTERVAL '10 minutes'
+          ORDER BY m.updated_at ASC
+          LIMIT ${Math.max(1, Math.min(50, parseInt(limit, 10) || 5))}`,
+        [!!includeOldErrors]
+    ).catch(() => []);
+
+    const targets = (rows || []).filter((r) =>
+        r.parse_status === 'pending' || isTransientError(r.parse_error));
+    if (!targets.length) return { considered: (rows || []).length, retried: 0, users: [] };
+
+    log.log(`[resumeParser] sweeper: retrying ${targets.length} résumé(s)`);
+    for (const r of targets) {
+        try { await _parseResume(r.user_id, r.resume_path); }
+        catch (e) { log.error(`[resumeParser] sweeper failed for user ${r.user_id}:`, e.message); }
+    }
+    return { considered: (rows || []).length, retried: targets.length, users: targets.map((t) => t.user_id) };
+}
+
+module.exports = { triggerResumeParsingBackground, retryStuckResumes, isTransientError, _parseResume };

@@ -4044,6 +4044,25 @@ catch (e) { console.error('[replyPoll] failed to start:', e.message); }
 try { require('./server/services/engagementScheduler').startEngagementScheduler(); }
 catch (e) { console.error('[engagement] failed to start:', e.message); }
 
+// Résumé re-parse sweeper. A transient model failure (503 "high demand") used to be written as a
+// PERMANENT parse error that nothing ever retried, leaving the user's résumé unusable while the app
+// told them to "wait and try again". The parser now marks those retryable; this picks them up, plus
+// the rows the old code had already written off. Small and slow on purpose — it shares model quota
+// with live traffic, and a thundering retry during an outage turns a blip into an incident.
+// Disable with RESUME_SWEEPER_DISABLED=1.
+if (process.env.RESUME_SWEEPER_DISABLED !== '1') {
+    const sweep = () => {
+        try {
+            require('./services/resumeParserService')
+                .retryStuckResumes({ limit: 5 })
+                .then((r) => { if (r && r.retried) console.log(`[resumeParser] sweeper retried ${r.retried} résumé(s): ${r.users.join(', ')}`); })
+                .catch((e) => console.error('[resumeParser] sweeper:', e.message));
+        } catch (e) { console.error('[resumeParser] sweeper start:', e.message); }
+    };
+    setTimeout(sweep, 3 * 60 * 1000);          // once, a few minutes after boot
+    setInterval(sweep, 30 * 60 * 1000);        // then every half hour
+}
+
 // Global job firehose — populate the isolated global_jobs feed from public company ATS boards every
 // few hours (no AI, no keys). Disable with GLOBAL_JOB_FIREHOSE_ENABLED=0.
 try { require('./server/services/globalJobFirehose').startGlobalJobFirehose(); }
