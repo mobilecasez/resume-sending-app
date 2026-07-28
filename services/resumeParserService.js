@@ -330,6 +330,19 @@ async function _parseResume(userId, relativeResumePath) {
 // thundering retry during an outage is what turns a blip into an incident.
 async function retryStuckResumes({ limit = 5, includeOldErrors = true, log = console } = {}) {
     ensureDbConnection();
+    // ⚠️ The retryable test MUST live in SQL, not in a .filter() after the query.
+    // The first version selected "any errored row, oldest first, LIMIT 5" and then filtered for
+    // transience in JS. The five oldest rows are all PERMANENT failures (four unreadable PDFs and a
+    // bad byte sequence), so every sweep logged "considered 5, retried 0" and the two genuinely
+    // transient rows — which are newer — could never enter the window. Filtering after LIMIT means
+    // the limit is applied to the wrong population.
+    //
+    // ⚠️ NOT ONE '?' IN THIS SQL. dbConfig.query rewrites every '?' into a positional placeholder,
+    // so a regex quantifier like `rate.?limit` would become `rate.$2limit` and shift every
+    // parameter after it. `.{0,1}` says the same thing and survives the rewrite.
+    const TRANSIENT_SQL = '(429|500|502|503|504|high demand|overload|unavailable|rate.{0,1}limit|quota|deadline exceeded|timeout|timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up|fetch failed)';
+    const PERMANENT_SQL = '(credits are depleted|billing|payment required|API key not valid|API_KEY_INVALID|PERMISSION_DENIED)';
+
     const rows = await dbConfig.query(
         `SELECT m.user_id, m.parse_status, m.parse_error, u.resume_path
            FROM resume_metadata m
@@ -338,13 +351,17 @@ async function retryStuckResumes({ limit = 5, includeOldErrors = true, log = con
             AND COALESCE(u.resume_path, '') <> ''
             AND (
                   m.parse_status = 'pending'
-                  OR ($1 AND m.parse_status = 'error' AND COALESCE(m.parse_error, '') <> '')
+                  OR (
+                       $1 AND m.parse_status = 'error'
+                       AND COALESCE(m.parse_error, '') ~* '${TRANSIENT_SQL}'
+                       AND COALESCE(m.parse_error, '') !~* '${PERMANENT_SQL}'
+                     )
                 )
             AND m.updated_at < NOW() - INTERVAL '10 minutes'
           ORDER BY m.updated_at ASC
           LIMIT ${Math.max(1, Math.min(50, parseInt(limit, 10) || 5))}`,
         [!!includeOldErrors]
-    ).catch(() => []);
+    ).catch((e) => { console.error('[resumeParser] sweeper query:', e.message); return []; });
 
     const targets = (rows || []).filter((r) =>
         r.parse_status === 'pending' || isTransientError(r.parse_error));
