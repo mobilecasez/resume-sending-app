@@ -149,6 +149,49 @@ async function extractTextFromPDF(absolutePath) {
     return (data.text || '').trim();
 }
 
+/**
+ * Read a résumé the text layer cannot give us — a scan, a photo, an export with no embedded text.
+ *
+ * pdf-parse only lifts text that is already IN the file. A CV that was scanned or exported as
+ * images yields nothing, and the old code called that "PDF appears to be empty or non-readable" and
+ * gave up permanently. Four real users are in exactly that state: they uploaded a perfectly good CV,
+ * and as far as the product is concerned they have no skills, no experience and no match scores.
+ *
+ * Gemini reads PDFs and images directly, so the fix needs no new dependency and no OCR service — we
+ * hand it the actual file and ask it to transcribe. Everything downstream is unchanged, because
+ * what comes back is ordinary text that flows into the same parser.
+ */
+const VISION_MIME = { '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.heic': 'image/heic' };
+const VISION_MAX_BYTES = 18 * 1024 * 1024;   // inline data has a hard ceiling; stay under it
+
+async function extractTextWithVision(absolutePath) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) throw new Error('GEMINI_API_KEY not set');
+
+    const ext = path.extname(absolutePath).toLowerCase();
+    const mimeType = VISION_MIME[ext];
+    if (!mimeType) throw new Error(`no vision reader for ${ext || 'this file type'}`);
+
+    const buffer = await fs.readFile(absolutePath);
+    if (buffer.length > VISION_MAX_BYTES) throw new Error(`file too large to read visually (${Math.round(buffer.length / 1e6)}MB)`);
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: process.env.GEMINI_FLASH_MODEL || 'gemini-2.5-flash' });
+
+    const prompt = 'Transcribe this résumé/CV to plain text, exactly as written. Preserve the reading '
+        + 'order, section headings, job titles, employers, dates and bullet points. Do not summarise, '
+        + 'do not add commentary, do not translate — reproduce the document\'s own words. If the document '
+        + 'contains no résumé content at all, reply with exactly: NO_RESUME_CONTENT';
+
+    const result = await generateWithRetry(model, [
+        { inlineData: { mimeType, data: buffer.toString('base64') } },
+        { text: prompt },
+    ]);
+    const text = String(result.response.text() || '').trim();
+    if (!text || /^NO_RESUME_CONTENT$/i.test(text)) throw new Error('the document contains no readable résumé content');
+    return text;
+}
+
 // ─── ai parsing ──────────────────────────────────────────────────────────────
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -163,6 +206,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * classify; a permanent one (bad key, depleted billing) is thrown immediately rather than retried.
  */
 async function generateWithRetry(model, prompt, attempts = 4) {
+    // `prompt` may be a string OR an array of parts (text + inlineData) — generateContent accepts
+    // both, and the vision path needs the array form to attach the file.
+
     let last;
     for (let i = 0; i < attempts; i++) {
         try {
@@ -261,11 +307,19 @@ async function _parseResume(userId, relativeResumePath) {
         const absolutePath = path.join(__dirname, '..', relativeResumePath);
 
         // 3. Extract text from PDF
-        const rawText = await extractTextFromPDF(absolutePath);
+        let rawText = '';
+        let readVia = 'text-layer';
+        try { rawText = await extractTextFromPDF(absolutePath); }
+        catch (e) { console.warn(`[resumeParser] text layer unreadable for user ${userId}: ${e.message}`); }
+
+        // No embedded text — the file is a scan, a photo, or an image-only export. Read it visually
+        // rather than declaring the CV unreadable, which is what used to happen.
         if (!rawText || rawText.length < 50) {
-            throw new Error('PDF appears to be empty or non-readable');
+            console.log(`[resumeParser] no text layer for user ${userId} (${rawText.length} chars) — reading the document visually`);
+            rawText = await extractTextWithVision(absolutePath);
+            readVia = 'vision';
         }
-        console.log(`[resumeParser] Extracted ${rawText.length} chars from resume for user ${userId}`);
+        console.log(`[resumeParser] Extracted ${rawText.length} chars for user ${userId} via ${readVia}`);
 
         // 4. Parse with Gemini AI
         const parsed = await parseWithGemini(rawText);
@@ -340,7 +394,11 @@ async function retryStuckResumes({ limit = 5, includeOldErrors = true, log = con
     // ⚠️ NOT ONE '?' IN THIS SQL. dbConfig.query rewrites every '?' into a positional placeholder,
     // so a regex quantifier like `rate.?limit` would become `rate.$2limit` and shift every
     // parameter after it. `.{0,1}` says the same thing and survives the rewrite.
-    const TRANSIENT_SQL = '(429|500|502|503|504|high demand|overload|unavailable|rate.{0,1}limit|quota|deadline exceeded|timeout|timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up|fetch failed)';
+    // 'empty or non-readable' and the UTF8 byte-sequence failure are included deliberately: they were
+    // permanent under the old text-only reader, and are now retryable because the vision path can read
+    // a scanned document. A row that fails vision too will come back with a different message and stop
+    // matching this pattern, so it will not loop forever.
+    const TRANSIENT_SQL = '(429|500|502|503|504|high demand|overload|unavailable|rate.{0,1}limit|quota|deadline exceeded|timeout|timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up|fetch failed|empty or non-readable|invalid byte sequence)';
     const PERMANENT_SQL = '(credits are depleted|billing|payment required|API key not valid|API_KEY_INVALID|PERMISSION_DENIED)';
 
     const rows = await dbConfig.query(
