@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "CVApplyr",
-    "slug": "cvapplyr",
+    "slug": "cvapplyr-mobile",
     "version": "3.4",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -32,7 +32,7 @@
     "android": {
       "package": "com.cvapplyr.mobile",
       "googleServicesFile": "./google-services.json",
-      "versionCode": 59,
+      "versionCode": 60,
       "intentFilters": [
         {
           "action": "VIEW",
@@ -108,9 +108,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "abd62ddd-b3d5-433b-a6bc-7e0a19716345"
+        "projectId": "992a6de3-e46e-4788-953d-f799671672eb"
       }
     },
-    "owner": "zsellr02s-team"
+    "owner": "zsellr"
   }
 }
