@@ -1432,6 +1432,40 @@ export async function adminAuthHeaderValue(): Promise<string | null> {
  * Ready-made `source` for <Image> / WebView pointing at a user's file, with the admin header
  * already attached. Returns null when there is no session (nothing would authenticate).
  */
+/**
+ * Download an admin file and hand back its BYTES as a data: URI.
+ *
+ * ⚠️ Do not point a WebView or <Image> at the file URL with a `headers` prop and expect it to work.
+ * react-native-webview only applies those headers to the FIRST request, and iOS hands PDF rendering
+ * to a separate loader that never sees them — so the endpoint is hit with no Authorization, replies
+ * "Access denied. No token provided.", and the viewer displays that error page. That is exactly the
+ * failure this replaces: a spinner, then an access-denied page.
+ *
+ * Fetching the bytes ourselves means the header is applied exactly once, by us, where we can see it.
+ */
+export async function fetchAdminFileAsDataUri(
+  userId: number | string,
+  kind: AdminFileKind,
+): Promise<{ dataUri: string; mime: string; bytes: number } | null> {
+  const auth = await adminAuthHeaderValue();
+  if (!auth) throw new Error('Your admin session has expired — sign in again.');
+  const res = await fetch(adminFileUrl(userId, kind), { headers: { Authorization: auth } });
+  if (!res.ok) {
+    let msg = `The server refused the file (HTTP ${res.status}).`;
+    try { const b = await res.json(); if (b && (b.error || b.stored)) msg = b.error + (b.stored ? ` (${b.stored})` : ''); } catch { /* not json */ }
+    throw new Error(msg);
+  }
+  const blob = await res.blob();
+  const mime = (blob as any).type || res.headers.get('content-type') || 'application/octet-stream';
+  const dataUri: string = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onloadend = () => resolve(String(r.result || ''));
+    r.onerror = () => reject(new Error('Could not read the downloaded file'));
+    r.readAsDataURL(blob);
+  });
+  return { dataUri, mime, bytes: (blob as any).size || 0 };
+}
+
 export async function adminFileSource(
   userId: number | string,
   kind: AdminFileKind,

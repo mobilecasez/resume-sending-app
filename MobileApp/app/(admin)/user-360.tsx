@@ -37,7 +37,7 @@ import {
   type AdminActivitySearch, type AdminActivityItemMap, type AdminCoverLetter,
   type AdminNotifyTemplate, type AdminNotifyTemplatesResponse, type AdminUserNotifyResult,
   type AdminFileKind, type AdminPushBlock,
-  fetchAdminResumeProfile, adminResumePdfUrl,
+  fetchAdminResumeProfile, adminResumePdfUrl, fetchAdminFileAsDataUri,
   fetchAdminSearches, fetchAdminSearchJobs, adminTestCoverLetter,
   type AdminResumeProfile, type AdminResumeEntry,
   type AdminSearchRow, type AdminSearchList, type AdminSearchJobs, type AdminSearchJob,
@@ -775,65 +775,118 @@ function OverlayShell({ title, sub, onClose, children, footer }: {
 }
 
 function DocViewer({ ov, userId, onClose }: { ov: Extract<Overlay, { kind: 'doc' }>; userId: string; onClose: () => void }) {
-  const [src, setSrc] = useState<{ uri: string; headers: Record<string, string> } | null>(null);
+  const [file, setFile] = useState<{ dataUri: string; mime: string; bytes: number } | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [err, setErr] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [opening, setOpening] = useState(false);
 
+  // Download the BYTES with the admin header instead of handing an authenticated URL to a viewer.
+  // The old version passed {uri, headers} straight to <WebView>; those headers are applied to the
+  // first request only, and iOS renders PDFs through a loader that never sees them — so the request
+  // arrived unauthenticated and the user watched a spinner turn into "Access denied".
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const sc = await adminFileSource(userId, ov.doc);
+        const f = await fetchAdminFileAsDataUri(userId, ov.doc);
         if (!alive) return;
-        if (!sc) { setState('error'); return; }
-        setSrc(sc); setState('ready');
-      } catch { if (alive) setState('error'); }
+        if (!f) { setErr('Your admin session has expired — sign in again.'); setState('error'); return; }
+        setFile(f); setState('ready');
+      } catch (e: any) {
+        if (alive) { setErr(e?.message || 'Could not download the file'); setState('error'); }
+      }
     })();
     return () => { alive = false; };
   }, [ov.doc, userId]);
 
   const isImage = ov.doc !== 'resume';
+  const isPdf = /pdf/i.test(file?.mime || '');
+  // Android's system WebView cannot render a PDF at all — no flag changes that, and the only way to
+  // do it in-process would be a native PDF dependency this project does not take. So rather than
+  // showing a blank page and blaming the file, hand it to the OS viewer, which IS on the device.
+  const canRenderInline = !isPdf || Platform.OS === 'ios';
+
+  const openExternally = useCallback(async () => {
+    if (!file) return;
+    setOpening(true);
+    try {
+      const FileSystem = require('expo-file-system');
+      const Sharing = require('expo-sharing');
+      const base64 = file.dataUri.split(',')[1] || '';
+      const ext = isPdf ? 'pdf' : (file.mime.split('/')[1] || 'bin').replace(/[^a-z0-9]/gi, '');
+      const p = `${FileSystem.cacheDirectory}admin-${ov.doc}-${userId}.${ext}`;
+      await FileSystem.writeAsStringAsync(p, base64, { encoding: 'base64' });
+      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(p, { mimeType: file.mime });
+      else Alert.alert('Saved', `Written to ${p}`);
+    } catch (e: any) {
+      Alert.alert('Could not open the file', e?.message || 'Unknown error');
+    } finally { setOpening(false); }
+  }, [file, isPdf, ov.doc, userId]);
+
   return (
     <OverlayShell title={ov.label} sub={ov.sub} onClose={onClose}>
       <View style={s.docBody}>
         {state === 'loading' ? (
-          <Skel text="Opening the file…" />
-        ) : state === 'error' || !src ? (
-          <Empty icon="alert-circle-outline" text="Could not build an authenticated link for this file — the admin session may have expired." />
+          <Skel text="Downloading the file…" />
+        ) : state === 'error' ? (
+          <Empty icon="alert-circle-outline" text={err || 'Could not download this file.'} />
         ) : isImage ? (
           <ScrollView contentContainerStyle={s.docImgWrap} maximumZoomScale={4} minimumZoomScale={1}>
             {failed
-              ? <Empty icon="image-outline" text="The file could not be displayed." />
-              : <Image source={src} style={s.docImg} resizeMode="contain" onError={() => setFailed(true)} />}
+              ? <Empty icon="image-outline" text="The file downloaded but could not be displayed." />
+              : <Image source={{ uri: file!.dataUri }} style={s.docImg} resizeMode="contain" onError={() => setFailed(true)} />}
           </ScrollView>
-        ) : (
+        ) : canRenderInline && !failed ? (
           <WebView
-            source={src}
+            // A data: URI — the bytes are already here, so nothing is fetched and nothing can be
+            // refused. Hardening stays: this is a file a stranger uploaded, rendering inside a
+            // screen that holds an admin token.
+            source={{ uri: file!.dataUri }}
             style={s.web}
             startInLoadingState
             renderLoading={() => <View style={s.webLoading}><ActivityIndicator color={C.blue} size="large" /></View>}
             onError={() => setFailed(true)}
             setSupportMultipleWindows={false}
-            // ⚠️ Same hardening as the cover-letter viewer below. This renders a file the USER
-            // uploaded, inside an admin session that holds an admin token — and react-native-webview
-            // defaults javaScriptEnabled to true and originWhitelist to ['*'], so an uploaded HTML
-            // "résumé" would run script and could navigate anywhere. A PDF needs neither.
             javaScriptEnabled={false}
-            originWhitelist={[]}
+            originWhitelist={['file://', 'data:']}
             allowsInlineMediaPlayback={false}
-            onShouldStartLoadWithRequest={(req) => req.url === (src as any)?.uri}
+            onShouldStartLoadWithRequest={(req) => String(req.url || '').startsWith('data:')}
           />
+        ) : (
+          <View style={s.docFallback}>
+            <Ionicons name="document-text-outline" size={40} color={C.textFaint} />
+            <Text style={s.docFallbackT}>
+              {failed ? 'This file could not be displayed inline.' : 'Android cannot show a PDF inside the app'}
+            </Text>
+            <Text style={s.docFallbackB}>
+              {failed
+                ? 'The file downloaded correctly — the in-app viewer just could not render it.'
+                : 'The system WebView has no PDF renderer, and this project does not add a native PDF library for it. The file is downloaded and ready — open it with any PDF app on the device.'}
+            </Text>
+            <TouchableOpacity style={[s.pdfBtn, opening && s.sendBtnOff]} onPress={openExternally} disabled={opening} activeOpacity={0.85}>
+              {opening ? <ActivityIndicator color="#fff" size="small" />
+                : <><Ionicons name="open-outline" size={14} color="#fff" /><Text style={s.pdfBtnT}>Open</Text></>}
+            </TouchableOpacity>
+            <Text style={s.footnote}>
+              For reading the content itself, the Résumé row above shows the parsed profile — that is what
+              matching and cover letters actually use.
+            </Text>
+          </View>
         )}
-        {!isImage && state === 'ready' ? (
-          <Text style={s.docHint}>
-            {failed
-              ? 'The viewer could not load this file. It is served from an admin-only endpoint — open it from the web admin if this keeps failing.'
-              : Platform.OS === 'android'
-                ? 'PDFs do not always render inline in Android’s system WebView. A blank page here does not mean the file is missing.'
-                : 'Served from the admin-only file endpoint with your session header.'}
-          </Text>
+
+        {state === 'ready' ? (
+          <View style={s.docFoot}>
+            <Text style={s.docHint}>
+              {`${(file!.bytes / 1024).toFixed(0)} KB · ${file!.mime}`}
+            </Text>
+            {canRenderInline && !failed ? (
+              <TouchableOpacity onPress={openExternally} disabled={opening} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={s.docOpenLink}>{opening ? 'Opening…' : 'Open in another app'}</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
         ) : null}
-        {state === 'ready' ? <Text style={[s.mono, s.docUrl]} numberOfLines={1}>{adminFileUrl(userId, ov.doc)}</Text> : null}
       </View>
     </OverlayShell>
   );
@@ -2297,6 +2350,16 @@ function JobRow({ job, result, busy, onSend }: {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 const s = StyleSheet.create({
+  // ── raw-file viewer ────────────────────────────────────────────────────────
+  docFallback: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 10 },
+  docFallbackT: { fontSize: 15, fontWeight: '800', color: '#0B0F22', textAlign: 'center' },
+  docFallbackB: { fontSize: 12.5, color: '#64748B', textAlign: 'center', lineHeight: 18 },
+  docFoot: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    gap: 10, paddingTop: 8,
+  },
+  docOpenLink: { fontSize: 12, fontWeight: '800', color: '#2563EB' },
+
   // ── copy controls ──────────────────────────────────────────────────────────
   copyBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
