@@ -128,7 +128,7 @@ async function pushAdmins(thread, bodyText) {
         a.expo_push_token,
         `Support · ${thread.issue_title}`,
         `${thread.user_name || 'A user'}: ${str(bodyText).slice(0, 90)}`,
-        { type: 'support', screen: '/(admin)/support', threadId: String(thread.id) },
+        { type: 'support', route: 'admin-support', params: { threadId: String(thread.id) }, screen: '/(admin)/support' },
       ).catch(() => null);
       if (r && r !== 'stale') sent++;
     }
@@ -156,7 +156,7 @@ async function pushUser(thread, bodyText) {
     if (!tok || !/^Expo(nent)?PushToken\[/.test(tok)) return { skipped: 'no_token' };
     const r = await expoPush.sendPushNotification(
       tok, 'Support replied', str(bodyText).slice(0, 120),
-      { type: 'support_reply', screen: '/(support)/thread', threadId: String(thread.id) },
+      { type: 'support_reply', route: 'support', params: { threadId: String(thread.id) }, screen: '/(support)/thread' },
     );
     return { ok: r !== 'stale' && !!r, result: r };
   } catch (e) {
@@ -366,6 +366,49 @@ async function setStatus(threadId, status) {
   return r ? { ok: true, thread: shapeThread(r, true) } : { error: 'not_found' };
 }
 
+/**
+ * Staff START a conversation with a user.
+ *
+ * This is the reverse of the normal flow and it is the more valuable one: an admin looks at
+ * someone's data, sees what actually went wrong — a résumé that never parsed, a search that
+ * returned nothing, three cover letters and no applications — and reaches out first. The user gets
+ * a push, taps it, and lands in a conversation that is already about their specific problem instead
+ * of a blank "how can we help".
+ *
+ * Unlike a reply, this reaches somebody who did not ask to be contacted, so it is the one support
+ * action the admin UI puts behind the type-to-confirm gate.
+ */
+async function adminStartThread(userId, issueKey, message, adminId) {
+  const uid = int(userId);
+  const issue = ISSUE_BY_KEY.get(str(issueKey));
+  const body = str(message).slice(0, BODY_MAX);
+  if (!uid) return { error: 'bad_user' };
+  if (!issue) return { error: 'unknown_issue' };
+  if (!body) return { error: 'empty' };
+
+  const u = await dbConfig.get(`SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL`, [uid]);
+  if (!u) return { error: 'not_found' };
+
+  // Reuse the open thread for this issue so staff cannot accidentally fork the conversation.
+  let thread = await dbConfig.get(
+    `SELECT * FROM support_threads WHERE user_id = $1 AND issue_key = $2 AND status = 'open'`,
+    [uid, issue.key]);
+  if (!thread) {
+    thread = await dbConfig.get(
+      `INSERT INTO support_threads (user_id, issue_key, subject, status, last_message_at, last_sender, last_body)
+       VALUES ($1, $2, $3, 'open', NOW(), 'admin', $4) RETURNING *`,
+      [uid, issue.key, issue.title, body.slice(0, 160)]);
+  }
+  if (!thread) return { error: 'create_failed' };
+
+  const posted = await postMessage(adminId, thread.id, body, 'admin', adminId);
+  if (posted.error) return posted;
+
+  const fresh = await dbConfig.get(`SELECT * FROM support_threads WHERE id = $1`, [thread.id]);
+  const push = await pushUser(fresh, body);
+  return { thread: shapeThread(fresh, true), message: posted.message, push, started: true };
+}
+
 /** Admin reply — posts, then pushes the user. */
 async function adminReply(threadId, adminId, bodyText) {
   const t = await dbConfig.get(`SELECT * FROM support_threads WHERE id = $1`, [int(threadId)]);
@@ -380,6 +423,6 @@ async function adminReply(threadId, adminId, bodyText) {
 module.exports = {
   ISSUES, listIssues, BODY_MAX, DETAILS_MAX, MAX_OPEN_THREADS,
   createThread, postMessage, listUserThreads, threadMessages, markRead, setMuted,
-  listAdminThreads, setStatus, adminReply,
+  listAdminThreads, setStatus, adminReply, adminStartThread,
   shapeMessageForUser, shapeMessageForAdmin, shapeThread,
 };

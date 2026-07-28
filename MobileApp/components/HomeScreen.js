@@ -2063,8 +2063,11 @@ export default function HomeScreen({
               { icon: 'people-outline', title: 'Registered Users', sub: 'Signups, sign-in type & usage', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/registered-users'); } },
               { icon: 'compass-outline', title: 'User Analytics', sub: 'Per-user journey timelines', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/user-analytics'); } },
               { icon: 'megaphone-outline', title: 'Segments', sub: 'Target user groups with a push', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/segments'); } },
+              { icon: 'chatbubbles-outline', title: 'Support Inbox', sub: 'Issues users reported — reply directly', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/support'); } },
               { icon: 'git-branch-outline', title: 'Environment', sub: 'Point this device at another backend', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/environment'); } },
             ] : []).concat([
+              null,
+              { icon: 'help-buoy-outline', title: 'Help & support', sub: 'Report a problem, chat with our team', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(support)'); } },
               null,
               { icon: 'document-text-outline', title: 'Terms & Conditions', sub: 'View terms of service',   onPress: () => { setShowSettings(false); setScreen('terms'); } },
               { icon: 'shield-outline',          title: 'Privacy Policy',   sub: 'How we protect your data', onPress: () => { setShowSettings(false); setScreen('privacy'); } },

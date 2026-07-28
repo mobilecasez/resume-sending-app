@@ -109,6 +109,17 @@ router.get('/admin/support/threads/:id/messages', authenticateAdmin, async (req,
   } catch (e) { res.status(500).json({ error: 'Could not load the conversation' }); }
 });
 
+// Staff-initiated: reach out to a user about something their data shows. Deliberately separate
+// from a reply, because this contacts someone who did not ask to be contacted.
+router.post('/admin/support/threads', authenticateAdmin, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const r = await svc.adminStartThread(b.userId, b.issueKey, b.message, uid(req));
+    if (r.error) return fail(res, r);
+    res.json({ success: true, ...r });
+  } catch (e) { console.error('[support] admin start:', e.message); res.status(500).json({ error: 'Could not start the conversation' }); }
+});
+
 router.post('/admin/support/threads/:id/messages', authenticateAdmin, async (req, res) => {
   try {
     const r = await svc.adminReply(req.params.id, uid(req), req.body && req.body.body);

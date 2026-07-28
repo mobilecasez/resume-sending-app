@@ -119,6 +119,18 @@ const eq = (n, a, b) => ok(n, a === b, `expected ${JSON.stringify(b)}, got ${JSO
     eq('a resolved thread refuses new user messages', closedWrite.error, 'closed');
     eq('bad status is refused', (await svc.setStatus(TA, 'banana')).error, 'bad_status');
 
+    // ── staff-initiated conversation ────────────────────────────────────────
+    const started = await svc.adminStartThread(A, 'resume_upload', 'Hi — I can see your CV never finished processing. Want me to re-run it?', ADMIN);
+    ok('admin can start a conversation with a user', !!started.thread, JSON.stringify(started).slice(0, 140));
+    ok('the started thread belongs to that user', started.thread && started.thread.user.id === A);
+    const seen = await svc.threadMessages(started.thread.id, { userId: A });
+    ok('the user can open the thread staff started', !seen.error && seen.messages.length === 1);
+    ok('and sees it as coming from support', seen.messages[0] && seen.messages[0].sender === 'support');
+    ok('with no staff identity attached', seen.messages[0] && !('sender_user_id' in seen.messages[0]));
+    eq('staff cannot start one for an unknown issue', (await svc.adminStartThread(A, 'nope', 'x', ADMIN)).error, 'unknown_issue');
+    eq('staff cannot start an empty conversation', (await svc.adminStartThread(A, 'login', '   ', ADMIN)).error, 'empty');
+    eq('staff cannot start one for a missing user', (await svc.adminStartThread(99999999, 'login', 'hi', ADMIN)).error, 'not_found');
+
     // ── open-thread ceiling ─────────────────────────────────────────────────
     let capped = null;
     for (const k of ['search_no_jobs', 'search_wrong', 'resume_upload', 'apply_failed', 'autofill', 'notifications', 'credits']) {

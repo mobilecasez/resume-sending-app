@@ -83,6 +83,11 @@ const HANDLED_KEY = 'push_last_handled_response';
 
 const DISCOVER = '/(discover)';
 const AI_HUB = '/(ai-hub)';
+const SUPPORT = '/(support)';
+const SUPPORT_THREAD = '/(support)/thread';
+const ADMIN_SUPPORT = '/(admin)/support';
+/** Thread ids are integers from a SERIAL column — anything else is not one of ours. */
+const THREAD_ID_RE = /^[0-9]{1,12}$/;
 
 // App.js's profile screen understands these focus targets (HomeScreen/OnboardingChecklist use the
 // same set). Anything else is ignored and falls back to 'profile'.
@@ -137,6 +142,25 @@ export function resolveRoute(data: any): PushRouteAction {
   const p = asObject((data as any).params);
 
   switch (key) {
+    // Support replies land the user IN the conversation. Without a valid thread id we still open
+    // Help & support rather than doing nothing — the user tapped for a reason.
+    case 'support':
+    case 'support-reply':
+    case 'support_reply': {
+      const id = str(p.threadId) || str(p.thread_id);
+      if (id && THREAD_ID_RE.test(id)) return { kind: 'navigate', pathname: SUPPORT_THREAD, params: { id } };
+      return { kind: 'navigate', pathname: SUPPORT, params: {} };
+    }
+
+    // Staff tapping "a user needs help" go straight to that thread in the inbox.
+    case 'admin-support':
+    case 'admin_support': {
+      const id = str(p.threadId) || str(p.thread_id);
+      const params: Record<string, string> = {};
+      if (id && THREAD_ID_RE.test(id)) params.threadId = id;
+      return { kind: 'navigate', pathname: ADMIN_SUPPORT, params };
+    }
+
     case 'discover':
     case 'explore': {
       const params: Record<string, string> = {};
