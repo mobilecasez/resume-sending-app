@@ -109,15 +109,40 @@ async function saveParsed(userId, rawText, parsed) {
 // 10 who have a résumé on file with no usable parse.
 //
 // A model being busy is not the same fact as a PDF being unreadable. They now get different states.
-const TRANSIENT = /\b(429|500|502|503|504)\b|high demand|overload|unavailable|rate.?limit|quota|deadline exceeded|timeout|timed out|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed/i;
+// ⚠️ ONE list, used by BOTH the JavaScript check and the SQL the sweeper runs.
+//
+// These started as two copies. When the vision reader landed I added "empty or non-readable" to the
+// SQL and forgot the JavaScript — so the sweep selected the five scanned CVs and then threw all five
+// away in a .filter() a few lines later, logging "considered 5, retried 0" forever. Two lists that
+// must agree will eventually disagree; the string below is the only place either is written.
+//
+// NOT ONE '?' IN THESE PATTERNS: dbConfig rewrites every '?' into a positional placeholder, so
+// `rate.?limit` would become `rate.$2limit` and shift every parameter after it. `.{0,1}` is safe.
+const RETRYABLE_SRC = [
+    // the model was busy or the network hiccuped — asking again is the whole fix
+    '429', '500', '502', '503', '504', 'high demand', 'overload', 'unavailable',
+    'rate.{0,1}limit', 'quota', 'deadline exceeded', 'timeout', 'timed out',
+    'ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'socket hang up', 'fetch failed',
+    // permanent under the OLD text-only reader, reachable now that we can read a document visually
+    'empty or non-readable', 'invalid byte sequence',
+].join('|');
 
-/** True when trying the exact same thing later could plausibly succeed. */
+// Needs a human, not a retry. A depleted balance arrives as a 429, so this must be checked FIRST.
+const PERMANENT_SRC = [
+    'credits are depleted', 'billing', 'payment required',
+    'API key not valid', 'API_KEY_INVALID', 'PERMISSION_DENIED',
+    'no readable r', 'no vision reader', 'too large to read',   // vision itself already refused it
+].join('|');
+
+const RETRYABLE_RE = new RegExp(`(${RETRYABLE_SRC})`, 'i');
+const PERMANENT_RE = new RegExp(`(${PERMANENT_SRC})`, 'i');
+
+/** True when trying again could plausibly succeed — in-process, or later via the sweeper. */
 function isTransientError(message) {
     const m = String(message || '');
-    // "prepayment credits are depleted" arrives as a 429 but is NOT transient — retrying burns
-    // attempts against a wall until somebody tops the account up. Treat it as needing a human.
-    if (/credits are depleted|billing|payment required|API key not valid|API_KEY_INVALID|PERMISSION_DENIED/i.test(m)) return false;
-    return TRANSIENT.test(m);
+    if (!m) return false;
+    if (PERMANENT_RE.test(m)) return false;
+    return RETRYABLE_RE.test(m);
 }
 
 /**
@@ -394,12 +419,10 @@ async function retryStuckResumes({ limit = 5, includeOldErrors = true, log = con
     // ⚠️ NOT ONE '?' IN THIS SQL. dbConfig.query rewrites every '?' into a positional placeholder,
     // so a regex quantifier like `rate.?limit` would become `rate.$2limit` and shift every
     // parameter after it. `.{0,1}` says the same thing and survives the rewrite.
-    // 'empty or non-readable' and the UTF8 byte-sequence failure are included deliberately: they were
-    // permanent under the old text-only reader, and are now retryable because the vision path can read
-    // a scanned document. A row that fails vision too will come back with a different message and stop
-    // matching this pattern, so it will not loop forever.
-    const TRANSIENT_SQL = '(429|500|502|503|504|high demand|overload|unavailable|rate.{0,1}limit|quota|deadline exceeded|timeout|timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up|fetch failed|empty or non-readable|invalid byte sequence)';
-    const PERMANENT_SQL = '(credits are depleted|billing|payment required|API key not valid|API_KEY_INVALID|PERMISSION_DENIED)';
+    // Built from the SAME strings as the JavaScript check above — see RETRYABLE_SRC. This is the
+    // whole point of that constant: the two can no longer drift apart.
+    const TRANSIENT_SQL = RETRYABLE_SRC;
+    const PERMANENT_SQL = PERMANENT_SRC;
 
     const rows = await dbConfig.query(
         `SELECT m.user_id, m.parse_status, m.parse_error, u.resume_path
@@ -411,8 +434,8 @@ async function retryStuckResumes({ limit = 5, includeOldErrors = true, log = con
                   m.parse_status = 'pending'
                   OR (
                        $1 AND m.parse_status = 'error'
-                       AND COALESCE(m.parse_error, '') ~* '${TRANSIENT_SQL}'
-                       AND COALESCE(m.parse_error, '') !~* '${PERMANENT_SQL}'
+                       AND COALESCE(m.parse_error, '') ~* '(${TRANSIENT_SQL})'
+                       AND COALESCE(m.parse_error, '') !~* '(${PERMANENT_SQL})'
                      )
                 )
             AND m.updated_at < NOW() - INTERVAL '10 minutes'
