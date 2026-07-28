@@ -14,6 +14,7 @@ export default function AdminLayout() {
       <Stack.Screen name="user-360" options={{ headerShown: false }} />
       <Stack.Screen name="segments" options={{ headerShown: false }} />
       <Stack.Screen name="environment" options={{ headerShown: false }} />
+      <Stack.Screen name="support" options={{ headerShown: false }} />
     </Stack>
   );
 }

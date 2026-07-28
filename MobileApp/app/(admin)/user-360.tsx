@@ -37,7 +37,7 @@ import {
   type AdminActivitySearch, type AdminActivityItemMap, type AdminCoverLetter,
   type AdminNotifyTemplate, type AdminNotifyTemplatesResponse, type AdminUserNotifyResult,
   type AdminFileKind, type AdminPushBlock,
-  fetchAdminResumeProfile, adminResumePdfUrl, fetchAdminFileAsDataUri,
+  fetchAdminResumeProfile, adminResumePdfUrl, fetchAdminFileToCache,
   fetchAdminSearches, fetchAdminSearchJobs, adminTestCoverLetter,
   type AdminResumeProfile, type AdminResumeEntry,
   type AdminSearchRow, type AdminSearchList, type AdminSearchJobs, type AdminSearchJob,
@@ -775,7 +775,7 @@ function OverlayShell({ title, sub, onClose, children, footer }: {
 }
 
 function DocViewer({ ov, userId, onClose }: { ov: Extract<Overlay, { kind: 'doc' }>; userId: string; onClose: () => void }) {
-  const [file, setFile] = useState<{ dataUri: string; mime: string; bytes: number } | null>(null);
+  const [file, setFile] = useState<{ uri: string; mime: string; bytes: number } | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [err, setErr] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -789,7 +789,7 @@ function DocViewer({ ov, userId, onClose }: { ov: Extract<Overlay, { kind: 'doc'
     let alive = true;
     (async () => {
       try {
-        const f = await fetchAdminFileAsDataUri(userId, ov.doc);
+        const f = await fetchAdminFileToCache(userId, ov.doc);
         if (!alive) return;
         if (!f) { setErr('Your admin session has expired — sign in again.'); setState('error'); return; }
         setFile(f); setState('ready');
@@ -811,14 +811,10 @@ function DocViewer({ ov, userId, onClose }: { ov: Extract<Overlay, { kind: 'doc'
     if (!file) return;
     setOpening(true);
     try {
-      const FileSystem = require('expo-file-system');
       const Sharing = require('expo-sharing');
-      const base64 = file.dataUri.split(',')[1] || '';
-      const ext = isPdf ? 'pdf' : (file.mime.split('/')[1] || 'bin').replace(/[^a-z0-9]/gi, '');
-      const p = `${FileSystem.cacheDirectory}admin-${ov.doc}-${userId}.${ext}`;
-      await FileSystem.writeAsStringAsync(p, base64, { encoding: 'base64' });
-      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(p, { mimeType: file.mime });
-      else Alert.alert('Saved', `Written to ${p}`);
+      // Already on disk — hand the OS the path rather than re-encoding anything.
+      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(file.uri, { mimeType: file.mime });
+      else Alert.alert('Saved', `Written to ${file.uri}`);
     } catch (e: any) {
       Alert.alert('Could not open the file', e?.message || 'Unknown error');
     } finally { setOpening(false); }
@@ -835,23 +831,28 @@ function DocViewer({ ov, userId, onClose }: { ov: Extract<Overlay, { kind: 'doc'
           <ScrollView contentContainerStyle={s.docImgWrap} maximumZoomScale={4} minimumZoomScale={1}>
             {failed
               ? <Empty icon="image-outline" text="The file downloaded but could not be displayed." />
-              : <Image source={{ uri: file!.dataUri }} style={s.docImg} resizeMode="contain" onError={() => setFailed(true)} />}
+              : <Image source={{ uri: file!.uri }} style={s.docImg} resizeMode="contain" onError={() => setFailed(true)} />}
           </ScrollView>
         ) : canRenderInline && !failed ? (
           <WebView
             // A data: URI — the bytes are already here, so nothing is fetched and nothing can be
             // refused. Hardening stays: this is a file a stranger uploaded, rendering inside a
             // screen that holds an admin token.
-            source={{ uri: file!.dataUri }}
+            source={{ uri: file!.uri }}
             style={s.web}
             startInLoadingState
             renderLoading={() => <View style={s.webLoading}><ActivityIndicator color={C.blue} size="large" /></View>}
             onError={() => setFailed(true)}
+            onRenderProcessGone={() => setFailed(true)}
             setSupportMultipleWindows={false}
             javaScriptEnabled={false}
-            originWhitelist={['file://', 'data:']}
+            originWhitelist={['file://']}
+            allowFileAccess
+            allowFileAccessFromFileURLs={false}
+            allowUniversalAccessFromFileURLs={false}
+            allowingReadAccessToURL={file!.uri}
             allowsInlineMediaPlayback={false}
-            onShouldStartLoadWithRequest={(req) => String(req.url || '').startsWith('data:')}
+            onShouldStartLoadWithRequest={(req) => String(req.url || '') === file!.uri}
           />
         ) : (
           <View style={s.docFallback}>
@@ -924,24 +925,24 @@ function ResumeProfileViewer({ ov, userId, onClose }: {
     try {
       const auth = await adminAuthHeaderValue();
       if (!auth) { Alert.alert('Session expired', 'Sign in again to render the PDF.'); return; }
-      const res = await fetch(adminResumePdfUrl(userId), { headers: { Authorization: auth } });
-      if (!res.ok) {
-        let msg = `The server could not render a PDF (HTTP ${res.status}).`;
-        try { const b = await res.json(); if (b?.detail || b?.error) msg = b.detail || b.error; } catch { /* not json */ }
+      // Straight to disk. Base64-ing a rendered PDF into a JS string is what crashed the raw-file
+      // viewer, and this path had exactly the same shape.
+      const FileSystem = require('expo-file-system');
+      const path = `${FileSystem.cacheDirectory}resume-${userId}.pdf`;
+      const res = await FileSystem.downloadAsync(adminResumePdfUrl(userId), path, {
+        headers: { Authorization: auth },
+      });
+      if (!res || res.status !== 200) {
+        let msg = `The server could not render a PDF (HTTP ${res ? res.status : '?'}).`;
+        try {
+          const body = await FileSystem.readAsStringAsync(path).catch(() => '');
+          const b = body ? JSON.parse(body) : null;
+          if (b && (b.detail || b.error)) msg = b.detail || b.error;
+        } catch { /* not json */ }
+        await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
         Alert.alert('No PDF', msg);
         return;
       }
-      const blob = await res.blob();
-      const dataUri: string = await new Promise((resolve, reject) => {
-        const r = new FileReader();
-        r.onloadend = () => resolve(String(r.result || ''));
-        r.onerror = reject;
-        r.readAsDataURL(blob);
-      });
-      const FileSystem = require('expo-file-system');
-      const base64 = dataUri.split(',')[1] || '';
-      const path = `${FileSystem.cacheDirectory}resume-${userId}.pdf`;
-      await FileSystem.writeAsStringAsync(path, base64, { encoding: 'base64' });
       const Sharing = require('expo-sharing');
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(path, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });

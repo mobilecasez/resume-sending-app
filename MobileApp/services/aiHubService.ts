@@ -1443,27 +1443,40 @@ export async function adminAuthHeaderValue(): Promise<string | null> {
  *
  * Fetching the bytes ourselves means the header is applied exactly once, by us, where we can see it.
  */
-export async function fetchAdminFileAsDataUri(
+export async function fetchAdminFileToCache(
   userId: number | string,
   kind: AdminFileKind,
-): Promise<{ dataUri: string; mime: string; bytes: number } | null> {
+): Promise<{ uri: string; mime: string; bytes: number } | null> {
   const auth = await adminAuthHeaderValue();
   if (!auth) throw new Error('Your admin session has expired — sign in again.');
-  const res = await fetch(adminFileUrl(userId, kind), { headers: { Authorization: auth } });
-  if (!res.ok) {
-    let msg = `The server refused the file (HTTP ${res.status}).`;
-    try { const b = await res.json(); if (b && (b.error || b.stored)) msg = b.error + (b.stored ? ` (${b.stored})` : ''); } catch { /* not json */ }
+
+  const FileSystem = require('expo-file-system');
+  const target = `${FileSystem.cacheDirectory}admin-${kind}-${userId}`;
+
+  // ⚠️ STREAM TO DISK. The previous version fetched the bytes, base64-encoded the whole file into a
+  // JavaScript string, held it in component state and handed it to a WebView as a data: URI. That
+  // CRASHED the app: base64 inflates by ~37%, so a 2 MB résumé becomes a ~2.7 MB string that is
+  // then copied across the bridge and parsed as a URL. downloadAsync writes straight to disk and
+  // never materialises the file in JS memory at all.
+  const res = await FileSystem.downloadAsync(adminFileUrl(userId, kind), target, {
+    headers: { Authorization: auth },
+  });
+  if (!res || res.status !== 200) {
+    let msg = `The server refused the file (HTTP ${res ? res.status : '?'}).`;
+    // The endpoint answers with JSON on failure — small enough to read safely.
+    try {
+      const body = await FileSystem.readAsStringAsync(target).catch(() => '');
+      const b = body ? JSON.parse(body) : null;
+      if (b && (b.error || b.stored)) msg = b.error + (b.stored ? ` (${b.stored})` : '');
+    } catch { /* not json — keep the status message */ }
+    await FileSystem.deleteAsync(target, { idempotent: true }).catch(() => {});
     throw new Error(msg);
   }
-  const blob = await res.blob();
-  const mime = (blob as any).type || res.headers.get('content-type') || 'application/octet-stream';
-  const dataUri: string = await new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onloadend = () => resolve(String(r.result || ''));
-    r.onerror = () => reject(new Error('Could not read the downloaded file'));
-    r.readAsDataURL(blob);
-  });
-  return { dataUri, mime, bytes: (blob as any).size || 0 };
+
+  const info = await FileSystem.getInfoAsync(res.uri).catch(() => null);
+  const mime = String((res.headers && (res.headers['Content-Type'] || res.headers['content-type'])) || '')
+    .split(';')[0] || 'application/octet-stream';
+  return { uri: res.uri, mime, bytes: (info && info.size) || 0 };
 }
 
 export async function adminFileSource(

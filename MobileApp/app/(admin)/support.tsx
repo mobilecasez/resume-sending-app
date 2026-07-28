@@ -194,6 +194,23 @@ export default function AdminSupport() {
   // ── inbox ──────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={s.root}>
+      {/* This screen is the ROOT of the (admin) stack when opened from the menu, so the navigator
+          draws no back arrow. Without this bar the admin is stranded — the same fault the user
+          hit on the support screen. */}
+      <View style={s.topBar}>
+        <TouchableOpacity
+          onPress={() => { if (router.canGoBack()) router.back(); else router.replace('/'); }}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+        >
+          <Ionicons name="arrow-back" size={22} color={C.ink} />
+        </TouchableOpacity>
+        <Text style={s.topBarT}>Support Inbox</Text>
+        <TouchableOpacity onPress={() => load(true)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} accessibilityLabel="Refresh">
+          <Ionicons name="refresh" size={19} color={C.muted} />
+        </TouchableOpacity>
+      </View>
       <ScrollView
         contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} tintColor={C.blue} />}
@@ -262,6 +279,12 @@ export default function AdminSupport() {
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
+  topBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    backgroundColor: C.card, borderBottomColor: C.line, borderBottomWidth: 1,
+    paddingHorizontal: 16, paddingVertical: 12,
+  },
+  topBarT: { flex: 1, fontSize: 15, fontWeight: '900', color: C.ink },
   center: { paddingVertical: 40, alignItems: 'center', justifyContent: 'center' },
   h1: { fontSize: 24, fontWeight: '900', color: C.ink, letterSpacing: -0.6 },
   sub: { fontSize: 13, color: C.muted, marginTop: 4, marginBottom: 14, lineHeight: 19 },
