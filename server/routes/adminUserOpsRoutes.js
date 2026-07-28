@@ -28,6 +28,8 @@ router.get('/admin/users/:id/cover-letters/:letterId', authenticateAdmin, ctrl.g
 // at /files/resume, but it is no longer the only way in — see services/adminResumeView.js.
 router.get('/admin/users/:id/resume-profile', authenticateAdmin, ctrl.getResumeProfile);
 router.get('/admin/users/:id/resume-pdf', authenticateAdmin, ctrl.getResumePdf);
+// Re-parse on demand: {userId} retries one user, {} sweeps whatever is stuck.
+router.post('/admin/resume-reparse', authenticateAdmin, ctrl.reparseResumes);
 
 // Searches with their outcomes, the jobs one search produced, and a no-charge cover-letter render
 // against a real job using that user's own résumé.

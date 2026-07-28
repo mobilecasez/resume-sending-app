@@ -4051,16 +4051,21 @@ catch (e) { console.error('[engagement] failed to start:', e.message); }
 // with live traffic, and a thundering retry during an outage turns a blip into an incident.
 // Disable with RESUME_SWEEPER_DISABLED=1.
 if (process.env.RESUME_SWEEPER_DISABLED !== '1') {
-    const sweep = () => {
+    // ⚠️ LOG EVERY RUN, including the boring ones. The first version of this scheduled itself
+    // silently and logged only when it repaired something — so when the stuck rows did not move
+    // there was no way to tell "it ran and found nothing" from "it never ran", and the only
+    // remaining move was to wait another half hour and look again. Every other scheduler in this
+    // file announces itself at boot; this one now does too, and reports each sweep either way.
+    const sweep = async (why) => {
         try {
-            require('./services/resumeParserService')
-                .retryStuckResumes({ limit: 5 })
-                .then((r) => { if (r && r.retried) console.log(`[resumeParser] sweeper retried ${r.retried} résumé(s): ${r.users.join(', ')}`); })
-                .catch((e) => console.error('[resumeParser] sweeper:', e.message));
-        } catch (e) { console.error('[resumeParser] sweeper start:', e.message); }
+            const r = await require('./services/resumeParserService').retryStuckResumes({ limit: 5 });
+            console.log(`[resumeParser] sweep (${why}): considered ${r.considered}, retried ${r.retried}`
+                + (r.retried ? ` → users ${r.users.join(', ')}` : ''));
+        } catch (e) { console.error(`[resumeParser] sweep (${why}) failed:`, e.message); }
     };
-    setTimeout(sweep, 3 * 60 * 1000);          // once, a few minutes after boot
-    setInterval(sweep, 30 * 60 * 1000);        // then every half hour
+    setTimeout(() => sweep('boot'), 3 * 60 * 1000);
+    setInterval(() => sweep('interval'), 30 * 60 * 1000);
+    console.log('📄 Résumé re-parse sweeper: scheduled (3m after boot, then every 30m)');
 }
 
 // Global job firehose — populate the isolated global_jobs feed from public company ATS boards every

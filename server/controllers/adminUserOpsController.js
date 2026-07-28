@@ -115,6 +115,37 @@ async function testCoverLetter(req, res) {
   }
 }
 
+// POST /api/admin/resume-reparse            { userId? , limit? }
+// Runs the résumé re-parse sweep NOW. Exists because a scheduler you can only observe by waiting
+// 30 minutes is a scheduler you cannot debug — and because an admin looking at a user whose résumé
+// failed should be able to retry it on the spot rather than tell them to re-upload.
+async function reparseResumes(req, res) {
+  try {
+    const svc = require('../../services/resumeParserService');
+    const userId = parseInt((req.body && req.body.userId) || 0, 10);
+    if (userId > 0) {
+      const u = await require('../../db-config')
+        .get('SELECT resume_path FROM users WHERE id = $1 AND deleted_at IS NULL', [userId]);
+      if (!u) return res.status(404).json({ error: 'User not found (or soft-deleted)' });
+      if (!String(u.resume_path || '').trim()) return res.status(400).json({ error: 'That user has no résumé on file' });
+      await svc._parseResume(userId, u.resume_path);
+      const m = await require('../../db-config')
+        .get('SELECT parse_status, parse_error FROM resume_metadata WHERE user_id = $1', [userId]);
+      return res.json({
+        success: true, scope: 'user', userId,
+        parseStatus: m ? m.parse_status : null,
+        parseError: m ? m.parse_error : null,
+      });
+    }
+    const limit = Math.min(25, Math.max(1, parseInt((req.body && req.body.limit) || 5, 10)));
+    const r = await svc.retryStuckResumes({ limit });
+    res.json({ success: true, scope: 'sweep', ...r });
+  } catch (e) {
+    console.error('[adminUserOps] resume reparse:', e.message);
+    res.status(500).json({ error: 'Re-parse failed', detail: e.message });
+  }
+}
+
 // 1) GET /api/admin/users/:id/overview
 async function getOverview(req, res) {
   const id = idOf(req);
@@ -320,5 +351,5 @@ async function notifySegmentUsers(req, res) {
 module.exports = {
   getOverview, getFile, getMatchedJobs, getActivity, getCoverLetter, getTemplates, notifyUser,
   getSegments, getSegmentUsers, notifySegmentUsers,
-  getResumeProfile, getResumePdf, getSearches, getSearchJobs, testCoverLetter,
+  getResumeProfile, getResumePdf, getSearches, getSearchJobs, testCoverLetter, reparseResumes,
 };
