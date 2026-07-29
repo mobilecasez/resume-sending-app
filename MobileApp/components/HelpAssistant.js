@@ -443,9 +443,14 @@ export default function HelpAssistant({ attention = 0, context = 'home' }) {
     const flash = () => {
       if (!alive) return;
       setIdle(true);
-      Animated.timing(idleA, { toValue: 1, duration: 320, useNativeDriver: true }).start();
+      // ⚠️ JS driver, NEVER native: the bubble's view also carries the drag position `pan` in its
+      // transform. A native-driver animation on ANY value of a view migrates every value attached
+      // to that view to native nodes — pan included — and the next JS-driven drag then throws the
+      // FATAL "Attempting to run JS driven animation on animated node that has been moved to
+      // native". That was a real crash in build 128, caught by the global guard.
+      Animated.timing(idleA, { toValue: 1, duration: 320, useNativeDriver: false }).start();
       timers.push(setTimeout(() => {
-        Animated.timing(idleA, { toValue: 0, duration: 450, useNativeDriver: true })
+        Animated.timing(idleA, { toValue: 0, duration: 450, useNativeDriver: false })
           .start(() => { if (alive) setIdle(false); });
       }, 3600));
     };
