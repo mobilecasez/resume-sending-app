@@ -57,6 +57,19 @@ const J = (ctx) => (ctx && ctx.job) || null;
 
 // ── the catalogue ────────────────────────────────────────────────────────────
 const TEMPLATES = [
+  // ── announcements ─────────────────────────────────────────────────────────
+  {
+    key: 'whats_new',
+    label: 'What’s new (release announcement)',
+    description: 'Release highlights — written for 3.4 (Google job search, the step-by-step guide, in-app support). Use overrides to adapt it for later releases. Opens the Jobs page.',
+    category: 'marketing',
+    notifType: 'jobs',
+    route: '/(discover)',
+    params: () => ({}),
+    title: (ctx) => greet(ctx, (n) => `${n}, CVApplyr just got a big upgrade ✨`, 'CVApplyr just got a big upgrade ✨'),
+    body: () => 'Search jobs on the real Google inside the app, follow the new step-by-step guide, and chat with support any time. Plus faster job details and many fixes — update and try it!',
+    suggestWhen: () => ({ suggested: true, reason: 'Release announcement — applies to every reachable user.' }),
+  },
   // ── job discovery ─────────────────────────────────────────────────────────
   {
     key: 'best_matches',
