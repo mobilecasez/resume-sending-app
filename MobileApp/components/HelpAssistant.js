@@ -348,6 +348,29 @@ export default function HelpAssistant({ attention = 0, context = 'home' }) {
     })
   ).current;
 
+  // Dragging the COACH POPUP moves the whole assistant too (popup + button share `pan`). Unlike the
+  // button's responder this must NOT claim the touch on start — the popup has its own tappable
+  // children (See how / close), and claiming on start would eat their taps. It claims on movement.
+  const popupResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6,
+      onPanResponderGrant: () => {
+        pan.setOffset({ x: pan.x.__getValue(), y: pan.y.__getValue() });
+        pan.setValue({ x: 0, y: 0 });
+      },
+      onPanResponderMove: (_e, g) => pan.setValue({ x: g.dx, y: g.dy }),
+      onPanResponderRelease: () => {
+        pan.flattenOffset();
+        const p = clampPos({ x: pan.x.__getValue(), y: pan.y.__getValue() });
+        shared.pos = p;
+        Animated.spring(pan, { toValue: p, friction: 7, useNativeDriver: false }).start(() => notify());
+        AsyncStorage.setItem(POS_KEY, JSON.stringify(p)).catch(() => {});
+      },
+      onPanResponderTerminationRequest: () => false,
+    })
+  ).current;
+
   // ── "Your guide lives here" ────────────────────────────────────────────────────────────────────
   // The intro popup shrinks into this button; the moment it lands, the button rings and says so.
   const ring = useRef(new Animated.Value(0)).current;
@@ -406,6 +429,30 @@ export default function HelpAssistant({ attention = 0, context = 'home' }) {
     }, 26);
     return () => clearInterval(t);
   }, [coach]);
+
+  // ── Idle flash ─────────────────────────────────────────────────────────────────────────────────
+  // When the coach has nothing to say and no hint is up, the button occasionally flashes a small
+  // "For any help, Tap me!!" bubble so a quiet screen still shows where help lives. Fades in for a
+  // few seconds, fades out, repeats — tapping it opens the assistant.
+  const [idle, setIdle] = useState(false);
+  const idleA = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!isTop || open || coach || hint) { setIdle(false); idleA.setValue(0); return undefined; }
+    let alive = true;
+    const timers = [];
+    const flash = () => {
+      if (!alive) return;
+      setIdle(true);
+      Animated.timing(idleA, { toValue: 1, duration: 320, useNativeDriver: true }).start();
+      timers.push(setTimeout(() => {
+        Animated.timing(idleA, { toValue: 0, duration: 450, useNativeDriver: true })
+          .start(() => { if (alive) setIdle(false); });
+      }, 3600));
+    };
+    timers.push(setTimeout(flash, 7000));       // first flash a little after the screen settles
+    const iv = setInterval(flash, 32000);        // then a gentle reminder every so often
+    return () => { alive = false; clearInterval(iv); timers.forEach(clearTimeout); };
+  }, [isTop, open, coach, hint]);
 
   const dismissCoach = useCallback(() => {
     if (coach) shared.coachShown[coach.key] = true;
@@ -479,31 +526,49 @@ export default function HelpAssistant({ attention = 0, context = 'home' }) {
         </Animated.View>
       )}
 
-      {/* ── Coach popup — glass card that types its message, anchored to the button ── */}
+      {/* ── Coach popup — a translucent thought-cloud that types its message. It hangs off the
+             button (two puffs trail down toward it) and DRAGGING the cloud moves both together. ── */}
       {!open && !!coach && (
         <Animated.View
           style={[s.coach, coachOnLeft ? s.coachLeft : s.coachRight, { transform: pan.getTranslateTransform() }]}
+          {...popupResponder.panHandlers}
         >
-          <View style={s.coachGlass}>
+          <View style={[s.cloud, coachOnLeft ? s.cloudTailLeft : s.cloudTailRight]}>
             <View style={s.coachHead}>
               <LinearGradient colors={['#06B6D4', '#3B82F6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.coachIcon}>
                 <Ionicons name="sparkles" size={12} color="#fff" />
               </LinearGradient>
               <Text style={s.coachTitle}>Your guide</Text>
               <TouchableOpacity onPress={dismissCoach} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <Ionicons name="close" size={16} color="rgba(255,255,255,0.65)" />
+                <Ionicons name="close" size={16} color="rgba(255,255,255,0.7)" />
               </TouchableOpacity>
             </View>
             <Text style={s.coachMsg}>
               {typed}
               {typed.length < (coach?.msg?.length || 0) ? <Text style={s.coachCaret}>▍</Text> : null}
             </Text>
-            <TouchableOpacity style={s.coachCta} activeOpacity={0.85} onPress={coachShowHow}>
-              <Ionicons name="play-circle-outline" size={15} color="#67E8F9" />
-              <Text style={s.coachCtaText}>Tap here to see how</Text>
-              <Ionicons name="arrow-forward" size={13} color="#67E8F9" />
+            <TouchableOpacity style={s.coachCta} activeOpacity={0.85} onPress={coachShowHow} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+              <Ionicons name="play-circle-outline" size={13} color="#67E8F9" />
+              <Text style={s.coachCtaText}>See how</Text>
+              <Ionicons name="arrow-forward" size={11} color="#67E8F9" />
             </TouchableOpacity>
           </View>
+          {/* the trail of puffs that ties the cloud to the button */}
+          <View style={[s.puff, s.puffBig, coachOnLeft ? { left: 22 } : { right: 22 }]} />
+          <View style={[s.puff, s.puffSmall, coachOnLeft ? { left: 8 } : { right: 6 }]} />
+        </Animated.View>
+      )}
+
+      {/* ── Idle flash — nothing to say, so just wave occasionally. Tapping it opens the guide. ── */}
+      {!open && idle && !coach && !hint && (
+        <Animated.View
+          style={[s.idleWrap, coachOnLeft ? s.coachLeft : s.coachRight, { opacity: idleA, transform: pan.getTranslateTransform() }]}
+        >
+          <TouchableOpacity activeOpacity={0.85} onPress={() => setOpen(true)} style={[s.cloud, s.idleCloud, coachOnLeft ? s.cloudTailLeft : s.cloudTailRight]}>
+            <Text style={s.idleText}>For any help, Tap me!!</Text>
+          </TouchableOpacity>
+          <View style={[s.puff, s.puffBig, coachOnLeft ? { left: 18 } : { right: 18 }]} />
+          <View style={[s.puff, s.puffSmall, coachOnLeft ? { left: 6 } : { right: 4 }]} />
         </Animated.View>
       )}
 
@@ -628,25 +693,40 @@ const s = StyleSheet.create({
   },
   hintText: { color: '#fff', fontSize: 12.5, fontWeight: '700', lineHeight: 17 },
 
-  // ── Coach popup — dark glass so it reads on both the navy and the light screens ──
-  coach: { position: 'absolute', bottom: HELP_FAB.bottom + HELP_FAB.size + 12, width: Math.min(SW * 0.74, 300), zIndex: 999 },
+  // ── Coach popup — a translucent thought-cloud (uneven corners + puffs toward the button) so it
+  //    reads as the button "thinking", on both the navy and the light screens ──
+  coach: { position: 'absolute', bottom: HELP_FAB.bottom + HELP_FAB.size - 4, width: Math.min(SW * 0.8, 320), zIndex: 999, paddingBottom: 30 },
   coachRight: { right: HELP_FAB.right },
   coachLeft: { right: undefined, left: HELP_FAB.right },
-  coachGlass: {
-    backgroundColor: 'rgba(13,20,40,0.88)', borderRadius: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.16)',
-    paddingHorizontal: 14, paddingTop: 11, paddingBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.35, shadowRadius: 22, elevation: 12,
+  cloud: {
+    backgroundColor: 'rgba(13,20,40,0.72)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.24)',
+    paddingHorizontal: 15, paddingTop: 11, paddingBottom: 13,
+    // Uneven on purpose — even radii read as a card, these read as a cloud.
+    borderTopLeftRadius: 32, borderTopRightRadius: 22, borderBottomLeftRadius: 26, borderBottomRightRadius: 28,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.32, shadowRadius: 22, elevation: 12,
   },
+  // the corner nearest the button tucks in, pointing the cloud at it
+  cloudTailRight: { borderBottomRightRadius: 8 },
+  cloudTailLeft: { borderBottomLeftRadius: 8 },
+  puff: { position: 'absolute', backgroundColor: 'rgba(13,20,40,0.62)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.22)' },
+  puffBig: { width: 16, height: 16, borderRadius: 8, bottom: 12 },
+  puffSmall: { width: 9, height: 9, borderRadius: 5, bottom: 1 },
   coachHead: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 7 },
   coachIcon: { width: 22, height: 22, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   coachTitle: { flex: 1, fontSize: 11, fontWeight: '800', color: 'rgba(255,255,255,0.72)', letterSpacing: 0.7, textTransform: 'uppercase' },
   coachMsg: { fontSize: 13.5, color: '#FFFFFF', lineHeight: 20, fontWeight: '600' },
   coachCaret: { color: '#67E8F9', fontWeight: '400' },
+  // A slim pill, not a full-width bar — the message is the point, the button just says where to tap.
   coachCta: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 11, height: 38,
-    borderRadius: 12, backgroundColor: 'rgba(103,232,249,0.12)', borderWidth: 1, borderColor: 'rgba(103,232,249,0.35)',
+    flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', gap: 5, marginTop: 10,
+    paddingHorizontal: 12, height: 30, borderRadius: 15,
+    backgroundColor: 'rgba(103,232,249,0.14)', borderWidth: 1, borderColor: 'rgba(103,232,249,0.4)',
   },
-  coachCtaText: { fontSize: 12.5, fontWeight: '800', color: '#67E8F9' },
+  coachCtaText: { fontSize: 12, fontWeight: '800', color: '#67E8F9' },
+  // idle "Tap me" — the same cloud, minified
+  idleWrap: { position: 'absolute', bottom: HELP_FAB.bottom + HELP_FAB.size - 4, maxWidth: SW * 0.6, zIndex: 999, paddingBottom: 26 },
+  idleCloud: { paddingHorizontal: 14, paddingTop: 9, paddingBottom: 10 },
+  idleText: { fontSize: 12.5, fontWeight: '800', color: '#FFFFFF', letterSpacing: 0.2 },
 
   overlay: { flex: 1, backgroundColor: 'rgba(6,10,25,0.5)', justifyContent: 'flex-end' },
   sheet: { backgroundColor: '#F4F7FC', borderTopLeftRadius: 26, borderTopRightRadius: 26, maxHeight: SH * 0.92, paddingBottom: Platform.OS === 'ios' ? 28 : 14 },
