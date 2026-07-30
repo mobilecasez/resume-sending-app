@@ -1369,6 +1369,27 @@ export default function HomeScreen({
   }, [setScreen]);
   const showOnboarding = !onboardingDismissed && setup && !setup.complete;
 
+  // What's left on the plan/trial — powers the hero summary; refreshed on every Home focus so a
+  // generation elsewhere is reflected the moment the user comes back.
+  const [subLeft, setSubLeft] = useState(null);   // { letters, resumes, planLabel } | null
+  useFocusEffect(useCallback(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const st = await require('../services/subscriptionService').fetchSubscriptionStatus();
+        if (!alive || !st) return;
+        if (st.via === 'plan' || st.via === 'trial') {
+          setSubLeft({
+            letters: st.remaining?.letters ?? 0,
+            resumes: st.remaining?.resumes ?? 0,
+            planLabel: st.via === 'plan' ? (st.subscription?.label || 'your plan') : 'free trial',
+          });
+        } else setSubLeft(null);   // no plan/trial → legacy credit number stays
+      } catch { /* keep whatever we showed last */ }
+    })();
+    return () => { alive = false; };
+  }, []));
+
   // First-run explainer — shown ONCE per user (before any setup), tells them what the app does.
   // Override: if the server sends alwaysShowIntro (env ALWAYS_SHOW_INTRO=1), show it EVERY launch —
   // handy for testing the intro on TestFlight without a rebuild (toggle the Railway env var).
@@ -1765,22 +1786,34 @@ export default function HomeScreen({
             </View>
           </View>
 
-          {/* Credits row: big number left + reply mini-card right */}
-          <View style={styles.creditsRow}>
+          {/* What's left this period (plan/trial) — tap for the detailed Usage screen. Falls back
+              to the legacy credit number until the subscription status has loaded. */}
+          <TouchableOpacity
+            style={styles.creditsRow}
+            activeOpacity={0.8}
+            onPress={() => require('expo-router').router?.push?.('/(subscription)/usage')}
+          >
             <View>
-              <Text style={styles.creditsNumber}>{creditBalance}</Text>
-              <Text style={styles.creditsLabel}>AVAILABLE CREDITS</Text>
+              <Text style={styles.creditsNumber}>{subLeft ? subLeft.letters : creditBalance}</Text>
+              <Text style={styles.creditsLabel}>{subLeft ? 'COVER LETTERS LEFT' : 'AVAILABLE CREDITS'}</Text>
+              {subLeft && (
+                <Text style={styles.subResumesLeft}>{subLeft.resumes} resume generation{subLeft.resumes === 1 ? '' : 's'} left · {subLeft.planLabel}</Text>
+              )}
             </View>
             <View style={styles.replyMiniCard}>
               <Text style={styles.replyMiniLabel}>REPLIES</Text>
               <Text style={styles.replyMiniValue}>{totalReplied}/{totalSent}</Text>
             </View>
-          </View>
+          </TouchableOpacity>
 
-          {/* Top up button — below credits */}
-          <TouchableOpacity style={styles.topUpPill} onPress={() => setScreen('usage')} activeOpacity={0.85}>
-            <Ionicons name="flash" size={11} color={T.ink} />
-            <Text style={styles.topUpText}>Top up</Text>
+          {/* Upgrade — straight to the plans */}
+          <TouchableOpacity
+            style={styles.topUpPill}
+            onPress={() => require('expo-router').router?.push?.('/(subscription)/plans')}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="diamond-outline" size={11} color={T.ink} />
+            <Text style={styles.topUpText}>Upgrade</Text>
           </TouchableOpacity>
 
           {/* Glass stat strip */}
@@ -2364,6 +2397,7 @@ const styles = StyleSheet.create({
   creditsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   creditsNumber: { fontSize: 64, fontWeight: '800', color: '#fff', lineHeight: 68, letterSpacing: -2 },
   creditsLabel: { fontSize: 10, fontWeight: '700', letterSpacing: 1.6, color: 'rgba(255,255,255,0.5)', marginBottom: 10, marginTop: 2 },
+  subResumesLeft: { fontSize: 11, fontWeight: '600', color: 'rgba(255,255,255,0.65)', marginTop: -4, marginBottom: 8 },
   replyMiniCard: {
     backgroundColor: 'rgba(255,255,255,0.12)',
     borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
