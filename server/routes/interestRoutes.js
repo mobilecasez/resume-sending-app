@@ -11,6 +11,42 @@ const parseSkills = (v) => {
   return [...new Set(arr.map((s) => String(s).trim()).filter(Boolean))].slice(0, 8);
 };
 
+const cleanJobUrl = (v) => {
+  const u = String(v || '').trim();
+  if (!/^https?:\/\/\S+$/i.test(u) || u.length > 500) return null;
+  // Aggregators block server fetches (LinkedIn's 999 wall etc.) — reject up front with a clear
+  // message instead of letting the ingest spin forever.
+  if (/linkedin\.com|indeed\.|glassdoor\./i.test(u)) return 'aggregator';
+  return u;
+};
+
+// Ingest attempt tracker: pinned URLs get 3 tries with a growing cooldown, then are marked failed
+// so the client can say "we couldn't fetch this" instead of "fetching…" forever, and so re-opening
+// a card never turns into an unbounded fetch+AI spend loop. Also closes the POST/GET double-fire
+// race — the first caller's entry blocks the concurrent second. In-memory: a restart just grants
+// a fresh set of tries, which is fine.
+const INGEST_MAX_TRIES = 3;
+const _ingestAttempts = new Map();   // url -> { tries, nextAt, failed }
+const urlIngestFailed = (u) => { const e = _ingestAttempts.get(u); return !!(e && e.failed); };
+
+// Fire-and-forget: pull the pinned posting into global_jobs so the card can show it. Lazy require
+// keeps route load independent of the research service's env checks.
+function ingestPinnedUrl(jobUrl, country, city) {
+  const now = Date.now();
+  const e = _ingestAttempts.get(jobUrl) || { tries: 0, nextAt: 0, failed: false };
+  if (e.failed || now < e.nextAt) return;
+  e.tries += 1;
+  e.nextAt = now + Math.min(10 * 60 * 1000 * Math.pow(2, e.tries), 6 * 3600 * 1000);
+  if (e.tries >= INGEST_MAX_TRIES) e.failed = true;   // this is the last try — flag when it also yields nothing
+  _ingestAttempts.set(jobUrl, e);
+  try {
+    const { ingestUrl } = require('../services/demandResearch');
+    ingestUrl(jobUrl, { country: country || null, city: city || null }, 'user_pinned')
+      .then((saved) => { if (saved > 0) _ingestAttempts.delete(jobUrl); })
+      .catch(() => {});
+  } catch {}
+}
+
 // Dropdown data for the add-interest form: countries that actually have jobs (count-ordered),
 // and per-country cities extracted from job locations — so users only pick places with supply.
 router.get('/interests/meta', authenticateToken, async (req, res) => {
@@ -73,7 +109,8 @@ router.get('/interests/suggested', authenticateToken, async (req, res) => {
                 ROW_NUMBER() OVER (PARTITION BY country ORDER BY first_seen DESC) AS rn,
                 COUNT(*) OVER (PARTITION BY country) AS country_total
            FROM global_jobs
-          WHERE is_active AND country IS NOT NULL AND country <> '' AND country <> 'Global' AND (${likeAny})
+          WHERE is_active AND country IS NOT NULL AND country <> '' AND country <> 'Global'
+            AND COALESCE(source, '') <> 'user_pinned' AND (${likeAny})
        )
        SELECT * FROM matched WHERE rn <= 4
        ORDER BY country_total DESC, country, rn
@@ -97,7 +134,7 @@ router.get('/interests/suggested', authenticateToken, async (req, res) => {
 router.get('/interests', authenticateToken, async (req, res) => {
   try {
     const rows = await dbConfig.query(
-      'SELECT id, label, country, city, skills, created_at FROM user_job_interests WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20',
+      'SELECT id, label, country, city, skills, job_url, created_at FROM user_job_interests WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20',
       [req.user.id]);
     const items = [];
     for (const r of rows || []) {
@@ -105,14 +142,19 @@ router.get('/interests', authenticateToken, async (req, res) => {
       try { skills = Array.isArray(r.skills) ? r.skills : JSON.parse(r.skills || '[]'); } catch {}
       const lowered = skills.map((s) => String(s).toLowerCase());
       let count = 0;
-      if (lowered.length) {
+      if (lowered.length && r.country) {
         const likeAny = lowered.map((_, i) => `(LOWER(skills::text) LIKE $${i + 2} OR LOWER(title) LIKE $${i + 2})`).join(' OR ');
         const q = await dbConfig.query(
           `SELECT COUNT(*)::int AS n FROM global_jobs WHERE is_active AND country = $1 AND (${likeAny})`,
           [r.country, ...lowered.map((s) => `%${s}%`)]).catch(() => null);
         count = q && q[0] ? q[0].n : 0;
       }
-      items.push({ id: r.id, label: r.label, country: r.country, city: r.city, skills, jobCount: count, createdAt: r.created_at });
+      if (r.job_url) {
+        const u = await dbConfig.query(
+          'SELECT 1 FROM global_jobs WHERE is_active AND job_url = $1 LIMIT 1', [r.job_url]).catch(() => null);
+        if (u && u.length) count += 1;
+      }
+      items.push({ id: r.id, label: r.label, country: r.country, city: r.city, skills, jobUrl: r.job_url || null, jobCount: count, createdAt: r.created_at });
     }
     res.json({ success: true, items });
   } catch (e) {
@@ -124,16 +166,35 @@ router.get('/interests', authenticateToken, async (req, res) => {
 router.post('/interests', authenticateToken, async (req, res) => {
   try {
     const b = req.body || {};
-    const country = String(b.country || '').trim().slice(0, 78);
+    const country = String(b.country || '').trim().slice(0, 78) || null;
     const city = String(b.city || '').trim().slice(0, 120) || null;
     const skills = parseSkills(b.skills);
-    if (!country) return res.status(400).json({ error: 'Country is required' });
-    if (!skills.length) return res.status(400).json({ error: 'Add at least one skill or role' });
-    const label = String(b.label || '').trim().slice(0, 140) || `${skills[0]} · ${city ? city + ', ' : ''}${country}`;
+    const jobUrl = cleanJobUrl(b.jobUrl);
+    if (jobUrl === 'aggregator') {
+      return res.status(400).json({ error: 'LinkedIn / Indeed / Glassdoor links can’t be fetched — paste the job’s link on the employer’s own careers site instead.' });
+    }
+    // Two valid shapes: place + skills (the watch), or an exact posting URL (fetch just that job).
+    if (!jobUrl) {
+      if (!country) return res.status(400).json({ error: 'Country is required' });
+      if (!skills.length) return res.status(400).json({ error: 'Add at least one skill or role' });
+    }
+    // Cap per user: bounds both the UI (list shows 20) and pinned-URL ingest abuse.
+    const cnt = await dbConfig.query(
+      'SELECT COUNT(*)::int AS n FROM user_job_interests WHERE user_id = $1', [req.user.id]).catch(() => null);
+    if (cnt && cnt[0] && cnt[0].n >= 20) {
+      return res.status(400).json({ error: 'You can keep up to 20 cards — remove one first.' });
+    }
+    let label = String(b.label || '').trim().slice(0, 140);
+    if (!label) {
+      if (skills.length && country) label = `${skills[0]} · ${city ? city + ', ' : ''}${country}`;
+      else if (jobUrl) { try { label = `Job at ${new URL(jobUrl).hostname.replace(/^www\./, '')}`; } catch { label = 'Pinned job'; } }
+      else label = country || 'My interest';
+    }
     const rows = await dbConfig.query(
-      `INSERT INTO user_job_interests (user_id, label, country, city, skills)
-       VALUES ($1,$2,$3,$4,$5::jsonb) RETURNING id`,
-      [req.user.id, label, country, city, JSON.stringify(skills)]);
+      `INSERT INTO user_job_interests (user_id, label, country, city, skills, job_url)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6) RETURNING id`,
+      [req.user.id, label, country, city, JSON.stringify(skills), jobUrl]);
+    if (jobUrl) ingestPinnedUrl(jobUrl, country, city);
     res.json({ success: true, id: rows && rows[0] ? rows[0].id : null });
   } catch (e) {
     console.error('[interests] create:', e.message);
@@ -159,13 +220,33 @@ router.get('/interests/:id/jobs', authenticateToken, async (req, res) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 50);
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
     const rows = await dbConfig.query(
-      'SELECT country, city, skills FROM user_job_interests WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+      'SELECT country, city, skills, job_url FROM user_job_interests WHERE id = $1 AND user_id = $2', [id, req.user.id]);
     if (!rows || !rows.length) return res.status(404).json({ error: 'Interest not found' });
     const it = rows[0];
     let skills = [];
     try { skills = Array.isArray(it.skills) ? it.skills : JSON.parse(it.skills || '[]'); } catch {}
     const lowered = skills.map((s) => String(s).toLowerCase());
-    if (!lowered.length) return res.json({ success: true, jobs: [], total: 0 });
+
+    // Pinned exact posting always tops the card. While its background fetch is still running the
+    // response flags pendingUrl so the client can say "fetching this job" instead of "no jobs";
+    // after the tracker exhausts its tries it flips to urlFailed so the client can be honest.
+    let urlJobs = [];
+    let pendingUrl = false;
+    let urlFailed = false;
+    if (it.job_url) {
+      urlJobs = (await dbConfig.query(
+        `SELECT id, job_url, title, employer_name, employer_domain, location, work_mode, job_type,
+                salary, experience, responsibilities, skills, country, first_seen
+           FROM global_jobs WHERE is_active AND job_url = $1 LIMIT 1`, [it.job_url]).catch(() => null)) || [];
+      if (!urlJobs.length) {
+        if (urlIngestFailed(it.job_url)) urlFailed = true;
+        else { pendingUrl = true; ingestPinnedUrl(it.job_url, it.country, it.city); }
+      }
+    }
+
+    if (!lowered.length || !it.country) {
+      return res.json({ success: true, total: urlJobs.length, jobs: offset === 0 ? urlJobs : [], pendingUrl, urlFailed });
+    }
     const likeAny = lowered.map((_, i) => `(LOWER(skills::text) LIKE $${i + 2} OR LOWER(title) LIKE $${i + 2})`).join(' OR ');
     const params = [it.country, ...lowered.map((s) => `%${s}%`)];
     const cityRank = it.city
@@ -175,14 +256,24 @@ router.get('/interests/:id/jobs', authenticateToken, async (req, res) => {
     const total = await dbConfig.query(
       `SELECT COUNT(*)::int AS n FROM global_jobs WHERE is_active AND country = $1 AND (${likeAny})`,
       params.slice(0, 1 + lowered.length));
-    const jobs = await dbConfig.query(
+    const jobs = (await dbConfig.query(
       `SELECT id, job_url, title, employer_name, employer_domain, location, work_mode, job_type,
               salary, experience, responsibilities, skills, country, first_seen
          FROM global_jobs
         WHERE is_active AND country = $1 AND (${likeAny})
         ORDER BY ${cityRank}, first_seen DESC
-        LIMIT ${limit} OFFSET ${offset}`, params);
-    res.json({ success: true, total: total && total[0] ? total[0].n : 0, jobs: jobs || [] });
+        LIMIT ${limit} OFFSET ${offset}`, params)) || [];
+    const pinnedUrl = urlJobs.length ? urlJobs[0].job_url : null;
+    const merged = offset === 0
+      ? [...urlJobs, ...jobs.filter((j) => j.job_url !== pinnedUrl)]
+      : jobs.filter((j) => j.job_url !== pinnedUrl);
+    res.json({
+      success: true,
+      total: (total && total[0] ? total[0].n : 0) + urlJobs.length,
+      jobs: merged,
+      pendingUrl,
+      urlFailed,
+    });
   } catch (e) {
     console.error('[interests] jobs:', e.message);
     res.status(500).json({ error: 'Could not load jobs for this interest' });

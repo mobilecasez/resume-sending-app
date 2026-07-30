@@ -3925,7 +3925,7 @@ export default function JobDetailScreen() {
           <View style={s.card}>
             <Text style={s.sectionLabel}>REQUIRED SKILLS</Text>
             <View style={s.skillsRow}>
-              {visibleSkills.map((skill, i) => (
+              {visibleSkills.map((skill: string, i: number) => (
                 <View key={i} style={s.skillChip}>
                   <Text style={s.skillChipText}>{skill}</Text>
                 </View>

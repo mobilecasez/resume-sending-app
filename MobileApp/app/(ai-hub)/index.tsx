@@ -49,7 +49,8 @@ import { track } from '../../services/analytics';
 import { ExploreFeed } from '../(discover)';
 import SortControl from '../../components/SortControl';
 import SavedJobsList from '../../components/SavedJobsList';
-import InterestBoard from '../../components/InterestBoard';
+import InterestBoard, { gradFor as interestGradFor, hashId as interestJobHash } from '../../components/InterestBoard';
+import type { InterestJob } from '../../services/interestsService';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
@@ -788,10 +789,13 @@ const JobCard = React.memo(function JobCard({ job, employer, clStatus, onApply, 
 
     {/* ── Footer ── */}
     <View style={styles.cardFooter}>
+      {/* Synthetic gj_ ids (directory jobs) have no DB row — the contacts endpoint would 500. */}
+      {!String(job.id).startsWith('gj_') && (
       <TouchableOpacity onPress={() => onAddContact(job.id)} style={styles.addContactBtn}>
         <Ionicons name="person-add-outline" size={13} color={T.textMuted} />
         <Text style={styles.addContactBtnText}>Add Contact</Text>
       </TouchableOpacity>
+      )}
       {!!job.applyUrl && (
         <TouchableOpacity onPress={() => onVisitJob(job)} style={styles.visitJobBtn}>
           <Ionicons name="open-outline" size={13} color={T.blue} />
@@ -1301,6 +1305,7 @@ export default function AIHubScreen() {
   const [hubSavedCount, setHubSavedCount] = useState(0);
   const [hubSavedStats, setHubSavedStats] = useState({ count: 0, withCl: 0, applied: 0 });   // Saved-tab summary
   const [hubSearchStats, setHubSearchStats] = useState({ total: 0, remote: 0, fields: 0, regions: 0 });   // Search-tab summary
+  const [interestStats, setInterestStats] = useState({ groups: 0, jobs: 0, pinned: 0 });                  // My Jobs hero summary (from InterestBoard)
 
   // Refresh the Saved count + summary independently of the Saved tab being mounted — so the hero/tab badge
   // update right after a live-fetch (which happens on the Search tab) closes, not only when Saved is opened.
@@ -1471,7 +1476,8 @@ export default function AIHubScreen() {
   const employersRef = useRef<Employer[]>([]);
   useFocusEffect(
     useCallback(() => {
-      if (employersRef.current.length === 0) return;
+      // No employers guard here: interest-card jobs need statuses too (the batch endpoint
+      // resolves gj_ aliases), and users without tracked companies are now the main audience.
       loadAllJobStatuses().then((s) => { if (Object.keys(s).length) setJobStatuses(s); });
     }, [])
   );
@@ -1596,7 +1602,12 @@ export default function AIHubScreen() {
         if (cancelled) return;
         freshApplied = true;
         if (!dashboard || dashboard.length === 0) {
-          setEmployers([]); setPills([]); setInitialLoading(false); return;
+          setEmployers([]); setPills([]); setInitialLoading(false);
+          // Still load statuses: interest-card jobs (gj_ aliases) carry Applied/CL badges even
+          // when the user never tracked a company.
+          const st = await loadAllJobStatuses();
+          if (!cancelled && Object.keys(st).length) setJobStatuses(st);
+          return;
         }
         const { sorted } = applyDashboard(dashboard);
         sorted.forEach((entry) => {
@@ -1818,6 +1829,37 @@ export default function AIHubScreen() {
     if (job.applyUrl) Linking.openURL(job.applyUrl);
   }, []);
 
+  // A directory job from an interest group, rendered as the SAME detailed JobCard used everywhere
+  // else in the app. matchScore -1 = "unscorable" (renders no badge) — null would show a false
+  // "Evaluating" pulse for jobs nobody is scoring.
+  const renderInterestJob = useCallback((j: InterestJob) => {
+    const name = j.employer_name || 'Company';
+    const employer: any = {
+      id: 'g_' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), name,
+      subInfo: [j.location, j.country].filter(Boolean).join(' · ') || 'Live opening',
+      logoColor: interestGradFor(name), logoInitial: (name[0] || '?').toUpperCase(),
+      status: 'active', jobs: [], domain: j.employer_domain || '',
+    };
+    const job: any = {
+      id: interestJobHash(j.job_url || String(j.id)), title: j.title, location: j.location || 'Not specified',
+      experience: j.experience || '', salary: j.salary || '', jobType: j.job_type || '',
+      workMode: j.work_mode || null, urgent: false,
+      skills: Array.isArray(j.skills) ? j.skills : [],
+      responsibilities: Array.isArray(j.responsibilities) ? j.responsibilities : [],
+      contacts: [], applyUrl: j.job_url, matchScore: -1,
+    };
+    return (
+      <JobCard
+        job={job}
+        employer={employer}
+        clStatus={jobStatuses[job.id] ?? null}
+        onApply={handleApply}
+        onAddContact={handleAddContact}
+        onVisitJob={handleVisitJob}
+      />
+    );
+  }, [jobStatuses, handleApply, handleAddContact, handleVisitJob]);
+
   const openModal = () => {
     setInputValue('https://');
     setModalVisible(true);
@@ -1891,7 +1933,12 @@ export default function AIHubScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.addBtn}
-            onPress={() => { if (hubTab === 'myjobs') setInterestAddOpen(true); else openModal(); }}
+            onPress={() => {
+              // Always the interest form: the legacy Add-Company search has no rendering surface
+              // anymore, so its modal must not be reachable. The form lives on the My Jobs tab.
+              if (hubTab !== 'myjobs') setHubTab('myjobs');
+              setInterestAddOpen(true);
+            }}
             activeOpacity={0.8}
           >
             <Ionicons name="add" size={18} color={T.ink} />
@@ -1915,9 +1962,9 @@ export default function AIHubScreen() {
             ? (hubSearchStats.total > 0 ? `${hubSearchStats.total.toLocaleString('en-US')} live openings — describe the job you want` : 'Describe the job you want — found across the live web')
             : hubTab === 'saved'
             ? (hubSavedStats.count > 0 ? `${hubSavedStats.count} job${hubSavedStats.count === 1 ? '' : 's'} fetched from the web` : 'Jobs you fetch from the web appear here')
-            : (employers.length > 0
-              ? `Tracking ${stats.sources} ${stats.sources === 1 ? 'company' : 'companies'} · ${stats.matches} match${stats.matches === 1 ? '' : 'es'} · ${stats.contacts} contacts`
-              : 'Add a company to start AI job matching')}
+            : (interestStats.groups > 0
+              ? `${interestStats.groups} ${interestStats.groups === 1 ? 'watchlist' : 'watchlists'} · ${interestStats.jobs.toLocaleString('en-US')} matched jobs — researched twice a day`
+              : 'Tell us where and what — we research it for you twice a day')}
         </Text>
         <View style={styles.statsRow}>
           {(hubTab === 'search'
@@ -1934,10 +1981,10 @@ export default function AIHubScreen() {
                 { value: String(hubSavedStats.applied), label: 'Applied', color: '#34D399' },
               ]
             : [
-                { value: String(stats.matches), label: 'Matches', color: '#22D3EE' },
-                { value: String(stats.contacts), label: 'Contacts', color: '#A78BFA' },
-                { value: `${employers.length > 0 ? stats.verifiedPct : 0}%`, label: 'Verified', color: '#34D399' },
-                { value: String(stats.sources), label: 'Companies', color: '#FB923C' },
+                { value: String(interestStats.groups), label: 'Watchlists', color: '#22D3EE' },
+                { value: interestStats.jobs.toLocaleString('en-US'), label: 'Matched jobs', color: '#A78BFA' },
+                { value: String(interestStats.pinned), label: 'Pinned', color: '#34D399' },
+                { value: '2×', label: 'Daily runs', color: '#FB923C' },
               ]
           ).map((s, i, arr) => (
             <React.Fragment key={s.label}>
@@ -1965,11 +2012,6 @@ export default function AIHubScreen() {
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-        scrollEventThrottle={16}
-        onScroll={(e) => {
-          const should = e.nativeEvent.contentOffset.y > 240;
-          setShowFloatingFilter((prev) => (prev === should ? prev : should));
-        }}
       >
 
         <View style={{ height: 2 }} />
@@ -1977,293 +2019,22 @@ export default function AIHubScreen() {
         {/* ══ BODY (light bg) ══════════════════════════════════════════════════ */}
         <View style={styles.body}>
 
-          {/* ── LOCATION INTERESTS — the new heart of this tab: place + skills cards fed from the
-                 global directory, researched twice a day, with match push notifications. The
-                 legacy company-search cards render BELOW for users who already have them. ── */}
+          {/* ── LOCATION INTERESTS — this IS the tab now: square group cards (country/city/pinned
+                 job) in the same horizontal strip the company cards used, jobs of the selected
+                 group below as the app's real detailed job cards. The legacy company list is gone;
+                 a pinned exact-job URL in the add form replaces "track a company". ── */}
           <InterestBoard
             addOpen={interestAddOpen}
             onAddClose={() => setInterestAddOpen(false)}
             onRequestAdd={() => setInterestAddOpen(true)}
-            onOpenCompanySearch={openModal}
+            renderJob={renderInterestJob}
+            onStats={setInterestStats}
           />
 
-          {initialLoading ? (
-            <View style={styles.emptyState}>
-              <ActivityIndicator size="large" color={T.blue} />
-              <Text style={styles.emptyStateTitle}>Loading your dashboard...</Text>
-            </View>
-          ) : employers.length === 0 && loadingCompanies.length === 0 ? (
-            <View style={[styles.emptyState, { paddingVertical: 18 }]}>
-              <Text style={styles.emptyStateSub}>
-                Tracking a specific company? Add its careers page and AI finds its matching jobs and hiring contacts.
-              </Text>
-              <TouchableOpacity onPress={openModal} activeOpacity={0.85} style={styles.emptyBtnOuter}>
-                <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.emptyBtn}>
-                  <Ionicons name="add" size={18} color="white" />
-                  <Text style={styles.emptyBtnText}>Add target company</Text>
-                </LinearGradient>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <>
-              {/* Loading cards */}
-              {loadingCompanies.map((company) => {
-                // Show a clean display name: extract hostname from URL or use as-is
-                let displayName = company;
-                try {
-                  if (company.startsWith('http')) {
-                    displayName = new URL(company).hostname.replace(/^www\./, '');
-                  }
-                } catch {}
-
-                return (
-                  <View key={company} style={styles.loaderCard}>
-                    <View style={styles.loaderHeader}>
-                      <LinearGradient colors={[T.blue, T.purple]} style={styles.loaderIcon}>
-                        <ActivityIndicator size="small" color="#fff" />
-                      </LinearGradient>
-                      <View style={styles.loaderTexts}>
-                        <Text style={styles.loaderTitle} numberOfLines={1}>Analyzing {displayName}</Text>
-                        <Text style={styles.loaderSub}>AI is scraping and matching jobs</Text>
-                      </View>
-                      <TouchableOpacity
-                        style={styles.loaderDeleteBtn}
-                        activeOpacity={0.7}
-                        onPress={() => {
-                          setLoadingCompanies((prev) => prev.filter((c) => c !== company));
-                          setPills((prev) => prev.filter((p) => p.label !== company));
-                          getInflightSearches().then((entries) => {
-                            const entry = entries.find((e) => e.companyName === company);
-                            if (entry) removeInflightSearch(entry.jobId);
-                          });
-                        }}
-                      >
-                        <Ionicons name="close" size={16} color={T.textMuted} />
-                      </TouchableOpacity>
-                    </View>
-                    <IndeterminateBar />
-                    <Text style={styles.loaderNote}>This can take a minute. You can leave the app — we'll notify you when done.</Text>
-                  </View>
-                );
-              })}
-              {loadingCompanies.length > 0 && <LoadingTips />}
-
-              {/* ── Horizontal company card strip ── */}
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.companyStrip}
-                style={styles.companyStripScroll}
-              >
-                {employers.map((employer) => (
-                  <CompanyCard
-                    key={employer.id}
-                    employer={employer}
-                    selected={selectedEmployerId === employer.id}
-                    loading={loadingEmployerId === employer.id}
-                    processing={processingEmployerIds.has(employer.id)}
-                    onPress={() => {
-                      if (loadingEmployerId) return;                       // a switch is already loading
-                      if (selectedEmployerId === employer.id) { setSelectedEmployerId(null); return; }
-                      setLoadingEmployerId(employer.id);                   // paint the loader first…
-                      requestAnimationFrame(() => setSelectedEmployerId(employer.id)); // …then the heavy switch
-                    }}
-                    onRemove={() => {
-                      // Ignore rapid repeat taps: the list re-render lags a beat, and a
-                      // second tap would land on whichever card shifted into that spot.
-                      const now = Date.now();
-                      if (now - lastRemoveRef.current < 400) return;
-                      lastRemoveRef.current = now;
-                      const pill = pills.find((p) => p.employerId === employer.id);
-                      if (pill) handleRemovePill(pill.id);
-                      else removeEmployerCore(employer.id);
-                    }}
-                  />
-                ))}
-              </ScrollView>
-
-              {/* Sort control for My Jobs (best match / newest) — right-aligned above the job cards. */}
-              {visibleEmployers.length > 0 && (
-                <View style={styles.myJobsSortRow}>
-                  <SortControl options={[{ key: 'match', label: 'Best match' }, { key: 'recent', label: 'Newest first' }]} value={myJobsSort} onChange={(k) => setMyJobsSort(k as any)} />
-                </View>
-              )}
-
-              {/* ── Job cards for selected / all companies ── */}
-              {visibleEmployers.map((employer) => {
-                // Always best-match first: scored jobs rank by % (highest → lowest).
-                // Still-evaluating / unscorable jobs (matchScore null or -1) fall to the
-                // bottom, newest-first among themselves (createdAt desc).
-                const jobs = [...(employer.jobs || [])].sort((a, b) => {
-                  const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-                  const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-                  if (myJobsSort === 'recent') { if (tb !== ta) return tb - ta; }
-                  const ma = typeof a.matchScore === 'number' && a.matchScore >= 0 ? a.matchScore : -1;
-                  const mb = typeof b.matchScore === 'number' && b.matchScore >= 0 ? b.matchScore : -1;
-                  if (mb !== ma) return mb - ma;
-                  return tb - ta;
-                });
-                // Per-company filter (Location + minimum match) — applied ONLY when a single
-                // company is selected; switching company resets it (effect above).
-                const filteredJobs = selectedEmployerId
-                  ? jobs.filter((j) => {
-                      const { country, city } = parseLocation(j.location);
-                      return (countryFilter.length === 0 || countryFilter.includes(country)) &&
-                        (cityFilter.length === 0 || cityFilter.includes(city)) &&
-                        (minMatch === 0 || (typeof j.matchScore === 'number' && j.matchScore >= minMatch));
-                    })
-                  : jobs;
-                // All-companies view renders EVERY employer in one ScrollView pass — window each
-                // to a short preview so it can't freeze; "See all" selects that company.
-                const allView = !selectedEmployerId;
-                const shownJobs = allView ? filteredJobs.slice(0, 5) : filteredJobs;
-                const empTotal = (employer as any).totalJobs ?? jobs.length;
-                const isProcessing = processingEmployerIds.has(employer.id);
-                // No jobs and not processing — show a helpful empty-state card
-                if (jobs.length === 0 && !isProcessing) {
-                  return (
-                  <View key={employer.id}>
-                  <View style={styles.noJobsCard}>
-                    <LinearGradient colors={employer.logoColor || ['#555', '#222']} style={styles.noJobsLogo}>
-                      <Text style={styles.noJobsLogoText}>{employer.logoInitial}</Text>
-                    </LinearGradient>
-                    <Text style={styles.noJobsTitle}>No openings found on {employer.name}'s portal</Text>
-                    <Text style={styles.noJobsBody}>
-                      This company may not be actively posting jobs on their career page right now — their listings may be behind a login wall our AI can't access.
-                      {'\n\n'}
-                      You can still apply proactively. Search for this role on any major job platform to find the right contact, then add the recruiter's details on your{' '}
-                      <Text style={styles.noJobsHighlight}>CVApplyr dashboard</Text>{' '}and send a personalised application.
-                    </Text>
-
-                    <TouchableOpacity
-                      style={styles.noJobsAddBtn}
-                      activeOpacity={0.8}
-                      onPress={async () => {
-                        await AsyncStorage.setItem('aiHub_trigger_add_recipient', 'true');
-                        router.back();
-                      }}
-                    >
-                      <Ionicons name="person-add-outline" size={14} color={T.blue} />
-                      <Text style={styles.noJobsAddBtnText}>Add a Recruiter Contact</Text>
-                    </TouchableOpacity>
-                  </View>
-                  {/* Always-visible "raise a concern" card — shown in the 0-jobs layout too. */}
-                  <EmployerConcernCard
-                    employer={employer}
-                    submitted={concernSubmittedIds.has(employer.id)}
-                    onSubmitted={markConcernSubmitted}
-                  />
-                  </View>
-                  );
-                }
-                return (
-                <View key={employer.id} style={styles.employerSection}>
-                  {/* While the search is still running and nothing has come back yet, keep the
-                      user happy and engaged with personalized, résumé-aware encouragement instead
-                      of an empty screen. Hidden the moment jobs appear. (No "finding more" card.) */}
-                  {(isProcessing || (employer as any).learning) && jobs.length === 0 && (
-                    <MotivationProgress employerName={employer.name} personalized={motivationLines} />
-                  )}
-                  {/* Count row above the first job — ALWAYS visible when there are jobs. Shows the
-                      filter when a company is selected with >1 role, and a tiny loader beside the
-                      count while the search is still running. */}
-                  {jobs.length > 0 && (
-                    <View style={styles.filterHeaderRow}>
-                      <View style={styles.countWithLoader}>
-                        <Text style={styles.filterCountText}>
-                          {filterActive ? `${filteredJobs.length} of ${jobs.length}` : `${empTotal}`} {(filterActive ? jobs.length : empTotal) === 1 ? 'job' : 'jobs'}
-                        </Text>
-                        {isProcessing && <ActivityIndicator size="small" color={T.blue} style={styles.countLoader} />}
-                      </View>
-                      {showFilterBtn && (
-                        <TouchableOpacity
-                          style={[styles.filterChip, filterActive && styles.filterChipActive]}
-                          activeOpacity={0.85}
-                          onPress={() => setFilterOpen(true)}
-                        >
-                          <Ionicons name="options-outline" size={14} color={filterActive ? '#fff' : T.ink} />
-                          <Text style={[styles.filterChipText, filterActive && styles.filterChipTextActive]}>Filter</Text>
-                          {filterActive && <View style={styles.filterChipDot} />}
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  )}
-                  {loadingEmployerId === employer.id ? (
-                    <View style={styles.jobsLoadingRow}>
-                      <ActivityIndicator size="small" color={T.blue} />
-                      <Text style={styles.jobsLoadingText}>Loading jobs for {employer.name}…</Text>
-                    </View>
-                  ) : filteredJobs.length === 0 && jobs.length > 0 ? (
-                    <View style={styles.noMatchCard}>
-                      <Ionicons name="funnel-outline" size={22} color={T.textFaint} />
-                      <Text style={styles.noMatchText}>No jobs match these filters</Text>
-                      <TouchableOpacity onPress={() => { setCountryFilter([]); setCityFilter([]); setMinMatch(0); }} activeOpacity={0.8}>
-                        <Text style={styles.noMatchClear}>Clear filters</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ) : (
-                    shownJobs.map((job) => (
-                      <JobCard
-                        key={job.id}
-                        job={job}
-                        employer={employer}
-                        clStatus={jobStatuses[job.id] ?? null}
-                        onApply={handleApply}
-                        onAddContact={handleAddContact}
-                        onVisitJob={handleVisitJob}
-                      />
-                    ))
-                  )}
-                  {/* All-companies view: preview only — "See all" jumps into the company. */}
-                  {!isProcessing && allView && filteredJobs.length > shownJobs.length && (
-                    <TouchableOpacity style={styles.showMoreBtn} activeOpacity={0.85} onPress={() => setSelectedEmployerId(employer.id)}>
-                      <Ionicons name="chevron-down" size={14} color={T.blue} />
-                      <Text style={styles.showMoreBtnText}>See all {empTotal} jobs at {employer.name}</Text>
-                    </TouchableOpacity>
-                  )}
-                  {/* Server has more pages: append the next top-matched page. */}
-                  {!isProcessing && !allView && !filterActive && empTotal > jobs.length && (
-                    <TouchableOpacity
-                      style={styles.showMoreBtn}
-                      activeOpacity={0.85}
-                      disabled={loadingMoreIds.has(employer.id)}
-                      onPress={() => handleShowMoreJobs(employer.id)}
-                    >
-                      {loadingMoreIds.has(employer.id) ? (
-                        <ActivityIndicator size="small" color={T.blue} />
-                      ) : (
-                        <>
-                          <Ionicons name="chevron-down" size={14} color={T.blue} />
-                          <Text style={styles.showMoreBtnText}>Show more jobs ({jobs.length} of {empTotal})</Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-                  )}
-                  {/* (Progress indicator now lives at the TOP of the section, above.) */}
-                  {/* Always-visible "raise a concern" card — only once the search is done. */}
-                  {!isProcessing && (
-                    <EmployerConcernCard
-                      employer={employer}
-                      submitted={concernSubmittedIds.has(employer.id)}
-                      onSubmitted={markConcernSubmitted}
-                    />
-                  )}
-                </View>
-                );
-              })}
-            </>
-          )}
         </View>
       </ScrollView>
       )}
 
-      {/* Floating filter — pinned top-right, fades in once scrolled into the job list */}
-      {showFilterBtn && showFloatingFilter && (
-        <TouchableOpacity style={[styles.floatingFilterBtn, { top: insets.top + 56 }]} activeOpacity={0.9} onPress={() => setFilterOpen(true)}>
-          <Ionicons name="options-outline" size={20} color="#fff" />
-          {filterActive && <View style={styles.floatingFilterDot} />}
-        </TouchableOpacity>
-      )}
 
       {/* ── Coming Soon Overlay ── */}
       {featureFlag?.status === 'under_construction' && (

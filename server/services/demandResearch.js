@@ -88,7 +88,7 @@ async function discoverUrls(model, cluster) {
 }
 
 // ── extraction: each discovered URL → one job row in global_jobs ──────────────────────────────
-async function ingestUrl(url, cluster) {
+async function ingestUrl(url, cluster, source = 'demand_research') {
   try {
     const exists = await dbConfig.query('SELECT 1 FROM global_jobs WHERE job_url = $1', [url]);
     if (exists && exists.length) return 0;   // already known — the upsert would only bump last_seen
@@ -105,7 +105,7 @@ async function ingestUrl(url, cluster) {
       responsibilities: Array.isArray(detail.responsibilities) ? detail.responsibilities : [],
       skills: Array.isArray(detail.skills) ? detail.skills : [],
     };
-    return await saveJobs([job], 'demand_research', cluster.country);
+    return await saveJobs([job], source, cluster.country);
   } catch (e) {
     return 0;
   }
@@ -234,4 +234,5 @@ function startDemandResearch() {
   console.log(`[demandResearch] scheduled every ${INTERVAL_H}h (persisted gate)`);
 }
 
-module.exports = { runDemandResearch, startDemandResearch };
+// ingestUrl is reused by interestRoutes to fetch the exact posting a user pins on an interest.
+module.exports = { runDemandResearch, startDemandResearch, ingestUrl };

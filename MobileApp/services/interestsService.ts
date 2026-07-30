@@ -14,8 +14,8 @@ async function authHeader(): Promise<Record<string, string>> {
 }
 
 export type Interest = {
-  id: number; label: string; country: string; city: string | null;
-  skills: string[]; jobCount: number; createdAt: string;
+  id: number; label: string; country: string | null; city: string | null;
+  skills: string[]; jobUrl?: string | null; jobCount: number; createdAt: string;
 };
 export type InterestJob = {
   id: string; job_url: string; title: string; employer_name: string | null; employer_domain: string | null;
@@ -29,7 +29,7 @@ export async function fetchInterests(): Promise<Interest[]> {
   return (data?.items ?? []) as Interest[];
 }
 
-export async function createInterest(input: { country: string; city?: string; skills: string[]; label?: string }): Promise<boolean> {
+export async function createInterest(input: { country?: string; city?: string; skills?: string[]; jobUrl?: string; label?: string }): Promise<boolean> {
   const headers = await authHeader();
   const { data } = await axios.post(`${API_BASE}/interests`, input, { headers, timeout: 20000 });
   return !!data?.success;
@@ -40,10 +40,10 @@ export async function deleteInterest(id: number): Promise<void> {
   await axios.delete(`${API_BASE}/interests/${id}`, { headers, timeout: 15000 });
 }
 
-export async function fetchInterestJobs(id: number, offset = 0, limit = 20): Promise<{ jobs: InterestJob[]; total: number }> {
+export async function fetchInterestJobs(id: number, offset = 0, limit = 20): Promise<{ jobs: InterestJob[]; total: number; pendingUrl?: boolean; urlFailed?: boolean }> {
   const headers = await authHeader();
   const { data } = await axios.get(`${API_BASE}/interests/${id}/jobs?offset=${offset}&limit=${limit}`, { headers, timeout: 20000 });
-  return { jobs: (data?.jobs ?? []) as InterestJob[], total: data?.total ?? 0 };
+  return { jobs: (data?.jobs ?? []) as InterestJob[], total: data?.total ?? 0, pendingUrl: !!data?.pendingUrl, urlFailed: !!data?.urlFailed };
 }
 
 export type PlaceOption = { name: string; jobs: number };

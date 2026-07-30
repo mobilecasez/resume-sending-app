@@ -1150,6 +1150,14 @@ async function runPostgresMigrations(db) {
                      ON user_job_interests(user_id, created_at DESC)`);
         console.log('✅ Migration 029: user_job_interests done');
 
+        // ── Migration 030: exact-job URL on interests ──
+        // An interest can carry a specific posting URL ("fetch just this job"): the URL is ingested
+        // into global_jobs once and always tops that interest's card. URL-only interests exist too,
+        // so country loosens to nullable (the research routine already skips skill-less rows).
+        await col(`ALTER TABLE user_job_interests ADD COLUMN IF NOT EXISTS job_url TEXT`);
+        await col(`ALTER TABLE user_job_interests ALTER COLUMN country DROP NOT NULL`);
+        console.log('✅ Migration 030: interest job_url done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);
