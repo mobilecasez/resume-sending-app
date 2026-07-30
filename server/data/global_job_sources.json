@@ -1,4486 +1,4922 @@
 [
-  {
-    "url": "https://boards.greenhouse.io/stripe",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/airbnb",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/coinbase",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/databricks",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/gitlab",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/robinhood",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/dropbox",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/discord",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/reddit",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/figma",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/instacart",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/doordash",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/brex",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/benchling",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/samsara",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/affirm",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/flexport",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/faire",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/sofi",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/twilio",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cloudflare",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/hashicorp",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/confluent",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/elastic",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/asana",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/coursera",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/lyft",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/pinterest",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/squarespace",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/wayfair",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/peloton",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/toasttab",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/procore",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/amplitude",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/gusto",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/checkr",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/chime",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/marqeta",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/wealthfront",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/oscarhealth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/warbyparker",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/1password",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/sentry",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/pagerduty",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/nerdwallet",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/thumbtack",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/gemini",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/kraken",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/mistral",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/anthropic",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/openai",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/ramp",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/notion",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/linear",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/vanta",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/posthog",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/replit",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/cohere",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/deel",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/leetcode",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/webflow",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/airtable",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/gong",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/rippling",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cockroachlabs",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/dbtlabs",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/clickup",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/calendly",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vercel",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/netlify",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/supabase",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/fivetran",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/mercury",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/plaid",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/grafanalabs",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/docker",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/mozilla",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/duckduckgo",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/whoop",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/calm",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/noom",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/hims",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/verkada",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/scaleai",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/moderntreasury",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/lithic",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/persona",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/watershed",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/baseten",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/modal",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/perplexityai",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/zip",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/carvana",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/gopuff",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/aloyoga",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/feverup",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/shieldai",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/hellofresh",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/waymo",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/rocketlab",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/crusoe",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/onemedical",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/zscaler",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/charliehealth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/onrunning",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/toast",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/saronic",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/oscar",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/dept",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/applied",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/buckmason",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/xometry",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/lucidmotors",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/guidepostmontessori",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/revolutionmedicines",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/point72",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/scoutmotors",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/roblox",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/roku",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/adyen",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/janestreet",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/block",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/natera",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/wpp",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tripactions",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/talkiatry",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/ninjavan",
-    "region": "SEA"
-  },
-  {
-    "url": "https://boards.greenhouse.io/formlabs",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/via",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/base-power",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vast",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/chaosindustries",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/riotgames",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/imc",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ubiquiti",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/five9",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/gorjana",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cookunity",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ripple",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/mejuri",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/aurorainnovation",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/voodoo",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/thirdbridge",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cortland",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/scopely",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bozzuto",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/lalamove",
-    "region": "Asia"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/sondermind",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/quince",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/netskope",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/flix",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/2k",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/handshake",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/epicgames",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tenstorrent",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/helsing",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/betsson",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/reformation",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/formenergy",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/fahertybrand",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/catonetworks",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/hopper",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/motional",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/preply",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/skydio",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/alixpartners",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/helion",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/guidepoint",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/hermeus",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/valtech",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/wayve",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/justworks",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/knowbe4",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/includedhealth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/upstart",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/geotab",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/oura",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vardaspace",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/nuro",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/apptronik",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/astranis",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/psiquantum",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/misfitsmarket",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/redwoodmaterials",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/mach",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/fashionnova",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/fanduel",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tripadvisor",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/dialpad",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/uberfreight",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/alphasights",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/aircall",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/planetlabs",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/twochairs",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/brilliantearth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/gomotive",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/fictiv",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/industrious",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/rockstargames",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/achievementfirst",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/blankstreet",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tecovas",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/charlesriverassociates",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/kodiak",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/kaizengaming",
-    "region": "EU"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/rothys",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/chowbus",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/slice",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/allencontrolsystems",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/headway",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vaxcyte",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/duolingo",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/harbingermotors",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vaco",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/krafton",
-    "region": "India"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tripledotstudios",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/twitch",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/sweetgreen",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/coherehealth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/carta",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/oklo",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vaynermedia",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tekion",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/thoughtworks",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/instructure",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/engine",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/fireblocks",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cortica",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/instawork",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vonage",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/getyourguide",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/lightmatter",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/loftorbital",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/docebo",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/serverobotics",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/princesspolly",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cargurus",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/agilityrobotics",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cloverhealth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/lighthouse",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/ro",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/junipersquare",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/nintendo",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/fastly",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/shipmonk",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/opentable",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/zocdoc",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/easygo",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ursamajor",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/meter",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/aledade",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/spire",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/geniussports",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/speak",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/betterup",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/muonspace",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/sesai",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/lessen",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/sonicwall",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/chartis",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cloudbeds",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/hourglasscosmetics",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/avride",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/truveta",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/reply",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/kepler",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/aclu",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/netgear",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/trainline",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/clear",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bird",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/komodohealth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/strivehealth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/mavenclinic",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/everlane",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/datacamp",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/oneacrefund",
-    "region": "Africa"
-  },
-  {
-    "url": "https://boards.greenhouse.io/wonderschool",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/360learning",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/betterment",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/swordhealth",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/epirus",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/formic",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/higharc",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/blacksky",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/veracyte",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/span",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/steadily",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/amplify",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/nium",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/netcracker",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vannevarlabs",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/thatgamecompany",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/coalition",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/pathrobotics",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/stockx",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bandwidth",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/multiverse",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/convene",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/prizepicks",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/netbrain",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/d2l",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/seatgeek",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/nexamp",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/generalassembly",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/wealthsimple",
-    "region": "Canada"
-  },
-  {
-    "url": "https://jobs.lever.co/zopa",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/rula",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/applovin",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/mentimeter",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vacasa",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/silananotechnologies",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/kasa",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/beamtherapeutics",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/10xgenomics",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tia",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/project44",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/rushstreetinteractive",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/recursionpharmaceuticals",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/taketwo",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tubitv",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ilia",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/criticalmass",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/wpromote",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/gridware",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/kin",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/chargepoint",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/spin",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/flatironhealth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/octave",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bouldercare",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/antora",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/figure",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/braintrust",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/wing",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/nerdy",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/omadahealth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/genedx",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/thirdlove",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/bounteous",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/edmentum",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/revel",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/kairospower",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/valon",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/wattpad",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/pariveda",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/twistbioscience",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/hover",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/parallelwireless",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/lodgify",
-    "region": "EU"
-  },
-  {
-    "url": "https://jobs.lever.co/airalo",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cargomatic",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/warp",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/kymeratherapeutics",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ultragenyxpharmaceutical",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/patreon",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/naughtydog",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/axios",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/velo3d",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/glossier",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/renttherunway",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/skydance",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/leap",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/givedirectly",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/newsela",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/away",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/motive",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/porter",
-    "region": "India"
-  },
-  {
-    "url": "https://boards.greenhouse.io/freenome",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/abcellera",
-    "region": "Canada"
-  },
-  {
-    "url": "https://jobs.lever.co/placemakr",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/radiant",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/nextiva",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/benevity",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/avantus",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/brightwheel",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/fareharbor",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/tomo",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/entrata",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/drsquatch",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/saatva",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/hawkeye360",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/mizzenandmain",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/toptal",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/wildlifestudios",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://jobs.lever.co/kabam",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/givewell",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/promise",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ooma",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/envoy",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/insider",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/forwardnetworks",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/auterion",
-    "region": "EU"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/picogrid",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/wikimedia",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/2u",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/forto",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ginkgobioworks",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/generatebiomedicines",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/orchard",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/thrivemarket",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/weee",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/semafor",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/dreamgames",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ideo",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/skillsoft",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/elevatebio",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ritual",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/energyhub",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/sonic",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/regent",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/andela",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/outfit7",
-    "region": "EU"
-  },
-  {
-    "url": "https://jobs.lever.co/foodsmart",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/clintonfoundation",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/solidpower",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/udacity",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/loadsmart",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/chaidiscovery",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/partiful",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/lunarenergy",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/voltus",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/liquidiv",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/jellyfish",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/rti",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/stitchfix",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/peek",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/insitro",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/adaptive",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bombas",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/harrys",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ruggable",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/theathletic",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/arcadia",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/zerohomes",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/medal",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/sleeper",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/classdojo",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/kiddom",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/skyscanner",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/adaptivebiotechnologies",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ownwell",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/olipop",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/gymshark",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/factorialenergy",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/navapbc",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/humanrightswatch",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/novacredit",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/psi",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/guild",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/fleetio",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/factor",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/capellaspace",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/educative",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/duffel",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/tourlane",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/koddi",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/fourkites",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/vooma",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/roofr",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/homebound",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/rumble",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/gimlet",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/substack",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/olo",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/brooklinen",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bruntworkwear",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/resolvetosavelives",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/chanzuckerberginitiative",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/esusu",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/emnify",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/seesaw",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/outrider",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/companycam",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/aurorasolar",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/philo",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/descript",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/inkitt",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/voxmedia",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/sparkfund",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/boingo",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vatnsystems",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/grovecollaborative",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/parachutehome",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/supergoop",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/pointb",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/goguardian",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/springboard",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/enveda",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/latchbio",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/vevo",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ag1",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/shift5",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/charitywater",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/acumen",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/teachforall",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/slate",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/helm-ai",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/relaytherapeutics",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tesseratherapeutics",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/openspace",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/snapdocs",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/mosaic",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/omnidian",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/charmindustrial",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/butcherbox",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/chownow",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/whisperaero",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tatcha",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/golin",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bandainamco",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/codeforamerica",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/thetrevorproject",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/propel",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/blueprintmedicines",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tangotherapeutics",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/icon",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/flashfood",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/airdna",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/revinate",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/roadie",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/caribou",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/primemedicine",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/valohealth",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/twelve",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/diginn",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/code3",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/instrument",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/jamcity",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/evolvevacationrental",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/arvinas",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/akoya",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/asimov",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/knock",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/kentik",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/prose",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/colemanresearch",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/heycar",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/shipwell",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bringg",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/culturebiosciences",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/houzz",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/slingshotaerospace",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/doctolib",
-    "region": "France/DACH/EU (Paris, Berlin, Frankfurt, Milan)"
-  },
-  {
-    "url": "https://boards.greenhouse.io/dataiku",
-    "region": "France/EU/UK (Paris, London) + global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/mirakl",
-    "region": "France/EU/UK (Paris, London, München, Bordeaux)"
-  },
-  {
-    "url": "https://jobs.lever.co/qonto",
-    "region": "France/EU (Paris, Brussels, Barcelona, Milan, Belgrade)"
-  },
-  {
-    "url": "https://jobs.lever.co/pigment",
-    "region": "France/EU/UK/CH (Paris, London) + North America"
-  },
-  {
-    "url": "https://jobs.lever.co/contentsquare",
-    "region": "France/EU (Germany, Amsterdam) + global"
-  },
-  {
-    "url": "https://jobs.lever.co/blablacar",
-    "region": "France/EU (Paris, remote France)"
-  },
-  {
-    "url": "https://jobs.lever.co/swile",
-    "region": "France/EU (Paris, Montpellier) + Brazil"
-  },
-  {
-    "url": "https://jobs.lever.co/vestiairecollective",
-    "region": "France/EU/UK (Paris, Tourcoing, Crawley, Berlin)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/pennylane",
-    "region": "France (Paris, Bordeaux, Caen, remote France)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/alan",
-    "region": "France/EU (Paris, Belgium, Madrid)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/ledger",
-    "region": "France/EU/UK (Paris, London) + US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/sorare",
-    "region": "France (Paris)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/backmarket",
-    "region": "France/EU/UK (Paris, Bordeaux, Barcelona, London)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/finary",
-    "region": "France (Paris, remote France)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/gorgias",
-    "region": "France/EU (Paris, Belgrade) + North America"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/ankorstore",
-    "region": "France (Paris)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/photoroom",
-    "region": "France/EU (Paris, Europe remote) + US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/dust",
-    "region": "France (Paris) + US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/n26",
-    "region": "Berlin, DE / EU (Paris, Madrid)"
-  },
-  {
-    "url": "https://boards.greenhouse.io/celonis",
-    "region": "Munich, DE / EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/contentful",
-    "region": "Berlin, DE / London, UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/raisin",
-    "region": "Berlin, DE"
-  },
-  {
-    "url": "https://boards.greenhouse.io/sumup",
-    "region": "Berlin, DE / Barcelona, ES / EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/solarisbank",
-    "region": "Berlin / Frankfurt, DE"
-  },
-  {
-    "url": "https://boards.greenhouse.io/grover",
-    "region": "Berlin, DE"
-  },
-  {
-    "url": "https://boards.greenhouse.io/moonfare",
-    "region": "Berlin, DE / London, UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/commercetools",
-    "region": "Munich, DE / Valencia, ES"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/flink",
-    "region": "Zürich, CH"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/choco",
-    "region": "Berlin, DE / London, UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/babbel",
-    "region": "Berlin, DE"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/billie",
-    "region": "Berlin, DE"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/zenjob",
-    "region": "Berlin, DE"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/deepl",
-    "region": "Cologne, DE / EU"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/alephalpha",
-    "region": "Heidelberg, DE"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/enpal",
-    "region": "Berlin, DE / Milan, IT"
-  },
-  {
-    "url": "https://jobs.lever.co/pipedrive",
-    "region": "Prague, CZ / Lisbon, PT / EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/proton",
-    "region": "Geneva, Switzerland HQ — 31 CH jobs (Geneva), plus Paris/Bar"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/frontify",
-    "region": "St. Gallen, Switzerland HQ — 9 CH (Sankt Gallen) + 8 London"
-  },
-  {
-    "url": "https://boards.greenhouse.io/scandit",
-    "region": "Zurich, Switzerland HQ — 3 CH jobs, 7 EU total"
-  },
-  {
-    "url": "https://jobs.lever.co/swissborg",
-    "region": "Lausanne, Switzerland — 3 EU/remote-EU jobs"
-  },
-  {
-    "url": "https://boards.greenhouse.io/datadog",
-    "region": "Paris eng + EU — 88 EU jobs incl. 2 CH"
-  },
-  {
-    "url": "https://boards.greenhouse.io/okta",
-    "region": "US HQ + EU/EMEA — 32 EU jobs"
-  },
-  {
-    "url": "https://boards.greenhouse.io/braze",
-    "region": "US HQ + London/EU — 22 EU jobs"
-  },
-  {
-    "url": "https://boards.greenhouse.io/intercom",
-    "region": "Dublin, Ireland HQ — 90 EU jobs"
-  },
-  {
-    "url": "https://boards.greenhouse.io/rubrik",
-    "region": "US HQ + EU — 12 EU jobs incl. 1 CH"
-  },
-  {
-    "url": "https://boards.greenhouse.io/algolia",
-    "region": "Paris, France HQ — 26 EU jobs"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ledgy",
-    "region": "Zurich/London — 17 EU jobs (DE/UK/ES/PL/RO)"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tines",
-    "region": "Dublin, Ireland HQ — 3 EU jobs"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/elevenlabs",
-    "region": "London + remote-EU — 90 EU jobs"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/synthesia",
-    "region": "London HQ + remote-EU — 53 EU jobs incl. 2 CH"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/lovable",
-    "region": "Stockholm, Sweden — 18 EU jobs"
-  },
-  {
-    "url": "https://boards.greenhouse.io/catawiki",
-    "region": "Amsterdam NL / EU (Netherlands, Lisbon, France, Italy)"
-  },
-  {
-    "url": "https://jobs.lever.co/fresha",
-    "region": "EU/UK (London, Warsaw, Madrid, Paris; Amsterdam office)"
-  },
-  {
-    "url": "https://jobs.lever.co/crypto",
-    "region": "Global; EU/UK (London, Sofia)"
-  },
-  {
-    "url": "https://jobs.lever.co/netlight",
-    "region": "EU (Stockholm, Munich, Berlin, Amsterdam, Madrid)"
-  },
-  {
-    "url": "https://jobs.lever.co/storiogroup",
-    "region": "Amsterdam NL / EU (Amsterdam, Munich, London, Barcelona)"
-  },
-  {
-    "url": "https://jobs.eu.lever.co/tomtom",
-    "region": "Amsterdam NL / EU (Amsterdam, Madrid, Lodz, Gent) — EU Lever"
-  },
-  {
-    "url": "https://jobs.eu.lever.co/prosus",
-    "region": "Amsterdam NL — EU Lever host"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/eye-security",
-    "region": "NL/DACH (The Hague, Netherlands, Germany, Belgium, Austria)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/wetravel",
-    "region": "Amsterdam office / EU (Spain, Portugal, Lithuania, Poland)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/monumental",
-    "region": "Amsterdam NL (all roles Amsterdam)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/luminovo",
-    "region": "DACH (Munich, Berlin)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/bitvavo",
-    "region": "Amsterdam NL (HQ)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/recharge",
-    "region": "UK/Remote (London, Toronto, Remote)"
-  },
-  {
-    "url": "https://boards.greenhouse.io/okx",
-    "region": "Global; Remote EMEA, Dubai"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bitpanda",
-    "region": "Vienna (AT) HQ; all-EU (Berlin, Barcelona, Paris, Milan)"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bitgo",
-    "region": "Global; Frankfurt (DE), London"
-  },
-  {
-    "url": "https://boards.greenhouse.io/blockchain",
-    "region": "Global; London, Paris, Malta"
-  },
-  {
-    "url": "https://boards.greenhouse.io/aptoslabs",
-    "region": "Global remote incl. EU; Palo Alto"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bitmex",
-    "region": "Hong Kong; Remote - Europe"
-  },
-  {
-    "url": "https://boards.greenhouse.io/consensys",
-    "region": "Global; Remote EMEA"
-  },
-  {
-    "url": "https://boards.greenhouse.io/21shares",
-    "region": "Zug (CH) HQ; current role New York"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/kraken.com",
-    "region": "Global; Poland, UK, Ireland"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/blockdaemon",
-    "region": "Global; Dublin (IE)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/keyrock",
-    "region": "Brussels (BE) HQ; Zurich (CH), London"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/nethermind",
-    "region": "Remote; Hungary (EU)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/dune",
-    "region": "Europe / New York"
-  },
-  {
-    "url": "https://boards.greenhouse.io/scout24",
-    "region": "Germany (Berlin/Munich/Bonn) — .NET/Microsoft-stack marketpl"
-  },
-  {
-    "url": "https://boards.greenhouse.io/avepoint",
-    "region": "Global; 31 EU/UK roles — heavy Microsoft 365 / .NET vendor"
-  },
-  {
-    "url": "https://boards.greenhouse.io/wolt",
-    "region": "EU (Berlin/Athens/Budapest/Stockholm/Helsinki/Ljubljana)"
-  },
-  {
-    "url": "https://boards.greenhouse.io/gocardless",
-    "region": "EU/UK (Riga/Lisbon/London/Leeds)"
-  },
-  {
-    "url": "https://jobs.lever.co/sonarsource",
-    "region": "Switzerland (Geneva HQ)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/deepjudge",
-    "region": "Switzerland (Zurich HQ)"
-  },
-  {
-    "url": "https://jobs.lever.co/frontify",
-    "region": "Switzerland (St. Gallen HQ)"
-  },
-  {
-    "url": "https://jobs.lever.co/anybotics",
-    "region": "Switzerland (Zurich HQ)"
-  },
-  {
-    "url": "https://boards.greenhouse.io/terraquantum",
-    "region": "Switzerland (St. Gallen HQ) / Germany"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/smallpdf",
-    "region": "Switzerland (Zurich HQ, remote roles)"
-  },
-  {
-    "url": "https://boards.greenhouse.io/parloa",
-    "region": "EU (Berlin/Munich + UK/France)"
-  },
-  {
-    "url": "https://boards.greenhouse.io/typeform",
-    "region": "Barcelona, Spain"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cabify",
-    "region": "Madrid, Spain"
-  },
-  {
-    "url": "https://boards.greenhouse.io/feedzai",
-    "region": "Lisbon/Porto, Portugal"
-  },
-  {
-    "url": "https://jobs.lever.co/jobandtalent",
-    "region": "Madrid/Barcelona, Spain"
-  },
-  {
-    "url": "https://jobs.lever.co/deliverect",
-    "region": "Ghent, Belgium (roles in Madrid/London/Berlin)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/satispay",
-    "region": "Milan, Italy (roles in Barcelona/EU)"
-  },
-  {
-    "url": "https://jobs.lever.co/spotify",
-    "region": "Sweden"
-  },
-  {
-    "url": "https://jobs.lever.co/veo",
-    "region": "Denmark"
-  },
-  {
-    "url": "https://jobs.lever.co/whereby",
-    "region": "Norway"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/pleo",
-    "region": "Denmark"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/supercell",
-    "region": "Finland"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/iceye",
-    "region": "Finland"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/gelato",
-    "region": "Norway"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/corti",
-    "region": "Denmark"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/planday",
-    "region": "Denmark"
-  },
-  {
-    "url": "https://boards.greenhouse.io/truecaller",
-    "region": "Sweden"
-  },
-  {
-    "url": "https://boards.greenhouse.io/relex",
-    "region": "Finland"
-  },
-  {
-    "url": "https://boards.greenhouse.io/smartlyio",
-    "region": "Finland"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cognite",
-    "region": "Norway"
-  },
-  {
-    "url": "https://boards.greenhouse.io/trustpilot",
-    "region": "Denmark"
-  },
-  {
-    "url": "https://boards.greenhouse.io/yousician",
-    "region": "Finland"
-  },
-  {
-    "url": "https://boards.greenhouse.io/monzo",
-    "region": "UK/EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tide",
-    "region": "UK/DACH/EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/form3",
-    "region": "UK/EU (remote)"
-  },
-  {
-    "url": "https://boards.greenhouse.io/payoneer",
-    "region": "EU"
-  },
-  {
-    "url": "https://boards.greenhouse.io/wayve",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/hyperexponential",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/quantexa",
-    "region": "UK/DACH"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/n8n",
-    "region": "DACH (Berlin)"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/tacto",
-    "region": "DACH (Munich)"
-  },
-  {
-    "url": "https://jobs.lever.co/matillion",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.lever.co/celerion",
-    "region": "Switzerland (Fehraltorf/Zurich) + US — clinical CRO / bioana"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/cradlebio",
-    "region": "Switzerland (Zürich) + Amsterdam — protein-design biotech"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bridgebio",
-    "region": "Switzerland (Zug HQ) + US — biotech pharma"
-  },
-  {
-    "url": "https://boards.greenhouse.io/nlcventures",
-    "region": "EU (Netherlands/Germany/France) — healthtech venture builder"
-  },
-  {
-    "url": "https://boards.greenhouse.io/iniziomedical",
-    "region": "UK (London/Manchester) — medical/healthcare services"
-  },
-  {
-    "url": "https://boards.greenhouse.io/olema",
-    "region": "Ireland (Dublin) + US — oncology biotech"
-  },
-  {
-    "url": "https://jobs.lever.co/bioagilytix",
-    "region": "Germany (Hamburg) + US — bioanalytical CRO"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/amboss",
-    "region": "Germany (Berlin) — clinical knowledge / healthcare"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/neko-health",
-    "region": "UK (London) + Sweden (Stockholm) — preventive health-screeni"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/basecamp-research",
-    "region": "UK (London) — biotech / protein AI"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/genomics",
-    "region": "UK (Oxford/London) — genomics drug discovery"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/owkin",
-    "region": "France (Paris) + UK — TechBio drug discovery"
-  },
-  {
-    "url": "https://jobs.lever.co/h1",
-    "region": "Denmark (Copenhagen) + UK + US — healthcare data platform"
-  },
-  {
-    "url": "https://boards.greenhouse.io/numab",
-    "region": "Switzerland (Wädenswil/Zurich) biotech — current posting Rem"
-  },
-  {
-    "url": "https://boards.greenhouse.io/inyova",
-    "region": "Zurich, Switzerland — impact-investing wealth fintech"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bybit",
-    "region": "Vienna (Austria) + global — crypto exchange (25 EU roles)"
-  },
-  {
-    "url": "https://boards.greenhouse.io/copperco",
-    "region": "London + Remote-EMEA — crypto custody/prime brokerage"
-  },
-  {
-    "url": "https://boards.greenhouse.io/truelayer",
-    "region": "London/Milan — open-banking payments (9 EU roles)"
-  },
-  {
-    "url": "https://boards.greenhouse.io/remotecom",
-    "region": "Remote-EMEA/Western Europe/UK — global payroll & EOR (142 EU"
-  },
-  {
-    "url": "https://jobs.lever.co/moonpay",
-    "region": "London/UK + US — crypto payments on-ramp"
-  },
-  {
-    "url": "https://jobs.lever.co/anchorage",
-    "region": "US + Portugal (3 EU) — crypto bank/custody"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/mollie",
-    "region": "Amsterdam/Lisbon/Milan/Munich — payments fintech (24 EU role"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/airwallex",
-    "region": "London + global — cross-border payments fintech (96 EU roles"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/trulioo",
-    "region": "Dublin + Vancouver/US — KYC/identity verification for financ"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/swiggy",
-    "region": "India"
-  },
-  {
-    "url": "https://jobs.lever.co/paytm",
-    "region": "India"
-  },
-  {
-    "url": "https://boards.greenhouse.io/phonepe",
-    "region": "India"
-  },
-  {
-    "url": "https://razorpay.pinpointhq.com",
-    "region": "France"
-  },
-  {
-    "url": "https://jobs.lever.co/cred",
-    "region": "India"
-  },
-  {
-    "url": "https://jobs.lever.co/meesho",
-    "region": "India"
-  },
-  {
-    "url": "https://boards.greenhouse.io/groww",
-    "region": "India"
-  },
-  {
-    "url": "https://zepto.bamboohr.com/careers",
-    "region": "Australia"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/unacademy",
-    "region": "India"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/interviewbit",
-    "region": "India"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/newtonschool",
-    "region": "India"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/freshworks",
-    "region": "India"
-  },
-  {
-    "url": "https://boards.greenhouse.io/postman",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/inmobi",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/glance",
-    "region": "India"
-  },
-  {
-    "url": "https://boards.greenhouse.io/druva",
-    "region": "Global"
-  },
-  {
-    "url": "https://innovaccer.pinpointhq.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/highradius",
-    "region": "India"
-  },
-  {
-    "url": "https://moengage.pinpointhq.com",
-    "region": "France"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/whatfix",
-    "region": "India"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/atlan",
-    "region": "India"
-  },
-  {
-    "url": "https://boards.greenhouse.io/pine",
-    "region": "India"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/navi",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/mindtickle",
-    "region": "India"
-  },
-  {
-    "url": "https://boards.greenhouse.io/observeai",
-    "region": "India"
-  },
-  {
-    "url": "https://rapido.pinpointhq.com",
-    "region": "France"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/rebelfoods",
-    "region": "India"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/nobroker",
-    "region": "India"
-  },
-  {
-    "url": "https://magicbricks.pinpointhq.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/ixigo",
-    "region": "India"
-  },
-  {
-    "url": "https://boards.greenhouse.io/turing",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/sigmoid",
-    "region": "India"
-  },
-  {
-    "url": "https://boards.greenhouse.io/netradyne",
-    "region": "India"
-  },
-  {
-    "url": "https://jobs.lever.co/aeratechnology",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/zenoti",
-    "region": "India"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/bureau",
-    "region": "India"
-  },
-  {
-    "url": "https://jobs.lever.co/zeta",
-    "region": "India"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/upstox",
-    "region": "India"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/polygontechnology",
-    "region": "India"
-  },
-  {
-    "url": "https://boards.greenhouse.io/matic",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/narayanahealth",
-    "region": "India"
-  },
-  {
-    "url": "https://apexon.pinpointhq.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/clarisights",
-    "region": "India"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/captainfresh",
-    "region": "India"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/grab",
-    "region": "Global"
-  },
-  {
-    "url": "https://shopee.pinpointhq.com",
-    "region": "France"
-  },
-  {
-    "url": "https://boards.greenhouse.io/thunes",
-    "region": "Global"
-  },
-  {
-    "url": "https://ats.rippling.com/aspire/jobs",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/xendit",
-    "region": "Global"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/sayurbox",
-    "region": "Indonesia"
-  },
-  {
-    "url": "https://osome.teamtailor.com",
-    "region": "Singapore"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/doctoranywhere",
-    "region": "Singapore"
-  },
-  {
-    "url": "https://fundingsocieties.pinpointhq.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.lever.co/ambergroup",
-    "region": "Hong Kong"
-  },
-  {
-    "url": "https://jobs.lever.co/maya",
-    "region": "Canada"
-  },
-  {
-    "url": "https://kumu.bamboohr.com/careers",
-    "region": "Philippines"
-  },
-  {
-    "url": "https://tiki.jobs.personio.de",
-    "region": "Vietnam"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/skymavis",
-    "region": "Vietnam"
-  },
-  {
-    "url": "https://boards.greenhouse.io/mercari",
-    "region": "Canada"
-  },
-  {
-    "url": "https://apply.workable.com/smartnews",
-    "region": "Japan"
-  },
-  {
-    "url": "https://layerx.jobs.personio.de",
-    "region": "Germany"
-  },
-  {
-    "url": "https://boards.greenhouse.io/paypay",
-    "region": "Japan"
-  },
-  {
-    "url": "https://jobs.lever.co/woven-by-toyota",
-    "region": "Japan"
-  },
-  {
-    "url": "https://boards.greenhouse.io/coupang",
-    "region": "South Korea"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/canva",
-    "region": "Australia"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/safetyculture",
-    "region": "Australia"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cultureamp",
-    "region": "Australia"
-  },
-  {
-    "url": "https://jobs.lever.co/deputy",
-    "region": "Australia"
-  },
-  {
-    "url": "https://jobs.lever.co/immutable",
-    "region": "Australia"
-  },
-  {
-    "url": "https://boards.greenhouse.io/octopusdeploy",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/judobank",
-    "region": "Australia"
-  },
-  {
-    "url": "https://apply.workable.com/rokt",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/eucalyptus",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/healthmatch",
-    "region": "Australia"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/halter",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/xero",
-    "region": "Australia"
-  },
-  {
-    "url": "https://sharesies.bamboohr.com/careers",
-    "region": "New Zealand"
-  },
-  {
-    "url": "https://boards.greenhouse.io/dawnaerospace",
-    "region": "Netherlands"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/partly",
-    "region": "New Zealand"
-  },
-  {
-    "url": "https://boards.greenhouse.io/careem",
-    "region": "UAE"
-  },
-  {
-    "url": "https://tabby.pinpointhq.com",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/tamara",
-    "region": "Global"
-  },
-  {
-    "url": "https://propertyfinder.teamtailor.com",
-    "region": "UAE"
-  },
-  {
-    "url": "https://dubizzle.teamtailor.com",
-    "region": "UAE"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/ziina",
-    "region": "UAE"
-  },
-  {
-    "url": "https://apply.workable.com/hudabeauty",
-    "region": "UAE"
-  },
-  {
-    "url": "https://chalhoubgroup.teamtailor.com",
-    "region": "UAE"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/masdar",
-    "region": "UAE"
-  },
-  {
-    "url": "https://apply.workable.com/alpheya",
-    "region": "UAE"
-  },
-  {
-    "url": "https://bosta.bamboohr.com/careers",
-    "region": "Egypt"
-  },
-  {
-    "url": "https://instabug.bamboohr.com/careers",
-    "region": "Egypt"
-  },
-  {
-    "url": "https://nana.bamboohr.com/careers",
-    "region": "Saudi Arabia"
-  },
-  {
-    "url": "https://unifonic.recruitee.com",
-    "region": "Egypt"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/yassir",
-    "region": "Germany"
-  },
-  {
-    "url": "https://instadeep.bamboohr.com/careers",
-    "region": "Tunisia"
-  },
-  {
-    "url": "https://monday.jobs.personio.de",
-    "region": "Israel"
-  },
-  {
-    "url": "https://boards.greenhouse.io/lightricks",
-    "region": "Israel"
-  },
-  {
-    "url": "https://boards.greenhouse.io/riskified",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/melio",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/hibob",
-    "region": "Israel"
-  },
-  {
-    "url": "https://boards.greenhouse.io/jfrog",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cybereason",
-    "region": "Japan"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/armis",
-    "region": "Israel"
-  },
-  {
-    "url": "https://boards.greenhouse.io/orcasecurity",
-    "region": "Israel"
-  },
-  {
-    "url": "https://aqua-security.pinpointhq.com",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/axonius",
-    "region": "Israel"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/redis",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/similarweb",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/taboola",
-    "region": "Global"
-  },
-  {
-    "url": "https://moonactive.pinpointhq.com",
-    "region": "France"
-  },
-  {
-    "url": "https://jobs.lever.co/trendyol",
-    "region": "Turkey"
-  },
-  {
-    "url": "https://jobs.lever.co/peakgames",
-    "region": "Turkey"
-  },
-  {
-    "url": "https://paystack.teamtailor.com",
-    "region": "Nigeria"
-  },
-  {
-    "url": "https://kuda.pinpointhq.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/moniepoint",
-    "region": "Nigeria"
-  },
-  {
-    "url": "https://boards.greenhouse.io/jumia",
-    "region": "Nigeria"
-  },
-  {
-    "url": "https://yellowcard.bamboohr.com/careers",
-    "region": "Nigeria"
-  },
-  {
-    "url": "https://cellulant.bamboohr.com/careers",
-    "region": "Kenya"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/m-kopa",
-    "region": "Nigeria"
-  },
-  {
-    "url": "https://sunking.pinpointhq.com",
-    "region": "Global"
-  },
-  {
-    "url": "https://turaco.breezy.hr",
-    "region": "Nigeria"
-  },
-  {
-    "url": "https://jobs.lever.co/apolloagriculture",
-    "region": "Kenya"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/burnmanufacturing",
-    "region": "Kenya"
-  },
-  {
-    "url": "https://boards.greenhouse.io/luno",
-    "region": "South Africa"
-  },
-  {
-    "url": "https://nakedinsurance.bamboohr.com/careers",
-    "region": "South Africa"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ozow",
-    "region": "South Africa"
-  },
-  {
-    "url": "https://peachpayments.bamboohr.com/careers",
-    "region": "India"
-  },
-  {
-    "url": "https://clickatell.bamboohr.com/careers",
-    "region": "South Africa"
-  },
-  {
-    "url": "https://aerobotics.bamboohr.com/careers",
-    "region": "South Africa"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/nubank",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/kavak",
-    "region": "Mexico"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bitso",
-    "region": "Mexico"
-  },
-  {
-    "url": "https://konfio.bamboohr.com/careers",
-    "region": "Mexico"
-  },
-  {
-    "url": "https://boards.greenhouse.io/clara",
-    "region": "Global"
-  },
-  {
-    "url": "https://jeeves.recruitee.com",
-    "region": "Mexico"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/belvo",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://jobs.lever.co/dlocal",
-    "region": "Global"
-  },
-  {
-    "url": "https://loft.teamtailor.com",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://boards.greenhouse.io/quintoandar",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://boards.greenhouse.io/gympass",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vtex",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://jobs.lever.co/starkbank",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://boards.greenhouse.io/rdstation",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://satellogic.bamboohr.com/careers",
-    "region": "Argentina"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/tapi",
-    "region": "Hungary"
-  },
-  {
-    "url": "https://betterfly.teamtailor.com",
-    "region": "Chile"
-  },
-  {
-    "url": "https://jobs.lever.co/fintual",
-    "region": "Mexico"
-  },
-  {
-    "url": "https://buk.jobs.personio.de",
-    "region": "Germany"
-  },
-  {
-    "url": "https://justo.bamboohr.com/careers",
-    "region": "Chile"
-  },
-  {
-    "url": "https://jobs.lever.co/xepelin",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/toku",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bold",
-    "region": "Colombia"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/addi",
-    "region": "Colombia"
-  },
-  {
-    "url": "https://jobs.lever.co/yuno",
-    "region": "Global"
-  },
-  {
-    "url": "https://simetrik.bamboohr.com/careers",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/skydropx",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://albo.bamboohr.com/careers",
-    "region": "Mexico"
-  },
-  {
-    "url": "https://klar.bamboohr.com/careers",
-    "region": "Mexico"
-  },
-  {
-    "url": "https://zubale.bamboohr.com/careers",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://osigu.bamboohr.com/careers",
-    "region": "Guatemala"
-  },
-  {
-    "url": "https://cit.jobs.personio.de",
-    "region": "Germany"
-  },
-  {
-    "url": "https://nubimetrics.bamboohr.com/careers",
-    "region": "Argentina"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/warren",
-    "region": "Belgium"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/nomad",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://boards.greenhouse.io/btgpactual",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://boards.greenhouse.io/xpinc",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://northvolt.pinpointhq.com",
-    "region": "Canada"
-  },
-  {
-    "url": "https://epidemicsound.bamboohr.com/careers",
-    "region": "Sweden"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/kognity",
-    "region": "Sweden"
-  },
-  {
-    "url": "https://anyfin.teamtailor.com",
-    "region": "Sweden"
-  },
-  {
-    "url": "https://storytel.teamtailor.com",
-    "region": "Sweden"
-  },
-  {
-    "url": "https://detectify.teamtailor.com",
-    "region": "Sweden"
-  },
-  {
-    "url": "https://volvocars.pinpointhq.com",
-    "region": "Global"
-  },
-  {
-    "url": "https://polestar.teamtailor.com",
-    "region": "Sweden"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/deliveryhero",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/traderepublic",
-    "region": "Germany"
-  },
-  {
-    "url": "https://scalablecapital.jobs.personio.de",
-    "region": "Germany"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/clark",
-    "region": "US"
-  },
-  {
-    "url": "https://personio.recruitee.com",
-    "region": "Germany"
-  },
-  {
-    "url": "https://boards.greenhouse.io/staffbase",
-    "region": "Germany"
-  },
-  {
-    "url": "https://flixbus.bamboohr.com/careers",
-    "region": "Germany"
-  },
-  {
-    "url": "https://1komma5.teamtailor.com",
-    "region": "Germany"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ivalua",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/younited",
-    "region": "France"
-  },
-  {
-    "url": "https://boards.greenhouse.io/shifttechnology",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/ekimetrics",
-    "region": "Global"
-  },
-  {
-    "url": "https://booking.breezy.hr",
-    "region": "Netherlands"
-  },
-  {
-    "url": "https://bunq.recruitee.com",
-    "region": "Netherlands"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/picnic",
-    "region": "Netherlands"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/coolblue",
-    "region": "Netherlands"
-  },
-  {
-    "url": "https://framer.jobs.personio.de",
-    "region": "Netherlands"
-  },
-  {
-    "url": "https://nmbrs.recruitee.com",
-    "region": "Netherlands"
-  },
-  {
-    "url": "https://dashmote.recruitee.com",
-    "region": "China"
-  },
-  {
-    "url": "https://boards.greenhouse.io/flowtraders",
-    "region": "Global"
-  },
-  {
-    "url": "https://apply.workable.com/starling-bank",
-    "region": "UK"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/wise",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/marshmallow",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/cleo",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/freetrade",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/zilch",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/deliveroo",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/beamery",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/complyadvantage",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/graphcore",
-    "region": "UK"
-  },
-  {
-    "url": "https://arm.pinpointhq.com",
-    "region": "France"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/improbable",
-    "region": "UK"
-  },
-  {
-    "url": "https://thoughtmachine.pinpointhq.com",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/paddle",
-    "region": "Global"
-  },
-  {
-    "url": "https://zendesk.pinpointhq.com",
-    "region": "France"
-  },
-  {
-    "url": "https://templafy.teamtailor.com",
-    "region": "Denmark"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/lunar",
-    "region": "US"
-  },
-  {
-    "url": "https://podimo.teamtailor.com",
-    "region": "Denmark"
-  },
-  {
-    "url": "https://aiven.pinpointhq.com",
-    "region": "France"
-  },
-  {
-    "url": "https://iqm.teamtailor.com",
-    "region": "Finland"
-  },
-  {
-    "url": "https://vipps.teamtailor.com",
-    "region": "Norway"
-  },
-  {
-    "url": "https://remarkable.teamtailor.com",
-    "region": "Norway"
-  },
-  {
-    "url": "https://zivid.bamboohr.com/careers",
-    "region": "Norway"
-  },
-  {
-    "url": "https://bolt.pinpointhq.com",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/veriff",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/glia",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/nord-security",
-    "region": "Lithuania"
-  },
-  {
-    "url": "https://boards.greenhouse.io/lokalise",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/docplanner",
-    "region": "Spain"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/allegro",
-    "region": "Poland"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/brainly",
-    "region": "Poland"
-  },
-  {
-    "url": "https://boards.greenhouse.io/rampnetwork",
-    "region": "Poland"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/softwaremind",
-    "region": "Poland"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/rohlik",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/kiwi-com",
-    "region": "Czechia"
-  },
-  {
-    "url": "https://boards.greenhouse.io/jetbrains",
-    "region": "Global"
-  },
-  {
-    "url": "https://travelperk.pinpointhq.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://wallbox.bamboohr.com/careers",
-    "region": "Global"
-  },
-  {
-    "url": "https://fever.jobs.personio.de",
-    "region": "UK"
-  },
-  {
-    "url": "https://idealista.teamtailor.com",
-    "region": "Spain"
-  },
-  {
-    "url": "https://boards.greenhouse.io/wallapop",
-    "region": "Spain"
-  },
-  {
-    "url": "https://seedtag.teamtailor.com",
-    "region": "Spain"
-  },
-  {
-    "url": "https://jobs.lever.co/musixmatch",
-    "region": "Italy"
-  },
-  {
-    "url": "https://prima-assicurazioni.jobs.personio.de",
-    "region": "Italy"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/nexthink",
-    "region": "Global"
-  },
-  {
-    "url": "https://selma-finance.jobs.personio.de",
-    "region": "Switzerland"
-  },
-  {
-    "url": "https://climeworks.recruitee.com",
-    "region": "Switzerland"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/swissquote",
-    "region": "Switzerland"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/omio",
-    "region": "Germany"
-  },
-  {
-    "url": "https://boards.greenhouse.io/trivago",
-    "region": "Germany"
-  },
-  {
-    "url": "https://boards.greenhouse.io/gostudent",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/refurbed",
-    "region": "Austria"
-  },
-  {
-    "url": "https://boards.greenhouse.io/storyblok",
-    "region": "Austria"
-  },
-  {
-    "url": "https://boards.greenhouse.io/collibra",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/showpad",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/flipdish",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/wayflyer",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/letsgetchecked",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/evervault",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/uipath",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/emag",
-    "region": "Romania"
-  },
-  {
-    "url": "https://fintechos.bamboohr.com/careers",
-    "region": "Romania"
-  },
-  {
-    "url": "https://payhawk.jobs.personio.de",
-    "region": "UK"
-  },
-  {
-    "url": "https://chaos.recruitee.com",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.lever.co/siteground",
-    "region": "Bulgaria"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/endava",
-    "region": "Global"
-  },
-  {
-    "url": "https://macpaw.recruitee.com",
-    "region": "Ukraine"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/restream",
-    "region": "Estonia"
-  },
-  {
-    "url": "https://reface.breezy.hr",
-    "region": "Ukraine"
-  },
-  {
-    "url": "https://jobs.lever.co/intellias",
-    "region": "Ukraine"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/sigmasoftware",
-    "region": "Ukraine"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/elliptic",
-    "region": "Global"
-  },
-  {
-    "url": "https://copper.pinpointhq.com",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/nothing",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/gousto",
-    "region": "UK"
-  },
-  {
-    "url": "https://huel.teamtailor.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/butternutbox",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/zoe",
-    "region": "UK"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/ceracare",
-    "region": "UK"
-  },
-  {
-    "url": "https://vitesse.pinpointhq.com",
-    "region": "Global"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/griffin",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/allica-bank",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/oaknorth",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/clearbank",
-    "region": "UK"
-  },
-  {
-    "url": "https://nested.teamtailor.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/goodlord",
-    "region": "UK"
-  },
-  {
-    "url": "https://rightmove.pinpointhq.com",
-    "region": "France"
-  },
-  {
-    "url": "https://cazoo.teamtailor.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/motorway",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/carwow",
-    "region": "Global"
-  },
-  {
-    "url": "https://octopusenergy.bamboohr.com/careers",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ovoenergy",
-    "region": "UK"
-  },
-  {
-    "url": "https://tado.jobs.personio.de",
-    "region": "Germany"
-  },
-  {
-    "url": "https://ecosia.jobs.personio.de",
-    "region": "Germany"
-  },
-  {
-    "url": "https://userlane.jobs.personio.de",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/blackforestlabs",
-    "region": "Germany"
-  },
-  {
-    "url": "https://merantix.jobs.personio.de",
-    "region": "Germany"
-  },
-  {
-    "url": "https://boards.greenhouse.io/isaraerospace",
-    "region": "Germany"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/the-exploration-company",
-    "region": "Germany"
-  },
-  {
-    "url": "https://magazino.jobs.personio.de",
-    "region": "Germany"
-  },
-  {
-    "url": "https://proglove.jobs.personio.de",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/konux",
-    "region": "Germany"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vay",
-    "region": "US"
-  },
-  {
-    "url": "https://wandelbots.jobs.personio.de",
-    "region": "Germany"
-  },
-  {
-    "url": "https://boards.greenhouse.io/navvis",
-    "region": "Germany"
-  },
-  {
-    "url": "https://ottobock.teamtailor.com",
-    "region": "Germany"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/brainlab",
-    "region": "Global"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/devotedhealth",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/priviahealth",
-    "region": "US"
-  },
-  {
-    "url": "https://ats.rippling.com/carbon-health/jobs",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/parsleyhealth",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/lyrahealth",
-    "region": "US"
-  },
-  {
-    "url": "https://brightline.bamboohr.com/careers",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/sprinter-health",
-    "region": "Canada"
-  },
-  {
-    "url": "https://boards.greenhouse.io/mainstreethealth",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/grow-therapy",
-    "region": "US"
-  },
-  {
-    "url": "https://alma.bamboohr.com/careers",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ophelia",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bicyclehealth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/interwellhealth",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/thyme-care",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/color-health",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/butterflynetwork",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/hinge-health",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/virtahealth",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/vidahealth",
-    "region": "US"
-  },
-  {
-    "url": "https://ats.rippling.com/calibrate/jobs",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/hims-and-hers",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/carrotfertility",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/papa",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/honor",
-    "region": "US"
-  },
-  {
-    "url": "https://helpathome.bamboohr.com/careers",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bayada",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/carepointhealth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ayahealthcare",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/trustedhealth",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/shiftkey",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/clipboardhealth",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/medely",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/vivian-health",
-    "region": "US"
-  },
-  {
-    "url": "https://etsy.bamboohr.com/careers",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/poshmark",
-    "region": "US"
-  },
-  {
-    "url": "https://allbirds.pinpointhq.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/vuori",
-    "region": "US"
-  },
-  {
-    "url": "https://skims.pinpointhq.com",
-    "region": "US"
-  },
-  {
-    "url": "https://represent.recruitee.com",
-    "region": "Germany"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/tonal",
-    "region": "US"
-  },
-  {
-    "url": "https://ats.rippling.com/therabody/jobs",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/classpass",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/equinox",
-    "region": "US"
-  },
-  {
-    "url": "https://f45-training.breezy.hr",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/shakeshack",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/torchystacos",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/nomnom",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/bark",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.lever.co/rover",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/lemonade",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/pieinsurance",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/ethoslife",
-    "region": "India"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/ladder",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/bestow",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/sidecarhealth",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/platformscience",
-    "region": "India"
-  },
-  {
-    "url": "https://schneider.bamboohr.com/careers",
-    "region": "US"
-  },
-  {
-    "url": "https://sunrun.pinpointhq.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/sunnova",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/palmetto",
-    "region": "US"
-  },
-  {
-    "url": "https://licycle.bamboohr.com/careers",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/group14",
-    "region": "US"
-  },
-  {
-    "url": "https://fervoenergy.pinpointhq.com",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/sylvera",
-    "region": "UK"
-  },
-  {
-    "url": "https://boards.greenhouse.io/patch",
-    "region": "US"
-  },
-  {
-    "url": "https://heirloom.bamboohr.com/careers",
-    "region": "US"
-  },
-  {
-    "url": "https://solugen.breezy.hr",
-    "region": "US"
-  },
-  {
-    "url": "https://impossiblefoods.bamboohr.com/careers",
-    "region": "US"
-  },
-  {
-    "url": "https://oatly.teamtailor.com",
-    "region": "Sweden"
-  },
-  {
-    "url": "https://boards.greenhouse.io/liquiddeath",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/curaleaf",
-    "region": "Israel"
-  },
-  {
-    "url": "https://boards.greenhouse.io/greenthumbindustries",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/servicetitan",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/jobber",
-    "region": "Canada"
-  },
-  {
-    "url": "https://boards.greenhouse.io/buildops",
-    "region": "US"
-  },
-  {
-    "url": "https://builtrobotics.pinpointhq.com",
-    "region": "Global"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/turnerconstruction",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/udemy",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/khanacademy",
-    "region": "India"
-  },
-  {
-    "url": "https://boards.greenhouse.io/outschool",
-    "region": "Canada"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/primroseschools",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/clever",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/osmo",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/degreed",
-    "region": "Brazil"
-  },
-  {
-    "url": "https://ats.rippling.com/jobot/jobs",
-    "region": "US"
-  },
-  {
-    "url": "https://adecco.recruitee.com",
-    "region": "Switzerland"
-  },
-  {
-    "url": "https://randstad.jobs.personio.de",
-    "region": "Austria"
-  },
-  {
-    "url": "https://michaelpage.pinpointhq.com",
-    "region": "France"
-  },
-  {
-    "url": "https://apply.workable.com/lafosse",
-    "region": "UK"
-  },
-  {
-    "url": "https://impellam.pinpointhq.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/alight",
-    "region": "US"
-  },
-  {
-    "url": "https://gallagher.bamboohr.com/careers",
-    "region": "US"
-  },
-  {
-    "url": "https://hubinternational.pinpointhq.com",
-    "region": "US"
-  },
-  {
-    "url": "https://baldwin.bamboohr.com/careers",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/instahyre",
-    "region": "India"
-  },
-  {
-    "url": "https://jobs.lever.co/remofirst",
-    "region": "Global"
-  },
-  {
-    "url": "https://multiplier.bamboohr.com/careers",
-    "region": "India"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/loophealth",
-    "region": "India"
-  },
-  {
-    "url": "https://wint.teamtailor.com",
-    "region": "India"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/turtlemint",
-    "region": "India"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/lendingkart",
-    "region": "India"
-  },
-  {
-    "url": "https://axio.jobs.personio.de",
-    "region": "UK"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/velocity",
-    "region": "Poland"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/refyne",
-    "region": "India"
-  },
-  {
-    "url": "https://ats.rippling.com/crio/jobs",
-    "region": "US"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/cars24",
-    "region": "India"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/bounce",
-    "region": "Portugal"
-  },
-  {
-    "url": "https://careers.smartrecruiters.com/vernacularai",
-    "region": "India"
-  },
-  {
-    "url": "https://minimalist.recruitee.com",
-    "region": "UAE"
-  },
-  {
-    "url": "https://itc.jobs.personio.de",
-    "region": "India"
-  },
-  {
-    "url": "https://tatasteel.pinpointhq.com",
-    "region": "UK"
-  },
-  {
-    "url": "https://shopify.pinpointhq.com",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/hootsuite",
-    "region": "Global"
-  },
-  {
-    "url": "https://boards.greenhouse.io/later",
-    "region": "US"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/maple",
-    "region": "US"
-  },
-  {
-    "url": "https://adasupport.bamboohr.com/careers",
-    "region": "Canada"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/koho",
-    "region": "Canada"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/neofinancial",
-    "region": "Canada"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/lightspeed",
-    "region": "Israel"
-  },
-  {
-    "url": "https://boards.greenhouse.io/thinkific",
-    "region": "Canada"
-  },
-  {
-    "url": "https://boards.greenhouse.io/unbounce",
-    "region": "Canada"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/visier",
-    "region": "Canada"
-  },
-  {
-    "url": "https://boards.greenhouse.io/alayacare",
-    "region": "Canada"
-  },
-  {
-    "url": "https://jobs.lever.co/waabi",
-    "region": "Canada"
-  },
-  {
-    "url": "https://nanoleaf.bamboohr.com/careers",
-    "region": "Canada"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/clearco",
-    "region": "Canada"
-  },
-  {
-    "url": "https://jobs.ashbyhq.com/miovision",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/aspectbiosystems",
-    "region": "Canada"
-  },
-  {
-    "url": "https://jobs.lever.co/deepgenomics",
-    "region": "Canada"
-  },
-  {
-    "url": "https://jobs.lever.co/benchsci",
-    "region": "Canada"
-  },
-  {
-    "url": "https://jobs.lever.co/pointclickcare",
-    "region": "US"
-  },
-  {
-    "url": "https://boards.greenhouse.io/arteriaai",
-    "region": "Canada"
-  },
-  {
-    "url": "https://nesto.jobs.personio.de",
-    "region": "Canada"
-  }
+ {
+  "url": "https://boards.greenhouse.io/stripe",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/airbnb",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/coinbase",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/databricks",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/gitlab",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/robinhood",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/dropbox",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/discord",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/reddit",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/figma",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/instacart",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/doordash",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/brex",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/benchling",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/samsara",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/affirm",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/flexport",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/faire",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/sofi",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/twilio",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cloudflare",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/hashicorp",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/confluent",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/elastic",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/asana",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/coursera",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/lyft",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/pinterest",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/squarespace",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/wayfair",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/peloton",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/toasttab",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/procore",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/amplitude",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/gusto",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/checkr",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/chime",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/marqeta",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/wealthfront",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/oscarhealth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/warbyparker",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/1password",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/sentry",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/pagerduty",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/nerdwallet",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/thumbtack",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/gemini",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/kraken",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/mistral",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/anthropic",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/openai",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/ramp",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/notion",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/linear",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/vanta",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/posthog",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/replit",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/cohere",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/deel",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/leetcode",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/webflow",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/airtable",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/gong",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/rippling",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cockroachlabs",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/dbtlabs",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/clickup",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/calendly",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vercel",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/netlify",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/supabase",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/fivetran",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/mercury",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/plaid",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/grafanalabs",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/docker",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/mozilla",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/duckduckgo",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/whoop",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/calm",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/noom",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/hims",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/verkada",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/scaleai",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/moderntreasury",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/lithic",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/persona",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/watershed",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/baseten",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/modal",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/perplexityai",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/zip",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/carvana",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/gopuff",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/aloyoga",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/feverup",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/shieldai",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/hellofresh",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/waymo",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/rocketlab",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/crusoe",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/onemedical",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/zscaler",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/charliehealth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/onrunning",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/toast",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/saronic",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/oscar",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/dept",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/applied",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/buckmason",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/xometry",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/lucidmotors",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/guidepostmontessori",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/revolutionmedicines",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/point72",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/scoutmotors",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/roblox",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/roku",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/adyen",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/janestreet",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/block",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/natera",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/wpp",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tripactions",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/talkiatry",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/ninjavan",
+  "region": "SEA"
+ },
+ {
+  "url": "https://boards.greenhouse.io/formlabs",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/via",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/base-power",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vast",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/chaosindustries",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/riotgames",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/imc",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ubiquiti",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/five9",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/gorjana",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cookunity",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ripple",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/mejuri",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/aurorainnovation",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/voodoo",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/thirdbridge",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cortland",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/scopely",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bozzuto",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/lalamove",
+  "region": "Asia"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/sondermind",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/quince",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/netskope",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/flix",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/2k",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/handshake",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/epicgames",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tenstorrent",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/helsing",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/betsson",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/reformation",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/formenergy",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/fahertybrand",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/catonetworks",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/hopper",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/motional",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/preply",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/skydio",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/alixpartners",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/helion",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/guidepoint",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/hermeus",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/valtech",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/wayve",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/justworks",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/knowbe4",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/includedhealth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/upstart",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/geotab",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/oura",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vardaspace",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/nuro",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/apptronik",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/astranis",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/psiquantum",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/misfitsmarket",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/redwoodmaterials",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/mach",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/fashionnova",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/fanduel",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tripadvisor",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/dialpad",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/uberfreight",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/alphasights",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/aircall",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/planetlabs",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/twochairs",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/brilliantearth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/gomotive",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/fictiv",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/industrious",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/rockstargames",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/achievementfirst",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/blankstreet",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tecovas",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/charlesriverassociates",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/kodiak",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/kaizengaming",
+  "region": "EU"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/rothys",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/chowbus",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/slice",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/allencontrolsystems",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/headway",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vaxcyte",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/duolingo",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/harbingermotors",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vaco",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/krafton",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tripledotstudios",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/twitch",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/sweetgreen",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/coherehealth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/carta",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/oklo",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vaynermedia",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tekion",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/thoughtworks",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/instructure",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/engine",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/fireblocks",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cortica",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/instawork",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vonage",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/getyourguide",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/lightmatter",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/loftorbital",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/docebo",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/serverobotics",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/princesspolly",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cargurus",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/agilityrobotics",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cloverhealth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/lighthouse",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/ro",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/junipersquare",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/nintendo",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/fastly",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/shipmonk",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/opentable",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/zocdoc",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/easygo",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ursamajor",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/meter",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/aledade",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/spire",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/geniussports",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/speak",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/betterup",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/muonspace",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/sesai",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/lessen",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/sonicwall",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/chartis",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cloudbeds",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/hourglasscosmetics",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/avride",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/truveta",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/reply",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/kepler",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/aclu",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/netgear",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/trainline",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/clear",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bird",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/komodohealth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/strivehealth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/mavenclinic",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/everlane",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/datacamp",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/oneacrefund",
+  "region": "Africa"
+ },
+ {
+  "url": "https://boards.greenhouse.io/wonderschool",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/360learning",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/betterment",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/swordhealth",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/epirus",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/formic",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/higharc",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/blacksky",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/veracyte",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/span",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/steadily",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/amplify",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/nium",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/netcracker",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vannevarlabs",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/thatgamecompany",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/coalition",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/pathrobotics",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/stockx",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bandwidth",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/multiverse",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/convene",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/prizepicks",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/netbrain",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/d2l",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/seatgeek",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/nexamp",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/generalassembly",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/wealthsimple",
+  "region": "Canada"
+ },
+ {
+  "url": "https://jobs.lever.co/zopa",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/rula",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/applovin",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/mentimeter",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vacasa",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/silananotechnologies",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/kasa",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/beamtherapeutics",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/10xgenomics",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tia",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/project44",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/rushstreetinteractive",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/recursionpharmaceuticals",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/taketwo",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tubitv",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ilia",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/criticalmass",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/wpromote",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/gridware",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/kin",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/chargepoint",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/spin",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/flatironhealth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/octave",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bouldercare",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/antora",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/figure",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/braintrust",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/wing",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/nerdy",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/omadahealth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/genedx",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/thirdlove",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/bounteous",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/edmentum",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/revel",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/kairospower",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/valon",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/wattpad",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/pariveda",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/twistbioscience",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/hover",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/parallelwireless",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/lodgify",
+  "region": "EU"
+ },
+ {
+  "url": "https://jobs.lever.co/airalo",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cargomatic",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/warp",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/kymeratherapeutics",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ultragenyxpharmaceutical",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/patreon",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/naughtydog",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/axios",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/velo3d",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/glossier",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/renttherunway",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/skydance",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/leap",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/givedirectly",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/newsela",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/away",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/motive",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/porter",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/freenome",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/abcellera",
+  "region": "Canada"
+ },
+ {
+  "url": "https://jobs.lever.co/placemakr",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/radiant",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/nextiva",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/benevity",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/avantus",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/brightwheel",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/fareharbor",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/tomo",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/entrata",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/drsquatch",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/saatva",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/hawkeye360",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/mizzenandmain",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/toptal",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/wildlifestudios",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://jobs.lever.co/kabam",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/givewell",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/promise",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ooma",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/envoy",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/insider",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/forwardnetworks",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/auterion",
+  "region": "EU"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/picogrid",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/wikimedia",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/2u",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/forto",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ginkgobioworks",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/generatebiomedicines",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/orchard",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/thrivemarket",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/weee",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/semafor",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/dreamgames",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ideo",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/skillsoft",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/elevatebio",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ritual",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/energyhub",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/sonic",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/regent",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/andela",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/outfit7",
+  "region": "EU"
+ },
+ {
+  "url": "https://jobs.lever.co/foodsmart",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/clintonfoundation",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/solidpower",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/udacity",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/loadsmart",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/chaidiscovery",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/partiful",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/lunarenergy",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/voltus",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/liquidiv",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/jellyfish",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/rti",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/stitchfix",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/peek",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/insitro",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/adaptive",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bombas",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/harrys",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ruggable",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/theathletic",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/arcadia",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/zerohomes",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/medal",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/sleeper",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/classdojo",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/kiddom",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/skyscanner",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/adaptivebiotechnologies",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ownwell",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/olipop",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/gymshark",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/factorialenergy",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/navapbc",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/humanrightswatch",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/novacredit",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/psi",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/guild",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/fleetio",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/factor",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/capellaspace",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/educative",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/duffel",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/tourlane",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/koddi",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/fourkites",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/vooma",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/roofr",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/homebound",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/rumble",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/gimlet",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/substack",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/olo",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/brooklinen",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bruntworkwear",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/resolvetosavelives",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/chanzuckerberginitiative",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/esusu",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/emnify",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/seesaw",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/outrider",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/companycam",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/aurorasolar",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/philo",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/descript",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/inkitt",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/voxmedia",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/sparkfund",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/boingo",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vatnsystems",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/grovecollaborative",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/parachutehome",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/supergoop",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/pointb",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/goguardian",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/springboard",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/enveda",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/latchbio",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/vevo",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ag1",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/shift5",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/charitywater",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/acumen",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/teachforall",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/slate",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/helm-ai",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/relaytherapeutics",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tesseratherapeutics",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/openspace",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/snapdocs",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/mosaic",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/omnidian",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/charmindustrial",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/butcherbox",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/chownow",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/whisperaero",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tatcha",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/golin",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bandainamco",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/codeforamerica",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/thetrevorproject",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/propel",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/blueprintmedicines",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tangotherapeutics",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/icon",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/flashfood",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/airdna",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/revinate",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/roadie",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/caribou",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/primemedicine",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/valohealth",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/twelve",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/diginn",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/code3",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/instrument",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/jamcity",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/evolvevacationrental",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/arvinas",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/akoya",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/asimov",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/knock",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/kentik",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/prose",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/colemanresearch",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/heycar",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/shipwell",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bringg",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/culturebiosciences",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/houzz",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/slingshotaerospace",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/doctolib",
+  "region": "France/DACH/EU (Paris, Berlin, Frankfurt, Milan)"
+ },
+ {
+  "url": "https://boards.greenhouse.io/dataiku",
+  "region": "France/EU/UK (Paris, London) + global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/mirakl",
+  "region": "France/EU/UK (Paris, London, München, Bordeaux)"
+ },
+ {
+  "url": "https://jobs.lever.co/qonto",
+  "region": "France/EU (Paris, Brussels, Barcelona, Milan, Belgrade)"
+ },
+ {
+  "url": "https://jobs.lever.co/pigment",
+  "region": "France/EU/UK/CH (Paris, London) + North America"
+ },
+ {
+  "url": "https://jobs.lever.co/contentsquare",
+  "region": "France/EU (Germany, Amsterdam) + global"
+ },
+ {
+  "url": "https://jobs.lever.co/blablacar",
+  "region": "France/EU (Paris, remote France)"
+ },
+ {
+  "url": "https://jobs.lever.co/swile",
+  "region": "France/EU (Paris, Montpellier) + Brazil"
+ },
+ {
+  "url": "https://jobs.lever.co/vestiairecollective",
+  "region": "France/EU/UK (Paris, Tourcoing, Crawley, Berlin)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/pennylane",
+  "region": "France (Paris, Bordeaux, Caen, remote France)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/alan",
+  "region": "France/EU (Paris, Belgium, Madrid)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/ledger",
+  "region": "France/EU/UK (Paris, London) + US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/sorare",
+  "region": "France (Paris)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/backmarket",
+  "region": "France/EU/UK (Paris, Bordeaux, Barcelona, London)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/finary",
+  "region": "France (Paris, remote France)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/gorgias",
+  "region": "France/EU (Paris, Belgrade) + North America"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/ankorstore",
+  "region": "France (Paris)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/photoroom",
+  "region": "France/EU (Paris, Europe remote) + US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/dust",
+  "region": "France (Paris) + US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/n26",
+  "region": "Berlin, DE / EU (Paris, Madrid)"
+ },
+ {
+  "url": "https://boards.greenhouse.io/celonis",
+  "region": "Munich, DE / EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/contentful",
+  "region": "Berlin, DE / London, UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/raisin",
+  "region": "Berlin, DE"
+ },
+ {
+  "url": "https://boards.greenhouse.io/sumup",
+  "region": "Berlin, DE / Barcelona, ES / EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/solarisbank",
+  "region": "Berlin / Frankfurt, DE"
+ },
+ {
+  "url": "https://boards.greenhouse.io/grover",
+  "region": "Berlin, DE"
+ },
+ {
+  "url": "https://boards.greenhouse.io/moonfare",
+  "region": "Berlin, DE / London, UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/commercetools",
+  "region": "Munich, DE / Valencia, ES"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/flink",
+  "region": "Zürich, CH"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/choco",
+  "region": "Berlin, DE / London, UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/babbel",
+  "region": "Berlin, DE"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/billie",
+  "region": "Berlin, DE"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/zenjob",
+  "region": "Berlin, DE"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/deepl",
+  "region": "Cologne, DE / EU"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/alephalpha",
+  "region": "Heidelberg, DE"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/enpal",
+  "region": "Berlin, DE / Milan, IT"
+ },
+ {
+  "url": "https://jobs.lever.co/pipedrive",
+  "region": "Prague, CZ / Lisbon, PT / EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/proton",
+  "region": "Geneva, Switzerland HQ — 31 CH jobs (Geneva), plus Paris/Bar"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/frontify",
+  "region": "St. Gallen, Switzerland HQ — 9 CH (Sankt Gallen) + 8 London"
+ },
+ {
+  "url": "https://boards.greenhouse.io/scandit",
+  "region": "Zurich, Switzerland HQ — 3 CH jobs, 7 EU total"
+ },
+ {
+  "url": "https://jobs.lever.co/swissborg",
+  "region": "Lausanne, Switzerland — 3 EU/remote-EU jobs"
+ },
+ {
+  "url": "https://boards.greenhouse.io/datadog",
+  "region": "Paris eng + EU — 88 EU jobs incl. 2 CH"
+ },
+ {
+  "url": "https://boards.greenhouse.io/okta",
+  "region": "US HQ + EU/EMEA — 32 EU jobs"
+ },
+ {
+  "url": "https://boards.greenhouse.io/braze",
+  "region": "US HQ + London/EU — 22 EU jobs"
+ },
+ {
+  "url": "https://boards.greenhouse.io/intercom",
+  "region": "Dublin, Ireland HQ — 90 EU jobs"
+ },
+ {
+  "url": "https://boards.greenhouse.io/rubrik",
+  "region": "US HQ + EU — 12 EU jobs incl. 1 CH"
+ },
+ {
+  "url": "https://boards.greenhouse.io/algolia",
+  "region": "Paris, France HQ — 26 EU jobs"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ledgy",
+  "region": "Zurich/London — 17 EU jobs (DE/UK/ES/PL/RO)"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tines",
+  "region": "Dublin, Ireland HQ — 3 EU jobs"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/elevenlabs",
+  "region": "London + remote-EU — 90 EU jobs"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/synthesia",
+  "region": "London HQ + remote-EU — 53 EU jobs incl. 2 CH"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/lovable",
+  "region": "Stockholm, Sweden — 18 EU jobs"
+ },
+ {
+  "url": "https://boards.greenhouse.io/catawiki",
+  "region": "Amsterdam NL / EU (Netherlands, Lisbon, France, Italy)"
+ },
+ {
+  "url": "https://jobs.lever.co/fresha",
+  "region": "EU/UK (London, Warsaw, Madrid, Paris; Amsterdam office)"
+ },
+ {
+  "url": "https://jobs.lever.co/crypto",
+  "region": "Global; EU/UK (London, Sofia)"
+ },
+ {
+  "url": "https://jobs.lever.co/netlight",
+  "region": "EU (Stockholm, Munich, Berlin, Amsterdam, Madrid)"
+ },
+ {
+  "url": "https://jobs.lever.co/storiogroup",
+  "region": "Amsterdam NL / EU (Amsterdam, Munich, London, Barcelona)"
+ },
+ {
+  "url": "https://jobs.eu.lever.co/tomtom",
+  "region": "Amsterdam NL / EU (Amsterdam, Madrid, Lodz, Gent) — EU Lever"
+ },
+ {
+  "url": "https://jobs.eu.lever.co/prosus",
+  "region": "Amsterdam NL — EU Lever host"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/eye-security",
+  "region": "NL/DACH (The Hague, Netherlands, Germany, Belgium, Austria)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/wetravel",
+  "region": "Amsterdam office / EU (Spain, Portugal, Lithuania, Poland)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/monumental",
+  "region": "Amsterdam NL (all roles Amsterdam)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/luminovo",
+  "region": "DACH (Munich, Berlin)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/bitvavo",
+  "region": "Amsterdam NL (HQ)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/recharge",
+  "region": "UK/Remote (London, Toronto, Remote)"
+ },
+ {
+  "url": "https://boards.greenhouse.io/okx",
+  "region": "Global; Remote EMEA, Dubai"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bitpanda",
+  "region": "Vienna (AT) HQ; all-EU (Berlin, Barcelona, Paris, Milan)"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bitgo",
+  "region": "Global; Frankfurt (DE), London"
+ },
+ {
+  "url": "https://boards.greenhouse.io/blockchain",
+  "region": "Global; London, Paris, Malta"
+ },
+ {
+  "url": "https://boards.greenhouse.io/aptoslabs",
+  "region": "Global remote incl. EU; Palo Alto"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bitmex",
+  "region": "Hong Kong; Remote - Europe"
+ },
+ {
+  "url": "https://boards.greenhouse.io/consensys",
+  "region": "Global; Remote EMEA"
+ },
+ {
+  "url": "https://boards.greenhouse.io/21shares",
+  "region": "Zug (CH) HQ; current role New York"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/kraken.com",
+  "region": "Global; Poland, UK, Ireland"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/blockdaemon",
+  "region": "Global; Dublin (IE)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/keyrock",
+  "region": "Brussels (BE) HQ; Zurich (CH), London"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/nethermind",
+  "region": "Remote; Hungary (EU)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/dune",
+  "region": "Europe / New York"
+ },
+ {
+  "url": "https://boards.greenhouse.io/scout24",
+  "region": "Germany (Berlin/Munich/Bonn) — .NET/Microsoft-stack marketpl"
+ },
+ {
+  "url": "https://boards.greenhouse.io/avepoint",
+  "region": "Global; 31 EU/UK roles — heavy Microsoft 365 / .NET vendor"
+ },
+ {
+  "url": "https://boards.greenhouse.io/wolt",
+  "region": "EU (Berlin/Athens/Budapest/Stockholm/Helsinki/Ljubljana)"
+ },
+ {
+  "url": "https://boards.greenhouse.io/gocardless",
+  "region": "EU/UK (Riga/Lisbon/London/Leeds)"
+ },
+ {
+  "url": "https://jobs.lever.co/sonarsource",
+  "region": "Switzerland (Geneva HQ)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/deepjudge",
+  "region": "Switzerland (Zurich HQ)"
+ },
+ {
+  "url": "https://jobs.lever.co/frontify",
+  "region": "Switzerland (St. Gallen HQ)"
+ },
+ {
+  "url": "https://jobs.lever.co/anybotics",
+  "region": "Switzerland (Zurich HQ)"
+ },
+ {
+  "url": "https://boards.greenhouse.io/terraquantum",
+  "region": "Switzerland (St. Gallen HQ) / Germany"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/smallpdf",
+  "region": "Switzerland (Zurich HQ, remote roles)"
+ },
+ {
+  "url": "https://boards.greenhouse.io/parloa",
+  "region": "EU (Berlin/Munich + UK/France)"
+ },
+ {
+  "url": "https://boards.greenhouse.io/typeform",
+  "region": "Barcelona, Spain"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cabify",
+  "region": "Madrid, Spain"
+ },
+ {
+  "url": "https://boards.greenhouse.io/feedzai",
+  "region": "Lisbon/Porto, Portugal"
+ },
+ {
+  "url": "https://jobs.lever.co/jobandtalent",
+  "region": "Madrid/Barcelona, Spain"
+ },
+ {
+  "url": "https://jobs.lever.co/deliverect",
+  "region": "Ghent, Belgium (roles in Madrid/London/Berlin)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/satispay",
+  "region": "Milan, Italy (roles in Barcelona/EU)"
+ },
+ {
+  "url": "https://jobs.lever.co/spotify",
+  "region": "Sweden"
+ },
+ {
+  "url": "https://jobs.lever.co/veo",
+  "region": "Denmark"
+ },
+ {
+  "url": "https://jobs.lever.co/whereby",
+  "region": "Norway"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/pleo",
+  "region": "Denmark"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/supercell",
+  "region": "Finland"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/iceye",
+  "region": "Finland"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/gelato",
+  "region": "Norway"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/corti",
+  "region": "Denmark"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/planday",
+  "region": "Denmark"
+ },
+ {
+  "url": "https://boards.greenhouse.io/truecaller",
+  "region": "Sweden"
+ },
+ {
+  "url": "https://boards.greenhouse.io/relex",
+  "region": "Finland"
+ },
+ {
+  "url": "https://boards.greenhouse.io/smartlyio",
+  "region": "Finland"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cognite",
+  "region": "Norway"
+ },
+ {
+  "url": "https://boards.greenhouse.io/trustpilot",
+  "region": "Denmark"
+ },
+ {
+  "url": "https://boards.greenhouse.io/yousician",
+  "region": "Finland"
+ },
+ {
+  "url": "https://boards.greenhouse.io/monzo",
+  "region": "UK/EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tide",
+  "region": "UK/DACH/EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/form3",
+  "region": "UK/EU (remote)"
+ },
+ {
+  "url": "https://boards.greenhouse.io/payoneer",
+  "region": "EU"
+ },
+ {
+  "url": "https://boards.greenhouse.io/wayve",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/hyperexponential",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/quantexa",
+  "region": "UK/DACH"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/n8n",
+  "region": "DACH (Berlin)"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/tacto",
+  "region": "DACH (Munich)"
+ },
+ {
+  "url": "https://jobs.lever.co/matillion",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.lever.co/celerion",
+  "region": "Switzerland (Fehraltorf/Zurich) + US — clinical CRO / bioana"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/cradlebio",
+  "region": "Switzerland (Zürich) + Amsterdam — protein-design biotech"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bridgebio",
+  "region": "Switzerland (Zug HQ) + US — biotech pharma"
+ },
+ {
+  "url": "https://boards.greenhouse.io/nlcventures",
+  "region": "EU (Netherlands/Germany/France) — healthtech venture builder"
+ },
+ {
+  "url": "https://boards.greenhouse.io/iniziomedical",
+  "region": "UK (London/Manchester) — medical/healthcare services"
+ },
+ {
+  "url": "https://boards.greenhouse.io/olema",
+  "region": "Ireland (Dublin) + US — oncology biotech"
+ },
+ {
+  "url": "https://jobs.lever.co/bioagilytix",
+  "region": "Germany (Hamburg) + US — bioanalytical CRO"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/amboss",
+  "region": "Germany (Berlin) — clinical knowledge / healthcare"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/neko-health",
+  "region": "UK (London) + Sweden (Stockholm) — preventive health-screeni"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/basecamp-research",
+  "region": "UK (London) — biotech / protein AI"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/genomics",
+  "region": "UK (Oxford/London) — genomics drug discovery"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/owkin",
+  "region": "France (Paris) + UK — TechBio drug discovery"
+ },
+ {
+  "url": "https://jobs.lever.co/h1",
+  "region": "Denmark (Copenhagen) + UK + US — healthcare data platform"
+ },
+ {
+  "url": "https://boards.greenhouse.io/numab",
+  "region": "Switzerland (Wädenswil/Zurich) biotech — current posting Rem"
+ },
+ {
+  "url": "https://boards.greenhouse.io/inyova",
+  "region": "Zurich, Switzerland — impact-investing wealth fintech"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bybit",
+  "region": "Vienna (Austria) + global — crypto exchange (25 EU roles)"
+ },
+ {
+  "url": "https://boards.greenhouse.io/copperco",
+  "region": "London + Remote-EMEA — crypto custody/prime brokerage"
+ },
+ {
+  "url": "https://boards.greenhouse.io/truelayer",
+  "region": "London/Milan — open-banking payments (9 EU roles)"
+ },
+ {
+  "url": "https://boards.greenhouse.io/remotecom",
+  "region": "Remote-EMEA/Western Europe/UK — global payroll & EOR (142 EU"
+ },
+ {
+  "url": "https://jobs.lever.co/moonpay",
+  "region": "London/UK + US — crypto payments on-ramp"
+ },
+ {
+  "url": "https://jobs.lever.co/anchorage",
+  "region": "US + Portugal (3 EU) — crypto bank/custody"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/mollie",
+  "region": "Amsterdam/Lisbon/Milan/Munich — payments fintech (24 EU role"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/airwallex",
+  "region": "London + global — cross-border payments fintech (96 EU roles"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/trulioo",
+  "region": "Dublin + Vancouver/US — KYC/identity verification for financ"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/swiggy",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.lever.co/paytm",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/phonepe",
+  "region": "India"
+ },
+ {
+  "url": "https://razorpay.pinpointhq.com",
+  "region": "France"
+ },
+ {
+  "url": "https://jobs.lever.co/cred",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.lever.co/meesho",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/groww",
+  "region": "India"
+ },
+ {
+  "url": "https://zepto.bamboohr.com/careers",
+  "region": "Australia"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/unacademy",
+  "region": "India"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/interviewbit",
+  "region": "India"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/newtonschool",
+  "region": "India"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/freshworks",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/postman",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/inmobi",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/glance",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/druva",
+  "region": "Global"
+ },
+ {
+  "url": "https://innovaccer.pinpointhq.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/highradius",
+  "region": "India"
+ },
+ {
+  "url": "https://moengage.pinpointhq.com",
+  "region": "France"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/whatfix",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/atlan",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/pine",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/navi",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/mindtickle",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/observeai",
+  "region": "India"
+ },
+ {
+  "url": "https://rapido.pinpointhq.com",
+  "region": "France"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/rebelfoods",
+  "region": "India"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/nobroker",
+  "region": "India"
+ },
+ {
+  "url": "https://magicbricks.pinpointhq.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/ixigo",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/turing",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/sigmoid",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/netradyne",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.lever.co/aeratechnology",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/zenoti",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/bureau",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.lever.co/zeta",
+  "region": "India"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/upstox",
+  "region": "India"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/polygontechnology",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/matic",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/narayanahealth",
+  "region": "India"
+ },
+ {
+  "url": "https://apexon.pinpointhq.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/clarisights",
+  "region": "India"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/captainfresh",
+  "region": "India"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/grab",
+  "region": "Global"
+ },
+ {
+  "url": "https://shopee.pinpointhq.com",
+  "region": "France"
+ },
+ {
+  "url": "https://boards.greenhouse.io/thunes",
+  "region": "Global"
+ },
+ {
+  "url": "https://ats.rippling.com/aspire/jobs",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/xendit",
+  "region": "Global"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/sayurbox",
+  "region": "Indonesia"
+ },
+ {
+  "url": "https://osome.teamtailor.com",
+  "region": "Singapore"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/doctoranywhere",
+  "region": "Singapore"
+ },
+ {
+  "url": "https://fundingsocieties.pinpointhq.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.lever.co/ambergroup",
+  "region": "Hong Kong"
+ },
+ {
+  "url": "https://jobs.lever.co/maya",
+  "region": "Canada"
+ },
+ {
+  "url": "https://kumu.bamboohr.com/careers",
+  "region": "Philippines"
+ },
+ {
+  "url": "https://tiki.jobs.personio.de",
+  "region": "Vietnam"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/skymavis",
+  "region": "Vietnam"
+ },
+ {
+  "url": "https://boards.greenhouse.io/mercari",
+  "region": "Canada"
+ },
+ {
+  "url": "https://apply.workable.com/smartnews",
+  "region": "Japan"
+ },
+ {
+  "url": "https://layerx.jobs.personio.de",
+  "region": "Germany"
+ },
+ {
+  "url": "https://boards.greenhouse.io/paypay",
+  "region": "Japan"
+ },
+ {
+  "url": "https://jobs.lever.co/woven-by-toyota",
+  "region": "Japan"
+ },
+ {
+  "url": "https://boards.greenhouse.io/coupang",
+  "region": "South Korea"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/canva",
+  "region": "Australia"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/safetyculture",
+  "region": "Australia"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cultureamp",
+  "region": "Australia"
+ },
+ {
+  "url": "https://jobs.lever.co/deputy",
+  "region": "Australia"
+ },
+ {
+  "url": "https://jobs.lever.co/immutable",
+  "region": "Australia"
+ },
+ {
+  "url": "https://boards.greenhouse.io/octopusdeploy",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/judobank",
+  "region": "Australia"
+ },
+ {
+  "url": "https://apply.workable.com/rokt",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/eucalyptus",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/healthmatch",
+  "region": "Australia"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/halter",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/xero",
+  "region": "Australia"
+ },
+ {
+  "url": "https://sharesies.bamboohr.com/careers",
+  "region": "New Zealand"
+ },
+ {
+  "url": "https://boards.greenhouse.io/dawnaerospace",
+  "region": "Netherlands"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/partly",
+  "region": "New Zealand"
+ },
+ {
+  "url": "https://boards.greenhouse.io/careem",
+  "region": "UAE"
+ },
+ {
+  "url": "https://tabby.pinpointhq.com",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/tamara",
+  "region": "Global"
+ },
+ {
+  "url": "https://propertyfinder.teamtailor.com",
+  "region": "UAE"
+ },
+ {
+  "url": "https://dubizzle.teamtailor.com",
+  "region": "UAE"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/ziina",
+  "region": "UAE"
+ },
+ {
+  "url": "https://apply.workable.com/hudabeauty",
+  "region": "UAE"
+ },
+ {
+  "url": "https://chalhoubgroup.teamtailor.com",
+  "region": "UAE"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/masdar",
+  "region": "UAE"
+ },
+ {
+  "url": "https://apply.workable.com/alpheya",
+  "region": "UAE"
+ },
+ {
+  "url": "https://bosta.bamboohr.com/careers",
+  "region": "Egypt"
+ },
+ {
+  "url": "https://instabug.bamboohr.com/careers",
+  "region": "Egypt"
+ },
+ {
+  "url": "https://nana.bamboohr.com/careers",
+  "region": "Saudi Arabia"
+ },
+ {
+  "url": "https://unifonic.recruitee.com",
+  "region": "Egypt"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/yassir",
+  "region": "Germany"
+ },
+ {
+  "url": "https://instadeep.bamboohr.com/careers",
+  "region": "Tunisia"
+ },
+ {
+  "url": "https://monday.jobs.personio.de",
+  "region": "Israel"
+ },
+ {
+  "url": "https://boards.greenhouse.io/lightricks",
+  "region": "Israel"
+ },
+ {
+  "url": "https://boards.greenhouse.io/riskified",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/melio",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/hibob",
+  "region": "Israel"
+ },
+ {
+  "url": "https://boards.greenhouse.io/jfrog",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cybereason",
+  "region": "Japan"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/armis",
+  "region": "Israel"
+ },
+ {
+  "url": "https://boards.greenhouse.io/orcasecurity",
+  "region": "Israel"
+ },
+ {
+  "url": "https://aqua-security.pinpointhq.com",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/axonius",
+  "region": "Israel"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/redis",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/similarweb",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/taboola",
+  "region": "Global"
+ },
+ {
+  "url": "https://moonactive.pinpointhq.com",
+  "region": "France"
+ },
+ {
+  "url": "https://jobs.lever.co/trendyol",
+  "region": "Turkey"
+ },
+ {
+  "url": "https://jobs.lever.co/peakgames",
+  "region": "Turkey"
+ },
+ {
+  "url": "https://paystack.teamtailor.com",
+  "region": "Nigeria"
+ },
+ {
+  "url": "https://kuda.pinpointhq.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/moniepoint",
+  "region": "Nigeria"
+ },
+ {
+  "url": "https://boards.greenhouse.io/jumia",
+  "region": "Nigeria"
+ },
+ {
+  "url": "https://yellowcard.bamboohr.com/careers",
+  "region": "Nigeria"
+ },
+ {
+  "url": "https://cellulant.bamboohr.com/careers",
+  "region": "Kenya"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/m-kopa",
+  "region": "Nigeria"
+ },
+ {
+  "url": "https://sunking.pinpointhq.com",
+  "region": "Global"
+ },
+ {
+  "url": "https://turaco.breezy.hr",
+  "region": "Nigeria"
+ },
+ {
+  "url": "https://jobs.lever.co/apolloagriculture",
+  "region": "Kenya"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/burnmanufacturing",
+  "region": "Kenya"
+ },
+ {
+  "url": "https://boards.greenhouse.io/luno",
+  "region": "South Africa"
+ },
+ {
+  "url": "https://nakedinsurance.bamboohr.com/careers",
+  "region": "South Africa"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ozow",
+  "region": "South Africa"
+ },
+ {
+  "url": "https://peachpayments.bamboohr.com/careers",
+  "region": "India"
+ },
+ {
+  "url": "https://clickatell.bamboohr.com/careers",
+  "region": "South Africa"
+ },
+ {
+  "url": "https://aerobotics.bamboohr.com/careers",
+  "region": "South Africa"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/nubank",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/kavak",
+  "region": "Mexico"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bitso",
+  "region": "Mexico"
+ },
+ {
+  "url": "https://konfio.bamboohr.com/careers",
+  "region": "Mexico"
+ },
+ {
+  "url": "https://boards.greenhouse.io/clara",
+  "region": "Global"
+ },
+ {
+  "url": "https://jeeves.recruitee.com",
+  "region": "Mexico"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/belvo",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://jobs.lever.co/dlocal",
+  "region": "Global"
+ },
+ {
+  "url": "https://loft.teamtailor.com",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://boards.greenhouse.io/quintoandar",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://boards.greenhouse.io/gympass",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vtex",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://jobs.lever.co/starkbank",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://boards.greenhouse.io/rdstation",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://satellogic.bamboohr.com/careers",
+  "region": "Argentina"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/tapi",
+  "region": "Hungary"
+ },
+ {
+  "url": "https://betterfly.teamtailor.com",
+  "region": "Chile"
+ },
+ {
+  "url": "https://jobs.lever.co/fintual",
+  "region": "Mexico"
+ },
+ {
+  "url": "https://buk.jobs.personio.de",
+  "region": "Germany"
+ },
+ {
+  "url": "https://justo.bamboohr.com/careers",
+  "region": "Chile"
+ },
+ {
+  "url": "https://jobs.lever.co/xepelin",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/toku",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bold",
+  "region": "Colombia"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/addi",
+  "region": "Colombia"
+ },
+ {
+  "url": "https://jobs.lever.co/yuno",
+  "region": "Global"
+ },
+ {
+  "url": "https://simetrik.bamboohr.com/careers",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/skydropx",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://albo.bamboohr.com/careers",
+  "region": "Mexico"
+ },
+ {
+  "url": "https://klar.bamboohr.com/careers",
+  "region": "Mexico"
+ },
+ {
+  "url": "https://zubale.bamboohr.com/careers",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://osigu.bamboohr.com/careers",
+  "region": "Guatemala"
+ },
+ {
+  "url": "https://cit.jobs.personio.de",
+  "region": "Germany"
+ },
+ {
+  "url": "https://nubimetrics.bamboohr.com/careers",
+  "region": "Argentina"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/warren",
+  "region": "Belgium"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/nomad",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://boards.greenhouse.io/btgpactual",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://boards.greenhouse.io/xpinc",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://northvolt.pinpointhq.com",
+  "region": "Canada"
+ },
+ {
+  "url": "https://epidemicsound.bamboohr.com/careers",
+  "region": "Sweden"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/kognity",
+  "region": "Sweden"
+ },
+ {
+  "url": "https://anyfin.teamtailor.com",
+  "region": "Sweden"
+ },
+ {
+  "url": "https://storytel.teamtailor.com",
+  "region": "Sweden"
+ },
+ {
+  "url": "https://detectify.teamtailor.com",
+  "region": "Sweden"
+ },
+ {
+  "url": "https://volvocars.pinpointhq.com",
+  "region": "Global"
+ },
+ {
+  "url": "https://polestar.teamtailor.com",
+  "region": "Sweden"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/deliveryhero",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/traderepublic",
+  "region": "Germany"
+ },
+ {
+  "url": "https://scalablecapital.jobs.personio.de",
+  "region": "Germany"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/clark",
+  "region": "US"
+ },
+ {
+  "url": "https://personio.recruitee.com",
+  "region": "Germany"
+ },
+ {
+  "url": "https://boards.greenhouse.io/staffbase",
+  "region": "Germany"
+ },
+ {
+  "url": "https://flixbus.bamboohr.com/careers",
+  "region": "Germany"
+ },
+ {
+  "url": "https://1komma5.teamtailor.com",
+  "region": "Germany"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ivalua",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/younited",
+  "region": "France"
+ },
+ {
+  "url": "https://boards.greenhouse.io/shifttechnology",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/ekimetrics",
+  "region": "Global"
+ },
+ {
+  "url": "https://booking.breezy.hr",
+  "region": "Netherlands"
+ },
+ {
+  "url": "https://bunq.recruitee.com",
+  "region": "Netherlands"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/picnic",
+  "region": "Netherlands"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/coolblue",
+  "region": "Netherlands"
+ },
+ {
+  "url": "https://framer.jobs.personio.de",
+  "region": "Netherlands"
+ },
+ {
+  "url": "https://nmbrs.recruitee.com",
+  "region": "Netherlands"
+ },
+ {
+  "url": "https://dashmote.recruitee.com",
+  "region": "China"
+ },
+ {
+  "url": "https://boards.greenhouse.io/flowtraders",
+  "region": "Global"
+ },
+ {
+  "url": "https://apply.workable.com/starling-bank",
+  "region": "UK"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/wise",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/marshmallow",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cleo",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/freetrade",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/zilch",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/deliveroo",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/beamery",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/complyadvantage",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/graphcore",
+  "region": "UK"
+ },
+ {
+  "url": "https://arm.pinpointhq.com",
+  "region": "France"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/improbable",
+  "region": "UK"
+ },
+ {
+  "url": "https://thoughtmachine.pinpointhq.com",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/paddle",
+  "region": "Global"
+ },
+ {
+  "url": "https://zendesk.pinpointhq.com",
+  "region": "France"
+ },
+ {
+  "url": "https://templafy.teamtailor.com",
+  "region": "Denmark"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/lunar",
+  "region": "US"
+ },
+ {
+  "url": "https://podimo.teamtailor.com",
+  "region": "Denmark"
+ },
+ {
+  "url": "https://aiven.pinpointhq.com",
+  "region": "France"
+ },
+ {
+  "url": "https://iqm.teamtailor.com",
+  "region": "Finland"
+ },
+ {
+  "url": "https://vipps.teamtailor.com",
+  "region": "Norway"
+ },
+ {
+  "url": "https://remarkable.teamtailor.com",
+  "region": "Norway"
+ },
+ {
+  "url": "https://zivid.bamboohr.com/careers",
+  "region": "Norway"
+ },
+ {
+  "url": "https://bolt.pinpointhq.com",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/veriff",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/glia",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/nord-security",
+  "region": "Lithuania"
+ },
+ {
+  "url": "https://boards.greenhouse.io/lokalise",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/docplanner",
+  "region": "Spain"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/allegro",
+  "region": "Poland"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/brainly",
+  "region": "Poland"
+ },
+ {
+  "url": "https://boards.greenhouse.io/rampnetwork",
+  "region": "Poland"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/softwaremind",
+  "region": "Poland"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/rohlik",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/kiwi-com",
+  "region": "Czechia"
+ },
+ {
+  "url": "https://boards.greenhouse.io/jetbrains",
+  "region": "Global"
+ },
+ {
+  "url": "https://travelperk.pinpointhq.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://wallbox.bamboohr.com/careers",
+  "region": "Global"
+ },
+ {
+  "url": "https://fever.jobs.personio.de",
+  "region": "UK"
+ },
+ {
+  "url": "https://idealista.teamtailor.com",
+  "region": "Spain"
+ },
+ {
+  "url": "https://boards.greenhouse.io/wallapop",
+  "region": "Spain"
+ },
+ {
+  "url": "https://seedtag.teamtailor.com",
+  "region": "Spain"
+ },
+ {
+  "url": "https://jobs.lever.co/musixmatch",
+  "region": "Italy"
+ },
+ {
+  "url": "https://prima-assicurazioni.jobs.personio.de",
+  "region": "Italy"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/nexthink",
+  "region": "Global"
+ },
+ {
+  "url": "https://selma-finance.jobs.personio.de",
+  "region": "Switzerland"
+ },
+ {
+  "url": "https://climeworks.recruitee.com",
+  "region": "Switzerland"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/swissquote",
+  "region": "Switzerland"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/omio",
+  "region": "Germany"
+ },
+ {
+  "url": "https://boards.greenhouse.io/trivago",
+  "region": "Germany"
+ },
+ {
+  "url": "https://boards.greenhouse.io/gostudent",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/refurbed",
+  "region": "Austria"
+ },
+ {
+  "url": "https://boards.greenhouse.io/storyblok",
+  "region": "Austria"
+ },
+ {
+  "url": "https://boards.greenhouse.io/collibra",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/showpad",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/flipdish",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/wayflyer",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/letsgetchecked",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/evervault",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/uipath",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/emag",
+  "region": "Romania"
+ },
+ {
+  "url": "https://fintechos.bamboohr.com/careers",
+  "region": "Romania"
+ },
+ {
+  "url": "https://payhawk.jobs.personio.de",
+  "region": "UK"
+ },
+ {
+  "url": "https://chaos.recruitee.com",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.lever.co/siteground",
+  "region": "Bulgaria"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/endava",
+  "region": "Global"
+ },
+ {
+  "url": "https://macpaw.recruitee.com",
+  "region": "Ukraine"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/restream",
+  "region": "Estonia"
+ },
+ {
+  "url": "https://reface.breezy.hr",
+  "region": "Ukraine"
+ },
+ {
+  "url": "https://jobs.lever.co/intellias",
+  "region": "Ukraine"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/sigmasoftware",
+  "region": "Ukraine"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/elliptic",
+  "region": "Global"
+ },
+ {
+  "url": "https://copper.pinpointhq.com",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/nothing",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/gousto",
+  "region": "UK"
+ },
+ {
+  "url": "https://huel.teamtailor.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/butternutbox",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/zoe",
+  "region": "UK"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/ceracare",
+  "region": "UK"
+ },
+ {
+  "url": "https://vitesse.pinpointhq.com",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/griffin",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/allica-bank",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/oaknorth",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/clearbank",
+  "region": "UK"
+ },
+ {
+  "url": "https://nested.teamtailor.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/goodlord",
+  "region": "UK"
+ },
+ {
+  "url": "https://rightmove.pinpointhq.com",
+  "region": "France"
+ },
+ {
+  "url": "https://cazoo.teamtailor.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/motorway",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/carwow",
+  "region": "Global"
+ },
+ {
+  "url": "https://octopusenergy.bamboohr.com/careers",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ovoenergy",
+  "region": "UK"
+ },
+ {
+  "url": "https://tado.jobs.personio.de",
+  "region": "Germany"
+ },
+ {
+  "url": "https://ecosia.jobs.personio.de",
+  "region": "Germany"
+ },
+ {
+  "url": "https://userlane.jobs.personio.de",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/blackforestlabs",
+  "region": "Germany"
+ },
+ {
+  "url": "https://merantix.jobs.personio.de",
+  "region": "Germany"
+ },
+ {
+  "url": "https://boards.greenhouse.io/isaraerospace",
+  "region": "Germany"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/the-exploration-company",
+  "region": "Germany"
+ },
+ {
+  "url": "https://magazino.jobs.personio.de",
+  "region": "Germany"
+ },
+ {
+  "url": "https://proglove.jobs.personio.de",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/konux",
+  "region": "Germany"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vay",
+  "region": "US"
+ },
+ {
+  "url": "https://wandelbots.jobs.personio.de",
+  "region": "Germany"
+ },
+ {
+  "url": "https://boards.greenhouse.io/navvis",
+  "region": "Germany"
+ },
+ {
+  "url": "https://ottobock.teamtailor.com",
+  "region": "Germany"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/brainlab",
+  "region": "Global"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/devotedhealth",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/priviahealth",
+  "region": "US"
+ },
+ {
+  "url": "https://ats.rippling.com/carbon-health/jobs",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/parsleyhealth",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/lyrahealth",
+  "region": "US"
+ },
+ {
+  "url": "https://brightline.bamboohr.com/careers",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/sprinter-health",
+  "region": "Canada"
+ },
+ {
+  "url": "https://boards.greenhouse.io/mainstreethealth",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/grow-therapy",
+  "region": "US"
+ },
+ {
+  "url": "https://alma.bamboohr.com/careers",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ophelia",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bicyclehealth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/interwellhealth",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/thyme-care",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/color-health",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/butterflynetwork",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/hinge-health",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/virtahealth",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/vidahealth",
+  "region": "US"
+ },
+ {
+  "url": "https://ats.rippling.com/calibrate/jobs",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/hims-and-hers",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/carrotfertility",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/papa",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/honor",
+  "region": "US"
+ },
+ {
+  "url": "https://helpathome.bamboohr.com/careers",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bayada",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/carepointhealth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ayahealthcare",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/trustedhealth",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/shiftkey",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/clipboardhealth",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/medely",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/vivian-health",
+  "region": "US"
+ },
+ {
+  "url": "https://etsy.bamboohr.com/careers",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/poshmark",
+  "region": "US"
+ },
+ {
+  "url": "https://allbirds.pinpointhq.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/vuori",
+  "region": "US"
+ },
+ {
+  "url": "https://skims.pinpointhq.com",
+  "region": "US"
+ },
+ {
+  "url": "https://represent.recruitee.com",
+  "region": "Germany"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/tonal",
+  "region": "US"
+ },
+ {
+  "url": "https://ats.rippling.com/therabody/jobs",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/classpass",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/equinox",
+  "region": "US"
+ },
+ {
+  "url": "https://f45-training.breezy.hr",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/shakeshack",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/torchystacos",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/nomnom",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/bark",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.lever.co/rover",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/lemonade",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/pieinsurance",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/ethoslife",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/ladder",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/bestow",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/sidecarhealth",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/platformscience",
+  "region": "India"
+ },
+ {
+  "url": "https://schneider.bamboohr.com/careers",
+  "region": "US"
+ },
+ {
+  "url": "https://sunrun.pinpointhq.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/sunnova",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/palmetto",
+  "region": "US"
+ },
+ {
+  "url": "https://licycle.bamboohr.com/careers",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/group14",
+  "region": "US"
+ },
+ {
+  "url": "https://fervoenergy.pinpointhq.com",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/sylvera",
+  "region": "UK"
+ },
+ {
+  "url": "https://boards.greenhouse.io/patch",
+  "region": "US"
+ },
+ {
+  "url": "https://heirloom.bamboohr.com/careers",
+  "region": "US"
+ },
+ {
+  "url": "https://solugen.breezy.hr",
+  "region": "US"
+ },
+ {
+  "url": "https://impossiblefoods.bamboohr.com/careers",
+  "region": "US"
+ },
+ {
+  "url": "https://oatly.teamtailor.com",
+  "region": "Sweden"
+ },
+ {
+  "url": "https://boards.greenhouse.io/liquiddeath",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/curaleaf",
+  "region": "Israel"
+ },
+ {
+  "url": "https://boards.greenhouse.io/greenthumbindustries",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/servicetitan",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/jobber",
+  "region": "Canada"
+ },
+ {
+  "url": "https://boards.greenhouse.io/buildops",
+  "region": "US"
+ },
+ {
+  "url": "https://builtrobotics.pinpointhq.com",
+  "region": "Global"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/turnerconstruction",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/udemy",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/khanacademy",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/outschool",
+  "region": "Canada"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/primroseschools",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/clever",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/osmo",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/degreed",
+  "region": "Brazil"
+ },
+ {
+  "url": "https://ats.rippling.com/jobot/jobs",
+  "region": "US"
+ },
+ {
+  "url": "https://adecco.recruitee.com",
+  "region": "Switzerland"
+ },
+ {
+  "url": "https://randstad.jobs.personio.de",
+  "region": "Austria"
+ },
+ {
+  "url": "https://michaelpage.pinpointhq.com",
+  "region": "France"
+ },
+ {
+  "url": "https://apply.workable.com/lafosse",
+  "region": "UK"
+ },
+ {
+  "url": "https://impellam.pinpointhq.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/alight",
+  "region": "US"
+ },
+ {
+  "url": "https://gallagher.bamboohr.com/careers",
+  "region": "US"
+ },
+ {
+  "url": "https://hubinternational.pinpointhq.com",
+  "region": "US"
+ },
+ {
+  "url": "https://baldwin.bamboohr.com/careers",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/instahyre",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.lever.co/remofirst",
+  "region": "Global"
+ },
+ {
+  "url": "https://multiplier.bamboohr.com/careers",
+  "region": "India"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/loophealth",
+  "region": "India"
+ },
+ {
+  "url": "https://wint.teamtailor.com",
+  "region": "India"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/turtlemint",
+  "region": "India"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/lendingkart",
+  "region": "India"
+ },
+ {
+  "url": "https://axio.jobs.personio.de",
+  "region": "UK"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/velocity",
+  "region": "Poland"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/refyne",
+  "region": "India"
+ },
+ {
+  "url": "https://ats.rippling.com/crio/jobs",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/cars24",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/bounce",
+  "region": "Portugal"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/vernacularai",
+  "region": "India"
+ },
+ {
+  "url": "https://minimalist.recruitee.com",
+  "region": "UAE"
+ },
+ {
+  "url": "https://itc.jobs.personio.de",
+  "region": "India"
+ },
+ {
+  "url": "https://tatasteel.pinpointhq.com",
+  "region": "UK"
+ },
+ {
+  "url": "https://shopify.pinpointhq.com",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/hootsuite",
+  "region": "Global"
+ },
+ {
+  "url": "https://boards.greenhouse.io/later",
+  "region": "US"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/maple",
+  "region": "US"
+ },
+ {
+  "url": "https://adasupport.bamboohr.com/careers",
+  "region": "Canada"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/koho",
+  "region": "Canada"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/neofinancial",
+  "region": "Canada"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/lightspeed",
+  "region": "Israel"
+ },
+ {
+  "url": "https://boards.greenhouse.io/thinkific",
+  "region": "Canada"
+ },
+ {
+  "url": "https://boards.greenhouse.io/unbounce",
+  "region": "Canada"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/visier",
+  "region": "Canada"
+ },
+ {
+  "url": "https://boards.greenhouse.io/alayacare",
+  "region": "Canada"
+ },
+ {
+  "url": "https://jobs.lever.co/waabi",
+  "region": "Canada"
+ },
+ {
+  "url": "https://nanoleaf.bamboohr.com/careers",
+  "region": "Canada"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/clearco",
+  "region": "Canada"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/miovision",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/aspectbiosystems",
+  "region": "Canada"
+ },
+ {
+  "url": "https://jobs.lever.co/deepgenomics",
+  "region": "Canada"
+ },
+ {
+  "url": "https://jobs.lever.co/benchsci",
+  "region": "Canada"
+ },
+ {
+  "url": "https://jobs.lever.co/pointclickcare",
+  "region": "US"
+ },
+ {
+  "url": "https://boards.greenhouse.io/arteriaai",
+  "region": "Canada"
+ },
+ {
+  "url": "https://nesto.jobs.personio.de",
+  "region": "Canada"
+ },
+ {
+  "url": "https://boards.greenhouse.io/purestorage",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.lever.co/gohighlevel",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/sarvam",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/mongodb",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.lever.co/hevodata",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/razorpaysoftwareprivatelimited",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/gleanwork",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.lever.co/netomi",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/devrev",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.lever.co/levelai",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/ema",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/arcesiumllc",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/agoda",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/zuora",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/commerceiq",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.lever.co/epifi",
+  "region": "India"
+ },
+ {
+  "url": "https://boards.greenhouse.io/sumologic",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/certa",
+  "region": "India"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/smallest",
+  "region": "India"
+ },
+ {
+  "url": "https://apply.workable.com/pakistan-mobile-communication-limited-pmcl",
+  "region": "Pakistan"
+ },
+ {
+  "url": "https://zameen.breezy.hr",
+  "region": "Pakistan"
+ },
+ {
+  "url": "https://apply.workable.com/devsinc-17",
+  "region": "Pakistan"
+ },
+ {
+  "url": "https://apply.workable.com/pakistan-single-window",
+  "region": "Pakistan"
+ },
+ {
+  "url": "https://apply.workable.com/burq",
+  "region": "Pakistan"
+ },
+ {
+  "url": "https://jobs.lever.co/smart-working-solutions",
+  "region": "Pakistan"
+ },
+ {
+  "url": "https://apply.workable.com/hugobank",
+  "region": "Pakistan"
+ },
+ {
+  "url": "https://apply.workable.com/inbox-business-technologies",
+  "region": "Pakistan"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/IFS1",
+  "region": "Sri Lanka"
+ },
+ {
+  "url": "https://jobs.lever.co/dijital-team-pty-ltd",
+  "region": "Sri Lanka"
+ },
+ {
+  "url": "https://apply.workable.com/orfium",
+  "region": "Sri Lanka"
+ },
+ {
+  "url": "https://cambio.teamtailor.com",
+  "region": "Sri Lanka"
+ },
+ {
+  "url": "https://apply.workable.com/homey",
+  "region": "Sri Lanka"
+ },
+ {
+  "url": "https://apply.workable.com/onyx-capital-group",
+  "region": "Sri Lanka"
+ },
+ {
+  "url": "https://apply.workable.com/inivos",
+  "region": "Sri Lanka"
+ },
+ {
+  "url": "https://apply.workable.com/international-water-management-institute",
+  "region": "Sri Lanka"
+ },
+ {
+  "url": "https://apply.workable.com/matific",
+  "region": "Sri Lanka"
+ },
+ {
+  "url": "https://jobs.lever.co/fieldnation",
+  "region": "Bangladesh"
+ },
+ {
+  "url": "https://apply.workable.com/pixofix",
+  "region": "Bangladesh"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/InvariantGroupDhamakaShopping1",
+  "region": "Bangladesh"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/Bohubrihi",
+  "region": "Bangladesh"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/PortonicsLimited",
+  "region": "Bangladesh"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/CraftsmenLtd",
+  "region": "Bangladesh"
+ },
+ {
+  "url": "https://apply.workable.com/cloudfactory",
+  "region": "Nepal"
+ },
+ {
+  "url": "https://apply.workable.com/odin-mortgage",
+  "region": "Nepal"
+ },
+ {
+  "url": "https://apply.workable.com/clusus",
+  "region": "Nepal"
+ },
+ {
+  "url": "https://apply.workable.com/icimod",
+  "region": "Nepal"
+ },
+ {
+  "url": "https://apply.workable.com/blys",
+  "region": "Nepal"
+ },
+ {
+  "url": "https://securitypalnepal.bamboohr.com/careers",
+  "region": "Nepal"
+ },
+ {
+  "url": "https://jobs.lever.co/aleph",
+  "region": "Global"
+ },
+ {
+  "url": "https://apply.workable.com/covergo",
+  "region": "Global"
+ },
+ {
+  "url": "https://ehpv.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1",
+  "region": "UAE"
+ },
+ {
+  "url": "https://eiby.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1",
+  "region": "UAE"
+ },
+ {
+  "url": "https://fa-evlo-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1",
+  "region": "UAE"
+ },
+ {
+  "url": "https://iaboey.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2",
+  "region": "UAE"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/EtihadAirways5",
+  "region": "UAE"
+ },
+ {
+  "url": "https://jobs.lever.co/aldar",
+  "region": "UAE"
+ },
+ {
+  "url": "https://apply.workable.com/bayutdubizzle",
+  "region": "UAE"
+ },
+ {
+  "url": "https://apply.workable.com/visioneers",
+  "region": "UAE"
+ },
+ {
+  "url": "https://apply.workable.com/health-7-careers",
+  "region": "UAE"
+ },
+ {
+  "url": "https://boards.greenhouse.io/cobblestoneenergy",
+  "region": "UAE"
+ },
+ {
+  "url": "https://apply.workable.com/emaratech-2",
+  "region": "UAE"
+ },
+ {
+  "url": "https://careers.majidalfuttaim.com",
+  "region": "UAE"
+ },
+ {
+  "url": "https://taskus.wd1.myworkdayjobs.com/Careers",
+  "region": "Philippines"
+ },
+ {
+  "url": "https://jobs.lever.co/coins",
+  "region": "Philippines"
+ },
+ {
+  "url": "https://apply.workable.com/manilarecruitment",
+  "region": "Philippines"
+ },
+ {
+  "url": "https://toters.bamboohr.com/careers",
+  "region": "Lebanon"
+ },
+ {
+  "url": "https://murex.wd3.myworkdayjobs.com/MurexCareerPage1",
+  "region": "Lebanon"
+ },
+ {
+  "url": "https://jobs.lever.co/weloglobal",
+  "region": "Uzbekistan"
+ },
+ {
+  "url": "https://absa.wd3.myworkdayjobs.com/ABSAcareersite",
+  "region": "South Africa"
+ },
+ {
+  "url": "https://oldmutual.wd3.myworkdayjobs.com/Old_Mutual_Careers",
+  "region": "South Africa"
+ },
+ {
+  "url": "https://picknpay.wd3.myworkdayjobs.com/PNP_Careers",
+  "region": "South Africa"
+ },
+ {
+  "url": "https://tigerbrands.wd103.myworkdayjobs.com/TigerBrands",
+  "region": "South Africa"
+ },
+ {
+  "url": "https://pzcussons.wd3.myworkdayjobs.com/CareersPZCussons",
+  "region": "Nigeria"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/standardbankgroup",
+  "region": "South Africa"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/AmrefHealthAfrica4",
+  "region": "Kenya"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/SALIXDataAfricaLimited",
+  "region": "Kenya"
+ },
+ {
+  "url": "https://ehle.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1",
+  "region": "Africa"
+ },
+ {
+  "url": "https://egjd.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX",
+  "region": "Kenya"
+ },
+ {
+  "url": "https://mukuru.breezy.hr",
+  "region": "South Africa"
+ },
+ {
+  "url": "https://boards.greenhouse.io/entersekt",
+  "region": "South Africa"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/lemfi",
+  "region": "Nigeria"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/verto",
+  "region": "Nigeria"
+ },
+ {
+  "url": "https://jobs.lever.co/tala",
+  "region": "Kenya"
+ },
+ {
+  "url": "https://jobs.lever.co/copia",
+  "region": "Kenya"
+ },
+ {
+  "url": "https://boards.greenhouse.io/alxafrica",
+  "region": "Africa"
+ },
+ {
+  "url": "https://boards.greenhouse.io/flyzipline",
+  "region": "Global"
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/hirehangar",
+  "region": "Africa"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/BoschGroup",
+  "region": "Global"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/SGS",
+  "region": "Global"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/HMGroup",
+  "region": "Global"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/Securitas",
+  "region": "Global"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/Continental",
+  "region": "Global"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/Sixt",
+  "region": "Global"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/Sodexo",
+  "region": "Australia"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/Colliers",
+  "region": "Australia"
+ },
+ {
+  "url": "https://careers.smartrecruiters.com/NMCHealthcare",
+  "region": "UAE"
+ },
+ {
+  "url": "https://maersk.wd3.myworkdayjobs.com/Maersk_Careers",
+  "region": "Global"
+ },
+ {
+  "url": "https://trinityhealth.wd1.myworkdayjobs.com/jobs",
+  "region": "US"
+ },
+ {
+  "url": "https://usfoods.wd1.myworkdayjobs.com/usfoodscareersExternal",
+  "region": "US"
+ },
+ {
+  "url": "https://ryder.wd5.myworkdayjobs.com/RyderCareers",
+  "region": "US"
+ },
+ {
+  "url": "https://feenstra.recruitee.com",
+  "region": "Netherlands"
+ },
+ {
+  "url": "https://bonarius.recruitee.com",
+  "region": "Netherlands"
+ },
+ {
+  "url": "https://thermondo.jobs.personio.de",
+  "region": "Germany"
+ },
+ {
+  "url": "https://instabee.teamtailor.com",
+  "region": "Sweden"
+ },
+ {
+  "url": "https://careers-gmr.icims.com",
+  "region": "US"
+ },
+ {
+  "url": "https://emt-careers-gmr.icims.com",
+  "region": "US"
+ },
+ {
+  "url": "https://careers-emcorgroup.icims.com",
+  "region": "US"
+ },
+ {
+  "url": "https://careers.majidalfuttaim.com/global/en/search-results",
+  "region": "UAE"
+ },
+ {
+  "url": "https://www.airarabiagroupcareers.com/global/en/search-results",
+  "region": "UAE"
+ }
 ]
