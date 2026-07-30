@@ -2815,7 +2815,7 @@ function exportSig(){
         'Remaining credits are 0. Please recharge to continue generating cover letters.',
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+          { text: '💎 See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
         ]
       );
       return;
@@ -2955,7 +2955,7 @@ function exportSig(){
         'Remaining credits are 0. Please recharge to continue sending applications.',
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+          { text: '💎 See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
         ]
       );
       return;
@@ -3088,7 +3088,7 @@ function exportSig(){
         'Remaining credits are 0. Please recharge to continue generating and sending applications.',
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: '💎 Recharge Now', onPress: () => setScreen('packages') }
+          { text: '💎 See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
         ]
       );
       return;
@@ -6174,12 +6174,12 @@ function exportSig(){
                 )}
               </View>
 
-              {/* Buy More Credits Button */}
-              <TouchableOpacity 
+              {/* Plans & Usage — the subscription model replaced credit packs (2026-07-30) */}
+              <TouchableOpacity
                 style={styles.buyCreditsButton}
-                onPress={() => setScreen('packages')}
+                onPress={() => require('expo-router').router?.push?.('/(subscription)/usage')}
               >
-                <Text style={styles.buyCreditsButtonText}>💎 Buy More Credits</Text>
+                <Text style={styles.buyCreditsButtonText}>💎 Plans & Usage</Text>
               </TouchableOpacity>
             </>
           )}
@@ -8588,7 +8588,7 @@ function exportSig(){
                               'Remaining credits are 0. Please recharge to continue downloading.',
                               [
                                 { text: 'Cancel', style: 'cancel' },
-                                { text: 'Recharge Now', onPress: () => setScreen('packages') }
+                                { text: 'See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
                               ]
                             );
                             return;
@@ -8631,7 +8631,7 @@ function exportSig(){
                               'Remaining credits are 0. Please recharge to continue sending applications.',
                               [
                                 { text: 'Cancel', style: 'cancel' },
-                                { text: 'Recharge Now', onPress: () => setScreen('packages') }
+                                { text: 'See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
                               ]
                             );
                             return;
@@ -8688,7 +8688,7 @@ function exportSig(){
                       'Remaining credits are 0. Please recharge to continue generating cover letters.',
                       [
                         { text: 'Cancel', style: 'cancel' },
-                        { text: 'Recharge Now', onPress: () => setScreen('packages') }
+                        { text: 'See Plans', onPress: () => require('expo-router').router?.push?.('/(subscription)/plans') }
                       ]
                     );
                     return;
