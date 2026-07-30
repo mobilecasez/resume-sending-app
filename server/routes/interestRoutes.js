@@ -11,6 +11,84 @@ const parseSkills = (v) => {
   return [...new Set(arr.map((s) => String(s).trim()).filter(Boolean))].slice(0, 8);
 };
 
+// Dropdown data for the add-interest form: countries that actually have jobs (count-ordered),
+// and per-country cities extracted from job locations — so users only pick places with supply.
+router.get('/interests/meta', authenticateToken, async (req, res) => {
+  try {
+    const rows = await dbConfig.query(
+      `SELECT country, COUNT(*)::int AS n FROM global_jobs
+        WHERE is_active AND country IS NOT NULL AND country <> '' AND country <> 'Global'
+        GROUP BY country ORDER BY n DESC LIMIT 120`);
+    res.json({ success: true, countries: (rows || []).map((r) => ({ name: r.country, jobs: r.n })) });
+  } catch (e) {
+    res.status(500).json({ error: 'Could not load countries' });
+  }
+});
+
+router.get('/interests/cities', authenticateToken, async (req, res) => {
+  try {
+    const country = String(req.query.country || '').trim();
+    if (!country) return res.status(400).json({ error: 'country required' });
+    // First comma-segment of the location is the city in the overwhelming majority of rows.
+    const rows = await dbConfig.query(
+      `SELECT INITCAP(TRIM(SPLIT_PART(location, ',', 1))) AS city, COUNT(*)::int AS n
+         FROM global_jobs
+        WHERE is_active AND country = $1 AND location IS NOT NULL AND location <> ''
+        GROUP BY 1 HAVING TRIM(SPLIT_PART(location, ',', 1)) <> '' ORDER BY n DESC LIMIT 40`, [country]);
+    const cities = (rows || [])
+      .map((r) => ({ name: r.city, jobs: r.n }))
+      // drop junk segments that are clearly not cities (remote flags, country echoes)
+      .filter((c) => c.name.length >= 2 && c.name.length <= 40 && !/remote|hybrid|anywhere|work from/i.test(c.name) && c.name.toLowerCase() !== country.toLowerCase());
+    res.json({ success: true, cities });
+  } catch (e) {
+    res.status(500).json({ error: 'Could not load cities' });
+  }
+});
+
+// Nothing saved yet → best-matched jobs from the directory, GROUPED BY COUNTRY, driven by the
+// user's parsed résumé skills. Gives the Jobs tab a living first screen before any interest exists.
+router.get('/interests/suggested', authenticateToken, async (req, res) => {
+  try {
+    const rm = await dbConfig.query(
+      `SELECT skills, technical_skills, job_titles FROM resume_metadata
+        WHERE user_id = $1 AND parse_status = 'done' ORDER BY id DESC LIMIT 1`, [req.user.id]);
+    const row = rm && rm[0];
+    if (!row) return res.json({ success: true, groups: [], noResume: true });
+    const pick = (v) => { try { const a = Array.isArray(v) ? v : JSON.parse(v || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
+    const skills = [...new Set([...pick(row.technical_skills), ...pick(row.skills), ...pick(row.job_titles)]
+      .map((s) => String(s).trim().toLowerCase()).filter((s) => s.length >= 3))].slice(0, 6);
+    if (!skills.length) return res.json({ success: true, groups: [], noResume: false });
+
+    const likeAny = skills.map((_, i) => `(LOWER(skills::text) LIKE $${i + 1} OR LOWER(title) LIKE $${i + 1})`).join(' OR ');
+    const params = skills.map((s) => `%${s}%`);
+    // top countries for these skills, then a handful of freshest jobs per country
+    const rows = await dbConfig.query(
+      `WITH matched AS (
+         SELECT id, job_url, title, employer_name, employer_domain, location, work_mode, job_type,
+                salary, experience, responsibilities, skills, country, first_seen,
+                ROW_NUMBER() OVER (PARTITION BY country ORDER BY first_seen DESC) AS rn,
+                COUNT(*) OVER (PARTITION BY country) AS country_total
+           FROM global_jobs
+          WHERE is_active AND country IS NOT NULL AND country <> '' AND country <> 'Global' AND (${likeAny})
+       )
+       SELECT * FROM matched WHERE rn <= 4
+       ORDER BY country_total DESC, country, rn
+       LIMIT 40`, params);
+    const groups = [];
+    const byCountry = new Map();
+    for (const r of rows || []) {
+      if (!byCountry.has(r.country)) { byCountry.set(r.country, { country: r.country, total: r.country_total, jobs: [] }); groups.push(byCountry.get(r.country)); }
+      const g = byCountry.get(r.country);
+      const { rn, country_total, ...job } = r;
+      g.jobs.push(job);
+    }
+    res.json({ success: true, skills, groups: groups.slice(0, 6) });
+  } catch (e) {
+    console.error('[interests] suggested:', e.message);
+    res.status(500).json({ error: 'Could not load suggestions' });
+  }
+});
+
 // List the caller's interests with a live job count for each card.
 router.get('/interests', authenticateToken, async (req, res) => {
   try {

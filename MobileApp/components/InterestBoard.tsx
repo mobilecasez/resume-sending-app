@@ -10,13 +10,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput, Modal, ActivityIndicator, Alert, Platform,
+  KeyboardAvoidingView, ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import {
   fetchInterests, createInterest, deleteInterest, fetchInterestJobs,
-  type Interest, type InterestJob,
+  fetchCountryOptions, fetchCityOptions, fetchSuggestedByCountry,
+  type Interest, type InterestJob, type PlaceOption, type SuggestedGroup,
 } from '../services/interestsService';
 
 const T = {
@@ -57,14 +59,58 @@ export default function InterestBoard({
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState<number | null>(null);
   const [jobs, setJobs] = useState<Record<number, { jobs: InterestJob[]; total: number; loading: boolean }>>({});
-  // add form
+  // add form — dropdown-driven places + chip-based skills
   const [country, setCountry] = useState('');
   const [city, setCity] = useState('');
-  const [skills, setSkills] = useState('');
+  const [skillChips, setSkillChips] = useState<string[]>([]);
+  const [skillInput, setSkillInput] = useState('');
   const [saving, setSaving] = useState(false);
+  const [countryOpts, setCountryOpts] = useState<PlaceOption[]>([]);
+  const [cityOpts, setCityOpts] = useState<PlaceOption[]>([]);
+  const [picker, setPicker] = useState<'country' | 'city' | null>(null);
+  const [pickerFilter, setPickerFilter] = useState('');
+
+  // load country options when the form opens; city options follow the chosen country
+  useEffect(() => {
+    if (!addOpen) { setPicker(null); return; }
+    if (!countryOpts.length) fetchCountryOptions().then(setCountryOpts).catch(() => {});
+  }, [addOpen]);
+  useEffect(() => {
+    setCity(''); setCityOpts([]);
+    if (country) fetchCityOptions(country).then(setCityOpts).catch(() => {});
+  }, [country]);
+
+  // chips: comma or Enter turns the typed text into a chip
+  const commitSkill = useCallback((raw?: string) => {
+    const t = String(raw != null ? raw : skillInput).trim().replace(/,+$/, '');
+    if (!t) return;
+    setSkillChips((prev) => (prev.some((s) => s.toLowerCase() === t.toLowerCase()) || prev.length >= 8) ? prev : [...prev, t]);
+    setSkillInput('');
+  }, [skillInput]);
+  const onSkillChange = useCallback((v: string) => {
+    if (v.includes(',')) {
+      const parts = v.split(',');
+      parts.slice(0, -1).forEach((p) => commitSkill(p));
+      setSkillInput(parts[parts.length - 1]);
+    } else setSkillInput(v);
+  }, [commitSkill]);
+
+  // Nothing saved yet → best-matched jobs from the directory, grouped by country (résumé skills).
+  const [suggested, setSuggested] = useState<SuggestedGroup[]>([]);
+  const [suggestedNote, setSuggestedNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    try { setItems(await fetchInterests()); } catch {} finally { setLoading(false); }
+    try {
+      const list = await fetchInterests();
+      setItems(list);
+      if (list.length === 0) {
+        try {
+          const sug = await fetchSuggestedByCountry();
+          setSuggested(sug.groups);
+          setSuggestedNote(sug.noResume ? 'Upload your résumé and this fills with jobs matched to your skills.' : (sug.skills && sug.skills.length ? `Matched to your skills: ${sug.skills.slice(0, 3).join(', ')}` : null));
+        } catch { setSuggested([]); }
+      } else setSuggested([]);
+    } catch {} finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -83,19 +129,18 @@ export default function InterestBoard({
   }, [openId, jobs]);
 
   const save = useCallback(async () => {
-    const c = country.trim();
-    const sk = skills.split(',').map((s) => s.trim()).filter(Boolean);
-    if (!c) { Alert.alert('Missing country', 'Tell us which country you want jobs in.'); return; }
-    if (!sk.length) { Alert.alert('Missing skills', 'Add at least one skill or role — e.g. "plumber" or "react, node".'); return; }
+    const sk = [...skillChips, ...(skillInput.trim() ? [skillInput.trim()] : [])];
+    if (!country) { Alert.alert('Missing country', 'Pick the country you want jobs in.'); return; }
+    if (!sk.length) { Alert.alert('Missing skills', 'Add at least one skill or role — e.g. "plumber" or "react".'); return; }
     setSaving(true);
     try {
-      const ok = await createInterest({ country: c, city: city.trim() || undefined, skills: sk });
-      if (ok) { setCountry(''); setCity(''); setSkills(''); onAddClose(); load(); }
+      const ok = await createInterest({ country, city: city || undefined, skills: sk });
+      if (ok) { setCountry(''); setCity(''); setSkillChips([]); setSkillInput(''); onAddClose(); load(); }
       else Alert.alert('Could not save', 'Please try again.');
     } catch (e: any) {
       Alert.alert('Could not save', e?.response?.data?.error || 'Please try again.');
     } finally { setSaving(false); }
-  }, [country, city, skills, onAddClose, load]);
+  }, [country, city, skillChips, skillInput, onAddClose, load]);
 
   const remove = useCallback((it: Interest) => {
     Alert.alert('Remove this interest?', `${it.label} — job alerts for it stop too.`, [
@@ -109,10 +154,45 @@ export default function InterestBoard({
       {loading ? (
         <ActivityIndicator color={T.blue} style={{ marginVertical: 26 }} />
       ) : items.length === 0 ? (
-        <View style={s.empty}>
-          <Ionicons name="location-outline" size={34} color={T.faint} />
-          <Text style={s.emptyTitle}>Tell us where and what</Text>
-          <Text style={s.emptyText}>Add a place + your skills, and jobs for it appear here. Our researcher then scans the live web for exactly this twice a day — and tells you when fresh matches land.</Text>
+        <View>
+          <View style={s.empty}>
+            <Ionicons name="location-outline" size={34} color={T.faint} />
+            <Text style={s.emptyTitle}>Tell us where and what</Text>
+            <Text style={s.emptyText}>Add a place + your skills, and jobs for it appear here. Our researcher then scans the live web for exactly this twice a day — and tells you when fresh matches land.</Text>
+          </View>
+
+          {/* No interests yet → best directory matches for the RESUME's skills, grouped by country */}
+          {suggested.length > 0 && (
+            <View>
+              <Text style={s.suggTitle}>Best matches for you, by country</Text>
+              {!!suggestedNote && <Text style={s.suggNote}>{suggestedNote}</Text>}
+              {suggested.map((g) => (
+                <View key={g.country} style={s.card}>
+                  <View style={s.cardHead}>
+                    <LinearGradient colors={gradFor(g.country)} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.logo}>
+                      <Ionicons name="earth" size={17} color="#fff" />
+                    </LinearGradient>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={s.cardTitle} numberOfLines={1}>{g.country}</Text>
+                      <Text style={s.cardSkills} numberOfLines={1}>{g.total} matching {g.total === 1 ? 'job' : 'jobs'}</Text>
+                    </View>
+                  </View>
+                  <View style={s.jobsWrap}>
+                    {g.jobs.map((job) => (
+                      <TouchableOpacity key={job.id} style={s.jobRow} activeOpacity={0.85} onPress={() => openJob(router, job)}>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={s.jobTitle} numberOfLines={2}>{job.title}</Text>
+                          <Text style={s.jobMeta} numberOfLines={1}>{[job.employer_name, job.location].filter(Boolean).join(' · ')}</Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={16} color={T.faint} />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+          {suggested.length === 0 && !!suggestedNote && <Text style={s.suggNote}>{suggestedNote}</Text>}
         </View>
       ) : (
         items.map((it) => {
@@ -158,9 +238,12 @@ export default function InterestBoard({
         })
       )}
 
-      {/* ── Add-interest form — ONE top-level modal ── */}
+      {/* ── Add-interest form — ONE top-level modal, keyboard-aware, dropdown places, chip skills ── */}
       <Modal visible={addOpen} transparent animationType="slide" onRequestClose={onAddClose}>
-        <View style={s.sheetOverlay}>
+        <KeyboardAvoidingView
+          style={s.sheetOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
           <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onAddClose} />
           <View style={s.sheet}>
             <View style={s.sheetHead}>
@@ -169,12 +252,85 @@ export default function InterestBoard({
                 <Ionicons name="close" size={22} color={T.muted} />
               </TouchableOpacity>
             </View>
+
+            {/* COUNTRY dropdown */}
             <Text style={s.label}>COUNTRY *</Text>
-            <TextInput value={country} onChangeText={setCountry} placeholder="e.g. India" placeholderTextColor={T.faint} style={s.input} autoCapitalize="words" />
-            <Text style={s.label}>CITY (OPTIONAL — its jobs rank first)</Text>
-            <TextInput value={city} onChangeText={setCity} placeholder="e.g. Bengaluru" placeholderTextColor={T.faint} style={s.input} autoCapitalize="words" />
-            <Text style={s.label}>SKILLS OR ROLES * (COMMA SEPARATED)</Text>
-            <TextInput value={skills} onChangeText={setSkills} placeholder="e.g. react, node — or plumber" placeholderTextColor={T.faint} style={s.input} autoCapitalize="none" />
+            <TouchableOpacity style={s.select} activeOpacity={0.8} onPress={() => { setPicker(picker === 'country' ? null : 'country'); setPickerFilter(''); }}>
+              <Text style={[s.selectText, !country && { color: T.faint }]}>{country || 'Choose a country'}</Text>
+              <Ionicons name={picker === 'country' ? 'chevron-up' : 'chevron-down'} size={16} color={T.faint} />
+            </TouchableOpacity>
+
+            {/* CITY dropdown (after country; only cities that actually have jobs) */}
+            <Text style={s.label}>CITY (OPTIONAL — ITS JOBS RANK FIRST)</Text>
+            <TouchableOpacity
+              style={[s.select, !country && { opacity: 0.5 }]}
+              activeOpacity={0.8}
+              disabled={!country}
+              onPress={() => { setPicker(picker === 'city' ? null : 'city'); setPickerFilter(''); }}
+            >
+              <Text style={[s.selectText, !city && { color: T.faint }]}>{city || (country ? 'Any city' : 'Pick a country first')}</Text>
+              <Ionicons name={picker === 'city' ? 'chevron-up' : 'chevron-down'} size={16} color={T.faint} />
+            </TouchableOpacity>
+
+            {/* inline picker list — inside the sheet, never a nested modal */}
+            {picker && (
+              <View style={s.pickerBox}>
+                <TextInput
+                  value={pickerFilter} onChangeText={setPickerFilter}
+                  placeholder={picker === 'country' ? 'Type to filter countries…' : 'Type to filter cities…'}
+                  placeholderTextColor={T.faint} style={s.pickerFilter} autoCapitalize="none"
+                />
+                <ScrollView style={{ maxHeight: 180 }} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+                  {picker === 'city' && (
+                    <TouchableOpacity style={s.pickerRow} onPress={() => { setCity(''); setPicker(null); }}>
+                      <Text style={s.pickerRowText}>Any city</Text>
+                    </TouchableOpacity>
+                  )}
+                  {(picker === 'country' ? countryOpts : cityOpts)
+                    .filter((o) => !pickerFilter || o.name.toLowerCase().includes(pickerFilter.toLowerCase()))
+                    .map((o) => (
+                      <TouchableOpacity
+                        key={o.name} style={s.pickerRow}
+                        onPress={() => { if (picker === 'country') setCountry(o.name); else setCity(o.name); setPicker(null); }}
+                      >
+                        <Text style={s.pickerRowText}>{o.name}</Text>
+                        <Text style={s.pickerRowN}>{o.jobs} jobs</Text>
+                      </TouchableOpacity>
+                    ))}
+                  {(picker === 'country' ? countryOpts : cityOpts).length === 0 && (
+                    <Text style={s.pickerEmpty}>{picker === 'city' ? 'No city data yet for this country — leave it on Any city.' : 'Loading…'}</Text>
+                  )}
+                </ScrollView>
+              </View>
+            )}
+
+            {/* SKILLS as chips: comma or return adds a card */}
+            <Text style={s.label}>SKILLS OR ROLES *</Text>
+            <View style={s.chipBox}>
+              {skillChips.map((c) => (
+                <View key={c} style={s.chip}>
+                  <Text style={s.chipText}>{c}</Text>
+                  <TouchableOpacity onPress={() => setSkillChips((prev) => prev.filter((x) => x !== c))} hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}>
+                    <Ionicons name="close-circle" size={15} color={T.blueDeep} />
+                  </TouchableOpacity>
+                </View>
+              ))}
+              <TextInput
+                value={skillInput}
+                onChangeText={onSkillChange}
+                onSubmitEditing={() => commitSkill()}
+                blurOnSubmit={false}
+                placeholder={skillChips.length ? 'Add another…' : 'e.g. react — or plumber'}
+                placeholderTextColor={T.faint}
+                style={s.chipInput}
+                autoCapitalize="none"
+                returnKeyType="done"
+              />
+            </View>
+            <Text style={s.infoLine}>
+              <Ionicons name="information-circle-outline" size={12} color={T.faint} /> Type a skill and press return (or a comma) to add it as a card — up to 8. We research these for you twice a day.
+            </Text>
+
             <TouchableOpacity style={[s.saveBtn, saving && { opacity: 0.6 }]} onPress={save} disabled={saving} activeOpacity={0.9}>
               <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.saveGrad}>
                 {saving ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.saveText}>Start watching</Text>}
@@ -190,7 +346,7 @@ export default function InterestBoard({
               </TouchableOpacity>
             )}
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -201,6 +357,9 @@ const s = StyleSheet.create({
   empty: { alignItems: 'center', gap: 8, backgroundColor: T.card, borderRadius: 24, padding: 26, marginBottom: 12, borderWidth: 1, borderColor: T.line },
   emptyTitle: { fontSize: 15.5, fontWeight: '800', color: T.ink },
   emptyText: { fontSize: 12.5, color: T.muted, textAlign: 'center', lineHeight: 18 },
+
+  suggTitle: { fontSize: 15, fontWeight: '800', color: T.ink, marginBottom: 3, marginLeft: 2, letterSpacing: -0.2 },
+  suggNote: { fontSize: 11.5, color: T.faint, fontWeight: '600', marginBottom: 9, marginLeft: 2 },
 
   card: { backgroundColor: T.card, borderRadius: 20, borderWidth: 1, borderColor: T.line, marginBottom: 10, overflow: 'hidden' },
   cardHead: { flexDirection: 'row', alignItems: 'center', gap: 11, padding: 13 },
@@ -223,7 +382,19 @@ const s = StyleSheet.create({
   sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
   sheetTitle: { fontSize: 16.5, fontWeight: '800', color: T.ink, letterSpacing: -0.2, flex: 1 },
   label: { fontSize: 10, fontWeight: '800', color: T.faint, letterSpacing: 0.8, marginTop: 10, marginBottom: 5 },
-  input: { backgroundColor: '#F4F7FC', borderWidth: 1, borderColor: T.line, borderRadius: 13, paddingHorizontal: 13, height: 46, fontSize: 14, color: T.ink },
+  select: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F4F7FC', borderWidth: 1, borderColor: T.line, borderRadius: 13, paddingHorizontal: 13, height: 46 },
+  selectText: { fontSize: 14, color: T.ink, fontWeight: '600' },
+  pickerBox: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: T.line, borderRadius: 13, marginTop: 6, overflow: 'hidden' },
+  pickerFilter: { height: 40, paddingHorizontal: 13, fontSize: 13, color: T.ink, borderBottomWidth: 1, borderBottomColor: T.line, backgroundColor: '#F8FAFD' },
+  pickerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 13, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: T.line },
+  pickerRowText: { fontSize: 13.5, color: T.ink, fontWeight: '600' },
+  pickerRowN: { fontSize: 11, color: T.faint, fontWeight: '700' },
+  pickerEmpty: { fontSize: 12, color: T.faint, padding: 13 },
+  chipBox: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, backgroundColor: '#F4F7FC', borderWidth: 1, borderColor: T.line, borderRadius: 13, paddingHorizontal: 9, paddingVertical: 7, minHeight: 46 },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(79,141,255,0.12)', borderWidth: 1, borderColor: 'rgba(79,141,255,0.3)', borderRadius: 100, paddingLeft: 11, paddingRight: 7, paddingVertical: 6 },
+  chipText: { fontSize: 12.5, fontWeight: '700', color: T.blueDeep },
+  chipInput: { flexGrow: 1, minWidth: 110, fontSize: 13.5, color: T.ink, paddingVertical: 4 },
+  infoLine: { fontSize: 11, color: T.faint, lineHeight: 16, marginTop: 6, marginLeft: 2 },
   saveBtn: { marginTop: 16, borderRadius: 14, overflow: 'hidden' },
   saveGrad: { height: 50, alignItems: 'center', justifyContent: 'center' },
   saveText: { color: '#fff', fontSize: 15, fontWeight: '800' },
