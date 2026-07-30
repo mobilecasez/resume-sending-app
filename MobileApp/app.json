@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.cvapplyr.mobile",
-      "buildNumber": "130",
+      "buildNumber": "135",
       "usesAppleSignIn": true,
       "infoPlist": {
         "CFBundleURLTypes": [
