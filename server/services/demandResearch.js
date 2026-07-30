@@ -161,6 +161,24 @@ async function notifyMatchedUsers(sinceIso) {
   return sent;
 }
 
+// ── system_schedule bookkeeping — the admin "routines" view reads this table, and the persisted
+//    last-run timestamp stops frequent deploys from re-running the research every boot. ─────────
+const JOB_KEY = 'demand_research';
+async function recordRun(summary) {
+  try {
+    await dbConfig.query(
+      `INSERT INTO system_schedule (job_key, last_run_at, last_summary) VALUES ($1, NOW(), $2)
+       ON CONFLICT (job_key) DO UPDATE SET last_run_at = NOW(), last_summary = EXCLUDED.last_summary`,
+      [JOB_KEY, String(summary).slice(0, 480)]);
+  } catch (e) { console.warn('[demandResearch] recordRun:', e.message); }
+}
+async function lastRunAt() {
+  try {
+    const r = await dbConfig.query('SELECT last_run_at FROM system_schedule WHERE job_key = $1', [JOB_KEY]);
+    return r && r[0] ? new Date(r[0].last_run_at) : null;
+  } catch { return null; }
+}
+
 // ── the run ───────────────────────────────────────────────────────────────────────────────────
 let _running = false;
 async function runDemandResearch() {
@@ -169,9 +187,17 @@ async function runDemandResearch() {
   const startedAt = new Date().toISOString();
   try {
     const clusters = await loadClusters();
-    if (!clusters.length) { console.log('[demandResearch] no user interests yet — nothing to research'); return { clusters: 0 }; }
+    if (!clusters.length) {
+      console.log('[demandResearch] no user interests yet — nothing to research');
+      await recordRun('ran — no user interests saved yet, nothing to research');
+      return { clusters: 0 };
+    }
     const model = geminiGrounded();
-    if (!model) { console.warn('[demandResearch] no GEMINI_API_KEY — skipped'); return { error: 'no_key' }; }
+    if (!model) {
+      console.warn('[demandResearch] no GEMINI_API_KEY — skipped');
+      await recordRun('SKIPPED — no GEMINI_API_KEY');
+      return { error: 'no_key' };
+    }
     console.log(`[demandResearch] ${clusters.length} demand clusters`);
     let jobsAdded = 0;
     for (const cluster of clusters) {
@@ -181,19 +207,31 @@ async function runDemandResearch() {
     }
     const pushed = await notifyMatchedUsers(startedAt);
     console.log(`[demandResearch] done — ${jobsAdded} jobs added, ${pushed} users notified`);
+    await recordRun(`ran — ${clusters.length} clusters, ${jobsAdded} jobs added, ${pushed} users notified`);
     return { clusters: clusters.length, jobsAdded, pushed };
   } catch (e) {
     console.error('[demandResearch] run failed:', e.message);
+    await recordRun(`FAILED — ${String(e.message).slice(0, 200)}`);
     return { error: e.message };
   } finally { _running = false; }
 }
 
 function startDemandResearch() {
   if (!ENABLED) { console.log('[demandResearch] disabled via env'); return; }
-  // first run 10 min after boot (let migrations + caches settle), then every INTERVAL_H hours
-  setTimeout(() => { runDemandResearch().catch(() => {}); }, 10 * 60 * 1000);
-  setInterval(() => { runDemandResearch().catch(() => {}); }, INTERVAL_H * 3600 * 1000);
-  console.log(`[demandResearch] scheduled every ${INTERVAL_H}h`);
+  const tick = async () => {
+    // persisted gate: only run when the LAST recorded run is older than the interval, so restarts
+    // and frequent deploys never double-research (same pattern as the firehose).
+    const last = await lastRunAt();
+    if (last && Date.now() - last.getTime() < INTERVAL_H * 3600 * 1000 * 0.9) return;
+    await runDemandResearch().catch(() => {});
+  };
+  // register in the routines table immediately so the schedule is VISIBLE before the first run
+  (async () => {
+    if (!(await lastRunAt())) await recordRun(`scheduled every ${INTERVAL_H}h — waiting for the first run`);
+  })().catch(() => {});
+  setTimeout(() => { tick(); }, 10 * 60 * 1000);
+  setInterval(() => { tick(); }, 30 * 60 * 1000);   // check twice hourly; the gate enforces the real cadence
+  console.log(`[demandResearch] scheduled every ${INTERVAL_H}h (persisted gate)`);
 }
 
 module.exports = { runDemandResearch, startDemandResearch };
