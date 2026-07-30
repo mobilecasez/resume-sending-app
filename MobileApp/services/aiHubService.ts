@@ -810,10 +810,14 @@ export async function startJobCoverLetter(
   // The dashboard list ships a slimmed job (3 responsibilities) — sending the jobId lets the
   // server swap in the FULL stored list, so letter quality never depends on client hydration.
   if (jobId) body.jobId = jobId;
+  // x-device-id joins the request so the server's trial quota is per-DEVICE (one 7-day trial per
+  // phone, not per email). Absent on failure → server falls back to per-user trial.
+  let devHeaders: Record<string, string> = {};
+  try { devHeaders = await require('./deviceId').deviceHeader(); } catch {}
   const response = await axios.post(
     `${API_BASE}/generate-cover-letter-details`,
     body,
-    { headers, timeout: 30000 }
+    { headers: { ...headers, ...devHeaders }, timeout: 30000 }
   );
   // Returns { jobId } in async mode or full result in sync mode
   if (response.data?.jobId) return response.data.jobId;
@@ -1463,7 +1467,10 @@ export async function fetchAdminFileToCache(
   const auth = await adminAuthHeaderValue();
   if (!auth) throw new Error('Your admin session has expired — sign in again.');
 
-  const FileSystem = require('expo-file-system');
+  // ⚠️ '/legacy' is REQUIRED on SDK 54: the package's main entry deprecated downloadAsync and
+  // THROWS a "migrate to File/Directory" error — which is exactly what broke the admin viewer.
+  // Every other download in this app (HomeScreen, templates, job-detail) already imports /legacy.
+  const FileSystem = require('expo-file-system/legacy');
   const target = `${FileSystem.cacheDirectory}admin-${kind}-${userId}`;
 
   // ⚠️ STREAM TO DISK. The previous version fetched the bytes, base64-encoded the whole file into a

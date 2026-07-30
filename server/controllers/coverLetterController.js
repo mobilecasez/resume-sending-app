@@ -10,6 +10,7 @@ const { generateCoverLetterPDF: generateRichCoverLetterPDF } = require('./emailC
 const clTemplates = require('../utils/coverLetterTemplates');
 const clRenderer  = require('../utils/coverLetterRenderer');
 const { getEventCost } = require('../services/eventCosts');
+const entitlements = require('../services/entitlements');
 const { emit } = require('../services/track');   // first-party analytics
 
 const CL_DOWNLOAD_CREDIT_COST = 2; // fallback; live cost via getEventCost('cover_letter_download')
@@ -543,19 +544,21 @@ const generateCoverLetters = async (req, res) => {
             return res.status(400).json({ error: 'No recipients provided' });
         }
 
-        // CHECK CREDITS — per-cover-letter cost is admin-configurable.
+        // GATE — subscription/trial quota first, legacy credits as fallback (entitlements decides).
+        // Check only; the deduction happens per letter AFTER each successful generation below.
         const clCost = await getEventCost('cover_letter_generate');
         try {
-            const creditCheck = await checkUserCredits(userId, recipients.length * clCost);
-            if (!creditCheck.hasCredits) {
+            const gate = await entitlements.canConsumeMany(userId, 'cover_letter', recipients.length, req);
+            if (!gate.allowed) {
                 return res.status(402).json({
-                    error: creditCheck.message,
-                    remainingCredits: creditCheck.remaining,
+                    error: gate.message,
+                    reason: 'quota_exhausted',
+                    remainingCredits: 0,
                     creditsRequired: recipients.length * clCost
                 });
             }
         } catch (error) {
-            return res.status(500).json({ error: 'Failed to check credit balance' });
+            return res.status(500).json({ error: 'Failed to check your plan allowance' });
         }
 
         // Get user profile
@@ -621,16 +624,18 @@ const generateCoverLetters = async (req, res) => {
                     
                     console.log(`✅ Generated personalized cover letter for ${companyName}`);
 
-                    // DEDUCT CREDIT
+                    // DEDUCT — only after THIS letter succeeded. entitlements picks the pool
+                    // (plan → trial → legacy credits) and writes the usage-ledger row.
                     try {
-                        await deductCredits(userId, clCost, 'cover_letter_generation', {
+                        await entitlements.consumeOnSuccess(userId, 'cover_letter', {
                             companyName: companyName,
                             position: recipient.position,
-                            recipientEmail: recipient.email
-                        });
+                            recipientEmail: recipient.email,
+                            screen: 'letters'
+                        }, req);
                         creditsDeducted++;
                     } catch (creditError) {
-                        console.error('Failed to deduct credit:', creditError);
+                        console.error('Failed to record usage:', creditError);
                     }
 
                     // Format and generate PDF
@@ -729,18 +734,20 @@ const generateCoverLetterDetails = async (req, res) => {
         console.log(`   User: ${userId}, Position: ${position}`);
         emit(req, 'cover_letter_generate', { forJob: !!sourceJobId });
 
-        // CHECK CREDITS (always synchronous — fast DB check)
+        // GATE (always synchronous — fast DB check): plan/trial quota first, credits fallback.
+        // Deduction is on SUCCESS only, further down.
         try {
-            const creditCheck = await checkUserCredits(userId, await getEventCost('cover_letter_generate'));
-            if (!creditCheck.hasCredits) {
-                return res.status(402).json({ 
-                    error: creditCheck.message,
-                    remainingCredits: creditCheck.remaining,
+            const gate = await entitlements.canConsumeMany(userId, 'cover_letter', 1, req);
+            if (!gate.allowed) {
+                return res.status(402).json({
+                    error: gate.message,
+                    reason: 'quota_exhausted',
+                    remainingCredits: 0,
                     creditsRequired: 1
                 });
             }
         } catch (error) {
-            return res.status(500).json({ error: 'Failed to check credit balance' });
+            return res.status(500).json({ error: 'Failed to check your plan allowance' });
         }
 
         // Get user profile (always synchronous — fast DB check)
@@ -939,16 +946,16 @@ async function executeGenerationWork(userId, user, { recipientEmail, websiteUrl,
     // letter is used for every region — the picker only changes PDF formatting.
     const coverLetterHtml = formatCoverLetterWithHTML(aiResult.cover_letter || '', {});
 
-    // DEDUCT CREDIT (admin-configurable cost)
+    // DEDUCT — only now, after the letter was actually produced. entitlements picks the pool
+    // (plan → trial → legacy credits) and writes the usage-ledger row for the Usage screen.
     try {
-        const clCost = await getEventCost('cover_letter_generate');
-        console.log(`💳 Deducting ${clCost} credit(s) from user ${userId}...`);
-        await deductCredits(userId, clCost, 'cover_letter_generation', {
+        const used = await entitlements.consumeOnSuccess(userId, 'cover_letter', {
             companyName,
             position,
-            recipientEmail
+            recipientEmail,
+            screen: 'job_cover_letter'
         });
-        console.log(`✅ Credit deducted successfully`);
+        console.log(`✅ Usage recorded via ${used.via}`);
 
         await dbConfig.run(
             'UPDATE users SET total_generated = total_generated + 1 WHERE id = ?',

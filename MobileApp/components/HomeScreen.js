@@ -2055,6 +2055,7 @@ export default function HomeScreen({
               { icon: 'briefcase-outline',   title: 'Jobs Dashboard',     sub: 'AI-powered job search hub',  onPress: () => { setShowSettings(false); require('expo-router').router?.push?.({ pathname: '/(ai-hub)', params: { tab: 'myjobs' } }); } },
               { icon: 'compass-outline',     title: 'Explore Jobs',       sub: 'Browse live openings worldwide', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.({ pathname: '/(ai-hub)', params: { tab: 'search' } }); } },
               { icon: 'document-text-outline', title: 'Resume Builder',   sub: 'Build your AI-powered resume', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(resume-builder)'); } },
+              { icon: 'diamond-outline',       title: 'Plans & Usage',    sub: 'Your plan, trial and usage history', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(subscription)/usage'); } },
             ].concat(isAdmin ? [
               { icon: 'star-outline', title: 'Admin Panel', sub: 'Manage credit packages', onPress: () => { setShowSettings(false); setScreen('admin'); } },
               { icon: 'pricetags-outline', title: 'AI Event Credits', sub: 'Set credits per AI action', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/ai-event-credits'); } },

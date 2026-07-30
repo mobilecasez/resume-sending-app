@@ -9,6 +9,7 @@ const fs           = require('fs').promises;
 const { renderPdf, renderPreviews } = require('../utils/resumeRenderer');
 const { TEMPLATE_IDS, templatesForRegion } = require('../utils/resumeTemplates');
 const { getEventCost } = require('../services/eventCosts');
+const entitlements = require('../services/entitlements');
 
 // Fallback defaults; the live per-request cost is resolved via getEventCost() (admin-editable).
 const RESUME_CREDIT_COST   = 2; // credits charged per AI generation / regeneration
@@ -312,8 +313,13 @@ async function generateAI(req, res) {
     }
 
     try {
-        const RESUME_CREDIT_COST = await getEventCost('resume_ai_generate');   // admin-configurable
-        const creditCheck = await checkUserCredits(userId, RESUME_CREDIT_COST);
+        // GATE — plan/trial quota first, legacy credits fallback; deduct on success only (below).
+        const gate = await entitlements.canConsumeMany(userId, 'resume', 1, req);
+        if (!gate.allowed) {
+            return res.status(402).json({ error: gate.message, reason: 'quota_exhausted', creditsRequired: 1, remainingCredits: 0 });
+        }
+        const RESUME_CREDIT_COST = await getEventCost('resume_ai_generate');   // legacy display only
+        const creditCheck = { hasCredits: true };   // gate above is authoritative now
         if (!creditCheck.hasCredits) {
             return res.status(402).json({ error: creditCheck.message, creditsRequired: RESUME_CREDIT_COST, creditsRemaining: creditCheck.remaining });
         }
@@ -372,8 +378,9 @@ async function generateAI(req, res) {
         resumeData._buildMethod = 'ai';
 
         try {
-            await deductCredits(userId, RESUME_CREDIT_COST, 'resume_generation', { name: resumeData.personal_info?.full_name });
-        } catch (e) { console.warn('[resumeBuilder] credit deduction failed:', e.message); }
+            // Deduct only now — the resume was actually generated. Pool + ledger via entitlements.
+            await entitlements.consumeOnSuccess(userId, 'resume', { name: resumeData.personal_info?.full_name, screen: 'resume_builder' }, req);
+        } catch (e) { console.warn('[resumeBuilder] usage record failed:', e.message); }
 
         await ensureResumeTable();
         await dbConfig.run(

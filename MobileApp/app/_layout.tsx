@@ -301,6 +301,16 @@ export default function RootLayout() {
   // First-party analytics — report app opens + foreground returns so the admin dashboard shows
   // LIVE activity (active users now) instead of the 1–3 day store reports. Fire-and-forget.
   // This is the earliest request the app makes, so it waits for the address to settle too.
+  // Report the keychain-persisted device id once per launch (trial dedupe — one 7-day trial per
+  // device). Delayed a beat so the session restore has landed; silently a no-op when signed out.
+  useEffect(() => {
+    if (!envReady) return;
+    const t = setTimeout(() => {
+      try { require('../services/subscriptionService').reportDeviceOnce(); } catch { /* optional */ }
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [envReady]);
+
   useEffect(() => {
     if (!envReady) return;
     track('app_open');

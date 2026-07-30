@@ -927,7 +927,8 @@ function ResumeProfileViewer({ ov, userId, onClose }: {
       if (!auth) { Alert.alert('Session expired', 'Sign in again to render the PDF.'); return; }
       // Straight to disk. Base64-ing a rendered PDF into a JS string is what crashed the raw-file
       // viewer, and this path had exactly the same shape.
-      const FileSystem = require('expo-file-system');
+      // ⚠️ '/legacy' required on SDK 54 — the main entry's downloadAsync throws a deprecation error.
+      const FileSystem = require('expo-file-system/legacy');
       const path = `${FileSystem.cacheDirectory}resume-${userId}.pdf`;
       const res = await FileSystem.downloadAsync(adminResumePdfUrl(userId), path, {
         headers: { Authorization: auth },

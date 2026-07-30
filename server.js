@@ -3998,6 +3998,10 @@ app.use('/api', adminUserOpsRoutes);
 // In-app support: user issue reports + 1:1 chat with staff. User routes are scoped to the caller's
 // own threads inside the service; admin routes are authenticateAdmin. See supportRoutes.js.
 app.use('/api', require('./server/routes/supportRoutes'));
+
+// Subscription plans + 7-day trial + usage ledger (Migration 028). Quota gates live inside the
+// cover-letter and resume controllers; these routes are status/usage/device/admin-assign.
+app.use('/api', require('./server/routes/subscriptionRoutes'));
 app.use('/api', adminGlobalJobsRoutes);
 app.use('/api', discoverRoutes);
 app.use('/api', require('./server/routes/appConfigRoutes'));

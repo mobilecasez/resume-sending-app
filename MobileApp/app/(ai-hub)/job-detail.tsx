@@ -2764,6 +2764,14 @@ export default function JobDetailScreen() {
       clearInterval(tick); clearInterval(stageTick);
       setClState('idle');
       const msg = e?.response?.data?.message ?? e?.response?.data?.error ?? e?.message ?? 'Failed to generate. Please try again.';
+      // Quota exhausted (trial/plan) → offer the Plans screen instead of a dead-end error.
+      if (e?.response?.status === 402) {
+        Alert.alert('Limit reached', msg, [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) },
+        ]);
+        return null;
+      }
       Alert.alert('Error', msg);
       return null;
     }

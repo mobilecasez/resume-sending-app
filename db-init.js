@@ -1071,6 +1071,69 @@ async function runPostgresMigrations(db) {
                      ON support_threads(user_id, issue_key) WHERE status = 'open'`);
         console.log('✅ Migration 027: support_threads + support_messages done');
 
+        // ── Migration 028: subscription plans + 7-day trial + usage ledger ──
+        // Quota-based monetisation for the two paid AI features (cover letters, resume generation);
+        // everything else becomes free. Legacy credit balances keep working as a fallback pool, so
+        // this migration breaks nothing for existing users. Trial is ONE PER DEVICE: the app sends
+        // a keychain-persisted device id, and trial_devices remembers which device already used its
+        // trial — re-registering with a fresh email on the same phone does not reset it.
+        await col(`CREATE TABLE IF NOT EXISTS user_subscriptions (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            plan_key TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            source TEXT NOT NULL DEFAULT 'admin',
+            product_id TEXT,
+            period_start TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            period_end TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user
+                     ON user_subscriptions(user_id, status, period_end DESC)`);
+        await col(`CREATE TABLE IF NOT EXISTS usage_ledger (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            source TEXT NOT NULL,
+            plan_key TEXT,
+            detail JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_usage_ledger_user
+                     ON usage_ledger(user_id, kind, source, created_at DESC)`);
+        await col(`CREATE TABLE IF NOT EXISTS user_trials (
+            user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            device_id TEXT,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            ends_at TIMESTAMPTZ NOT NULL
+        )`);
+        await col(`CREATE TABLE IF NOT EXISTS trial_devices (
+            device_id TEXT PRIMARY KEY,
+            first_user_id INTEGER,
+            ip_hash TEXT,
+            trial_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        await col(`CREATE TABLE IF NOT EXISTS user_devices (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            device_id TEXT NOT NULL,
+            ip_hash TEXT,
+            first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (user_id, device_id)
+        )`);
+        // Everything except the two gated generations becomes free. TRULY one-time: a marker row
+        // (is_active=0, never shown as a cost) records that the flip ran, so an admin who later
+        // re-prices any of these keeps their value on every subsequent boot.
+        await col(`UPDATE ai_event_costs SET credits = 0
+                     WHERE event_key IN ('company_search','ai_search','live_fetch',
+                                         'cover_letter_download','resume_download',
+                                         'find_recruiters','find_recruiter_emails')
+                       AND NOT EXISTS (SELECT 1 FROM ai_event_costs WHERE event_key = 'm028_free_flip_done')`);
+        await col(`INSERT INTO ai_event_costs (event_key, label, credits, category, sort_order, description, is_active)
+                     VALUES ('m028_free_flip_done', 'migration marker', 0, 'free', 999, 'Migration 028 free-flip already applied — do not delete.', 0)
+                     ON CONFLICT (event_key) DO NOTHING`);
+        console.log('✅ Migration 028: subscriptions + trial + usage ledger done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

@@ -298,7 +298,10 @@ export default function ResumeBuilderIndex() {
 
     try {
       const authHeader = await getAuthHeader();
-      const headers: Record<string, string> = { 'Content-Type': 'application/json', ...authHeader };
+      // device id → per-device trial quota on the server (one 7-day trial per phone)
+      let devHeaders: Record<string, string> = {};
+      try { devHeaders = await require('../../services/deviceId').deviceHeader(); } catch {}
+      const headers: Record<string, string> = { 'Content-Type': 'application/json', ...authHeader, ...devHeaders };
       const res = await fetch(`${API_BASE}/resume-builder/generate-ai`, {
         method: 'POST',
         headers,
@@ -310,7 +313,15 @@ export default function ResumeBuilderIndex() {
       clearInterval(iv);
       if (res.status === 402) {
         setMode('ai');
-        Alert.alert('Insufficient Credits', data.error || 'You need 2 credits to generate a resume. Please top up your credits.');
+        // Quota exhausted (trial or plan) → route to Plans; legacy credit users see the same sheet.
+        Alert.alert(
+          'Limit reached',
+          data.error || 'You have used your included resume generations.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) },
+          ]
+        );
         return;
       }
       if (!res.ok || !data.resumeData) throw new Error(data.error || 'Generation failed');
