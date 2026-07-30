@@ -49,6 +49,7 @@ import { track } from '../../services/analytics';
 import { ExploreFeed } from '../(discover)';
 import SortControl from '../../components/SortControl';
 import SavedJobsList from '../../components/SavedJobsList';
+import InterestBoard from '../../components/InterestBoard';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
@@ -1295,6 +1296,7 @@ export default function AIHubScreen() {
   const params = useLocalSearchParams<{ tab?: string }>();
   const initialTab = params?.tab === 'search' || params?.tab === 'saved' || params?.tab === 'myjobs' ? params.tab : 'search';
   const [hubTab, setHubTab] = useState<'search' | 'myjobs' | 'saved'>(initialTab);   // unified Job Hub tabs
+  const [interestAddOpen, setInterestAddOpen] = useState(false);   // + on the Jobs tab opens the interest form
   const [myJobsSort, setMyJobsSort] = useState<'match' | 'recent'>('match');   // My Jobs sort (best match / newest)
   const [hubSavedCount, setHubSavedCount] = useState(0);
   const [hubSavedStats, setHubSavedStats] = useState({ count: 0, withCl: 0, applied: 0 });   // Saved-tab summary
@@ -1887,7 +1889,11 @@ export default function AIHubScreen() {
           <TouchableOpacity style={styles.addBtn} onPress={() => router.push('/(rewards)')} activeOpacity={0.8}>
             <Ionicons name="gift-outline" size={17} color={T.ink} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.addBtn} onPress={openModal} activeOpacity={0.8}>
+          <TouchableOpacity
+            style={styles.addBtn}
+            onPress={() => { if (hubTab === 'myjobs') setInterestAddOpen(true); else openModal(); }}
+            activeOpacity={0.8}
+          >
             <Ionicons name="add" size={18} color={T.ink} />
           </TouchableOpacity>
         </View>
@@ -1971,19 +1977,24 @@ export default function AIHubScreen() {
         {/* ══ BODY (light bg) ══════════════════════════════════════════════════ */}
         <View style={styles.body}>
 
+          {/* ── LOCATION INTERESTS — the new heart of this tab: place + skills cards fed from the
+                 global directory, researched twice a day, with match push notifications. The
+                 legacy company-search cards render BELOW for users who already have them. ── */}
+          <InterestBoard
+            addOpen={interestAddOpen}
+            onAddClose={() => setInterestAddOpen(false)}
+            onOpenCompanySearch={openModal}
+          />
+
           {initialLoading ? (
             <View style={styles.emptyState}>
               <ActivityIndicator size="large" color={T.blue} />
               <Text style={styles.emptyStateTitle}>Loading your dashboard...</Text>
             </View>
           ) : employers.length === 0 && loadingCompanies.length === 0 ? (
-            <View style={styles.emptyState}>
-              <LinearGradient colors={[T.blue, T.blueDeep]} style={styles.emptyIcon}>
-                <Ionicons name="briefcase-outline" size={32} color="#fff" />
-              </LinearGradient>
-              <Text style={styles.emptyStateTitle}>No jobs tracked yet</Text>
+            <View style={[styles.emptyState, { paddingVertical: 18 }]}>
               <Text style={styles.emptyStateSub}>
-                Add a company career page URL or company name to let AI automatically find matching jobs and hiring contacts.
+                Tracking a specific company? Add its careers page and AI finds its matching jobs and hiring contacts.
               </Text>
               <TouchableOpacity onPress={openModal} activeOpacity={0.85} style={styles.emptyBtnOuter}>
                 <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.emptyBtn}>

@@ -1134,6 +1134,22 @@ async function runPostgresMigrations(db) {
                      ON CONFLICT (event_key) DO NOTHING`);
         console.log('✅ Migration 028: subscriptions + trial + usage ledger done');
 
+        // ── Migration 029: location-based job interests (the redesigned Jobs tab) ──
+        // A card = a place + skills the user cares about. The demand-research routine walks these
+        // twice a day to research the live web for exactly this demand and feed global_jobs.
+        await col(`CREATE TABLE IF NOT EXISTS user_job_interests (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            label TEXT,
+            country TEXT NOT NULL,
+            city TEXT,
+            skills JSONB NOT NULL DEFAULT '[]'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_user_job_interests_user
+                     ON user_job_interests(user_id, created_at DESC)`);
+        console.log('✅ Migration 029: user_job_interests done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

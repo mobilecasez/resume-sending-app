@@ -4002,6 +4002,9 @@ app.use('/api', require('./server/routes/supportRoutes'));
 // Subscription plans + 7-day trial + usage ledger (Migration 028). Quota gates live inside the
 // cover-letter and resume controllers; these routes are status/usage/device/admin-assign.
 app.use('/api', require('./server/routes/subscriptionRoutes'));
+
+// Location-based job interests (Migration 029) — the redesigned Jobs tab cards.
+app.use('/api', require('./server/routes/interestRoutes'));
 app.use('/api', adminGlobalJobsRoutes);
 app.use('/api', discoverRoutes);
 app.use('/api', require('./server/routes/appConfigRoutes'));
@@ -4077,6 +4080,11 @@ if (process.env.RESUME_SWEEPER_DISABLED !== '1') {
 
 // Global job firehose — populate the isolated global_jobs feed from public company ATS boards every
 // few hours (no AI, no keys). Disable with GLOBAL_JOB_FIREHOSE_ENABLED=0.
+// Demand-driven research — twice a day, researches the live web for the skills+locations users
+// saved as interests, feeds global_jobs, and pushes "new matching jobs" to affected users.
+try { require('./server/services/demandResearch').startDemandResearch(); }
+catch (e) { console.error('[demandResearch] failed to start:', e.message); }
+
 try { require('./server/services/globalJobFirehose').startGlobalJobFirehose(); }
 catch (e) { console.error('[firehose] failed to start:', e.message); }
 
