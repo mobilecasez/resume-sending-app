@@ -48,10 +48,11 @@ function openJob(router: ReturnType<typeof useRouter>, j: InterestJob) {
 }
 
 export default function InterestBoard({
-  addOpen, onAddClose, onOpenCompanySearch,
+  addOpen, onAddClose, onRequestAdd, onOpenCompanySearch,
 }: {
   addOpen: boolean;                       // parent's + button opens the form
   onAddClose: () => void;
+  onRequestAdd?: () => void;              // the compact first card opens the form too
   onOpenCompanySearch?: () => void;       // legacy employer search stays one tap away
 }) {
   const router = useRouter();
@@ -155,47 +156,64 @@ export default function InterestBoard({
     ]);
   }, [load]);
 
+  // country groups behave exactly like the interest cards: collapsed with a count pill, tap to expand
+  const [openCountry, setOpenCountry] = useState<string | null>(null);
+
   return (
     <View style={s.wrap}>
+      {/* ── Compact add card — always FIRST, so adding lives right where the cards are ── */}
+      <TouchableOpacity style={s.addCard} activeOpacity={0.85} onPress={() => (onRequestAdd ? onRequestAdd() : undefined)}>
+        <LinearGradient colors={[T.blue, T.blueDeep]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.addLogo}>
+          <Ionicons name="add" size={20} color="#fff" />
+        </LinearGradient>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={s.cardTitle}>Tell us where and what</Text>
+          <Text style={s.cardSkills} numberOfLines={1}>Place + skills — researched for you twice a day</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={17} color={T.faint} />
+      </TouchableOpacity>
+
       {loading ? (
         <ActivityIndicator color={T.blue} style={{ marginVertical: 26 }} />
       ) : items.length === 0 ? (
         <View>
-          <View style={s.empty}>
-            <Ionicons name="location-outline" size={34} color={T.faint} />
-            <Text style={s.emptyTitle}>Tell us where and what</Text>
-            <Text style={s.emptyText}>Add a place + your skills, and jobs for it appear here. Our researcher then scans the live web for exactly this twice a day — and tells you when fresh matches land.</Text>
-          </View>
-
-          {/* No interests yet → best directory matches for the RESUME's skills, grouped by country */}
+          {/* No interests yet → best directory matches for the RESUME's skills, grouped by country —
+              rendered as the SAME collapsible cards the company sections used. */}
           {suggested.length > 0 && (
             <View>
               <Text style={s.suggTitle}>Best matches for you, by country</Text>
               {!!suggestedNote && <Text style={s.suggNote}>{suggestedNote}</Text>}
-              {suggested.map((g) => (
-                <View key={g.country} style={s.card}>
-                  <View style={s.cardHead}>
-                    <LinearGradient colors={gradFor(g.country)} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.logo}>
-                      <Ionicons name="earth" size={17} color="#fff" />
-                    </LinearGradient>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={s.cardTitle} numberOfLines={1}>{g.country}</Text>
-                      <Text style={s.cardSkills} numberOfLines={1}>{g.total} matching {g.total === 1 ? 'job' : 'jobs'}</Text>
-                    </View>
+              {suggested.map((g) => {
+                const open = openCountry === g.country;
+                return (
+                  <View key={g.country} style={s.card}>
+                    <TouchableOpacity style={s.cardHead} activeOpacity={0.85} onPress={() => setOpenCountry(open ? null : g.country)}>
+                      <LinearGradient colors={gradFor(g.country)} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.logo}>
+                        <Ionicons name="earth" size={17} color="#fff" />
+                      </LinearGradient>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={s.cardTitle} numberOfLines={1}>{g.country}</Text>
+                        <Text style={s.cardSkills} numberOfLines={1}>Matched to your résumé</Text>
+                      </View>
+                      <View style={s.countPill}><Text style={s.countText}>{g.total}</Text><Text style={s.countLbl}>jobs</Text></View>
+                      <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={17} color={T.faint} />
+                    </TouchableOpacity>
+                    {open && (
+                      <View style={s.jobsWrap}>
+                        {g.jobs.map((job) => (
+                          <TouchableOpacity key={job.id} style={s.jobRow} activeOpacity={0.85} onPress={() => openJob(router, job)}>
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                              <Text style={s.jobTitle} numberOfLines={2}>{job.title}</Text>
+                              <Text style={s.jobMeta} numberOfLines={1}>{[job.employer_name, job.location].filter(Boolean).join(' · ')}</Text>
+                            </View>
+                            <Ionicons name="chevron-forward" size={16} color={T.faint} />
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    )}
                   </View>
-                  <View style={s.jobsWrap}>
-                    {g.jobs.map((job) => (
-                      <TouchableOpacity key={job.id} style={s.jobRow} activeOpacity={0.85} onPress={() => openJob(router, job)}>
-                        <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={s.jobTitle} numberOfLines={2}>{job.title}</Text>
-                          <Text style={s.jobMeta} numberOfLines={1}>{[job.employer_name, job.location].filter(Boolean).join(' · ')}</Text>
-                        </View>
-                        <Ionicons name="chevron-forward" size={16} color={T.faint} />
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </View>
-              ))}
+                );
+              })}
             </View>
           )}
           {suggested.length === 0 && !!suggestedNote && <Text style={s.suggNote}>{suggestedNote}</Text>}
@@ -393,9 +411,11 @@ export default function InterestBoard({
 
 const s = StyleSheet.create({
   wrap: { marginBottom: 8 },
-  empty: { alignItems: 'center', gap: 8, backgroundColor: T.card, borderRadius: 24, padding: 26, marginBottom: 12, borderWidth: 1, borderColor: T.line },
-  emptyTitle: { fontSize: 15.5, fontWeight: '800', color: T.ink },
-  emptyText: { fontSize: 12.5, color: T.muted, textAlign: 'center', lineHeight: 18 },
+  addCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 11, backgroundColor: T.card, borderRadius: 20,
+    borderWidth: 1.5, borderColor: 'rgba(79,141,255,0.35)', borderStyle: 'dashed', padding: 13, marginBottom: 10,
+  },
+  addLogo: { width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
 
   suggTitle: { fontSize: 15, fontWeight: '800', color: T.ink, marginBottom: 3, marginLeft: 2, letterSpacing: -0.2 },
   suggNote: { fontSize: 11.5, color: T.faint, fontWeight: '600', marginBottom: 9, marginLeft: 2 },

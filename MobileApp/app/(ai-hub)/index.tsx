@@ -1983,6 +1983,7 @@ export default function AIHubScreen() {
           <InterestBoard
             addOpen={interestAddOpen}
             onAddClose={() => setInterestAddOpen(false)}
+            onRequestAdd={() => setInterestAddOpen(true)}
             onOpenCompanySearch={openModal}
           />
 
