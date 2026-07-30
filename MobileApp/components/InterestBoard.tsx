@@ -70,14 +70,20 @@ export default function InterestBoard({
   const [picker, setPicker] = useState<'country' | 'city' | null>(null);
   const [pickerFilter, setPickerFilter] = useState('');
 
-  // load country options when the form opens; city options follow the chosen country
+  // Preload country options at MOUNT (not first open) so the picker is instant; retry on open if
+  // the first fetch failed. City options follow the chosen country, with a visible loading state.
+  const [cityLoading, setCityLoading] = useState(false);
+  useEffect(() => { fetchCountryOptions().then(setCountryOpts).catch(() => {}); }, []);
   useEffect(() => {
     if (!addOpen) { setPicker(null); return; }
     if (!countryOpts.length) fetchCountryOptions().then(setCountryOpts).catch(() => {});
   }, [addOpen]);
   useEffect(() => {
     setCity(''); setCityOpts([]);
-    if (country) fetchCityOptions(country).then(setCityOpts).catch(() => {});
+    if (country) {
+      setCityLoading(true);
+      fetchCityOptions(country).then(setCityOpts).catch(() => {}).finally(() => setCityLoading(false));
+    }
   }, [country]);
 
   // chips: comma or Enter turns the typed text into a chip
@@ -238,14 +244,76 @@ export default function InterestBoard({
         })
       )}
 
-      {/* ── Add-interest form — ONE top-level modal, keyboard-aware, dropdown places, chip skills ── */}
-      <Modal visible={addOpen} transparent animationType="slide" onRequestClose={onAddClose}>
+      {/* ── Add-interest form — ONE top-level modal. The sheet has a FIXED height and the picker
+             REPLACES the form content (back arrow returns), so nothing stretches or jumps while
+             choosing a country/city. ── */}
+      <Modal visible={addOpen} transparent animationType="slide" onRequestClose={() => { if (picker) setPicker(null); else onAddClose(); }}>
         <KeyboardAvoidingView
           style={s.sheetOverlay}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
           <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onAddClose} />
           <View style={s.sheet}>
+            {picker ? (
+              /* ── PICKER PAGE — fills the whole sheet, zero reflow ── */
+              <View style={{ flex: 1 }}>
+                <View style={s.sheetHead}>
+                  <TouchableOpacity onPress={() => setPicker(null)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ marginRight: 10 }}>
+                    <Ionicons name="arrow-back" size={22} color={T.ink} />
+                  </TouchableOpacity>
+                  <Text style={s.sheetTitle}>{picker === 'country' ? 'Choose a country' : `City in ${country}`}</Text>
+                  <TouchableOpacity onPress={onAddClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <Ionicons name="close" size={22} color={T.muted} />
+                  </TouchableOpacity>
+                </View>
+                <View style={s.searchWrap}>
+                  <Ionicons name="search" size={15} color={T.faint} />
+                  <TextInput
+                    value={pickerFilter} onChangeText={setPickerFilter}
+                    placeholder={picker === 'country' ? 'Search countries…' : 'Search cities…'}
+                    placeholderTextColor={T.faint} style={s.searchInput} autoCapitalize="none" autoCorrect={false}
+                  />
+                </View>
+                <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled">
+                  {picker === 'city' && !cityLoading && (
+                    <TouchableOpacity style={s.pickerRow} onPress={() => { setCity(''); setPicker(null); }}>
+                      <Text style={s.pickerRowText}>Any city</Text>
+                      {!city && <Ionicons name="checkmark" size={16} color={T.emerald} />}
+                    </TouchableOpacity>
+                  )}
+                  {(picker === 'city' && cityLoading) ? (
+                    <View style={s.pickerLoading}><ActivityIndicator color={T.blue} /><Text style={s.pickerEmpty}>Loading cities…</Text></View>
+                  ) : (
+                    (picker === 'country' ? countryOpts : cityOpts)
+                      .filter((o) => !pickerFilter || o.name.toLowerCase().includes(pickerFilter.toLowerCase()))
+                      .map((o) => {
+                        const selected = picker === 'country' ? country === o.name : city === o.name;
+                        return (
+                          <TouchableOpacity
+                            key={o.name} style={s.pickerRow}
+                            onPress={() => { if (picker === 'country') setCountry(o.name); else setCity(o.name); setPicker(null); setPickerFilter(''); }}
+                          >
+                            <Text style={[s.pickerRowText, selected && { color: T.blueDeep }]}>{o.name}</Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                              <Text style={s.pickerRowN}>{o.jobs} jobs</Text>
+                              {selected && <Ionicons name="checkmark" size={16} color={T.emerald} />}
+                            </View>
+                          </TouchableOpacity>
+                        );
+                      })
+                  )}
+                  {picker === 'country' && countryOpts.length === 0 && (
+                    <View style={s.pickerLoading}><ActivityIndicator color={T.blue} /><Text style={s.pickerEmpty}>Loading countries…</Text></View>
+                  )}
+                  {picker === 'city' && !cityLoading && cityOpts.length === 0 && (
+                    <Text style={s.pickerEmpty}>No city breakdown for {country} yet — "Any city" covers the whole country.</Text>
+                  )}
+                  <View style={{ height: 20 }} />
+                </ScrollView>
+              </View>
+            ) : (
+            /* ── FORM PAGE ── */
+            <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <View style={s.sheetHead}>
               <Text style={s.sheetTitle}>What jobs should we watch for?</Text>
               <TouchableOpacity onPress={onAddClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
@@ -253,56 +321,24 @@ export default function InterestBoard({
               </TouchableOpacity>
             </View>
 
-            {/* COUNTRY dropdown */}
+            {/* COUNTRY */}
             <Text style={s.label}>COUNTRY *</Text>
-            <TouchableOpacity style={s.select} activeOpacity={0.8} onPress={() => { setPicker(picker === 'country' ? null : 'country'); setPickerFilter(''); }}>
+            <TouchableOpacity style={s.select} activeOpacity={0.8} onPress={() => { setPicker('country'); setPickerFilter(''); }}>
               <Text style={[s.selectText, !country && { color: T.faint }]}>{country || 'Choose a country'}</Text>
-              <Ionicons name={picker === 'country' ? 'chevron-up' : 'chevron-down'} size={16} color={T.faint} />
+              <Ionicons name="chevron-forward" size={16} color={T.faint} />
             </TouchableOpacity>
 
-            {/* CITY dropdown (after country; only cities that actually have jobs) */}
+            {/* CITY */}
             <Text style={s.label}>CITY (OPTIONAL — ITS JOBS RANK FIRST)</Text>
             <TouchableOpacity
               style={[s.select, !country && { opacity: 0.5 }]}
               activeOpacity={0.8}
               disabled={!country}
-              onPress={() => { setPicker(picker === 'city' ? null : 'city'); setPickerFilter(''); }}
+              onPress={() => { setPicker('city'); setPickerFilter(''); }}
             >
               <Text style={[s.selectText, !city && { color: T.faint }]}>{city || (country ? 'Any city' : 'Pick a country first')}</Text>
-              <Ionicons name={picker === 'city' ? 'chevron-up' : 'chevron-down'} size={16} color={T.faint} />
+              <Ionicons name="chevron-forward" size={16} color={T.faint} />
             </TouchableOpacity>
-
-            {/* inline picker list — inside the sheet, never a nested modal */}
-            {picker && (
-              <View style={s.pickerBox}>
-                <TextInput
-                  value={pickerFilter} onChangeText={setPickerFilter}
-                  placeholder={picker === 'country' ? 'Type to filter countries…' : 'Type to filter cities…'}
-                  placeholderTextColor={T.faint} style={s.pickerFilter} autoCapitalize="none"
-                />
-                <ScrollView style={{ maxHeight: 180 }} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
-                  {picker === 'city' && (
-                    <TouchableOpacity style={s.pickerRow} onPress={() => { setCity(''); setPicker(null); }}>
-                      <Text style={s.pickerRowText}>Any city</Text>
-                    </TouchableOpacity>
-                  )}
-                  {(picker === 'country' ? countryOpts : cityOpts)
-                    .filter((o) => !pickerFilter || o.name.toLowerCase().includes(pickerFilter.toLowerCase()))
-                    .map((o) => (
-                      <TouchableOpacity
-                        key={o.name} style={s.pickerRow}
-                        onPress={() => { if (picker === 'country') setCountry(o.name); else setCity(o.name); setPicker(null); }}
-                      >
-                        <Text style={s.pickerRowText}>{o.name}</Text>
-                        <Text style={s.pickerRowN}>{o.jobs} jobs</Text>
-                      </TouchableOpacity>
-                    ))}
-                  {(picker === 'country' ? countryOpts : cityOpts).length === 0 && (
-                    <Text style={s.pickerEmpty}>{picker === 'city' ? 'No city data yet for this country — leave it on Any city.' : 'Loading…'}</Text>
-                  )}
-                </ScrollView>
-              </View>
-            )}
 
             {/* SKILLS as chips: comma or return adds a card */}
             <Text style={s.label}>SKILLS OR ROLES *</Text>
@@ -345,6 +381,9 @@ export default function InterestBoard({
                 <Text style={s.companyLinkText}>Search a specific company instead</Text>
               </TouchableOpacity>
             )}
+            <View style={{ height: 12 }} />
+            </ScrollView>
+            )}
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -378,8 +417,13 @@ const s = StyleSheet.create({
   moreNote: { fontSize: 11, color: T.faint, fontWeight: '600', paddingVertical: 9, textAlign: 'center' },
 
   sheetOverlay: { flex: 1, backgroundColor: 'rgba(6,10,25,0.5)', justifyContent: 'flex-end' },
-  sheet: { backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 18, paddingBottom: Platform.OS === 'ios' ? 34 : 20 },
+  // FIXED height: opening the picker or the keyboard swaps/scrolls content INSIDE the sheet —
+  // the sheet itself never grows or jumps (that reflow was the "moving and expanding" complaint).
+  sheet: { backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 18, paddingBottom: Platform.OS === 'ios' ? 30 : 16, height: 560, maxHeight: '86%' },
   sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  searchWrap: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F4F7FC', borderWidth: 1, borderColor: T.line, borderRadius: 13, paddingHorizontal: 12, height: 42, marginBottom: 8 },
+  searchInput: { flex: 1, fontSize: 13.5, color: T.ink, paddingVertical: 0 },
+  pickerLoading: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 13 },
   sheetTitle: { fontSize: 16.5, fontWeight: '800', color: T.ink, letterSpacing: -0.2, flex: 1 },
   label: { fontSize: 10, fontWeight: '800', color: T.faint, letterSpacing: 0.8, marginTop: 10, marginBottom: 5 },
   select: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F4F7FC', borderWidth: 1, borderColor: T.line, borderRadius: 13, paddingHorizontal: 13, height: 46 },

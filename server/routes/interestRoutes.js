@@ -30,11 +30,15 @@ router.get('/interests/cities', authenticateToken, async (req, res) => {
     const country = String(req.query.country || '').trim();
     if (!country) return res.status(400).json({ error: 'country required' });
     // First comma-segment of the location is the city in the overwhelming majority of rows.
+    // ⚠️ The segment filter must live in the inner WHERE — a HAVING on the ungrouped expression
+    // made Postgres reject the whole query (this endpoint 500'd in build 132).
     const rows = await dbConfig.query(
-      `SELECT INITCAP(TRIM(SPLIT_PART(location, ',', 1))) AS city, COUNT(*)::int AS n
-         FROM global_jobs
-        WHERE is_active AND country = $1 AND location IS NOT NULL AND location <> ''
-        GROUP BY 1 HAVING TRIM(SPLIT_PART(location, ',', 1)) <> '' ORDER BY n DESC LIMIT 40`, [country]);
+      `SELECT city, COUNT(*)::int AS n FROM (
+         SELECT INITCAP(TRIM(SPLIT_PART(location, ',', 1))) AS city
+           FROM global_jobs
+          WHERE is_active AND country = $1 AND location IS NOT NULL
+            AND TRIM(SPLIT_PART(location, ',', 1)) <> ''
+       ) t GROUP BY city ORDER BY n DESC LIMIT 40`, [country]);
     const cities = (rows || [])
       .map((r) => ({ name: r.city, jobs: r.n }))
       // drop junk segments that are clearly not cities (remote flags, country echoes)
