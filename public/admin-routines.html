@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <meta name="theme-color" content="#0B1120" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <meta name="robots" content="noindex">
+
+    <title>Routines - Admin</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+
+    <style>
+        body { font-family: 'Montserrat', sans-serif; background: #F4F7FB; }
+        .page-wrap { max-width: 980px; margin: 0 auto; padding: 96px 16px 60px; }
+        .page-title { font-weight: 800; color: #0B1120; letter-spacing: -0.5px; }
+        .page-sub { color: #64748B; font-size: 0.9rem; margin-bottom: 26px; }
+        .routine-card {
+            background: #fff; border: 1px solid rgba(11,17,32,0.07); border-radius: 18px;
+            padding: 20px 22px; margin-bottom: 14px; box-shadow: 0 6px 22px rgba(15,23,42,0.05);
+            display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap;
+        }
+        .r-icon { font-size: 1.7rem; line-height: 1; margin-top: 2px; }
+        .r-main { flex: 1; min-width: 260px; }
+        .r-name { font-weight: 800; color: #0B1120; font-size: 1.02rem; }
+        .r-desc { color: #64748B; font-size: 0.82rem; line-height: 1.5; margin-top: 3px; }
+        .r-meta { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; font-size: 0.78rem; }
+        .r-meta b { color: #0B1120; font-weight: 700; }
+        .r-meta span { color: #64748B; }
+        .r-summary {
+            margin-top: 10px; font-size: 0.78rem; color: #334155; background: #F1F5F9;
+            border-radius: 10px; padding: 8px 12px; word-break: break-word;
+        }
+        .r-summary.failed { background: #FEF2F2; color: #B91C1C; }
+        .badge-cadence { background: rgba(6,182,212,0.12); color: #0E7490; font-weight: 700; border-radius: 100px; padding: 4px 12px; font-size: 0.72rem; }
+        .badge-running { background: rgba(16,185,129,0.14); color: #047857; font-weight: 700; border-radius: 100px; padding: 4px 12px; font-size: 0.72rem; }
+        .badge-never { background: rgba(148,163,184,0.16); color: #64748B; font-weight: 700; border-radius: 100px; padding: 4px 12px; font-size: 0.72rem; }
+        .btn-run {
+            background: linear-gradient(90deg, #06B6D4, #3B82F6); color: #fff; font-weight: 700;
+            border: none; border-radius: 12px; padding: 9px 18px; font-size: 0.82rem;
+        }
+        .btn-run:disabled { opacity: 0.55; }
+        .r-side { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+        #status.loading { text-align: center; color: #64748B; padding: 60px 0; }
+    </style>
+</head>
+
+<body>
+    <div id="app-header"></div>
+
+    <div class="page-wrap">
+        <h3 class="page-title">⏱️ Routines</h3>
+        <div class="page-sub">Every background routine the server runs on a schedule — what it does, when it last ran, and a button to run it right now. Auto-refreshes every 20s.</div>
+        <div id="status" class="loading">Loading routines…</div>
+        <div id="list"></div>
+    </div>
+
+    <script src="/js/app-header.js?v=6"></script>
+    <script src="/js/app-footer.js"></script>
+
+    <script>
+        const authToken = localStorage.getItem('authToken');
+        if (!authToken) window.location.href = '/login';
+
+        const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? 'http://localhost:3000'
+            : 'https://cvapplyr.com';
+
+        function esc(s) {
+            if (s === null || s === undefined) return '';
+            return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+        function authHeaders(json) {
+            const h = { 'Authorization': 'Bearer ' + authToken };
+            if (json) h['Content-Type'] = 'application/json';
+            return h;
+        }
+        function rel(iso) {
+            if (!iso) return null;
+            const ms = Date.now() - new Date(iso).getTime();
+            const m = Math.round(ms / 60000);
+            if (m < 1) return 'just now';
+            if (m < 60) return m + ' min ago';
+            const h = Math.round(m / 60);
+            if (h < 48) return h + 'h ago';
+            return Math.round(h / 24) + 'd ago';
+        }
+        function relFuture(iso) {
+            if (!iso) return null;
+            const ms = new Date(iso).getTime() - Date.now();
+            if (ms <= 0) return 'due now';
+            const m = Math.round(ms / 60000);
+            if (m < 60) return 'in ' + m + ' min';
+            const h = Math.round(m / 60);
+            if (h < 48) return 'in ' + h + 'h';
+            return 'in ' + Math.round(h / 24) + 'd';
+        }
+
+        async function load() {
+            try {
+                const res = await fetch(API_BASE + '/api/admin/routines', { headers: authHeaders() });
+                if (res.status === 401 || res.status === 403) {
+                    document.getElementById('status').innerHTML = '⛔ Access denied — admin only.';
+                    return;
+                }
+                const data = await res.json();
+                render(data.routines || []);
+            } catch (e) {
+                document.getElementById('status').textContent = 'Could not load routines — check your connection.';
+            }
+        }
+
+        function render(routines) {
+            document.getElementById('status').style.display = 'none';
+            const html = routines.map((r) => {
+                const failed = /FAILED|SKIPPED/i.test(r.lastSummary || '');
+                const stateBadge = r.running
+                    ? '<span class="badge-running">● Running since ' + esc(rel(r.running)) + '</span>'
+                    : (r.lastRunAt ? '' : '<span class="badge-never">Never ran yet</span>');
+                return '<div class="routine-card">' +
+                    '<div class="r-icon">' + esc(r.icon) + '</div>' +
+                    '<div class="r-main">' +
+                        '<div class="r-name">' + esc(r.name) + ' ' + stateBadge + '</div>' +
+                        '<div class="r-desc">' + esc(r.description) + '</div>' +
+                        '<div class="r-meta">' +
+                            '<span><b>Last run:</b> ' + esc(rel(r.lastRunAt) || 'never') + '</span>' +
+                            (r.nextRunAt ? '<span><b>Next run:</b> ' + esc(relFuture(r.nextRunAt)) + '</span>' : '') +
+                        '</div>' +
+                        (r.lastSummary ? '<div class="r-summary' + (failed ? ' failed' : '') + '">' + esc(r.lastSummary) + '</div>' : '') +
+                    '</div>' +
+                    '<div class="r-side">' +
+                        '<span class="badge-cadence">' + esc(r.cadence) + '</span>' +
+                        '<button class="btn-run" data-key="' + esc(r.key) + '"' + (r.running ? ' disabled' : '') + '>' + (r.running ? 'Running…' : '▶ Run now') + '</button>' +
+                    '</div>' +
+                '</div>';
+            }).join('');
+            document.getElementById('list').innerHTML = html;
+            document.querySelectorAll('.btn-run').forEach((btn) => {
+                btn.addEventListener('click', async () => {
+                    btn.disabled = true; btn.textContent = 'Starting…';
+                    try {
+                        const res = await fetch(API_BASE + '/api/admin/routines/run/' + btn.dataset.key, { method: 'POST', headers: authHeaders(true) });
+                        const d = await res.json();
+                        btn.textContent = d.started ? 'Running…' : (d.alreadyRunning ? 'Already running' : 'Failed');
+                    } catch (e) { btn.textContent = 'Failed'; btn.disabled = false; }
+                    setTimeout(load, 1500);
+                });
+            });
+        }
+
+        load();
+        setInterval(load, 20000);
+    </script>
+</body>
+
+</html>

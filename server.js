@@ -4006,6 +4006,7 @@ app.use('/api', require('./server/routes/subscriptionRoutes'));
 // Location-based job interests (Migration 029) — the redesigned Jobs tab cards.
 app.use('/api', require('./server/routes/interestRoutes'));
 app.use('/api', adminGlobalJobsRoutes);
+app.use('/api', require('./server/routes/adminRoutinesRoutes'));   // admin Routines view (system_schedule + run-now)
 app.use('/api', discoverRoutes);
 app.use('/api', require('./server/routes/appConfigRoutes'));
 app.use('/api', analyticsRoutes);
