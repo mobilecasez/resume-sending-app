@@ -116,6 +116,7 @@ async function ingestUrl(url, cluster, source = 'demand_research') {
 
 // ── match push: fresh jobs that fit an interest → one notification per user per day ───────────
 async function notifyMatchedUsers(sinceIso) {
+  if (!(await require('./notifSwitch').isOn('demand_jobs'))) return 0;
   const interests = await dbConfig.query(
     `SELECT i.user_id, i.country, i.city, i.skills, u.expo_push_token
        FROM user_job_interests i
@@ -148,9 +149,9 @@ async function notifyMatchedUsers(sinceIso) {
       // prefs: these are marketing-ish job alerts → the 'digest' category governs them
       const ok = await notifPrefs.isEnabled(userId, 'digest').catch(() => true);
       if (!ok) continue;
-      // daily dedupe via notifications log
+      // daily dedupe via notifications log (shared with the résumé-match push — one job alert/day)
       const dup = await dbConfig.query(
-        `SELECT 1 FROM notifications WHERE user_id = $1 AND type = 'demand_jobs' AND created_at > NOW() - INTERVAL '20 hours' LIMIT 1`, [userId]);
+        `SELECT 1 FROM notifications WHERE user_id = $1 AND type IN ('demand_jobs','resume_match_jobs') AND created_at > NOW() - INTERVAL '20 hours' LIMIT 1`, [userId]);
       if (dup && dup.length) continue;
       const title = 'New matching jobs for you 🎯';
       const body = `${m.n} new ${m.skill} ${m.n === 1 ? 'job' : 'jobs'} near ${m.place} just landed — take a look.`;
@@ -160,6 +161,70 @@ async function notifyMatchedUsers(sinceIso) {
         [userId, title, body]).catch(() => {});
       sent++;
     } catch (e) { console.warn('[demandResearch] push failed for', userId, e.message); }
+  }
+  return sent;
+}
+
+// ── résumé match push: fresh jobs that fit a user's RESUME skills (no saved interest needed) ──
+// "6 new plumbing jobs in Canada" — the copy names the dominant skill and country of the matched
+// jobs. One job alert per user per day (dedupe shared with the interest push above).
+function flatSkills(v) {
+  try {
+    const a = typeof v === 'string' ? JSON.parse(v) : v;
+    if (Array.isArray(a)) return a.map(String);
+    if (a && typeof a === 'object') return Object.values(a).flat().map(String);
+  } catch {}
+  return [];
+}
+
+async function notifyResumeMatchedUsers(sinceIso) {
+  if (!(await require('./notifSwitch').isOn('resume_match_jobs'))) return 0;
+  const users = await dbConfig.query(
+    `SELECT u.id, u.expo_push_token, rm.technical_skills, rm.skills, rm.job_titles
+       FROM users u
+       JOIN LATERAL (SELECT technical_skills, skills, job_titles FROM resume_metadata
+                      WHERE user_id = u.id AND parse_status = 'done' ORDER BY id DESC LIMIT 1) rm ON true
+      WHERE u.deleted_at IS NULL AND u.expo_push_token IS NOT NULL AND u.expo_push_token <> ''
+        AND u.email NOT LIKE 'ats%@example.com'`).catch(() => []);
+  let sent = 0;
+  for (const u of users || []) {
+    if (TEST_USER_IDS.has(Number(u.id))) continue;
+    try {
+      const skills = [...new Set([...flatSkills(u.technical_skills), ...flatSkills(u.skills), ...flatSkills(u.job_titles)]
+        .map((s) => String(s).trim().toLowerCase()).filter((s) => s.length >= 4))].slice(0, 6);
+      if (!skills.length) continue;
+      const likeAny = skills.map((_, i) => `(LOWER(title) LIKE $${i + 2} OR LOWER(skills::text) LIKE $${i + 2})`).join(' OR ');
+      const rows = await dbConfig.query(
+        `SELECT title, skills, country FROM global_jobs
+          WHERE is_active AND first_seen >= $1 AND (${likeAny}) LIMIT 60`,
+        [sinceIso, ...skills.map((s) => `%${s}%`)]).catch(() => []);
+      if (!rows || !rows.length) continue;
+      // dominant country + the skill term that actually matched the most jobs → honest copy
+      const byCountry = {};
+      const bySkill = {};
+      for (const r of rows) {
+        byCountry[r.country || 'your area'] = (byCountry[r.country || 'your area'] || 0) + 1;
+        const hay = (String(r.title) + ' ' + JSON.stringify(r.skills || [])).toLowerCase();
+        for (const s of skills) if (hay.includes(s)) bySkill[s] = (bySkill[s] || 0) + 1;
+      }
+      const country = Object.entries(byCountry).sort((a, b) => b[1] - a[1])[0][0];
+      const topSkill = (Object.entries(bySkill).sort((a, b) => b[1] - a[1])[0] || [null])[0];
+      const n = rows.length;
+      // prefs + shared daily dedupe
+      const ok = await notifPrefs.isEnabled(u.id, 'digest').catch(() => true);
+      if (!ok) continue;
+      const dup = await dbConfig.query(
+        `SELECT 1 FROM notifications WHERE user_id = $1 AND type IN ('demand_jobs','resume_match_jobs') AND created_at > NOW() - INTERVAL '20 hours' LIMIT 1`, [u.id]);
+      if (dup && dup.length) continue;
+      const what = topSkill ? `${topSkill} job${n === 1 ? '' : 's'}` : `job${n === 1 ? '' : 's'} for you`;
+      const title = `${n} new ${what} in ${country} 🎯`;
+      const body = 'Fresh openings matched to your résumé just landed — take a look.';
+      await sendPushNotification(u.expo_push_token, title, body, { route: '/(discover)', params: { sort: 'recent' }, action: 'resume_match_jobs' });
+      await dbConfig.query(
+        `INSERT INTO notifications (user_id, type, title, message, created_at) VALUES ($1,'resume_match_jobs',$2,$3,NOW())`,
+        [u.id, title, body]).catch(() => {});
+      sent++;
+    } catch (e) { console.warn('[demandResearch] resume push failed for', u.id, e.message); }
   }
   return sent;
 }
@@ -209,9 +274,10 @@ async function runDemandResearch() {
       console.log(`[demandResearch] ${cluster.skills[0]} @ ${cluster.city || cluster.country}: ${urls.length} urls`);
     }
     const pushed = await notifyMatchedUsers(startedAt);
-    console.log(`[demandResearch] done — ${jobsAdded} jobs added, ${pushed} users notified`);
-    await recordRun(`ran — ${clusters.length} clusters, ${jobsAdded} jobs added, ${pushed} users notified`);
-    return { clusters: clusters.length, jobsAdded, pushed };
+    const resumePushed = await notifyResumeMatchedUsers(startedAt).catch(() => 0);
+    console.log(`[demandResearch] done — ${jobsAdded} jobs added, ${pushed}+${resumePushed} users notified`);
+    await recordRun(`ran — ${clusters.length} clusters, ${jobsAdded} jobs added, ${pushed} interest + ${resumePushed} résumé pushes`);
+    return { clusters: clusters.length, jobsAdded, pushed, resumePushed };
   } catch (e) {
     console.error('[demandResearch] run failed:', e.message);
     await recordRun(`FAILED — ${String(e.message).slice(0, 200)}`);
@@ -237,5 +303,6 @@ function startDemandResearch() {
   console.log(`[demandResearch] scheduled every ${INTERVAL_H}h (persisted gate)`);
 }
 
-// ingestUrl is reused by interestRoutes to fetch the exact posting a user pins on an interest.
-module.exports = { runDemandResearch, startDemandResearch, ingestUrl };
+// ingestUrl is reused by interestRoutes to fetch the exact posting a user pins on an interest;
+// the notify* pair is reused by the admin notify-matches endpoint (the Claude-side routine).
+module.exports = { runDemandResearch, startDemandResearch, ingestUrl, notifyMatchedUsers, notifyResumeMatchedUsers };

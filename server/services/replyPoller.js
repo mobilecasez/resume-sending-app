@@ -74,7 +74,10 @@ async function checkUserMicrosoftReplies(user) {
       await dbConfig.run(
         'UPDATE application_history SET reply_received = 1, reply_date = ?, reply_subject = ?, reply_snippet = ?, reply_from_email = ? WHERE id = ?',
         [email.receivedDateTime, subject, body, fromEmail, app.id]).catch(() => {});
-      try { await notifyEmailReply(user.id, app.company_name, subject); } catch (_) {}   // in-app + push
+      try {
+        // reply detection itself always records; the user-facing alert obeys the admin switch
+        if (await require('./notifSwitch').isOn('reply_alerts')) await notifyEmailReply(user.id, app.company_name, subject);
+      } catch (_) {}   // in-app + push
       found++;
     }
   }

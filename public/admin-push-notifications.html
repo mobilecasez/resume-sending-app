@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <meta name="theme-color" content="#0B1120" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <meta name="robots" content="noindex">
+
+    <title>Push Notifications - Admin</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/bootstrap-4.1.1-dist/css/bootstrap.min.css">
+
+    <style>
+        body { font-family: 'Montserrat', sans-serif; background: #F4F7FB; }
+        .page-wrap { max-width: 980px; margin: 0 auto; padding: 96px 16px 60px; }
+        .page-title { font-weight: 800; color: #0B1120; letter-spacing: -0.5px; }
+        .page-sub { color: #64748B; font-size: 0.9rem; margin-bottom: 24px; }
+        .sec-title { font-weight: 800; color: #0B1120; font-size: 1rem; margin: 26px 0 10px; }
+        .n-card {
+            background: #fff; border: 1px solid rgba(11,17,32,0.07); border-radius: 18px;
+            padding: 18px 20px; margin-bottom: 12px; box-shadow: 0 6px 22px rgba(15,23,42,0.05);
+            display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+        }
+        .n-icon { font-size: 1.5rem; line-height: 1; }
+        .n-main { flex: 1; min-width: 240px; }
+        .n-name { font-weight: 800; color: #0B1120; font-size: 0.96rem; }
+        .n-desc { color: #64748B; font-size: 0.8rem; line-height: 1.5; margin-top: 2px; }
+        .n-counts { font-size: 0.74rem; color: #64748B; margin-top: 6px; }
+        .n-counts b { color: #0B1120; }
+        .n-off-note { color: #B91C1C; font-weight: 700; font-size: 0.74rem; }
+        /* toggle */
+        .switch { position: relative; display: inline-block; width: 52px; height: 30px; flex-shrink: 0; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute; cursor: pointer; inset: 0; background: #CBD5E1; border-radius: 100px;
+            transition: 0.2s;
+        }
+        .slider:before {
+            content: ""; position: absolute; height: 24px; width: 24px; left: 3px; bottom: 3px;
+            background: #fff; border-radius: 50%; transition: 0.2s; box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+        }
+        input:checked + .slider { background: linear-gradient(90deg, #06B6D4, #3B82F6); }
+        input:checked + .slider:before { transform: translateX(22px); }
+        input:disabled + .slider { opacity: 0.5; cursor: wait; }
+        #status.loading { text-align: center; color: #64748B; padding: 60px 0; }
+        .btn-test {
+            background: #0B1120; color: #fff; font-weight: 700; border: none;
+            border-radius: 12px; padding: 9px 18px; font-size: 0.82rem;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="app-header"></div>
+
+    <div class="page-wrap">
+        <h3 class="page-title">🔔 Push Notifications</h3>
+        <div class="page-sub">Every automated push your users receive — each one can be switched off here instantly (takes effect within a minute, no deploy). Counts show how many actually went out.</div>
+        <div id="status" class="loading">Loading…</div>
+
+        <div id="userSec" style="display:none;">
+            <div class="sec-title">Automated pushes to USERS</div>
+            <div id="userList"></div>
+        </div>
+
+        <div id="adminSec" style="display:none;">
+            <div class="sec-title">Alerts to ADMINS</div>
+            <div id="adminList"></div>
+            <button class="btn-test" id="testBtn">Send a test push to admin devices</button>
+            <span id="testResult" style="font-size:0.8rem;color:#64748B;margin-left:10px;"></span>
+        </div>
+    </div>
+
+    <script src="/js/app-header.js?v=7"></script>
+    <script src="/js/app-footer.js"></script>
+
+    <script>
+        const authToken = localStorage.getItem('authToken');
+        if (!authToken) window.location.href = '/login';
+        const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? 'http://localhost:3000'
+            : 'https://cvapplyr.com';
+
+        function esc(s) {
+            if (s === null || s === undefined) return '';
+            return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+        function authHeaders(json) {
+            const h = { 'Authorization': 'Bearer ' + authToken };
+            if (json) h['Content-Type'] = 'application/json';
+            return h;
+        }
+
+        const ADMIN_CATS = [
+            { key: 'installs', icon: '📲', label: 'New installs', desc: 'Push to admin devices when a new user installs the app (iOS/Android).' },
+            { key: 'registrations', icon: '🧑‍💻', label: 'New registrations', desc: 'Push when a new user registers, with the sign-in provider.' },
+            { key: 'purchases', icon: '💰', label: 'Purchases', desc: 'Push when a user buys credits or a subscription.' },
+        ];
+
+        async function load() {
+            try {
+                const [uRes, aRes] = await Promise.all([
+                    fetch(API_BASE + '/api/admin/user-notification-switches', { headers: authHeaders() }),
+                    fetch(API_BASE + '/api/admin/notification-settings', { headers: authHeaders() }),
+                ]);
+                if (uRes.status === 401 || uRes.status === 403) {
+                    document.getElementById('status').innerHTML = '⛔ Access denied — admin only.';
+                    return;
+                }
+                const u = await uRes.json();
+                const a = await aRes.json();
+                renderUsers(u.switches || []);
+                renderAdmins(a.settings || {});
+                document.getElementById('status').style.display = 'none';
+                document.getElementById('userSec').style.display = '';
+                document.getElementById('adminSec').style.display = '';
+            } catch (e) {
+                document.getElementById('status').textContent = 'Could not load — check your connection.';
+            }
+        }
+
+        function toggleHtml(id, on) {
+            return '<label class="switch"><input type="checkbox" id="' + esc(id) + '"' + (on ? ' checked' : '') + '><span class="slider"></span></label>';
+        }
+
+        function renderUsers(switches) {
+            document.getElementById('userList').innerHTML = switches.map((s) =>
+                '<div class="n-card">' +
+                    '<div class="n-icon">' + esc(s.icon) + '</div>' +
+                    '<div class="n-main">' +
+                        '<div class="n-name">' + esc(s.label) + (s.enabled ? '' : ' <span class="n-off-note">· OFF</span>') + '</div>' +
+                        '<div class="n-desc">' + esc(s.description) + '</div>' +
+                        '<div class="n-counts">Sent: <b>' + s.sent24h + '</b> in 24h · <b>' + s.sent7d + '</b> in 7 days</div>' +
+                    '</div>' +
+                    toggleHtml('sw_' + s.key, s.enabled) +
+                '</div>'
+            ).join('');
+            switches.forEach((s) => {
+                const el = document.getElementById('sw_' + s.key);
+                el.addEventListener('change', async () => {
+                    el.disabled = true;
+                    try {
+                        await fetch(API_BASE + '/api/admin/user-notification-switches/' + s.key, {
+                            method: 'PUT', headers: authHeaders(true), body: JSON.stringify({ enabled: el.checked }),
+                        });
+                    } catch (e) { el.checked = !el.checked; }
+                    el.disabled = false;
+                    load();
+                });
+            });
+        }
+
+        function renderAdmins(settings) {
+            document.getElementById('adminList').innerHTML = ADMIN_CATS.map((c) =>
+                '<div class="n-card">' +
+                    '<div class="n-icon">' + c.icon + '</div>' +
+                    '<div class="n-main">' +
+                        '<div class="n-name">' + c.label + '</div>' +
+                        '<div class="n-desc">' + c.desc + '</div>' +
+                    '</div>' +
+                    toggleHtml('adm_' + c.key, settings[c.key] !== false) +
+                '</div>'
+            ).join('');
+            ADMIN_CATS.forEach((c) => {
+                const el = document.getElementById('adm_' + c.key);
+                el.addEventListener('change', async () => {
+                    el.disabled = true;
+                    const body = {}; body[c.key] = el.checked;
+                    try {
+                        await fetch(API_BASE + '/api/admin/notification-settings', {
+                            method: 'PUT', headers: authHeaders(true), body: JSON.stringify(body),
+                        });
+                    } catch (e) { el.checked = !el.checked; }
+                    el.disabled = false;
+                });
+            });
+        }
+
+        document.getElementById('testBtn').addEventListener('click', async () => {
+            const out = document.getElementById('testResult');
+            out.textContent = 'Sending…';
+            try {
+                const res = await fetch(API_BASE + '/api/admin/notification-test', { method: 'POST', headers: authHeaders(true) });
+                const d = await res.json();
+                out.textContent = d.success !== false ? 'Sent — check your phone.' : (d.error || 'Failed');
+            } catch (e) { out.textContent = 'Failed'; }
+        });
+
+        load();
+    </script>
+</body>
+
+</html>

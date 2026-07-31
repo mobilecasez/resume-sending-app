@@ -1158,6 +1158,16 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE user_job_interests ALTER COLUMN country DROP NOT NULL`);
         console.log('✅ Migration 030: interest job_url done');
 
+        // ── Migration 031: admin kill switches for user-facing scheduled pushes ──
+        // Keyed, not fixed-column: new notification categories only need a registry entry in
+        // notifSwitch.js. A missing row = ON.
+        await col(`CREATE TABLE IF NOT EXISTS user_notification_switches (
+            key TEXT PRIMARY KEY,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        console.log('✅ Migration 031: user_notification_switches done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

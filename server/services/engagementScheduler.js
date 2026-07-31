@@ -30,16 +30,19 @@ function hoursSince(ts) { return ts ? (Date.now() - new Date(ts).getTime()) / 3.
 // ── Daily: follow-up reminders + credit-expiry warnings ──────────────────────────────────────
 async function runDailyReminders({ force = false } = {}) {
   if (!force && hoursSince(await getLastRun('daily_reminders')) < 20) return { skipped: true };
+  const notifSwitch = require('./notifSwitch');
+  const followUpsOn = await notifSwitch.isOn('daily_reminders');
+  const expiryOn = await notifSwitch.isOn('credit_expiry');
   let followUps = 0, expiries = 0;
 
   // Follow-ups: applied >= N days ago, no reply, not yet reminded.
-  const stale = await dbConfig.query(
+  const stale = followUpsOn ? await dbConfig.query(
     `SELECT id, user_id, company_name, EXTRACT(DAY FROM (NOW() - sent_date))::int AS days_ago
        FROM application_history
       WHERE reply_received = 0 AND follow_up_reminded_at IS NULL
         AND sent_date <= NOW() - INTERVAL '${FOLLOWUP_AFTER_DAYS} days'
         AND sent_date >  NOW() - INTERVAL '${FOLLOWUP_MAX_AGE_DAYS} days'
-      ORDER BY sent_date ASC LIMIT ${DAILY_CAP}`).catch(() => []);
+      ORDER BY sent_date ASC LIMIT ${DAILY_CAP}`).catch(() => []) : [];
   for (const a of stale) {
     try {
       await notifyFollowUp(a.user_id, a.company_name || 'the company', a.days_ago);
@@ -49,13 +52,13 @@ async function runDailyReminders({ force = false } = {}) {
   }
 
   // Credit expiry: expires within 3 days, still has a balance, not warned in the last few days.
-  const expiring = await dbConfig.query(
+  const expiring = expiryOn ? await dbConfig.query(
     `SELECT user_id, credits_remaining, EXTRACT(DAY FROM (expiry_date - NOW()))::int AS days_left
        FROM user_credits
       WHERE expiry_date IS NOT NULL AND credits_remaining > 0
         AND expiry_date > NOW() AND expiry_date <= NOW() + INTERVAL '3 days'
         AND (expiry_warned_at IS NULL OR expiry_warned_at < NOW() - INTERVAL '4 days')
-      LIMIT ${DAILY_CAP}`).catch(() => []);
+      LIMIT ${DAILY_CAP}`).catch(() => []) : [];
   for (const c of expiring) {
     try {
       await notifyCreditExpiry(c.user_id, c.credits_remaining, Math.max(0, c.days_left) + 1);
@@ -73,6 +76,7 @@ async function runDailyReminders({ force = false } = {}) {
 // ── Weekly: activity digest for active users ─────────────────────────────────────────────────
 async function runWeeklyDigest({ force = false } = {}) {
   if (!force && hoursSince(await getLastRun('weekly_digest')) < 156) return { skipped: true }; // ~6.5 days
+  if (!(await require('./notifSwitch').isOn('weekly_digest'))) { await setLastRun('weekly_digest', 'switched off by admin'); return { skipped: 'switched_off' }; }
   const byUser = {};
   const bump = (uid, k, n) => { (byUser[uid] = byUser[uid] || { sent: 0, replies: 0, generated: 0 })[k] += n; };
 

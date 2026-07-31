@@ -102,6 +102,57 @@ router.post('/admin/routines/ingest-urls', authenticateAdmin, async (req, res) =
   }
 });
 
+// Match-and-push sweep for freshly added jobs: interest matches + résumé matches. The Claude-side
+// routine calls this after ingesting so users actually hear "6 new plumbing jobs in Canada".
+router.post('/admin/routines/notify-matches', authenticateAdmin, async (req, res) => {
+  try {
+    const hours = Math.min(Math.max(parseFloat((req.body || {}).sinceHours) || 24, 0.5), 72);
+    const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+    const dr = require('../services/demandResearch');
+    const interestPushes = await dr.notifyMatchedUsers(sinceIso).catch(() => 0);
+    const resumePushes = await dr.notifyResumeMatchedUsers(sinceIso).catch(() => 0);
+    res.json({ success: true, sinceHours: hours, interestPushes, resumePushes });
+  } catch (e) {
+    console.error('[routines] notify-matches:', e.message);
+    res.status(500).json({ error: 'Notify sweep failed' });
+  }
+});
+
+// ── User-facing push switches: what automated pushes users receive, admin on/off ──
+router.get('/admin/user-notification-switches', authenticateAdmin, async (req, res) => {
+  try {
+    const notifSwitch = require('../services/notifSwitch');
+    const enabled = await notifSwitch.getAll();
+    const items = [];
+    for (const s of notifSwitch.SWITCHES) {
+      const counts = await dbConfig.query(
+        `SELECT COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')::int AS d1,
+                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days')::int AS d7
+           FROM notifications WHERE type = ANY($1)`, [s.types]).catch(() => null);
+      items.push({
+        key: s.key, label: s.label, icon: s.icon, description: s.description,
+        enabled: enabled[s.key] !== false,
+        sent24h: counts && counts[0] ? counts[0].d1 : 0,
+        sent7d: counts && counts[0] ? counts[0].d7 : 0,
+      });
+    }
+    res.json({ success: true, switches: items });
+  } catch (e) {
+    console.error('[routines] switches:', e.message);
+    res.status(500).json({ error: 'Could not load switches' });
+  }
+});
+
+router.put('/admin/user-notification-switches/:key', authenticateAdmin, async (req, res) => {
+  try {
+    const notifSwitch = require('../services/notifSwitch');
+    const on = await notifSwitch.set(req.params.key, !!(req.body || {}).enabled);
+    res.json({ success: true, key: req.params.key, enabled: on });
+  } catch (e) {
+    res.status(400).json({ error: String(e.message) });
+  }
+});
+
 router.post('/admin/routines/run/:key', authenticateAdmin, async (req, res) => {
   const r = ROUTINES.find((x) => x.key === req.params.key);
   if (!r) return res.status(400).json({ error: 'Unknown routine' });
