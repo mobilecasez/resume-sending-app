@@ -1077,6 +1077,26 @@ export async function sendAdminTestNotification(): Promise<{ sent: number; admin
   return (data && data.result) || { sent: 0 };
 }
 
+// ── Admin: kill switches for USER-facing automated pushes (interest/résumé match, reminders…) ──
+export type UserNotifSwitch = {
+  key: string; label: string; icon: string; description: string;
+  enabled: boolean; sent24h: number; sent7d: number;
+};
+
+/** Admin: every automated user push category with its on/off state and sent counts. */
+export async function fetchUserNotifSwitches(): Promise<UserNotifSwitch[]> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE}/admin/user-notification-switches`, { headers, timeout: 20000 });
+  return (data?.switches ?? []) as UserNotifSwitch[];
+}
+
+/** Admin: flip one user-push category on/off (takes effect server-side within a minute). */
+export async function setUserNotifSwitch(key: string, enabled: boolean): Promise<boolean> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.put(`${API_BASE}/admin/user-notification-switches/${encodeURIComponent(key)}`, { enabled }, { headers, timeout: 20000 });
+  return !!data?.enabled;
+}
+
 // ── Discover: value-first global job feed (browse real jobs before any setup) ────
 export type DiscoverJob = {
   id: string; title: string; company: string | null; employer_name: string | null; employer_domain: string | null;
