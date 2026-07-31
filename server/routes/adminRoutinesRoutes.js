@@ -74,6 +74,34 @@ router.get('/admin/routines', authenticateAdmin, async (req, res) => {
   }
 });
 
+// Feed discovered posting URLs straight into global_jobs — the Claude-side demand-research
+// routine finds URLs with its own web search and hands them here so extraction runs on the
+// server (prod Gemini key, saveJobs upsert). Sequential + capped: this is a trickle, not a bulk.
+router.post('/admin/routines/ingest-urls', authenticateAdmin, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const urls = (Array.isArray(b.urls) ? b.urls : [])
+      .map((u) => String(u || '').trim())
+      .filter((u) => /^https?:\/\/\S+$/i.test(u) && u.length <= 500)
+      .filter((u) => !/linkedin\.com|indeed\.|glassdoor\.|google\.com\/search/i.test(u))
+      .slice(0, 40);
+    if (!urls.length) return res.status(400).json({ error: 'No usable URLs (http/https, no aggregators, max 40)' });
+    const cluster = { country: String(b.country || '').trim().slice(0, 78) || null, city: String(b.city || '').trim().slice(0, 120) || null };
+    const { ingestUrl } = require('../services/demandResearch');
+    const results = [];
+    let saved = 0;
+    for (const url of urls) {
+      const n = await ingestUrl(url, cluster, String(b.source || 'demand_research').slice(0, 55)).catch(() => 0);
+      saved += n;
+      results.push({ url, saved: n > 0 });
+    }
+    res.json({ success: true, requested: urls.length, saved, results });
+  } catch (e) {
+    console.error('[routines] ingest-urls:', e.message);
+    res.status(500).json({ error: 'Ingest failed' });
+  }
+});
+
 router.post('/admin/routines/run/:key', authenticateAdmin, async (req, res) => {
   const r = ROUTINES.find((x) => x.key === req.params.key);
   if (!r) return res.status(400).json({ error: 'Unknown routine' });
