@@ -195,6 +195,7 @@ const GENERIC_TERMS = new Set([
   'driving', 'license', 'licence', 'certificate', 'certified', 'proficient', 'proficiency',
   'leader', 'leaders', 'business', 'project', 'projects', 'process', 'processes', 'quality',
   'development', 'strategy', 'strategic', 'generation', 'tracking', 'monitoring', 'records',
+  'table', 'tables', 'pivot', 'charts', 'presentation', 'presentations', 'documentation',
 ]);
 
 // City/region → country, for résumés whose address line names a place but not the country
