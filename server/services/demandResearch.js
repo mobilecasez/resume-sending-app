@@ -24,7 +24,10 @@ const ENABLED = (process.env.DEMAND_RESEARCH_ENABLED || '1') === '1';
 const MAX_CLUSTERS_PER_RUN = parseInt(process.env.DEMAND_RESEARCH_CLUSTERS || '12', 10);
 const MAX_URLS_PER_CLUSTER = parseInt(process.env.DEMAND_RESEARCH_URLS || '8', 10);
 // Founder/test accounts never drive research or receive these pushes.
-const TEST_USER_IDS = new Set([1, 4, 5, 6, 7, 8, 9, 11, 14, 24, 26, 41, 43]);
+// User 1 (the founder) is deliberately NOT excluded here: their saved interests must be
+// researched like anyone's, or the end-to-end loop (save interest → research → match push)
+// can never be tested from the real app. The other ids are pure test accounts.
+const TEST_USER_IDS = new Set([4, 5, 6, 7, 8, 9, 11, 14, 24, 26, 41, 43]);
 
 function geminiGrounded() {
   const key = process.env.GEMINI_API_KEY;
