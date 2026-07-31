@@ -613,7 +613,10 @@ const JS_HELPERS = `
   function optVal(o){ return String(o&&o.value!=null?o.value:'').toUpperCase(); }
   // Countries that SHARE a dial code — without these, "+1" resolves to Guam and "+44" to Jersey.
   var PRIM_ISO={'1':'US','7':'RU','44':'GB','39':'IT','47':'NO','61':'AU','212':'MA','262':'RE','290':'SH','358':'FI','500':'FK','590':'GP','599':'CW','672':'NF','683':'NU','690':'TK'};
-  var PRIM_NAME={'1':'united states','7':'russia','44':'united kingdom','39':'italy','47':'norway','61':'australia','212':'morocco','262':'reunion','290':'saint helena','358':'finland','500':'falkland','590':'guadeloupe','599':'curacao','672':'norfolk','683':'niue','690':'tokelau'};
+  var PRIM_NAME={'1':'united states','7':'russia','44':'united kingdom','39':'italy','47':'norway','61':'australia','212':'morocco','262':'reunion','290':'saint helena','358':'finland','500':'falkland','590':'guadeloupe','599':'curacao','672':'norfolk','683':'niue','690':'tokelau',
+    // single-country codes too: these feed the popup SEARCH filter (searching "india" works on
+    // every picker; searching "+91" fails on starts-with filters), never the exact-dial matcher.
+    '91':'india','92':'pakistan','49':'germany','33':'france','34':'spain','351':'portugal','31':'netherlands','46':'sweden','41':'switzerland','971':'united arab emirates','966':'saudi arabia','94':'sri lanka','86':'china','81':'japan','82':'korea','55':'brazil','52':'mexico','234':'nigeria','254':'kenya','20':'egypt','63':'philippines','62':'indonesia','60':'malaysia','65':'singapore','64':'new zealand','48':'poland','43':'austria','32':'belgium','45':'denmark','30':'greece','36':'hungary','40':'romania','380':'ukraine','90':'turkey','880':'bangladesh','977':'nepal','353':'ireland','420':'czech'};
   // Dial-code-aware option matcher, tried BEFORE pickOpt on country controls. pickOpt is a substring
   // matcher: against a realistic country list it returns NULL for "+1", "+44" and "+7" (too many
   // candidates, and its v.length>=4 guard rejects short codes). Here the dial code is compared
@@ -665,6 +668,46 @@ const JS_HELPERS = `
       if(el.closest && el.closest('[class*=select__control],[class*=react-select],[class*=select2-container],[class*=chosen-container],[class*=MuiAutocomplete],[class*=ui-select],.iti__country-container')) return true;
     }catch(e){}
     return false;
+  }
+  // A TRIGGER-style combo: an <input type=button> (Revolut's rui kit renders every dropdown this
+  // way — country, gender, "Select one", the phone code picker) or a readOnly input. Typing into
+  // one does nothing; it must be CLICKED open, and any filtering happens in the popup's own search
+  // box. These used to be skipped entirely by both the scan and the fill ("many dropdowns missed").
+  function isComboTrigger(el){
+    try{
+      if(!el || el.tagName!=='INPUT') return false;
+      if(!isCombo(el)) return false;
+      var t=(el.type||'').toLowerCase();
+      return t==='button' || el.readOnly===true;
+    }catch(e){ return false; }
+  }
+  // The search input INSIDE an opened popup (Revolut's "Search phone country codes", intl-tel-input's
+  // country filter) — or wherever focus landed after opening. Never the trigger itself.
+  function cbSearchBox(el, pop){
+    try{
+      if(pop&&pop.el&&pop.el.querySelectorAll){
+        var cs=pop.el.querySelectorAll('input');
+        for(var i=0;i<cs.length;i++){ var c=cs[i], ct=(c.type||'').toLowerCase();
+          if(c!==el && !c.readOnly && ['text','search',''].indexOf(ct)>=0 && vis(c)) return c; }
+      }
+    }catch(e){}
+    try{
+      var ae=document.activeElement;
+      if(ae && ae!==el && ae.tagName==='INPUT' && !ae.readOnly && ['text','search',''].indexOf((ae.type||'').toLowerCase())>=0 && vis(ae)) return ae;
+    }catch(e){}
+    return null;
+  }
+  // What to type into a popup's search box. Dial-code pickers search by country NAME far more
+  // reliably than by "+91", so prefer the name when one can be derived.
+  function cbFilterFor(el, want){
+    if(isCountryLabel(nlbl(el))){
+      var name=cleanTxt(want).replace(/[+0-9()\\[\\]]+/g,' ').replace(/\\s+/g,' ').trim();
+      if(name) return name;
+      var wd=wantDial(want);
+      if(wd && PRIM_NAME[wd]) return PRIM_NAME[wd];
+      if(wd) return '+'+wd;
+    }
+    return String(want);
   }
   function cbCtrl(el){
     try{ return (el.closest&&(el.closest('[class*=select__control]')||el.closest('[class*=MuiAutocomplete-root]')||el.closest('[class*=select2-selection]')||el.closest('[class*=chosen-container]')))||el.parentElement; }catch(e){ return el.parentElement; }
@@ -766,18 +809,36 @@ const JS_HELPERS = `
   // reported as filled. Only an explicit selected-value node counts now; anything else returns ''.
   function cbShown(el){
     try{
-      var w=cbCtrl(el); if(!w||!w.querySelector) return '';
-      var sv=w.querySelector('[class*=single-value],[class*=multi-value],[class*=select2-selection__rendered],[class*=chosen-single] span,[aria-selected="true"]');
-      if(!sv) return '';
-      var t=cbText(sv);
-      if(!t) return '';
-      // select2/Chosen render their PLACEHOLDER through the same node.
-      try{ if(sv.className && /placeholder/i.test(cbClassOf(sv))) return ''; }catch(e){}
-      var ph=cbNorm(el.placeholder||'');
-      if(ph && cbNorm(t)===ph) return '';
-      if(/^(select|choose|please select|-{2,}|\\.\\.\\.)\\b/i.test(t)) return '';
-      return t;
+      var w=cbCtrl(el);
+      if(w&&w.querySelector){
+        var sv=w.querySelector('[class*=single-value],[class*=multi-value],[class*=select2-selection__rendered],[class*=chosen-single] span,[aria-selected="true"]');
+        if(sv){
+          var t=cbText(sv);
+          // select2/Chosen render their PLACEHOLDER through the same node.
+          try{ if(t && sv.className && /placeholder/i.test(cbClassOf(sv))) t=''; }catch(e){}
+          var ph=cbNorm(el.placeholder||'');
+          if(t && ph && cbNorm(t)===ph) t='';
+          if(t && /^(select|choose|please select|-{2,}|\\.\\.\\.)\\b/i.test(t)) t='';
+          if(t) return t;
+        }
+      }
+      // Trigger-style widgets display the selection AS the input's value, which the FRAMEWORK sets.
+      // We never type into a trigger ourselves, so a value here is a real selection — not our echo.
+      if(isComboTrigger(el)){
+        var tv=cleanTxt(el.value||'');
+        var ph2=cbNorm(el.placeholder||'');
+        if(tv && cbNorm(tv)!==ph2 && !/^(select|choose|please select|-{2,})/i.test(tv)) return tv;
+      }
+      return '';
     }catch(e){ return ''; }
+  }
+  // "Shown" is not always "answered": an UNTOUCHED country / dial-code widget showing the page's
+  // geo-IP default (+44 on a UK site) is nobody's answer — the exact "it never changes the phone
+  // country code when one is already there" complaint. Mirrors selIsUserAnswer's select rule.
+  function cbAnswered(el){
+    var sh=cbShown(el); if(!sh) return false;
+    try{ if(isCountryLabel(nlbl(el)) && !el.__cvfTouched) return false; }catch(e){}
+    return true;
   }
   // Close a widget popup without ever pressing Enter (implicit submit) — and WITHOUT closing the host
   // application MODAL. A real el.blur() is what actually dismisses react-select / MUI Autocomplete /
@@ -833,35 +894,68 @@ const JS_HELPERS = `
   //    random row — a wrong dial code, or a fabricated answer to a legal question — and then reports
   //    it as filled. An unanswered question the user can see beats a wrong one they cannot.
   function openAndPick(el, v, cb){
-    var want=String(v), fin=false;
+    var want=String(v), fin=false, trig=isComboTrigger(el), sb=null;
     function finish(ok){ if(fin) return; fin=true; if(!ok){ try{ cbClose(el); }catch(e){} } cb(ok); }
     if(cbAborted()){ finish(false); return; }
     var pre=cbPreOpen();
     try{ el.focus(); }catch(e){}
-    try{ setNative(el,''); }catch(e){}
+    if(!trig){ try{ setNative(el,''); }catch(e){} }
     var ctrl=cbCtrl(el);
     if(ctrl&&ctrl!==el) cbSafeClick(ctrl);
+    // A wrapper click never reaches an input-shaped trigger — it must be clicked itself to open.
+    if(trig) cbSafeClick(el);
     setTimeout(function(){
       if(cbAborted()){ finish(false); return; }
-      try{ el.focus(); }catch(e){}
-      try{ setNative(el,want); }catch(e){}
+      if(trig){
+        // Typing into the trigger does nothing; filter via the popup's own search box when it has one.
+        var pop0=cbPopup(el, pre);
+        sb=cbSearchBox(el, pop0);
+        if(sb){ try{ sb.focus(); }catch(e){} try{ setNative(sb, cbFilterFor(el, want)); }catch(e){} }
+      } else {
+        try{ el.focus(); }catch(e){}
+        // Type the FILTER, not necessarily the raw value: dial-code widgets search by country
+        // name ("india"), and "+91" finds nothing on a starts-with filter. For every non-country
+        // control cbFilterFor returns the value unchanged.
+        try{ setNative(el, cbFilterFor(el, want)); }catch(e){}
+      }
       setTimeout(function(){
         if(cbAborted()){ finish(false); return; }
         var pop=cbPopup(el, pre);
         if(!pop){ finish(false); return; }
-        var os=cbOptions(el, pop);
-        if(!os.length){ finish(false); return; }
-        var pool=[]; for(var i=0;i<os.length;i++) pool.push({text:cbText(os[i]),el:os[i]});
-        var m=isCountryLabel(nlbl(el)) ? pickDial(pool,want) : null;
-        if(!m) m=pickOpt(pool,want);
-        if(!m || !m.el || !cbSafeClick(m.el)){ finish(false); return; }
-        setTimeout(function(){
-          // Verify against what the widget SHOWS. el.value is not evidence — we typed it ourselves,
-          // so comparing it to the value we wanted reported success on every run that misfired.
-          var shown=cbNorm(cbShown(el)), mt=cbNorm(m.text), ok=false;
-          try{ if(shown&&mt) ok = shown.indexOf(mt.slice(0,20))>=0 || mt.indexOf(shown.slice(0,20))>=0; }catch(e){}
-          finish(ok);
-        },300);
+        function pickFrom(os, retried){
+          if(cbAborted()){ finish(false); return; }
+          var rbox = trig ? sb : el;   // whichever box holds our filter text
+          function retry(){
+            // our search filter may not match how this list spells things — clear it once and re-read
+            try{ setNative(rbox,''); }catch(e){}
+            setTimeout(function(){ var p2=cbPopup(el, pre)||pop; pickFrom(cbOptions(el, p2), true); }, 380);
+          }
+          if(!os.length){ if(rbox && !retried){ retry(); return; } finish(false); return; }
+          var pool=[]; for(var i=0;i<os.length;i++) pool.push({text:cbText(os[i]),el:os[i]});
+          var m=isCountryLabel(nlbl(el)) ? pickDial(pool,want) : null;
+          if(!m) m=pickOpt(pool,want);
+          if((!m || !m.el) && rbox && !retried){ retry(); return; }
+          if(!m || !m.el || !cbSafeClick(m.el)){ finish(false); return; }
+          setTimeout(function(){
+            // Verify against what the widget SHOWS. el.value is not evidence for typeable combos —
+            // we typed it ourselves, so comparing it to the wanted value reported success on every
+            // run that misfired. (For triggers el.value IS framework-set — cbShown handles that.)
+            var shown=cbNorm(cbShown(el)), mt=cbNorm(m.text), ok=false;
+            try{ if(shown&&mt) ok = shown.indexOf(mt.slice(0,20))>=0 || mt.indexOf(shown.slice(0,20))>=0; }catch(e){}
+            finish(ok);
+          },300);
+        }
+        // The popup can appear only on this second look — the search box then still needs typing.
+        if(trig && !sb){
+          sb=cbSearchBox(el, pop);
+          if(sb){
+            try{ sb.focus(); }catch(e){}
+            try{ setNative(sb, cbFilterFor(el, want)); }catch(e){}
+            setTimeout(function(){ pickFrom(cbOptions(el, cbPopup(el, pre)||pop), false); }, 380);
+            return;
+          }
+        }
+        pickFrom(cbOptions(el, pop), false);
       },450);
     },240);
   }
@@ -882,10 +976,11 @@ const JS_HELPERS = `
       if(qi>=q.length || Date.now()-t0>2500 || cbAborted()){ fin(); return; }
       var f=q[qi++], el=null, all=ctrls();
       for(var j=0;j<all.length;j++){ if(sig(all[j])===f.key){ el=all[j]; break; } }
-      if(!el || cbShown(el)){ step(); return; }
+      if(!el || cbAnswered(el)){ step(); return; }
       var pre=cbPreOpen();
       try{ el.focus(); }catch(e){}
       var c=cbCtrl(el); if(c&&c!==el) cbSafeClick(c);
+      if(isComboTrigger(el)) cbSafeClick(el);   // wrapper clicks never reach an input-shaped trigger
       setTimeout(function(){
         try{
           var pop=cbPopup(el, pre);
@@ -920,7 +1015,8 @@ const JS_HELPERS = `
       function fillVisible(){
         var els = ctrls();
         for (var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
-          if (['hidden','submit','button','reset','image','file'].indexOf(t)>=0) continue;
+          if (['hidden','submit','reset','image','file'].indexOf(t)>=0) continue;
+          if (t==='button' && !isCombo(el)) continue;   // a button-shaped input that IS a combo (Revolut) stays in
           if (!vis(el)) continue;
           var s = sig(el);
           if (!(s in bySig)) continue;
@@ -930,8 +1026,9 @@ const JS_HELPERS = `
           if (t!=='radio' && t!=='checkbox' && el.tagName!=='SELECT' && isCombo(el)){
             // keepUser() reads el.value — and react-select CLEARS el.value after a pick, so for a
             // dropdown the USER answered by hand it sees an empty box and would let us wipe and
-            // re-pick their answer. Read what the widget SHOWS instead.
-            if (cbShown(el)){ filled[s]=true; continue; }
+            // re-pick their answer. Read what the widget SHOWS instead (cbAnswered also re-opens an
+            // UNTOUCHED dial-code widget stuck on the page's geo-IP default).
+            if (cbAnswered(el)){ filled[s]=true; continue; }
             if (!dseen[s]){
               dseen[s]=1;
               // Pre-seed the failure NOW, for every dropdown we defer. drain() deletes it on success.
@@ -964,8 +1061,12 @@ const JS_HELPERS = `
             } else if (t==='checkbox'){
               var wc=(v===true)||/^(yes|true|on|1|checked)$/i.test(String(v)); setChecked(el,wc); if(el.checked===wc) filled[s]=true;
             } else {
-              try{el.focus();}catch(e){} setNative(el,String(v)); try{el.dispatchEvent(new Event('blur',{bubbles:true}));el.blur();}catch(e){}
-              if (sameAnswer(el.value,v)) filled[s]=true;
+              var vv=String(v);
+              // A phone box next to a separate dial-code picker gets the LOCAL number only —
+              // otherwise "+91 98765…" lands beside an already-selected "+91".
+              if (t==='tel' || /\\b(phone|mobile)\\b/i.test(nlbl(el)+' '+(el.name||''))) vv=phoneLocal(vv, el);
+              try{el.focus();}catch(e){} setNative(el,vv); try{el.dispatchEvent(new Event('blur',{bubbles:true}));el.blur();}catch(e){}
+              if (sameAnswer(el.value,vv)) filled[s]=true;
               else fails[s]={key:s,label:nlbl(el).slice(0,90),why:'the field rejected the value'};
             }
           } catch(e){}
@@ -984,7 +1085,7 @@ const JS_HELPERS = `
           var d=deferred[di++], el=null, all=ctrls();
           for(var j=0;j<all.length;j++){ if(sig(all[j])===d.s && vis(all[j])){ el=all[j]; break; } }
           if(!el){ if(!filled[d.s]) fails[d.s]={key:d.s,label:d.label,why:'this dropdown left the page before we could pick'}; setTimeout(step,60); return; }
-          if(cbShown(el)){ filled[d.s]=true; delete fails[d.s]; setTimeout(step,60); return; }
+          if(cbAnswered(el)){ filled[d.s]=true; delete fails[d.s]; setTimeout(step,60); return; }
           openAndPick(el, d.v, function(ok){
             if(ok){ filled[d.s]=true; delete fails[d.s]; }
             else fails[d.s]={key:d.s,label:d.label,why:'dropdown — please pick this one yourself'};
@@ -1061,10 +1162,43 @@ const JS_HELPERS = `
         var cur=cleanTxt(o.text||o.value||'');
         return cur ? cur.toLowerCase()!==cleanTxt(v).toLowerCase() : false;
       }
+      // An UNTOUCHED country / dial-code widget holding the page's default is nobody's answer —
+      // same rule selIsUserAnswer applies to native selects. A trusted user gesture (FOCUS_DETECT
+      // marks __cvfTouched) still protects a real choice.
+      if(isCombo(el) && isCountryLabel(nlbl(el)) && !el.__cvfTouched) return false;
       var cv=cleanTxt(el.value||'');
       if(!cv) return false;
       return cv.toLowerCase()!==cleanTxt(v).toLowerCase();
     }catch(e){ return false; }
+  }
+  // ── Phone / dial-code splitting ─────────────────────────────────────────────
+  // Does this page carry a SEPARATE dial-code control (a phone-code select, or a combo labeled
+  // like one)? Cached: fillVisible runs on every scroll step.
+  var __cvfDialAt=0, __cvfDialOn=false;
+  function pageHasDialControl(){
+    var now=Date.now(); if(now-__cvfDialAt<3000) return __cvfDialOn;
+    __cvfDialAt=now; __cvfDialOn=false;
+    try{
+      var els=ctrls();
+      for(var i=0;i<els.length;i++){
+        var el=els[i];
+        if(!vis(el)) continue;
+        if(el.tagName==='SELECT'){ if(isPhoneCodeOpts(Array.prototype.slice.call(el.options))){ __cvfDialOn=true; break; } continue; }
+        if(isCombo(el) && /dial|calling code|phone code|country code|phone country/i.test(cleanTxt(nlbl(el)))){ __cvfDialOn=true; break; }
+      }
+    }catch(e){}
+    return __cvfDialOn;
+  }
+  function phoneLocal(v, el){
+    var s=cleanTxt(v);
+    if(!/^(\\+|00)\\d/.test(s.replace(/\\s/g,''))) return v;              // no international prefix — nothing to strip
+    try{ if(/includ|with.*country|full.*international/i.test(nlbl(el))) return v; }catch(e){}   // the label ASKS for the code
+    if(!pageHasDialControl()) return v;
+    var m=s.match(/^\\+\\s*\\d{1,3}[\\s.\\-]*/);
+    if(!m) m=s.match(/^00\\d{1,3}[\\s.\\-]*/);
+    if(!m) return v;
+    var rest=s.slice(m[0].length).replace(/^[\\s.\\-()]+/,'');
+    return rest.replace(/[^0-9]/g,'').length>=5 ? rest : v;              // never strip a value that IS just the code
   }
   // A widget that REFORMATS what we typed still filled correctly (typing "2026-09-01" into a date
   // field can leave it reading "09/01/2026", and strict equality reported that as a failure — then
@@ -1321,7 +1455,8 @@ const READ_FIELDS_JS = `(function(){
     function snap(){
       var els=ctrls();
       for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
-        if(['hidden','submit','button','reset','image'].indexOf(t)>=0) continue;
+        if(['hidden','submit','reset','image'].indexOf(t)>=0) continue;
+        if(t==='button' && !isCombo(el)) continue;   // button-shaped inputs that ARE dropdowns (Revolut) stay in
         if(!vis(el)) continue;
         if(isWidgetInternal(el)) continue;
         var s=sig(el);
@@ -1389,6 +1524,9 @@ const FOCUS_DETECT_JS = `(function(){
   };
   document.addEventListener('change', mark, true);
   document.addEventListener('input', mark, true);
+  // Trigger-style dropdowns (input[type=button]) get no native change/input event when the user
+  // picks — a trusted CLICK on the control is the gesture that proves the selection is theirs.
+  document.addEventListener('click', mark, true);
   document.addEventListener('focus', function(ev){
     try {
       var el = ev.target; if(!el) return; var tag = el.tagName;
@@ -1444,7 +1582,8 @@ const FRAME_AGENT_JS = `(function(){
       var out=[], seen={}, rgroups={};
       function snap(){ var els=ctrls();
         for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
-          if(['hidden','submit','button','reset','image'].indexOf(t)>=0) continue;
+          if(['hidden','submit','reset','image'].indexOf(t)>=0) continue;
+          if(t==='button' && !isCombo(el)) continue;
           if(!vis(el)) continue;
           if(isWidgetInternal(el)) continue;
           var s=sig(el);

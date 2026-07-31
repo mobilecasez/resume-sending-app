@@ -111,6 +111,50 @@ const ok = (name, cond, extra) => {
           inp.addEventListener('blur', function(){ open=false; setTimeout(render,0); });
         </script></form></body></html>`;
     }
+    // Revolut's rui kit, faithfully: every dropdown is an <input type=button aria-haspopup=listbox>.
+    // Typing into the trigger does NOTHING — clicking it opens a popup with its own SEARCH input and
+    // option rows; picking writes the trigger's .value and closes. Includes the phone pair (dial
+    // trigger + tel input), which is the "+91 pasted next to +91" case.
+    if (url.includes('rui.example.com')) {
+      body = `<html><body><form id="f">
+        <label id="cc-label">Phone country code</label>
+        <input id="cc" type="button" aria-haspopup="listbox" aria-label="Search phone country codes" placeholder=" ">
+        <label for="phone">Phone number</label><input id="phone" name="phoneNumber" type="tel" placeholder="Phone number">
+        <label id="cty-label">Current country</label>
+        <input id="cty" type="button" aria-haspopup="listbox" placeholder=" ">
+        <div id="pop" style="display:none"></div>
+        <button type="submit" id="go">Submit application</button>
+        <script>
+          window.__submits=0;
+          document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();window.__submits++;});
+          var CC=['United Kingdom +44','India +91','United States +1'];
+          var CTY=['United Kingdom','India','Portugal','United States'];
+          function wire(trigId, opts){
+            var trig=document.getElementById(trigId), pop=document.getElementById('pop');
+            function close(){ pop.style.display='none'; pop.innerHTML=''; }
+            trig.addEventListener('blur', function(){ setTimeout(function(){ if(!pop.contains(document.activeElement)) close(); }, 0); });
+            trig.addEventListener('keydown', function(e){ if(e.key==='Escape') close(); });
+            trig.addEventListener('click', function(){
+              pop.setAttribute('role','listbox');
+              pop.innerHTML='<input id="popsearch" type="text" placeholder="Search">';
+              pop.style.display='block';
+              var search=pop.querySelector('#popsearch');
+              function render(){
+                Array.prototype.slice.call(pop.querySelectorAll('[role=option]')).forEach(function(n){n.remove();});
+                opts.filter(function(o){ var q=(search.value||'').toLowerCase(); return !q||o.toLowerCase().indexOf(q)>=0; })
+                  .forEach(function(o){
+                    var d=document.createElement('div'); d.setAttribute('role','option'); d.textContent=o;
+                    d.addEventListener('click', function(){ trig.value=o; close(); });
+                    pop.appendChild(d);
+                  });
+              }
+              search.addEventListener('input', render);
+              render();
+            });
+          }
+          wire('cc', CC); wire('cty', CTY);
+        </script></form></body></html>`;
+    }
     // A react-select INSIDE a modal that closes on a document-level (bubble-phase) Escape — exactly
     // the YC "Apply for this role" popup. Autofill's combobox-close Escape must NOT dismiss it.
     if (url.includes('modal.example.com')) {
@@ -330,14 +374,69 @@ const ok = (name, cond, extra) => {
     await page.addInitScript(BRIDGE);
     await page.goto('https://combo.example.com/apply');
     // react-select leaves input.value === '' after a pick, so el.value cannot detect their answer.
+    // A REAL pick arrives through a trusted tap, which FOCUS_DETECT marks on the control — model
+    // that flag too, or this test exercises a gesture no real user can produce.
     await page.evaluate(() => {
       const sv = document.createElement('div'); sv.className = 'select__single-value'; sv.textContent = 'Canada +1';
       document.querySelector('.select__value-container').appendChild(sv);
+      document.getElementById('country').__cvfTouched = true;
     });
     await page.evaluate(fillJs({ 'i:country|text': 'India' }));
     await page.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 45000 });
     const svs = await page.evaluate(() => Array.from(document.querySelectorAll('.select__single-value')).map((n) => n.textContent));
     ok("the user's own dropdown choice is not wiped and re-picked", svs.length === 1 && svs[0] === 'Canada +1', svs);
+    await page.close();
+  }
+
+  console.log('\nan UNTOUCHED dial-code default (geo-IP preselect) IS corrected');
+  {
+    const page = await ctx.newPage();
+    await page.addInitScript(BRIDGE);
+    await page.goto('https://combo.example.com/apply');
+    // Same shown-value, but NO touch flag: this is the page's own preselection, nobody's answer —
+    // the exact "+91 never applies because the box already reads United Kingdom (+44)" complaint.
+    await page.evaluate(() => {
+      const sv = document.createElement('div'); sv.className = 'select__single-value'; sv.textContent = 'United Kingdom +44';
+      document.querySelector('.select__value-container').appendChild(sv);
+    });
+    await page.evaluate(fillJs({ 'i:country|text': '+91' }));
+    await page.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 45000 });
+    const svs = await page.evaluate(() => Array.from(document.querySelectorAll('.select__single-value')).map((n) => n.textContent));
+    ok('the untouched default is re-picked to the profile dial code', svs.indexOf('India +91') >= 0, svs);
+    await page.close();
+  }
+
+  console.log('\ntrigger-style dropdowns (Revolut rui): scanned, searched, picked, phone split');
+  {
+    const page = await ctx.newPage();
+    await page.addInitScript(BRIDGE);
+    await page.goto('https://rui.example.com/apply');
+    // 1) the SCAN must now see button-shaped dropdowns and enumerate their options
+    await page.evaluate(READ_FIELDS_JS);
+    await page.waitForFunction(() => window.__msgs.some((m) => m.type === 'FIELDS'), null, { timeout: 45000 });
+    const fields = await page.evaluate(() => window.__msgs.find((m) => m.type === 'FIELDS').fields);
+    const cc = fields.find((f) => f.key === 'i:cc|button');
+    const cty = fields.find((f) => f.key === 'i:cty|button');
+    ok('the dial-code trigger is scanned as a combobox', !!cc && cc.widget === 'combobox', cc);
+    ok('the country trigger is scanned as a combobox', !!cty && cty.widget === 'combobox', cty);
+    ok('dial options were enumerated through the popup', !!cc && (cc.options || []).indexOf('India +91') >= 0, cc && cc.options);
+    ok('country options were enumerated through the popup', !!cty && (cty.options || []).indexOf('Portugal') >= 0, cty && cty.options);
+    // 2) the FILL must open each trigger, type into the POPUP's search box, and click the match —
+    //    and the tel input must receive the LOCAL number because a dial control exists.
+    await page.evaluate(fillJs({ 'i:cc|button': '+91', 'i:cty|button': 'India', 'n:phoneNumber|tel': '+91 79005 91039' }));
+    await page.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 45000 });
+    const st = await page.evaluate(() => ({
+      cc: document.getElementById('cc').value,
+      cty: document.getElementById('cty').value,
+      phone: document.getElementById('phone').value,
+      submits: window.__submits,
+      msg: window.__msgs.find((m) => m.type === 'FILLED'),
+    }));
+    ok('the dial-code trigger picked +91', st.cc === 'India +91', st);
+    ok('the country trigger picked India', st.cty === 'India', st);
+    ok('the phone box got the LOCAL number (code stripped)', st.phone === '79005 91039', st.phone);
+    ok('nothing reported failed', (st.msg.failed || []).length === 0, st.msg.failed);
+    ok('THE FORM WAS NEVER SUBMITTED', st.submits === 0, st.submits);
     await page.close();
   }
 
