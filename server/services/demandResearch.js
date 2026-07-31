@@ -193,6 +193,8 @@ const GENERIC_TERMS = new Set([
   'director', 'supervisor', 'senior', 'junior', 'intern', 'degree', 'bachelor', 'master',
   'university', 'college', 'school', 'english', 'french', 'spanish', 'arabic', 'hindi', 'fluent',
   'driving', 'license', 'licence', 'certificate', 'certified', 'proficient', 'proficiency',
+  'leader', 'leaders', 'business', 'project', 'projects', 'process', 'processes', 'quality',
+  'development', 'strategy', 'strategic', 'generation', 'tracking', 'monitoring', 'records',
 ]);
 
 // City/region → country, for résumés whose address line names a place but not the country
@@ -204,7 +206,7 @@ const REGION_COUNTRY = [
   [['gauteng', 'centurion', 'johannesburg', 'cape town', 'pretoria', 'durban'], 'South Africa'],
   [['lisboa', 'lisbon', 'sintra', 'cacém', 'cacem', 'porto', 'cascais'], 'Portugal'],
   [['casablanca', 'marrakech', 'marrakesh', 'rabat', 'tangier', 'tanger', 'agadir', 'belksiri', 'kenitra'], 'Morocco'],
-  [['grasse', 'paris', 'lyon', 'marseille', 'toulouse', 'nice'], 'France'],
+  [['grasse', 'paris', 'lyon', 'marseille', 'toulouse', 'boulevard fragonard'], 'France'],
   [['london', 'manchester', 'birmingham', 'glasgow', 'edinburgh'], 'UK'],
   [['dubai', 'abu dhabi', 'sharjah'], 'UAE'],
   [['taxila', 'islamabad', 'karachi', 'lahore', 'rawalpindi'], 'Pakistan'],
@@ -222,14 +224,19 @@ const COUNTRY_ALIASES = [
 ];
 
 // The user's own country from their résumé text — or null, in which case we DON'T push
-// (better silent than telling a Morocco waiter about jobs in India).
+// (better silent than telling a Morocco waiter about jobs in India). EARLIEST mention wins:
+// the address line sits at the top of a résumé, while stray country words ("… clients in India")
+// can appear anywhere below it.
 function countryFromResume(rawLower) {
   if (!rawLower) return null;
-  for (const [alias, country] of COUNTRY_ALIASES) if (rawLower.includes(alias)) return country;
-  for (const [places, country] of REGION_COUNTRY) {
-    for (const p of places) if (rawLower.includes(p)) return country;
-  }
-  return null;
+  let best = null, bestIdx = Infinity;
+  const consider = (needle, country) => {
+    const i = rawLower.indexOf(needle);
+    if (i >= 0 && i < bestIdx) { best = country; bestIdx = i; }
+  };
+  for (const [alias, country] of COUNTRY_ALIASES) consider(alias, country);
+  for (const [places, country] of REGION_COUNTRY) for (const p of places) consider(p, country);
+  return best;
 }
 
 // "plumbing" must match "Plumber": crude suffix stem, used for the SQL LIKE; the ORIGINAL word
