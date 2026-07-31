@@ -106,9 +106,15 @@ router.post('/admin/routines/ingest-urls', authenticateAdmin, async (req, res) =
 // routine calls this after ingesting so users actually hear "6 new plumbing jobs in Canada".
 router.post('/admin/routines/notify-matches', authenticateAdmin, async (req, res) => {
   try {
-    const hours = Math.min(Math.max(parseFloat((req.body || {}).sinceHours) || 24, 0.5), 72);
+    const b = req.body || {};
+    const hours = Math.min(Math.max(parseFloat(b.sinceHours) || 24, 0.5), 72);
+    const dryRun = !!b.dryRun;   // preview what WOULD be pushed, sending nothing
     const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
     const dr = require('../services/demandResearch');
+    if (dryRun) {
+      const preview = await dr.notifyResumeMatchedUsers(sinceIso, { dryRun: true }).catch(() => []);
+      return res.json({ success: true, sinceHours: hours, dryRun: true, wouldPush: preview });
+    }
     const interestPushes = await dr.notifyMatchedUsers(sinceIso).catch(() => 0);
     const resumePushes = await dr.notifyResumeMatchedUsers(sinceIso).catch(() => 0);
     res.json({ success: true, sinceHours: hours, interestPushes, resumePushes });

@@ -177,7 +177,8 @@ function flatSkills(v) {
   return [];
 }
 
-// Generic résumé filler must never drive a push — "6 new communication skills jobs" is spam.
+// Generic résumé filler must never drive a push — "6 new communication skills jobs" and
+// "60 new manager jobs" are spam. Includes bare seniority/role fillers and language names.
 const GENERIC_TERMS = new Set([
   'skill', 'skills', 'communication', 'communications', 'teamwork', 'leadership', 'management',
   'microsoft', 'office', 'excel', 'word', 'powerpoint', 'computer', 'computers', 'training',
@@ -187,7 +188,49 @@ const GENERIC_TERMS = new Set([
   'knowledge', 'good', 'quick', 'learner', 'listener', 'verbal', 'written', 'interpersonal',
   'time', 'work', 'team', 'planning', 'support', 'operations', 'systems', 'system', 'standards',
   'application', 'applications', 'course', 'courses', 'hygiene', 'health', 'safety', 'sales',
+  'manager', 'managers', 'executive', 'executives', 'assistant', 'assistants', 'specialist',
+  'specialists', 'commercial', 'associate', 'associates', 'officer', 'coordinator', 'coordination',
+  'director', 'supervisor', 'senior', 'junior', 'intern', 'degree', 'bachelor', 'master',
+  'university', 'college', 'school', 'english', 'french', 'spanish', 'arabic', 'hindi', 'fluent',
+  'driving', 'license', 'licence', 'certificate', 'certified', 'proficient', 'proficiency',
 ]);
+
+// City/region → country, for résumés whose address line names a place but not the country
+// ("Port Coquitlam, BC" / "Noida, Uttar Pradesh"). Country values MUST match global_jobs.country.
+const REGION_COUNTRY = [
+  [['british columbia', 'coquitlam', 'vancouver', 'ontario', 'toronto', 'alberta', 'calgary', 'quebec', 'montreal'], 'Canada'],
+  [['texas', 'houston', 'california', 'new york', 'florida', 'chicago', 'seattle', 'hawaii'], 'US'],
+  [['noida', 'uttar pradesh', 'delhi', 'mumbai', 'bengaluru', 'bangalore', 'hyderabad', 'chennai', 'pune', 'kolkata', 'visakhapatnam', 'indore', 'gurgaon', 'gurugram'], 'India'],
+  [['gauteng', 'centurion', 'johannesburg', 'cape town', 'pretoria', 'durban'], 'South Africa'],
+  [['lisboa', 'lisbon', 'sintra', 'cacém', 'cacem', 'porto', 'cascais'], 'Portugal'],
+  [['casablanca', 'marrakech', 'marrakesh', 'rabat', 'tangier', 'tanger', 'agadir', 'belksiri', 'kenitra'], 'Morocco'],
+  [['grasse', 'paris', 'lyon', 'marseille', 'toulouse', 'nice'], 'France'],
+  [['london', 'manchester', 'birmingham', 'glasgow', 'edinburgh'], 'UK'],
+  [['dubai', 'abu dhabi', 'sharjah'], 'UAE'],
+  [['taxila', 'islamabad', 'karachi', 'lahore', 'rawalpindi'], 'Pakistan'],
+  [['colombo', 'kandy'], 'Sri Lanka'],
+];
+const COUNTRY_ALIASES = [
+  ['canada', 'Canada'], ['united states', 'US'], ['u.s.a', 'US'], [' usa', 'US'],
+  ['india', 'India'], ['south africa', 'South Africa'], ['portugal', 'Portugal'],
+  ['morocco', 'Morocco'], ['maroc', 'Morocco'], ['france', 'France'],
+  ['united kingdom', 'UK'], ['united arab emirates', 'UAE'], ['pakistan', 'Pakistan'],
+  ['sri lanka', 'Sri Lanka'], ['germany', 'Germany'], ['netherlands', 'Netherlands'],
+  ['sweden', 'Sweden'], ['switzerland', 'Switzerland'], ['spain', 'Spain'], ['italy', 'Italy'],
+  ['australia', 'Australia'], ['nigeria', 'Nigeria'], ['kenya', 'Kenya'], ['egypt', 'Egypt'],
+  ['philippines', 'Philippines'], ['indonesia', 'Indonesia'], ['brazil', 'Brazil'],
+];
+
+// The user's own country from their résumé text — or null, in which case we DON'T push
+// (better silent than telling a Morocco waiter about jobs in India).
+function countryFromResume(rawLower) {
+  if (!rawLower) return null;
+  for (const [alias, country] of COUNTRY_ALIASES) if (rawLower.includes(alias)) return country;
+  for (const [places, country] of REGION_COUNTRY) {
+    for (const p of places) if (rawLower.includes(p)) return country;
+  }
+  return null;
+}
 
 // "plumbing" must match "Plumber": crude suffix stem, used for the SQL LIKE; the ORIGINAL word
 // stays as the human label in the push copy.
@@ -215,56 +258,52 @@ function resumeTerms(row) {
   return terms.slice(0, 8);
 }
 
-async function notifyResumeMatchedUsers(sinceIso) {
-  if (!(await require('./notifSwitch').isOn('resume_match_jobs'))) return 0;
+async function notifyResumeMatchedUsers(sinceIso, { dryRun = false } = {}) {
+  if (!(await require('./notifSwitch').isOn('resume_match_jobs'))) return dryRun ? [] : 0;
   const users = await dbConfig.query(
     `SELECT u.id, u.expo_push_token, rm.technical_skills, rm.skills, rm.job_titles,
-            LOWER(LEFT(rm.raw_text, 600)) AS resume_head
+            LOWER(rm.raw_text) AS resume_lower
        FROM users u
        JOIN LATERAL (SELECT technical_skills, skills, job_titles, raw_text FROM resume_metadata
                       WHERE user_id = u.id AND parse_status = 'done' ORDER BY id DESC LIMIT 1) rm ON true
       WHERE u.deleted_at IS NULL AND u.expo_push_token IS NOT NULL AND u.expo_push_token <> ''
         AND u.email NOT LIKE 'ats%@example.com'`).catch(() => []);
   let sent = 0;
+  const preview = [];
   for (const u of users || []) {
     if (TEST_USER_IDS.has(Number(u.id))) continue;
     try {
+      // HARD country requirement: no detected country → no push. Wrong-country job alerts
+      // destroy trust faster than silence does.
+      const country = countryFromResume(u.resume_lower);
+      if (!country) continue;
       const terms = resumeTerms(u);
       if (!terms.length) continue;
-      const likeAny = terms.map((_, i) => `(LOWER(title) LIKE $${i + 2} OR LOWER(skills::text) LIKE $${i + 2})`).join(' OR ');
-      let rows = await dbConfig.query(
-        `SELECT title, skills, country FROM global_jobs
-          WHERE is_active AND first_seen >= $1 AND (${likeAny}) LIMIT 60`,
-        [sinceIso, ...terms.map((t) => `%${t.stem}%`)]).catch(() => []);
-      if (!rows || !rows.length) continue;
-      // Country scope: if the résumé header names one of the matched countries (address line),
-      // keep only that country's jobs — a waiter in Morocco must not hear about India.
-      const aliases = (c) => c === 'US' ? ['united states', 'usa', 'u.s'] : c === 'UK' ? ['united kingdom', 'u.k'] : [String(c).toLowerCase()];
-      const own = [...new Set(rows.map((r) => r.country).filter(Boolean))]
-        .filter((c) => aliases(c).some((a) => (u.resume_head || '').includes(a)));
-      if (own.length) rows = rows.filter((r) => own.includes(r.country));
+      const likeAny = terms.map((_, i) => `(LOWER(title) LIKE $${i + 3} OR LOWER(skills::text) LIKE $${i + 3})`).join(' OR ');
+      const rows = await dbConfig.query(
+        `SELECT title, skills FROM global_jobs
+          WHERE is_active AND country = $1 AND first_seen >= $2 AND (${likeAny}) LIMIT 200`,
+        [country, sinceIso, ...terms.map((t) => `%${t.stem}%`)]).catch(() => []);
       // 1 stray match is noise, not news
-      if (rows.length < 2) continue;
-      // dominant country + the term that matched the most jobs → honest, specific copy
-      const byCountry = {};
+      if (!rows || rows.length < 2) continue;
+      // the term that matched the most jobs → honest, specific copy
       const byTerm = {};
       for (const r of rows) {
-        byCountry[r.country || 'your area'] = (byCountry[r.country || 'your area'] || 0) + 1;
         const hay = (String(r.title) + ' ' + JSON.stringify(r.skills || [])).toLowerCase();
         for (const t of terms) if (hay.includes(t.stem)) byTerm[t.label] = (byTerm[t.label] || 0) + 1;
       }
-      const country = Object.entries(byCountry).sort((a, b) => b[1] - a[1])[0][0];
       const topTerm = (Object.entries(byTerm).sort((a, b) => b[1] - a[1])[0] || [null])[0];
-      const n = rows.length;
+      const n = Math.min(rows.length, 99);
+      const what = topTerm ? `${topTerm} job${n === 1 ? '' : 's'}` : `job${n === 1 ? '' : 's'} for you`;
+      const title = `${n}${rows.length > 99 ? '+' : ''} new ${what} in ${country} 🎯`;
+      const body = 'Fresh openings matched to your résumé just landed — take a look.';
+      if (dryRun) { preview.push({ userId: u.id, country, title, matches: rows.length }); continue; }
       // prefs + shared daily dedupe
       const ok = await notifPrefs.isEnabled(u.id, 'digest').catch(() => true);
       if (!ok) continue;
       const dup = await dbConfig.query(
         `SELECT 1 FROM notifications WHERE user_id = $1 AND type IN ('demand_jobs','resume_match_jobs') AND created_at > NOW() - INTERVAL '20 hours' LIMIT 1`, [u.id]);
       if (dup && dup.length) continue;
-      const what = topTerm ? `${topTerm} job${n === 1 ? '' : 's'}` : `job${n === 1 ? '' : 's'} for you`;
-      const title = `${n} new ${what} in ${country} 🎯`;
-      const body = 'Fresh openings matched to your résumé just landed — take a look.';
       await sendPushNotification(u.expo_push_token, title, body, { route: '/(discover)', params: { sort: 'recent' }, action: 'resume_match_jobs' });
       await dbConfig.query(
         `INSERT INTO notifications (user_id, type, title, message, created_at) VALUES ($1,'resume_match_jobs',$2,$3,NOW())`,
@@ -272,7 +311,7 @@ async function notifyResumeMatchedUsers(sinceIso) {
       sent++;
     } catch (e) { console.warn('[demandResearch] resume push failed for', u.id, e.message); }
   }
-  return sent;
+  return dryRun ? preview : sent;
 }
 
 // ── system_schedule bookkeeping — the admin "routines" view reads this table, and the persisted
