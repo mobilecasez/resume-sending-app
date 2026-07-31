@@ -12,7 +12,7 @@
 // A Modal nested inside another Modal crashed the app on iOS when dismissed (v3.3 build 87).
 import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated, PanResponder, Alert, Dimensions, BackHandler, Pressable, Platform, Linking,
+  View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated, PanResponder, Alert, Dimensions, BackHandler, Pressable, Platform, Linking, TextInput, Keyboard,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -25,6 +25,26 @@ import RobotIcon from './RobotIcon';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../utils/webviewAuth';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../utils/webviewTranslate';
 import { PAGE_TEXT_FN, FORM_TOUCH_JS } from '../utils/webviewPageText';
+
+// ── search-or-open helpers (shared with GoogleJobBrowser and the Search tab) ─────────────────────
+// Google's plain results page. `ie/oe` keep it UTF-8 on every locale; nothing else is forced, so the
+// user gets their own country/language exactly as they would in their browser.
+export function googleSearchUrl(query: string): string {
+  const q = String(query || '').trim();
+  return 'https://www.google.com/search?ie=UTF-8&oe=UTF-8&q=' + encodeURIComponent(q || 'jobs near me');
+}
+
+// A pasted job link should OPEN, not be googled. Deliberately conservative: a scheme or www. prefix,
+// or a bare domain that carries a path ("company.com/careers/123"). Plain words — including things
+// like "node.js" — still search.
+export function directUrlOf(query: string): string | null {
+  const t = String(query || '').trim();
+  if (!t || /\s/.test(t)) return null;
+  if (/^https?:\/\/\S+$/i.test(t)) return t;
+  if (/^www\.[^\s/]+\.[^\s/]+/i.test(t)) return 'https://' + t;
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+\/\S+$/i.test(t)) return 'https://' + t;
+  return null;
+}
 
 const NOT_COMPANY_RE = /linkedin\.com|licdn\.com|lnkd\.in|google\.[a-z.]+|bing\.com|duckduckgo|accounts\.|login\.|signin\.|auth[0-9]?\.|appleid\.apple|facebook\.com|about:blank/i;
 
@@ -213,6 +233,10 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   // around that — the user completes it themselves if they want to. We just stop pretending the page
   // is results, and offer the same query on another engine, exactly as they'd do in their browser.
   const [engineWall, setEngineWall] = useState(false);
+  // Address bar: an always-available way to open a pasted link (or run a fresh search) from
+  // inside the browser — no need to close it and start over.
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkText, setLinkText] = useState('');
   const sawLinkedInRef = useRef(false);
   const currentUrlRef = useRef(url);
   const currentTitleRef = useRef('');
@@ -272,6 +296,23 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     if (fetchingRef.current) { Alert.alert('Fetching in progress', 'Please wait a few seconds — your job is being read and saved.'); return; }
     try { webRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(homeUrl)}; true;`); } catch {}
   }, [homeUrl]);
+
+  // Address bar: open what was typed — a link goes straight there, anything else Google-searches.
+  const toggleLinkBar = useCallback(() => {
+    if (fetchingRef.current) { Alert.alert('Fetching in progress', 'Please wait a few seconds — your job is being read and saved.'); return; }
+    setLinkOpen((v) => {
+      if (!v) setLinkText(currentUrlRef.current || '');
+      return !v;
+    });
+  }, []);
+  const openTypedLink = useCallback(() => {
+    const t = linkText.trim();
+    if (!t || !webRef.current) return;
+    const target = directUrlOf(t) || googleSearchUrl(t);
+    setLinkOpen(false);
+    Keyboard.dismiss();
+    try { webRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(target)}; true;`); } catch {}
+  }, [linkText]);
 
   // Re-check on every dock open: the user may have just signed in (or been signed out) since the
   // last look. Cheap enough not to cache, and always current when the row is actually on screen.
@@ -604,6 +645,9 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
             <Ionicons name="search" size={17} color={fetching ? '#94A3B8' : '#0F172A'} />
           </TouchableOpacity>
         )}
+        <TouchableOpacity onPress={toggleLinkBar} style={[styles.navBtn, linkOpen && styles.navBtnActive, fetching && styles.navBtnOff]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Ionicons name="link-outline" size={18} color={fetching ? '#94A3B8' : linkOpen ? '#fff' : '#0F172A'} />
+        </TouchableOpacity>
         <TouchableOpacity onPress={toggleTranslate} style={[styles.navBtn, webTranslated && styles.navBtnActive]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           {webTranslating
             ? <ActivityIndicator size="small" color="#06B6D4" />
@@ -616,6 +660,35 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           <Ionicons name="close" size={20} color={fetching ? '#94A3B8' : '#0F172A'} />
         </TouchableOpacity>
       </View>
+      {/* Address bar — open a pasted link directly, or Google-search anything else. Plain view
+          below the top bar (NOT a Modal — we already live inside one). */}
+      {linkOpen && (
+        <View style={styles.linkBar}>
+          <Ionicons name="link-outline" size={15} color="#64748B" />
+          <TextInput
+            value={linkText}
+            onChangeText={setLinkText}
+            placeholder="Paste a job link — or type a search"
+            placeholderTextColor="#94A3B8"
+            style={styles.linkInput}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            returnKeyType="go"
+            autoFocus
+            selectTextOnFocus
+            onSubmitEditing={openTypedLink}
+          />
+          {linkText.length > 0 && (
+            <TouchableOpacity onPress={() => setLinkText('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close-circle" size={16} color="#94A3B8" />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity onPress={openTypedLink} style={styles.linkGoBtn} activeOpacity={0.85}>
+            <Text style={styles.linkGoTx}>Go</Text>
+          </TouchableOpacity>
+        </View>
+      )}
       {engineWall && (
         <View style={styles.wallBar}>
           <Ionicons name="shield-outline" size={15} color="#92400E" />
@@ -807,6 +880,10 @@ const styles = StyleSheet.create({
   tipBar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 10, marginBottom: 8, backgroundColor: '#fff', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: '#E2E8F0' },
   tipTx: { flex: 1, color: '#334155', fontSize: 12, fontWeight: '600', lineHeight: 16 },
   tipBold: { fontWeight: '800', color: '#0F172A' },
+  linkBar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 10, marginBottom: 8, backgroundColor: '#F1F5F9', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: '#E2E8F0' },
+  linkInput: { flex: 1, fontSize: 13, color: '#0F172A', paddingVertical: 2 },
+  linkGoBtn: { backgroundColor: '#06B6D4', borderRadius: 9, paddingHorizontal: 13, paddingVertical: 6 },
+  linkGoTx: { color: '#fff', fontSize: 12, fontWeight: '800' },
   wallBar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 10, marginBottom: 8, backgroundColor: '#FEF3C7', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: '#FDE68A' },
   wallTx: { flex: 1, color: '#92400E', fontSize: 12, fontWeight: '600', lineHeight: 16 },
   wallBtn: { backgroundColor: '#92400E', borderRadius: 9, paddingHorizontal: 10, paddingVertical: 6 },

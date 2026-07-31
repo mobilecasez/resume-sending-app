@@ -26,7 +26,7 @@ import {
 import { logEvent } from '../../services/firebaseAnalytics';
 import SilentWebSearch from '../../components/SilentWebSearch';
 import { useEventCosts } from '../../hooks/useEventCosts';
-import GoogleJobBrowser from '../../components/GoogleJobBrowser';
+import GoogleJobBrowser, { directUrlOf } from '../../components/GoogleJobBrowser';
 import SavedJobsList from '../../components/SavedJobsList';
 
 const T = {
@@ -493,10 +493,14 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
       {!embedded && <HeroCard facets={facets} total={total} />}
       <View style={styles.searchWrap}>
         <Ionicons name="search" size={16} color={T.blueDeep} />
-        <TextInput ref={searchRef} value={query} onChangeText={setQuery} placeholder="Search jobs — title, skill, location" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" onFocus={() => setShowRecent(true)} onBlur={() => setTimeout(() => setShowRecent(false), 150)} onSubmitEditing={() => openGoogle()} />
+        <TextInput ref={searchRef} value={query} onChangeText={setQuery} placeholder="Search jobs — or paste a job link" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" onFocus={() => setShowRecent(true)} onBlur={() => setTimeout(() => setShowRecent(false), 150)} onSubmitEditing={() => openGoogle()} />
         {query.length > 0 && <TouchableOpacity onPress={() => setQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Ionicons name="close-circle" size={17} color={T.textFaint} /></TouchableOpacity>}
+        {/* A pasted link OPENS directly in the browser (save it there via robot → Fetch job);
+            anything else Google-searches. The label tells the user which will happen. */}
         <TouchableOpacity onPress={() => openGoogle()} disabled={!query.trim()} style={[styles.askAiBtn, !query.trim() && { opacity: 0.5 }]} activeOpacity={0.85}>
-          <Ionicons name="logo-google" size={13} color="#fff" /><Text style={styles.askAiText}>Google Search</Text>
+          {directUrlOf(query)
+            ? <><Ionicons name="link-outline" size={13} color="#fff" /><Text style={styles.askAiText}>Open Link</Text></>
+            : <><Ionicons name="logo-google" size={13} color="#fff" /><Text style={styles.askAiText}>Google Search</Text></>}
         </TouchableOpacity>
       </View>
 

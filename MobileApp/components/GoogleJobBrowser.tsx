@@ -18,15 +18,12 @@
 import React, { useMemo, useRef } from 'react';
 import { Modal } from 'react-native';
 import { useEventCosts } from '../hooks/useEventCosts';
-import BrowseFetch from './BrowseFetch';
+import BrowseFetch, { googleSearchUrl, directUrlOf } from './BrowseFetch';
 import type { LiveJobCard } from '../services/aiHubService';
 
-// Google's plain results page. `ie/oe` keep it UTF-8 on every locale; nothing else is forced, so the
-// user gets their own country/language exactly as they would in their browser.
-export function googleSearchUrl(query: string): string {
-  const q = String(query || '').trim();
-  return 'https://www.google.com/search?ie=UTF-8&oe=UTF-8&q=' + encodeURIComponent(q || 'jobs near me');
-}
+// The helpers live in BrowseFetch (it needs them for its own address bar; importing back from
+// here would be a cycle). Re-exported so existing imports keep working.
+export { googleSearchUrl, directUrlOf };
 
 export default function GoogleJobBrowser({ visible, query, onClose, onApplyHere }: {
   visible: boolean;
@@ -39,7 +36,9 @@ export default function GoogleJobBrowser({ visible, query, onClose, onApplyHere 
 }) {
   const { costOf } = useEventCosts();
   const fetchCost = costOf('live_fetch') ?? 0;
-  const home = useMemo(() => googleSearchUrl(query), [query]);
+  // A pasted link opens DIRECTLY (the user then saves it via the robot → Fetch job);
+  // anything else is a Google search, exactly as before.
+  const home = useMemo(() => directUrlOf(query) || googleSearchUrl(query), [query]);
   // On Android a <Modal> intercepts the hardware back key and calls onRequestClose — the
   // BackHandler inside BrowseFetch never sees it. Route the press into BrowseFetch's own decision
   // so back means "previous page", not "throw away the whole search".
