@@ -177,12 +177,51 @@ function flatSkills(v) {
   return [];
 }
 
+// Generic résumé filler must never drive a push — "6 new communication skills jobs" is spam.
+const GENERIC_TERMS = new Set([
+  'skill', 'skills', 'communication', 'communications', 'teamwork', 'leadership', 'management',
+  'microsoft', 'office', 'excel', 'word', 'powerpoint', 'computer', 'computers', 'training',
+  'service', 'services', 'customer', 'professional', 'experience', 'organization', 'organizational',
+  'problem', 'solving', 'analysis', 'analytical', 'detail', 'oriented', 'ability', 'strong',
+  'basic', 'advanced', 'general', 'suite', 'internet', 'email', 'entry', 'reporting', 'tools',
+  'knowledge', 'good', 'quick', 'learner', 'listener', 'verbal', 'written', 'interpersonal',
+  'time', 'work', 'team', 'planning', 'support', 'operations', 'systems', 'system', 'standards',
+  'application', 'applications', 'course', 'courses', 'hygiene', 'health', 'safety', 'sales',
+]);
+
+// "plumbing" must match "Plumber": crude suffix stem, used for the SQL LIKE; the ORIGINAL word
+// stays as the human label in the push copy.
+const stemOf = (w) => (w.length >= 6 ? w.replace(/(ings?|ers?|s)$/, '') : w);
+
+// Build match terms from a résumé: job TITLES first (strongest signal — "sql developer",
+// "waiter"), then tokens of technical skills. Each term = { stem (SQL), label (copy) }.
+function resumeTerms(row) {
+  const terms = [];
+  const seen = new Set();
+  const push = (stem, label) => {
+    if (stem.length < 4 || GENERIC_TERMS.has(stem) || seen.has(stem)) return;
+    seen.add(stem); terms.push({ stem, label });
+  };
+  for (const t of flatSkills(row.job_titles)) {
+    const phrase = String(t).trim().toLowerCase();
+    if (phrase.length >= 5 && phrase.length <= 40 && phrase.split(/\s+/).length <= 3) push(phrase, phrase);
+    for (const w of phrase.split(/[^a-zà-ÿ]+/i)) if (w.length >= 5 && !GENERIC_TERMS.has(w)) push(stemOf(w), w);
+  }
+  for (const t of [...flatSkills(row.technical_skills), ...flatSkills(row.skills)]) {
+    for (const w of String(t).toLowerCase().split(/[^a-zà-ÿ]+/i)) {
+      if (w.length >= 5 && !GENERIC_TERMS.has(w)) push(stemOf(w), w);
+    }
+  }
+  return terms.slice(0, 8);
+}
+
 async function notifyResumeMatchedUsers(sinceIso) {
   if (!(await require('./notifSwitch').isOn('resume_match_jobs'))) return 0;
   const users = await dbConfig.query(
-    `SELECT u.id, u.expo_push_token, rm.technical_skills, rm.skills, rm.job_titles
+    `SELECT u.id, u.expo_push_token, rm.technical_skills, rm.skills, rm.job_titles,
+            LOWER(LEFT(rm.raw_text, 600)) AS resume_head
        FROM users u
-       JOIN LATERAL (SELECT technical_skills, skills, job_titles FROM resume_metadata
+       JOIN LATERAL (SELECT technical_skills, skills, job_titles, raw_text FROM resume_metadata
                       WHERE user_id = u.id AND parse_status = 'done' ORDER BY id DESC LIMIT 1) rm ON true
       WHERE u.deleted_at IS NULL AND u.expo_push_token IS NOT NULL AND u.expo_push_token <> ''
         AND u.email NOT LIKE 'ats%@example.com'`).catch(() => []);
@@ -190,25 +229,32 @@ async function notifyResumeMatchedUsers(sinceIso) {
   for (const u of users || []) {
     if (TEST_USER_IDS.has(Number(u.id))) continue;
     try {
-      const skills = [...new Set([...flatSkills(u.technical_skills), ...flatSkills(u.skills), ...flatSkills(u.job_titles)]
-        .map((s) => String(s).trim().toLowerCase()).filter((s) => s.length >= 4))].slice(0, 6);
-      if (!skills.length) continue;
-      const likeAny = skills.map((_, i) => `(LOWER(title) LIKE $${i + 2} OR LOWER(skills::text) LIKE $${i + 2})`).join(' OR ');
-      const rows = await dbConfig.query(
+      const terms = resumeTerms(u);
+      if (!terms.length) continue;
+      const likeAny = terms.map((_, i) => `(LOWER(title) LIKE $${i + 2} OR LOWER(skills::text) LIKE $${i + 2})`).join(' OR ');
+      let rows = await dbConfig.query(
         `SELECT title, skills, country FROM global_jobs
           WHERE is_active AND first_seen >= $1 AND (${likeAny}) LIMIT 60`,
-        [sinceIso, ...skills.map((s) => `%${s}%`)]).catch(() => []);
+        [sinceIso, ...terms.map((t) => `%${t.stem}%`)]).catch(() => []);
       if (!rows || !rows.length) continue;
-      // dominant country + the skill term that actually matched the most jobs → honest copy
+      // Country scope: if the résumé header names one of the matched countries (address line),
+      // keep only that country's jobs — a waiter in Morocco must not hear about India.
+      const aliases = (c) => c === 'US' ? ['united states', 'usa', 'u.s'] : c === 'UK' ? ['united kingdom', 'u.k'] : [String(c).toLowerCase()];
+      const own = [...new Set(rows.map((r) => r.country).filter(Boolean))]
+        .filter((c) => aliases(c).some((a) => (u.resume_head || '').includes(a)));
+      if (own.length) rows = rows.filter((r) => own.includes(r.country));
+      // 1 stray match is noise, not news
+      if (rows.length < 2) continue;
+      // dominant country + the term that matched the most jobs → honest, specific copy
       const byCountry = {};
-      const bySkill = {};
+      const byTerm = {};
       for (const r of rows) {
         byCountry[r.country || 'your area'] = (byCountry[r.country || 'your area'] || 0) + 1;
         const hay = (String(r.title) + ' ' + JSON.stringify(r.skills || [])).toLowerCase();
-        for (const s of skills) if (hay.includes(s)) bySkill[s] = (bySkill[s] || 0) + 1;
+        for (const t of terms) if (hay.includes(t.stem)) byTerm[t.label] = (byTerm[t.label] || 0) + 1;
       }
       const country = Object.entries(byCountry).sort((a, b) => b[1] - a[1])[0][0];
-      const topSkill = (Object.entries(bySkill).sort((a, b) => b[1] - a[1])[0] || [null])[0];
+      const topTerm = (Object.entries(byTerm).sort((a, b) => b[1] - a[1])[0] || [null])[0];
       const n = rows.length;
       // prefs + shared daily dedupe
       const ok = await notifPrefs.isEnabled(u.id, 'digest').catch(() => true);
@@ -216,7 +262,7 @@ async function notifyResumeMatchedUsers(sinceIso) {
       const dup = await dbConfig.query(
         `SELECT 1 FROM notifications WHERE user_id = $1 AND type IN ('demand_jobs','resume_match_jobs') AND created_at > NOW() - INTERVAL '20 hours' LIMIT 1`, [u.id]);
       if (dup && dup.length) continue;
-      const what = topSkill ? `${topSkill} job${n === 1 ? '' : 's'}` : `job${n === 1 ? '' : 's'} for you`;
+      const what = topTerm ? `${topTerm} job${n === 1 ? '' : 's'}` : `job${n === 1 ? '' : 's'} for you`;
       const title = `${n} new ${what} in ${country} 🎯`;
       const body = 'Fresh openings matched to your résumé just landed — take a look.';
       await sendPushNotification(u.expo_push_token, title, body, { route: '/(discover)', params: { sort: 'recent' }, action: 'resume_match_jobs' });
