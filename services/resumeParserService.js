@@ -44,8 +44,18 @@ async function upsertPending(userId) {
 /**
  * Persist successfully parsed metadata.
  */
+// PDF text extraction can emit NUL bytes (and other C0 control chars) that Postgres refuses:
+// `invalid byte sequence for encoding "UTF8": 0x00`. The INSERT then throws, the résumé is marked
+// failed, and the user is told nothing — u66 sat broken for two weeks on exactly this. Strip them.
+function pgSafeText(s) {
+    return String(s == null ? '' : s)
+        .replace(/\u0000/g, '')                                  // NUL — the byte Postgres hard-rejects
+        .replace(/[\u0001-\u0008\u000B\u000C\u000E-\u001F]/g, ' ');   // other C0, keeping tab/newline/CR
+}
+
 async function saveParsed(userId, rawText, parsed) {
     ensureDbConnection();
+    rawText = pgSafeText(rawText);
     await dbConfig.run(
         `INSERT INTO resume_metadata (
              user_id, raw_text, summary,
