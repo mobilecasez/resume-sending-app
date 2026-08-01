@@ -196,6 +196,7 @@ const GENERIC_TERMS = new Set([
   'leader', 'leaders', 'business', 'project', 'projects', 'process', 'processes', 'quality',
   'development', 'strategy', 'strategic', 'generation', 'tracking', 'monitoring', 'records',
   'table', 'tables', 'pivot', 'charts', 'presentation', 'presentations', 'documentation',
+  'posting', 'postings', 'workflow', 'workflows', 'deputy', 'assistant', 'trainee', 'staff',
 ]);
 
 // City/region → country, for résumés whose address line names a place but not the country
