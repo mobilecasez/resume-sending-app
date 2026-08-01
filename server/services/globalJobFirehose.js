@@ -116,8 +116,29 @@ async function runFirehose({ limit } = {}) {
     } catch (e) { console.warn('[firehose] jobtech-se failed:', e.message); }
   }
 
-  const summary = { sources: list.length, boardsOk, jobsSaved, nationalSaved, seconds: Math.round((Date.now() - t0) / 1000) };
-  console.log(`[firehose] DONE: ${boardsOk}/${list.length} boards, ${jobsSaved} jobs + ${nationalSaved} from national feeds, ${summary.seconds}s`);
+  // ── Stale-job sweep ────────────────────────────────────────────────────────────────────────
+  // Every upsert sets is_active=TRUE and refreshes last_seen, but NOTHING ever set it back — so
+  // is_active was TRUE on all ~150k rows and "active" carried no information at all. A job that
+  // has not appeared on its board for three weeks is gone from the employer's site; keep serving
+  // it and the user opens a dead posting. 21 days is deliberately generous: it survives a board
+  // being unreachable for a couple of passes.
+  //
+  // ⚠️ GUARDED ON jobsSaved: a pass where every board failed (network down, ATS blocking us)
+  // would otherwise deactivate the ENTIRE feed in one sweep. No jobs in → no jobs out.
+  let deactivated = null;
+  if (jobsSaved > 0) {
+    try {
+      const r = await dbConfig.run(
+        `UPDATE global_jobs SET is_active = FALSE WHERE is_active AND last_seen < NOW() - INTERVAL '21 days'`);
+      deactivated = (r && (r.changes ?? r.rowCount)) ?? 0;   // dbConfig.run → { lastID, changes }
+      console.log(`[firehose] stale sweep: deactivated ${deactivated} job(s) unseen for 21+ days`);
+    } catch (e) { console.warn('[firehose] stale sweep failed:', e.message); }
+  } else {
+    console.warn('[firehose] stale sweep SKIPPED — this pass saved 0 jobs (a failed pass must not deactivate the feed)');
+  }
+
+  const summary = { sources: list.length, boardsOk, jobsSaved, nationalSaved, deactivated, seconds: Math.round((Date.now() - t0) / 1000) };
+  console.log(`[firehose] DONE: ${boardsOk}/${list.length} boards, ${jobsSaved} jobs + ${nationalSaved} from national feeds, ${deactivated == null ? 'sweep skipped' : deactivated + ' deactivated'}, ${summary.seconds}s`);
   try {
     await dbConfig.run(
       `INSERT INTO system_schedule (job_key, last_run_at, last_summary) VALUES ('global_job_firehose', NOW(), ?)

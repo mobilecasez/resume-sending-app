@@ -97,6 +97,32 @@ async function saveParsed(userId, rawText, parsed) {
             Array.isArray(parsed.industries) ? parsed.industries : null,
         ]
     );
+    await backfillUserCountry(userId, rawText);
+}
+
+/**
+ * Derive the user's country from the résumé text and store it — but ONLY when users.country is
+ * still NULL. It was NULL for every user on production, so job targeting had nothing to aim at.
+ *
+ * Reuses the SAME extractor the demand-research push already trusts (earliest-mention-wins over an
+ * alias/region table), so a user can never be told about jobs in one country here and another there.
+ * Never overwrites a value the user set themselves, and never fails the parse: a résumé that saved
+ * fine must stay saved even if this lookup throws.
+ */
+async function backfillUserCountry(userId, rawText) {
+    try {
+        if (!rawText) return;
+        const { countryFromResume } = require('../server/services/demandResearch');
+        if (typeof countryFromResume !== 'function') return;
+        const country = countryFromResume(String(rawText).toLowerCase());
+        if (!country) return;
+        await dbConfig.run(
+            `UPDATE users SET country = ? WHERE id = ? AND (country IS NULL OR country = '')`,
+            [country, userId]
+        );
+    } catch (e) {
+        console.warn(`[resumeParser] country backfill skipped for user ${userId}: ${e.message}`);
+    }
 }
 
 // ─── transient vs permanent failure ──────────────────────────────────────────

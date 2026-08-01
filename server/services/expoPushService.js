@@ -92,6 +92,14 @@ async function sendPushNotification(pushToken, title, body, data = {}) {
         const ticket = j && j.data;
         if (ticket && ticket.status === 'error') {
             const err = ticket.details && ticket.details.error;
+            // Per-notification receipt line. noteError records the ROLLING health, which tells you
+            // push is broken but never WHICH device — so "did it arrive for this user?" had no
+            // answer anywhere. Log the token prefix (first 12 chars is enough to match a row in
+            // users.expo_push_token, and stops short of the full credential) next to the reason.
+            // Best-effort and non-fatal: a logging failure must not change what the send returns.
+            try {
+                console.warn(`[push] ticket error  token=${String(pushToken).slice(0, 12)}…  reason=${err || 'unknown'}  ${String(ticket.message || '').slice(0, 160)}`);
+            } catch {}
             noteError(err || 'TicketError', ticket.message);
             // DeviceNotRegistered → the token really is stale, so the caller clears it. Anything
             // else (notably InvalidCredentials) is OUR configuration: leave the token alone, or a

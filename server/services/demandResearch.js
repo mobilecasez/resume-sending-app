@@ -398,4 +398,4 @@ function startDemandResearch() {
 
 // ingestUrl is reused by interestRoutes to fetch the exact posting a user pins on an interest;
 // the notify* pair is reused by the admin notify-matches endpoint (the Claude-side routine).
-module.exports = { runDemandResearch, startDemandResearch, ingestUrl, notifyMatchedUsers, notifyResumeMatchedUsers };
+module.exports = { runDemandResearch, startDemandResearch, ingestUrl, notifyMatchedUsers, notifyResumeMatchedUsers, countryFromResume };

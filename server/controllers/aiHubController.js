@@ -1847,8 +1847,19 @@ async function getMatchScores(req, res) {
 
         // Persist each score (also stamps scored_at so each job is computed once) and merge
         // it into the result alongside the already-cached scores.
+        //
+        // ⚠️ The model sometimes answers with a job id that was NOT in the batch (a hallucinated
+        // or echoed-back uuid). That row then violates user_job_matches_job_id_fkey, and because
+        // the failure was swallowed silently the REAL job stayed unscored forever — rendering as
+        // 0% to the user. Keep only ids we actually asked about, and log anything else.
+        const asked = new Set(jobs.map((j) => String(j.id)));
         for (const jid of Object.keys(scores)) {
-            try { await jobService.saveUserJobMatch(userId, jid, scores[jid]); } catch (e) { /* non-fatal */ }
+            if (!asked.has(String(jid))) {
+                console.warn(`[aiHub] scorer returned an unrequested job id (${String(jid).slice(0, 40)}) — ignored`);
+                continue;
+            }
+            try { await jobService.saveUserJobMatch(userId, jid, scores[jid]); }
+            catch (e) { console.warn(`[aiHub] could not persist match score for ${String(jid).slice(0, 40)}: ${e.message}`); }
             result[jid] = scores[jid];
         }
         return res.json({ scores: result });
@@ -2476,14 +2487,173 @@ async function groundedDeepCrawl(employerName, careersUrl) {
     return resolved;
 }
 
+// ── Keyword vs employer classification ───────────────────────────────────────
+// Deliberately conservative: a real company name must still reach the employer pipeline. We only
+// claim an input as a KEYWORD when it is clearly a role/trade/place/industry word, or when it is
+// generic enough that no careers page could exist for it.
+const KW_ROLE = /\b(job|jobs|vacanc|hiring|opening|career|work|intern|internship|fresher|part[- ]?time|full[- ]?time|remote|freelanc)\b/i;
+const KW_TRADE = /\b(plumb\w*|electric\w*|carpent\w*|paint\w*|weld\w*|mason|driver|mechanic|technician|nurse|nursing|teacher|teaching|chef|cook|waiter|waitress|server|bartend\w*|barista|barber|cleaner|housekeep\w*|security|guard|warehouse|forklift|delivery|courier|tailor|beautician|salon|receptionist|cashier|store\s?keeper|labour|labor|helper|welder|fitter|operator|supervisor|storekeeper)\b/i;
+const KW_WHITE = /\b(develop\w*|engineer\w*|programm\w*|software|data|analyst|analytics|scien\w*|design\w*|market\w*|sales|account\w*|finance|financial|audit\w*|hr|human resources|recruit\w*|admin\w*|support|customer service|logistics|supply chain|procure\w*|legal|lawyer|advocate|doctor|pharma\w*|medical|civil|mechanical|electrical|architect\w*|content|writer|editor|translat\w*|teacher|banking|insurance|telecom|hospitality|hotel|retail|manufactur\w*|construction|consult\w*)\b/i;
+// Country / big-city words users type as a whole query ("pakistan", "dubai").
+const KW_PLACE = /^(india|pakistan|bangladesh|sri lanka|nepal|uae|dubai|abu dhabi|qatar|saudi|kuwait|oman|bahrain|morocco|egypt|nigeria|ghana|kenya|south africa|philippines|indonesia|malaysia|singapore|vietnam|thailand|usa|uk|canada|australia|germany|france|spain|italy|portugal|netherlands|sweden|poland|romania|turkey|brazil|mexico|remote|worldwide|anywhere)$/i;
+
+function looksLikeJobKeyword(input) {
+    const s = String(input || '').trim();
+    if (!s || s.length > 80) return false;
+    if (/^https?:\/\//i.test(s)) return false;
+    if (/^(file|content|data):/i.test(s)) return true;          // a pasted local path is never an employer
+    if (/[a-z0-9-]+\.(com|net|org|io|co|ai|in|de|fr|nl|se|ch|uk|pk|lk|ae|za|ma|pt|es|it|au|ca)\b/i.test(s)) return false;  // domain-ish → employer
+    if (KW_PLACE.test(s)) return true;
+    if (KW_ROLE.test(s) || KW_TRADE.test(s) || KW_WHITE.test(s)) return true;
+    return false;
+}
+
+// Answer a keyword the way a job board would: our own directory first (ranked, user's country
+// preferred), then grounded live search when the directory is thin. Returns pipeline-shaped jobs.
+async function keywordJobSearch(query, userId) {
+    const q = String(query || '').trim();
+    const words = q.toLowerCase().split(/[^a-zà-ÿ0-9.#+]+/i).filter((w) => w.length >= 3);
+    if (!words.length) return [];
+
+    // The user's own country (résumé header / profile) ranks first — "no jobs where users live"
+    // was the second-biggest complaint in the pain report.
+    let country = null;
+    try {
+        const r = await dbConfig.get(
+            `SELECT LOWER(LEFT(raw_text, 600)) AS head FROM resume_metadata
+              WHERE user_id = $1 AND parse_status = 'done' ORDER BY id DESC LIMIT 1`, [userId]);
+        if (r && r.head) {
+            const { countryFromResume } = require('../services/demandResearch');
+            country = typeof countryFromResume === 'function' ? countryFromResume(r.head) : null;
+        }
+    } catch (_) {}
+
+    const params = [];
+    const P = (v) => { params.push(v); return '$' + params.length; };
+    const kwOr = words.map((w) => {
+        const p = P('%' + w + '%');
+        return `(LOWER(title) LIKE ${p} OR LOWER(employer_name) LIKE ${p} OR LOWER(COALESCE(skills::text,'')) LIKE ${p} OR LOWER(COALESCE(location,'')) LIKE ${p})`;
+    }).join(' OR ');
+    const rank = country ? `CASE WHEN country = ${P(country)} THEN 0 ELSE 1 END, ` : '';
+    const rows = await dbConfig.query(
+        `SELECT job_url, title, employer_name, employer_domain, location, work_mode, job_type,
+                salary, experience, responsibilities, skills, country
+           FROM global_jobs
+          WHERE is_active AND (${kwOr})
+          ORDER BY ${rank}first_seen DESC
+          LIMIT 40`, params).catch(() => []);
+
+    let jobs = (rows || []).map((r) => ({
+        title: r.title,
+        location: r.location || (r.country || ''),
+        job_url: r.job_url,
+        employer_name: r.employer_name || null,
+        job_type: r.job_type || null,
+        salary: r.salary || null,
+        experience: r.experience || null,
+        work_mode: r.work_mode || null,
+        responsibilities: Array.isArray(r.responsibilities) ? r.responsibilities : [],
+        skills: Array.isArray(r.skills) ? r.skills : [],
+    }));
+
+    // Thin directory → ask the live web (same grounded engine the Discover tab uses).
+    if (jobs.length < 8) {
+        try {
+            const parsed = { keywords: words.slice(0, 3), location: country || null, workMode: null, seniority: null };
+            const live = await groundedDiscover(parsed, country || null, { allowAggregators: true }).catch(() => []);
+            const seen = new Set(jobs.map((j) => j.job_url));
+            for (const l of live || []) {
+                if (!l || !l.job_url || seen.has(l.job_url)) continue;
+                seen.add(l.job_url);
+                jobs.push({
+                    title: l.title, location: l.location || '', job_url: l.job_url,
+                    employer_name: l.employer_name || l.company || null,
+                    job_type: l.job_type || null, salary: l.salary || null, experience: l.experience || null,
+                    work_mode: l.work_mode || null,
+                    responsibilities: Array.isArray(l.responsibilities) ? l.responsibilities : [],
+                    skills: Array.isArray(l.skills) ? l.skills : [],
+                });
+                if (jobs.length >= 40) break;
+            }
+        } catch (e) { console.error('[aiHub] keyword grounded:', e.message); }
+    }
+    return jobs;
+}
+
+// Persist a keyword result under a synthetic "search" employer so the existing dashboard, match
+// scoring and cover-letter flows work unchanged.
+async function completeKeywordSearch(asyncJobId, userId, query, jobs) {
+    const label = String(query).trim().replace(/^https?:\/\//i, '').slice(0, 60);
+    const domain = 'search:' + label.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50);
+    const employerId = await jobService.upsertEmployer(
+        domain, label.charAt(0).toUpperCase() + label.slice(1),
+        `${jobs.length} job${jobs.length === 1 ? '' : 's'} matching "${label}"`,
+        ['#06B6D4', '#3B82F6'], (label[0] || '?').toUpperCase());
+    await jobService.trackUserEmployer(userId, employerId);
+    await dbConfig.run(
+        `UPDATE user_tracked_employers SET async_job_id = $1, updated_at = CURRENT_TIMESTAMP
+          WHERE user_id = $2 AND employer_id = $3`, [asyncJobId, userId, employerId]).catch(() => {});
+
+    const out = [];
+    for (const j of jobs) {
+        try {
+            const locId = await jobService.upsertLocation(j.location || null).catch(() => null);
+            const jobId = await jobService.upsertJob(
+                employerId, locId, j.title, j.job_url, j.experience, j.salary, j.job_type, false,
+                j.responsibilities || [], j.work_mode || null);
+            await jobService.saveUserJobMatch(userId, jobId, null).catch(() => {});
+            out.push({
+                id: jobId, title: j.title, location: j.location || 'Not specified',
+                experience: j.experience || '', salary: j.salary || '', jobType: j.job_type || '',
+                workMode: j.work_mode || null, urgent: false,
+                skills: j.skills || [], responsibilities: j.responsibilities || [],
+                contacts: [], applyUrl: j.job_url, matchScore: null,
+            });
+        } catch (e) { /* one bad row must not lose the search */ }
+    }
+    const employer = {
+        id: employerId, name: label.charAt(0).toUpperCase() + label.slice(1),
+        subInfo: `${out.length} job${out.length === 1 ? '' : 's'} found`,
+        logoColor: ['#06B6D4', '#3B82F6'], logoInitial: (label[0] || '?').toUpperCase(),
+        domain, status: 'active', jobs: out,
+    };
+    await jobService.completeJob(asyncJobId, { employer, jobs: out, keywordSearch: true });
+    // Match rows are created UNSCORED on purpose: the client's /match-scores call computes and
+    // caches them on render (that path is verified working), so cards show real % not zeros.
+    return;
+}
+
 async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
     console.log(`[aiHub] Starting job search for "${companyInput}" (jobId: ${asyncJobId})`);
     try {
         await jobService.startJob(asyncJobId);
 
-        // Determine a URL to scrape
+        // ── KEYWORD RESCUE (the "users type words, not URLs" fix) ──────────────
+        // 13 of 20 real searches were keywords ("plumbing", "finance", "pakistan", "electrical")
+        // that this flow turned into https://plulmbing and scraped into a zero-result wall — or,
+        // for "electrical", a hard crash with nothing shown to the user. A keyword is a JOB
+        // SEARCH, not an employer: answer it from the global directory (+ grounded live search)
+        // and hand the results to the same pipeline an ATS would feed.
         const isUrl = companyInput.startsWith('http://') || companyInput.startsWith('https://');
+        if (!isUrl && looksLikeJobKeyword(companyInput)) {
+            const kwJobs = await keywordJobSearch(companyInput, userId).catch((e) => {
+                console.error('[aiHub] keywordJobSearch:', e.message); return [];
+            });
+            if (kwJobs.length) {
+                console.log(`[aiHub] Keyword search "${companyInput}" → ${kwJobs.length} jobs (directory + live)`);
+                return await completeKeywordSearch(asyncJobId, userId, companyInput, kwJobs);
+            }
+            console.log(`[aiHub] Keyword search "${companyInput}" found nothing — falling through to employer resolution`);
+        }
+
+        // Determine a URL to scrape
         let scrapeUrl = isUrl ? companyInput : await resolveCareersUrl(companyInput);
+        if (!scrapeUrl) {
+            // resolveCareersUrl can legitimately fail (a word that is no company). Previously this
+            // crashed deeper in the pipeline with "No JSON object found" and NO user-visible error.
+            await jobService.failJob(asyncJobId, `We couldn't find jobs for "${companyInput}". Try a job title (e.g. "electrician jobs in Delhi"), or paste a careers-page link.`);
+            return;
+        }
         console.log(`[aiHub] Scraping: ${scrapeUrl}`);
 
         // ── Self-improving fix loop: apply a learned override for this employer ──
@@ -5506,4 +5676,8 @@ module.exports = {
     // exported for tools/test-single-posting.js — the pure gate in front of the posting fetch
     looksLikeSingleJobUrl,
     extractSingleJobPosting,
+    // Exported so a backfill can score rows the live endpoint never reached (user_job_matches
+    // rows left with scored_at NULL render as 0% in the app). Pure — takes a profile and jobs,
+    // touches no request/response — so a backfill computes the SAME number getMatchScores would.
+    scoreJobsForUser,
 };

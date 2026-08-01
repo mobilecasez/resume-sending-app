@@ -9,6 +9,7 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const live = require('../services/liveAnalytics');
+const dbConfig = require('../../db-config');
 
 // Hash the client IP (never store it raw) so we can dedup a person's repeat installs by network
 // without holding PII. Salted so hashes aren't reversible/rainbow-tableable.
@@ -55,6 +56,13 @@ async function track(req, res) {
         platform: e.platform || b.platform, appVersion: e.appVersion || b.appVersion,
         anonId: e.anonId || b.anonId, country: e.country || b.country || geo, userId, ipHash,
       });
+    }
+    // users.last_seen_at was declared in migration 004 and then NEVER written, so every
+    // "active user" question had to be answered from app_events instead. Stamp it here — ONCE
+    // per request, not once per event — for any batch that carried a valid token. Best-effort:
+    // analytics intake must still succeed if this write fails.
+    if (userId) {
+      await dbConfig.run(`UPDATE users SET last_seen_at = NOW() WHERE id = ?`, [userId]).catch(() => {});
     }
   } catch (_) { /* analytics must never break the client */ }
   return res.status(204).end();
