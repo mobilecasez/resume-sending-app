@@ -53,9 +53,23 @@ function pgSafeText(s) {
         .replace(/[\u0001-\u0008\u000B\u000C\u000E-\u001F]/g, ' ');   // other C0, keeping tab/newline/CR
 }
 
+// Postgres rejects NUL inside JSONB strings too, so the PARSED object needs the same scrub as
+// raw_text — a single control byte anywhere in skills/education fails the whole insert.
+function pgSafeDeep(v) {
+    if (typeof v === 'string') return pgSafeText(v);
+    if (Array.isArray(v)) return v.map(pgSafeDeep);
+    if (v && typeof v === 'object') {
+        const out = {};
+        for (const k of Object.keys(v)) out[pgSafeText(k)] = pgSafeDeep(v[k]);
+        return out;
+    }
+    return v;
+}
+
 async function saveParsed(userId, rawText, parsed) {
     ensureDbConnection();
     rawText = pgSafeText(rawText);
+    parsed = pgSafeDeep(parsed || {});
     await dbConfig.run(
         `INSERT INTO resume_metadata (
              user_id, raw_text, summary,
