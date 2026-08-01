@@ -155,6 +155,34 @@ const ok = (name, cond, extra) => {
           wire('cc', CC); wire('cty', CTY);
         </script></form></body></html>`;
     }
+    // Power-up fixture: multi-select, native date, reworded radio options, and a control far
+    // below the fold (the classes of field the engine used to leave empty).
+    if (url.includes('power.example.com')) {
+      body = `<html><body><form id="f">
+        <label for="locs">Preferred work locations</label>
+        <select id="locs" name="locs" multiple>
+          <option value="ldn">London</option><option value="rem">UK - Remote</option>
+          <option value="ber">Berlin</option><option value="nyc">New York</option>
+        </select>
+        <label for="start">Earliest start date</label><input id="start" name="start" type="date">
+        <fieldset><legend>Do you consent to interview transcripts?</legend>
+          <label><input type="radio" name="consent" value="y"> Yes, I consent</label>
+          <label><input type="radio" name="consent" value="n"> No, I don't consent</label>
+        </fieldset>
+        <label for="edu">Highest education</label>
+        <select id="edu" name="edu">
+          <option value="">Select…</option>
+          <option value="bsc">Bachelor of Science</option>
+          <option value="msc">Master of Science</option>
+        </select>
+        <div style="height:2400px"></div>
+        <label for="deep">Notice period</label><input id="deep" name="deep">
+        <button type="submit" id="go">Submit application</button>
+        <script>
+          window.__submits=0;
+          document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();window.__submits++;});
+        </script></form></body></html>`;
+    }
     // A react-select INSIDE a modal that closes on a document-level (bubble-phase) Escape — exactly
     // the YC "Apply for this role" popup. Autofill's combobox-close Escape must NOT dismiss it.
     if (url.includes('modal.example.com')) {
@@ -437,6 +465,53 @@ const ok = (name, cond, extra) => {
     ok('the phone box got the LOCAL number (code stripped)', st.phone === '79005 91039', st.phone);
     ok('nothing reported failed', (st.msg.failed || []).length === 0, st.msg.failed);
     ok('THE FORM WAS NEVER SUBMITTED', st.submits === 0, st.submits);
+    await page.close();
+  }
+
+  console.log('\npower-ups: multi-select, dates, reworded options, below-the-fold fields');
+  {
+    const page = await ctx.newPage();
+    await page.addInitScript(BRIDGE);
+    await page.goto('https://power.example.com/apply');
+    await page.evaluate(fillJs({
+      'n:locs|select-multiple': 'London, UK - Remote',       // comma list → several picks
+      'n:start|date': '01/09/2026',                          // dd/mm/yyyy → yyyy-mm-dd
+      'n:consent|radio': 'yes',                              // → "Yes, I consent"
+      'n:edu|select-one': "Bachelor's degree",               // → "Bachelor of Science" (fuzzy)
+      'n:deep|text': '30 days',                              // 2400px below the fold
+    }));
+    await page.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 45000 });
+    const st = await page.evaluate(() => ({
+      locs: Array.from(document.getElementById('locs').selectedOptions).map((o) => o.value),
+      start: document.getElementById('start').value,
+      consent: (document.querySelector('input[name=consent]:checked') || {}).value || null,
+      edu: document.getElementById('edu').value,
+      deep: document.getElementById('deep').value,
+      submits: window.__submits,
+      msg: window.__msgs.find((m) => m.type === 'FILLED'),
+    }));
+    ok('multi-select got BOTH locations', st.locs.length === 2 && st.locs.includes('ldn') && st.locs.includes('rem'), st.locs);
+    ok('dd/mm/yyyy normalised for the native date input', st.start === '2026-09-01', st.start);
+    ok('"yes" matched the reworded radio "Yes, I consent"', st.consent === 'y', st.consent);
+    ok('"Bachelor\'s degree" matched "Bachelor of Science"', st.edu === 'bsc', st.edu);
+    ok('a field 2400px below the fold still filled', st.deep === '30 days', st.deep);
+    ok('THE FORM WAS NEVER SUBMITTED', st.submits === 0, st.submits);
+    await page.close();
+  }
+
+  console.log('\nthe fuzzy matcher refuses unrelated options');
+  {
+    const page = await ctx.newPage();
+    await page.addInitScript(BRIDGE);
+    await page.goto('https://power.example.com/apply');
+    await page.evaluate(fillJs({ 'n:edu|select-one': 'Certified Welding Inspector' }));
+    await page.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 45000 });
+    const st = await page.evaluate(() => ({
+      edu: document.getElementById('edu').value,
+      msg: window.__msgs.find((m) => m.type === 'FILLED'),
+    }));
+    ok('an unrelated value picks NOTHING (no fabricated answer)', st.edu === '', st.edu);
+    ok('and it is reported as a failure the user can see', (st.msg.failed || []).length === 1, st.msg.failed);
     await page.close();
   }
 

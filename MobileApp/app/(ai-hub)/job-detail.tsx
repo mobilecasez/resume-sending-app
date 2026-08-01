@@ -598,7 +598,74 @@ const JS_HELPERS = `
       var pool = sw.length ? sw : ct;
       if(pool.length){ var best=pool[0]; for(var j=1;j<pool.length;j++){ if((pool[j].text||'').length < (best.text||'').length) best=pool[j]; } return best; }
     }
-    return null;
+    return pickOptFuzzy(opts, v);
+  }
+  // LAST-RESORT matcher. Substring matching leaves a field EMPTY whenever the wording differs at
+  // all ("Bachelor's degree" vs "Bachelor of Science", "3-5 years" vs "3 to 5 years", "Male" vs
+  // "Man"). Score by shared significant tokens and require a real majority overlap, so a confident
+  // rewording matches while an unrelated option can never sneak in.
+  // Structural filler + generic qualifiers. Without the qualifiers, "Bachelor's degree" scores only
+  // 0.5 against "Bachelor of Science" (the word "degree" dilutes the one token that matters) and the
+  // field is left blank — while dropping them keeps the DISTINGUISHING token (bachelor vs master).
+  var PO_STOP={'the':1,'a':1,'an':1,'of':1,'or':1,'and':1,'to':1,'in':1,'for':1,'with':1,'my':1,'i':1,'is':1,'are':1,'other':1,'please':1,'select':1,'choose':1,
+    'degree':1,'level':1,'category':1,'type':1,'status':1,'option':1,'currently':1,'have':1,'any':1};
+  function poToks(s){
+    var t=String(s||'').toLowerCase().replace(/[^a-z0-9+#.]+/g,' ').split(' ');
+    var out=[]; for(var i=0;i<t.length;i++){ var w=t[i]; if(w && w.length>=2 && PO_STOP[w]!==1) out.push(w); }
+    return out;
+  }
+  function pickOptFuzzy(opts, v){
+    var want=poToks(v); if(!want.length) return null;
+    var best=null, bestScore=0;
+    for(var i=0;i<opts.length;i++){
+      var tx=(opts[i].text||''); if(!tx) continue;
+      var got=poToks(tx); if(!got.length) continue;
+      var hit=0;
+      for(var w=0;w<want.length;w++){
+        for(var g=0;g<got.length;g++){
+          // prefix match both ways so "engineering"/"engineer" and "5"/"5+" agree
+          if(got[g]===want[w] || (want[w].length>=4 && got[g].indexOf(want[w])===0) || (got[g].length>=4 && want[w].indexOf(got[g])===0)){ hit++; break; }
+        }
+      }
+      // overlap relative to the SHORTER side, so a long option text isn't unfairly penalised
+      var score=hit/Math.min(want.length, got.length);
+      if(score>bestScore){ bestScore=score; best=opts[i]; }
+    }
+    return bestScore>=0.67 ? best : null;   // confident rewording only — never a guess
+  }
+  // Normalise a value for a native date input (they accept ONLY yyyy-mm-dd; anything else is
+  // silently rejected and the field stays empty).
+  function dateVal(v){
+    var s=String(v||'').trim();
+    if(/^\\d{4}-\\d{2}-\\d{2}$/.test(s)) return s;
+    var m=s.match(/^(\\d{1,2})[\\/.\\-](\\d{1,2})[\\/.\\-](\\d{4})$/);
+    if(m){
+      var a=parseInt(m[1],10), b=parseInt(m[2],10), y=m[3];
+      // dd/mm vs mm/dd: >12 decides it; otherwise assume dd/mm (every locale but the US)
+      var d=a, mo=b; if(a<=12 && b>12){ d=b; mo=a; }
+      return y+'-'+('0'+mo).slice(-2)+'-'+('0'+d).slice(-2);
+    }
+    var t=Date.parse(s);
+    if(!isNaN(t)){ var dt=new Date(t); return dt.getFullYear()+'-'+('0'+(dt.getMonth()+1)).slice(-2)+'-'+('0'+dt.getDate()).slice(-2); }
+    return s;
+  }
+  // Values that mean "several answers": an array, or a comma/semicolon/pipe list.
+  function multiVals(v){
+    if(Array.isArray(v)) return v.map(function(x){ return String(x).trim(); }).filter(Boolean);
+    var s=String(v==null?'':v);
+    if(!/[,;|]/.test(s)) return [];
+    return s.split(/[,;|]/).map(function(x){ return x.trim(); }).filter(Boolean);
+  }
+  // Bring a control into view before touching it. Off-screen widgets frequently refuse clicks and
+  // render their popup outside the viewport, which read as "no options" and left fields blank.
+  function bringIntoView(el){
+    try{
+      var r=el.getBoundingClientRect();
+      var h=window.innerHeight||600;
+      if(r.top>=0 && r.bottom<=h) return;
+      if(el.scrollIntoView) el.scrollIntoView({block:'center'});
+      else window.scrollTo(0, (window.pageYOffset||0)+r.top-h/2);
+    }catch(e){}
   }
   // ── Country / dial-code support ─────────────────────────────────────────────
   // Option text arrives as "India+91" (intl-tel-input), "India (+91)", "+91 (India)" or "IN +91",
@@ -708,6 +775,18 @@ const JS_HELPERS = `
       if(wd) return '+'+wd;
     }
     return String(want);
+  }
+  // Does this widget accept MORE THAN ONE answer? (react-select multi, chips/tokens already
+  // rendered, aria-multiselectable, or a label that asks for plural places/languages/skills.)
+  function isMultiCombo(el){
+    try{
+      if(el.getAttribute && el.getAttribute('aria-multiselectable')==='true') return true;
+      var w=cbCtrl(el);
+      if(w && w.querySelector && w.querySelector('[class*=multi-value],[class*=multiValue],[class*=chip],[class*=token],[class*=tag]')) return true;
+      var L=cleanTxt(nlbl(el)).toLowerCase();
+      if(/locations|languages|skills|technologies|countries|cities|areas|preferences/.test(L)) return true;
+    }catch(e){}
+    return false;
   }
   function cbCtrl(el){
     try{ return (el.closest&&(el.closest('[class*=select__control]')||el.closest('[class*=MuiAutocomplete-root]')||el.closest('[class*=select2-selection]')||el.closest('[class*=chosen-container]')))||el.parentElement; }catch(e){ return el.parentElement; }
@@ -897,6 +976,7 @@ const JS_HELPERS = `
     var want=String(v), fin=false, trig=isComboTrigger(el), sb=null;
     function finish(ok){ if(fin) return; fin=true; if(!ok){ try{ cbClose(el); }catch(e){} } cb(ok); }
     if(cbAborted()){ finish(false); return; }
+    bringIntoView(el);   // an off-screen widget renders its popup outside the viewport → "no options"
     var pre=cbPreOpen();
     try{ el.focus(); }catch(e){}
     if(!trig){ try{ setNative(el,''); }catch(e){} }
@@ -1042,8 +1122,31 @@ const JS_HELPERS = `
           try {
             if (t==='radio'){
               var ol=(nlbl(el)||el.value||'').trim().toLowerCase(); var want=String(v).trim().toLowerCase();
-              if (ol===want || (want && ol.indexOf(want)>=0) || (el.value||'').toLowerCase()===want){ setChecked(el,true); if(el.checked) filled[s]=true; }
+              // Exact / substring first, then the confident-rewording matcher: real forms answer
+              // "yes" with "Yes, I consent" and "male" with "Man", which used to match nothing and
+              // leave a REQUIRED radio group empty.
+              var rok = (ol===want || (want && ol.indexOf(want)>=0) || (el.value||'').toLowerCase()===want);
+              if (!rok && want && ol){
+                var fz=pickOptFuzzy([{text:ol}], want);
+                rok = !!fz;
+              }
+              if (rok){ bringIntoView(el); setChecked(el,true); if(el.checked) filled[s]=true; }
             } else if (el.tagName==='SELECT'){
+              bringIntoView(el);
+              // MULTI-select: pick every value we can match, not just the first. "Preferred work
+              // locations", "languages", "skills" are routinely multi-selects that used to receive
+              // exactly one answer (or none, when the whole comma-list matched no single option).
+              if (el.multiple){
+                var mv=multiVals(v); if(!mv.length) mv=[String(v)];
+                var oall=Array.prototype.slice.call(el.options), picked=0;
+                for(var mi=0; mi<mv.length; mi++){
+                  var mm=pickOpt(oall, mv[mi]);
+                  if(mm){ try{ mm.selected=true; picked++; }catch(e){} }
+                }
+                if(picked){ fire(el); filled[s]=true; }
+                else fails[s]={key:s,label:nlbl(el).slice(0,90),why:'no matching option'};
+                continue;
+              }
               // Country/dial-code selects first: pickOpt is a substring matcher and cannot compare
               // dial codes numerically, so "+1"/"+44"/"+7" matched nothing on a full country list.
               var oarr=Array.prototype.slice.call(el.options);
@@ -1065,6 +1168,9 @@ const JS_HELPERS = `
               // A phone box next to a separate dial-code picker gets the LOCAL number only —
               // otherwise "+91 98765…" lands beside an already-selected "+91".
               if (t==='tel' || /\\b(phone|mobile)\\b/i.test(nlbl(el)+' '+(el.name||''))) vv=phoneLocal(vv, el);
+              // Native date/month inputs accept ONLY yyyy-mm-dd — anything else is silently dropped.
+              if (t==='date' || t==='month') vv=dateVal(vv);
+              bringIntoView(el);
               try{el.focus();}catch(e){} setNative(el,vv); try{el.dispatchEvent(new Event('blur',{bubbles:true}));el.blur();}catch(e){}
               if (sameAnswer(el.value,vv)) filled[s]=true;
               else fails[s]={key:s,label:nlbl(el).slice(0,90),why:'the field rejected the value'};
@@ -1086,6 +1192,25 @@ const JS_HELPERS = `
           for(var j=0;j<all.length;j++){ if(sig(all[j])===d.s && vis(all[j])){ el=all[j]; break; } }
           if(!el){ if(!filled[d.s]) fails[d.s]={key:d.s,label:d.label,why:'this dropdown left the page before we could pick'}; setTimeout(step,60); return; }
           if(cbAnswered(el)){ filled[d.s]=true; delete fails[d.s]; setTimeout(step,60); return; }
+          // A multi-value widget ("Preferred work locations", languages, skills) takes several
+          // picks: run them in sequence, and count the field filled if ANY landed.
+          var vals=multiVals(d.v);
+          if(vals.length>1 && isMultiCombo(el)){
+            var vi=0, anyOk=false;
+            (function pickNext(){
+              if(vi>=vals.length || vi>=6){
+                if(anyOk){ filled[d.s]=true; delete fails[d.s]; }
+                else fails[d.s]={key:d.s,label:d.label,why:'dropdown — please pick this one yourself'};
+                setTimeout(step,150); return;
+              }
+              var one=vals[vi++];
+              var cur=null, all2=ctrls();
+              for(var q=0;q<all2.length;q++){ if(sig(all2[q])===d.s && vis(all2[q])){ cur=all2[q]; break; } }
+              if(!cur){ if(anyOk){ filled[d.s]=true; delete fails[d.s]; } setTimeout(step,150); return; }
+              openAndPick(cur, one, function(ok){ if(ok) anyOk=true; setTimeout(pickNext,200); });
+            })();
+            return;
+          }
           openAndPick(el, d.v, function(ok){
             if(ok){ filled[d.s]=true; delete fails[d.s]; }
             else fails[d.s]={key:d.s,label:d.label,why:'dropdown — please pick this one yourself'};
@@ -2486,7 +2611,16 @@ export default function JobDetailScreen() {
   // to the 3 the card shows) for speed — fetch the complete record once and layer it in, so the
   // detail view + cover letters always see ALL responsibilities/skills.
   const [fullJob, setFullJob] = useState<Job | null>(null);
-  useEffect(() => { track('screen_view', { screen: 'job_detail' }); }, []);
+  // Carry the job identity: without it "which job did they open" was unanswerable in analytics —
+  // every job-level question in the 2026-08-01 review died on this one missing property.
+  useEffect(() => {
+    track('screen_view', {
+      screen: 'job_detail',
+      jobId: (job as any)?.id ? String((job as any).id).slice(0, 60) : undefined,
+      jobUrl: (job as any)?.applyUrl ? String((job as any).applyUrl).slice(0, 200) : undefined,
+      employer: (employer as any)?.name ? String((employer as any).name).slice(0, 80) : undefined,
+    });
+  }, []);
   useEffect(() => {
     let cancel = false;
     const id = job?.id;
@@ -2909,6 +3043,30 @@ export default function JobDetailScreen() {
           { text: 'Not now', style: 'cancel' },
           { text: 'See plans', onPress: () => router.push('/(subscription)/plans' as never) },
         ]);
+        return null;
+      }
+      // NO RÉSUMÉ — the #1 silent dead-end in the 2026-08-01 analysis: users tapped Generate
+      // three times in four seconds, got nothing they could act on, and left. Take them to the
+      // upload instead of showing a message about a screen they have to go find.
+      if (e?.response?.data?.action === 'upload_resume' || /resume required/i.test(String(msg))) {
+        Alert.alert(
+          'Add your résumé first',
+          'Cover letters are written from your résumé. It takes about a minute to upload.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            {
+              text: 'Upload résumé',
+              onPress: async () => {
+                // Same bridge the onboarding checklist uses: App.js opens Account Settings and
+                // focuses the résumé section on this key. Leaving the user on a dead alert is
+                // exactly what burned u140 three sessions in a row.
+                try { await AsyncStorage.setItem('onboarding_focus_target', 'resume'); } catch {}
+                try { track('cl_blocked_no_resume'); } catch {}
+                router.back();
+              },
+            },
+          ],
+        );
         return null;
       }
       Alert.alert('Error', msg);

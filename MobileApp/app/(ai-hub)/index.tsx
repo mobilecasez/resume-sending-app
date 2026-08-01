@@ -1800,8 +1800,15 @@ export default function AIHubScreen() {
           const portal = err?.response?.data?.portal || trimmed;
           Alert.alert('🚫 Job Portal Detected', `"${portal}" is a job listing portal, not a company.\n\nCVApplyr works exclusively on employer career pages. Please enter a specific company name or their career page URL.\n\nExample: "https://careers.google.com"`, [{ text: 'Got it' }]);
         } else {
-          Alert.alert('Could not fetch jobs', `No results found for "${trimmed}". Try a full URL like https://careers.company.com`);
+          // Surface the SERVER's message when it has one — a failed search used to die silently
+          // (u170's "electrical" crashed server-side and the user saw nothing at all).
+          const serverMsg = err?.response?.data?.message || err?.response?.data?.error || err?.message;
+          const msg = (serverMsg && !/^(request failed|network error)/i.test(String(serverMsg)))
+            ? String(serverMsg)
+            : `We couldn't find jobs for "${trimmed}". Try a job title like "electrician jobs in Delhi", or paste a careers-page link.`;
+          Alert.alert('No jobs found', msg);
         }
+        try { track('search_failed', { query: trimmed.slice(0, 60), reason: isPortal ? 'portal' : 'no_results' }); } catch {}
         setPills((prev) => prev.filter((p) => p.id !== pillId));
         getInflightSearches().then((entries) => {
           const entry = entries.find((e) => e.pillId === pillId);
