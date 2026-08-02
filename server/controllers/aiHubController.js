@@ -5127,8 +5127,14 @@ async function autofillMap(req, res) {
         let portalQA = [];
         try { portalQA = await dbConfig.query('SELECT q_key, question, answer FROM user_job_portal_details WHERE user_id = ? ORDER BY use_count DESC LIMIT 300', [userId]); } catch {}
 
-        // Strip noisy/internal columns from resume_metadata
-        if (meta) { delete meta.id; delete meta.user_id; delete meta.parse_status; delete meta.created_at; delete meta.updated_at; }
+        // Strip noisy/internal columns from resume_metadata. raw_text STAYS — it is the candidate's
+        // actual work history, and questions like "have you worked here before?" are only
+        // answerable from it — but cap it so one long résumé cannot crowd out the form fields.
+        if (meta) {
+            delete meta.id; delete meta.user_id; delete meta.parse_status; delete meta.created_at; delete meta.updated_at;
+            delete meta.parse_error; delete meta.parsed_at;
+            if (meta.raw_text) meta.raw_text = String(meta.raw_text).slice(0, 6000);
+        }
 
         const profile = { ...(user || {}), resume_metadata: meta || undefined, builder_resume: builder || undefined };
         const clText = String(coverLetterHtml || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
@@ -5207,6 +5213,21 @@ RULES:
     • "How did you hear about / learn of this role / us?" → "Company website"
     • "A cover letter is required — have you included one?" / "Will you attach a resume?" → "Yes"
     • "Are you willing to work on-site / relocate / commute to <the job location>?" → "Yes"
+- EMPLOYMENT-HISTORY questions are ANSWERABLE FROM THE RÉSUMÉ — do not skip them. The profile's
+  resume_metadata (raw_text, experience_summary, education) IS the candidate's work history, so:
+    • "Have you previously been employed by / ever worked at ${companyName || 'this company'}?",
+      "Are you a former employee?", "Have you applied to us before?" → search the résumé's employers
+      for that company. Answer "Yes" (copying the field's own option) ONLY when the company appears
+      in their history; otherwise answer "No". A company absent from a résumé the candidate wrote is
+      a FACT, not a guess — answering "No" is correct and expected here.
+    • "Do you have a relative/friend working here?", "Were you referred by an employee?" → "No"
+      unless the profile says otherwise.
+    • "Do you have experience with X?" / "Years of experience in X" → answer from the résumé's
+      skills and experience_years. Never inflate: if X is absent, say so honestly or skip.
+- CHECKBOX GROUPS: several checkboxes can share ONE question — each field is a separate box whose
+  LABEL is one choice ("He/him", "She/her", "They/them", "Prefer not to say"). To pick a choice,
+  return that box's OWN label text as its value (e.g. key "l:he/him|checkbox" → "He/him"). Return a
+  value ONLY for the box that should be ticked; leave the siblings out entirely — never send "No".
     • Pronouns / gender questions → ONLY if the profile includes an explicit "gender" value. Map it to an option that is LITERALLY present in the field: gender "male" → a He/Him or Male option; "female" → a She/Her or Female option; "prefer not to say" → a "Prefer not to say" / neutral / decline option. If the profile has NO gender value, OMIT the field entirely (leave it blank for the user). NEVER infer gender or pronouns from the candidate's name or anything else.
 - DO NOT answer — put in "skipped" with "needs your judgement" — any question that needs the candidate's own judgement or legal/personal attestation:
     • work authorization / right to work / visa / sponsorship / immigration status

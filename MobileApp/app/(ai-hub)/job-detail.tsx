@@ -997,6 +997,88 @@ const JS_HELPERS = `
     try{ el.dispatchEvent(new Event('blur',{bubbles:true})); }catch(e){}
     try{ el.blur(); }catch(e){}
   }
+  // ── Actually closing a design-system SHEET ───────────────────────────────────
+  // blur + Escape are enough for react-select/MUI, but a full-screen sheet (Revolut rui) ignores
+  // BOTH — verified live: a document-level Escape left it open. Every dropdown we touched therefore
+  // stayed on screen, stacking one over another, and the user had to dismiss them by hand.
+  // A sheet ships its own dismiss control, so use it; fall back through Escape → backdrop → blur,
+  // verifying after each step instead of assuming.
+  var CB_CLOSE_TXT = /^(close|cancel|dismiss|back|done|ok|×|✕|✖|╳|x)$/i;
+  var CB_CLOSE_ARIA = /close|dismiss|back|cancel/i;
+  function cbSheetRoot(popEl){
+    // climb until the node covers most of the viewport (the sheet), max 6 hops
+    var n=popEl, best=popEl, h=0;
+    try{
+      while(n && h<6){
+        var r=n.getBoundingClientRect();
+        if(r.height >= (window.innerHeight||600)*0.5) best=n;
+        n=n.parentElement; h++;
+      }
+    }catch(e){}
+    return best;
+  }
+  function cbFindCloseCtrl(root){
+    try{
+      var cands=root.querySelectorAll('button,[role=button],[aria-label]');
+      for(var i=0;i<cands.length && i<120;i++){
+        var c=cands[i];
+        if(!vis(c)) continue;
+        var tx=cbText(c).trim();
+        var ar=(c.getAttribute&&(c.getAttribute('aria-label')||c.getAttribute('title')))||'';
+        if((tx && CB_CLOSE_TXT.test(tx)) || (ar && CB_CLOSE_ARIA.test(ar))){
+          // never a submit-shaped control, whatever it is called
+          var at=String((c.getAttribute&&c.getAttribute('type'))||'').toLowerCase();
+          if(at==='submit'||at==='image') continue;
+          if(CB_SUBMIT.test(tx) || (ar && CB_SUBMIT.test(ar))) continue;
+          return c;
+        }
+      }
+    }catch(e){}
+    return null;
+  }
+  function cbStillOpen(popEl){ try{ return !!(popEl && popEl.isConnected && vis(popEl)); }catch(e){ return false; } }
+  // Close whatever we opened for this control. popEl is the resolved popup (may be null).
+  function cbForceClose(el, popEl){
+    try{ cbClose(el); }catch(e){}
+    if(!popEl || !cbStillOpen(popEl)) return true;
+    // 1) the sheet's own Close / Back / × control
+    try{
+      var root=cbSheetRoot(popEl);
+      var btn=cbFindCloseCtrl(root);
+      if(btn){ cbSafeClick(btn); if(!cbStillOpen(popEl)) return true; }
+    }catch(e){}
+    // 2) a real bubbling Escape — only outside a host modal, where it would nuke the application
+    if(!cbInModal(el)){
+      try{ document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true})); }catch(e){}
+      if(!cbStillOpen(popEl)) return true;
+    }
+    // 3) the backdrop, if one is present (click OUTSIDE the panel, never on a row)
+    try{
+      var bd=document.querySelector('[class*=ackdrop],[class*=Overlay],[class*=overlay],[data-overlay]');
+      if(bd && vis(bd) && !bd.contains(el)){ cbSafeClick(bd); if(!cbStillOpen(popEl)) return true; }
+    }catch(e){}
+    return !cbStillOpen(popEl);
+  }
+  // Every sheet we open goes here so a final sweep can guarantee the page is left clean, even if a
+  // pick failed halfway or the widget re-rendered its popup node.
+  var __cvfOpened = [];
+  function cbNoteOpened(el, popEl){ try{ if(popEl) __cvfOpened.push({ el: el, pop: popEl }); }catch(e){} }
+  function cbCloseAllOpened(){
+    for(var i=0;i<__cvfOpened.length;i++){
+      try{ if(cbStillOpen(__cvfOpened[i].pop)) cbForceClose(__cvfOpened[i].el, __cvfOpened[i].pop); }catch(e){}
+    }
+    __cvfOpened = [];
+    // Anything still standing (a sheet whose node was replaced) gets one last generic dismiss.
+    try{
+      var late=deepQuery(CB_POPUP_SEL);
+      for(var j=0;j<late.length && j<40;j++){
+        var n=late[j];
+        if(!vis(n) || !cbLooksLikeList(n)) continue;
+        var b=cbFindCloseCtrl(cbSheetRoot(n));
+        if(b) cbSafeClick(b);
+      }
+    }catch(e){}
+  }
   // SAFETY GUARD for every phase that clicks page elements — the same structure skillsJs uses, for
   // the same reason: while it is on a form submit is swallowed, and the loop aborts on any
   // navigation, URL change or beforeunload.
@@ -1028,8 +1110,15 @@ const JS_HELPERS = `
   //    random row — a wrong dial code, or a fabricated answer to a legal question — and then reports
   //    it as filled. An unanswered question the user can see beats a wrong one they cannot.
   function openAndPick(el, v, cb){
-    var want=String(v), fin=false, trig=isComboTrigger(el), sb=null;
-    function finish(ok){ if(fin) return; fin=true; if(!ok){ try{ cbClose(el); }catch(e){} } cb(ok); }
+    var want=String(v), fin=false, trig=isComboTrigger(el), sb=null, popEl=null;
+    // ALWAYS close, success or failure. Closing only on failure is what left a stack of sheets on
+    // screen for the user to dismiss by hand — a pick that works still leaves the sheet up on any
+    // widget that does not self-dismiss.
+    function finish(ok){
+      if(fin) return; fin=true;
+      try{ cbForceClose(el, popEl); }catch(e){}
+      cb(ok);
+    }
     if(cbAborted()){ finish(false); return; }
     bringIntoView(el);   // an off-screen widget renders its popup outside the viewport → "no options"
     var pre=cbPreOpen();
@@ -1057,6 +1146,7 @@ const JS_HELPERS = `
         if(cbAborted()){ finish(false); return; }
         var pop=cbPopup(el, pre);
         if(!pop){ finish(false); return; }
+        popEl=pop.el; cbNoteOpened(el, popEl);   // remembered so the final sweep can guarantee closure
         function pickFrom(os, retried){
           if(cbAborted()){ finish(false); return; }
           var rbox = trig ? sb : el;   // whichever box holds our filter text
@@ -1117,8 +1207,10 @@ const JS_HELPERS = `
       var c=cbCtrl(el); if(c&&c!==el) cbSafeClick(c);
       if(isComboTrigger(el)) cbSafeClick(el);   // wrapper clicks never reach an input-shaped trigger
       setTimeout(function(){
+        var popEl2=null;
         try{
           var pop=cbPopup(el, pre);
+          if(pop) popEl2=pop.el;
           var os=pop?cbOptions(el, pop):[], opts=[];
           for(var k=0;k<os.length&&opts.length<60;k++){ var tx=cbText(os[k]); if(tx) opts.push(tx.slice(0,90)); }
           // A list we hit the cap on is INCOMPLETE. Say so, or the server's option-snap treats a
@@ -1126,8 +1218,10 @@ const JS_HELPERS = `
           // "no matching option".
           if(opts.length){ f.options=opts; f.optionsUnknown=false; if(os.length>=60) f.optionsTruncated=true; }
         }catch(e){}
-        cbClose(el);
-        setTimeout(step,100);
+        // The SCAN opens every dropdown too — it must leave each one closed, or the user watches
+        // sheets pile up before a single field is even filled.
+        try{ cbForceClose(el, popEl2); }catch(e){}
+        setTimeout(step,140);
       },360);
     }
     step();
@@ -1217,7 +1311,30 @@ const JS_HELPERS = `
               }
               else fails[s]={key:s,label:nlbl(el).slice(0,90),why:'no matching option'};
             } else if (t==='checkbox'){
-              var wc=(v===true)||/^(yes|true|on|1|checked)$/i.test(String(v)); setChecked(el,wc); if(el.checked===wc) filled[s]=true;
+              // A checkbox GROUP ("What are your pronouns?" → He/him · She/her · They/them) carries
+              // the answer in each box's LABEL, and its value attribute is just "on". Testing the
+              // answer against yes/true/on made "He/him" read as FALSE — so we actively UNCHECKED
+              // the very box we meant to tick. Label-match first, boolean second.
+              var rawv=String(v).trim();
+              var affirm=/^(yes|true|on|1|checked|y)$/i.test(rawv);
+              var negate=/^(no|false|off|0|unchecked|n)$/i.test(rawv);
+              if (v===true || affirm){
+                bringIntoView(el); setChecked(el,true); if(el.checked) filled[s]=true;
+              } else if (v===false || negate){
+                // An explicit "no" must never UNTICK something the candidate ticked themselves.
+                filled[s]=true;
+              } else {
+                var lab=cleanTxt(nlbl(el)).toLowerCase();
+                var wants=multiVals(rawv); if(!wants.length) wants=[rawv];
+                var hit=false;
+                for (var wi=0; wi<wants.length; wi++){
+                  var w=cleanTxt(wants[wi]).toLowerCase();
+                  if(!w||!lab) continue;
+                  if(lab===w || lab.indexOf(w)>=0 || w.indexOf(lab)>=0 || pickOptFuzzy([{text:lab}], w)){ hit=true; break; }
+                }
+                if (hit){ bringIntoView(el); setChecked(el,true); if(el.checked) filled[s]=true; }
+                else filled[s]=true;   // a sibling box in this group is the answer — leave this one alone
+              }
             } else {
               var vv=String(v);
               // A phone box next to a separate dial-code picker gets the LOCAL number only —
@@ -1275,6 +1392,8 @@ const JS_HELPERS = `
         step();
       }
       function report(){
+        // Leave the page as we found it: no half-open pickers for the user to dismiss by hand.
+        try{ cbCloseAllOpened(); }catch(e){}
         var fl=[], n=0;
         for(var k in fails){ if(Object.prototype.hasOwnProperty.call(fails,k) && !filled[k] && fl.length<12) fl.push(fails[k]); }
         for(var k2 in filled){ if(Object.prototype.hasOwnProperty.call(filled,k2)) n++; }

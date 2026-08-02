@@ -22,6 +22,10 @@ function raw(name) {
 }
 const JS_HELPERS = new Function('JS_HELPERS', 'return `' + raw('JS_HELPERS') + '`;')('');
 
+function rawFn(name) { const m = SRC.match(new RegExp('function ' + name + '\\([^)]*\\)[^{]*\\{[\\s\\S]*?return `([\\s\\S]*?)`;\\s*\\}')); if (!m) throw new Error('no fn ' + name); return m[1]; }
+const FILL_BODY = rawFn('fillJs');
+const fillJsFactory = (values) => new Function('JS_HELPERS', 'values', 'return `' + FILL_BODY + '`;')(JS_HELPERS, values);
+
 const URL = 'https://www.revolut.com/careers/apply/4ee78ed3-1222-4265-aca8-d6f147f7d15a/';
 
 let pass = 0, fail = 0;
@@ -122,6 +126,73 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   ok('Current country was set to India', picked.country.ok && /india/i.test(String(picked.country.value)), picked.country);
   ok('the phone country code was set to +91', picked.dial.ok && /\+?91/.test(String(picked.dial.value)), picked.dial);
   ok('THE REAL FORM WAS NEVER SUBMITTED', picked.submits === 0, picked.submits);
+
+
+  // ── sheets must be LEFT CLOSED, and checkbox groups must tick ────────────────
+  console.log('\nsheets close themselves; nothing is left stacked open');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(6000);
+  await page.evaluate(`window.ReactNativeWebView = { postMessage: function(){} };`);
+  await page.evaluate('(function(){' + JS_HELPERS + `
+    window.__submits = 0;
+    document.addEventListener('submit', function(e){ e.preventDefault(); window.__submits++; }, true);
+    window.__cvf = { openAndPick: openAndPick, nlbl: nlbl, cbCloseAllOpened: cbCloseAllOpened,
+      cbLooksLikeList: cbLooksLikeList, vis: vis, sig: sig };
+  })()`);
+  const sheets = await page.evaluate(async () => {
+    const openSheets = () => [...document.querySelectorAll('input[type=search]')].filter((e) => e.offsetParent !== null).length;
+    const run = (re, want) => new Promise((res) => {
+      const els = [...document.querySelectorAll('input[type=button]')].filter((e) => e.getBoundingClientRect().width);
+      const t = els.find((e) => re.test(window.__cvf.nlbl(e)));
+      if (!t) return res('no trigger');
+      window.__cvf.openAndPick(t, want, () => res('done'));
+      setTimeout(() => res('timeout'), 25000);
+    });
+    await run(/current country/i, 'India');
+    const afterFirst = openSheets();
+    await new Promise((r) => setTimeout(r, 800));
+    await run(/phone country/i, '+91');
+    const afterSecond = openSheets();
+    window.__cvf.cbCloseAllOpened();
+    await new Promise((r) => setTimeout(r, 700));
+    return { afterFirst, afterSecond, afterSweep: openSheets(), submits: window.__submits };
+  });
+  console.log('    open sheets:', JSON.stringify(sheets));
+  ok('no sheet is left open after the first pick', sheets.afterFirst === 0, sheets);
+  ok('no sheets stack up after a second pick', sheets.afterSecond === 0, sheets);
+  ok('the page is left clean (nothing for the user to dismiss)', sheets.afterSweep === 0, sheets);
+
+  console.log('\ncheckbox groups (pronouns) actually tick');
+  const boxes = await page.evaluate(async () => {
+    const cbs = [...document.querySelectorAll('input[type=checkbox]')].filter((e) => e.offsetParent !== null);
+    const he = cbs.find((c) => /he\/him/i.test(window.__cvf.nlbl(c)));
+    if (!he) return { found: false };
+    const key = window.__cvf.sig(he);
+    return { found: true, key, labels: cbs.slice(0, 5).map((c) => window.__cvf.nlbl(c)) };
+  });
+  console.log('    pronoun boxes:', JSON.stringify(boxes));
+  if (boxes.found) {
+    const res = await page.evaluate(async (key) => {
+      const vals = {}; vals[key] = 'He/him';
+      return new Promise((resolve) => {
+        window.__fillDone = resolve;
+        window.__vals = vals;
+        resolve(null);
+      });
+    }, boxes.key);
+    // drive the real fill script for just this field
+    const fillOne = fillJsFactory({ [boxes.key]: 'He/him' });
+    await page.evaluate(fillOne);
+    await page.waitForFunction(() => window.__msgs && window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 40000 }).catch(() => {});
+    const checked = await page.evaluate(() => [...document.querySelectorAll('input[type=checkbox]')]
+      .filter((e) => e.offsetParent !== null).map((c) => ({ l: (c.labels && c.labels[0] ? c.labels[0].innerText : '').trim().slice(0, 20), c: c.checked })));
+    console.log('    after fill:', JSON.stringify(checked));
+    const hit = checked.find((c) => /he\/him/i.test(c.l));
+    ok('the He/him box is TICKED (it used to be unticked by us)', !!hit && hit.c === true, checked);
+    ok('sibling pronoun boxes are left alone', checked.filter((c) => c.c).length === 1, checked);
+  } else {
+    ok('pronoun checkbox group found on the page', false, boxes);
+  }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   await browser.close();
