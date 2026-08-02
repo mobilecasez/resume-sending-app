@@ -751,9 +751,15 @@ const JS_HELPERS = `
   // The search input INSIDE an opened popup (Revolut's "Search phone country codes", intl-tel-input's
   // country filter) — or wherever focus landed after opening. Never the trigger itself.
   function cbSearchBox(el, pop){
+    // The filter box can sit in a STICKY HEADER that is a sibling of the rows container, so when the
+    // resolved popup is the inner list we must also look at its ancestors. Without the filter, a
+    // virtualized 240-country list only ever renders its first ~24 rows and "India" is unreachable.
     try{
-      if(pop&&pop.el&&pop.el.querySelectorAll){
-        var cs=pop.el.querySelectorAll('input');
+      var scopes=[];
+      if(pop&&pop.el){ var a=pop.el, h=0; while(a && h<4){ scopes.push(a); a=a.parentElement; h++; } }
+      for(var s=0;s<scopes.length;s++){
+        if(!scopes[s].querySelectorAll) continue;
+        var cs=scopes[s].querySelectorAll('input');
         for(var i=0;i<cs.length;i++){ var c=cs[i], ct=(c.type||'').toLowerCase();
           if(c!==el && !c.readOnly && ['text','search',''].indexOf(ct)>=0 && vis(c)) return c; }
       }
@@ -799,16 +805,52 @@ const JS_HELPERS = `
   // now only accepted when it is either EXPLICITLY associated with the control (aria-controls /
   // aria-owns), or it BECAME VISIBLE as a result of our own open gesture. A site nav and a sibling
   // button container are visible the whole time and can never qualify.
-  var CB_POPUP_SEL  = '[role=listbox],[role=menu],[role=grid],[class*=menu],[class*=dropdown],[class*=listbox],[class*=autocomplete],[class*=typeahead],[class*=results],[class*=suggestion],[class*=option]';
+  // ⚠️ Design-system sheets (Revolut's rui, and most "bottom sheet" pickers) use NO aria roles and
+  // no menu-ish class names: the country list is <button class="Cell__CellBase"> rows inside
+  // <div class="Group…"> inside <div class="ScrollContent…">. Name-matching alone found nothing, so
+  // we opened the sheet, saw "no options", and abandoned it half-open — the exact reported symptom.
+  // Hence: a wide net here, plus the STRUCTURAL test below that actually decides.
+  var CB_POPUP_SEL  = '[role=listbox],[role=menu],[role=grid],[class*=menu],[class*=dropdown],[class*=listbox],[class*=autocomplete],[class*=typeahead],[class*=results],[class*=suggestion],[class*=option],[class*=ScrollContent],[class*=scroll-content],[class*=Sheet],[class*=sheet],[class*=Drawer],[class*=drawer],[class*=Popover],[class*=popover],[class*=Picker],[class*=picker],[class*=Portal],[class*=portal],[class*=Overlay],[class*=overlay],[class*=Modal],[class*=Group]';
   // Word-boundary, so "form-options", "answer-options" and "optional-note" no longer look like popups.
-  var CB_POPUP_WORD = /(^|[-_])(menu|dropdown|listbox|autocomplete|typeahead|results|suggestions?|choices)([-_]|$)/i;
+  var CB_POPUP_WORD = /(^|[-_])(menu|dropdown|listbox|autocomplete|typeahead|results|suggestions?|choices|sheet|drawer|popover|picker|scrollcontent)([-_]|$)/i;
+  // Rows a design system renders WITHOUT any aria: clickable leaves carrying one short label.
+  var CB_ROW_SEL = '[role=option],li,[class*=option],[class*=item],[class*=Item],[class*=Cell],[class*=cell],[class*=row],[class*=Row],button,[role=button],[tabindex]';
+  function cbClickableLeaf(n){
+    try{
+      if(!n || !vis(n)) return false;
+      // a row holds its own label, not a nest of other rows
+      if(n.querySelector && n.querySelector('[role=option],button,[role=button]')) return false;
+      var tx=cbText(n); if(!tx || tx.length>120) return false;
+      if(n.tagName==='BUTTON'||n.getAttribute('role')==='option'||n.getAttribute('role')==='button') return true;
+      var cur=''; try{ cur=getComputedStyle(n).cursor; }catch(e){}
+      return cur==='pointer';
+    }catch(e){ return false; }
+  }
+  // STRUCTURAL popup test — what actually makes something a list: several sibling clickable rows.
+  // This is what recognises the Revolut sheet (and any other unlabeled design-system picker).
+  function cbLooksLikeList(n){
+    try{
+      if(!n || !n.querySelectorAll) return false;
+      var cands=n.querySelectorAll(CB_ROW_SEL), hits=0;
+      for(var i=0;i<cands.length && i<300 && hits<3;i++){ if(cbClickableLeaf(cands[i])) hits++; }
+      return hits>=3;
+    }catch(e){ return false; }
+  }
   function cbClassOf(n){ try{ var cn=n.className; if(cn&&typeof cn!=='string'&&cn.baseVal!=null) cn=cn.baseVal; return String(cn||''); }catch(e){ return ''; } }
   function cbPopupOk(n){
     try{
       var r=(n.getAttribute&&n.getAttribute('role'))||'';
       if(r==='listbox'||r==='menu'||r==='grid') return true;
       var toks=cbClassOf(n).split(/\\s+/);
-      for(var i=0;i<toks.length;i++){ if(toks[i]&&CB_POPUP_WORD.test(toks[i])) return true; }
+      // styled-components emit "Cell__CellBase-rui__sc-10xyz" — test the whole token too, not just
+      // its dash-separated words, or every design-system class fails the word test.
+      for(var i=0;i<toks.length;i++){
+        if(!toks[i]) continue;
+        if(CB_POPUP_WORD.test(toks[i])) return true;
+        if(/scrollcontent|sheet|drawer|popover|picker|listbox|dropdown/i.test(toks[i])) return true;
+      }
+      // Last word: does it BEHAVE like a list? (unlabeled design-system sheets)
+      if(cbLooksLikeList(n)) return true;
     }catch(e){}
     return false;
   }
@@ -839,15 +881,28 @@ const JS_HELPERS = `
   }
   function cbOptions(el, pop){
     if(!pop||!pop.el) return [];
-    var os=[]; try{ os=pop.el.querySelectorAll('[role=option],li,[class*=option],[class*=item]'); }catch(e){ return []; }
+    var os=[]; try{ os=pop.el.querySelectorAll('[role=option],li,[class*=option],[class*=item]'); }catch(e){ os=[]; }
     var out=[], seen=[];
-    for(var i=0;i<os.length&&out.length<60;i++){
+    for(var i=0;i<os.length&&out.length<200;i++){
       var o=os[i];
       if(!vis(o)) continue;
       try{ if(o.querySelector && o.querySelector('[role=option]')) continue; }catch(e){}   // container, not a row
       var tx=cbText(o); if(!tx||tx.length>120) continue;
       if(seen.indexOf(tx)>=0) continue; seen.push(tx);
       out.push(o);
+    }
+    // NOTHING matched the aria/class names → this is an unlabeled design-system list (Revolut rui:
+    // <button class="Cell__CellBase">Afghanistan</button>). Fall back to clickable leaves. The cap
+    // is high because a country list is ~240 rows and pickDial must see the RIGHT one, not row 60.
+    if(!out.length){
+      var cands=[]; try{ cands=pop.el.querySelectorAll(CB_ROW_SEL); }catch(e){ return []; }
+      for(var j=0;j<cands.length&&out.length<300;j++){
+        var c=cands[j];
+        if(!cbClickableLeaf(c)) continue;
+        var t2=cbText(c);
+        if(seen.indexOf(t2)>=0) continue; seen.push(t2);
+        out.push(c);
+      }
     }
     return out;
   }
