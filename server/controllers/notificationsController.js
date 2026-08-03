@@ -5,16 +5,21 @@ const notifPrefs = require('../services/notificationPrefs');
 
 // Send a device push for a notification, gated by the user's per-category preference. Best-effort:
 // never throws, never blocks the in-app notification. A stale Expo token → passive uninstall log.
+// ⚠️ RETURNS whether the push actually reached Expo. It used to return nothing, so every caller
+// that logged "sent" was guessing: a user who had opted out, or whose token was missing or stale,
+// was recorded identically to one whose phone buzzed. The scheduled jobs now spend a real
+// per-user notification budget, so "did it go?" has to be an answer, not an assumption.
 const pushForNotification = async (userId, { pushTitle, pushBody, category, type, metadata }) => {
     try {
-        if (category && !(await notifPrefs.isEnabled(userId, category))) return;   // user opted out of this category
+        if (category && !(await notifPrefs.isEnabled(userId, category))) return false;   // opted out
         const u = await dbConfig.get('SELECT expo_push_token FROM users WHERE id = ?', [userId]);
-        if (!u || !u.expo_push_token) return;
+        if (!u || !u.expo_push_token) return false;
         const r = await expoPush.sendPushNotification(
             u.expo_push_token, pushTitle, pushBody, { type, ...(metadata || {}) }
         );
         if (r === 'stale') { try { await require('../services/uninstallDetection').handleStaleToken(userId); } catch (_) {} }
-    } catch (e) { console.warn('[notif] push failed (non-blocking):', e.message); }
+        return r === true;
+    } catch (e) { console.warn('[notif] push failed (non-blocking):', e.message); return false; }
 };
 
 // Helper function to create notification.
@@ -35,18 +40,21 @@ const createNotification = async (userId, type, title, message, details = null, 
 
         console.log(`✅ Notification created for user ${userId}: ${type} (ID: ${result.lastID})`);
 
+        let pushed = false;
         if (opts && opts.push) {
-            await pushForNotification(userId, {
+            pushed = await pushForNotification(userId, {
                 pushTitle: opts.pushTitle || title,
                 pushBody: opts.pushBody || message,
                 category: opts.category,
                 type, metadata,
             });
         }
+        return { id: result ? result.lastID : null, pushed };
     } catch (error) {
         console.error(`❌ Error creating notification for user ${userId}:`, error);
         console.error('Error details:', error.message);
         console.error('Stack:', error.stack);
+        return { id: null, pushed: false };
     }
 };
 
@@ -283,7 +291,7 @@ const notifyNewJobs = async (userId, employerName, count, employerId) => {
 const notifyFollowUp = async (userId, companyName, daysAgo) => {
     const title = 'Time for a follow-up?';
     const message = `It's been ${daysAgo} days since you applied to ${companyName} with no reply. A short follow-up can help.`;
-    await createNotification(userId, 'reminder', title, message, null,
+    return createNotification(userId, 'reminder', title, message, null,
         { companyName, daysAgo, action: 'follow_up_reminder', route: '/(ai-hub)', params: { tab: 'myjobs' } }, {
         push: true, category: 'reminders',
         pushTitle: 'Time for a follow-up?', pushBody: `No reply from ${companyName} yet — a quick nudge can help.`,
@@ -299,7 +307,7 @@ const notifyWeeklyDigest = async (userId, { sent, replies, generated }) => {
     const summary = parts.length ? parts.join(' · ') : 'a quiet week';
     const title = 'Your week on CVApplyr';
     const message = `Last 7 days: ${summary}. Keep the momentum going!`;
-    await createNotification(userId, 'digest', title, message, null,
+    return createNotification(userId, 'digest', title, message, null,
         { sent, replies, generated, action: 'weekly_digest', route: '/(ai-hub)', params: { tab: 'myjobs' } }, {
         push: true, category: 'digest',
         pushTitle: 'Your week on CVApplyr 📊', pushBody: `Last 7 days: ${summary}.`,
@@ -310,7 +318,7 @@ const notifyWeeklyDigest = async (userId, { sent, replies, generated }) => {
 const notifyCreditExpiry = async (userId, credits, daysLeft) => {
     const title = 'Credits expiring soon';
     const message = `${credits} credit${credits === 1 ? '' : 's'} expire in ${daysLeft} day${daysLeft === 1 ? '' : 's'}. Use them before they're gone.`;
-    await createNotification(userId, 'credits', title, message, null,
+    return createNotification(userId, 'credits', title, message, null,
         { credits, daysLeft, action: 'credit_expiry', route: '/(ai-hub)', params: {} }, {
         push: true, category: 'reminders',
         pushTitle: 'Credits expiring soon ⏳', pushBody: message,

@@ -32,6 +32,8 @@ const MAX_PER_7D = parseInt(process.env.NUDGE_MAX_PER_7D || '3', 10);
 const MAX_ATTEMPTS = parseInt(process.env.NUDGE_MAX_ATTEMPTS || '3', 10);
 /** Hours to wait before attempt N+1 of the SAME nudge. Index 0 is unused (attempt 1 has no wait). */
 const BACKOFF_HOURS = [0, 72, 192];
+/** How long before a nudge whose push never landed may be attempted again. */
+const RETRY_AFTER_FAILURE_HOURS = parseInt(process.env.NUDGE_RETRY_AFTER_FAILURE_HOURS || '24', 10);
 const SILENCE_STREAK = parseInt(process.env.NUDGE_SILENCE_STREAK || '3', 10);
 const SILENCE_PAUSE_DAYS = parseInt(process.env.NUDGE_SILENCE_PAUSE_DAYS || '30', 10);
 /** How far either side of an observed-active hour still counts as a reasonable time to arrive. */
@@ -101,15 +103,26 @@ async function loadState(userIds) {
     for (const r of rows || []) {
       const s = state.get(int(r.user_id));
       if (!s) continue;
-      // Only a push that actually went out counts against the caps. A skip ('opted_out', 'no_token')
-      // reached nobody, so letting it consume the weekly budget would silently mute a reachable user.
-      if (r.push_ok !== true) continue;
       const at = new Date(r.sent_at).getTime();
+      const k = String(r.nudge_key);
+
+      // TIMING comes from EVERY attempt, successful or not. A failed push (dead token, opted out)
+      // that left no trace here meant the sweep retried the same nudge every 6 hours forever —
+      // silent on the lock screen, but writing a fresh in-app row each time, so the user's
+      // notification feed filled with the same message. The backoff must apply to attempts, not
+      // just to arrivals.
+      const prev = s.byKey.get(k);
+      if (!prev || at > prev.at) s.byKey.set(k, { at, attempt: prev ? prev.attempt : 0 });
+
+      // The CAPS, by contrast, only count pushes that actually went out. A skip reached nobody, so
+      // letting it consume the weekly budget would silently mute a perfectly reachable user.
+      if (r.push_ok !== true) continue;
       if (!s.lastSentAt || at > s.lastSentAt) s.lastSentAt = at;
       if (Date.now() - at <= 7 * 86400000) s.sent7d += 1;
-      const k = String(r.nudge_key);
-      const prev = s.byKey.get(k);
-      if (!prev || at > prev.at) s.byKey.set(k, { at, attempt: Math.max(1, int(r.attempt, 1)) });
+      // …and so does the attempt NUMBER: three failed sends must not exhaust MAX_ATTEMPTS and
+      // retire a nudge the user has never once seen.
+      const cur = s.byKey.get(k);
+      cur.attempt = Math.max(cur.attempt, int(r.attempt, 1));
       s.recent = s.recent || [];
       s.recent.push({ at, responded: !!r.responded_at });
     }
@@ -176,7 +189,7 @@ function check(userId, nudgeKey, state, now = Date.now(), opts = {}) {
     }
   }
 
-  // 3) per-nudge backoff
+  // 3) per-nudge backoff. `attempt` counts DELIVERED sends; `at` is the last time we TRIED.
   const prev = s.byKey ? s.byKey.get(nudgeKey) : null;
   let attempt = 1;
   if (prev) {
@@ -184,8 +197,12 @@ function check(userId, nudgeKey, state, now = Date.now(), opts = {}) {
     if (attempt > MAX_ATTEMPTS) {
       return { ok: false, reason: 'max_attempts', detail: `already sent '${nudgeKey}' ${prev.attempt}x` };
     }
-    const waitH = BACKOFF_HOURS[attempt - 1] != null ? BACKOFF_HOURS[attempt - 1] : BACKOFF_HOURS[BACKOFF_HOURS.length - 1];
-    const dueAt = prev.at + waitH * 3600000;
+    // A never-delivered attempt (prev.attempt === 0) still has to wait out the first backoff step,
+    // otherwise a user with a dead token gets a retry on every 6-hourly sweep.
+    const idx = Math.max(1, attempt) - 1;
+    const waitH = BACKOFF_HOURS[idx] != null ? BACKOFF_HOURS[idx] : BACKOFF_HOURS[BACKOFF_HOURS.length - 1];
+    const effectiveWait = prev.attempt === 0 ? Math.max(waitH, RETRY_AFTER_FAILURE_HOURS) : waitH;
+    const dueAt = prev.at + effectiveWait * 3600000;
     if (now < dueAt) {
       return { ok: false, reason: 'backoff',
         detail: `attempt ${attempt} of '${nudgeKey}' due ${new Date(dueAt).toISOString().slice(0, 16)}Z` };
@@ -214,7 +231,8 @@ function check(userId, nudgeKey, state, now = Date.now(), opts = {}) {
 }
 
 module.exports = {
-  MIN_GAP_HOURS, MAX_PER_7D, MAX_ATTEMPTS, BACKOFF_HOURS, SILENCE_STREAK, SILENCE_PAUSE_DAYS,
+  MIN_GAP_HOURS, MAX_PER_7D, MAX_ATTEMPTS, BACKOFF_HOURS, RETRY_AFTER_FAILURE_HOURS,
+  SILENCE_STREAK, SILENCE_PAUSE_DAYS,
   QUIET_SPREAD, TEST_USER_IDS,
   record, refreshResponses, loadState, check,
   // test seams

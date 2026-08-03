@@ -161,4 +161,46 @@ async function listGrants(userId, limit = 50) {
   } catch { return []; }
 }
 
-module.exports = { KINDS, MAX_AMOUNT, grantQuota, bonusSince, extendTrial, listGrants };
+/**
+ * Make sure a bonus grant will actually be COUNTABLE for this user, and return the window it lands in.
+ *
+ * ⚠️ This is the difference between granting quota and granting the ILLUSION of quota. entitlements
+ * reads bonuses inside a window — `created_at >= period_start` for a plan, `>= started_at` for a
+ * trial — and it only consults the trial window while the trial is ACTIVE. So:
+ *   • trial expired  → the grant is invisible; the user sees no extra letters.
+ *   • no trial row   → worse. ensureTrial will later create one with started_at = NOW(), which is
+ *                      AFTER our grant, so the grant is excluded forever.
+ * On production, 4 of the 16 users promised 3 free cover letters had no trial row at all — a quarter
+ * of that campaign would have been a lie. So: open a window first, then grant.
+ *
+ * Returns { via: 'plan' | 'trial' | null, opened?: string }.
+ */
+async function ensureCountableWindow(userId, idemKey) {
+  const uid = int(userId);
+  if (!uid) return { via: null };
+  try {
+    const ent = require('./entitlements');
+    const sub = await ent.activeSubscription(uid);
+    if (sub && ent.planByKey(sub.plan_key)) return { via: 'plan' };
+
+    const rows = await dbConfig.query('SELECT started_at, ends_at FROM user_trials WHERE user_id = $1', [uid]);
+    const trial = rows && rows[0];
+    if (!trial) {
+      // No trial ever started. Start one now — they were always entitled to it, they simply never
+      // touched a quota-gated feature. deviceId is null here on purpose: this is not someone
+      // claiming a trial on a fresh device, it is us making a promise we already made redeemable.
+      await ent.ensureTrial(uid, null, null);
+      return { via: 'trial', opened: 'started_trial' };
+    }
+    if (new Date(trial.ends_at) > new Date()) return { via: 'trial' };
+
+    // Expired: reopen it, keeping started_at so the usage window (and therefore the grant) still counts.
+    const r = await extendTrial(uid, 7, (idemKey || 'bonus') + ':window', { source: 'bonus_window', note: 'reopened so a granted bonus is usable' });
+    return { via: r.extended || r.already ? 'trial' : null, opened: r.extended ? 'reopened_trial' : undefined };
+  } catch (e) {
+    console.warn('[quotaGrants] ensureCountableWindow:', e.message);
+    return { via: null };
+  }
+}
+
+module.exports = { KINDS, MAX_AMOUNT, grantQuota, bonusSince, extendTrial, listGrants, ensureCountableWindow };

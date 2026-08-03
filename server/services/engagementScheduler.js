@@ -43,17 +43,22 @@ async function runDailyReminders({ force = false } = {}) {
         AND sent_date <= NOW() - INTERVAL '${FOLLOWUP_AFTER_DAYS} days'
         AND sent_date >  NOW() - INTERVAL '${FOLLOWUP_MAX_AGE_DAYS} days'
       ORDER BY sent_date ASC LIMIT ${DAILY_CAP}`).catch(() => []) : [];
-  // ⚠️ Every automated push records itself in user_nudge_log (services/nudgeGate.js). That table is
-  // what lets ANY job answer "has this person had enough notifications this week?" — without the
-  // row here, a follow-up reminder is invisible to the lifecycle nudges and the same user can be
-  // pushed twice in an hour by two jobs that each believe they are the only one.
+  // ⚠️ Every automated push both ASKS and TELLS the shared gate (services/nudgeGate.js). Recording
+  // alone is not enough — that was the first version of this, and it meant follow-ups still fanned
+  // out to everyone at whatever hour the tick landed while merely informing the other jobs after
+  // the fact. Asking first is what makes "one automated push per 20h" true rather than aspirational.
   const gate = require('./nudgeGate');
+  const staleState = await gate.loadState(stale.map((a) => a.user_id));
   for (const a of stale) {
     try {
-      await notifyFollowUp(a.user_id, a.company_name || 'the company', a.days_ago);
+      const d = gate.check(a.user_id, 'daily_reminders', staleState.get(a.user_id), Date.now());
+      if (!d.ok) continue;                      // the reminder waits for a better moment
+      const r = await notifyFollowUp(a.user_id, a.company_name || 'the company', a.days_ago);
       await dbConfig.run('UPDATE application_history SET follow_up_reminded_at = NOW() WHERE id = ?', [a.id]);
-      await gate.record(a.user_id, 'daily_reminders', { pushOk: true });
-      followUps++;
+      // Record what ACTUALLY happened. Hard-coding pushOk:true spends the user's weekly budget on
+      // a push that an opt-out or a dead token silently swallowed.
+      await gate.record(a.user_id, 'daily_reminders', { attempt: d.attempt, pushOk: !!(r && r.pushed) });
+      if (r && r.pushed) followUps++;
     } catch (_) {}
   }
 
@@ -65,12 +70,15 @@ async function runDailyReminders({ force = false } = {}) {
         AND expiry_date > NOW() AND expiry_date <= NOW() + INTERVAL '3 days'
         AND (expiry_warned_at IS NULL OR expiry_warned_at < NOW() - INTERVAL '4 days')
       LIMIT ${DAILY_CAP}`).catch(() => []) : [];
+  const expState = await gate.loadState(expiring.map((c) => c.user_id));
   for (const c of expiring) {
     try {
-      await notifyCreditExpiry(c.user_id, c.credits_remaining, Math.max(0, c.days_left) + 1);
+      const d = gate.check(c.user_id, 'credit_expiry', expState.get(c.user_id), Date.now());
+      if (!d.ok) continue;
+      const r = await notifyCreditExpiry(c.user_id, c.credits_remaining, Math.max(0, c.days_left) + 1);
       await dbConfig.run('UPDATE user_credits SET expiry_warned_at = NOW() WHERE user_id = ?', [c.user_id]);
-      await gate.record(c.user_id, 'credit_expiry', { pushOk: true });
-      expiries++;
+      await gate.record(c.user_id, 'credit_expiry', { attempt: d.attempt, pushOk: !!(r && r.pushed) });
+      if (r && r.pushed) expiries++;
     } catch (_) {}
   }
 
@@ -105,13 +113,20 @@ async function runWeeklyDigest({ force = false } = {}) {
     // The digest had NO per-user dedupe at all — its only guard was the job-level 156h timestamp,
     // which the admin "Run now" button bypasses with force:true. Two taps meant two digests to
     // everyone. The shared ledger closes that: a digest sent in the last 6 days is a repeat.
+    let st = new Map();
     try {
-      const st = await gate.loadState([id]);
-      const s = st.get(id);
-      const last = s && s.byKey ? s.byKey.get('weekly_digest') : null;
+      st = await gate.loadState([id]);
+      const gs = st.get(id);
+      const last = gs && gs.byKey ? gs.byKey.get('weekly_digest') : null;
       if (last && (Date.now() - last.at) < 6 * 24 * 3600 * 1000) continue;
     } catch (_) { /* gate unavailable — send rather than silently drop the digest */ }
-    try { await notifyWeeklyDigest(id, d); await gate.record(id, 'weekly_digest', { pushOk: true }); digests++; } catch (_) {}
+    try {
+      const dec = gate.check(id, 'weekly_digest', st.get(id), Date.now());
+      if (!dec.ok) continue;
+      const r = await notifyWeeklyDigest(id, d);
+      await gate.record(id, 'weekly_digest', { attempt: dec.attempt, pushOk: !!(r && r.pushed) });
+      if (r && r.pushed) digests++;
+    } catch (_) {}
   }
   const summary = `digests ${digests}`;
   await setLastRun('weekly_digest', summary);

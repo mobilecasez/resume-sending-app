@@ -188,6 +188,7 @@ function priorNudgeCount(state) {
  */
 function pickNudge(userState, gateState, enabled) {
   const tried = [];
+  const applicable = [];
   for (const n of NUDGES) {
     if (enabled && enabled[n.key] === false) { tried.push({ key: n.key, why: 'switched_off' }); continue; }
 
@@ -206,9 +207,19 @@ function pickNudge(userState, gateState, enabled) {
     const rel = templates.relevanceFor(tpl, userState);
     if (rel.relevance !== 'suggested') { tried.push({ key: n.key, why: rel.reason || rel.relevance }); continue; }
 
-    return { nudge: n, template: tpl, reason: rel.reason, tried };
+    applicable.push({ nudge: n, template: tpl, reason: rel.reason });
   }
-  return { nudge: null, tried };
+  // The FIRST entry is the pick; the rest are fallbacks. Returning only the first was a real dead
+  // end: when the top-priority nudge was inside its backoff — or had used all three attempts — the
+  // user got nothing at all, forever, even though a perfectly good lower-priority nudge applied.
+  // "One nudge per sweep" is the rule; "the highest-priority one we are ALLOWED to send" is what
+  // that rule actually means.
+  return {
+    nudge: applicable.length ? applicable[0].nudge : null,
+    template: applicable.length ? applicable[0].template : null,
+    reason: applicable.length ? applicable[0].reason : null,
+    applicable, tried,
+  };
 }
 
 // ── incentives ────────────────────────────────────────────────────────────────────────────────
@@ -226,7 +237,11 @@ function pickNudge(userState, gateState, enabled) {
 async function applyImmediate(userId, nudge, attempt) {
   const inc = nudge.incentive;
   if (!inc || inc.mode !== 'immediate') return null;
-  const idem = `${nudge.key}:a${attempt}`;
+  // ONE payout per nudge, not one per attempt. MAX_ATTEMPTS is 3, so an attempt-keyed idem let the
+  // trial nudge hand out 15 free days and 6 free letters to the same person. On attempts 2 and 3
+  // nothing is granted, applyImmediate returns null, and the offer line is simply dropped — the
+  // push still goes out, as a plain reminder that says nothing untrue.
+  const idem = nudge.key;
   const log = [];
   const said = [];
   const many = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
@@ -254,9 +269,15 @@ async function applyImmediate(userId, nudge, attempt) {
  * Pay out 'promise' incentives to people who actually did the thing.
  *
  * Runs before the send sweep so a settlement confirmation is the notification that user gets today,
- * rather than being queued behind a fresh nudge. The grant itself is idempotent and unconditional;
- * only the CONFIRMATION push is rate-limited, so a user at their weekly cap still gets the credit —
- * they just hear about it in the app rather than on the lock screen.
+ * rather than being queued behind a fresh nudge. The grant itself is unconditional; only the
+ * CONFIRMATION PUSH is rate-limited, so someone at their weekly cap still gets the quota — they
+ * just read about it in the app instead of on the lock screen.
+ *
+ * ⚠️ ONE PAYOUT PER PROMISE, NOT PER SEND. The idem key is the nudge key alone. Keying it on
+ * (nudge, attempt) looks equivalent and is not: the WHERE clause filters out already-paid rows and
+ * DISTINCT ON then picks the newest survivor, so once attempt 1 was paid, attempt 2's row became
+ * eligible and paid AGAIN — up to 3x the promised letters for anyone we nudged three times. The
+ * promise is "upload your résumé and we add 3", not "3 per reminder we sent you".
  */
 async function settleIncentives({ dryRun = false } = {}) {
   // `granted` counts real payouts; `wouldGrant` is the dry-run figure. Two names, because a dry run
@@ -271,7 +292,7 @@ async function settleIncentives({ dryRun = false } = {}) {
           AND l.incentive LIKE 'promised:%'
           AND l.sent_at > NOW() - INTERVAL '45 days'
           AND NOT EXISTS (SELECT 1 FROM quota_grants q
-                           WHERE q.user_id = l.user_id AND q.idem_key = l.nudge_key || ':a' || l.attempt)
+                           WHERE q.user_id = l.user_id AND q.idem_key = l.nudge_key)
         ORDER BY l.user_id, l.nudge_key, l.sent_at DESC
         LIMIT 500`);
   } catch (e) { console.warn('[lifecycle] settle query:', e.message); return out; }
@@ -287,30 +308,43 @@ async function settleIncentives({ dryRun = false } = {}) {
     if (!nudge.done(state)) continue;                   // not finished yet — check again next run
 
     const inc = nudge.incentive;
-    const idem = `${nudge.key}:a${int(row.attempt, 1)}`;
+    const idem = nudge.key;                             // one payout per promise — see the note above
     if (dryRun) {
       out.items.push({ userId: int(row.user_id), nudgeKey: nudge.key, wouldGrant: `${inc.amount} ${inc.kind}` });
       out.wouldGrant += 1;
       continue;
     }
+    // Open a window the grant can actually be counted in BEFORE writing it — an expired trial, or
+    // no trial row at all, would otherwise swallow the bonus and make the confirmation a lie.
+    const win = await quotaGrants.ensureCountableWindow(row.user_id, idem);
+    if (!win.via) { console.warn('[lifecycle] no countable quota window for user', row.user_id, '— bonus withheld'); continue; }
+
     const g = await quotaGrants.grantQuota(row.user_id, inc.kind, inc.amount, idem, { note: nudge.label });
     if (!g.granted) continue;
     out.granted += 1;
 
-    // Tell them. Best-effort: the quota is already theirs whether or not this push lands.
+    // Tell them — but through the SAME gate as everything else. This push was going out with no
+    // cap, no 20h gap and no quiet hours, which meant good news could still arrive at 4am on top of
+    // a nudge sent an hour earlier. When the gate says no, the in-app row is still written; the
+    // quota is theirs either way, they just find out on their next visit.
     try {
       const noun = inc.kind === 'resume' ? (inc.amount === 1 ? 'resume generation' : 'resume generations')
         : (inc.amount === 1 ? 'cover letter' : 'cover letters');
+      const paidKey = nudge.key + '_paid';
+      const gs = (await nudgeGate.loadState([int(row.user_id)])).get(int(row.user_id));
+      const allowed = nudgeGate.check(int(row.user_id), paidKey, gs, Date.now());
       const { createNotification } = require('../controllers/notificationsController');
-      await createNotification(
+      const res = await createNotification(
         int(row.user_id), 'credits',
         `${inc.amount} free ${noun} added ✅`,
         `Thanks for finishing that — your ${inc.amount} extra free ${noun} are on your account and ready to use.`,
         null,
         { route: 'usage', params: {}, action: 'incentive_settled', nudgeKey: nudge.key },
-        { push: true, category: 'reminders' });
-      await nudgeGate.record(row.user_id, nudge.key + '_paid', { attempt: 1, pushOk: true, incentive: `granted:${inc.amount} ${inc.kind}` });
-      out.confirmed += 1;
+        { push: !!allowed.ok, category: 'reminders' });
+      if (allowed.ok) {
+        await nudgeGate.record(row.user_id, paidKey, { attempt: 1, pushOk: !!(res && res.pushed), incentive: `granted:${inc.amount} ${inc.kind}` });
+        if (res && res.pushed) out.confirmed += 1;
+      }
     } catch (e) { console.warn('[lifecycle] settle confirm:', e.message); }
     out.items.push({ userId: int(row.user_id), nudgeKey: nudge.key, granted: `${inc.amount} ${inc.kind}` });
   }
@@ -380,8 +414,19 @@ async function runLifecycleNudges({ force = false, dryRun = false, scanLimit, se
     const pick = pickNudge(state, gs, enabled);
     if (!pick.nudge) { bump('nothing_applicable'); continue; }
 
-    const decision = nudgeGate.check(userId, pick.nudge.key, gs, Date.now());
-    if (!decision.ok) { bump(decision.reason); continue; }
+    // Walk down the priority list until one is allowed. 'backoff' and 'max_attempts' are specific
+    // to a nudge, so they should move us to the next candidate, not end the user's turn. The
+    // account-wide reasons (too_soon, weekly_cap, silent_user, quiet_hours) end it immediately —
+    // trying another nudge would be exactly the spam those rules exist to prevent.
+    let chosen = null, decision = null;
+    for (const cand of (pick.applicable || [])) {
+      const d = nudgeGate.check(userId, cand.nudge.key, gs, Date.now());
+      if (d.ok) { chosen = cand; decision = d; break; }
+      if (!['backoff', 'max_attempts'].includes(d.reason)) { decision = d; break; }
+      decision = d;
+    }
+    if (!chosen) { bump(decision ? decision.reason : 'nothing_applicable'); continue; }
+    pick.nudge = chosen.nudge; pick.template = chosen.template; pick.reason = chosen.reason;
 
     // Build the copy, appending the offer sentence when this nudge carries one.
     const ctx = { firstName: state.firstName, fullName: state.fullName, state, job: state.topMatch || null };
@@ -403,6 +448,14 @@ async function runLifecycleNudges({ force = false, dryRun = false, scanLimit, se
     // then failed to apply. A failed grant simply means the offer line is dropped.
     let incentiveNote = null;
     let finalOverrides = overrides;
+    // ⚠️ sendToUser owns the opt-out and token checks, and it runs AFTER this point. Granting first
+    // meant paying trial days to people who had switched these notifications off, or whose token
+    // was dead — they never learn about the extension, and it is spent. Ask the same two questions
+    // here, before any money-shaped thing moves.
+    if (inc && inc.mode === 'immediate') {
+      const reachable = await canReceive(userId, pick.template.category);
+      if (!reachable) { bump('send_' + (reachable === false ? 'unreachable' : 'unknown')); continue; }
+    }
     if (inc && inc.mode === 'immediate') {
       const applied = await applyImmediate(userId, pick.nudge, decision.attempt);
       if (!applied) {
@@ -447,6 +500,16 @@ async function runLifecycleNudges({ force = false, dryRun = false, scanLimit, se
   if (!dryRun) await setLastRun('lifecycle_nudges', line);
   if (summary.sent) console.log(`[lifecycle] ${line}`);
   return summary;
+}
+
+/** Would a push to this user actually be delivered? (opt-out + token, the two gates sendToUser applies) */
+async function canReceive(userId, category) {
+  try {
+    const prefs = require('./notificationPrefs');
+    if (category && !(await prefs.isEnabled(userId, category))) return false;
+    const u = await dbConfig.get('SELECT expo_push_token FROM users WHERE id = ?', [userId]);
+    return !!(u && /^Expo(nent)?PushToken\[/.test(String(u.expo_push_token || '')));
+  } catch { return true; }   // unknown → let sendToUser be the judge rather than dropping a real nudge
 }
 
 function clipTo(s, n) {

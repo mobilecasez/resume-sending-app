@@ -155,13 +155,13 @@ async function notifyMatchedUsers(sinceIso) {
       if (dup && dup.length) continue;
       const title = 'New matching jobs for you 🎯';
       const body = `${m.n} new ${m.skill} ${m.n === 1 ? 'job' : 'jobs'} near ${m.place} just landed — take a look.`;
-      await sendPushNotification(m.token, title, body, { route: '/(discover)', params: { sort: 'recent' }, action: 'demand_jobs' });
+      const pushed = await sendPushNotification(m.token, title, body, { route: '/(discover)', params: { sort: 'recent' }, action: 'demand_jobs' });
       await dbConfig.query(
         `INSERT INTO notifications (user_id, type, title, message, created_at) VALUES ($1,'demand_jobs',$2,$3,NOW())`,
         [userId, title, body]).catch(() => {});
       // Shared ledger — see services/nudgeGate.js. Without this row the lifecycle nudges cannot
       // see that this user already heard from us today, and would push again within the hour.
-      await require('./nudgeGate').record(userId, 'demand_jobs', { pushOk: true });
+      await require('./nudgeGate').record(userId, 'demand_jobs', { pushOk: pushed === true });
       sent++;
     } catch (e) { console.warn('[demandResearch] push failed for', userId, e.message); }
   }
@@ -316,11 +316,11 @@ async function notifyResumeMatchedUsers(sinceIso, { dryRun = false } = {}) {
       const dup = await dbConfig.query(
         `SELECT 1 FROM notifications WHERE user_id = $1 AND type IN ('demand_jobs','resume_match_jobs') AND created_at > NOW() - INTERVAL '20 hours' LIMIT 1`, [u.id]);
       if (dup && dup.length) continue;
-      await sendPushNotification(u.expo_push_token, title, body, { route: '/(discover)', params: { sort: 'recent' }, action: 'resume_match_jobs' });
+      const pushed = await sendPushNotification(u.expo_push_token, title, body, { route: '/(discover)', params: { sort: 'recent' }, action: 'resume_match_jobs' });
       await dbConfig.query(
         `INSERT INTO notifications (user_id, type, title, message, created_at) VALUES ($1,'resume_match_jobs',$2,$3,NOW())`,
         [u.id, title, body]).catch(() => {});
-      await require('./nudgeGate').record(u.id, 'resume_match_jobs', { pushOk: true });
+      await require('./nudgeGate').record(u.id, 'resume_match_jobs', { pushOk: pushed === true });
       sent++;
     } catch (e) { console.warn('[demandResearch] resume push failed for', u.id, e.message); }
   }

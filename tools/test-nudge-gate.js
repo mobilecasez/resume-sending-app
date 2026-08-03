@@ -86,6 +86,25 @@ console.log('\nper-nudge backoff');
     done.ok === false && done.reason === 'max_attempts', done);
 }
 
+// ── 3b. A push that never landed ──────────────────────────────────────────────────────────────
+// The sweep runs every 6h. If a failed attempt left no timing trace, it retried on every single
+// sweep — silent on the lock screen, but writing a duplicate in-app row each time.
+console.log('\nfailed attempts');
+{
+  const key = 'nudge_add_photo';
+  // attempt:0 means "we tried and nothing was delivered".
+  const justFailed = gate.check(101, key, state({ byKey: { [key]: { at: NOW - 6 * HOUR, attempt: 0 } } }), NOW);
+  ok('a failed push is not retried on the next 6-hourly sweep',
+    justFailed.ok === false && justFailed.reason === 'backoff', justFailed);
+
+  const dayLater = gate.check(101, key, state({ byKey: { [key]: { at: NOW - 25 * HOUR, attempt: 0 } } }), NOW);
+  ok('…but it IS retried a day later', dayLater.ok === true, dayLater);
+  ok('…still as attempt 1, because the user has never actually seen it', dayLater.attempt === 1, dayLater);
+
+  const threeFails = gate.check(101, key, state({ byKey: { [key]: { at: NOW - 40 * DAY, attempt: 0 } } }), NOW);
+  ok('failures never exhaust the 3-attempt budget', threeFails.ok === true, threeFails);
+}
+
 // ── 4. The rule that actually protects people ─────────────────────────────────────────────────
 console.log('\nsilence');
 {
@@ -227,6 +246,26 @@ console.log('\nthe support check-in');
     recent: [{ at: NOW - 5 * DAY, responded: true }, { at: NOW - 12 * DAY, responded: true }],
   }), onlyCheckin);
   ok('someone who applied successfully is not asked either', !applied.nudge, applied.nudge && applied.nudge.key);
+}
+
+// ── 8b. A blocked top-priority nudge must not silence the rest ────────────────────────────────
+console.log('\nfallback down the ladder');
+{
+  // No résumé AND no photo AND stalled: several nudges apply at once.
+  const many = { ...base, daysSinceSignup: 20, hasResume: false, hasPhoto: false, searches: 0, applications: 0 };
+  const p = life.pickNudge(many, state(), allOn);
+  ok('pickNudge returns the whole applicable list, not just the winner',
+    Array.isArray(p.applicable) && p.applicable.length >= 2, p.applicable && p.applicable.length);
+  ok('the winner is still first', p.applicable[0].nudge.key === p.nudge.key, p.nudge.key);
+
+  // The top pick has used all 3 attempts — the next one must still be reachable.
+  const top = p.applicable[0].nudge.key;
+  const exhausted = state({ byKey: { [top]: { at: NOW - 60 * DAY, attempt: 3 } } });
+  const blocked = gate.check(101, top, exhausted, NOW);
+  ok('the top nudge is indeed exhausted', blocked.ok === false && blocked.reason === 'max_attempts', blocked);
+  const next = p.applicable[1];
+  const allowed = gate.check(101, next.nudge.key, exhausted, NOW);
+  ok('…and the NEXT nudge in the ladder is still allowed', allowed.ok === true, allowed);
 }
 
 // ── 9. The registry itself ────────────────────────────────────────────────────────────────────
