@@ -43,10 +43,16 @@ async function runDailyReminders({ force = false } = {}) {
         AND sent_date <= NOW() - INTERVAL '${FOLLOWUP_AFTER_DAYS} days'
         AND sent_date >  NOW() - INTERVAL '${FOLLOWUP_MAX_AGE_DAYS} days'
       ORDER BY sent_date ASC LIMIT ${DAILY_CAP}`).catch(() => []) : [];
+  // ⚠️ Every automated push records itself in user_nudge_log (services/nudgeGate.js). That table is
+  // what lets ANY job answer "has this person had enough notifications this week?" — without the
+  // row here, a follow-up reminder is invisible to the lifecycle nudges and the same user can be
+  // pushed twice in an hour by two jobs that each believe they are the only one.
+  const gate = require('./nudgeGate');
   for (const a of stale) {
     try {
       await notifyFollowUp(a.user_id, a.company_name || 'the company', a.days_ago);
       await dbConfig.run('UPDATE application_history SET follow_up_reminded_at = NOW() WHERE id = ?', [a.id]);
+      await gate.record(a.user_id, 'daily_reminders', { pushOk: true });
       followUps++;
     } catch (_) {}
   }
@@ -63,6 +69,7 @@ async function runDailyReminders({ force = false } = {}) {
     try {
       await notifyCreditExpiry(c.user_id, c.credits_remaining, Math.max(0, c.days_left) + 1);
       await dbConfig.run('UPDATE user_credits SET expiry_warned_at = NOW() WHERE user_id = ?', [c.user_id]);
+      await gate.record(c.user_id, 'credit_expiry', { pushOk: true });
       expiries++;
     } catch (_) {}
   }
@@ -91,9 +98,20 @@ async function runWeeklyDigest({ force = false } = {}) {
   gen.forEach(r => bump(r.user_id, 'generated', r.n));
 
   let digests = 0;
+  const gate = require('./nudgeGate');
   for (const [uid, d] of Object.entries(byUser)) {
     if (!(d.sent || d.generated)) continue;               // only genuinely active users
-    try { await notifyWeeklyDigest(parseInt(uid, 10), d); digests++; } catch (_) {}
+    const id = parseInt(uid, 10);
+    // The digest had NO per-user dedupe at all — its only guard was the job-level 156h timestamp,
+    // which the admin "Run now" button bypasses with force:true. Two taps meant two digests to
+    // everyone. The shared ledger closes that: a digest sent in the last 6 days is a repeat.
+    try {
+      const st = await gate.loadState([id]);
+      const s = st.get(id);
+      const last = s && s.byKey ? s.byKey.get('weekly_digest') : null;
+      if (last && (Date.now() - last.at) < 6 * 24 * 3600 * 1000) continue;
+    } catch (_) { /* gate unavailable — send rather than silently drop the digest */ }
+    try { await notifyWeeklyDigest(id, d); await gate.record(id, 'weekly_digest', { pushOk: true }); digests++; } catch (_) {}
   }
   const summary = `digests ${digests}`;
   await setLastRun('weekly_digest', summary);

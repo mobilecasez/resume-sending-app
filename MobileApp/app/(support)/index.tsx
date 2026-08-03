@@ -10,13 +10,13 @@
 //   • The cards describe SYMPTOMS in the user's words ("Cover letter would not generate"), not our
 //     subsystems. Somebody who cannot apply to a job does not know whether that is autofill, the
 //     WebView or the job URL, and should not have to.
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
   TextInput, RefreshControl, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 // expo-router generates its typed-route table during prebuild, so a route folder added in this
 // same commit is not in it yet and `router.push('/(support)/thread')` fails typecheck until the
 // next build regenerates it. The path is real — this widens the type without silencing anything
@@ -49,6 +49,17 @@ function timeAgo(iso?: string | null): string {
 
 export default function SupportHome() {
   const router = useRouter();
+  // Arriving from the "are you facing any issue?" push. `focus` scrolls to and highlights the
+  // picker; `issue` pre-selects one card when the notification already knew the symptom. Neither
+  // writes anything — the user still chooses and still types, because a ticket the app filed on
+  // their behalf would tell support what WE guessed, not what actually happened to them.
+  const params = useLocalSearchParams<{ focus?: string; issue?: string }>();
+  const wantsFocus = String(params.focus || '') === '1';
+  const wantsIssue = String(params.issue || '').trim().toLowerCase();
+  const scrollRef = useRef<ScrollView | null>(null);
+  const pickerY = useRef(0);
+  const focusedOnce = useRef(false);
+
   const [issues, setIssues] = useState<SupportIssue[]>([]);
   const [detailsMax, setDetailsMax] = useState(1500);
   const [threads, setThreads] = useState<SupportThread[]>([]);
@@ -75,6 +86,24 @@ export default function SupportHome() {
   // Coming back from a conversation should show the new state, not a stale badge.
   useFocusEffect(useCallback(() => { fetchMyThreads().then((t) => setThreads(t.threads)).catch(() => {}); }, []));
 
+  // Once the issue cards exist, act on the deep link. Guarded by focusedOnce so returning from a
+  // thread does not yank the user back down the page, and so a re-render cannot re-open a card
+  // they deliberately closed.
+  useEffect(() => {
+    if (focusedOnce.current || !issues.length) return;
+    if (!wantsFocus && !wantsIssue) return;
+    focusedOnce.current = true;
+    if (wantsIssue) {
+      const hit = issues.find((i) => i.key === wantsIssue);
+      if (hit) setPicked(hit);
+    }
+    // Let the list lay out first — pickerY is measured by onLayout below.
+    const t = setTimeout(() => {
+      try { scrollRef.current?.scrollTo({ y: Math.max(0, pickerY.current - 12), animated: true }); } catch { /* ignore */ }
+    }, 350);
+    return () => clearTimeout(t);
+  }, [issues, wantsFocus, wantsIssue]);
+
   const submit = useCallback(async () => {
     if (!picked || sending) return;
     setSending(true); setSendErr(null);
@@ -94,6 +123,7 @@ export default function SupportHome() {
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView
+        ref={scrollRef}
         style={s.root}
         contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
         keyboardShouldPersistTaps="handled"
@@ -139,11 +169,13 @@ export default function SupportHome() {
           </View>
         ) : null}
 
-        <Text style={s.h1}>Are you facing any issues?</Text>
-        <Text style={s.sub}>
-          Pick what is going wrong and a real person will get back to you here. The more you tell us,
-          the faster we can fix it.
-        </Text>
+        <View onLayout={(e) => { pickerY.current = e.nativeEvent.layout.y; }}>
+          <Text style={s.h1}>Are you facing any issues?</Text>
+          <Text style={s.sub}>
+            Pick what is going wrong and a real person will get back to you here. The more you tell us,
+            the faster we can fix it.
+          </Text>
+        </View>
 
         {issues.map((i) => {
           const on = picked?.key === i.key;

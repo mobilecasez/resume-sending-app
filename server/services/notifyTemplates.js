@@ -14,14 +14,22 @@
 //   params(ctx)  deep-link params for the push data payload
 //   suggestWhen(state) → { suggested?, applicable?, reason? } — relevance for THIS user's live state
 //
-// DEEP-LINK CONTRACT (data = { route, params }) — only these four routes are handled by the app:
+// DEEP-LINK CONTRACT (data = { route, params }) — the routes the app handles, and nothing else:
 //   '/(discover)' + { jobId }        → Explore opens that one job's detail
 //   '/(discover)' + { sort:'match' } → Explore, best matches first
 //   '/(ai-hub)'                      → Job Hub dashboard (optional { tab:'search'|'saved'|'myjobs' })
 //   'profile'  + { section }           → App.js profile screen via the AsyncStorage handoff
 //   'help'                           → in-app tutorial
+//   'support'  + { focus:'1' }        → Help & support; focus opens the "what went wrong" picker
+//   'usage'                          → Plans & Usage (quota, trial state, bonus)
+//   'rewards'                        → Earn free credits
 // Do NOT invent a new route value here without the app-side handler learning it first — an unknown
-// route degrades to "just open the app", which is safe but wastes the notification.
+// route degrades to "just open the app", which is safe but wastes the notification. The app side is
+// MobileApp/services/pushRouting.ts (resolveRoute) and its test MobileApp/scripts/test-push-routing.js.
+//
+// ⚠️ 'support', 'usage' and 'rewards' were added in app build 143. Older installs do not know them
+// and will land on "just open the app" — acceptable degradation, but it is why these three are only
+// used by nudges whose value survives the user arriving at the home screen.
 'use strict';
 
 // The five real notification_preferences columns. A category outside this list is NEVER gated
@@ -456,6 +464,62 @@ const TEMPLATES = [
       if (!nOf(s.credits)) return { applicable: false, reason: 'No credits left to expire.' };
       if (s.creditsExpireInDays > 7) return { suggested: false, reason: `Credits expire in ${s.creditsExpireInDays}d — too early to warn.` };
       return { suggested: true, reason: `${s.credits} credits expire in ${s.creditsExpireInDays}d.` };
+    },
+  },
+
+  // ── quota / trial ─────────────────────────────────────────────────────────
+  {
+    key: 'trial_ending',
+    label: 'Trial ending soon',
+    description: 'The free trial runs out in a few days and they still have unused letters. Opens Plans & Usage.',
+    category: 'reminders',
+    notifType: 'credits',
+    route: 'usage',
+    params: () => ({}),
+    title: (ctx) => {
+      const d = nOf(S(ctx).trialDaysLeft);
+      return d <= 1 ? 'Your free trial ends tomorrow ⏳' : `Your free trial ends in ${plural(d, 'day')} ⏳`;
+    },
+    body: (ctx) => {
+      const s = S(ctx);
+      const l = nOf(s.lettersLeft);
+      return l
+        ? `You still have ${plural(l, 'free cover letter')} to use. Tap to put ${l === 1 ? 'it' : 'them'} to work before the trial closes.`
+        : 'Tap to see what you have used and what happens next.';
+    },
+    suggestWhen: (s) => {
+      const d = s.trialDaysLeft;
+      if (d == null) return { applicable: false, reason: 'Not on a trial (or no trial row).' };
+      if (d > 3) return { suggested: false, reason: `Trial has ${d} days left — too early to warn.` };
+      if (d < 0) return { applicable: false, reason: 'Trial already ended.' };
+      if (!nOf(s.lettersLeft) && !nOf(s.resumesLeft)) return { suggested: false, reason: 'Trial is already fully used — nothing left to come back for.' };
+      return { suggested: true, reason: `Trial ends in ${d}d with ${s.lettersLeft} letters unused.` };
+    },
+  },
+
+  // ── "is something broken?" ────────────────────────────────────────────────
+  {
+    key: 'support_checkin',
+    label: 'Are you facing any issue?',
+    description: 'Asks a stalled user whether something went wrong and opens Help & support with the "what went wrong" picker focused. Their answer becomes a real support thread in the staff inbox.',
+    // 'reminders' rather than 'marketing': this asks nothing of the user and sells nothing — it is
+    // the app checking whether it broke. Filing it under marketing would hide it from exactly the
+    // frustrated people who switched marketing off because the product was not working for them.
+    category: 'reminders',
+    notifType: 'reminder',
+    route: 'support',
+    params: () => ({ focus: '1' }),
+    title: (ctx) => greet(ctx, (n) => `${n}, did something not work?`, 'Did something not work?'),
+    body: () => 'You started but did not get through. If something broke or was confusing, tell us in one line — a real person reads every message and replies here.',
+    suggestWhen: (s) => {
+      // Only ask people who TRIED and stalled. Asking someone who never opened the app "did
+      // something go wrong?" is noise — nothing went wrong, they simply have not started.
+      if (s.hasOpenSupportThread) return { applicable: false, reason: 'Already has an open support conversation — asking again would fork it.' };
+      if (nOf(s.applications)) return { suggested: false, reason: 'Has applied to a job — the flow worked for them.' };
+      const tried = nOf(s.searches) || nOf(s.savedJobs) || nOf(s.coverLetters) || !!s.hasResume;
+      if (!tried) return { applicable: false, reason: 'Never got far enough for anything to break — activation nudges fit better.' };
+      if (nOf(s.daysSinceSignup) < 2) return { suggested: false, reason: 'Signed up in the last 2 days — give them room.' };
+      return { suggested: true, reason: `Tried the app (${s.searches} searches, ${s.savedJobs} saved, ${s.coverLetters} letters) and never applied.` };
     },
   },
 

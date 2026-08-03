@@ -11,6 +11,11 @@
 //   'profile'                  → App.js Account Settings, via the AsyncStorage handoff key that
 //                                App.js ALREADY consumes ('onboarding_focus_target')
 //   'help'                     → AsyncStorage flag HomeScreen can read to open the in-app guide
+//   'support'     (+ { focus, issue, threadId })
+//                              → Help & support; a thread id opens that conversation, focus opens
+//                                the "what went wrong" picker
+//   'usage' | 'plans'          → Plans & Usage (quota, trial, granted bonus)
+//   'rewards'                  → Earn free credits
 //   anything else / malformed  → NOTHING. A push must never crash the app and must never dump the
 //                                user on a random screen.
 //
@@ -86,6 +91,9 @@ const AI_HUB = '/(ai-hub)';
 const SUPPORT = '/(support)';
 const SUPPORT_THREAD = '/(support)/thread';
 const ADMIN_SUPPORT = '/(admin)/support';
+const USAGE = '/(subscription)/usage';
+const PLANS = '/(subscription)/plans';
+const REWARDS = '/(rewards)';
 /** Thread ids are integers from a SERIAL column — anything else is not one of ours. */
 const THREAD_ID_RE = /^[0-9]{1,12}$/;
 
@@ -144,13 +152,33 @@ export function resolveRoute(data: any): PushRouteAction {
   switch (key) {
     // Support replies land the user IN the conversation. Without a valid thread id we still open
     // Help & support rather than doing nothing — the user tapped for a reason.
+    //
+    // `focus:'1'` (the "are you facing any issue?" nudge) opens the same screen with the
+    // "what went wrong" picker scrolled to and highlighted. It is deliberately NOT a thread: we do
+    // not know what broke, and opening a pre-written ticket would put words in the user's mouth.
     case 'support':
     case 'support-reply':
     case 'support_reply': {
       const id = str(p.threadId) || str(p.thread_id);
       if (id && THREAD_ID_RE.test(id)) return { kind: 'navigate', pathname: SUPPORT_THREAD, params: { id } };
-      return { kind: 'navigate', pathname: SUPPORT, params: {} };
+      const params: Record<string, string> = {};
+      if (str(p.focus) === '1' || str(p.focus).toLowerCase() === 'true') params.focus = '1';
+      const issue = str(p.issue).toLowerCase();
+      if (issue && /^[a-z0-9_-]{1,60}$/.test(issue)) params.issue = issue;
+      return { kind: 'navigate', pathname: SUPPORT, params };
     }
+
+    // Plans & Usage — where granted bonus quota and trial state are visible. 'plans' goes to the
+    // plan list, everything else to the usage screen (a nudge about quota should show the quota).
+    case 'usage':
+    case 'subscription':
+      return { kind: 'navigate', pathname: USAGE, params: {} };
+    case 'plans':
+      return { kind: 'navigate', pathname: PLANS, params: {} };
+
+    case 'rewards':
+    case 'earn':
+      return { kind: 'navigate', pathname: REWARDS, params: {} };
 
     // Staff tapping "a user needs help" go straight to that thread in the inbox.
     case 'admin-support':

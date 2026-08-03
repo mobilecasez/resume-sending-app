@@ -62,7 +62,12 @@ const CONTEXTS = {
 
 // Only these routes are handled by the app (MobileApp/services/pushRouting.ts). A template pointing
 // anywhere else is a notification that opens nothing.
-const HANDLED_ROUTES = ['/(discover)', '/(ai-hub)', 'profile', 'help'];
+//
+// ⚠️ Keep this list and resolveRoute's switch in lockstep. The mirror-image assertion lives in
+// MobileApp/scripts/test-push-routing.js ("every route in the server contract resolves to
+// something") — adding a route here without teaching the app fails there, and vice versa.
+// 'support', 'usage' and 'rewards' arrived with the lifecycle nudges in app build 143.
+const HANDLED_ROUTES = ['/(discover)', '/(ai-hub)', 'profile', 'help', 'support', 'usage', 'rewards'];
 
 console.log('rendering ' + T.TEMPLATES.length + ' templates × ' + Object.keys(CONTEXTS).length + ' contexts');
 for (const tpl of T.TEMPLATES) {

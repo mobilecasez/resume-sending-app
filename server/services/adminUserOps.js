@@ -463,7 +463,8 @@ const MATCH_STATE_FIELDS = ['strongMatches', 'matchedJobCount', 'topMatch'];
 const DB_STATE_FIELDS = ['hasParsedResume', 'parseStatus', 'resumeSkillCount', 'field', 'roleCategory',
   'credits', 'creditsExpireInDays', 'platform', 'appVersion', 'savedJobs', 'coverLetters', 'coverLetters7d',
   'appliedCoverLetters', 'applications', 'applications7d', 'searches', 'events30d', 'firstEvent',
-  'lastEvent', 'daysSinceLastSeen', 'newJobsThisWeek', 'pendingApplication'];
+  'lastEvent', 'daysSinceLastSeen', 'newJobsThisWeek', 'pendingApplication',
+  'trialDaysLeft', 'lettersLeft', 'resumesLeft', 'hasOpenSupportThread'];
 
 // A state built from the user row alone. Every DB-backed field is present with a neutral value so a
 // template that reads one cannot crash — but stateTierFor() only hands this to templates that read
@@ -486,6 +487,7 @@ function lightUserState(u) {
     coverLetters7d: 0, appliedCoverLetters: 0, applications: 0, applications7d: 0, searches: 0,
     events30d: 0, firstEvent: null, lastEvent: null, daysSinceLastSeen: null,
     strongMatches: 0, matchedJobCount: 0, topMatch: null, newJobsThisWeek: 0, pendingApplication: null,
+    trialDaysLeft: null, lettersLeft: 0, resumesLeft: 0, hasOpenSupportThread: false,
     light: true,
   };
 }
@@ -593,6 +595,12 @@ async function buildUserState(userIdOrRow, opts = {}) {
   const expiry = credits && credits.expiry_date ? credits.expiry_date : null;
   const expireInDays = expiry ? Math.max(0, Math.ceil((new Date(expiry).getTime() - Date.now()) / 86400000)) : null;
 
+  // Quota + trial state, and whether they already have a support conversation open. Both are read
+  // WITHOUT creating anything: entitlements.getStatus() would lazily START a trial as a side effect
+  // (ensureTrial), and a reporting/notification read must never mutate the account it is describing.
+  const quota = await quotaStateOf(id);
+  const hasOpenSupportThread = await hasOpenThread(id);
+
   return {
     userId: id,
     fullName: u.full_name || '',
@@ -630,7 +638,61 @@ async function buildUserState(userIdOrRow, opts = {}) {
     topMatch,
     newJobsThisWeek,
     pendingApplication: pending ? { company: pending.company_name, days: int(pending.days) } : null,
+    trialDaysLeft: quota.trialDaysLeft,
+    lettersLeft: quota.lettersLeft,
+    resumesLeft: quota.resumesLeft,
+    hasOpenSupportThread,
   };
+}
+
+// Trial/plan quota WITHOUT side effects. entitlements.getStatus() calls ensureTrial(), which CREATES
+// a trial row (and a trial_devices row) for anyone who does not have one — fine when the app asks
+// "what do I have left?", catastrophic here: building a notification state for 180 users would start
+// a trial for every account that never had one, silently burning the one-trial-per-device rule.
+// So this reads the tables directly and returns nulls when there is nothing to read.
+async function quotaStateOf(userId) {
+  const out = { trialDaysLeft: null, lettersLeft: 0, resumesLeft: 0, via: null };
+  try {
+    const ent = require('./entitlements');
+    const sub = await ent.activeSubscription(userId);
+    if (sub) {
+      const plan = ent.planByKey(sub.plan_key);
+      if (plan) {
+        const [uL, uR, aL, aR] = await Promise.all([
+          ent.usedSince(userId, 'cover_letter', 'plan', '$4', [sub.period_start]),
+          ent.usedSince(userId, 'resume', 'plan', '$4', [sub.period_start]),
+          ent.allowanceIn(userId, 'cover_letter', plan.letters, sub.period_start),
+          ent.allowanceIn(userId, 'resume', plan.resumes, sub.period_start),
+        ]);
+        return { trialDaysLeft: null, lettersLeft: Math.max(0, aL - uL), resumesLeft: Math.max(0, aR - uR), via: 'plan' };
+      }
+    }
+    if (!(await tableExists('user_trials'))) return out;
+    const t = await g('SELECT started_at, ends_at FROM user_trials WHERE user_id = $1', [userId]);
+    if (!t) return out;                                   // no trial row — do NOT create one
+    const [uL, uR, aL, aR] = await Promise.all([
+      ent.usedSince(userId, 'cover_letter', 'trial', '$4', [t.started_at]),
+      ent.usedSince(userId, 'resume', 'trial', '$4', [t.started_at]),
+      ent.allowanceIn(userId, 'cover_letter', ent.TRIAL.letters, t.started_at),
+      ent.allowanceIn(userId, 'resume', ent.TRIAL.resumes, t.started_at),
+    ]);
+    // Floor at -1 rather than 0 so "already expired" stays distinguishable from "ends today".
+    const msLeft = new Date(t.ends_at).getTime() - Date.now();
+    return {
+      trialDaysLeft: msLeft < 0 ? -1 : Math.ceil(msLeft / 86400000),
+      lettersLeft: Math.max(0, aL - uL),
+      resumesLeft: Math.max(0, aR - uR),
+      via: 'trial',
+    };
+  } catch (e) { console.warn('[adminUserOps] quotaStateOf:', e.message); return out; }
+}
+
+async function hasOpenThread(userId) {
+  try {
+    if (!(await tableExists('support_threads'))) return false;
+    const r = await g(`SELECT 1 AS ok FROM support_threads WHERE user_id = $1 AND status = 'open' LIMIT 1`, [userId]);
+    return !!(r && r.ok);
+  } catch { return false; }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

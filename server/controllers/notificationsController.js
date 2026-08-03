@@ -188,6 +188,13 @@ const deleteAllRead = async (req, res) => {
 };
 
 // Specific notification creators for different actions
+//
+// ⚠️ EVERY PUSHED NOTIFICATION MUST CARRY `route` (and `params`) IN ITS METADATA.
+// pushForNotification sends `data = { type, ...metadata }`, and the app's resolveRoute
+// (MobileApp/services/pushRouting.ts) reads ONLY `data.route`. Until this comment was written not
+// one of these helpers set it, so every follow-up reminder, credit warning and weekly digest we
+// have ever sent opened the app and then just… sat there on whatever screen was last used. The
+// valid values are listed in services/notifyTemplates.js's header; anything else is a no-op.
 
 // Cover Letter Generated
 const notifyCoverLetterGenerated = async (userId, employerName, position, companyWebsite) => {
@@ -198,7 +205,8 @@ const notifyCoverLetterGenerated = async (userId, employerName, position, compan
         employerName,
         position,
         companyWebsite,
-        action: 'cover_letter_generated'
+        action: 'cover_letter_generated',
+        route: '/(ai-hub)', params: { tab: 'myjobs' },
     };
 
     await createNotification(userId, 'cover_letter', title, message, details, metadata, {
@@ -217,7 +225,8 @@ const notifyEmailSent = async (userId, employerName, employerEmail, position, su
         employerEmail,
         position,
         subject,
-        action: 'email_sent'
+        action: 'email_sent',
+        route: '/(ai-hub)', params: { tab: 'myjobs' },
     };
 
     await createNotification(userId, 'email', title, message, details, metadata, {
@@ -236,7 +245,8 @@ const notifyCreditsAdded = async (userId, creditsAdded, previousBalance, newBala
         previousBalance,
         newBalance,
         source,
-        action: 'credits_added'
+        action: 'credits_added',
+        route: '/(ai-hub)', params: {},
     };
 
     await createNotification(userId, 'credits', title, message, details, metadata, {
@@ -251,7 +261,7 @@ const notifyLowCredits = async (userId, newBalance) => {
     const message = newBalance <= 0
         ? 'You have no credits left. Top up to keep generating cover letters and applying.'
         : `You have ${newBalance} credit${newBalance === 1 ? '' : 's'} left. Top up so you never miss a match.`;
-    await createNotification(userId, 'credits', title, message, null, { newBalance, action: 'low_credits' }, {
+    await createNotification(userId, 'credits', title, message, null, { newBalance, action: 'low_credits', route: '/(ai-hub)', params: {} }, {
         push: true, category: 'application_updates',
         pushTitle: newBalance <= 0 ? 'Out of credits' : 'Running low on credits',
         pushBody: message,
@@ -263,7 +273,7 @@ const notifyNewJobs = async (userId, employerName, count, employerId) => {
     const title = `${count} new job${count === 1 ? '' : 's'} at ${employerName}`;
     const message = `We found ${count} new opening${count === 1 ? '' : 's'} at ${employerName} that match your resume.`;
     await createNotification(userId, 'jobs', title, message, null,
-        { employerName, employerId: String(employerId || ''), count, action: 'new_jobs' }, {
+        { employerName, employerId: String(employerId || ''), count, action: 'new_jobs', route: '/(discover)', params: { sort: 'match' } }, {
         push: true, category: 'application_updates',
         pushTitle: `${count} new job${count === 1 ? '' : 's'} at ${employerName} 🎯`, pushBody: 'Tap to view your new matches.',
     });
@@ -274,7 +284,7 @@ const notifyFollowUp = async (userId, companyName, daysAgo) => {
     const title = 'Time for a follow-up?';
     const message = `It's been ${daysAgo} days since you applied to ${companyName} with no reply. A short follow-up can help.`;
     await createNotification(userId, 'reminder', title, message, null,
-        { companyName, daysAgo, action: 'follow_up_reminder' }, {
+        { companyName, daysAgo, action: 'follow_up_reminder', route: '/(ai-hub)', params: { tab: 'myjobs' } }, {
         push: true, category: 'reminders',
         pushTitle: 'Time for a follow-up?', pushBody: `No reply from ${companyName} yet — a quick nudge can help.`,
     });
@@ -290,7 +300,7 @@ const notifyWeeklyDigest = async (userId, { sent, replies, generated }) => {
     const title = 'Your week on CVApplyr';
     const message = `Last 7 days: ${summary}. Keep the momentum going!`;
     await createNotification(userId, 'digest', title, message, null,
-        { sent, replies, generated, action: 'weekly_digest' }, {
+        { sent, replies, generated, action: 'weekly_digest', route: '/(ai-hub)', params: { tab: 'myjobs' } }, {
         push: true, category: 'digest',
         pushTitle: 'Your week on CVApplyr 📊', pushBody: `Last 7 days: ${summary}.`,
     });
@@ -301,7 +311,7 @@ const notifyCreditExpiry = async (userId, credits, daysLeft) => {
     const title = 'Credits expiring soon';
     const message = `${credits} credit${credits === 1 ? '' : 's'} expire in ${daysLeft} day${daysLeft === 1 ? '' : 's'}. Use them before they're gone.`;
     await createNotification(userId, 'credits', title, message, null,
-        { credits, daysLeft, action: 'credit_expiry' }, {
+        { credits, daysLeft, action: 'credit_expiry', route: '/(ai-hub)', params: {} }, {
         push: true, category: 'reminders',
         pushTitle: 'Credits expiring soon ⏳', pushBody: message,
     });
@@ -358,7 +368,8 @@ const notifyEmailReply = async (userId, companyName, replySubject) => {
     const metadata = {
         companyName,
         replySubject,
-        action: 'email_reply_received'
+        action: 'email_reply_received',
+        route: '/(ai-hub)', params: { tab: 'myjobs' },
     };
 
     await createNotification(userId, 'email', title, message, details, metadata, {

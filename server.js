@@ -4055,6 +4055,13 @@ catch (e) { console.error('[replyPoll] failed to start:', e.message); }
 try { require('./server/services/engagementScheduler').startEngagementScheduler(); }
 catch (e) { console.error('[engagement] failed to start:', e.message); }
 
+// Lifecycle nudges — works out where each user is stuck (no résumé, no photo, saved but never
+// applied, trial closing) and sends ONE fitting nudge, with bonus quota paid out when they finish
+// the step. Every send passes through nudgeGate: max one automated push per 20h, three per week,
+// three attempts per nudge, then it stops. Disable with LIFECYCLE_NUDGES_DISABLED=1.
+try { require('./server/services/lifecycleNudges').startLifecycleNudges(); }
+catch (e) { console.error('[lifecycle] failed to start:', e.message); }
+
 // Résumé re-parse sweeper. A transient model failure (503 "high demand") used to be written as a
 // PERMANENT parse error that nothing ever retried, leaving the user's résumé unusable while the app
 // told them to "wait and try again". The parser now marks those retryable; this picks them up, plus

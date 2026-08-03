@@ -111,6 +111,19 @@ async function usedSince(userId, kind, source, sinceSql, params) {
   return rows && rows[0] ? rows[0].n : 0;
 }
 
+// Bonus units granted on top of the plan/trial allowance (quota_grants — see services/quotaGrants.js),
+// counted in the SAME window as the usage they offset. Read through a lazy require so the two modules
+// can reference each other; falls back to 0 so a failed read can only ever UNDER-count quota.
+async function bonusSince(userId, kind, since) {
+  try { return await require('./quotaGrants').bonusSince(userId, kind, since); }
+  catch (e) { console.warn('[entitlements] bonusSince:', e.message); return 0; }
+}
+
+/** The real allowance for a window: what the plan/trial gives, plus anything granted since. */
+async function allowanceIn(userId, kind, base, since) {
+  return base + await bonusSince(userId, kind, since);
+}
+
 // Full picture for the app: plan, trial, remaining, used — one call.
 async function getStatus(userId, req) {
   const deviceId = req ? deviceIdOf(req) : null;
@@ -126,8 +139,11 @@ async function getStatus(userId, req) {
   if (sub && plan) {
     const uL = await usedSince(userId, 'cover_letter', 'plan', '$4', [sub.period_start]);
     const uR = await usedSince(userId, 'resume', 'plan', '$4', [sub.period_start]);
+    const aL = await allowanceIn(userId, 'cover_letter', plan.letters, sub.period_start);
+    const aR = await allowanceIn(userId, 'resume', plan.resumes, sub.period_start);
     out.used = { letters: uL, resumes: uR };
-    out.remaining = { letters: Math.max(0, plan.letters - uL), resumes: Math.max(0, plan.resumes - uR) };
+    out.remaining = { letters: Math.max(0, aL - uL), resumes: Math.max(0, aR - uR) };
+    out.bonus = { letters: aL - plan.letters, resumes: aR - plan.resumes };
     out.via = 'plan';
     return out;
   }
@@ -136,10 +152,13 @@ async function getStatus(userId, req) {
     const active = new Date(trial.ends_at) > new Date();
     const uL = await usedSince(userId, 'cover_letter', 'trial', '$4', [trial.started_at]);
     const uR = await usedSince(userId, 'resume', 'trial', '$4', [trial.started_at]);
+    const aL = await allowanceIn(userId, 'cover_letter', TRIAL.letters, trial.started_at);
+    const aR = await allowanceIn(userId, 'resume', TRIAL.resumes, trial.started_at);
     out.trialState = { active, startedAt: trial.started_at, endsAt: trial.ends_at, used: { letters: uL, resumes: uR } };
     if (active) {
       out.used = { letters: uL, resumes: uR };
-      out.remaining = { letters: Math.max(0, TRIAL.letters - uL), resumes: Math.max(0, TRIAL.resumes - uR) };
+      out.remaining = { letters: Math.max(0, aL - uL), resumes: Math.max(0, aR - uR) };
+      out.bonus = { letters: aL - TRIAL.letters, resumes: aR - TRIAL.resumes };
       out.via = 'trial';
     }
   } else if (trial && trial.blocked) {
@@ -164,14 +183,16 @@ async function canConsumeMany(userId, kind, count, req) {
     const plan = planByKey(sub.plan_key);
     if (plan) {
       const used = await usedSince(userId, kind, 'plan', '$4', [sub.period_start]);
-      if (plan[field] - used >= n) return { allowed: true, via: 'plan', remaining: plan[field] - used };
+      const allow = await allowanceIn(userId, kind, plan[field], sub.period_start);
+      if (allow - used >= n) return { allowed: true, via: 'plan', remaining: allow - used };
       // plan exhausted → fall through to credits fallback below (never to trial)
     }
   } else {
     const trial = await ensureTrial(userId, deviceId, ipHashOf(req || {}));
     if (trial && !trial.blocked && new Date(trial.ends_at) > new Date()) {
       const used = await usedSince(userId, kind, 'trial', '$4', [trial.started_at]);
-      if (TRIAL[field] - used >= n) return { allowed: true, via: 'trial', remaining: TRIAL[field] - used };
+      const allow = await allowanceIn(userId, kind, TRIAL[field], trial.started_at);
+      if (allow - used >= n) return { allowed: true, via: 'trial', remaining: allow - used };
     }
   }
 
@@ -203,12 +224,14 @@ async function consumeOnSuccess(userId, kind, detail = {}, req) {
     if (sub && planByKey(sub.plan_key)) {
       const plan = planByKey(sub.plan_key);
       const used = await usedSince(userId, kind, 'plan', '$4', [sub.period_start]);
-      if (plan[KIND_QUOTA_FIELD[kind]] - used >= 1) via = 'plan';
+      const allow = await allowanceIn(userId, kind, plan[KIND_QUOTA_FIELD[kind]], sub.period_start);
+      if (allow - used >= 1) via = 'plan';
     } else {
       const trial = await ensureTrial(userId, deviceId, null);
       if (trial && !trial.blocked && new Date(trial.ends_at) > new Date()) {
         const used = await usedSince(userId, kind, 'trial', '$4', [trial.started_at]);
-        if (TRIAL[KIND_QUOTA_FIELD[kind]] - used >= 1) via = 'trial';
+        const allow = await allowanceIn(userId, kind, TRIAL[KIND_QUOTA_FIELD[kind]], trial.started_at);
+        if (allow - used >= 1) via = 'trial';
       }
     }
     if (via === 'credits') {
@@ -258,4 +281,6 @@ module.exports = {
   PLANS, TRIAL,
   reportDevice, ensureTrial, getStatus, canConsumeMany, consumeOnSuccess, getUsage,
   adminSetSubscription, deviceIdOf, ipHashOf,
+  // exported for the lifecycle nudges (which must know what a user has LEFT before offering more)
+  activeSubscription, usedSince, bonusSince, allowanceIn, planByKey, KIND_QUOTA_FIELD,
 };

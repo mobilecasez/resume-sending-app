@@ -41,6 +41,11 @@ const ROUTINES = [
     description: 'Runs the automated diagnostic agent over user-submitted “this employer’s jobs look wrong” requests and applies verified per-domain fixes.',
     run: () => require('../services/fixQueueRunner').runFixQueue(),
   },
+  {
+    key: 'lifecycle_nudges', name: 'Lifecycle Nudges', icon: '🌱', intervalHours: 6,
+    description: 'Works out where each user is stuck (no résumé, no photo, saved but never applied, trial about to close…) and sends ONE fitting nudge — never two, never inside 20 hours of the last push, and never more than three times for the same nudge. Pays out promised bonus cover letters once the user actually completes the step, and asks “are you facing any issue?” last of all.',
+    run: () => require('../services/lifecycleNudges').runLifecycleNudges({ force: true }),
+  },
 ];
 
 // In-flight tracker so the page can show "running…" and a double-tap can't start a second run.
@@ -124,24 +129,75 @@ router.post('/admin/routines/notify-matches', authenticateAdmin, async (req, res
   }
 });
 
+// Lifecycle-nudge PREVIEW. Runs the whole pipeline — candidate selection, per-user state, the
+// priority ladder, and every gate — and returns exactly what would be sent to whom, without
+// sending anything. `dryRun` defaults to TRUE: a request that forgets the flag must preview, not
+// blast. Pass { dryRun: false } explicitly to actually send.
+router.post('/admin/routines/lifecycle-nudges', authenticateAdmin, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const dryRun = b.dryRun !== false;
+    const out = await require('../services/lifecycleNudges').runLifecycleNudges({
+      force: true,
+      dryRun,
+      scanLimit: Math.min(Math.max(parseInt(b.scanLimit, 10) || 2000, 1), 5000),
+      sendLimit: Math.min(Math.max(parseInt(b.sendLimit, 10) || (dryRun ? 200 : 300), 1), 1000),
+    });
+    res.json({ success: true, ...out });
+  } catch (e) {
+    console.error('[routines] lifecycle-nudges:', e.message);
+    res.status(500).json({ error: 'Lifecycle sweep failed: ' + e.message });
+  }
+});
+
 // ── User-facing push switches: what automated pushes users receive, admin on/off ──
 router.get('/admin/user-notification-switches', authenticateAdmin, async (req, res) => {
   try {
     const notifSwitch = require('../services/notifSwitch');
     const enabled = await notifSwitch.getAll();
-    const items = [];
-    for (const s of notifSwitch.SWITCHES) {
-      const counts = await dbConfig.query(
-        `SELECT COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')::int AS d1,
-                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days')::int AS d7
-           FROM notifications WHERE type = ANY($1)`, [s.types]).catch(() => null);
-      items.push({
+
+    // TWO grouped queries instead of one COUNT per switch. With 19 switches the old N+1 was 19
+    // sequential scans of `notifications` on every page load.
+    const [byType, byNudge] = await Promise.all([
+      dbConfig.query(
+        `SELECT type,
+                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')::int AS d1,
+                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days')::int  AS d7
+           FROM notifications WHERE created_at > NOW() - INTERVAL '7 days' GROUP BY type`).catch(() => []),
+      dbConfig.query(
+        `SELECT nudge_key,
+                COUNT(*) FILTER (WHERE sent_at > NOW() - INTERVAL '24 hours')::int AS d1,
+                COUNT(*) FILTER (WHERE sent_at > NOW() - INTERVAL '7 days')::int  AS d7
+           FROM user_nudge_log
+          WHERE push_ok IS TRUE AND sent_at > NOW() - INTERVAL '7 days' GROUP BY nudge_key`).catch(() => []),
+    ]);
+    const typeMap = new Map((byType || []).map((r) => [r.type, r]));
+    const nudgeMap = new Map((byNudge || []).map((r) => [r.nudge_key, r]));
+
+    const items = notifSwitch.SWITCHES.map((s) => {
+      let d1 = 0, d7 = 0;
+      if (s.nudgeKey) {
+        // Exact: one user_nudge_log row per send of THIS nudge. Counting by notifications.type
+        // would lump it in with every other sender writing the same bucket.
+        const r = nudgeMap.get(s.nudgeKey);
+        if (r) { d1 = r.d1; d7 = r.d7; }
+      } else {
+        for (const t of s.types || []) {
+          const r = typeMap.get(t);
+          if (r) { d1 += r.d1; d7 += r.d7; }
+        }
+      }
+      return {
         key: s.key, label: s.label, icon: s.icon, description: s.description,
+        group: s.group || 'core',
         enabled: enabled[s.key] !== false,
-        sent24h: counts && counts[0] ? counts[0].d1 : 0,
-        sent7d: counts && counts[0] ? counts[0].d7 : 0,
-      });
-    }
+        sent24h: d1, sent7d: d7,
+        // Shared `notifications.type` buckets (e.g. 'credits' is written by four senders) make a
+        // type-based count an upper bound, not a measurement. Say so rather than let the number
+        // be read as precise.
+        exactCount: !!s.nudgeKey,
+      };
+    });
     res.json({ success: true, switches: items });
   } catch (e) {
     console.error('[routines] switches:', e.message);

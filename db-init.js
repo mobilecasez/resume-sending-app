@@ -1168,6 +1168,50 @@ async function runPostgresMigrations(db) {
         )`);
         console.log('✅ Migration 031: user_notification_switches done');
 
+        // ── Migration 032: lifecycle nudges — the shared send ledger + bonus quota ──
+        // user_nudge_log is the ONE place every automated nudge records itself. Before this there
+        // were three incompatible dedupe mechanisms (a flag column on the domain row, a 20h window
+        // over `notifications`, and rewardNudges' own table), so nothing could answer "has this
+        // person had enough notifications this week?" — which is exactly the question that keeps us
+        // from irritating people. `attempt` drives the escalating backoff and `responded_at` records
+        // whether the user actually opened the app afterwards, so a silent user gets left alone.
+        await col(`CREATE TABLE IF NOT EXISTS user_nudge_log (
+            id BIGSERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            nudge_key TEXT NOT NULL,
+            attempt INTEGER NOT NULL DEFAULT 1,
+            sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            push_ok BOOLEAN,
+            skipped TEXT,
+            incentive TEXT,
+            responded_at TIMESTAMPTZ
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_user_nudge_log_user ON user_nudge_log(user_id, sent_at DESC)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_user_nudge_log_key ON user_nudge_log(user_id, nudge_key, sent_at DESC)`);
+
+        // quota_grants — the missing half of "here are 3 free cover letters". usage_ledger counts
+        // CONSUMPTION only (one row = one unit used, no amount column), and the trial/plan allowances
+        // are constants in entitlements.js, so until now there was literally nowhere to put a bonus.
+        // kind 'trial_days' records an ends_at extension so the same idem_key guard covers it.
+        await col(`CREATE TABLE IF NOT EXISTS quota_grants (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            amount INTEGER NOT NULL,
+            source TEXT NOT NULL DEFAULT 'nudge',
+            idem_key TEXT NOT NULL,
+            note TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (user_id, idem_key)
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_quota_grants_user ON quota_grants(user_id, kind, created_at DESC)`);
+
+        // The per-user frequency cap reads `notifications` by (user_id, type, created_at) on every
+        // candidate. Only (user_id) and (created_at DESC) existed, so that was a scan per user.
+        await col(`CREATE INDEX IF NOT EXISTS idx_notifications_user_type_created
+                     ON notifications(user_id, type, created_at DESC)`);
+        console.log('✅ Migration 032: user_nudge_log + quota_grants done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

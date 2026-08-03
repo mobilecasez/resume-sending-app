@@ -77,6 +77,50 @@ eq("'help' flags the tutorial",
   resolveRoute({ route: 'help' }),
   { kind: 'handoff', handoff: 'help', target: 'help', storage: { key: HELP_OPEN_KEY, value: '1' } });
 
+// ── Lifecycle-nudge destinations (build 143) ──────────────────────────────────────────────────
+// These exist because the automated nudges point at them. A nudge whose route the app silently
+// ignores is worse than no nudge: we spent the one interruption we are allowed and delivered
+// nothing. Every route string used in server/services/notifyTemplates.js must appear here.
+eq("'support' + focus opens the issue picker",
+  resolveRoute({ route: 'support', params: { focus: '1' } }),
+  { kind: 'navigate', pathname: '/(support)', params: { focus: '1' } });
+
+eq("'support' with no params still opens Help & support",
+  resolveRoute({ route: 'support' }),
+  { kind: 'navigate', pathname: '/(support)', params: {} });
+
+eq("'support' + issue preselects that card",
+  resolveRoute({ route: 'support', params: { focus: '1', issue: 'cover_letter' } }),
+  { kind: 'navigate', pathname: '/(support)', params: { focus: '1', issue: 'cover_letter' } });
+
+eq("a hostile issue key is dropped, not passed through",
+  resolveRoute({ route: 'support', params: { issue: '../../admin' } }),
+  { kind: 'navigate', pathname: '/(support)', params: {} });
+
+ok("a thread id still wins over focus (a reply is more specific than a prompt)",
+  resolveRoute({ route: 'support', params: { focus: '1', threadId: '42' } }).pathname === '/(support)/thread',
+  resolveRoute({ route: 'support', params: { focus: '1', threadId: '42' } }));
+
+eq("'usage' opens Plans & Usage",
+  resolveRoute({ route: 'usage' }),
+  { kind: 'navigate', pathname: '/(subscription)/usage', params: {} });
+
+eq("'plans' opens the plan list",
+  resolveRoute({ route: 'plans' }),
+  { kind: 'navigate', pathname: '/(subscription)/plans', params: {} });
+
+eq("'rewards' opens Earn credits",
+  resolveRoute({ route: 'rewards' }),
+  { kind: 'navigate', pathname: '/(rewards)', params: {} });
+
+// Every route the SERVER can emit must resolve. This is the assertion that would have caught a
+// template pointing at a route the app never learned.
+{
+  const serverRoutes = ['/(discover)', '/(ai-hub)', 'profile', 'help', 'support', 'usage', 'rewards'];
+  const dead = serverRoutes.filter((r) => resolveRoute({ route: r }).kind === 'none');
+  ok('every route in the server contract resolves to something', dead.length === 0, dead);
+}
+
 // ── 2. Malformed / hostile input → never navigate anywhere ────────────────────────────────────
 console.log('\nmalformed input');
 const isNone = (a) => a && a.kind === 'none' && !a.pathname && !a.storage;
