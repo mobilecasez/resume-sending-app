@@ -24,6 +24,7 @@ const JS_HELPERS = new Function('JS_HELPERS', 'return `' + raw('JS_HELPERS') + '
 
 function rawFn(name) { const m = SRC.match(new RegExp('function ' + name + '\\([^)]*\\)[^{]*\\{[\\s\\S]*?return `([\\s\\S]*?)`;\\s*\\}')); if (!m) throw new Error('no fn ' + name); return m[1]; }
 const FILL_BODY = rawFn('fillJs');
+const READ_FIELDS_JS = new Function('JS_HELPERS', 'return `' + raw('READ_FIELDS_JS') + '`;')(JS_HELPERS);
 const fillJsFactory = (values) => new Function('JS_HELPERS', 'values', 'return `' + FILL_BODY + '`;')(JS_HELPERS, values);
 
 const URL = 'https://www.revolut.com/careers/apply/4ee78ed3-1222-4265-aca8-d6f147f7d15a/';
@@ -40,7 +41,7 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   const page = await ctx.newPage();
   page.on('dialog', (d) => d.dismiss().catch(() => {}));
   await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
-  await page.waitForTimeout(6000);
+  await page.waitForTimeout(9000);
 
   // Install the real helpers + a submit tripwire (nothing may ever submit this form).
   await page.evaluate(`window.ReactNativeWebView = { postMessage: function(){} };`);
@@ -102,7 +103,7 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   // Full end-to-end pick through the shipped openAndPick.
   console.log('\nopenAndPick actually sets the values (country + dial code)');
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(6000);
+  await page.waitForTimeout(9000);
   await page.evaluate(`window.ReactNativeWebView = { postMessage: function(){} };`);
   await page.evaluate('(function(){' + JS_HELPERS + `
     window.__submits = 0;
@@ -131,7 +132,7 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   // ── sheets must be LEFT CLOSED, and checkbox groups must tick ────────────────
   console.log('\nsheets close themselves; nothing is left stacked open');
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(6000);
+  await page.waitForTimeout(9000);
   await page.evaluate(`window.ReactNativeWebView = { postMessage: function(){} };`);
   await page.evaluate('(function(){' + JS_HELPERS + `
     window.__submits = 0;
@@ -193,6 +194,36 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   } else {
     ok('pronoun checkbox group found on the page', false, boxes);
   }
+
+
+  // ── THE REAL SCAN over EVERY dropdown (this is what runs on the device) ──────
+  console.log('\nthe real scan reads ALL dropdowns and leaves none open');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(9000);
+  await page.evaluate(`window.ReactNativeWebView = { postMessage: function(s){ (window.__msgs=window.__msgs||[]).push(JSON.parse(s)); } };`);
+  await page.evaluate(`window.__openWatch = { max: 0 };
+    setInterval(function(){
+      var n = document.querySelectorAll('input[type=search]').length;
+      if (n > window.__openWatch.max) window.__openWatch.max = n;
+    }, 150);`);
+  await page.evaluate(READ_FIELDS_JS);
+  await page.waitForFunction(() => window.__msgs && window.__msgs.some((m) => m.type === 'FIELDS'), null, { timeout: 90000 });
+  const scan = await page.evaluate(() => {
+    const f = window.__msgs.find((m) => m.type === 'FIELDS').fields;
+    const combos = f.filter((x) => x.widget === 'combobox');
+    return {
+      fields: f.length,
+      combos: combos.length,
+      withOptions: combos.filter((c) => (c.options || []).length > 0).length,
+      sample: combos.map((c) => ({ l: (c.label || '').slice(0, 26), n: (c.options || []).length })),
+      maxSheetsOpenDuringScan: window.__openWatch.max,
+      sheetsOpenNow: document.querySelectorAll('input[type=search]').length,
+    };
+  });
+  console.log('    scan:', JSON.stringify(scan));
+  ok('every dropdown got its option list read', scan.combos > 0 && scan.withOptions === scan.combos, scan.sample);
+  ok('NEVER more than one sheet open at a time', scan.maxSheetsOpenDuringScan <= 1, scan.maxSheetsOpenDuringScan);
+  ok('no sheet is left open when the scan finishes', scan.sheetsOpenNow === 0, scan.sheetsOpenNow);
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   await browser.close();

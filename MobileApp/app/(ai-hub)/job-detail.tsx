@@ -832,8 +832,11 @@ const JS_HELPERS = `
     try{
       if(!n || !n.querySelectorAll) return false;
       var cands=n.querySelectorAll(CB_ROW_SEL), hits=0;
-      for(var i=0;i<cands.length && i<300 && hits<3;i++){ if(cbClickableLeaf(cands[i])) hits++; }
-      return hits>=3;
+      for(var i=0;i<cands.length && i<300 && hits<2;i++){ if(cbClickableLeaf(cands[i])) hits++; }
+      // TWO rows, not three: plenty of real pickers are short — Yes/No, or Revolut's "Preferred
+      // work locations" (London · UK-Remote), which returned NO options under a 3-row threshold.
+      // Safe, because this only ever judges nodes that BECAME VISIBLE from our own open gesture.
+      return hits>=2;
     }catch(e){ return false; }
   }
   function cbClassOf(n){ try{ var cn=n.className; if(cn&&typeof cn!=='string'&&cn.baseVal!=null) cn=cn.baseVal; return String(cn||''); }catch(e){ return ''; } }
@@ -869,15 +872,21 @@ const JS_HELPERS = `
     for(var i=0;i<ids.length;i++){ if(!ids[i]) continue; var n=null; try{ n=rt.getElementById(ids[i]); }catch(e){} if(n&&vis(n)) return {el:n, trusted:true}; }
     if(!pre) return null;                       // no association and no before-picture ⇒ refuse
     var cands=[]; try{ cands=deepQuery(CB_POPUP_SEL); }catch(e){ return null; }
+    // ⚠️ Do NOT return the first name-match. Revolut renders an empty "DropdownGroup" wrapper that
+    // matches on the word "dropdown" and appears BEFORE the real sheet in document order — taking
+    // it gave us a popup with ZERO options while the actual list sat right below it.
+    // Collect every candidate, then prefer one that genuinely CONTAINS rows.
+    var first=null;
     for(var j=0;j<cands.length&&j<400;j++){
       var c=cands[j];
       if(!vis(c)||!cbPopupOk(c)) continue;
       var was=false; for(var k=0;k<pre.length;k++){ if(pre[k]===c){ was=true; break; } }
       if(was) continue;                          // was already on screen ⇒ not our popup
       try{ if(c.contains&&c.contains(el)) continue; }catch(e){}   // the control's own wrapper
-      return {el:c, trusted:false};
+      if(cbLooksLikeList(c)) return {el:c, trusted:false};         // has real rows — this is the list
+      if(!first) first=c;                                          // remember, in case nothing better shows
     }
-    return null;
+    return first ? {el:first, trusted:false} : null;
   }
   function cbOptions(el, pop){
     if(!pop||!pop.el) return [];
@@ -1017,47 +1026,158 @@ const JS_HELPERS = `
     }catch(e){}
     return best;
   }
-  function cbFindCloseCtrl(root){
+  function cbIsCloseCtrl(c){
     try{
-      var cands=root.querySelectorAll('button,[role=button],[aria-label]');
-      for(var i=0;i<cands.length && i<120;i++){
-        var c=cands[i];
-        if(!vis(c)) continue;
-        var tx=cbText(c).trim();
-        var ar=(c.getAttribute&&(c.getAttribute('aria-label')||c.getAttribute('title')))||'';
-        if((tx && CB_CLOSE_TXT.test(tx)) || (ar && CB_CLOSE_ARIA.test(ar))){
-          // never a submit-shaped control, whatever it is called
-          var at=String((c.getAttribute&&c.getAttribute('type'))||'').toLowerCase();
-          if(at==='submit'||at==='image') continue;
-          if(CB_SUBMIT.test(tx) || (ar && CB_SUBMIT.test(ar))) continue;
+      if(!c || !vis(c)) return false;
+      var tx=cbText(c).trim();
+      var ar=(c.getAttribute&&(c.getAttribute('aria-label')||c.getAttribute('title')))||'';
+      if(!((tx && CB_CLOSE_TXT.test(tx)) || (ar && CB_CLOSE_ARIA.test(ar)))) return false;
+      var at=String((c.getAttribute&&c.getAttribute('type'))||'').toLowerCase();
+      if(at==='submit'||at==='image') return false;                  // never a submit-shaped control
+      if(CB_SUBMIT.test(tx) || (ar && CB_SUBMIT.test(ar))) return false;
+      return true;
+    }catch(e){ return false; }
+  }
+  // Snapshot of close-ish controls ALREADY on the page (a cookie banner's "Close", a nav "Back").
+  // Clicking one of those instead of the sheet's own would dismiss the wrong thing entirely.
+  function cbPreCloseCtrls(){
+    var out=[];
+    try{
+      var ns=deepQuery('button,[role=button],[aria-label]');
+      for(var i=0;i<ns.length && i<400;i++){ if(cbIsCloseCtrl(ns[i])) out.push(ns[i]); }
+    }catch(e){}
+    return out;
+  }
+  // ⚠️ The sheet's Close button is NOT inside the scrolling list — it sits in a sibling sticky
+  // header. Searching only within the popup found nothing, so every sheet fell through to Escape
+  // (which this widget ignores) and stayed open, stacking. Search the popup, then its ANCESTORS,
+  // and finally anything that BECAME visible when we opened — never a control that was already there.
+  function cbFindCloseCtrl(root, preCtrls){
+    var seenBefore=function(c){ if(!preCtrls) return false; for(var k=0;k<preCtrls.length;k++){ if(preCtrls[k]===c) return true; } return false; };
+    try{
+      var n=root, h=0;
+      while(n && h<6){
+        var cands=n.querySelectorAll ? n.querySelectorAll('button,[role=button],[aria-label]') : [];
+        for(var i=0;i<cands.length && i<200;i++){
+          var c=cands[i];
+          if(!cbIsCloseCtrl(c) || seenBefore(c)) continue;
           return c;
         }
+        n=n.parentElement; h++;
       }
+    }catch(e){}
+    // last resort: any close control that appeared with the sheet
+    try{
+      var all=deepQuery('button,[role=button],[aria-label]');
+      for(var j=0;j<all.length && j<400;j++){ if(cbIsCloseCtrl(all[j]) && !seenBefore(all[j])) return all[j]; }
     }catch(e){}
     return null;
   }
   function cbStillOpen(popEl){ try{ return !!(popEl && popEl.isConnected && vis(popEl)); }catch(e){ return false; } }
-  // Close whatever we opened for this control. popEl is the resolved popup (may be null).
-  function cbForceClose(el, popEl){
+  // Close whatever we opened for this control. popEl is the resolved popup (may be null);
+  // preCtrls is the pre-open snapshot of close controls, so we never click the page's own.
+  // Strategy order is EMPIRICAL, measured against the real sheet (scripts/test-live-forms.js):
+  //   ✓ Escape on the popup's own SEARCH BOX   ✓ clicking the trigger again (toggle)
+  //   ✓ clicking the backdrop                  ✗ Escape on document (ignored by this widget)
+  // The earlier version searched for a "Close" button and found the PAGE'S COOKIE BANNER instead —
+  // the sheet ships no such control — so nothing ever closed and the sheets stacked up.
+  function cbForceClose(el, popEl, preCtrls){
     try{ cbClose(el); }catch(e){}
     if(!popEl || !cbStillOpen(popEl)) return true;
-    // 1) the sheet's own Close / Back / × control
+    // 1) Escape ON THE SEARCH INPUT inside the popup (widget-level, verified to work).
+    //    ⚠️ bubbles ONLY outside a host modal: a bubbling Escape reaches the application popup's
+    //    own document-level close handler and throws away the user's half-filled application
+    //    (YC "Apply for this role"). Non-bubbling still reaches a handler bound on the input.
     try{
-      var root=cbSheetRoot(popEl);
-      var btn=cbFindCloseCtrl(root);
+      var bub = !cbInModal(el);
+      var sb=cbSearchBox(el, { el: popEl });
+      if(sb){
+        sb.focus();
+        sb.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:bub}));
+        sb.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:bub}));
+        if(!cbStillOpen(popEl)) return true;
+      }
+    }catch(e){}
+    // 2) click the trigger again — a toggle, and it is the control we opened ourselves
+    try{
+      if(isComboTrigger(el) && vis(el)){ cbSafeClick(el); if(!cbStillOpen(popEl)) return true; }
+    }catch(e){}
+    // 3) a dedicated close control, when the widget actually has one (react-select, MUI dialogs)
+    try{
+      var btn=cbFindCloseCtrl(cbSheetRoot(popEl), preCtrls);
       if(btn){ cbSafeClick(btn); if(!cbStillOpen(popEl)) return true; }
     }catch(e){}
-    // 2) a real bubbling Escape — only outside a host modal, where it would nuke the application
+    // 4) the backdrop: the top-left corner is outside every sheet panel. Guarded — never a link,
+    //    never a submit, and never a row inside the list itself.
     if(!cbInModal(el)){
+      try{
+        var pt=document.elementFromPoint(5,5);
+        if(pt && !popEl.contains(pt) && pt!==el){ cbSafeClick(pt); if(!cbStillOpen(popEl)) return true; }
+      }catch(e){}
+      // 5) last: a bubbling document Escape (works for plain menus; ignored by sheets)
       try{ document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true})); }catch(e){}
-      if(!cbStillOpen(popEl)) return true;
     }
-    // 3) the backdrop, if one is present (click OUTSIDE the panel, never on a row)
-    try{
-      var bd=document.querySelector('[class*=ackdrop],[class*=Overlay],[class*=overlay],[data-overlay]');
-      if(bd && vis(bd) && !bd.contains(el)){ cbSafeClick(bd); if(!cbStillOpen(popEl)) return true; }
-    }catch(e){}
     return !cbStillOpen(popEl);
+  }
+  // A sheet does not render the instant we click: a fixed 360ms wait was too short for a
+  // full-screen picker, so we read NO options and — worse — handed cbForceClose a null popup, whose
+  // Escape fallback does nothing to that sheet. It stayed open, the next one opened on top, and the
+  // user watched them stack. POLL for the popup instead of guessing a delay.
+  function cbWaitPopup(el, pre, maxMs, cb){
+    var t0=Date.now();
+    (function tick(){
+      var p=null; try{ p=cbPopup(el, pre); }catch(e){}
+      if(p && cbOptions(el, p).length){ cb(p); return; }
+      if(Date.now()-t0 >= maxMs){ cb(p); return; }   // p may be a popup with no rows yet
+      setTimeout(tick, 120);
+    })();
+  }
+  // Anything list-shaped still on screen gets closed. This is the "close it before opening the
+  // next one" guarantee — enforced by CHECKING, not by assuming our close worked.
+  // preCtrls = close controls that existed BEFORE we opened anything (captured once per run).
+  var __cvfBaseCtrls = null;
+  function cbBaselineCtrls(){ if(!__cvfBaseCtrls) __cvfBaseCtrls = cbPreCloseCtrls(); return __cvfBaseCtrls; }
+  function cbEnsureNoneOpen(){
+    var closed=0;
+    try{
+      var base=cbBaselineCtrls();
+      for(var pass=0; pass<4; pass++){
+        var ns=deepQuery(CB_POPUP_SEL), any=false;
+        for(var i=0;i<ns.length && i<60;i++){
+          var n=ns[i];
+          if(!vis(n) || !cbLooksLikeList(n)) continue;
+          // Escape on this sheet's own search box is the gesture that actually works; the trigger
+          // that opened it may already be gone, so drive the popup directly.
+          // same modal rule as cbForceClose: never let an Escape reach a host application popup
+          var inDlg=false; try{ inDlg=!!(n.closest && n.closest('[role=dialog],[aria-modal="true"],dialog[open]')); }catch(e){}
+          var sb=null; try{ sb=cbSearchBox(null, { el: n }); }catch(e){}
+          if(sb){
+            try{
+              sb.focus();
+              sb.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:!inDlg}));
+              sb.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:!inDlg}));
+            }catch(e){}
+            if(!vis(n)){ closed++; any=true; continue; }
+          }
+          var b=cbFindCloseCtrl(cbSheetRoot(n), base);
+          if(b){ cbSafeClick(b); if(!vis(n)){ closed++; any=true; continue; } }
+          // ⚠️ NO blind corner-click here. Inside a host application modal (YC's "Apply for this
+          // role" popup) the top-left corner IS the modal's backdrop — clicking it threw away the
+          // user's entire half-filled application. The corner is only ever used by cbForceClose,
+          // which knows the control and can check cbInModal first.
+          try{
+            var owner=null;
+            try{ owner=n.closest && n.closest('[role=dialog],[aria-modal="true"],dialog[open]'); }catch(e2){}
+            if(!owner){
+              var pt=document.elementFromPoint(5,5);
+              if(pt && !n.contains(pt)){ cbSafeClick(pt); if(!vis(n)){ closed++; any=true; } }
+            }
+          }catch(e){}
+        }
+        if(!any) break;   // nothing left to close
+      }
+    }catch(e){}
+    return closed;
   }
   // Every sheet we open goes here so a final sweep can guarantee the page is left clean, even if a
   // pick failed halfway or the widget re-rendered its popup node.
@@ -1065,19 +1185,11 @@ const JS_HELPERS = `
   function cbNoteOpened(el, popEl){ try{ if(popEl) __cvfOpened.push({ el: el, pop: popEl }); }catch(e){} }
   function cbCloseAllOpened(){
     for(var i=0;i<__cvfOpened.length;i++){
-      try{ if(cbStillOpen(__cvfOpened[i].pop)) cbForceClose(__cvfOpened[i].el, __cvfOpened[i].pop); }catch(e){}
+      try{ if(cbStillOpen(__cvfOpened[i].pop)) cbForceClose(__cvfOpened[i].el, __cvfOpened[i].pop, cbBaselineCtrls()); }catch(e){}
     }
     __cvfOpened = [];
     // Anything still standing (a sheet whose node was replaced) gets one last generic dismiss.
-    try{
-      var late=deepQuery(CB_POPUP_SEL);
-      for(var j=0;j<late.length && j<40;j++){
-        var n=late[j];
-        if(!vis(n) || !cbLooksLikeList(n)) continue;
-        var b=cbFindCloseCtrl(cbSheetRoot(n));
-        if(b) cbSafeClick(b);
-      }
-    }catch(e){}
+    try{ cbEnsureNoneOpen(); }catch(e){}
   }
   // SAFETY GUARD for every phase that clicks page elements — the same structure skillsJs uses, for
   // the same reason: while it is on a form submit is swallowed, and the loop aborts on any
@@ -1116,23 +1228,27 @@ const JS_HELPERS = `
     // widget that does not self-dismiss.
     function finish(ok){
       if(fin) return; fin=true;
-      try{ cbForceClose(el, popEl); }catch(e){}
+      try{ cbForceClose(el, popEl, preC); }catch(e){}
+      try{ cbEnsureNoneOpen(); }catch(e){}
       cb(ok);
     }
     if(cbAborted()){ finish(false); return; }
     bringIntoView(el);   // an off-screen widget renders its popup outside the viewport → "no options"
-    var pre=cbPreOpen();
+    var pre=cbPreOpen(), preC=cbBaselineCtrls();
     try{ el.focus(); }catch(e){}
     if(!trig){ try{ setNative(el,''); }catch(e){} }
     var ctrl=cbCtrl(el);
     if(ctrl&&ctrl!==el) cbSafeClick(ctrl);
     // A wrapper click never reaches an input-shaped trigger — it must be clicked itself to open.
     if(trig) cbSafeClick(el);
-    setTimeout(function(){
+    // Wait for the sheet to actually exist before trying to type into its search box — on a
+    // full-screen picker the old fixed 240ms landed before anything had rendered.
+    cbWaitPopup(el, pre, 2200, function(){
       if(cbAborted()){ finish(false); return; }
       if(trig){
         // Typing into the trigger does nothing; filter via the popup's own search box when it has one.
         var pop0=cbPopup(el, pre);
+        if(pop0){ popEl=pop0.el; cbNoteOpened(el, popEl); }   // known NOW, so finish() can always close it
         sb=cbSearchBox(el, pop0);
         if(sb){ try{ sb.focus(); }catch(e){} try{ setNative(sb, cbFilterFor(el, want)); }catch(e){} }
       } else {
@@ -1182,7 +1298,7 @@ const JS_HELPERS = `
         }
         pickFrom(cbOptions(el, pop), false);
       },450);
-    },240);
+    });
   }
 
   // Custom dropdowns hide their options until opened, so the AI was being asked to free-text a field
@@ -1198,19 +1314,22 @@ const JS_HELPERS = `
     var qi=0, t0=Date.now();
     function fin(){ cbGuardOff(); done(); }
     function step(){
-      if(qi>=q.length || Date.now()-t0>2500 || cbAborted()){ fin(); return; }
+      // Budget raised from 2.5s: a full-screen picker needs ~0.6-1s to render, so the old cap gave
+      // up after ~4 widgets and every remaining dropdown reached the AI with NO options — which is
+      // why they came back with wrong or empty values.
+      if(qi>=q.length || Date.now()-t0>16000 || cbAborted()){ cbEnsureNoneOpen(); fin(); return; }
       var f=q[qi++], el=null, all=ctrls();
       for(var j=0;j<all.length;j++){ if(sig(all[j])===f.key){ el=all[j]; break; } }
       if(!el || cbAnswered(el)){ step(); return; }
-      var pre=cbPreOpen();
+      var pre=cbPreOpen(), preC=cbBaselineCtrls();
+      bringIntoView(el);
       try{ el.focus(); }catch(e){}
       var c=cbCtrl(el); if(c&&c!==el) cbSafeClick(c);
       if(isComboTrigger(el)) cbSafeClick(el);   // wrapper clicks never reach an input-shaped trigger
-      setTimeout(function(){
-        var popEl2=null;
+      // WAIT for the list instead of guessing a delay (the 360ms guess read nothing on a sheet).
+      cbWaitPopup(el, pre, 2200, function(pop){
+        var popEl2 = pop ? pop.el : null;
         try{
-          var pop=cbPopup(el, pre);
-          if(pop) popEl2=pop.el;
           var os=pop?cbOptions(el, pop):[], opts=[];
           for(var k=0;k<os.length&&opts.length<60;k++){ var tx=cbText(os[k]); if(tx) opts.push(tx.slice(0,90)); }
           // A list we hit the cap on is INCOMPLETE. Say so, or the server's option-snap treats a
@@ -1218,11 +1337,14 @@ const JS_HELPERS = `
           // "no matching option".
           if(opts.length){ f.options=opts; f.optionsUnknown=false; if(os.length>=60) f.optionsTruncated=true; }
         }catch(e){}
-        // The SCAN opens every dropdown too — it must leave each one closed, or the user watches
-        // sheets pile up before a single field is even filled.
-        try{ cbForceClose(el, popEl2); }catch(e){}
-        setTimeout(step,140);
-      },360);
+        // CLOSE THIS ONE BEFORE OPENING THE NEXT — and verify it, rather than assuming. Reading a
+        // dropdown must never leave it on screen.
+        try{ cbForceClose(el, popEl2, preC); }catch(e){}
+        setTimeout(function(){
+          try{ cbEnsureNoneOpen(); }catch(e){}
+          setTimeout(step, 120);
+        }, 180);
+      });
     }
     step();
   }
@@ -1359,7 +1481,9 @@ const JS_HELPERS = `
         var di=0, t0=Date.now();
         function fin(){ cbGuardOff(); done(); }
         function step(){
-          if(di>=deferred.length || Date.now()-t0>9000 || cbAborted()){ fin(); return; }
+          // 9s was not enough once a picker needs ~1s to open, ~0.4s to filter and ~0.3s to verify:
+          // later dropdowns were abandoned mid-run (some of them still on screen).
+          if(di>=deferred.length || Date.now()-t0>30000 || cbAborted()){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); return; }
           var d=deferred[di++], el=null, all=ctrls();
           for(var j=0;j<all.length;j++){ if(sig(all[j])===d.s && vis(all[j])){ el=all[j]; break; } }
           if(!el){ if(!filled[d.s]) fails[d.s]={key:d.s,label:d.label,why:'this dropdown left the page before we could pick'}; setTimeout(step,60); return; }
@@ -1386,7 +1510,9 @@ const JS_HELPERS = `
           openAndPick(el, d.v, function(ok){
             if(ok){ filled[d.s]=true; delete fails[d.s]; }
             else fails[d.s]={key:d.s,label:d.label,why:'dropdown — please pick this one yourself'};
-            setTimeout(step,150);
+            // never start the next dropdown while this one is still on screen
+            try{ cbEnsureNoneOpen(); }catch(e){}
+            setTimeout(step,220);
           });
         }
         step();
