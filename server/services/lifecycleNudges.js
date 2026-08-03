@@ -337,6 +337,17 @@ async function runLifecycleNudges({ force = false, dryRun = false, scanLimit, se
   await nudgeGate.refreshResponses();
   summary.settle = await settleIncentives({ dryRun });
 
+  // The master switch is checked AFTER settlement on purpose: pausing the campaign must not
+  // withhold a bonus we already promised someone who went and did the thing.
+  const masterOn = await notifSwitch.isOn('lifecycle_nudges_master');
+  if (!masterOn) {
+    summary.summary = 'master switch OFF — no nudges sent'
+      + (summary.settle && summary.settle.granted ? `, but settled ${summary.settle.granted} promised bonus(es)` : '');
+    summary.masterOff = true;
+    if (!dryRun) await setLastRun('lifecycle_nudges', summary.summary);
+    return summary;
+  }
+
   const enabled = {};
   for (const n of NUDGES) enabled[n.key] = await notifSwitch.isOn(n.key);
 

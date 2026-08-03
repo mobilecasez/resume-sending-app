@@ -47,6 +47,17 @@ const SWITCHES = [
   // One switch per nudge, because "turn off the photo reminder but keep the résumé one" is the
   // control that is actually wanted. All of them additionally obey the global caps in nudgeGate:
   // max 1 automated push per 20h, 3 per 7 days, 3 attempts per nudge, then silence.
+  //
+  // …and ONE master switch above them, because 13 toggles is the wrong control for the only
+  // question that matters on day one: "is this thing allowed to message my users at all?".
+  // ⚠️ The master gates SENDING only. Bonus quota promised to someone who then did the thing is
+  // still paid out and still confirmed while it is off — a promise we already made does not become
+  // void because the campaign was paused.
+  {
+    key: 'lifecycle_nudges_master', label: 'Lifecycle nudges — MASTER', icon: '🎚️', group: 'lifecycle',
+    description: 'The single on/off for every automatic lifecycle nudge below. Off = no automatic nudges are sent to anyone, whatever the individual switches say. Bonuses already promised are still honoured.',
+    types: [],
+  },
   {
     key: 'nudge_upload_resume', label: 'Nudge: upload your résumé', icon: '📄', group: 'lifecycle',
     description: 'Sent 1+ day after signup when no résumé has been uploaded. Offers 3 extra free cover letters, granted once they actually upload. Opens the profile résumé section.',
