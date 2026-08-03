@@ -58,7 +58,9 @@ async function runDailyReminders({ force = false } = {}) {
       // Record what ACTUALLY happened. Hard-coding pushOk:true spends the user's weekly budget on
       // a push that an opt-out or a dead token silently swallowed.
       await gate.record(a.user_id, 'daily_reminders', { attempt: d.attempt, pushOk: !!(r && r.pushed) });
-      if (r && r.pushed) followUps++;
+      // ⚠️ staleState is a SNAPSHOT. A user with four unanswered applications passed the gate four
+      // times against it and got four pushes in one run, each individually "within the cap".
+      if (r && r.pushed) { gate.noteSent(staleState, a.user_id, 'daily_reminders'); followUps++; }
     } catch (_) {}
   }
 
@@ -78,7 +80,7 @@ async function runDailyReminders({ force = false } = {}) {
       const r = await notifyCreditExpiry(c.user_id, c.credits_remaining, Math.max(0, c.days_left) + 1);
       await dbConfig.run('UPDATE user_credits SET expiry_warned_at = NOW() WHERE user_id = ?', [c.user_id]);
       await gate.record(c.user_id, 'credit_expiry', { attempt: d.attempt, pushOk: !!(r && r.pushed) });
-      if (r && r.pushed) expiries++;
+      if (r && r.pushed) { gate.noteSent(expState, c.user_id, 'credit_expiry'); expiries++; }
     } catch (_) {}
   }
 

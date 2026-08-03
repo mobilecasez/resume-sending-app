@@ -128,20 +128,44 @@ const SWITCHES = [
 let _cache = null, _cacheAt = 0;
 const TTL = 60 * 1000;
 
+/**
+ * ⚠️ A FAILED READ MUST NOT BE CACHED, AND MUST NOT MEAN "ON".
+ *
+ * The original swallowed any query error, kept the all-defaults map, and cached it for 60s. So a
+ * transient database blip turned every switch back ON for a minute — including the master kill
+ * switch an operator had deliberately turned OFF to stop notifications going out. The one moment
+ * you most need a kill switch to hold is the moment things are going wrong.
+ *
+ * Now: a failed read is not cached (so the next call retries immediately) and is reported, so
+ * `isOn` can fail CLOSED for the switches where "off" is the safe answer.
+ */
 async function getAll() {
   if (_cache && Date.now() - _cacheAt < TTL) return _cache;
   const map = {};
-  for (const s of SWITCHES) map[s.key] = true;   // default ON
+  for (const s of SWITCHES) map[s.key] = true;   // default ON when the row is simply absent
+  let ok = true;
   try {
     const rows = await dbConfig.query('SELECT key, enabled FROM user_notification_switches');
+    if (!rows) ok = false;
     for (const r of rows || []) if (r.key in map) map[r.key] = !!r.enabled;
-  } catch { /* table may not exist yet — defaults hold */ }
-  _cache = map; _cacheAt = Date.now();
+  } catch (e) {
+    ok = false;
+    console.warn('[notifSwitch] read failed — switches unknown:', e.message);
+  }
+  if (ok) { _cache = map; _cacheAt = Date.now(); }
+  map.__read_ok = ok;
   return map;
 }
 
+/**
+ * Keys whose safe answer when we cannot read the table is OFF. Everything here either sends to a
+ * user or arms something that does; "we could not check, so we sent it anyway" is the wrong call.
+ */
+const FAIL_CLOSED = new Set(['lifecycle_nudges_master']);
+
 async function isOn(key) {
   const all = await getAll();
+  if (all.__read_ok === false) return !FAIL_CLOSED.has(key);
   return all[key] !== false;
 }
 

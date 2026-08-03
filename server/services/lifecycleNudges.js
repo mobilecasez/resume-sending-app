@@ -262,7 +262,11 @@ async function applyImmediate(userId, nudge, attempt) {
     log.push(`+${inc.amount} ${inc.kind}`);
     said.push(many(inc.amount, noun));
   }
-  return { log: log.join(', '), sentence: `We have added ${said.join(' and ')} to your trial.` };
+  return {
+    log: log.join(', '),
+    sentence: `We have added ${said.join(' and ')} to your trial.`,
+    title: inc.kind === 'trial_days' ? 'Your free trial just got longer 🎁' : null,
+  };
 }
 
 /**
@@ -462,8 +466,11 @@ async function runLifecycleNudges({ force = false, dryRun = false, scanLimit, se
         finalOverrides = {};                            // nothing granted → do not claim we did
       } else {
         incentiveNote = applied.log;
-        // Say what actually landed, not what the registry hoped would land.
+        // Say what actually landed, not what the registry hoped would land — INCLUDING the title.
+        // "Your free trial ends in 2 days ⏳" over a body that says we just added 5 days reads as a
+        // mail-merge failure; the two halves of one notification must agree.
         finalOverrides = { body: withOffer(base.body, applied.sentence) };
+        if (applied.title) finalOverrides.title = applied.title;
       }
     } else if (inc && inc.mode === 'promise') {
       incentiveNote = `promised:${inc.amount} ${inc.kind}`;

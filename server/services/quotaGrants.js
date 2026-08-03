@@ -186,9 +186,18 @@ async function ensureCountableWindow(userId, idemKey) {
     const rows = await dbConfig.query('SELECT started_at, ends_at FROM user_trials WHERE user_id = $1', [uid]);
     const trial = rows && rows[0];
     if (!trial) {
-      // No trial ever started. Start one now — they were always entitled to it, they simply never
-      // touched a quota-gated feature. deviceId is null here on purpose: this is not someone
-      // claiming a trial on a fresh device, it is us making a promise we already made redeemable.
+      // No trial ever started. They were always entitled to one — they simply never touched a
+      // quota-gated feature. But ⚠️ ONE TRIAL PER DEVICE still applies: calling ensureTrial with a
+      // null deviceId skips that check entirely, which would hand a second free trial to someone
+      // who already used theirs under a different account on the same phone. So check it here,
+      // using the devices we have on record for this user.
+      const claimed = await dbConfig.query(
+        `SELECT 1 AS hit
+           FROM user_devices d
+           JOIN trial_devices t ON t.device_id = d.device_id
+          WHERE d.user_id = $1 AND t.first_user_id IS NOT NULL AND t.first_user_id <> $1
+          LIMIT 1`, [uid]);
+      if (claimed && claimed.length) return { via: null, blocked: 'device_trial_used' };
       await ent.ensureTrial(uid, null, null);
       return { via: 'trial', opened: 'started_trial' };
     }
@@ -196,7 +205,13 @@ async function ensureCountableWindow(userId, idemKey) {
 
     // Expired: reopen it, keeping started_at so the usage window (and therefore the grant) still counts.
     const r = await extendTrial(uid, 7, (idemKey || 'bonus') + ':window', { source: 'bonus_window', note: 'reopened so a granted bonus is usable' });
-    return { via: r.extended || r.already ? 'trial' : null, opened: r.extended ? 'reopened_trial' : undefined };
+    if (r.extended) return { via: 'trial', opened: 'reopened_trial' };
+    // ⚠️ `already` means the idem key was consumed, NOT that a window is open — a crash between the
+    // marker and the UPDATE leaves exactly that state. Verify by reading the trial back rather than
+    // inferring, or we grant into a window that is still shut.
+    const after = await dbConfig.query('SELECT ends_at FROM user_trials WHERE user_id = $1', [uid]);
+    const open = after && after[0] && new Date(after[0].ends_at) > new Date();
+    return { via: open ? 'trial' : null };
   } catch (e) {
     console.warn('[quotaGrants] ensureCountableWindow:', e.message);
     return { via: null };

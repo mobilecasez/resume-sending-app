@@ -39,6 +39,20 @@ const SILENCE_PAUSE_DAYS = parseInt(process.env.NUDGE_SILENCE_PAUSE_DAYS || '30'
 /** How far either side of an observed-active hour still counts as a reasonable time to arrive. */
 const QUIET_SPREAD = 3;
 
+/**
+ * RECURRING categories — things that are SUPPOSED to arrive again and again (a weekly digest is
+ * weekly), as opposed to a one-off activation nudge that should give up after three tries.
+ *
+ * ⚠️ Without this set, MAX_ATTEMPTS silently retired them: three weekly digests, then the fourth
+ * hits 'max_attempts' and the digest is off for that user FOREVER. Same for follow-up reminders,
+ * credit-expiry warnings and the job-match alerts. They still obey the global gap, the weekly cap,
+ * quiet hours and the silence rule — they are simply exempt from the give-up counter and from the
+ * escalating per-nudge backoff, both of which only make sense for "please go and do this once".
+ */
+const RECURRING_KEYS = new Set([
+  'weekly_digest', 'daily_reminders', 'credit_expiry', 'demand_jobs', 'resume_match_jobs',
+]);
+
 // Founder + QA accounts. Previously this list existed ONLY inside demandResearch, so every other
 // job happily nudged the test accounts and polluted its own numbers.
 const TEST_USER_IDS = new Set([4, 5, 6, 7, 8, 9, 11, 14, 24, 26, 41, 43]);
@@ -126,7 +140,15 @@ async function loadState(userIds) {
       s.recent = s.recent || [];
       s.recent.push({ at, responded: !!r.responded_at });
     }
-  } catch (e) { console.warn('[nudgeGate] loadState log:', e.message); }
+  } catch (e) {
+    // ⚠️ FAIL CLOSED. This read IS the frequency cap — every "have they had one today?" answer comes
+    // from it. Swallowing the error left an empty state, which check() reads as "never nudged", so a
+    // single failed query would have quietly lifted every cap for every user in the batch and let
+    // the sweep push to all of them at once. Marking the state unusable turns a database blip into
+    // "send nothing this round", which is the only safe direction.
+    console.warn('[nudgeGate] loadState log FAILED — capping everything for this batch:', e.message);
+    for (const id of ids) { const s = state.get(id); if (s) s.unreadable = true; }
+  }
 
   // 2) the hours of day this person is demonstrably awake
   try {
@@ -154,6 +176,25 @@ async function loadState(userIds) {
   return state;
 }
 
+/**
+ * Fold a just-sent push back into an already-loaded state.
+ *
+ * ⚠️ A batch `loadState` is a SNAPSHOT. The follow-up loop checks every stale application against
+ * it, so a user with four unanswered applications passed the gate four times and received four
+ * pushes in one run — each one individually "within the cap". Callers that send inside a loop must
+ * call this after every send.
+ */
+function noteSent(state, userId, nudgeKey, now = Date.now()) {
+  const s = state && state.get ? state.get(int(userId)) : null;
+  if (!s) return;
+  s.lastSentAt = Math.max(int(s.lastSentAt, 0), now) || now;
+  s.sent7d = int(s.sent7d) + 1;
+  const prev = s.byKey.get(nudgeKey);
+  s.byKey.set(nudgeKey, { at: now, attempt: (prev ? prev.attempt : 0) + 1 });
+  s.recent = s.recent || [];
+  s.recent.unshift({ at: now, responded: false });
+}
+
 /** Circular distance between two hours of a 24h clock (23 and 1 are 2 apart, not 22). */
 function hourDistance(a, b) {
   const d = Math.abs(a - b) % 24;
@@ -176,6 +217,7 @@ function isAwakeAt(activeHours, hour) {
 function check(userId, nudgeKey, state, now = Date.now(), opts = {}) {
   if (TEST_USER_IDS.has(int(userId))) return { ok: false, reason: 'test_account' };
   const s = state || { byKey: new Map(), activeHours: new Set() };
+  if (s.unreadable) return { ok: false, reason: 'history_unavailable', detail: 'could not read the send ledger — holding off rather than risking a repeat' };
 
   // 4) silence — checked FIRST among the history rules, because someone who has stopped responding
   // should not even be evaluated for "which nudge fits them best".
@@ -192,7 +234,9 @@ function check(userId, nudgeKey, state, now = Date.now(), opts = {}) {
   // 3) per-nudge backoff. `attempt` counts DELIVERED sends; `at` is the last time we TRIED.
   const prev = s.byKey ? s.byKey.get(nudgeKey) : null;
   let attempt = 1;
-  if (prev) {
+  if (prev && RECURRING_KEYS.has(nudgeKey)) {
+    attempt = prev.attempt + 1;                 // recorded for the audit trail, never a ceiling
+  } else if (prev) {
     attempt = prev.attempt + 1;
     if (attempt > MAX_ATTEMPTS) {
       return { ok: false, reason: 'max_attempts', detail: `already sent '${nudgeKey}' ${prev.attempt}x` };
@@ -232,9 +276,9 @@ function check(userId, nudgeKey, state, now = Date.now(), opts = {}) {
 
 module.exports = {
   MIN_GAP_HOURS, MAX_PER_7D, MAX_ATTEMPTS, BACKOFF_HOURS, RETRY_AFTER_FAILURE_HOURS,
-  SILENCE_STREAK, SILENCE_PAUSE_DAYS,
+  SILENCE_STREAK, SILENCE_PAUSE_DAYS, RECURRING_KEYS,
   QUIET_SPREAD, TEST_USER_IDS,
-  record, refreshResponses, loadState, check,
+  record, refreshResponses, loadState, check, noteSent,
   // test seams
   _hourDistance: hourDistance, _isAwakeAt: isAwakeAt,
 };

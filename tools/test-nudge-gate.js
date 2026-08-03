@@ -162,6 +162,42 @@ console.log('\nquiet hours');
   ok('hour distance is symmetric', gate._hourDistance(1, 23) === 2, gate._hourDistance(1, 23));
 }
 
+// ── 5b. Recurring notifications must not be "used up" ─────────────────────────────────────────
+// A weekly digest is supposed to arrive weekly. MAX_ATTEMPTS is for "please go and do this once".
+console.log('\nrecurring vs one-shot');
+{
+  const spent = { at: NOW - 30 * DAY, attempt: 3 };
+  const oneShot = gate.check(101, 'nudge_add_photo', state({ byKey: { nudge_add_photo: spent } }), NOW);
+  ok('a one-shot nudge retires after 3 attempts', oneShot.ok === false && oneShot.reason === 'max_attempts', oneShot);
+
+  for (const key of ['weekly_digest', 'daily_reminders', 'credit_expiry', 'demand_jobs', 'resume_match_jobs']) {
+    const r = gate.check(101, key, state({ byKey: { [key]: spent } }), NOW);
+    ok(`'${key}' keeps going after 3 sends`, r.ok === true, r);
+  }
+  const capped = gate.check(101, 'weekly_digest', state({ byKey: { weekly_digest: spent }, lastSentAt: NOW - 2 * HOUR }), NOW);
+  ok('…but a recurring one still obeys the 20h gap', capped.ok === false && capped.reason === 'too_soon', capped);
+}
+
+// ── 5c. Fail CLOSED, not open ─────────────────────────────────────────────────────────────────
+// The read that answers "have they had one today?" IS the cap. Losing it must mean "send nothing".
+console.log('\nwhen the ledger cannot be read');
+{
+  const blind = state();
+  blind.unreadable = true;
+  const r = gate.check(101, 'nudge_add_photo', blind, NOW);
+  ok('an unreadable send history blocks the send', r.ok === false && r.reason === 'history_unavailable', r);
+}
+
+// ── 5d. A batch snapshot must be updated as we send ───────────────────────────────────────────
+console.log('\nsnapshot staleness');
+{
+  const st = new Map([[101, state({ hours: [15] })]]);
+  ok('first send is allowed', gate.check(101, 'daily_reminders', st.get(101), NOW).ok === true);
+  gate.noteSent(st, 101, 'daily_reminders', NOW);
+  const second = gate.check(101, 'daily_reminders', st.get(101), NOW);
+  ok('a second send in the same loop is refused', second.ok === false && second.reason === 'too_soon', second);
+}
+
 // ── 6. Accounts we must never nudge ───────────────────────────────────────────────────────────
 console.log('\nexclusions');
 {

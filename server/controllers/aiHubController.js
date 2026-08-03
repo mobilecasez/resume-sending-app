@@ -3303,7 +3303,7 @@ async function processJobSearch(asyncJobId, userId, companyInput, userProfile) {
                     u.expo_push_token,
                     n > 0 ? `${name}: ${n} job${n === 1 ? '' : 's'} ready 🎯` : `${name} — search finished`,
                     n > 0 ? `Tap to view your matches.` : `We couldn't find live openings right now — tap to review or report it.`,
-                    { type: 'job_search_complete', employer: name, employerId: String(employerDbId), jobId: asyncJobId, jobCount: n }
+                    { type: 'job_search_complete', employer: name, employerId: String(employerDbId), jobId: asyncJobId, jobCount: n , route: '/(ai-hub)', params: { tab: 'search' } }
                 );
                 // Passive uninstall detection: a stale token = the app was uninstalled (or notifications
                 // disabled). Clear it and log the uninstall for the live dashboard. Best-effort.
