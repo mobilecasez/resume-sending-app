@@ -825,7 +825,16 @@ const JS_HELPERS = `
   // Claim chip mode only on hard structural evidence. A plain "Skills" text box that genuinely
   // takes a comma-separated list must keep the plain-text path — and chipFill falls back to it
   // anyway, so a false positive costs nothing.
-  var CHIP_CLS=/multi-?value|(^|[-_])chips?([-_]|$)|(^|[-_])tags?([-_]|$)|(^|[-_])tokens?([-_]|$)|(^|[-_])pills?([-_]|$)/i;
+  // Design systems name their classes in CamelCase, not kebab: MUI's chip is "MuiChip-root", and a
+  // kebab-only word boundary matched none of it. Split on -, _, whitespace AND the lowercase-to-
+  // uppercase transition, then require the word to START a segment — otherwise "advantage",
+  // "heritage", "package" and "stage" all read as tag widgets.
+  function chipish(cls){
+    try{
+      var t=String(cls||'').replace(/([a-z0-9])([A-Z])/g,'$1 $2').replace(/[-_]+/g,' ');
+      return /(^|\\s)(chip|tag|token|pill)(s|list|input|container|item|items|wrapper|box|label|size[a-z]*)?(\\s|$)/i.test(t);
+    }catch(e){ return false; }
+  }
   function isChipInput(el){
     try{
       if(!el || el.tagName!=='INPUT') return false;
@@ -836,8 +845,9 @@ const JS_HELPERS = `
       var w=cbCtrl(el);
       if(w && w.querySelector){
         if(w.querySelector('[class*=multi-value],[class*=multiValue]')) return true;
+        if(chipish(cbClassOf(w))) return true;
         var kids=w.querySelectorAll('[class]');
-        for(var i=0;i<kids.length&&i<80;i++){ if(kids[i]!==el && CHIP_CLS.test(cbClassOf(kids[i]))) return true; }
+        for(var i=0;i<kids.length&&i<80;i++){ if(kids[i]!==el && chipish(cbClassOf(kids[i]))) return true; }
       }
     }catch(e){}
     return false;
@@ -848,7 +858,7 @@ const JS_HELPERS = `
     var out=[];
     try{
       var w=cbCtrl(el); if(!w||!w.querySelectorAll) return out;
-      var ns=w.querySelectorAll('[class*=multi-value],[class*=multiValue],[class*=chip],[class*=tag],[class*=token],[class*=pill],li,[role=button]');
+      var ns=w.querySelectorAll('[class*=multi-value],[class*=multiValue],[class*=chip],[class*=Chip],[class*=tag],[class*=Tag],[class*=token],[class*=Token],[class*=pill],li,[role=button]');
       for(var i=0;i<ns.length&&out.length<40;i++){
         if(ns[i]===el) continue;
         if(ns[i].querySelector && ns[i].querySelector('input')) continue;
@@ -864,6 +874,58 @@ const JS_HELPERS = `
   // something the applicant asked for, and it is refused on all three routes.
   // Answer a whole group at once. Returns {ok, label, why, consented[]}. Never unticks anything:
   // a member the applicant already chose is counted as a hit and left exactly as it is.
+  // ── CHIP / TAG filling ───────────────────────────────────────────────────────────────────────
+  // Per widget, per value: open the menu and click the row if there is one, else send a SHIELDED
+  // Enter — then CHECK that a chip actually appeared. Only a chip visible in the widget counts;
+  // el.value proves nothing, a tag widget clears it on every commit. Shared by the form fill and by
+  // the skills stage, which previously gave up whenever no menu row appeared and pressed Enter
+  // never — so on a type-and-Enter widget not one skill was ever added.
+  function chipFill(el, v, plainFallback, cb){
+    var wants=multiVals(v); if(!wants.length) wants=[String(v)];
+    wants=wants.slice(0,10);
+    var added=0, missed=[], i=0, t0=Date.now();
+    function has(w){
+      var have=chipTexts(el), n=cbNorm(w);
+      if(!n) return false;
+      for(var k=0;k<have.length;k++){ if(have[k]===n || have[k].indexOf(n)>=0) return true; }
+      return false;
+    }
+    function done1(w){
+      if(has(w)) added++;
+      else { missed.push(w); try{ setNative(el,''); }catch(e){} }
+      setTimeout(next, 200);
+    }
+    function next(){
+      if(i>=wants.length || Date.now()-t0>26000 || cbAborted()){ finish(); return; }
+      var w=wants[i++];
+      if(has(w)){ added++; next(); return; }          // already there — the applicant's own chip
+      // A chip widget that is ALSO a combobox is driven by the path that is already proven against
+      // real pickers: open it with the full gesture, filter through whatever search box it has, click
+      // the row, verify. Typing first and hoping a menu appears does not work — measured on MUI,
+      // whose controlled input REVERTS an injected write inside the same tick, so no filter is ever
+      // applied and no menu ever opens.
+      if(isCombo(el)){ openAndPick(el, w, function(){ done1(w); }); return; }
+      bringIntoView(el);
+      try{ el.focus(); }catch(e){}
+      try{ setNative(el, w); }catch(e){}
+      setTimeout(function(){
+        // A plain tag box commits on Enter. The shield makes that safe.
+        if(!has(w)) chipEnter(el);
+        setTimeout(function(){ done1(w); }, 340);
+      }, 420);
+    }
+    function finish(){
+      // LAST RESORT (form fields only): it was not a chip widget after all. Write the plain list
+      // exactly as the old text path did, so a wrong guess about the widget cannot lose the answer.
+      // The skills stage passes plainFallback=false — there the control IS known to be a chip
+      // widget, and dumping a comma list into it would just leave junk in the box.
+      if(plainFallback && added===0){ try{ el.focus(); setNative(el, multiVals(v).join(', ')||String(v)); el.dispatchEvent(new Event('blur',{bubbles:true})); el.blur(); }catch(e){} }
+      try{ cbEnsureNoneOpen(); }catch(e){}
+      cb({added:added, missed:missed, wanted:wants.length});
+    }
+    next();
+  }
+
   function grpSet(anyMember, t, v){
     var res={ok:false,label:'',why:'none of these answers matched the options',consented:[]};
     var mem=grpMembers(anyMember,t);
@@ -1410,6 +1472,16 @@ const JS_HELPERS = `
   // header. Searching only within the popup found nothing, so every sheet fell through to Escape
   // (which this widget ignores) and stayed open, stacking. Search the popup, then its ANCESTORS,
   // and finally anything that BECAME visible when we opened — never a control that was already there.
+  // ⚠️ While a repeater row is open, this hunt must not leave the popup. cbSheetRoot climbs to
+  // anything covering half the viewport, and the search then walks ANCESTORS and anything that
+  // "became visible" — which, with a row open, includes the ROW's own dismiss control. Measured
+  // live: closing the education picker took the finished experience row with it.
+  function cbCloseRoot(popEl){ return cbHoldingRow() ? popEl : cbSheetRoot(popEl); }
+  function cbCloseOk(c, popEl){
+    if(!cbHoldingRow()) return true;
+    try{ if(c.closest && c.closest('[data-cvf-row]')) return false; }catch(e){}
+    try{ return !!(popEl && popEl.contains && popEl.contains(c)); }catch(e){ return false; }
+  }
   function cbFindCloseCtrl(root, preCtrls){
     var seenBefore=function(c){ if(!preCtrls) return false; for(var k=0;k<preCtrls.length;k++){ if(preCtrls[k]===c) return true; } return false; };
     try{
@@ -1440,6 +1512,7 @@ const JS_HELPERS = `
   // The earlier version searched for a "Close" button and found the PAGE'S COOKIE BANNER instead —
   // the sheet ships no such control — so nothing ever closed and the sheets stacked up.
   function cbForceClose(el, popEl, preCtrls){
+    if(cbProtected(popEl)) return true;      // a repeater row of ours — closing it discards the row
     try{ cbClose(el); }catch(e){}
     if(!popEl || !cbStillOpen(popEl)) return true;
     // 1) Escape ON THE SEARCH INPUT inside the popup (widget-level, verified to work).
@@ -1447,7 +1520,7 @@ const JS_HELPERS = `
     //    own document-level close handler and throws away the user's half-filled application
     //    (YC "Apply for this role"). Non-bubbling still reaches a handler bound on the input.
     try{
-      var bub = !cbInModal(el);
+      var bub = !cbInModal(el) && !cbHoldingRow();
       var sb=cbSearchBox(el, { el: popEl });
       if(sb){
         sb.focus();
@@ -1462,12 +1535,12 @@ const JS_HELPERS = `
     }catch(e){}
     // 3) a dedicated close control, when the widget actually has one (react-select, MUI dialogs)
     try{
-      var btn=cbFindCloseCtrl(cbSheetRoot(popEl), preCtrls);
-      if(btn){ cbSafeClick(btn); if(!cbStillOpen(popEl)) return true; }
+      var btn=cbFindCloseCtrl(cbCloseRoot(popEl), preCtrls);
+      if(btn && cbCloseOk(btn, popEl)){ cbSafeClick(btn); if(!cbStillOpen(popEl)) return true; }
     }catch(e){}
     // 4) the backdrop: the top-left corner is outside every sheet panel. Guarded — never a link,
     //    never a submit, and never a row inside the list itself.
-    if(!cbInModal(el)){
+    if(!cbInModal(el) && !cbHoldingRow()){
       try{
         var pt=document.elementFromPoint(5,5);
         if(pt && !popEl.contains(pt) && pt!==el){ cbSafeClick(pt); if(!cbStillOpen(popEl)) return true; }
@@ -1504,10 +1577,14 @@ const JS_HELPERS = `
         for(var i=0;i<ns.length && i<60;i++){
           var n=ns[i];
           if(!vis(n) || !cbLooksLikeList(n)) continue;
+          if(cbProtected(n)) continue;      // this is a repeater row we opened, not a stray picker
+          // Holding a row makes this sweep conservative: only the sheets we opened ourselves are
+          // dismissed. A leftover picker is a nuisance; a destroyed row is lost work.
+          if(cbHoldingRow() && !cbWeOpened(n)) continue;
           // Escape on this sheet's own search box is the gesture that actually works; the trigger
           // that opened it may already be gone, so drive the popup directly.
           // same modal rule as cbForceClose: never let an Escape reach a host application popup
-          var inDlg=false; try{ inDlg=!!(n.closest && n.closest('[role=dialog],[aria-modal="true"],dialog[open]')); }catch(e){}
+          var inDlg=cbHoldingRow(); try{ if(!inDlg) inDlg=!!(n.closest && n.closest('[role=dialog],[aria-modal="true"],dialog[open]')); }catch(e){}
           var sb=null; try{ sb=cbSearchBox(null, { el: n }); }catch(e){}
           if(sb){
             try{
@@ -1517,15 +1594,15 @@ const JS_HELPERS = `
             }catch(e){}
             if(!vis(n)){ closed++; any=true; continue; }
           }
-          var b=cbFindCloseCtrl(cbSheetRoot(n), base);
-          if(b){ cbSafeClick(b); if(!vis(n)){ closed++; any=true; continue; } }
+          var b=cbFindCloseCtrl(cbCloseRoot(n), base);
+          if(b && cbCloseOk(b, n)){ cbSafeClick(b); if(!vis(n)){ closed++; any=true; continue; } }
           // ⚠️ NO blind corner-click here. Inside a host application modal (YC's "Apply for this
           // role" popup) the top-left corner IS the modal's backdrop — clicking it threw away the
           // user's entire half-filled application. The corner is only ever used by cbForceClose,
           // which knows the control and can check cbInModal first.
           try{
-            var owner=null;
-            try{ owner=n.closest && n.closest('[role=dialog],[aria-modal="true"],dialog[open]'); }catch(e2){}
+            var owner=cbHoldingRow()?n:null;
+            try{ if(!owner) owner=n.closest && n.closest('[role=dialog],[aria-modal="true"],dialog[open]'); }catch(e2){}
             if(!owner){
               var pt=document.elementFromPoint(5,5);
               if(pt && !n.contains(pt)){ cbSafeClick(pt); if(!vis(n)){ closed++; any=true; } }
@@ -1541,8 +1618,65 @@ const JS_HELPERS = `
   // pick failed halfway or the widget re-rendered its popup node.
   var __cvfOpened = [];
   function cbNoteOpened(el, popEl){ try{ if(popEl) __cvfOpened.push({ el: el, pop: popEl }); }catch(e){} }
+  // ⚠️ SOME SHEETS ARE OURS ON PURPOSE. A modal-style repeater renders its new row into a portal
+  // that is popup-shaped, so the generic "leave nothing open" sweep dismissed it. Measured on the
+  // live Revolut form: Company and Position were picked CORRECTLY into the new experience row, and
+  // then our own cleanup wiped the row — twice — leaving an empty shell and a report that claimed
+  // an entry we had just thrown away.
+  // Protection is expressed in terms of the row's own CONTROLS, not the sheet node: a picker opened
+  // from inside the row does not contain them, so it still gets closed normally, while anything
+  // holding the row itself is left alone.
+  var __cvfKeep = [];
+  function cbKeepCtrls(list){
+    try{
+      for(var i=0;i<list.length;i++){ if(list[i] && __cvfKeep.indexOf(list[i])<0) __cvfKeep.push(list[i]); }
+      // Element identity alone is not enough: the framework re-renders the row when the NEXT row is
+      // added, the kept nodes detach, and the protection silently evaporates exactly when it is
+      // still needed. Mark the row's own container too, so protection survives a re-render.
+      if(list.length){
+        var host=list[0].parentElement, h=0;
+        while(host && h<10){
+          var all=true;
+          for(var j=0;j<list.length;j++){ if(!host.contains(list[j])){ all=false; break; } }
+          if(all) break;
+          host=host.parentElement; h++;
+        }
+        if(host && host.setAttribute) host.setAttribute('data-cvf-row','1');
+      }
+    }catch(e){}
+  }
+  function cbProtected(n){
+    try{
+      if(n && n.getAttribute && n.getAttribute('data-cvf-row')) return true;
+      if(n && n.querySelector && n.querySelector('[data-cvf-row]')) return true;
+      for(var i=0;i<__cvfKeep.length;i++){ if(n===__cvfKeep[i] || (n.contains && n.contains(__cvfKeep[i]))) return true; }
+    }catch(e){}
+    return false;
+  }
+  // Is this node one of the sheets WE opened? While a row is held, the generic sweep is limited to
+  // these — a blind sweep of everything popup-shaped is what tore the row down.
+  function cbWeOpened(n){
+    try{ for(var i=0;i<__cvfOpened.length;i++){ var q=__cvfOpened[i].pop; if(q && (q===n || (q.contains&&q.contains(n)) || (n.contains&&n.contains(q)))) return true; } }catch(e){}
+    return false;
+  }
+  // While a repeater row is open, a BUBBLING Escape and a backdrop click are as dangerous as they
+  // are inside a host application modal: measured live, the picks for Company and Position landed
+  // in the new row and the very next escalation step dismissed the row that held them. So a held
+  // row disables exactly the same escalation steps cbInModal already disables.
+  function cbHoldingRow(){ return __cvfKeep.length>0; }
   function cbCloseAllOpened(){
+    // Holding a repeater row makes this GENTLE: blur and a non-bubbling Escape on each trigger we
+    // used, and nothing else. Every picker this run opened was already closed by openAndPick as it
+    // finished, so the escalation ladder has almost nothing left to do here — and running it was
+    // measured to destroy the very rows the run had just filled. A picker left open is a nuisance;
+    // a discarded row is lost work.
+    if(cbHoldingRow()){
+      for(var g=0;g<__cvfOpened.length;g++){ try{ cbClose(__cvfOpened[g].el); }catch(e){} }
+      __cvfOpened = [];
+      return;
+    }
     for(var i=0;i<__cvfOpened.length;i++){
+      try{ if(cbProtected(__cvfOpened[i].pop)) continue; }catch(e){}
       try{ if(cbStillOpen(__cvfOpened[i].pop)) cbForceClose(__cvfOpened[i].el, __cvfOpened[i].pop, cbBaselineCtrls()); }catch(e){}
     }
     __cvfOpened = [];
@@ -1885,58 +2019,6 @@ const JS_HELPERS = `
           if(consented.length<8) consented.push({label:(q||lab).slice(0,140), answer:(q?lab:'Ticked').slice(0,80)});
         }catch(e){}
       }
-      // ── CHIP PHASE ───────────────────────────────────────────────────────────────────────────
-      // Per widget, per value: open the menu and click the row if there is one, else send a
-      // shielded Enter — then CHECK that a chip actually appeared. Only a chip that is visible in
-      // the widget counts; el.value proves nothing, it is cleared on every commit.
-      function chipFill(el, v, cb){
-        var wants=multiVals(v); if(!wants.length) wants=[String(v)];
-        wants=wants.slice(0,10);
-        var added=0, missed=[], i=0, t0=Date.now();
-        function has(w){
-          var have=chipTexts(el), n=cbNorm(w);
-          if(!n) return false;
-          for(var k=0;k<have.length;k++){ if(have[k]===n || have[k].indexOf(n)>=0) return true; }
-          return false;
-        }
-        function next(){
-          if(i>=wants.length || Date.now()-t0>16000 || cbAborted()){ finish(); return; }
-          var w=wants[i++];
-          if(has(w)){ added++; next(); return; }          // already there — the applicant's own chip
-          var pre=cbPreOpen();
-          bringIntoView(el);
-          try{ el.focus(); }catch(e){}
-          try{ setNative(el, w); }catch(e){}
-          setTimeout(function(){
-            var pop=cbPopup(el, pre), picked=false;
-            if(pop){
-              var os=cbOptions(el, pop), best=null, n=cbNorm(w);
-              for(var j=0;j<os.length;j++){
-                var tx=cbNorm(cbText(os[j]));
-                if(tx===n){ best=os[j]; break; }
-                if(!best && n && tx.indexOf(n)===0) best=os[j];
-              }
-              if(best) picked=cbSafeClick(best);
-            }
-            setTimeout(function(){
-              if(!picked && !has(w)) chipEnter(el);
-              setTimeout(function(){
-                if(has(w)) added++;
-                else { missed.push(w); try{ setNative(el,''); }catch(e){} }
-                next();
-              }, 340);
-            }, picked?420:140);
-          }, 520);
-        }
-        function finish(){
-          // LAST RESORT: it was not a chip widget after all. Write the plain list exactly as the old
-          // text path did, so a wrong guess about the widget can never lose the answer.
-          if(added===0){ try{ el.focus(); setNative(el, String(v)); el.dispatchEvent(new Event('blur',{bubbles:true})); el.blur(); }catch(e){} }
-          try{ cbEnsureNoneOpen(); }catch(e){}
-          cb({added:added, missed:missed, wanted:wants.length});
-        }
-        next();
-      }
       function drainChips(done){
         if(!chipQ.length){ done(); return; }
         cbGuardOn();
@@ -1947,7 +2029,7 @@ const JS_HELPERS = `
           var d=chipQ[ci++], el=null, all=ctrls();
           for(var j=0;j<all.length;j++){ if(sig(all[j])===d.s && vis(all[j])){ el=all[j]; break; } }
           if(!el){ setTimeout(step,60); return; }
-          chipFill(el, d.v, function(r){
+          chipFill(el, d.v, true, function(r){
             if(r.added>=r.wanted){ filled[d.s]=true; delete fails[d.s]; }
             else if(r.added>0) fails[d.s]={key:d.s,label:d.label,why:'added '+r.added+' of '+r.wanted+' — the rest still need you'};
             else fails[d.s]={key:d.s,label:d.label,why:'we could not add these — please add them yourself'};
@@ -1960,65 +2042,153 @@ const JS_HELPERS = `
       // Click, then COUNT. If the document did not gain controls, this was not a repeater: stop,
       // and never press it again. Everything here runs behind a submit shield — a submit fired by
       // one of our synthetic clicks is by definition not something the applicant asked for.
-      function rpFillRow(fresh, row, cb){
+      // Fill one revealed row and REPORT WHAT LANDED. Cheap controls first: a combo can burn several
+      // seconds opening its sheet, and on the measured form that starved the date boxes completely.
+      function rpFillRow(fresh, row, deadline, cb){
         var keys=[]; for(var kk2 in row){ if(Object.prototype.hasOwnProperty.call(row,kk2)) keys.push(kk2); }
-        var i=0;
+        var landed=0, tried=0, missed=[];
         function valFor(el){
           var L=cleanTxt(nlbl(el)).toLowerCase(); if(!L) return null;
-          var j;
-          for(j=0;j<keys.length;j++){ if(cleanTxt(keys[j]).toLowerCase()===L) return row[keys[j]]; }
-          var pool=[]; for(j=0;j<keys.length;j++) pool.push({text:keys[j]});
+          var j2;
+          for(j2=0;j2<keys.length;j2++){ if(cleanTxt(keys[j2]).toLowerCase()===L) return row[keys[j2]]; }
+          var pool=[]; for(j2=0;j2<keys.length;j2++) pool.push({text:keys[j2]});
           var fz=pickOptFuzzy(pool, L);
           return fz ? row[fz.text] : null;
         }
-        function step(){
-          if(i>=fresh.length || cbAborted()){ cb(); return; }
-          var el=fresh[i++], t=(el.type||'').toLowerCase();
-          if(['hidden','submit','reset','image','file','button'].indexOf(t)>=0 && !isCombo(el)){ step(); return; }
-          var v=valFor(el);
-          if(v==null || v===''){ step(); return; }
-          try{
-            if(t==='checkbox'){ if(/^(yes|true|on|1|checked)$/i.test(String(v))) tickOn(el); step(); return; }
-            if(t==='radio'){ var gkr=grpKey(el); if(gkr) grpSet(el,'radio',v); else if(grpPick([el],String(v))) tickOn(el); step(); return; }
-            if(el.tagName==='SELECT'){ var mo=pickOpt(el.options,String(v)); if(mo) setNative(el,mo.value); step(); return; }
-            if(isCombo(el)){ openAndPick(el, String(v), function(){ setTimeout(step,260); }); return; }
-            if(t==='date'||t==='month') v=dateVal(v);
-            bringIntoView(el);
-            try{ el.focus(); }catch(e){}
-            setNative(el, String(v));
-            try{ el.dispatchEvent(new Event('blur',{bubbles:true})); el.blur(); }catch(e){}
-          }catch(e){}
-          step();
+        function note(el){ var n=cleanTxt(nlbl(el)).slice(0,40); if(n && missed.indexOf(n)<0) missed.push(n); }
+        var plain=[], combos=[], i2;
+        for(i2=0;i2<fresh.length;i2++){
+          var e0=fresh[i2], t0r=(e0.type||'').toLowerCase();
+          if(['hidden','submit','reset','image','file'].indexOf(t0r)>=0) continue;
+          if(!visCtl(e0)) continue;
+          if(isCombo(e0)) combos.push(e0);
+          else if(t0r!=='button') plain.push(e0);
         }
-        step();
+        for(var p2=0;p2<plain.length;p2++){
+          var el2=plain[p2], t2=(el2.type||'').toLowerCase(), v2=valFor(el2);
+          if(v2==null||v2==='') continue;
+          try{
+            if(t2==='checkbox'){
+              if(/^(yes|true|on|1|checked)$/i.test(String(v2))){ tried++; if(tickOn(el2)) landed++; else note(el2); }
+              continue;
+            }
+            if(t2==='radio'){ tried++; if(tickOn(el2)) landed++; else note(el2); continue; }
+            if(el2.tagName==='SELECT'){
+              tried++;
+              var mo=pickOpt(el2.options,String(v2));
+              if(mo){ setNative(el2,mo.value); var so=el2.options[el2.selectedIndex]; if(so&&cleanTxt(so.text)===cleanTxt(mo.text)){ landed++; continue; } }
+              note(el2); continue;
+            }
+            tried++;
+            var w2=String(v2); if(t2==='date'||t2==='month') w2=dateVal(w2);
+            bringIntoView(el2);
+            try{ el2.focus(); }catch(e){}
+            setNative(el2,w2);
+            try{ el2.dispatchEvent(new Event('blur',{bubbles:true})); el2.blur(); }catch(e){}
+            // READ BACK, always. Measured on the live Revolut row: its date box reverts EVERY
+            // injected write — six variants tried, including a _valueTracker reset and per-character
+            // input events. A control only a real keystroke can set is the applicant's to fill, and
+            // they have to be TOLD that, not shown a row we pretended to complete.
+            if(sameAnswer(el2.value,w2)) landed++; else note(el2);
+          }catch(e){}
+        }
+        var ci2=0;
+        function nextCombo(){
+          if(ci2>=combos.length || ci2>=3 || Date.now()>deadline || cbAborted()){ cb({landed:landed, tried:tried, missed:missed}); return; }
+          var el3=combos[ci2++], v3=valFor(el3);
+          if(v3==null||v3===''){ nextCombo(); return; }
+          tried++;
+          openAndPick(el3, String(v3), function(good){
+            if(good) landed++; else note(el3);
+            try{ cbEnsureNoneOpen(); }catch(e){}
+            setTimeout(nextCombo, 220);
+          });
+        }
+        nextCombo();
+      }
+      // Controls that could be part of a ROW. A sheet's own search box appears in ctrls() the moment
+      // a picker opens, and counting it as a new row control makes a non-repeater look like one —
+      // and then its filter box gets fuzzy-matched to a column name and typed into.
+      //
+      // Deliberately NOT "anything inside a popup-shaped node": measured on the live Revolut form,
+      // the new row IS rendered into a popup-shaped portal, so that rule excluded the very controls
+      // it was meant to find and every repeater reported "we could not add these". Closing whatever
+      // is open BEFORE measuring (see step()) is what makes the cheap filter sufficient.
+      function rpCtrls(){
+        var all=ctrls(), out=[];
+        for(var i=0;i<all.length;i++){
+          var el=all[i];
+          if((el.type||'').toLowerCase()==='search') continue;
+          if(isWidgetInternal(el)) continue;
+          out.push(el);
+        }
+        return out;
       }
       function rpRun(d, cb){
-        var rows=d.rows.slice(0,3), added=0, t0=Date.now();
-        function step(){
-          if(added>=rows.length || Date.now()-t0>18000 || cbAborted()){ cb(added); return; }
-          var btn=null, all=[];
-          try{ all=deepQuery('button,[role=button],a[role=button]'); }catch(e){}
+        var rows=d.rows.slice(0,3), added=0, landedAll=0, missed=[], btn=null, t0=Date.now();
+        function out(){ return {rows:added, landed:landedAll, missed:missed}; }
+        // Adding a row MOVES the DOM, so a path-based key can stop matching the button it named.
+        // Hold the element while it is still attached, and fall back to the region's own wording —
+        // that does not move — before giving up.
+        function resolve(){
+          try{ if(btn && document.contains(btn) && vis(btn)) return btn; }catch(e){}
+          btn=null;
+          var all=[]; try{ all=deepQuery('button,[role=button],a[role=button]'); }catch(e){}
           for(var j=0;j<all.length;j++){ if(vis(all[j]) && rpKey(all[j])===d.s){ btn=all[j]; break; } }
-          if(!btn){ cb(added); return; }
-          if(!d.label){ try{ var rg=rpRegion(btn); if(rg) d.label=rg.label.slice(0,90); }catch(e){} }
-          var beforeSet=ctrls(), url=location.href;
-          bringIntoView(btn);
-          if(!cbSafeClick(btn)){ cb(added); return; }
+          if(!btn && d.label){
+            try{
+              var c2=repeaterCands();
+              for(var q=0;q<c2.length;q++){ if(c2[q].label.slice(0,60)===d.label.slice(0,60)){ btn=c2[q].el; break; } }
+            }catch(e){}
+          }
+          return btn;
+        }
+        var lastRow=null;
+        function step(){
+          if(added>=rows.length || Date.now()-t0>22000 || cbAborted()){ cb(out()); return; }
+          // NEVER press Add again while the row we just filled is still on screen. Measured live:
+          // pressing it a second time on Revolut RESET the open row, throwing away the company and
+          // position we had just set. A repeater that has not absorbed the previous row is not
+          // ready for another one, whatever the vendor calls the button.
+          if(lastRow){
+            var stillOpen=false;
+            try{ for(var z=0;z<lastRow.length;z++){ if(document.contains(lastRow[z])){ stillOpen=true; break; } } }catch(e){}
+            if(stillOpen){ cb(out()); return; }
+          }
+          var b=resolve();
+          if(!b){ cb(out()); return; }
+          if(!d.label){ try{ var rg=rpRegion(b); if(rg) d.label=rg.label.slice(0,90); }catch(e){} }
+          try{ cbEnsureNoneOpen(); }catch(e){}      // measure against a page with nothing open
+          var beforeSet=rpCtrls(), url=location.href;
+          bringIntoView(b);
+          if(!cbSafeClick(b)){ cb(out()); return; }
           setTimeout(function(){
-            if(location.href!==url){ cb(added); return; }     // it navigated — hands off, permanently
-            var after=ctrls(), fresh=[];
+            if(location.href!==url){ cb(out()); return; }      // it navigated — hands off, permanently
+            var after=rpCtrls(), fresh=[];
             for(var a=0;a<after.length;a++){ if(beforeSet.indexOf(after[a])<0) fresh.push(after[a]); }
-            // THE STRUCTURAL TEST — and note it counts the DOCUMENT: a repeater row is routinely
-            // rendered into a portal outside the button's container and outside the form.
-            if(!fresh.length){ cb(added); return; }
+            // THE STRUCTURAL TEST — and it counts the DOCUMENT: a repeater row is routinely rendered
+            // into a portal outside the button's container and outside the form. No increase means
+            // this was never a repeater: stop, and never press it again.
+            if(!fresh.length){ cb(out()); return; }
+            cbKeepCtrls(fresh);            // from here on, our own sweep must not dismiss this row
+            lastRow=fresh;
             var row=rows[added]; added++;
-            rpFillRow(fresh, row, function(){ setTimeout(step, 360); });
+            rpFillRow(fresh, row, Date.now()+9000, function(r){
+              landedAll+=r.landed;
+              for(var m=0;m<r.missed.length;m++){ if(missed.indexOf(r.missed[m])<0) missed.push(r.missed[m]); }
+              // An empty row is worse than no row. If the first one took nothing, stop rather than
+              // opening more rows the applicant would have to delete by hand.
+              if(r.landed===0){ cb(out()); return; }
+              setTimeout(step, 320);
+            });
           }, 1100);
         }
         step();
       }
       function drainRepeaters(done){
         if(!repQ.length){ done(); return; }
+        // A submit fired by one of OUR synthetic clicks is by definition not something the applicant
+        // asked for, so it is refused on all three routes for the length of this phase only.
         var block=function(e){ try{ e.preventDefault(); e.stopImmediatePropagation(); }catch(_){} };
         var ps=null, pr=null;
         try{
@@ -2036,11 +2206,19 @@ const JS_HELPERS = `
           done();
         }
         function step(){
-          if(ri>=repQ.length || Date.now()-t0>40000 || cbAborted()){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); return; }
+          if(ri>=repQ.length || Date.now()-t0>50000 || cbAborted()){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); return; }
           var d=repQ[ri++];
-          rpRun(d, function(n){
-            if(n>0){ filled[d.s]=true; delete fails[d.s]; }
-            else fails[d.s]={key:d.s,label:(d.label||'extra entries').slice(0,90),why:'we could not add these rows — please add them yourself'};
+          rpRun(d, function(r){
+            var lab=(d.label||'extra entries').slice(0,90);
+            if(r.rows>0 && r.landed>0){
+              filled[d.s]=true;
+              delete fails[d.s];
+              // Partial success is still success — but the boxes we could not set are named, and
+              // the also-flag makes report() show this alongside the field being counted as filled.
+              if(r.missed.length) fails[d.s]={key:d.s,label:lab,why:'added '+r.rows+(r.rows===1?' entry':' entries')+' — '+r.missed.slice(0,3).join(', ')+' still needs you',also:true};
+            }
+            else if(r.rows>0) fails[d.s]={key:d.s,label:lab,why:'this section only accepts typing — please fill in the row we opened'};
+            else fails[d.s]={key:d.s,label:lab,why:'we could not add these — please add them yourself'};
             setTimeout(step, 260);
           });
         }
@@ -2161,7 +2339,9 @@ const JS_HELPERS = `
         // Leave the page as we found it: no half-open pickers for the user to dismiss by hand.
         try{ cbCloseAllOpened(); }catch(e){}
         var fl=[], n=0;
-        for(var k in fails){ if(Object.prototype.hasOwnProperty.call(fails,k) && !filled[k] && fl.length<12) fl.push(fails[k]); }
+        // also-flagged entries are reported EVEN THOUGH the field counted as filled: a repeater that added
+        // two rows but could not set their dates is a success the applicant still has to finish.
+        for(var k in fails){ if(Object.prototype.hasOwnProperty.call(fails,k) && (!filled[k] || fails[k].also) && fl.length<12) fl.push(fails[k]); }
         for(var k2 in filled){ if(Object.prototype.hasOwnProperty.call(filled,k2)) n++; }
         // The consent list is not decoration: RULE — every agreement we tick on the applicant's
         // behalf is named back to them, in its own wording, before they press submit.
@@ -3135,38 +3315,23 @@ function skillsJs(skills: string[]): string {
       }
       step();
     }
+    // ONE verified chip path, shared with the form fill (chipFill in JS_HELPERS): click the menu row
+    // when the widget offers one, otherwise send a SHIELDED Enter — and check afterwards that a chip
+    // really appeared.
+    //
+    // The loop this replaces pressed Enter NEVER. Its comment said "implicit submit", and the fear
+    // was right but the conclusion was not: on a type-and-Enter tag widget it therefore added
+    // nothing at all, which is exactly the reported "adding skills does not work". chipEnter makes
+    // Enter safe rather than avoiding it — a synthetic KeyboardEvent cannot trigger the browser's
+    // own implicit form submission (default actions run only for trusted events), and for the length
+    // of the dispatch a page handler that tries to submit is refused on all three routes.
     function typeRest(input, cb){
       if(!input){ cb(); return; }
       var left=[]; for(var k in want){ if(Object.prototype.hasOwnProperty.call(want,k)) left.push(want[k]); }
       left=left.slice(0,8);
-      var i=0;
-      function step(){
-        if(aborted || i>=left.length || Date.now()-t0>8000){ cb(); return; }
-        var sk=left[i++];
-        attempted++;
-        try{ input.focus(); }catch(e){}
-        setNative(input, sk);
-        setTimeout(function(){
-          var opt=null;
-          try{
-            var os=document.querySelectorAll('[role=listbox] [role=option],[role=option],ul.dropdown-menu li,.ui-select-choices-row,.autocomplete-item,[class*=suggestion] li,[class*=autocomplete] li');
-            for(var j=0;j<os.length;j++){ if(!vis(os[j])) continue; if(norm(chipText(os[j]))===norm(sk)){ opt=os[j]; break; } }
-          }catch(e){}
-          if(opt){
-            try{
-              opt.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
-              opt.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
-              if(opt.click) opt.click(); else opt.dispatchEvent(new MouseEvent('click',{bubbles:true}));
-              added++;
-            }catch(e){}
-            setTimeout(step,600);
-          } else {
-            setNative(input,'');   // clear the residue — never press Enter (implicit submit)
-            setTimeout(step,300);
-          }
-        },700);
-      }
-      step();
+      if(!left.length || aborted){ cb(); return; }
+      attempted+=left.length;
+      chipFill(input, left, false, function(r){ added+=r.added; cb(); });
     }
     var input=findInput();
     clickChips(findContainer(input), function(){ typeRest(input, done); });

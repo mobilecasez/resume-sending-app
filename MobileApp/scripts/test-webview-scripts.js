@@ -47,8 +47,35 @@ const ok = (name, cond, extra) => {
   else { fail++; console.log('  ✗ ' + name + (extra ? '  → ' + JSON.stringify(extra) : '')); }
 };
 
+// ── SOURCE HYGIENE for the JS_HELPERS template literal ────────────────────────────────────────
+// Two footguns have each shipped a broken build from this one string, so they are now asserted:
+//   * a BACKTICK anywhere inside it (even in a comment) terminates the literal — TS1005, far from
+//     the actual line;
+//   * a SINGLE backslash is eaten by the template literal, so a regex written as \s in the source
+//     reaches the page as s. That is silent: /(^|\s)chip/ became /(^|s)chip/ and matched nothing,
+//     and the only symptom was a widget quietly not being recognised.
+function helpersSourceProblems() {
+  const m = SRC.match(new RegExp('const JS_HELPERS = `([\\s\\S]*?)`;\\n'));
+  const body = m ? m[1] : '';
+  const ticks = (body.match(/`/g) || []).length;
+  const ctrl = [...body].filter((c) => c.charCodeAt(0) < 32 && !'\n\r\t'.includes(c)).length;
+  const singles = [];
+  body.split('\n').forEach((l, i) => {
+    const re = /(?<!\\)\\(?!\\)(.)/g;
+    let x;
+    while ((x = re.exec(l))) singles.push({ line: i + 1, esc: x[0], text: l.trim().slice(0, 80) });
+  });
+  return { ticks, ctrl, singles };
+}
+
 (async () => {
   const browser = await chromium.launch();
+
+  console.log('\nJS_HELPERS source hygiene');
+  const hyg = helpersSourceProblems();
+  ok('no backtick inside the JS_HELPERS template literal', hyg.ticks === 0, hyg.ticks);
+  ok('no literal control character inside it', hyg.ctrl === 0, hyg.ctrl);
+  ok('no single-backslash escape (the template literal eats it)', hyg.singles.length === 0, hyg.singles.slice(0, 4));
 
   // Serve any https URL so we can exercise real hostnames (hcaptcha, the portal, the IdP).
   const ctx = await browser.newContext();
