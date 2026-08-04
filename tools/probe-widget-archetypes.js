@@ -17,9 +17,13 @@
 //
 // ⚠️ SAFETY, because these are strangers' live application forms:
 //   • Every submit path is neutralised BEFORE any gesture, and the run ASSERTS zero submits after.
-//   • Nothing is ever typed into a field except into a POPUP SEARCH BOX during a gesture probe, and
-//     only on widgets that are not submit-shaped. No application is ever sent.
-//   • No demographic value is ever derived. This probe does not fill answers at all.
+//   • The only text ever entered is a meaningless two-letter stem ("am") typed into a suspected
+//     typeahead to see whether it fetches suggestions, and it is REMOVED again straight after.
+//     No answer is ever composed and no application is ever sent.
+//   • No demographic value is ever derived — this probe fills no answers at all, so there is nothing
+//     it could infer a person's ethnicity, disability, veteran status, gender or pronouns from.
+//   • Clicking is limited to opening widgets and to repeater candidates that have cleared three
+//     independent submit refusals. Nothing that could be a submit or a "next" is ever activated.
 'use strict';
 const fs = require('fs');
 const path = require('path');
