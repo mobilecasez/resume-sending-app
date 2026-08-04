@@ -719,15 +719,17 @@ const JS_HELPERS = `
   // in for it is not a question being asked, and a cookie banner's categories are never ours.
   var CB_BANNER=/cookie|onetrust|cookiebot|truste|usercentrics|klaro|gdpr-?(banner|bar)|consent-?(banner|bar|manager)|privacy-?(banner|bar)/i;
   function inBanner(el){
-    var p=el, h=0;
+    try{ if(el.__cvfBan!==undefined) return el.__cvfBan; }catch(e){}
+    var p=el, h=0, hit=false;
     while(p && h<7){
       try{
         var hay=String(p.id||'')+' '+cbClassOf(p)+' '+String((p.getAttribute&&p.getAttribute('data-testid'))||'');
-        if(CB_BANNER.test(hay)) return true;
+        if(CB_BANNER.test(hay)){ hit=true; break; }
       }catch(e){}
       h++; p=p.parentElement;
     }
-    return false;
+    try{ el.__cvfBan=hit; }catch(e){}
+    return hit;
   }
   function proxyOf(el){
     try{
@@ -743,10 +745,16 @@ const JS_HELPERS = `
   }
   // vis() for anything that is not a tick control; vis-OR-visible-proxy for radios and checkboxes.
   function visCtl(el){
+    // A COOKIE BANNER is never part of the application, so nothing inside one is a control we may
+    // read or set — visible or not. Ticking a banner's category is consent the applicant did not
+    // give, for a question the employer never asked. The offline fixture caught this: a banner whose
+    // WRAPPER is opacity:0 leaves the input itself passing vis() (CSS opacity does not inherit into
+    // a child's computed style), so a hidden-only guard let two cookie categories through as a
+    // scannable checkbox group.
+    if(inBanner(el)) return false;
     if(vis(el)) return true;
     var t=(el.type||'').toLowerCase();
     if(t!=='radio'&&t!=='checkbox') return false;
-    if(inBanner(el)) return false;
     return !!proxyOf(el);
   }
   // Tick a control that may be invisible: the native setter first (React reads that), then the

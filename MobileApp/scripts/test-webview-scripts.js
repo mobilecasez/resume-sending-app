@@ -210,6 +210,42 @@ function helpersSourceProblems() {
           document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();window.__submits++;});
         </script></form></body></html>`;
     }
+    // GROUPS fixture — the shapes measured on real forms, as an offline regression net:
+    //   * a NAMED checkbox group (Lever): every member shares one name, which used to collapse the
+    //     whole group onto one key and keep only the first box;
+    //   * an UNNAMED radio pair (Revolut's design system emits no name at all);
+    //   * an opacity-0 radio pair under visible pills (Workable's required questions);
+    //   * a hidden checkbox inside a COOKIE BANNER, which must stay excluded — it is not a question
+    //     the employer is asking (measured on Cambio, whose 3 hidden boxes are banner categories);
+    //   * a lone consent checkbox, which must be flagged so the review panel can name it.
+    if (url.includes('groups.example.com')) {
+      body = `<html><body>
+        <div id="cookie-banner" class="cookiebanner">
+          <label style="opacity:0"><input type="checkbox" name="ck_analytics"> Analytics cookies</label>
+          <label style="opacity:0"><input type="checkbox" name="ck_ads"> Advertising cookies</label>
+        </div>
+        <form id="f">
+          <div class="q"><p>Which active license do you have?</p>
+            <label><input type="checkbox" name="lic" value="licsw"> LICSW</label>
+            <label><input type="checkbox" name="lic" value="lisw"> LISW</label>
+            <label><input type="checkbox" name="lic" value="lcpc"> LCPC</label>
+          </div>
+          <div class="q"><p>Do you consent to interview transcripts?</p>
+            <span><label><input type="radio"> Yes, I consent</label>
+                  <label><input type="radio"> No, I don't consent</label></span>
+          </div>
+          <div class="q"><p>Are you based in UAE ?</p>
+            <span><label class="pill"><input type="radio" name="uae" required style="opacity:0;width:13px;height:13px"> YES</label>
+                  <label class="pill"><input type="radio" name="uae" required style="opacity:0;width:13px;height:13px"> NO</label></span>
+          </div>
+          <label><input type="checkbox" name="gdpr"> I agree to the processing of my personal data</label>
+          <button type="submit" id="go">Submit application</button>
+        </form>
+        <script>
+          window.__submits=0;
+          document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();window.__submits++;});
+        </script></body></html>`;
+    }
     // A react-select INSIDE a modal that closes on a document-level (bubble-phase) Escape — exactly
     // the YC "Apply for this role" popup. Autofill's combobox-close Escape must NOT dismiss it.
     if (url.includes('modal.example.com')) {
@@ -523,6 +559,68 @@ function helpersSourceProblems() {
     ok('"Bachelor\'s degree" matched "Bachelor of Science"', st.edu === 'bsc', st.edu);
     ok('a field 2400px below the fold still filled', st.deep === '30 days', st.deep);
     ok('THE FORM WAS NEVER SUBMITTED', st.submits === 0, st.submits);
+    await page.close();
+  }
+
+  // ── GROUPS as one field, and hidden tick controls the applicant CAN see ───────────────────────
+  console.log('\ngroups are scanned as ONE question with options');
+  {
+    const page = await ctx.newPage();
+    await page.addInitScript(BRIDGE);
+    await page.goto('https://groups.example.com/apply');
+    await page.evaluate(READ_FIELDS_JS);
+    await page.waitForFunction(() => window.__msgs.some((m) => m.type === 'FIELDS'), null, { timeout: 45000 });
+    const f = await page.evaluate(() => window.__msgs.find((m) => m.type === 'FIELDS').fields);
+    const lic = f.find((x) => (x.options || []).includes('LICSW'));
+    const cons = f.find((x) => (x.options || []).some((o) => /I consent/.test(o)));
+    const uae = f.find((x) => (x.options || []).includes('YES'));
+    const gdpr = f.find((x) => /processing of my personal data/i.test(x.label || ''));
+    ok('a NAMED checkbox group is one field with every member as an option',
+       !!lic && lic.widget === 'checkboxgroup' && lic.options.length === 3, lic);
+    ok('its key is still the name key, so old mappings and learned answers still land',
+       !!lic && lic.key === 'n:lic|checkbox', lic && lic.key);
+    ok('it carries the question, not its first box\'s label', !!lic && /active license/i.test(lic.label), lic && lic.label);
+    ok('an UNNAMED radio pair is one radiogroup', !!cons && cons.widget === 'radiogroup' && cons.options.length === 2, cons);
+    ok('and it is flagged as a consent question', !!cons && cons.consent === true, cons);
+    ok('opacity-0 radios with a visible pill ARE scanned (Workable\'s required questions)',
+       !!uae && uae.widget === 'radiogroup' && uae.options.length === 2, uae);
+    ok('their required flag survives', !!uae && uae.required === true, uae);
+    ok('a lone agreement checkbox is flagged for the review panel', !!gdpr && gdpr.consent === true, gdpr);
+    // The discriminator: hidden AND no question being asked. Cambio's three hidden checkboxes are a
+    // cookie banner's categories, and accepting them would put a banner in the applicant's form.
+    console.log('    fields:', JSON.stringify(f.map((x) => ({ w: x.widget || x.type, k: x.key.slice(0, 26), o: x.options, l: (x.label || '').slice(0, 60) }))));
+    ok('a hidden checkbox inside a COOKIE BANNER stays excluded',
+       !f.some((x) => /analytics cookies|advertising cookies/i.test(JSON.stringify(x.options || []))),
+       f.map((x) => x.options));
+    ok('nothing was submitted by the scan', (await page.evaluate(() => window.__submits)) === 0);
+    await page.close();
+  }
+
+  console.log('\ngroups are FILLED as one question, and never untick the applicant');
+  {
+    const page = await ctx.newPage();
+    await page.addInitScript(BRIDGE);
+    await page.goto('https://groups.example.com/apply');
+    // the applicant answers one box themselves, by hand, before autofill runs
+    await page.evaluate(() => { document.querySelector('input[name=lic][value=lcpc]').click(); });
+    const uaeKey = await page.evaluate(`(function(){ ${JS_HELPERS}
+      return grpKey(document.querySelector('input[name=uae]')); })()`);
+    await page.evaluate(fillJs({
+      'n:lic|checkbox': 'LICSW, LISW',       // a MULTI answer, by option label — not a boolean
+      [uaeKey]: 'yes',                       // an opacity-0 group, answered by rewording
+    }));
+    await page.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 45000 });
+    const st = await page.evaluate(() => ({
+      lic: [...document.querySelectorAll('input[name=lic]')].filter((c) => c.checked).map((c) => c.value),
+      uae: [...document.querySelectorAll('input[name=uae]')].map((c) => c.checked),
+      submits: window.__submits,
+      msg: window.__msgs.find((m) => m.type === 'FILLED'),
+    }));
+    ok('both wanted licences are ticked', st.lic.includes('licsw') && st.lic.includes('lisw'), st.lic);
+    ok('the box the applicant ticked by hand is NOT untouched away', st.lic.includes('lcpc'), st.lic);
+    ok('an opacity-0 group is actually set, through its visible pill', st.uae[0] === true, st.uae);
+    ok('only the matching member of it is set', st.uae[1] === false, st.uae);
+    ok('THE FORM WAS NEVER SUBMITTED (groups fill)', st.submits === 0, st.submits);
     await page.close();
   }
 
