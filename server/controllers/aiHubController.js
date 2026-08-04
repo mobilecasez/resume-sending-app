@@ -5017,6 +5017,62 @@ function snapToOption(options, v) {
 
 // Split a stored phone into { dial, national }. Accepts "+91 98765 43210", "0049 170 …",
 // "(+31) 6-1234", or a bare national number plus a country hint from the profile.
+// Which country is this candidate in? — the answer Auto Fill kept not having.
+//
+// ⚠️ users.country is NULL for 177 of our 180 accounts. Every country field on every application
+// form was therefore left at whatever the site's geo-IP guessed, because the model was told nothing
+// and correctly refused to invent one. The value is almost always recoverable from data we already
+// hold; it was simply never looked for.
+//
+// In order of how much we should trust it:
+//   1. users.country          — the person typed it
+//   2. users.address          — a country name sitting in their own address
+//   3. résumé location fields — what their CV header says
+//   4. résumé raw text        — a country named in the first lines (the header region)
+//   5. the phone's dial code  — +91 means India, and they typed the number
+// Returns { country, source } or { country: null }. Never guesses from a name or a language.
+function resolveUserCountry(user, meta) {
+    const names = Object.keys(DIAL_CODES).filter((k) => k.length > 3);   // skip the ISO-2 keys
+    const findIn = (text) => {
+        const t = String(text || '').toLowerCase();
+        if (!t) return null;
+        // longest name first so "united states" wins over a bare "us" fragment
+        const hit = names.slice().sort((a, b) => b.length - a.length)
+            .find((n) => new RegExp('(^|[^a-z])' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\function splitPhone(raw, countryHint) {') + '([^a-z]|$)').test(t));
+        return hit || null;
+    };
+    const title = (s) => String(s || '').replace(/\b[a-z]/g, (c) => c.toUpperCase());
+
+    const direct = String((user && user.country) || '').trim();
+    if (direct) return { country: direct, source: 'profile' };
+
+    const fromAddr = findIn(user && user.address);
+    if (fromAddr) return { country: title(fromAddr), source: 'address' };
+
+    if (meta) {
+        for (const k of ['location', 'city', 'country', 'address', 'current_location']) {
+            const hit = findIn(meta[k]);
+            if (hit) return { country: title(hit), source: 'resume:' + k };
+        }
+        // Only the HEADER of the résumé — a country mentioned in an employment history entry is
+        // where they USED to work, not where they are.
+        const head = String(meta.raw_text || '').slice(0, 600);
+        const fromHead = findIn(head);
+        if (fromHead) return { country: title(fromHead), source: 'resume:header' };
+    }
+
+    const digits = String((user && user.phone_number) || '').replace(/[^\d+]/g, '');
+    if (/^\+/.test(digits)) {
+        const bare = digits.replace(/^\+/, '');
+        // longest dial code first: +1 must not beat +91
+        const entries = Object.entries(DIAL_CODES).filter(([k]) => k.length > 3)
+            .sort((a, b) => b[1].length - a[1].length);
+        const hit = entries.find(([, code]) => bare.indexOf(code) === 0);
+        if (hit) return { country: title(hit[0]), source: 'phone' };
+    }
+    return { country: null, source: null };
+}
+
 function splitPhone(raw, countryHint) {
     const s = String(raw || '').trim();
     const hint = DIAL_CODES[String(countryHint || '').trim().toLowerCase()] || '';
@@ -5136,12 +5192,19 @@ async function autofillMap(req, res) {
             if (meta.raw_text) meta.raw_text = String(meta.raw_text).slice(0, 6000);
         }
 
+        // Fill in the country BEFORE the model ever sees the profile. Without this the model is
+        // told nothing and every country field on every form keeps the site's geo-IP default.
+        const _cty = resolveUserCountry(user, meta);
         const profile = { ...(user || {}), resume_metadata: meta || undefined, builder_resume: builder || undefined };
+        if (!String(profile.country || '').trim() && _cty.country) {
+            profile.country = _cty.country;
+            profile.country_source = _cty.source;   // visible to the model, and to us in logs
+        }
         const clText = String(coverLetterHtml || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
 
         // Phone facts, computed ONCE and handed to the model as literals so it never has to parse
         // "+91 98765 43210" itself — the "+91 is not working" complaint started here.
-        const _ph = splitPhone((user && user.phone_number) || '', (user && user.country) || '');
+        const _ph = splitPhone((user && user.phone_number) || '', profile.country || '');
         const phoneHint = _ph.dial
             ? `The candidate's dial code is "+${_ph.dial}" and their national number is "${_ph.national}". Full international form: "+${_ph.dial}${_ph.national}".`
             : `The candidate's phone is "${(user && user.phone_number) || ''}" and no dial code could be determined.`;
@@ -5332,6 +5395,45 @@ RULES:
                 }
             }
         } catch (e) { console.warn('[aiHub] autofillMap phone pass skipped:', e.message); }
+
+        // ── Post-pass 3: plain COUNTRY-OF-RESIDENCE fields ─────────────────────────
+        // The model already has the rule, but it only fires when the profile carried a country —
+        // and until resolveUserCountry existed it usually did not, so these fields kept the site's
+        // geo-IP guess. This closes it deterministically and snaps to the field's OWN spelling
+        // ("Netherlands" vs "NL" vs "Netherlands (NL)").
+        //
+        // ⚠️ SCOPE IS RESIDENCE ONLY. Citizenship, nationality, country of birth, tax residence and
+        // passport country are LEGAL questions with different answers, and a long label that reads
+        // as a question ("...authorized to work within the country in which...") is not a country
+        // field at all — answering it "Netherlands" is how a yes/no question gets a nonsense value.
+        try {
+            if (profile.country) {
+                const isResidenceCountry = (f) => {
+                    const L = String((f.label || '') + ' ' + (f.name || '') + ' ' + (f.placeholder || '')).toLowerCase().trim();
+                    if (!/\bcountry\b|\bland\b|\bpaese\b|\bpays\b|\bpaís\b/.test(L)) return false;
+                    if (/citizen|national|birth|tax|passport|dial|calling|phone code|code/.test(L)) return false;
+                    if (L.length > 45 || /\?/.test(L) || /^(are|do|does|will|have|has|can|would|is|did)\b/.test(L)) return false;
+                    return true;
+                };
+                for (const f of nonFile.filter(isResidenceCountry)) {
+                    if (values[f.key] != null) continue;                  // the model already answered
+                    const opts = Array.isArray(f.options) ? f.options : [];
+                    let chosen = profile.country;
+                    if (opts.length) {
+                        const want = String(profile.country).toLowerCase();
+                        chosen = opts.find((o) => String(o).toLowerCase() === want)
+                              || opts.find((o) => String(o).toLowerCase().indexOf(want) >= 0)
+                              || snapToOption(opts, profile.country)
+                              || null;
+                        // A partial option list (we only ever see the first 80 of ~240) is not
+                        // evidence the country is absent — send the plain name and let the device
+                        // match it against the real list.
+                        if (!chosen && (f.optionsTruncated || f.optionsUnknown)) chosen = profile.country;
+                    }
+                    if (chosen) { values[f.key] = chosen; delete skipped[f.key]; }
+                }
+            }
+        } catch (e) { console.warn('[aiHub] autofillMap country pass skipped:', e.message); }
 
         // ── Self-learning overlay ────────────────────────────────────────────
         // Belt-and-suspenders to the AI prompt above: for any field STILL empty, exact-match it

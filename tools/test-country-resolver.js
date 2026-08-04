@@ -1,0 +1,21 @@
+process.env.DATABASE_URL='postgresql://t@127.0.0.1:1/x';
+const src=require('fs').readFileSync('server/controllers/aiHubController.js','utf8');
+// pull the two pure pieces out without booting the controller
+const dial=src.match(/const DIAL_CODES = \{[\s\S]*?\n\};/)[0];
+const fn=src.match(/function resolveUserCountry\(user, meta\) \{[\s\S]*?\n\}/)[0];
+eval(dial+'\n'+fn);
+let p=0,f=0; const ok=(n,c,g)=>{if(c){p++;console.log('  ✓ '+n)}else{f++;console.log('  ✗ '+n+'  → '+JSON.stringify(g))}};
+const r=(u,m)=>resolveUserCountry(u,m);
+console.log('\nresolving a country from what we actually hold');
+ok('profile country wins', r({country:'India',address:'x, Germany'}).country==='India', r({country:'India',address:'x, Germany'}));
+ok('from the address', r({address:'Keizersgracht 1, Amsterdam, Netherlands'}).country==='Netherlands', r({address:'Keizersgracht 1, Amsterdam, Netherlands'}));
+ok('from a resume location field', r({},{location:'Bengaluru, India'}).country==='India', r({},{location:'Bengaluru, India'}));
+ok('from the resume HEADER only', r({},{raw_text:'Sam Patel\nMumbai, India\nSummary...'}).country==='India', r({},{raw_text:'Sam Patel\nMumbai, India'}));
+ok('NOT from an old employer deep in the resume', r({},{raw_text:'X'.repeat(900)+' worked in Germany'}).country===null, r({},{raw_text:'X'.repeat(900)+' worked in Germany'}));
+ok('from the phone dial code', r({phone_number:'+91 98765 43210'}).country==='India', r({phone_number:'+91 98765 43210'}));
+ok('+1 does not beat +91', r({phone_number:'+919876543210'}).country==='India', r({phone_number:'+919876543210'}));
+ok('longest name wins (united states)', r({address:'1 Main St, United States'}).country==='United States', r({address:'1 Main St, United States'}));
+ok('nothing to go on → null, never a guess', r({}).country===null, r({}));
+ok('a bare national number is not a country', r({phone_number:'0612345678'}).country===null, r({phone_number:'0612345678'}));
+ok('source is reported', r({address:'x, Sweden'}).source==='address', r({address:'x, Sweden'}));
+console.log('\n'+p+' passed, '+f+' failed'); process.exit(f?1:0);
