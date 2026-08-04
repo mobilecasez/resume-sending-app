@@ -346,6 +346,271 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   ok('the restored number is the real international one', digits(trunk.phone) === '919970020596', trunk.phone);
   ok('THE REAL FORM WAS NEVER SUBMITTED (trunk-zero case)', trunk.submits === 0, trunk.submits);
 
+
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // GROUPS, REPEATERS, CHIPS and HIDDEN-BUT-VISIBLE tick controls.
+  //
+  // Every section below re-neutralises submit on FIVE layers before anything is touched, and every
+  // one of them asserts zero submit attempts afterwards. These are strangers' live application
+  // forms; a fill sends nothing, a submit applies for a job in someone else's name.
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // Five layers, installed BEFORE anything is touched. __submits counts the three routes by which a
+  // form is actually SUBMITTED; __posts counts blocked network writes separately, because a page's
+  // own analytics POST is not an application being sent and must not read as one.
+  const SHIELD = `
+    window.__submits = []; window.__posts = [];
+    document.addEventListener('submit', function(e){ e.preventDefault(); e.stopImmediatePropagation(); window.__submits.push('event'); }, true);
+    HTMLFormElement.prototype.submit = function(){ window.__submits.push('proto'); };
+    HTMLFormElement.prototype.requestSubmit = function(){ window.__submits.push('requestSubmit'); };
+    (function(){ var of=window.fetch; window.fetch=function(u,o){ if(o&&/post|put/i.test((o&&o.method)||'')){ window.__posts.push(String(u).slice(0,60)); return Promise.reject(new Error('blocked')); } return of.apply(this,arguments); };
+      var oo=XMLHttpRequest.prototype.open; XMLHttpRequest.prototype.open=function(m,u){ if(/post|put/i.test(m||'')){ window.__posts.push(String(u).slice(0,60)); throw new Error('blocked'); } return oo.apply(this,arguments); }; })();
+    document.querySelectorAll('button[type=submit],input[type=submit]').forEach(function(b){ b.disabled=true; });
+    window.ReactNativeWebView = { postMessage: function(s){ (window.__msgs=window.__msgs||[]).push(JSON.parse(s)); } };
+  `;
+  const freshScan = async (url, waitMs) => {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    await page.waitForTimeout(waitMs || 9000);
+    await page.evaluate(SHIELD);
+    await page.evaluate(READ_FIELDS_JS);
+    await page.waitForFunction(() => window.__msgs && window.__msgs.some((m) => m.type === 'FIELDS'), null, { timeout: 120000 });
+    return page.evaluate(() => window.__msgs.find((m) => m.type === 'FIELDS').fields);
+  };
+
+  console.log('\nGROUPS — the scan emits ONE field per question, with its options');
+  let fields = await freshScan(URL);
+  const pronouns = fields.find((f) => (f.options || []).some((o) => /he\/him/i.test(o)));
+  const consentG = fields.find((f) => (f.options || []).some((o) => /i consent/i.test(o)));
+  console.log('    groups:', JSON.stringify(fields.filter((f) => /group/.test(f.widget || '')).map((f) => ({ w: f.widget, l: (f.label || '').slice(0, 40), n: (f.options || []).length, c: !!f.consent }))));
+  ok('the 5 pronoun checkboxes are ONE checkboxgroup, not 5 fields', !!pronouns && pronouns.widget === 'checkboxgroup', pronouns);
+  ok('it carries the question, not its first answer', !!pronouns && /pronoun/i.test(pronouns.label), pronouns && pronouns.label);
+  ok('it carries all 5 options', !!pronouns && pronouns.options.length === 5, pronouns && pronouns.options);
+  ok('it is flagged as accepting several answers', !!pronouns && pronouns.multi === true, pronouns);
+  ok('the unnamed consent radio PAIR is ONE radiogroup (they have no name attribute)', !!consentG && consentG.widget === 'radiogroup', consentG);
+  ok('it carries both options', !!consentG && consentG.options.length === 2, consentG && consentG.options);
+  ok('it is flagged as a CONSENT question', !!consentG && consentG.consent === true, consentG);
+  ok('the group question is the real question, not the first option', !!consentG && !/^yes, i consent$/i.test(consentG.label || ''), consentG && consentG.label);
+  ok('exactly 5 checkboxes + 2 radios collapse to exactly 2 group fields',
+    fields.filter((f) => /group/.test(f.widget || '')).length === 2, fields.filter((f) => /group/.test(f.widget || '')).length);
+  ok('the other fields are untouched by grouping (11 of them)',
+    fields.filter((f) => !/group|repeater/.test(f.widget || '')).length === 11,
+    fields.filter((f) => !/group|repeater/.test(f.widget || '')).map((f) => f.key));
+
+  console.log('\nGROUPS — filling by the GROUP key sets the right member and nothing else');
+  await page.evaluate(fillJsFactory({ [pronouns.key]: 'They/them', [consentG.key]: 'Yes' }));
+  await page.waitForFunction(() => window.__msgs && window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 120000 }).catch(() => {});
+  const gres = await page.evaluate(() => ({
+    ticks: [...document.querySelectorAll('input[type=checkbox],input[type=radio]')].map((c) => ({
+      l: (c.labels && c.labels[0] ? c.labels[0].innerText : '').trim().slice(0, 22), on: c.checked })),
+    report: window.__msgs.filter((m) => m.type === 'FILLED').pop(),
+    errors: window.__msgs.filter((m) => m.type === 'AUTOFILL_ERROR'),
+    submits: window.__submits,
+  }));
+  console.log('    ticks:', JSON.stringify(gres.ticks));
+  console.log('    consented:', JSON.stringify(gres.report && gres.report.consented));
+  const on = gres.ticks.filter((t) => t.on).map((t) => t.l);
+  ok('They/them is ticked', on.some((l) => /they\/them/i.test(l)), on);
+  ok('no other pronoun box is ticked', on.filter((l) => /him|her|prefer not|other/i.test(l)).length === 0, on);
+  ok('"Yes" resolved to the reworded option "Yes, I consent"', on.some((l) => /yes, i consent/i.test(l)), on);
+  ok('the opposite consent option is NOT selected', !on.some((l) => /don.t consent/i.test(l)), on);
+  ok('both groups counted as filled', !!gres.report && gres.report.count === 2, gres.report);
+  ok('no autofill error', gres.errors.length === 0, gres.errors);
+  // RULE: anything we agree to on the applicant's behalf is shown back to them before they submit.
+  const cons = (gres.report && gres.report.consented) || [];
+  ok('the consent we ticked is REPORTED back for review', cons.length === 1, cons);
+  ok('it is reported with the employer\'s own question wording', cons.length === 1 && /interview transcripts|consent/i.test(cons[0].label), cons);
+  ok('and with the answer we chose', cons.length === 1 && /yes, i consent/i.test(cons[0].answer), cons);
+  ok('THE REAL FORM WAS NEVER SUBMITTED (groups)', gres.submits.length === 0, gres.submits);
+
+  console.log('\nGROUPS — an explicit "no" never unticks what the applicant ticked themselves');
+  const keepMine = await page.evaluate(async ([pk]) => {
+    const cbs = [...document.querySelectorAll('input[type=checkbox]')];
+    const mine = cbs.find((c) => /she\/her/i.test((c.labels && c.labels[0] ? c.labels[0].innerText : '')));
+    mine.click();                                   // the applicant's own answer, by hand
+    return { before: mine.checked, key: pk };
+  }, [pronouns.key]);
+  await page.evaluate(fillJsFactory({ [pronouns.key]: 'They/them' }));
+  await page.waitForTimeout(2500);
+  const kept = await page.evaluate(() => [...document.querySelectorAll('input[type=checkbox]')]
+    .map((c) => ({ l: (c.labels && c.labels[0] ? c.labels[0].innerText : '').trim().slice(0, 20), on: c.checked })).filter((c) => c.on).map((c) => c.l));
+  ok('the applicant\'s own She/her tick survives a group fill for a different option', keepMine.before === true && kept.some((l) => /she\/her/i.test(l)), kept);
+
+  console.log('\nREPEATERS — detected structurally, and reported UNCLICKED by the scan');
+  fields = await freshScan(URL);
+  const reps = fields.filter((f) => f.widget === 'repeater');
+  console.log('    repeaters:', JSON.stringify(reps.map((r) => ({ k: r.key.slice(0, 34), l: (r.label || '').slice(0, 44) }))));
+  ok('both "Add" regions are found', reps.length === 2, reps.length);
+  ok('neither is matched on the word "Add" — the label is the REGION\'s wording',
+    reps.every((r) => !/^add$/i.test((r.label || '').trim())), reps.map((r) => r.label));
+  ok('one is the work-experience region', reps.some((r) => /experience/i.test(r.label)), reps.map((r) => r.label));
+  ok('one is the education region', reps.some((r) => /education/i.test(r.label)), reps.map((r) => r.label));
+  ok('the scan did NOT click them (no row was added)',
+    (await page.evaluate(() => document.querySelectorAll('input,textarea,select').length)) === 22,
+    await page.evaluate(() => document.querySelectorAll('input,textarea,select').length));
+  ok('THE REAL FORM WAS NEVER SUBMITTED (repeater scan)',
+    (await page.evaluate(() => window.__submits.length)) === 0);
+
+  console.log('\nREPEATERS — a row is added, filled from the given rows, and SURVIVES to the end');
+  const expRep = reps.find((r) => /experience/i.test(r.label));
+  const before22 = await page.evaluate(() => document.querySelectorAll('input,textarea,select').length);
+  // Entirely synthetic history. Matches nobody.
+  await page.evaluate(fillJsFactory({ [expRep.key]: [
+    { Company: 'Northwind Analytics', Position: 'Senior Engineer', 'Start date': '2021-04', 'End date': '2024-08' },
+    { Company: 'Baseline Systems', Position: 'Engineer', 'Start date': '2018-01', 'End date': '2021-03' },
+  ] }));
+  await page.waitForFunction(() => window.__msgs && window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 180000 }).catch(() => {});
+  const rres = await page.evaluate(() => {
+    const val = (re) => { const c = [...document.querySelectorAll('input')].find((i) => re.test(((i.labels && i.labels[0] ? i.labels[0].innerText : '') || ''))); return c ? String(c.value || '') : null; };
+    return { ctrls: document.querySelectorAll('input,textarea,select').length, company: val(/^company$/i), position: val(/^position$/i),
+      start: val(/^start date$/i), report: window.__msgs.filter((m) => m.type === 'FILLED').pop(),
+      errors: window.__msgs.filter((m) => m.type === 'AUTOFILL_ERROR'), submits: window.__submits };
+  });
+  console.log('    after:', JSON.stringify({ ctrls: rres.ctrls, company: rres.company, position: rres.position, start: rres.start }));
+  console.log('    report:', JSON.stringify(rres.report));
+  ok('the click really did add form controls (that IS the detection)', rres.ctrls > before22, [before22, rres.ctrls]);
+  ok('the row\'s Company was set', rres.company === 'Northwind Analytics', rres.company);
+  ok('the row\'s Position was set', rres.position === 'Senior Engineer', rres.position);
+  ok('the row SURVIVES the run — our own popup sweep no longer eats it', rres.ctrls >= before22 + 5, rres.ctrls);
+  // This employer's date box rejects every injected write (six variants measured, including a
+  // React _valueTracker reset and per-character InputEvents). It must be REPORTED, never counted.
+  ok('the date box we could not set is reported honestly, not claimed', rres.start === '', rres.start);
+  const rfail = ((rres.report || {}).failed || []).find((f) => f.key === expRep.key);
+  ok('the repeater is named in the review list with what still needs the applicant', !!rfail && /start date/i.test(rfail.why || ''), rfail);
+  ok('the partial success is still counted as filled', !!rres.report && rres.report.count >= 1, rres.report);
+  ok('no second row is opened while the first is still on screen', rres.ctrls < before22 + 10, rres.ctrls);
+  ok('no autofill error', rres.errors.length === 0, rres.errors);
+  ok('THE REAL FORM WAS NEVER SUBMITTED (repeater fill)', rres.submits.length === 0, rres.submits);
+
+  // Accepting an opacity-0 control that has a visible pill is what makes Workable's three REQUIRED
+  // yes/no questions and Ashby's twenty hidden controls scannable at all. It must not change the
+  // answer on a page where everything is already visible.
+  console.log('\nHIDDEN-BUT-VISIBLE tick controls — no change on a page that has none');
+  await page.evaluate('(function(){' + JS_HELPERS + `
+    window.__cvfProbe = { vis: vis, visCtl: visCtl, grpKey: grpKey, isChipInput: isChipInput, chipFill: chipFill, chipTexts: chipTexts, ctrls: ctrls };
+  })()`);
+  const visSame = await page.evaluate(() => {
+    const els = [...document.querySelectorAll('input,textarea,select')];
+    return { differ: els.filter((e) => window.__cvfProbe.visCtl(e) !== window.__cvfProbe.vis(e)).length, n: els.length };
+  });
+  ok('visCtl() agrees with vis() where every control is visible', visSame.differ === 0, visSame);
+  ok('no text field on this form is mistaken for a chip widget',
+    (await page.evaluate(() => window.__cvfProbe.ctrls().filter((e) => window.__cvfProbe.isChipInput(e)).length)) === 0);
+
+  // ── CHIPS: proven on a real chip widget ───────────────────────────────────────────────────────
+  // No corpus application form has one — measured across 16 reachable forms, zero chip inputs — so
+  // the widget itself is exercised on MUI's public Autocomplete demo, which ships both archetypes:
+  // a freeSolo box that commits typed text on Enter, and a multiple box that only picks from a menu.
+  // Skips politely (does not fail the run) when that page cannot be reached.
+  console.log('\nCHIPS — real chip widgets: type-and-Enter, and pick-from-menu');
+  let chipPage = true;
+  try {
+    await page.goto('https://mui.com/material-ui/react-autocomplete/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(6000);
+  } catch (e) { chipPage = false; }
+  if (!chipPage) {
+    console.log('    ⚠ chip page unreachable — chip assertions skipped');
+  } else {
+    await page.evaluate(SHIELD);
+    await page.evaluate('(function(){' + JS_HELPERS + `
+      window.__cvfProbe = { isChipInput: isChipInput, chipFill: chipFill, chipTexts: chipTexts, chipish: chipish };
+    })()`);
+    const chipRun = (id, vals) => page.evaluate(async ([id, vals]) => {
+      const P = window.__cvfProbe;
+      const el = document.getElementById(id);
+      if (!el) return { missing: true };
+      el.scrollIntoView({ block: 'center' });
+      const detected = P.isChipInput(el);
+      const before = P.chipTexts(el);
+      const r = await new Promise((res) => { P.chipFill(el, vals, false, res); setTimeout(() => res({ timeout: true }), 45000); });
+      return { detected, before, after: P.chipTexts(el), r, left: el.value, submits: window.__submits.slice(), posts: window.__posts.length };
+    }, [id, vals]);
+
+    const tagBox = await chipRun('tags-standard', ['The Godfather', 'Pulp Fiction']);
+    console.log('    freeSolo (type + Enter):', JSON.stringify(tagBox));
+    ok('a CamelCase chip widget (MuiChip-root) is recognised as a chip input', tagBox.detected === true, tagBox);
+    ok('and no form submit happened while it was recognised', tagBox.submits.length === 0, tagBox.submits);
+    ok('both chips were added', tagBox.r && tagBox.r.added === 2 && tagBox.r.missed.length === 0, tagBox.r);
+    ok('each chip is verified against what the widget SHOWS, not el.value',
+      (tagBox.after || []).some((t) => /godfather/i.test(t)) && (tagBox.after || []).some((t) => /pulp fiction/i.test(t)), tagBox.after);
+    ok('a chip the user already had is left alone', (tagBox.after || []).some((t) => /inception/i.test(t)), tagBox.after);
+    ok('the input box is left clean, with no residue', String(tagBox.left || '') === '', tagBox.left);
+    // The whole reason Enter is now allowed: the old skills loop refused to press it, so a
+    // type-and-Enter widget received nothing at all. A SYNTHETIC Enter cannot trigger the browser's
+    // own implicit submission, and the shield refuses a page handler that tries.
+    ok('pressing Enter added chips WITHOUT any form submit', tagBox.submits.length === 0, tagBox.submits);
+
+    const menuBox = await chipRun('checkboxes-tags-demo', ['Se7en', 'Fight Club']);
+    console.log('    pick-from-menu:', JSON.stringify(menuBox));
+    // An EMPTY pick-from-menu widget carries no chip yet, so there is no chip-shaped evidence and
+    // isChipInput correctly declines to claim it. That is not a gap: it is a combobox, the combo
+    // path drives it, and it starts being recognised as a chip widget the moment it holds one.
+    ok('an EMPTY multi widget is left to the combobox path, not claimed as a chip box', menuBox.detected === false, menuBox.detected);
+    ok('both values were still picked from its menu', menuBox.r && menuBox.r.added === 2 && menuBox.r.missed.length === 0, menuBox.r);
+    ok('once it holds chips it IS recognised',
+      (await page.evaluate(() => window.__cvfProbe.isChipInput(document.getElementById('checkboxes-tags-demo')))) === true);
+    ok('THE PAGE WAS NEVER SUBMITTED (chips)', menuBox.submits.length === 0, menuBox.submits);
+
+    const words = await page.evaluate(() => ['MuiChip-root', 'tag-input', 'chips', 'advantage', 'heritage', 'package', 'stage', 'vintage']
+      .map((c) => c + '=' + window.__cvfProbe.chipish(c)));
+    console.log('    chipish:', JSON.stringify(words));
+    ok('chip-ish class matching does not fire on advantage/heritage/package/stage/vintage',
+      words.filter((w) => /=true/.test(w)).length === 3, words);
+  }
+
+  // ── THE HEADLINE CASES, on two more real employers ────────────────────────────────────────────
+  // Revolut's tick controls are all visible, so it cannot prove the part of this work that matters
+  // most: 42 of 120 radios and 15 of 103 checkboxes across the corpus are opacity-0 natives under a
+  // visible pill, and the engine used to skip every one of them — reporting ZERO radio groups on a
+  // Workable form with three REQUIRED yes/no questions. Lever proves the other half: 74 visible
+  // checkboxes that used to collapse onto 8 keys labelled with whichever option came first.
+  // Each target skips politely rather than failing the run when it cannot be reached.
+  const scanEmployer = async (url) => {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(6000);
+    await page.evaluate(SHIELD);                       // shield FIRST, then reach the form
+    await page.evaluate(() => {
+      if (document.querySelectorAll('input,textarea,select').length >= 4) return;
+      const b = [...document.querySelectorAll('a,button')].find((x) => /^\s*(apply|apply now|apply for this job)\s*$/i.test((x.innerText || '').trim()) && (x.getAttribute('type') || '') !== 'submit');
+      if (b) b.click();
+    });
+    await page.waitForTimeout(6000);
+    const dom = await page.evaluate(() => {
+      const t = [...document.querySelectorAll('input[type=radio],input[type=checkbox]')];
+      return { ticks: t.length, hidden: t.filter((c) => { const st = getComputedStyle(c); return parseFloat(st.opacity || '1') === 0 || c.offsetParent === null || st.display === 'none'; }).length };
+    });
+    await page.evaluate(READ_FIELDS_JS);
+    await page.waitForFunction(() => window.__msgs && window.__msgs.some((m) => m.type === 'FIELDS'), null, { timeout: 90000 });
+    const f = await page.evaluate(() => window.__msgs.find((m) => m.type === 'FIELDS').fields);
+    const submits = await page.evaluate(() => window.__submits);
+    return { dom, fields: f, submits };
+  };
+
+  console.log('\nWORKABLE — three REQUIRED yes/no questions whose radios are opacity:0');
+  try {
+    const wk = await scanEmployer('https://apply.workable.com/j/C93E04D1AF');
+    const rg = wk.fields.filter((f) => f.widget === 'radiogroup');
+    console.log('    dom:', JSON.stringify(wk.dom), 'radiogroups:', JSON.stringify(rg.map((g) => ({ l: (g.label || '').slice(0, 34), o: g.options, req: g.required }))));
+    ok('every tick control on this form really is hidden', wk.dom.ticks > 0 && wk.dom.hidden === wk.dom.ticks, wk.dom);
+    ok('the engine now SEES them as radio groups (it used to report zero)', rg.length === 3, rg.length);
+    ok('each is one YES/NO question with both options', rg.every((g) => (g.options || []).length === 2), rg.map((g) => g.options));
+    ok('their REQUIRED flag survives', rg.every((g) => g.required === true), rg.map((g) => g.required));
+    ok('THE REAL FORM WAS NEVER SUBMITTED (workable scan)', wk.submits.length === 0, wk.submits);
+  } catch (e) { console.log('    ⚠ workable unreachable — skipped (' + String(e.message).slice(0, 60) + ')'); }
+
+  console.log('\nLEVER — 6 checkbox groups that used to collapse onto one key each');
+  try {
+    const lv = await scanEmployer('https://jobs.lever.co/lyrahealth/bf8f42c1-6453-4ee3-8efb-51b16b3f7bd0/apply');
+    const cg = lv.fields.filter((f) => f.widget === 'checkboxgroup');
+    const rg = lv.fields.filter((f) => f.widget === 'radiogroup');
+    console.log('    dom:', JSON.stringify(lv.dom), 'checkboxgroups:', JSON.stringify(cg.map((g) => ({ l: (g.label || '').slice(0, 34), n: (g.options || []).length }))));
+    ok('this form really does carry a hundred-plus tick controls', lv.dom.ticks > 100, lv.dom);
+    ok('the checkbox groups arrive as groups, not as one field per box', cg.length >= 5, cg.length);
+    ok('each carries a real options list rather than a single label', cg.every((g) => (g.options || []).length >= 4), cg.map((g) => (g.options || []).length));
+    ok('the licence question keeps all its choices', cg.some((g) => (g.options || []).some((o) => /LICSW/i.test(o))), cg.map((g) => g.label));
+    ok('its radio groups are grouped too', rg.length >= 10, rg.length);
+    ok('a consent checkbox is flagged for the review panel', lv.fields.some((f) => f.consent), lv.fields.filter((f) => f.consent).map((f) => f.label));
+    ok('THE REAL FORM WAS NEVER SUBMITTED (lever scan)', lv.submits.length === 0, lv.submits);
+  } catch (e) { console.log('    ⚠ lever unreachable — skipped (' + String(e.message).slice(0, 60) + ')'); }
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   await browser.close();
   process.exit(fail ? 1 : 0);

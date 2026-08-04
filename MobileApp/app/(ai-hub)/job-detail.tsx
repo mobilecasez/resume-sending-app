@@ -649,6 +649,13 @@ const JS_HELPERS = `
       if(strip.length>=4 && strip.length<=600) return strip.slice(0,220);
       h++; p=p.parentElement;
     }
+    // Nothing was left over at any level. Measured on Ashby's demographic block, whose gender /
+    // ethnicity / veteran groups land here: falling back to nearText() reads the page's own
+    // navigation ("Overview Application") and hands the mapper something that LOOKS like a question
+    // but is not — worse than an honest fragment of the group's real content. So the fallback stays
+    // the member's own label, and those groups arrive labelled "Male" / "Hispanic or Latino". They
+    // are demographic questions, which are never answered from anything but an explicit profile
+    // value, so a weak label costs nothing here; it is recorded rather than papered over.
     return fallbackEl?nlbl(fallbackEl):'';
   }
   // Stable key for the WHOLE group.
