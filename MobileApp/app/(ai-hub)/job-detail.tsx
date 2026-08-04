@@ -706,6 +706,17 @@ const JS_HELPERS = `
       if(t===name||t.indexOf(name+' ')===0||t.indexOf(name+'+')===0||t.indexOf(name+'(')===0) return opts[i]; } }
     return null;
   }
+  // Inverse of PRIM_NAME: "India" / "India (+91)" → "91". Only ever a FALLBACK for reading back a
+  // dial code out of a value that carries no "+NN" at all (the model answering a code picker with a
+  // country name). Exact whole-name match, so "Indian Ocean Territory" can never resolve to India.
+  function dialForName(v){
+    try{
+      var n=cleanTxt(v).replace(/[+0-9()\\[\\]]+/g,' ').replace(/\\s+/g,' ').trim().toLowerCase();
+      if(!n) return '';
+      for(var k in PRIM_NAME){ if(Object.prototype.hasOwnProperty.call(PRIM_NAME,k) && PRIM_NAME[k]===n) return k; }
+    }catch(e){}
+    return '';
+  }
   // "nationality" is deliberately NOT here: it is a legal question, not a dial-code control, and it
   // must keep the full never-overwrite protection.
   function isCountryLabel(s){ return /country|dial|calling code|phone code|\\bisd\\b/i.test(cleanTxt(s)); }
@@ -914,6 +925,33 @@ const JS_HELPERS = `
       }
     }
     return out;
+  }
+  // Is the list we just read the WHOLE list, or only a window onto a longer one?
+  //
+  // ⚠️ This is why "+91" never reached the picker. A design-system phone-code sheet holds ~240
+  // countries but renders ~24 rows and RECYCLES them as you scroll — the row for India is simply not
+  // in the DOM until the sheet's search box is filtered. We read those 24 ("+1 American Samoa" …
+  // "+1 U.S. Virgin Islands"), reported them as THE options, and the server — which deletes a value
+  // no option matches — concluded "+91: no matching option" and sent no dial code at all. The picker
+  // kept its geo-IP +44 while the number box got the national digits. Measured on the real Revolut
+  // sheet: scrollHeight 17216px behind a 796px viewport for 24 rows read, versus 796/796 and no
+  // hidden content for the 7-row gender list. So: say the list is partial when the height we cannot
+  // see is far more than the rows we CAN see could ever fill. The server already knows what to do
+  // with a partial list — it passes the bare "+91" through and lets pickDial match it here, against
+  // the real list, through the search box.
+  function cbListPartial(el, pop, opts){
+    try{
+      opts = opts || [];
+      if(opts.length>=200) return true;                       // we hit cbOptions' own read cap
+      if(!pop || !pop.el) return false;
+      var ch=0, hidden=0;
+      try{ ch=pop.el.clientHeight||0; hidden=(pop.el.scrollHeight||0)-ch; }catch(e){}
+      if(ch<=0 || hidden<=80) return false;                   // nothing is scrolled out of sight
+      var rh=0; try{ if(opts.length && opts[0].getBoundingClientRect) rh=opts[0].getBoundingClientRect().height||0; }catch(e){}
+      if(!rh) rh=40;
+      // 1.4x slack so a genuinely complete list that merely overflows its sheet is not called partial.
+      return hidden > opts.length*rh*1.4;
+    }catch(e){ return false; }
   }
   // Any label containing one of these is never clicked by us, in any context. Unanchored and
   // multilingual on purpose: the old anchored English list let "Submit application" and
@@ -1335,7 +1373,7 @@ const JS_HELPERS = `
           // A list we hit the cap on is INCOMPLETE. Say so, or the server's option-snap treats a
           // country picker's first 60 rows as the whole world and deletes "India (+91)" as
           // "no matching option".
-          if(opts.length){ f.options=opts; f.optionsUnknown=false; if(os.length>=60) f.optionsTruncated=true; }
+          if(opts.length){ f.options=opts; f.optionsUnknown=false; if(os.length>=60 || cbListPartial(el, pop, os)) f.optionsTruncated=true; }
         }catch(e){}
         // CLOSE THIS ONE BEFORE OPENING THE NEXT — and verify it, rather than assuming. Reading a
         // dropdown must never leave it on screen.
@@ -1363,6 +1401,9 @@ const JS_HELPERS = `
     try {
       var total = 0; for(var kk in bySig){ if(Object.prototype.hasOwnProperty.call(bySig,kk)) total++; }
       var filled={}, fails={}, deferred=[], dseen={};
+      // The phone number we wrote, and the number we were HANDED before splitting it. Kept so the
+      // split can be undone at the end if the dial half never landed (see phoneReconcile).
+      var phoneRec=null;
       function fillVisible(){
         var els = ctrls();
         for (var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
@@ -1460,8 +1501,16 @@ const JS_HELPERS = `
             } else {
               var vv=String(v);
               // A phone box next to a separate dial-code picker gets the LOCAL number only —
-              // otherwise "+91 98765…" lands beside an already-selected "+91".
-              if (t==='tel' || /\\b(phone|mobile)\\b/i.test(nlbl(el)+' '+(el.name||''))) vv=phoneLocal(vv, el);
+              // otherwise "+91 98765…" lands beside an already-selected "+91". REMEMBER the number
+              // we were given: this strip is a bet that the dial picker will accept "+91", and
+              // phoneReconcile() below settles that bet against what the picker actually shows.
+              if (t==='tel' || /\\b(phone|mobile)\\b/i.test(nlbl(el)+' '+(el.name||''))){
+                var vGiven=vv; vv=phoneLocal(vv, el);
+                // FIRST phone box only. The split is a page-level pairing (one number ↔ one dial
+                // control), so reconciling a second phone field against the same picker would be a
+                // guess. Referee / emergency-contact numbers are excluded server-side already.
+                if (!phoneRec && !isDialCtrl(el)) phoneRec={ s:s, given:vGiven };
+              }
               // Native date/month inputs accept ONLY yyyy-mm-dd — anything else is silently dropped.
               if (t==='date' || t==='month') vv=dateVal(vv);
               bringIntoView(el);
@@ -1517,6 +1566,53 @@ const JS_HELPERS = `
         }
         step();
       }
+      // ── THE ATOMIC-SPLIT INVARIANT ─────────────────────────────────────────────
+      // Never take information OUT of one field on the assumption that a second field accepted it.
+      //
+      // A split phone number is two writes that must succeed or fail together. The number half is a
+      // text box and lands instantly; the dial half is a 240-row VIRTUALISED picker that can fail
+      // for reasons we do not control. When it did, the page was left holding its own geo-IP default
+      // (+44) beside OUR national digits — reported as "filled", and stored as a number that belongs
+      // to nobody. Before the split existed the whole "+919970020596" went in one box: ugly, correct.
+      //
+      // THE TEST, applied AFTER the pickers have run: the two controls must CONCATENATE BACK to the
+      // number we were handed. Read the dial control, and:
+      //   • it shows a code the number actually starts with → keep the remainder (a real, correct split)
+      //   • it shows anything else                          → restore the FULL international number
+      // Worst case is "unsplit but correct". It is never "split and wrong".
+      function phoneReconcile(){
+        try{
+          if(!phoneRec) return;
+          var els=ctrls(), i, dialEl=null, numEl=null;
+          for(i=0;i<els.length;i++){ if(isDialCtrl(els[i])){ dialEl=els[i]; break; } }
+          var dsig=dialEl?sig(dialEl):null, wd='';
+          // Only when the server pre-split does the code live somewhere other than the number itself:
+          // in the value we were asked to put in the dial control ("+91", "India (+91)", or "India").
+          if(dsig && (dsig in bySig)) wd=wantDial(bySig[dsig]) || dialForName(bySig[dsig]);
+          var full=phoneDigits(phoneRec.given, wd);
+          if(!full) return;                                  // no code anywhere ⇒ nothing was split
+          for(i=0;i<els.length;i++){ if(sig(els[i])===phoneRec.s && vis(els[i])){ numEl=els[i]; break; } }
+          if(!numEl) return;
+          var got=dialOf(dialShownOf(dialEl));
+          // The picker's code must be a genuine prefix of this number. That single test is both
+          // "did our pick land" and "do these two fields still describe the user's number".
+          var split=!!(got && full.indexOf(got)===0 && full.length>got.length);
+          var target=split ? full.slice(got.length) : '+'+full;
+          if(sameAnswer(numEl.value, target)) return;        // already in the right shape
+          bringIntoView(numEl);
+          try{ numEl.focus(); }catch(e){}
+          setNative(numEl, target);
+          try{ numEl.dispatchEvent(new Event('blur',{bubbles:true})); numEl.blur(); }catch(e){}
+          if(sameAnswer(numEl.value, target)){ filled[phoneRec.s]=true; delete fails[phoneRec.s]; }
+          else { delete filled[phoneRec.s]; fails[phoneRec.s]={key:phoneRec.s,label:nlbl(numEl).slice(0,90),why:'please check your phone number'}; }
+          // Say so out loud. A dial picker we could not set is the user's to fix, and they need to
+          // know the number now carries its country code so they do not add it twice.
+          if(!split && dsig){
+            delete filled[dsig];
+            fails[dsig]={key:dsig,label:nlbl(dialEl).slice(0,90),why:'we could not set the country code — your full international number is in the phone box instead'};
+          }
+        }catch(e){}
+      }
       function report(){
         // Leave the page as we found it: no half-open pickers for the user to dismiss by hand.
         try{ cbCloseAllOpened(); }catch(e){}
@@ -1532,7 +1628,9 @@ const JS_HELPERS = `
           passes++;
           var after=0; for(var a in filled){ if(Object.prototype.hasOwnProperty.call(filled,a)) after++; }
           if (after > before && after < total && passes < 5){ pass(); }
-          else { drain(report); }
+          // Close every picker BEFORE reconciling: a full-screen sheet still on top of the phone box
+          // would swallow the focus/typing that puts the international number back.
+          else { drain(function(){ try{ cbCloseAllOpened(); }catch(e){} setTimeout(function(){ phoneReconcile(); report(); }, 180); }); }
         });
       }
       pass();
@@ -1597,6 +1695,45 @@ const JS_HELPERS = `
     }catch(e){ return false; }
   }
   // ── Phone / dial-code splitting ─────────────────────────────────────────────
+  // A dial-code control, as opposed to a plain country control. "Current country" must NOT match:
+  // it is a residence question, and treating it as the phone's code half would pair the number with
+  // the wrong widget entirely.
+  var DIAL_LABEL=/dial|calling code|phone code|country code|phone country|\\bisd\\b/i;
+  function isDialCtrl(el){
+    try{
+      if(!el || !vis(el)) return false;
+      if(el.tagName==='SELECT') return isPhoneCodeOpts(Array.prototype.slice.call(el.options));
+      return isCombo(el) && DIAL_LABEL.test(cleanTxt(nlbl(el)));
+    }catch(e){ return false; }
+  }
+  // The dial control as it READS RIGHT NOW — the only evidence that our pick landed. A <select>
+  // answers through its selected option; a combo through cbShown (which knows a trigger keeps its
+  // selection in el.value while react-select clears it).
+  function dialShownOf(el){
+    try{
+      if(!el) return '';
+      if(el.tagName==='SELECT'){ var o=el.options[el.selectedIndex]; return o?cleanTxt(o.text||o.value||''):''; }
+      return cbShown(el);
+    }catch(e){ return ''; }
+  }
+  // The FULL international digits of the number we were handed — the one fact both halves of a split
+  // must add up to. Either the value already carries them ("+91 99700 20596", "0091 99700 20596"), or
+  // the server pre-split it and the code is whatever we were asked to put in the dial control.
+  // Returns '' when the code is unknowable; we never invent one.
+  //
+  // ⚠️ Do NOT reach for wantDial() here. It reads the first 1-4 digits after a "+", which is right for
+  // a code on its own ("+91", "India (+91)") and WRONG for a whole number: wantDial("+919970020596")
+  // is "9199". Where the code ends is decided by the dial control, never by a regex over the number.
+  // (No backticks in this comment — one inside this template literal terminates it and breaks the build.)
+  function phoneDigits(given, wd){
+    try{
+      var s=cleanTxt(given); if(!s) return '';
+      var d=s.replace(/[^0-9]/g,''); if(!d) return '';
+      if(/^\\s*\\+/.test(s)) return d;
+      if(/^\\s*00\\d/.test(s)) return d.replace(/^0+/,'');     // 0091… is +91…
+      return wd ? wd+d : '';
+    }catch(e){ return ''; }
+  }
   // Does this page carry a SEPARATE dial-code control (a phone-code select, or a combo labeled
   // like one)? Cached: fillVisible runs on every scroll step.
   var __cvfDialAt=0, __cvfDialOn=false;
@@ -1605,12 +1742,7 @@ const JS_HELPERS = `
     __cvfDialAt=now; __cvfDialOn=false;
     try{
       var els=ctrls();
-      for(var i=0;i<els.length;i++){
-        var el=els[i];
-        if(!vis(el)) continue;
-        if(el.tagName==='SELECT'){ if(isPhoneCodeOpts(Array.prototype.slice.call(el.options))){ __cvfDialOn=true; break; } continue; }
-        if(isCombo(el) && /dial|calling code|phone code|country code|phone country/i.test(cleanTxt(nlbl(el)))){ __cvfDialOn=true; break; }
-      }
+      for(var i=0;i<els.length;i++){ if(isDialCtrl(els[i])){ __cvfDialOn=true; break; } }
     }catch(e){}
     return __cvfDialOn;
   }

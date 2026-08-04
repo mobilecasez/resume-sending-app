@@ -215,15 +215,117 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
       fields: f.length,
       combos: combos.length,
       withOptions: combos.filter((c) => (c.options || []).length > 0).length,
-      sample: combos.map((c) => ({ l: (c.label || '').slice(0, 26), n: (c.options || []).length })),
+      sample: combos.map((c) => ({ l: (c.label || '').slice(0, 26), n: (c.options || []).length, partial: !!c.optionsTruncated })),
       maxSheetsOpenDuringScan: window.__openWatch.max,
       sheetsOpenNow: document.querySelectorAll('input[type=search]').length,
+      dialKey: (f.find((x) => /phone country/i.test(x.label || '')) || {}).key,
+      numKey: (f.find((x) => String(x.type).toLowerCase() === 'tel') || {}).key,
+      dialPartial: !!(f.find((x) => /phone country/i.test(x.label || '')) || {}).optionsTruncated,
+      countryPartial: !!(f.find((x) => /current country/i.test(x.label || '')) || {}).optionsTruncated,
+      genderPartial: !!(f.find((x) => /gender/i.test(x.label || '')) || {}).optionsTruncated,
+      genderN: ((f.find((x) => /gender/i.test(x.label || '')) || {}).options || []).length,
     };
   });
   console.log('    scan:', JSON.stringify(scan));
   ok('every dropdown got its option list read', scan.combos > 0 && scan.withOptions === scan.combos, scan.sample);
   ok('NEVER more than one sheet open at a time', scan.maxSheetsOpenDuringScan <= 1, scan.maxSheetsOpenDuringScan);
   ok('no sheet is left open when the scan finishes', scan.sheetsOpenNow === 0, scan.sheetsOpenNow);
+
+  // ── The 240-row phone-code list is VIRTUALISED: 24 rows in the DOM, India not among them ───────
+  // Reporting those 24 as "the options" is what made the server rule +91 out ("no matching option")
+  // and send no dial code at all, so the picker kept its geo-IP +44. Saying the list is PARTIAL is
+  // what puts the bare "+91" back on the wire for pickDial to resolve against the real list.
+  ok('the virtualised phone-code list is reported as PARTIAL (server must not rule +91 out)', scan.dialPartial === true, scan);
+  ok('the virtualised country list is reported as PARTIAL too', scan.countryPartial === true, scan);
+  ok('a SHORT, fully-rendered list (gender) is NOT falsely flagged partial', scan.genderN > 0 && scan.genderPartial === false, scan);
+
+  // ── THE ATOMIC-SPLIT INVARIANT ────────────────────────────────────────────────────────────────
+  // The number half and the dial half must succeed or fail TOGETHER. Never "split and wrong".
+  const DIAL_KEY = scan.dialKey, NUM_KEY = scan.numKey;
+  const digits = (s) => String(s || '').replace(/[^0-9]/g, '');
+
+  // Runs one real fill and reports what the page ends up holding. blockDial=true neutralises the
+  // dial picker at the DOM level (capture-phase stopImmediatePropagation on its own control), which
+  // is a failure we do not have to fake anywhere inside the engine.
+  async function runFill(values, blockDial) {
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(9000);
+    await page.evaluate(`window.ReactNativeWebView = { postMessage: function(s){ (window.__msgs=window.__msgs||[]).push(JSON.parse(s)); } };`);
+    await page.evaluate('(function(){' + JS_HELPERS + `
+      window.__submits = 0;
+      document.addEventListener('submit', function(e){ e.preventDefault(); window.__submits++; }, true);
+      window.__cvf = { nlbl: nlbl, cbShown: cbShown };
+    })()`);
+    if (blockDial) {
+      await page.evaluate(() => {
+        const els = [...document.querySelectorAll('input[type=button]')].filter((e) => e.getBoundingClientRect().width);
+        const trig = els.find((e) => /phone country/i.test(window.__cvf.nlbl(e)));
+        window.__blocked = !!trig;
+        if (!trig) return;
+        const zone = trig.parentElement || trig;
+        const stop = (e) => { if (zone.contains(e.target)) { e.stopImmediatePropagation(); e.preventDefault(); } };
+        ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'touchstart'].forEach((t) => window.addEventListener(t, stop, true));
+      });
+    }
+    await page.evaluate(fillJsFactory(values));
+    // NOT allowed to bubble: the harness's catch-all treats /timeout/ as "site unreachable" and
+    // exits 0, which would turn a fill that never finishes into a green run.
+    let timedOut = false;
+    await page.waitForFunction(() => window.__msgs && window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 180000 })
+      .catch(() => { timedOut = true; });
+    if (timedOut) return { timedOut: true, report: { failed: [] }, errors: ['fill never reported FILLED'], submits: -1, dialShows: null, phone: null, blocked: null };
+    return page.evaluate(() => {
+      const els = [...document.querySelectorAll('input[type=button]')].filter((e) => e.getBoundingClientRect().width);
+      const trig = els.find((e) => /phone country/i.test(window.__cvf.nlbl(e)));
+      const tel = [...document.querySelectorAll('input')].find((i) => (i.type || '').toLowerCase() === 'tel');
+      return {
+        dialShows: trig ? window.__cvf.cbShown(trig) : null,
+        phone: tel ? tel.value : null,
+        report: window.__msgs.filter((m) => m.type === 'FILLED').pop(),
+        errors: window.__msgs.filter((m) => m.type === 'AUTOFILL_ERROR'),
+        submits: window.__submits,
+        blocked: window.__blocked === undefined ? null : window.__blocked,
+      };
+    });
+  }
+
+  console.log('\nphone split — the dial pick SUCCEEDS: split, and split correctly');
+  const okSplit = await runFill({ [DIAL_KEY]: '+91', [NUM_KEY]: '9970020596' }, false);
+  console.log('    result:', JSON.stringify(okSplit));
+  ok('the dial picker shows +91', /\+?91\b/.test(String(okSplit.dialShows)), okSplit.dialShows);
+  ok('the number box holds ONLY the national part', digits(okSplit.phone) === '9970020596', okSplit.phone);
+  ok('no autofill error', okSplit.errors.length === 0, okSplit.errors);
+  ok('THE REAL FORM WAS NEVER SUBMITTED (successful split)', okSplit.submits === 0, okSplit.submits);
+
+  console.log('\nphone split — the dial pick FAILS: the FULL number goes back in the number box');
+  const badSplit = await runFill({ [DIAL_KEY]: '+91', [NUM_KEY]: '9970020596' }, true);
+  console.log('    result:', JSON.stringify(badSplit));
+  ok('the dial picker really was neutralised', badSplit.blocked === true, badSplit);
+  ok('the picker did NOT reach +91 (this is the failure we are handling)', !/\+?91\b/.test(String(badSplit.dialShows)), badSplit.dialShows);
+  ok('the number box holds the FULL international number, not the naked national part', digits(badSplit.phone) === '919970020596', badSplit.phone);
+  ok('it is never left as national digits beside the wrong code', digits(badSplit.phone) !== '9970020596', badSplit.phone);
+  ok('the un-set country code is REPORTED, not silently swallowed', (badSplit.report.failed || []).some((f) => /country code/i.test(f.why || '')), badSplit.report);
+  ok('THE REAL FORM WAS NEVER SUBMITTED (failed split)', badSplit.submits === 0, badSplit.submits);
+
+  // The other direction of the same invariant: the number arrives WITH its code (a learned or
+  // AI-supplied answer) and the pick succeeds. Restoring the full number here would leave "+91" in
+  // the picker AND "+91…" in the box — the country code twice. Regression guard for deriving the
+  // dial code by regex from a whole number: wantDial("+919970020596") is "9199", not "91".
+  console.log('\nphone split — the number arrives WITH its code and the pick SUCCEEDS');
+  const both = await runFill({ [DIAL_KEY]: '+91', [NUM_KEY]: '+919970020596' }, false);
+  console.log('    result:', JSON.stringify(both));
+  ok('the dial picker still shows +91', /\+?91\b/.test(String(both.dialShows)), both.dialShows);
+  ok('the country code is NOT duplicated into the number box', digits(both.phone) === '9970020596', both.phone);
+  ok('THE REAL FORM WAS NEVER SUBMITTED (full-number + successful pick)', both.submits === 0, both.submits);
+
+  // The production path that produced the user's screenshot: the server saw 24 of 240 options,
+  // decided "+91: no matching option", sent NO dial value, and sent the number in full international
+  // form — which the client then stripped anyway because a dial control exists on the page.
+  console.log('\nphone split — no dial value was sent at all (the reported production case)');
+  const noDial = await runFill({ [NUM_KEY]: '+919970020596' }, false);
+  console.log('    result:', JSON.stringify(noDial));
+  ok('the number keeps its country code when nothing set the picker', digits(noDial.phone) === '919970020596', noDial.phone);
+  ok('THE REAL FORM WAS NEVER SUBMITTED (no-dial case)', noDial.submits === 0, noDial.submits);
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   await browser.close();
