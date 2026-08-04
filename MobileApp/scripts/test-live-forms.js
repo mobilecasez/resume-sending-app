@@ -651,6 +651,106 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
     ok('THE REAL FORM WAS NEVER SUBMITTED (lever scan)', lv.submits.length === 0, lv.submits);
   } catch (e) { console.log('    ⚠ lever unreachable — skipped (' + String(e.message).slice(0, 60) + ')'); }
 
+  // ── THE REAL SERVER, ANSWERING THE REAL PAGE ──────────────────────────────────────────────────
+  // Everything above proves the DEVICE can drive these widgets. This proves the other half: that
+  // the values PRODUCTION returns, for THIS page's own scanned fields, are values THIS page can
+  // actually take. A fixture cannot show that — the option strings, the group keys and the row
+  // columns all come from the employer, not from us.
+  //
+  // ⚠️ NOTHING PERSONAL IS TYPED INTO THE EMPLOYER'S FORM. The real account's answers are checked
+  // against the live DOM; where a row has to be revealed to compare its columns, the server's row
+  // KEYS are kept and its values are replaced with synthetic markers. Submit stays neutralised on
+  // all five layers and is asserted zero at the end, as everywhere else in this file.
+  console.log('\nTHE REAL SERVER ANSWERS THE REAL PAGE');
+  try {
+    require(path.join(REPO, 'node_modules', 'dotenv')).config({ path: path.join(REPO, '.env') });
+    const jwt = require(path.join(REPO, 'node_modules', 'jsonwebtoken'));
+    const API = process.env.AUTOFILL_TEST_API || 'https://cvapplyr-website-production.up.railway.app';
+    if (!process.env.JWT_SECRET) throw new Error('no JWT_SECRET in .env');
+    const live = await freshScan(URL);
+    const token = jwt.sign({ id: Number(process.env.AUTOFILL_TEST_USER || 1), email: 'x@y.z' }, process.env.JWT_SECRET);
+    const resp = await fetch(API + '/api/ai-hub/autofill-map', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: live, jobTitle: 'Legal Counsel (Loyalty)', companyName: 'Revolut' }),
+    });
+    if (resp.status !== 200) throw new Error('server said HTTP ' + resp.status);
+    const body = await resp.json();
+    const vals = body.values || {};
+    const why = {}; for (const s of (body.skipped || [])) why[s.key] = s.why;
+    const byKey = {}; for (const f of live) byKey[f.key] = f;
+    console.log('    server answered ' + Object.keys(vals).length + ' of ' + live.length + ' scanned fields');
+    console.log('    ' + Object.keys(vals).map((k) => (byKey[k] ? (byKey[k].label || '').slice(0, 26) : k) + '=' + JSON.stringify(vals[k]).slice(0, 46)).join('\n    '));
+
+    ok('every answer names a field this page really has', Object.keys(vals).every((k) => byKey[k]), Object.keys(vals).filter((k) => !byKey[k]));
+    // ⚠️ Comparing this by splitting on commas is exactly the bug the server had: a REAL option on
+    // this page is "Job portal or job search (Indeed, Google search, Justjoin.it, etc.)". A
+    // one-answer field is compared WHOLE; only a multi field is split.
+    const fits = (k) => {
+      const f = byKey[k], v = String(vals[k]);
+      if (f.options.indexOf(v) >= 0) return true;
+      if (!(f.multi === true || f.widget === 'checkboxgroup' || f.widget === 'chips')) return false;
+      return v.split(/\s*,\s*/).every((p) => f.options.indexOf(p) >= 0);
+    };
+    const optioned = Object.keys(vals).filter((k) => (byKey[k].options || []).length && !byKey[k].optionsTruncated);
+    ok('every option-bearing answer is one of THAT field\'s own live options',
+      optioned.every(fits), optioned.filter((k) => !fits(k)).map((k) => [byKey[k].label, vals[k]]));
+    const rgKeys = live.filter((f) => f.widget === 'radiogroup').map((f) => f.key);
+    ok('no radiogroup gets more than one answer', rgKeys.every((k) => vals[k] === undefined || byKey[k].options.indexOf(String(vals[k])) >= 0), rgKeys.map((k) => vals[k]));
+    const ethn = live.find((f) => /ethnic/i.test(f.label || ''));
+    ok('the ethnicity question is left blank for the applicant', !ethn || vals[ethn.key] === undefined, ethn && vals[ethn.key]);
+    const consentG2 = live.find((f) => f.consent === true);
+    ok('the consent question is handed back, not answered on their behalf',
+      !consentG2 || vals[consentG2.key] === undefined, consentG2 && vals[consentG2.key]);
+    ok('…and it is named as needing them', !consentG2 || why[consentG2.key] === 'needs your consent', consentG2 && why[consentG2.key]);
+    const liveReps = live.filter((f) => f.widget === 'repeater');
+    const expKey = (liveReps.find((r) => /experience/i.test(r.label)) || {}).key;
+    const eduKey = (liveReps.find((r) => /education/i.test(r.label)) || {}).key;
+    ok('the work region got an ARRAY of rows', Array.isArray(vals[expKey]) && vals[expKey].length > 0, vals[expKey]);
+    ok('the education region got an ARRAY of rows', Array.isArray(vals[eduKey]) && vals[eduKey].length > 0, vals[eduKey]);
+    ok('the work rows carry employers and the education rows do not',
+      Array.isArray(vals[expKey]) && Array.isArray(vals[eduKey])
+        && vals[expKey].every((r) => Object.keys(r).some((c) => /company|employer/i.test(c)))
+        && vals[eduKey].every((r) => !Object.keys(r).some((c) => /company|employer/i.test(c))),
+      [vals[expKey], vals[eduKey]]);
+
+    // Do the server's plain-English row KEYS actually reach the employer's own columns? Reveal one
+    // row and find out — with the keys kept and every value replaced by a synthetic marker.
+    if (Array.isArray(vals[expKey]) && vals[expKey].length) {
+      const src = vals[expKey][0];
+      const probe = {}; const expect = {};
+      let n = 0;
+      for (const k of Object.keys(src)) {
+        const marker = /date|year|from|until/i.test(k) ? '2021-04' : 'SYNTHETIC' + (++n);
+        probe[k] = marker; expect[k] = marker;
+      }
+      const before = await page.evaluate(() => document.querySelectorAll('input,textarea,select').length);
+      await page.evaluate(fillJsFactory({ [expKey]: [probe] }));
+      await page.waitForFunction(() => window.__msgs && window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 180000 }).catch(() => {});
+      const landed = await page.evaluate(() => {
+        const out = {};
+        // Text-ish controls only: a checkbox reports value "on" whether or not it is ticked, and
+        // listing those made an untouched form look like something had been filled in.
+        for (const i of [...document.querySelectorAll('input,textarea')]) {
+          if (['checkbox', 'radio', 'hidden', 'submit', 'button'].indexOf((i.type || '').toLowerCase()) >= 0) continue;
+          const l = ((i.labels && i.labels[0] ? i.labels[0].innerText : '') || i.getAttribute('placeholder') || '').trim();
+          if (l && i.value) out[l] = String(i.value);
+        }
+        return { out, ctrls: document.querySelectorAll('input,textarea,select').length, submits: window.__submits };
+      });
+      console.log('    columns the server\'s keys reached:', JSON.stringify(landed.out));
+      ok('the row really opened (the click added controls)', landed.ctrls > before, [before, landed.ctrls]);
+      const hit = (col, key) => Object.keys(landed.out).some((l) => col.test(l) && landed.out[l] === expect[key]);
+      const companyKey = Object.keys(expect).find((k) => /company|employer/i.test(k));
+      const roleKey = Object.keys(expect).find((k) => /position|title|role/i.test(k));
+      ok('the server\'s company key landed in the employer\'s Company column', !!companyKey && hit(/^company$/i, companyKey), [companyKey, landed.out]);
+      ok('the server\'s role key landed in the employer\'s Position column', !!roleKey && hit(/^position$/i, roleKey), [roleKey, landed.out]);
+      ok('THE REAL FORM WAS NEVER SUBMITTED (server-driven row)', landed.submits.length === 0, landed.submits);
+    }
+    ok('THE REAL FORM WAS NEVER SUBMITTED (server section)', (await page.evaluate(() => window.__submits.length)) === 0);
+  } catch (e) {
+    console.log('    ⚠ production endpoint not exercised — skipped (' + String(e.message).slice(0, 80) + ')');
+  }
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   await browser.close();
   process.exit(fail ? 1 : 0);

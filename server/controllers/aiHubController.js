@@ -5753,11 +5753,40 @@ async function autofillFiles(req, res) {
 // A field that carries SEVERAL answers in one value: a checkbox group, or a chips/tag widget.
 function isMultiField(f) { return !!(f && (f.multi === true || f.widget === 'checkboxgroup' || f.widget === 'chips')); }
 function splitAnswers(v) { return String(v == null ? '' : v).split(/\s*[,;|]\s*/).map((x) => x.trim()).filter(Boolean); }
+// Split a multi-answer value WITH THE OPTION LIST IN HAND.
+//
+// ⚠️ Found on the live Revolut and Lever forms, not in a fixture: real options contain commas.
+// "Hispanic, Latino or Spanish origin" is one option, not two, and splitting it blindly produced
+// two fragments that matched nothing — so keepCheckboxValue DELETED a correct answer outright.
+// So: try the whole value first, then join adjacent fragments greedily, longest first, and only
+// fall back to a bare fragment when no join is an option.
+const _normOpt = (s) => String(s == null ? '' : s).toLowerCase().replace(/\s*([,;|])\s*/g, '$1').replace(/\s+/g, ' ').trim();
+function splitAnswersAgainst(options, v) {
+    const raw = String(v == null ? '' : v).trim();
+    if (!raw) return [];
+    const opts = (Array.isArray(options) ? options : []).map(String);
+    if (!opts.length) return splitAnswers(raw);
+    const find = (s) => { const n = _normOpt(s); return n ? opts.find((o) => _normOpt(o) === n) : undefined; };
+    const whole = find(raw);
+    if (whole) return [raw];                        // the WHOLE value is one option that has commas in it
+    const toks = splitAnswers(raw);
+    const out = [];
+    for (let i = 0; i < toks.length;) {
+        let took = 0;
+        for (let n = Math.min(6, toks.length - i); n >= 2; n--) {
+            const join = toks.slice(i, i + n).join(', ');
+            if (find(join)) { out.push(join); took = n; break; }
+        }
+        if (!took) { out.push(toks[i]); took = 1; }
+        i += took;
+    }
+    return out;
+}
 // Resolve each part of a multi-answer value onto a real option. Returns the resolved list, or null
 // when nothing resolved. Snapping the WHOLE comma list matched nothing, so "English, French" used to
 // be deleted wholesale as "no matching option".
 function snapMultiValue(options, v) {
-    const parts = splitAnswers(v);
+    const parts = splitAnswersAgainst(options, v);
     if (!parts.length) return null;
     const kept = [];
     for (const part of parts) {
@@ -5781,7 +5810,7 @@ function keepCheckboxValue(field, v) {
         // against the page's exact text, and handing it "they/them" for "They/them" only works by
         // accident of a case-insensitive matcher.
         const kept = [];
-        for (const part of splitAnswers(v)) {
+        for (const part of splitAnswersAgainst(opts, v)) {
             const hit = opts.find((o) => o.toLowerCase() === part.toLowerCase());
             if (hit && kept.indexOf(hit) < 0) kept.push(hit);
         }

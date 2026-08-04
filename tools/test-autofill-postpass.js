@@ -49,6 +49,19 @@ ok('duplicates collapse', JSON.stringify(snapMultiValue(LANGS.options, 'English,
 ok('nothing resolvable returns null (so the caller can say "no matching option")', snapMultiValue(LANGS.options, 'Klingon, Dothraki') === null);
 ok('an empty value returns null', snapMultiValue(LANGS.options, '   ') === null);
 
+// FOUND ON A LIVE PAGE, not in a fixture: real options contain commas. Revolut's "How did you
+// hear about us" list has "Job portal or job search (Indeed, Google search, Justjoin.it, etc.)"
+// and Lever's ethnicity list has "Hispanic, Latino or Spanish origin". Splitting a multi-answer
+// value blindly on commas turned those into fragments that matched nothing — and keepCheckboxValue
+// then DELETED a correct answer.
+console.log('\nan option that CONTAINS a comma is one answer, not several');
+const ETH = { type: 'checkbox', widget: 'checkboxgroup', multi: true, options: ['Hispanic, Latino or Spanish origin', 'Asian', 'Mixed or Multiple Ethnic Groups'] };
+ok('the whole value is recognised as one option', keepCheckboxValue(ETH, 'Hispanic, Latino or Spanish origin') === 'Hispanic, Latino or Spanish origin', keepCheckboxValue(ETH, 'Hispanic, Latino or Spanish origin'));
+ok('a plain answer alongside it still splits correctly', keepCheckboxValue(ETH, 'Asian, Hispanic, Latino or Spanish origin') === 'Asian, Hispanic, Latino or Spanish origin', keepCheckboxValue(ETH, 'Asian, Hispanic, Latino or Spanish origin'));
+ok('snapping resolves it too', JSON.stringify(snapMultiValue(ETH.options, 'Hispanic, Latino or Spanish origin')) === '["Hispanic, Latino or Spanish origin"]', snapMultiValue(ETH.options, 'Hispanic, Latino or Spanish origin'));
+ok('ordinary comma-separated answers are UNCHANGED by all this', keepCheckboxValue(LANGS, 'English, French') === 'English, French');
+ok('a fragment that matches nothing is still dropped', keepCheckboxValue(ETH, 'Asian, Klingon') === 'Asian', keepCheckboxValue(ETH, 'Asian, Klingon'));
+
 console.log('\nthe multi flag is read from any of the three signals');
 ok('widget checkboxgroup', isMultiField(PRONOUNS) === true);
 ok('widget chips', isMultiField(CHIPS) === true);
