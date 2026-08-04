@@ -147,6 +147,20 @@ async function callServer(uid, fields, label) {
       ok('the OPTIONAL consent is not ticked for them', val('l:i would like to hear about future roles|checkbox') === undefined, val('l:i would like to hear about future roles|checkbox'));
       ok('and the applicant is TOLD it needs them', N.skipMap['l:i would like to hear about future roles|checkbox'] === 'needs your consent', N.skipMap['l:i would like to hear about future roles|checkbox']);
       ok('the unnamed consent radiogroup is handed back too', val(field('g:radio|form>div:nth-of-type(7)|do you consent to us keeping your data for 12 months#yes, i consent~no, i don\'t consent').key) === undefined || field('g:radio|form>div:nth-of-type(7)|do you consent to us keeping your data for 12 months#yes, i consent~no, i don\'t consent').required === true);
+      // Work authorisation. MEASURED: asked alone, the model skips it; asked inside the full
+      // payload it answered "Yes" for a real account — an invented statement about someone's
+      // immigration status. It may now only carry the applicant's OWN earlier answer, so what
+      // this asserts is the property, not a fixed value: whatever comes back must be one of the
+      // field's options AND must be reproducible when the same question is asked on its own
+      // (a value that appears only in company of other fields is the model improvising).
+      for (const wa of NEXT.filter((f) => /authoris|sponsorship/i.test(f.label))) {
+        const v = val(wa.key);
+        if (v === undefined) { ok('the ' + (/sponsor/i.test(wa.label) ? 'sponsorship' : 'authorisation') + ' question is left to the applicant', N.skipMap[wa.key] === 'needs your judgement', N.skipMap[wa.key]); continue; }
+        ok('a work-authorisation answer is one of the field’s options', wa.options.indexOf(String(v)) >= 0, v);
+        const alone = await callServer(uid, [wa], 'work-authorisation asked ALONE (is the answer stable?)');
+        ok('…and it is the SAME answer when the question is asked alone (so it is theirs, not improvised)',
+          alone && alone.values[wa.key] === v, alone && alone.values[wa.key]);
+      }
       // Repeaters.
       for (const rp of NEXT.filter((f) => f.widget === 'repeater')) {
         const v = val(rp.key);

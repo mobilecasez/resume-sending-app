@@ -5476,6 +5476,11 @@ RULES:
             }
         } catch (e) { console.warn('[aiHub] autofillMap country pass skipped:', e.message); }
 
+        // Keys whose value is the APPLICANT'S OWN WORDS — replayed from what they typed on an
+        // earlier form — as opposed to something the model produced. The work-authorisation guard
+        // below is the only thing that needs to tell those two apart, and it needs to badly.
+        const fromApplicant = new Set();
+
         // ── Self-learning overlay ────────────────────────────────────────────
         // Belt-and-suspenders to the AI prompt above: for any field STILL empty, exact-match it
         // against the user's saved Q&A by normalized question — so every learned answer fills.
@@ -5487,7 +5492,7 @@ RULES:
                 for (const f of fields) {
                     if (!f || !f.key || values[f.key] != null) continue;   // skip ones the AI already filled
                     const ans = memMap[normalizeQ(fieldQuestion(f))];
-                    if (ans != null && ans !== '') { values[f.key] = ans; delete skipped[f.key]; learned++; }
+                    if (ans != null && ans !== '') { values[f.key] = ans; delete skipped[f.key]; learned++; fromApplicant.add(f.key); }
                 }
                 if (learned) console.log(`[aiHub] saved-answers filled ${learned} field(s) the AI left blank for user ${userId}`);
             }
@@ -5503,7 +5508,7 @@ RULES:
         // shipped app never sends. An older build's payload takes exactly the same path through
         // this function as it did before.
         try {
-            let det = 0;
+            let det = 0, guarded = 0;
             for (const f of nonFile) {
                 const widget = String(f.widget || '').toLowerCase();
                 const isRep = widget === 'repeater' || String(f.type || '').toLowerCase() === 'repeater';
@@ -5522,6 +5527,31 @@ RULES:
                     else if (skipped[f.key] == null) skipped[f.key] = 'not in your profile';
                     continue;
                 }
+                // WORK AUTHORISATION / VISA / SPONSORSHIP — the applicant's answer or nobody's.
+                //
+                // ⚠️ MEASURED ON PRODUCTION, not theorised: asked "Will you now or in the future
+                // require visa sponsorship to work in the Netherlands?" ON ITS OWN, the model
+                // obeys the prompt and skips it — but inside the full 14-field payload it
+                // answered "Yes" for a real account. That is a legal statement about someone's
+                // immigration status, invented, on a real application. The prompt cannot be the
+                // only thing standing between a user and that, so the rule is enforced here:
+                // this class of question keeps a value ONLY when the value is the applicant's own
+                // earlier answer to the SAME question (no polarity flip, same country).
+                const waTopic = workAuthTopic(fieldQuestion(f));
+                if (waTopic) {
+                    const wa = learnedWorkAuthAnswer(f, portalQA);
+                    if (wa) {
+                        const opts = Array.isArray(f.options) ? f.options : [];
+                        const snap = opts.length ? snapSingleValue(opts, wa) : wa;
+                        // Against a KNOWN option list that does not contain it, the applicant's own
+                        // earlier answer is not usable here — say so instead of forcing it in.
+                        if (snap) { values[f.key] = snap; delete skipped[f.key]; fromApplicant.add(f.key); det++; continue; }
+                        if (!opts.length || f.optionsTruncated || f.optionsUnknown) { values[f.key] = wa; delete skipped[f.key]; fromApplicant.add(f.key); det++; continue; }
+                    }
+                    if (values[f.key] != null && !fromApplicant.has(f.key)) { delete values[f.key]; guarded++; }
+                    if (values[f.key] == null) skipped[f.key] = 'needs your judgement';
+                    continue;
+                }
                 if (values[f.key] != null) continue;                  // AI or a learned answer won
                 if (f.consent === true) continue;                     // never invented here (RULE below)
                 if (widget === 'chips') {
@@ -5529,17 +5559,9 @@ RULES:
                     if (chips) { values[f.key] = chips; delete skipped[f.key]; det++; }
                     continue;
                 }
-                const wa = learnedWorkAuthAnswer(f, portalQA);
-                if (wa) {
-                    const opts = Array.isArray(f.options) ? f.options : [];
-                    const snap = opts.length ? snapSingleValue(opts, wa) : wa;
-                    // Against a KNOWN option list that does not contain it, the applicant's own
-                    // earlier answer is not usable here — say so instead of forcing it in.
-                    if (snap) { values[f.key] = snap; delete skipped[f.key]; det++; }
-                    else if (!opts.length || f.optionsTruncated || f.optionsUnknown) { values[f.key] = wa; delete skipped[f.key]; det++; }
-                }
             }
             if (det) console.log(`[aiHub] deterministic pass filled ${det} new-shape field(s) for user ${userId}`);
+            if (guarded) console.warn(`[aiHub] dropped ${guarded} INVENTED work-authorisation answer(s) for user ${userId}`);
         } catch (e) { console.warn('[aiHub] autofillMap new-shape pass skipped:', e.message); }
 
         // NOTE: the saved-answers overlay runs HERE, before passes 3 and 4 — not after them.
