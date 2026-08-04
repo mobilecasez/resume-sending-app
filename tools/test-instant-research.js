@@ -26,8 +26,11 @@ const ok = (name, cond, got) => {
 };
 
 // ── the two real résumés this was built for ───────────────────────────────────────────────────
-// VIJAY is user 192 on production, verbatim: France, Trainee Chemist, batch reactors and GMP.
-const VIJAY = {
+// A SYNTHETIC chemist résumé. It exercises exactly the taxonomy behaviour we care about — an
+// occupation that classifies to 'Science & Research' — without putting a real person's name, CV
+// contents or employer history in the repository. The original fixture was copied verbatim from a
+// live production account; a test does not need someone's identity to prove a regex.
+const CHEMIST = {
   job_titles: ['Trainee Chemist', 'Production Trainee', 'Lab Chemist'],
   industries: ['Water Treatment', 'Specialty Aroma Chemicals', 'Chemical Manufacturing'],
   skills: ['Batch Reactor Operations', 'Fractional Distillation', 'GMP Documentation',
@@ -51,8 +54,8 @@ const CLEAR = {
 // ── 1. ARM 1 — the résumé maps to a field, and that cell is empty ─────────────────────────────
 console.log('\narm 1: the thin cell');
 {
-  const d = ir.resolveDemand({ resumeMeta: VIJAY, country: 'France', city: null });
-  ok('Vijay resolves to a taxonomy field', d.ok === true && d.arm === 'field', d);
+  const d = ir.resolveDemand({ resumeMeta: CHEMIST, country: 'France', city: null });
+  ok('a chemist résumé resolves to a taxonomy field', d.ok === true && d.arm === 'field', d);
   // ⚠️ The brief predicted he would resolve to NOTHING. He does not: jobTaxonomy really does have
   // a Science & Research field and its regex matches "chemist". Asserting the actual field here so
   // the next person reads the truth rather than the assumption.
@@ -108,7 +111,7 @@ console.log('\narm 2: the unrepresented occupation');
 // ── 3. Preconditions ──────────────────────────────────────────────────────────────────────────
 console.log('\nwhen there is nothing to go on');
 {
-  const noCountry = ir.resolveDemand({ resumeMeta: VIJAY, country: null });
+  const noCountry = ir.resolveDemand({ resumeMeta: CHEMIST, country: null });
   ok('no country → no research (we would research the wrong continent)',
     noCountry.ok === false && noCountry.reason === 'no_country', noCountry);
   const noResume = ir.resolveDemand({ resumeMeta: null, country: 'France' });
@@ -125,7 +128,7 @@ console.log('\nwhen there is nothing to go on');
 // ── 4. It must never fire twice for the same user ─────────────────────────────────────────────
 console.log('\nonce per user, once per demand');
 {
-  const d = ir.resolveDemand({ resumeMeta: VIJAY, country: 'France' });
+  const d = ir.resolveDemand({ resumeMeta: CHEMIST, country: 'France' });
 
   const again = ir.decideRun(d, { ...CLEAR, demandRan: true });
   ok('re-uploading the same résumé costs nothing', again.ok === false && again.reason === 'already_researched', again);
@@ -148,7 +151,7 @@ console.log('\nonce per user, once per demand');
 // 578 thin cells × every signup is an unbounded AI bill. These are the walls.
 console.log('\nthe cost guard');
 {
-  const d = ir.resolveDemand({ resumeMeta: VIJAY, country: 'France' });
+  const d = ir.resolveDemand({ resumeMeta: CHEMIST, country: 'France' });
 
   ok('it ships DISARMED — the env flag defaults to off', ir.POLICY.ENABLED === false, ir.POLICY.ENABLED);
   const disarmed = ir.decideRun(d, { ...CLEAR, envEnabled: false });
