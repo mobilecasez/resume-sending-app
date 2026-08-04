@@ -549,6 +549,46 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
       (await page.evaluate(() => window.__cvfProbe.isChipInput(document.getElementById('checkboxes-tags-demo')))) === true);
     ok('THE PAGE WAS NEVER SUBMITTED (chips)', menuBox.submits.length === 0, menuBox.submits);
 
+    // ── the virtualised-list false negative, on the real react-window widget ────────────────────
+    // Saying "this is the whole list" about a window onto a longer one is how a valid value gets
+    // deleted server-side as "no matching option" — the same failure that kept +91 off the phone
+    // picker. Here the [role=listbox] reports clientHeight === scrollHeight, so reading the popup
+    // node alone concludes "complete" for a TEN THOUSAND option list.
+    await page.evaluate('(function(){' + JS_HELPERS + `
+      window.__cvfV = { cbPreOpen: cbPreOpen, cbPopup: cbPopup, cbOptions: cbOptions, cbListPartial: cbListPartial };
+    })()`);
+    const virt = await page.evaluate(async () => {
+      const C = window.__cvfV;
+      const el = [...document.querySelectorAll('input[role=combobox]')].find((i) => /10,000/.test((i.labels && i.labels[0] ? i.labels[0].innerText : '') + (i.getAttribute('aria-label') || '')));
+      if (!el) return { missing: true };
+      el.scrollIntoView({ block: 'center' });
+      const pre = C.cbPreOpen();
+      el.focus();
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      el.click();
+      await new Promise((r) => setTimeout(r, 1600));
+      const lb = document.querySelector('[role=listbox]');
+      const pop = C.cbPopup(el, pre) || (lb ? { el: lb, trusted: false } : null);
+      if (!pop) return { noPopup: true };
+      const opts = C.cbOptions(el, pop);
+      const inner = [...pop.el.querySelectorAll('*')].filter((k) => k.scrollHeight > k.clientHeight + 20)[0];
+      return { rows: opts.length, partial: C.cbListPartial(el, pop, opts),
+        popupOverflow: (pop.el.scrollHeight - pop.el.clientHeight),
+        realScrollerOverflow: inner ? inner.scrollHeight - inner.clientHeight : 0,
+        submits: window.__submits.length };
+    });
+    console.log('    virtualised list:', JSON.stringify(virt));
+    if (virt.missing || virt.noPopup) {
+      console.log('    ⚠ the 10,000-option demo did not open — virtualisation assertions skipped');
+    } else {
+      ok('the popup node itself reports NO overflow (this is the trap)', virt.popupOverflow <= 80, virt.popupOverflow);
+      ok('the real scroller is a DESCENDANT, and it is enormous', virt.realScrollerOverflow > 10000, virt.realScrollerOverflow);
+      ok('only a handful of the 10,000 rows are actually rendered', virt.rows > 0 && virt.rows < 60, virt.rows);
+      ok('so the list is reported PARTIAL — the server must not rule a value out', virt.partial === true, virt);
+      ok('THE PAGE WAS NEVER SUBMITTED (virtualisation)', virt.submits === 0, virt.submits);
+    }
+
     const words = await page.evaluate(() => ['MuiChip-root', 'tag-input', 'chips', 'advantage', 'heritage', 'package', 'stage', 'vintage']
       .map((c) => c + '=' + window.__cvfProbe.chipish(c)));
     console.log('    chipish:', JSON.stringify(words));

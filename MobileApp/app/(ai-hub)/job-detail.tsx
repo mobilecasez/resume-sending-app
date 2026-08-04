@@ -1341,8 +1341,26 @@ const JS_HELPERS = `
       opts = opts || [];
       if(opts.length>=200) return true;                       // we hit cbOptions' own read cap
       if(!pop || !pop.el) return false;
+      // ⚠️ The scroller is NOT always the node we resolved as the popup. On a react-window list the
+      // [role=listbox] reports scrollHeight === clientHeight === 400 while the REAL scroller sits one
+      // level in with scrollHeight 481744 — so reading the popup alone answered "complete list" for a
+      // 10,000-option virtualised widget, and the server would then delete a perfectly good value as
+      // "no matching option". Search the popup AND its descendants and take the deepest overflow.
       var ch=0, hidden=0;
-      try{ ch=pop.el.clientHeight||0; hidden=(pop.el.scrollHeight||0)-ch; }catch(e){}
+      try{
+        var cands=[pop.el], q=null;
+        try{ q=pop.el.querySelectorAll('*'); }catch(e){}
+        for(var i=0;q && i<q.length && i<400;i++) cands.push(q[i]);
+        for(var j=0;j<cands.length;j++){
+          var n=cands[j], c=n.clientHeight||0, hh=(n.scrollHeight||0)-c;
+          if(c<=0 || hh<=0) continue;
+          if(j>0){
+            var oy=''; try{ oy=window.getComputedStyle(n).overflowY||''; }catch(e){}
+            if(oy!=='auto' && oy!=='scroll') continue;         // not a scroller, just tall content
+          }
+          if(hh>hidden){ hidden=hh; ch=c; }
+        }
+      }catch(e){}
       if(ch<=0 || hidden<=80) return false;                   // nothing is scrolled out of sight
       var rh=0; try{ if(opts.length && opts[0].getBoundingClientRect) rh=opts[0].getBoundingClientRect().height||0; }catch(e){}
       if(!rh) rh=40;
