@@ -1,0 +1,155 @@
+[
+ {
+  "url": "https://apply.workable.com/j/C93E04D1AF",
+  "hidden": 0,
+  "withVisibleProxy": 0,
+  "rows": []
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/bestow/80d43dc2-1ac3-4d43-9c70-c9a4a2789fb7",
+  "hidden": 20,
+  "withVisibleProxy": 20,
+  "rows": [
+   {
+    "type": "checkbox",
+    "name": "2ba13af9-cd31-43fd-ad32-b11aa1",
+    "label": "We are open to US Remote Employees in the con",
+    "visibleProxy": true,
+    "proxyKind": "ancestor",
+    "inCookieBanner": false,
+    "inForm": false
+   },
+   {
+    "type": "radio",
+    "name": "909f7990-5f97-45cb-84c3-3201ca",
+    "label": "No, I will not need immigration support now o",
+    "visibleProxy": true,
+    "proxyKind": "label",
+    "inCookieBanner": false,
+    "inForm": false
+   },
+   {
+    "type": "radio",
+    "name": "909f7990-5f97-45cb-84c3-3201ca",
+    "label": "Yes, I will need a transfer of my current vis",
+    "visibleProxy": true,
+    "proxyKind": "label",
+    "inCookieBanner": false,
+    "inForm": false
+   },
+   {
+    "type": "radio",
+    "name": "909f7990-5f97-45cb-84c3-3201ca",
+    "label": "Yes, I will need a different type of sponsors",
+    "visibleProxy": true,
+    "proxyKind": "label",
+    "inCookieBanner": false,
+    "inForm": false
+   },
+   {
+    "type": "radio",
+    "name": "909f7990-5f97-45cb-84c3-3201ca",
+    "label": "Yes, I will need a TN visa.",
+    "visibleProxy": true,
+    "proxyKind": "label",
+    "inCookieBanner": false,
+    "inForm": false
+   },
+   {
+    "type": "radio",
+    "name": "909f7990-5f97-45cb-84c3-3201ca",
+    "label": "Yes (other).",
+    "visibleProxy": true,
+    "proxyKind": "label",
+    "inCookieBanner": false,
+    "inForm": false
+   },
+   {
+    "type": "radio",
+    "name": "1af6ccbb-c809-4e52-bfad-92ded5",
+    "label": "Male",
+    "visibleProxy": true,
+    "proxyKind": "label",
+    "inCookieBanner": false,
+    "inForm": false
+   },
+   {
+    "type": "radio",
+    "name": "1af6ccbb-c809-4e52-bfad-92ded5",
+    "label": "Female",
+    "visibleProxy": true,
+    "proxyKind": "label",
+    "inCookieBanner": false,
+    "inForm": false
+   },
+   {
+    "type": "radio",
+    "name": "1af6ccbb-c809-4e52-bfad-92ded5",
+    "label": "Decline to self-identify",
+    "visibleProxy": true,
+    "proxyKind": "label",
+    "inCookieBanner": false,
+    "inForm": false
+   },
+   {
+    "type": "radio",
+    "name": "1af6ccbb-c809-4e52-bfad-92ded5",
+    "label": "Hispanic or Latino",
+    "visibleProxy": true,
+    "proxyKind": "label",
+    "inCookieBanner": false,
+    "inForm": false
+   }
+  ]
+ },
+ {
+  "url": "https://skims.pinpointhq.com/en/postings/bff69523-837e-4633-8ff7-f7f217da955c",
+  "hidden": 1,
+  "withVisibleProxy": 1,
+  "rows": [
+   {
+    "type": "checkbox",
+    "name": "application[process_informatio",
+    "label": "Allow us to process your personal information",
+    "visibleProxy": true,
+    "proxyKind": "label",
+    "inCookieBanner": false,
+    "inForm": true
+   }
+  ]
+ },
+ {
+  "url": "https://cambio.teamtailor.com/jobs/8049233-project-manager-within-e-health",
+  "hidden": 3,
+  "withVisibleProxy": 0,
+  "rows": [
+   {
+    "type": "checkbox",
+    "name": "",
+    "label": "Strictly necessary",
+    "visibleProxy": false,
+    "proxyKind": "",
+    "inCookieBanner": true,
+    "inForm": false
+   },
+   {
+    "type": "checkbox",
+    "name": "",
+    "label": "Analytics",
+    "visibleProxy": false,
+    "proxyKind": "",
+    "inCookieBanner": true,
+    "inForm": false
+   },
+   {
+    "type": "checkbox",
+    "name": "",
+    "label": "Marketing",
+    "visibleProxy": false,
+    "proxyKind": "",
+    "inCookieBanner": true,
+    "inForm": false
+   }
+  ]
+ }
+]

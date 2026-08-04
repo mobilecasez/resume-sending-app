@@ -1,0 +1,400 @@
+[
+ {
+  "platform": "greenhouse",
+  "url": "https://job-boards.greenhouse.io/alxafrica/jobs/8083210",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "greenhouse",
+  "url": "https://job-boards.greenhouse.io/alxafrica/jobs/8083202",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "lever",
+  "url": "https://jobs.lever.co/tala/7a25de80-de3a-4ebb-99c1-8857fb6f533b",
+  "radios": 10,
+  "radiosHidden": 0,
+  "checkboxes": 8,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "lever",
+  "url": "https://jobs.lever.co/lyrahealth/bf8f42c1-6453-4ee3-8efb-51b16b3f7bd0",
+  "radios": 52,
+  "radiosHidden": 0,
+  "checkboxes": 74,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "ashby",
+  "url": "https://jobs.ashbyhq.com/bestow/80d43dc2-1ac3-4d43-9c70-c9a4a2789fb7",
+  "radios": 19,
+  "radiosHidden": 19,
+  "checkboxes": 1,
+  "checkboxesHidden": 1,
+  "reasons": {
+   "display:none": 1,
+   "opacity:0": 19
+  },
+  "hiddenLabels": [
+   "display:none :: We are open to US Remote Employees in th",
+   "opacity:0 :: No, I will not need immigration support ",
+   "opacity:0 :: Yes, I will need a transfer of my curren",
+   "opacity:0 :: Yes, I will need a different type of spo",
+   "opacity:0 :: Yes, I will need a TN visa.",
+   "opacity:0 :: Yes (other)."
+  ],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "ashby",
+  "url": "https://jobs.ashbyhq.com/poshmark/9815fea8-ac8d-499f-baa0-7a9e7a7bea4d",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 3,
+  "checkboxesHidden": 3,
+  "reasons": {
+   "display:none": 3
+  },
+  "hiddenLabels": [
+   "display:none :: Are you able to work from our Redwood Ci",
+   "display:none :: Are you legally authorized to work in th",
+   "display:none :: Will you now or in the future require sp"
+  ],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "workday",
+  "url": "https://ryder.wd5.myworkdayjobs.com/RyderCareers/job/USA---Lathrop-CA-95330/Customer-Logistics-Supervisor_R179246",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "workday",
+  "url": "https://ryder.wd5.myworkdayjobs.com/RyderCareers/job/USA---Hayward-CA-94545/Business-Development-Manager_R179860-1",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "smartrecruiters",
+  "url": "https://jobs.smartrecruiters.com/Colliers/744000141354989",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "smartrecruiters",
+  "url": "https://jobs.smartrecruiters.com/Sixt/744000141329980",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "personio",
+  "url": "https://userlane.jobs.personio.com/job/2735377",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "personio",
+  "url": "https://userlane.jobs.personio.com/job/2735332",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "recruitee",
+  "url": "https://climeworks.recruitee.com/o/senior-synthetic-chemist-sorbent-innovation-lead-80100",
+  "radios": 11,
+  "radiosHidden": 11,
+  "checkboxes": 1,
+  "checkboxesHidden": 1,
+  "reasons": {
+   "offsetParent null": 12
+  },
+  "hiddenLabels": [
+   "offsetParent null :: Company website (climeworks.com)",
+   "offsetParent null :: LinkedIn",
+   "offsetParent null :: Google",
+   "offsetParent null :: Indeed",
+   "offsetParent null :: Jobs.ch",
+   "offsetParent null :: Jobscout"
+  ],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "recruitee",
+  "url": "https://macpaw.recruitee.com/o/senior-product-manager-leebry-b2b",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "workable",
+  "url": "https://apply.workable.com/j/C93E04D1AF",
+  "radios": 6,
+  "radiosHidden": 6,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {
+   "opacity:0": 6
+  },
+  "hiddenLabels": [
+   "opacity:0 :: YES",
+   "opacity:0 :: NO",
+   "opacity:0 :: YES",
+   "opacity:0 :: NO",
+   "opacity:0 :: YES",
+   "opacity:0 :: NO"
+  ],
+  "nonInputWidgets": 1
+ },
+ {
+  "platform": "workable",
+  "url": "https://apply.workable.com/j/A567CDD3F9",
+  "radios": 6,
+  "radiosHidden": 6,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {
+   "opacity:0": 6
+  },
+  "hiddenLabels": [
+   "opacity:0 :: YES",
+   "opacity:0 :: NO",
+   "opacity:0 :: YES",
+   "opacity:0 :: NO",
+   "opacity:0 :: YES",
+   "opacity:0 :: NO"
+  ],
+  "nonInputWidgets": 1
+ },
+ {
+  "platform": "teamtailor",
+  "url": "https://delve.teamtailor.com/jobs/7302049-commercial-manager-to-hutchison-ports-stockholm?promotion=2128934-arbetsformedlingen",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 4,
+  "checkboxesHidden": 2,
+  "reasons": {
+   "opacity:0": 2
+  },
+  "hiddenLabels": [
+   "opacity:0 :: Strikt nödvändiga",
+   "opacity:0 :: Statistik"
+  ],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "teamtailor",
+  "url": "https://cambio.teamtailor.com/jobs/8049233-project-manager-within-e-health",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 6,
+  "checkboxesHidden": 3,
+  "reasons": {
+   "opacity:0": 3
+  },
+  "hiddenLabels": [
+   "opacity:0 :: Strictly necessary",
+   "opacity:0 :: Analytics",
+   "opacity:0 :: Marketing"
+  ],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "bamboo",
+  "url": "https://satellogic.bamboohr.com/careers/571",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "bamboo",
+  "url": "https://konfio.bamboohr.com/careers/1243",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "jobvite",
+  "url": "http://app.jobvite.com/m?3aS3tnwq",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "jobvite",
+  "url": "http://app.jobvite.com/m?37S3tnwn",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "successfactors",
+  "url": "https://career5.successfactors.eu/sfcareer/jobreqcareerpvt?jobId=729244&company=lidlstiftuP2&st=FFFDFE6387DEDB143AA2C479E9C1AB79E6460D2A",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "successfactors",
+  "url": "https://career5.successfactors.eu/sfcareer/jobreqcareerpvt?jobId=729066&company=lidlstiftuP2&st=6342BB4EEA67E1ABC586C62F0E3D640A9FE7A60E",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "icims",
+  "url": "https://careers-emcorgroup.icims.com/jobs/51595/commercial-maintenance-technician/job",
+  "radios": 2,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "icims",
+  "url": "https://careers-emcorgroup.icims.com/jobs/51593/fire-alarm-division-manager/job",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 1,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "taleo",
+  "url": "https://phf.tbe.taleo.net/phf01/ats/careers/v2/viewRequisition?org=JSHR6E&cws=63&rid=15657",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 3,
+  "checkboxesHidden": 3,
+  "reasons": {
+   "display:none": 3
+  },
+  "hiddenLabels": [
+   "display:none :: I am Fluent in Swedish Only",
+   "display:none :: I am Fluent in English Only",
+   "display:none :: I am Fluent in both Swedish and English"
+  ],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "join",
+  "url": "https://join.com/companies/eatsous/16451087-senior-full-stack-product-engineer-startup-saas-amsterdam?pid=e65242534431eadcb0c9",
+  "radios": 0,
+  "radiosHidden": 0,
+  "checkboxes": 0,
+  "checkboxesHidden": 0,
+  "reasons": {},
+  "hiddenLabels": [],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "pinpoint",
+  "url": "https://skims.pinpointhq.com/en/postings/bff69523-837e-4633-8ff7-f7f217da955c",
+  "radios": 6,
+  "radiosHidden": 0,
+  "checkboxes": 1,
+  "checkboxesHidden": 1,
+  "reasons": {
+   "opacity:0": 1
+  },
+  "hiddenLabels": [
+   "opacity:0 :: Allow us to process your personal inform"
+  ],
+  "nonInputWidgets": 0
+ },
+ {
+  "platform": "pinpoint",
+  "url": "https://skims.pinpointhq.com/en/postings/3b24702d-4b24-4ae2-8af0-b27734633383",
+  "radios": 8,
+  "radiosHidden": 0,
+  "checkboxes": 1,
+  "checkboxesHidden": 1,
+  "reasons": {
+   "opacity:0": 1
+  },
+  "hiddenLabels": [
+   "opacity:0 :: Allow us to process your personal inform"
+  ],
+  "nonInputWidgets": 0
+ }
+]
