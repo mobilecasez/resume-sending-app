@@ -1224,6 +1224,43 @@ async function runPostgresMigrations(db) {
         await col(`CREATE INDEX IF NOT EXISTS idx_apply_url_res_at ON apply_url_resolutions(resolved_at DESC)`);
         console.log('✅ Migration 033: apply_url_resolutions done');
 
+        // ── Migration 034: instant, on-demand job research (services/instantResearch.js) ──
+        // One row per research run we did FOR a specific user because their corner of the feed was
+        // empty. The table is the cost guard, not an audit nicety: the UNIQUE (user_id, demand_key)
+        // is what makes a re-upload free, the per-user row count is the "one run per user" cap, and
+        // the 24h count is the daily spend ceiling. `handoff_at` hands the newly-found jobs back to
+        // the 12-hourly demandResearch routine, which owns every notification.
+        await col(`CREATE TABLE IF NOT EXISTS instant_research_runs (
+            id BIGSERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            demand_key TEXT NOT NULL,
+            arm TEXT NOT NULL,
+            country TEXT,
+            city TEXT,
+            field TEXT,
+            occupation TEXT,
+            urls_found INTEGER NOT NULL DEFAULT 0,
+            jobs_added INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'queued',
+            handoff_at TIMESTAMPTZ,
+            handoff_done_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (user_id, demand_key)
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_instant_research_user
+                     ON instant_research_runs(user_id, created_at DESC)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_instant_research_created
+                     ON instant_research_runs(created_at DESC)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_instant_research_handoff
+                     ON instant_research_runs(handoff_at) WHERE handoff_done_at IS NULL`);
+        // Ship DISARMED. notifSwitch treats a MISSING row as ON, so the row must exist and say
+        // FALSE — otherwise deploying this file would arm paid AI research for every new signup the
+        // moment the process boots. Only an admin flipping the switch turns it on.
+        await col(`INSERT INTO user_notification_switches (key, enabled, updated_at)
+                   VALUES ('instant_research', FALSE, NOW())
+                   ON CONFLICT (key) DO NOTHING`);
+        console.log('✅ Migration 034: instant_research_runs done (switch seeded OFF)');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

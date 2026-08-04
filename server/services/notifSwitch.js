@@ -23,6 +23,16 @@ const SWITCHES = [
     types: ['resume_match_jobs'],
   },
   {
+    // ⚠️ NOT a push category — this one gates SPENDING, not sending. It is in this registry because
+    // this registry is what the admin page renders, and "may the server spend money researching
+    // jobs for a user the moment their résumé parses?" needs exactly the same one-click off switch.
+    // It sends nothing itself; the jobs it finds are announced by the two alerts above, under their
+    // own switches and caps. Seeded OFF by Migration 034 and FAIL-CLOSED below.
+    key: 'instant_research', label: 'Instant job research on résumé upload', icon: '🔎',
+    description: 'When a résumé finishes parsing and that person’s (country + field) corner of the feed is nearly empty — or their occupation maps to no field at all — go and research live jobs for them right away instead of waiting for the 12-hourly routine. Costs one grounded AI search + up to 8 extractions. Max 1 run per user ever, 20/day across all users. Off by default.',
+    types: [],
+  },
+  {
     key: 'daily_reminders', label: 'Follow-up reminders', icon: '⏰',
     description: 'Daily nudge when an application got no reply after a few days — “time to follow up with X”.',
     types: ['reminder'],
@@ -161,7 +171,7 @@ async function getAll() {
  * Keys whose safe answer when we cannot read the table is OFF. Everything here either sends to a
  * user or arms something that does; "we could not check, so we sent it anyway" is the wrong call.
  */
-const FAIL_CLOSED = new Set(['lifecycle_nudges_master']);
+const FAIL_CLOSED = new Set(['lifecycle_nudges_master', 'instant_research']);
 
 async function isOn(key) {
   const all = await getAll();

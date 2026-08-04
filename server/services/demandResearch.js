@@ -117,6 +117,11 @@ async function ingestUrl(url, cluster, source = 'demand_research') {
 // ── match push: fresh jobs that fit an interest → one notification per user per day ───────────
 async function notifyMatchedUsers(sinceIso) {
   if (!(await require('./notifSwitch').isOn('demand_jobs'))) return 0;
+  const ir = require('./instantResearch');
+  // Jobs an INSTANT run went and found for this user are older than this run's start, so the
+  // `first_seen >= sinceIso` filter below would hide the very jobs we researched on their behalf.
+  // An unconsumed handoff widens the window back to that run. See instantResearch.sinceForUser.
+  const handoffs = await ir.pendingHandoffs().catch(() => new Map());
   const interests = await dbConfig.query(
     `SELECT i.user_id, i.country, i.city, i.skills, u.expo_push_token
        FROM user_job_interests i
@@ -130,15 +135,23 @@ async function notifyMatchedUsers(sinceIso) {
     skills = skills.map((s) => String(s).trim().toLowerCase()).filter(Boolean);
     if (!skills.length || !r.country) continue;
     // fresh jobs in this interest's country matching any skill by skills-array or title
+    const since = ir.sinceForUser(sinceIso, handoffs.get(Number(r.user_id)));
     const likeAny = skills.map((_, i) => `(LOWER(skills::text) LIKE $${i + 3} OR LOWER(title) LIKE $${i + 3})`).join(' OR ');
-    const params = [r.country, sinceIso, ...skills.map((s) => `%${s.toLowerCase()}%`)];
+    const params = [r.country, since, ...skills.map((s) => `%${s.toLowerCase()}%`)];
     const rows = await dbConfig.query(
       `SELECT COUNT(*)::int AS n FROM global_jobs
         WHERE is_active AND country = $1 AND first_seen >= $2 AND (${likeAny})`, params).catch(() => null);
     const n = rows && rows[0] ? rows[0].n : 0;
     if (n > 0) {
-      const cur = perUser.get(r.user_id) || { n: 0, token: r.expo_push_token, place: r.city || r.country, skill: skills[0] };
+      const cur = perUser.get(r.user_id) || { n: 0, token: r.expo_push_token, place: r.city || r.country, skill: skills[0], city: r.city, country: r.country, cands: [] };
       cur.n += n;
+      // The candidates behind the number, nearest first — so a push about ONE job can open THAT
+      // job instead of dropping the user on the feed to hunt for it.
+      const cand = await dbConfig.query(
+        `SELECT job_url, title, location, skills FROM global_jobs
+          WHERE is_active AND country = $1 AND first_seen >= $2 AND (${likeAny})
+          ORDER BY first_seen DESC LIMIT 20`, params).catch(() => []);
+      cur.cands = cur.cands.concat(cand || []);
       perUser.set(r.user_id, cur);
     }
   }
@@ -155,13 +168,19 @@ async function notifyMatchedUsers(sinceIso) {
       if (dup && dup.length) continue;
       const title = 'New matching jobs for you 🎯';
       const body = `${m.n} new ${m.skill} ${m.n === 1 ? 'job' : 'jobs'} near ${m.place} just landed — take a look.`;
-      const pushed = await sendPushNotification(m.token, title, body, { route: '/(discover)', params: { sort: 'recent' }, action: 'demand_jobs' });
+      // One standout job → open THAT job ('/(discover)' + { jobId }); a genuine set → the feed.
+      const ordered = ir.orderByProximity(m.cands, { city: m.city, country: m.country });
+      const standout = ir.pickStandoutJob(ordered.map((j) => ({ ...j, score: ir.overlapScore(j, [m.skill]) })));
+      const params = ir.pushParamsForMatch(standout);
+      const pushed = await sendPushNotification(m.token, title, body, { route: '/(discover)', params, action: 'demand_jobs' });
       await dbConfig.query(
         `INSERT INTO notifications (user_id, type, title, message, created_at) VALUES ($1,'demand_jobs',$2,$3,NOW())`,
         [userId, title, body]).catch(() => {});
       // Shared ledger — see services/nudgeGate.js. Without this row the lifecycle nudges cannot
       // see that this user already heard from us today, and would push again within the hour.
       await require('./nudgeGate').record(userId, 'demand_jobs', { pushOk: pushed === true });
+      // The hand-back is complete: the user has now heard about what the instant run found.
+      await ir.markHandoffDone(userId).catch(() => {});
       sent++;
     } catch (e) { console.warn('[demandResearch] push failed for', userId, e.message); }
   }
@@ -272,8 +291,10 @@ function resumeTerms(row) {
 
 async function notifyResumeMatchedUsers(sinceIso, { dryRun = false } = {}) {
   if (!(await require('./notifSwitch').isOn('resume_match_jobs'))) return dryRun ? [] : 0;
+  const ir = require('./instantResearch');
+  const handoffs = await ir.pendingHandoffs().catch(() => new Map());
   const users = await dbConfig.query(
-    `SELECT u.id, u.expo_push_token, rm.technical_skills, rm.skills, rm.job_titles,
+    `SELECT u.id, u.city, u.expo_push_token, rm.technical_skills, rm.skills, rm.job_titles,
             LOWER(rm.raw_text) AS resume_lower
        FROM users u
        JOIN LATERAL (SELECT technical_skills, skills, job_titles, raw_text FROM resume_metadata
@@ -292,10 +313,11 @@ async function notifyResumeMatchedUsers(sinceIso, { dryRun = false } = {}) {
       const terms = resumeTerms(u);
       if (!terms.length) continue;
       const likeAny = terms.map((_, i) => `(LOWER(title) LIKE $${i + 3} OR LOWER(skills::text) LIKE $${i + 3})`).join(' OR ');
+      const since = ir.sinceForUser(sinceIso, handoffs.get(Number(u.id)));
       const rows = await dbConfig.query(
-        `SELECT title, skills FROM global_jobs
+        `SELECT job_url, title, location, skills FROM global_jobs
           WHERE is_active AND country = $1 AND first_seen >= $2 AND (${likeAny}) LIMIT 200`,
-        [country, sinceIso, ...terms.map((t) => `%${t.stem}%`)]).catch(() => []);
+        [country, since, ...terms.map((t) => `%${t.stem}%`)]).catch(() => []);
       // 1 stray match is noise, not news
       if (!rows || rows.length < 2) continue;
       // the term that matched the most jobs → honest, specific copy
@@ -316,11 +338,17 @@ async function notifyResumeMatchedUsers(sinceIso, { dryRun = false } = {}) {
       const dup = await dbConfig.query(
         `SELECT 1 FROM notifications WHERE user_id = $1 AND type IN ('demand_jobs','resume_match_jobs') AND created_at > NOW() - INTERVAL '20 hours' LIMIT 1`, [u.id]);
       if (dup && dup.length) continue;
-      const pushed = await sendPushNotification(u.expo_push_token, title, body, { route: '/(discover)', params: { sort: 'recent' }, action: 'resume_match_jobs' });
+      // Same rule as the interest push: one clearly-best job earns a direct deep-link, a real set
+      // opens the feed. `score` = how many of THIS user's résumé terms the job answers.
+      const ordered = ir.orderByProximity(rows, { city: u.city, country });
+      const standout = ir.pickStandoutJob(ordered.map((j) => ({ ...j, score: ir.overlapScore(j, terms) })));
+      const params = ir.pushParamsForMatch(standout);
+      const pushed = await sendPushNotification(u.expo_push_token, title, body, { route: '/(discover)', params, action: 'resume_match_jobs' });
       await dbConfig.query(
         `INSERT INTO notifications (user_id, type, title, message, created_at) VALUES ($1,'resume_match_jobs',$2,$3,NOW())`,
         [u.id, title, body]).catch(() => {});
       await require('./nudgeGate').record(u.id, 'resume_match_jobs', { pushOk: pushed === true });
+      await ir.markHandoffDone(u.id).catch(() => {});
       sent++;
     } catch (e) { console.warn('[demandResearch] resume push failed for', u.id, e.message); }
   }
@@ -403,4 +431,11 @@ function startDemandResearch() {
 
 // ingestUrl is reused by interestRoutes to fetch the exact posting a user pins on an interest;
 // the notify* pair is reused by the admin notify-matches endpoint (the Claude-side routine).
-module.exports = { runDemandResearch, startDemandResearch, ingestUrl, notifyMatchedUsers, notifyResumeMatchedUsers, countryFromResume };
+// geminiGrounded + discoverUrls + GENERIC_TERMS are exported for services/instantResearch.js, which
+// runs the SAME discovery and the SAME ingestion on demand for one user — reusing them rather than
+// forking a second prompt is what stops the instant path and the 12-hourly path drifting apart.
+module.exports = {
+  runDemandResearch, startDemandResearch, ingestUrl,
+  notifyMatchedUsers, notifyResumeMatchedUsers, countryFromResume,
+  geminiGrounded, discoverUrls, GENERIC_TERMS,
+};

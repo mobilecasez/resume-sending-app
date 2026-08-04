@@ -436,6 +436,17 @@ async function _parseResume(userId, relativeResumePath) {
 
         console.log(`[resumeParser] Metadata and normalized skills saved for user ${userId} ✅`);
 
+        // THIS is the first moment the user's occupation AND their country are both known
+        // (saveParsed → backfillUserCountry has just run), which is why the on-demand job research
+        // hangs off completion and not off registration. Fire-and-forget and defensive on purpose:
+        // it is disarmed by default, it must never delay a parse, and a résumé that parsed fine
+        // must stay parsed even if this module is missing or throws.
+        try {
+            require('../server/services/instantResearch').onResumeParsed(userId);
+        } catch (e) {
+            console.warn(`[resumeParser] instant research skipped for user ${userId}: ${e.message}`);
+        }
+
     } catch (err) {
         const retryable = isTransientError(err && err.message);
         console.error(`[resumeParser] Failed for user ${userId} (${retryable ? 'TRANSIENT — will retry' : 'permanent'}):`, err.message);
