@@ -8,8 +8,11 @@
 // (5 min) and the "how many <field> jobs are in <country>" count is memoised globally (10 min) —
 // a 500-recipient notification blast pays for a handful of counts, not 500.
 //
-// Kill switch: GEO_RANK=0 makes getGeoContext() return the INACTIVE context, and every caller then
-// builds byte-identical SQL to what it built before this feature existed.
+// Kill switch: GEO_RANK=0 makes BOTH entry points — getGeoContext() and contextForPlace() — return
+// the INACTIVE context, and every caller then builds the SQL it built before this feature existed.
+// Both have to check it: contextForPlace() takes no userId, so it never passes through
+// getGeoContext(), and a call site that only uses it (the saved-interest job list) would otherwise
+// keep the new ordering with the switch flipped — a rollback that does not roll back.
 'use strict';
 
 const dbConfig = require('../../db-config');
@@ -78,8 +81,14 @@ async function getGeoContext(userId, opts = {}) {
   return ctx;
 }
 
-/** An explicit user choice (a saved interest's country/city) ranked with the same comparator. */
+/**
+ * An explicit user choice (a saved interest's country/city) ranked with the same comparator.
+ * ⚠️ This path takes NO per-user context, so it has to check the kill switch itself — GEO_RANK=0
+ * has to turn the feature off everywhere, and a caller that only ever asked contextForPlace() would
+ * otherwise keep the new ORDER BY with the switch flipped, leaving no way to roll the change back.
+ */
 function contextForPlace(country, city) {
+  if (off()) return geoRank.INACTIVE;
   const canon = geoRank.canonCountry(country);
   if (!canon) return geoRank.INACTIVE;
   const anchor = {

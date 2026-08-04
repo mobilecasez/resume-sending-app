@@ -2519,9 +2519,13 @@ async function keywordJobSearch(query, userId) {
 
     // The user's own country ranks first — "no jobs where users live" was the second-biggest
     // complaint in the pain report. This used to be a local `CASE WHEN country = <résumé country>`;
-    // it now goes through the SHARED comparator (geoRank), so this list, the Explore feed, the
-    // search and the notifier order jobs by exactly the same rule — including the city tier and the
-    // guard that stops country-first burying a user whose field has nothing in their country.
+    // it now uses the SHARED tier (geoRank), so it agrees with the feed on WHAT counts as the user's
+    // country (aliases, "All France (remote)", the city tier) instead of an exact-string compare.
+    // ⚠️ It deliberately does NOT consult geo.mode: the empty-field guard is about a whole feed being
+    // swamped by irrelevant local roles, and this list is already narrowed to what the user typed, so
+    // country-first is safe here. Keeping the tier unconditional is also what preserves the previous
+    // behaviour of this endpoint — honouring match-first would mean dropping the country preference
+    // entirely, since no résumé match score is computed on this path.
     const geo = await geoContext.getGeoContext(userId);
     const country = geo.active ? geo.anchor.country : null;
 

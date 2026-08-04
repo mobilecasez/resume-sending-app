@@ -263,10 +263,17 @@ router.get('/interests/:id/jobs', authenticateToken, async (req, res) => {
     // `CASE WHEN LOWER(location) LIKE '%city%'`; it now runs the SHARED tier (geoRank) so a saved
     // interest orders identically to the feed — de-accented ("Genève" matches a "geneva" interest),
     // word-bounded, and with "All France (remote)" counting as the country rather than as far away.
+    // ⚠️ GEO_RANK=0 has to put this list back the way it was, exactly like every other call site —
+    // contextForPlace() returns the INACTIVE context then, and we fall back to the pre-change
+    // expression rather than to a constant tier (which would silently drop the city preference and
+    // make the kill switch look like a second, different change). The one thing NOT restored is the
+    // old bare `1`, which Postgres reads as an ORDER BY ORDINAL — i.e. "order by column 1 (id)",
+    // never the constant it was meant to be.
+    const place = geoContext.contextForPlace(it.country, it.city);
     const P = (v) => { params.push(v); return '$' + params.length; };
-    const cityRank = geoRank.tierSql(
-      geoContext.contextForPlace(it.country, it.city).anchor, P,
-      { countryCol: 'country', locationCol: 'location' });
+    const cityRank = place.active
+      ? geoRank.tierSql(place.anchor, P, { countryCol: 'country', locationCol: 'location' })
+      : (it.city ? `(CASE WHEN LOWER(location) LIKE ${P('%' + String(it.city).toLowerCase() + '%')} THEN 0 ELSE 1 END)` : '(1)::int');
     const total = await dbConfig.query(
       `SELECT COUNT(*)::int AS n FROM global_jobs WHERE is_active AND country = $1 AND (${likeAny})`,
       params.slice(0, 1 + lowered.length));

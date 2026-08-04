@@ -197,6 +197,48 @@ console.log('\nbuilding the anchor from a real users row');
   ok('nothing on file → no anchor, no guess', nothing.country === null && nothing.city === null, nothing);
 }
 
+// ── 7b. A postal code is not a city ────────────────────────────────────────────────────────────
+// The city test is a word-boundary match on the job's location, so a "75001 Paris" anchor can never
+// match a job stored as "Paris, France": the tier stays inert forever while the API still reports
+// city:"75001 Paris", cityKnown:true and the admin line reads "country-first from 75001 Paris".
+// A city we can never match must not be advertised as one.
+console.log('\na postal code is not a city (an anchor we could never match must not be claimed)');
+{
+  ok('"75001 Paris" → "Paris"', geo.stripPostcode('75001 Paris') === 'Paris', geo.stripPostcode('75001 Paris'));
+  ok('"1017 CE Amsterdam" → "Amsterdam"', geo.stripPostcode('1017 CE Amsterdam') === 'Amsterdam', geo.stripPostcode('1017 CE Amsterdam'));
+  ok('"London EC1A 1BB" → "London"', geo.stripPostcode('London EC1A 1BB') === 'London', geo.stripPostcode('London EC1A 1BB'));
+  ok('a real short-first-word city is NOT mangled ("St Albans")', geo.stripPostcode('St Albans') === 'St Albans', geo.stripPostcode('St Albans'));
+  ok('a bare postal code leaves nothing', geo.stripPostcode('75001') === '', geo.stripPostcode('75001'));
+
+  const fr = geo.buildAnchor({ user: { country: 'France', address: '12 Rue de Rivoli, 75001 Paris, France' } });
+  ok('⚠️ the anchor is "Paris", not "75001 Paris"', fr.city === 'Paris', fr);
+  ok('…and it actually tiers a real Paris row as same-city',
+    geo.tierOf(job('x', 'Paris, France', 'France'), fr) === T.CITY, geo.tierOf(job('x', 'Paris, France', 'France'), fr));
+  const nl = geo.buildAnchor({ user: { country: 'Netherlands', address: 'Keizersgracht 1, 1017 CE Amsterdam, Netherlands' } });
+  ok('Dutch "1017 CE Amsterdam" anchors on Amsterdam', nl.city === 'Amsterdam', nl);
+  const codeOnly = geo.buildAnchor({ user: { country: 'France', address: '75001, France' } });
+  ok('an address segment that is ONLY a code gives no city', codeOnly.city === null, codeOnly);
+  ok('…and says it is a postal code, not that the country disagrees with itself',
+    /postal code/.test((codeOnly.cityRejected || {}).reason || ''), codeOnly.cityRejected);
+}
+
+// ── 7c. The rejection reason has to name the branch it actually took ──────────────────────────
+// "the address is in France, but the profile country is France" is worse than silence: it reads as
+// a bug in the anchor rather than as the deliberate refusal it is.
+console.log('\nwhy a city was refused is reported truthfully, never self-contradicting');
+{
+  const onlyCountry = geo.buildAnchor({ user: { country: 'France', address: 'France' } });
+  ok('a one-line address that is just the country gives no city', onlyCountry.city === null, onlyCountry);
+  ok('⚠️ the reason is "it is the country itself", not "France ≠ France"',
+    /is the country itself/.test((onlyCountry.cityRejected || {}).reason || ''), onlyCountry.cityRejected);
+  ok('no rejection reason ever names the same country twice',
+    !/\bFrance\b[\s\S]*\bFrance\b/.test((onlyCountry.cityRejected || {}).reason || ''), onlyCountry.cityRejected);
+
+  const wrongCountry = geo.buildAnchor({ user: { country: 'France', address: 'Keizersgracht 1, Amsterdam, Netherlands' } });
+  ok('a genuinely foreign address still reports the country clash',
+    /is in Netherlands/.test((wrongCountry.cityRejected || {}).reason || ''), wrongCountry.cityRejected);
+}
+
 // ── 8. Country labels: users type them one way, the corpus stores another ──────────────────────
 console.log('\ncountry labels line up between users.country and global_jobs.country');
 {
@@ -228,6 +270,28 @@ console.log('\nthe generated SQL binds every value and mirrors the JS branches')
   const noCity = [];
   geo.tierSql(franceOnly, (v) => { noCity.push(v); return '$' + noCity.length; }, { countryCol: 'country' });
   ok('with no city the CASE has no city branch at all', !geo.tierSql(franceOnly, (v) => '$1', {}).includes('THEN 0'), geo.tierSql(franceOnly, (v) => '$1', {}));
+}
+
+// ── 10. The kill switch has to reach EVERY entry point ────────────────────────────────────────
+// GEO_RANK=0 is the whole rollback plan. contextForPlace() takes no userId, so it never passes
+// through getGeoContext(), and the saved-interest job list uses nothing else — if it ignores the
+// switch, flipping the switch changes some queries and not others, which is not a rollback.
+// (geoContext pulls in db-config, which builds a lazy pool from the dead URL forced at the top of
+// this file; contextForPlace itself is synchronous and never touches it.)
+console.log('\nGEO_RANK=0 turns the feature off at every entry point, not just the per-user one');
+{
+  const geoCtx = require(path.join(__dirname, '..', 'server', 'services', 'geoContext'));
+  const on = geoCtx.contextForPlace('France', 'Paris');
+  ok('normally a picked place is an active country-first context', on.active === true && on.mode === 'country-first', on);
+
+  process.env.GEO_RANK = '0';
+  const off = geoCtx.contextForPlace('France', 'Paris');
+  ok('⚠️ with the switch off, contextForPlace() is INACTIVE too', off.active === false && off.anchor === null, off);
+  ok('…so the caller cannot build a geo ORDER BY out of it', geo.tierSql(off.anchor, () => '$1') === '(5)::int');
+  delete process.env.GEO_RANK;
+
+  ok('and the switch is re-read per call, not frozen at require time',
+    geoCtx.contextForPlace('France', 'Paris').active === true);
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

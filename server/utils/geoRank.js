@@ -150,6 +150,30 @@ function placeRe(name) {
   return _placeCache.get(k);
 }
 
+/**
+ * A postal code is not a city. The city test is a WORD-BOUNDARY match on the job's location text,
+ * so "75001 Paris" (the segment a French address actually yields) can never match a job stored as
+ * "Paris, France" — the city tier would be permanently inert while the API still reported
+ * `city: "75001 Paris", cityKnown: true` and the admin line still read "country-first from 75001
+ * Paris, France". A city we can never match must not be advertised as one, so the code is stripped
+ * before the guess is accepted:
+ *   "75001 Paris" → "Paris" · "1017 CE Amsterdam" → "Amsterdam" · "London EC1A 1BB" → "London"
+ * A short leading token is only dropped when a code was actually removed in front of it, so
+ * "St Albans" and "Le Mans" survive intact. Returns '' when nothing with letters is left.
+ */
+function stripPostcode(text) {
+  const toks = String(text || '').trim().split(/\s+/).filter(Boolean);
+  const out = [];
+  let droppedCode = false;
+  for (const t of toks) {
+    if (/\d/.test(t)) { droppedCode = true; continue; }          // 75001, EC1A, 1BB, 1017
+    if (droppedCode && !out.length && t.replace(/[^a-zà-ÿ]/gi, '').length <= 2) continue;   // the "CE" of "1017 CE"
+    out.push(t);
+  }
+  const s = out.join(' ').replace(/^[\s,.\-]+|[\s,.\-]+$/g, '');
+  return /[a-zà-ÿ]/i.test(s) ? s : '';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The anchor: where the user actually is, using ONLY what they told us
 // ─────────────────────────────────────────────────────────────────────────────
@@ -187,18 +211,24 @@ function buildAnchor({ user, resumeMeta } = {}) {
   if (addr) {
     const addrCountry = canonCountry(addr);
     const segs = addr.split(',').map((s) => s.trim()).filter(Boolean);
-    const guess = segs.length >= 2 ? segs[segs.length - 2] : segs[0];
+    const rawGuess = segs.length >= 2 ? segs[segs.length - 2] : segs[0];
+    // A postal code is not a city — "75001 Paris" has to become "Paris" or the city tier can never
+    // fire while the API keeps reporting a city (see stripPostcode).
+    const guess = stripPostcode(rawGuess);
     // A one-line address that is just the country ("Netherlands") must not become a "city" —
     // everything in the country would then read as "same city", which is a claim we cannot make.
     const guessIsCountry = isCountryName(guess);
     if (addrCountry && addrCountry === out.country && guess && !guessIsCountry) { out.city = guess; out.citySource = 'address'; }
-    else if (guess) {
-      out.cityRejected = {
-        value: guess,
-        reason: addrCountry
-          ? `the address is in ${addrCountry}, but the profile country is ${out.country}`
-          : `the address does not name ${out.country}, so we cannot tell it is a ${out.country} address`,
-      };
+    else if (rawGuess) {
+      // ⚠️ Each branch must name the reason it actually took. Saying "the address is in France, but
+      // the profile country is France" (what the country-name branch used to report) is worse than
+      // silence: it reads as a bug in the anchor rather than as the deliberate refusal it is.
+      let reason;
+      if (!guess) reason = `"${rawGuess}" is a postal code, not a place we can match against a job location`;
+      else if (guessIsCountry) reason = `"${guess}" is the country itself, not a city inside it`;
+      else if (!addrCountry) reason = `the address does not name ${out.country}, so we cannot tell it is a ${out.country} address`;
+      else reason = `the address is in ${addrCountry}, but the profile country is ${out.country}`;
+      out.cityRejected = { value: guess || rawGuess, reason };
     }
   }
   return out;
@@ -376,7 +406,7 @@ const INACTIVE = Object.freeze({
 
 module.exports = {
   TIER, TIER_LABEL, MIN_FIELD_JOBS, INACTIVE, OPEN_LABELS, REMOTE_SRC, DEACC_FROM, DEACC_TO,
-  deaccent, canonCountry, isCountryName, countryLabels, countryRegexSrc, placePatternSrc,
+  deaccent, canonCountry, isCountryName, countryLabels, countryRegexSrc, placePatternSrc, stripPostcode,
   buildAnchor, tierOf, compare, rank, band,
   sameCountrySql, tierSql, orderSql,
   decideMode, describe,
