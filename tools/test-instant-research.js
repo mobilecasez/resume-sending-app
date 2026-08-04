@@ -266,6 +266,48 @@ console.log('\nwhere the push lands');
   ok('an unrelated job scores zero', ir.overlapScore({ title: 'Truck Driver', skills: [] }, terms) === 0);
 }
 
+// ── 7a. The standout bar vs. what the CALL SITES actually feed it ─────────────────────────────
+// A review found the interest-match push scoring every candidate against ONE skill (`[m.skill]`).
+// overlapScore over a single term can only return 0 or 1, and pickStandoutJob needs minScore 2 AND
+// a lead of 2 — so a standout was arithmetically IMPOSSIBLE for any user with more than one
+// candidate, and every "1 new chemist job near Paris" push quietly fell back to the feed. These
+// assertions pin the arithmetic and the two things the call site now has to do about it.
+console.log('\nthe standout bar is reachable from the call site');
+{
+  const JOBS = [
+    { job_url: 'u1', title: 'Lab Chemist — Distillation', skills: ['Batch Reactor', 'GMP'] },
+    { job_url: 'u2', title: 'Warehouse Operative', skills: [] },
+    { job_url: 'u3', title: 'Office Assistant', skills: [] },
+  ];
+  const oneTerm = JOBS.map((j) => ({ ...j, score: ir.overlapScore(j, ['chemist']) }));
+  ok('a single search term can never score above 1', Math.max(...oneTerm.map((j) => j.score)) === 1,
+    oneTerm.map((j) => j.score));
+  ok('…so scoring on one term alone can never produce a standout', ir.pickStandoutJob(oneTerm) === null,
+    ir.pickStandoutJob(oneTerm));
+
+  const allTerms = JOBS.map((j) => ({ ...j, score: ir.overlapScore(j, ['chemist', 'gmp', 'reactor']) }));
+  ok('scoring on ALL of the user\'s skills finds the obvious job',
+    (ir.pickStandoutJob(allTerms) || {}).job_url === 'u1', ir.pickStandoutJob(allTerms));
+
+  // Two saved interests matching the SAME posting must not look like a two-job tie.
+  const dup = [
+    { job_url: 'u1', title: 'Lab Chemist', skills: ['GMP'] },
+    { job_url: 'u1', title: 'Lab Chemist', skills: ['GMP'] },
+  ].map((j) => ({ ...j, score: ir.overlapScore(j, ['chemist', 'gmp']) }));
+  ok('one job counted twice ties with itself and loses its deep-link', ir.pickStandoutJob(dup) === null,
+    ir.pickStandoutJob(dup));
+
+  // The call sites themselves, so this cannot regress back to the single-term form.
+  const src = require('fs').readFileSync(
+    path.join(__dirname, '..', 'server', 'services', 'demandResearch.js'), 'utf8');
+  ok('the interest push no longer scores on one skill', !/overlapScore\(j, \[m\.skill\]\)/.test(src));
+  ok('it scores on every skill the user saved', /scoreTerms/.test(src) && /cur\.terms\.includes/.test(src));
+  ok('it dedupes candidates by job_url', /cur\.seen\.has\(j\.job_url\)/.test(src));
+  ok('a failed send does not consume the hand-back window',
+    (src.match(/if \(pushed === true\) await ir\.markHandoffDone/g) || []).length === 2,
+    (src.match(/markHandoffDone/g) || []).length);
+}
+
 // ── 7b. The id must be the SAME id the app and the admin tools mint ───────────────────────────
 console.log('\nthe gj_ id contract');
 {

@@ -143,15 +143,28 @@ async function notifyMatchedUsers(sinceIso) {
         WHERE is_active AND country = $1 AND first_seen >= $2 AND (${likeAny})`, params).catch(() => null);
     const n = rows && rows[0] ? rows[0].n : 0;
     if (n > 0) {
-      const cur = perUser.get(r.user_id) || { n: 0, token: r.expo_push_token, place: r.city || r.country, skill: skills[0], city: r.city, country: r.country, cands: [] };
+      const cur = perUser.get(r.user_id)
+        || { n: 0, token: r.expo_push_token, place: r.city || r.country, skill: skills[0],
+             city: r.city, country: r.country, cands: [], terms: [], seen: new Set() };
       cur.n += n;
+      // ⚠️ Score against EVERY skill this user asked for, not just the first one. A single term can
+      // only ever score 0 or 1, and pickStandoutJob needs minScore 2 + a lead of 2 — so scoring on
+      // `skills[0]` alone made a standout arithmetically impossible for any user with more than one
+      // candidate, and the deep-link silently degraded to the feed in exactly the cases it was for.
+      for (const s of skills) if (!cur.terms.includes(s)) cur.terms.push(s);
       // The candidates behind the number, nearest first — so a push about ONE job can open THAT
-      // job instead of dropping the user on the feed to hunt for it.
+      // job instead of dropping the user on the feed to hunt for it. Deduped by job_url: two saved
+      // interests that match the same posting are one job, and counting it twice turned "the one
+      // job for you" into a two-candidate tie with no standout.
       const cand = await dbConfig.query(
         `SELECT job_url, title, location, skills FROM global_jobs
           WHERE is_active AND country = $1 AND first_seen >= $2 AND (${likeAny})
           ORDER BY first_seen DESC LIMIT 20`, params).catch(() => []);
-      cur.cands = cur.cands.concat(cand || []);
+      for (const j of cand || []) {
+        if (!j || !j.job_url || cur.seen.has(j.job_url)) continue;
+        cur.seen.add(j.job_url);
+        cur.cands.push(j);
+      }
       perUser.set(r.user_id, cur);
     }
   }
@@ -170,7 +183,8 @@ async function notifyMatchedUsers(sinceIso) {
       const body = `${m.n} new ${m.skill} ${m.n === 1 ? 'job' : 'jobs'} near ${m.place} just landed — take a look.`;
       // One standout job → open THAT job ('/(discover)' + { jobId }); a genuine set → the feed.
       const ordered = ir.orderByProximity(m.cands, { city: m.city, country: m.country });
-      const standout = ir.pickStandoutJob(ordered.map((j) => ({ ...j, score: ir.overlapScore(j, [m.skill]) })));
+      const scoreTerms = (m.terms && m.terms.length) ? m.terms : [m.skill];
+      const standout = ir.pickStandoutJob(ordered.map((j) => ({ ...j, score: ir.overlapScore(j, scoreTerms) })));
       const params = ir.pushParamsForMatch(standout);
       const pushed = await sendPushNotification(m.token, title, body, { route: '/(discover)', params, action: 'demand_jobs' });
       await dbConfig.query(
@@ -179,8 +193,10 @@ async function notifyMatchedUsers(sinceIso) {
       // Shared ledger — see services/nudgeGate.js. Without this row the lifecycle nudges cannot
       // see that this user already heard from us today, and would push again within the hour.
       await require('./nudgeGate').record(userId, 'demand_jobs', { pushOk: pushed === true });
-      // The hand-back is complete: the user has now heard about what the instant run found.
-      await ir.markHandoffDone(userId).catch(() => {});
+      // The hand-back is complete ONLY if the push actually went out. Marking it done on a failed
+      // send would consume the widened window and the user would never hear about the jobs we spent
+      // a grounded call finding for them. pendingHandoffs stops retrying after 7 days.
+      if (pushed === true) await ir.markHandoffDone(userId).catch(() => {});
       sent++;
     } catch (e) { console.warn('[demandResearch] push failed for', userId, e.message); }
   }
@@ -348,7 +364,8 @@ async function notifyResumeMatchedUsers(sinceIso, { dryRun = false } = {}) {
         `INSERT INTO notifications (user_id, type, title, message, created_at) VALUES ($1,'resume_match_jobs',$2,$3,NOW())`,
         [u.id, title, body]).catch(() => {});
       await require('./nudgeGate').record(u.id, 'resume_match_jobs', { pushOk: pushed === true });
-      await ir.markHandoffDone(u.id).catch(() => {});
+      // Same rule as above: a failed send must not consume the hand-back window.
+      if (pushed === true) await ir.markHandoffDone(u.id).catch(() => {});
       sent++;
     } catch (e) { console.warn('[demandResearch] resume push failed for', u.id, e.message); }
   }
