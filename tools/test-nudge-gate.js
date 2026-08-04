@@ -241,47 +241,41 @@ for (const n of life.NUDGES) allOn[n.key] = true;
     p4.nudge && p4.nudge.key === 'nudge_generate_cover_letter', p4.nudge && p4.nudge.key);
 }
 
-// ── 8. "Are you facing any issue?" is asked LAST ──────────────────────────────────────────────
+// ── 8. "Are you facing any issue?" — asked on EVIDENCE of a failed attempt ────────────────────
 console.log('\nthe support check-in');
 {
-  // Someone who tried the app and stalled, with everything else already done or not applicable.
-  const stalled = {
-    ...base, hasResume: true, hasParsedResume: true, hasPhoto: true, hasSignature: true,
-    completeness: { percent: 100, missing: [] }, searches: 6, savedJobs: 2, coverLetters: 1,
-    applications: 0, daysSinceLastSeen: 3, daysSinceSignup: 12,
-  };
-  const noHistory = life.pickNudge(stalled, state({ recent: [] }), allOn);
-  ok('it is NOT the first thing we ask — an earlier nudge wins',
-    noHistory.nudge && noHistory.nudge.key !== 'nudge_support_checkin', noHistory.nudge && noHistory.nudge.key);
-
-  // Now suppose every earlier nudge is switched off, so only the check-in could apply.
   const onlyCheckin = {};
   for (const n of life.NUDGES) onlyCheckin[n.key] = n.key === 'nudge_support_checkin';
+  const pick = (over) => life.pickNudge({ ...base, daysSinceSignup: 9, hasResume: true, hasParsedResume: true,
+    hasPhoto: true, hasSignature: true, completeness: { percent: 100, missing: [] }, ...over },
+    state({ recent: [] }), onlyCheckin);
 
-  const tooEarly = life.pickNudge(stalled, state({ recent: [{ at: NOW - 5 * DAY, responded: true }] }), onlyCheckin);
-  ok('with only 1 earlier nudge it still holds off', !tooEarly.nudge, tooEarly.nudge && tooEarly.nudge.key);
+  ok('searched and came away with NOTHING → ask',
+    pick({ searches: 1, savedJobs: 0, coverLetters: 0 }).nudge != null);
 
-  const ready = life.pickNudge(stalled, state({
-    recent: [{ at: NOW - 5 * DAY, responded: true }, { at: NOW - 12 * DAY, responded: true }],
-  }), onlyCheckin);
-  ok('after 2 earlier nudges we finally ask', ready.nudge && ready.nudge.key === 'nudge_support_checkin', ready.nudge && ready.nudge.key);
+  ok('ran the SAME search repeatedly → ask (the strongest signal)',
+    pick({ searches: 4, repeatSearches: 4, savedJobs: 0, coverLetters: 0 }).nudge != null);
 
-  const alreadyTalking = life.pickNudge({ ...stalled, hasOpenSupportThread: true }, state({
-    recent: [{ at: NOW - 5 * DAY, responded: true }, { at: NOW - 12 * DAY, responded: true }],
-  }), onlyCheckin);
-  ok('someone already in a conversation with support is not asked again',
-    !alreadyTalking.nudge, alreadyTalking.nudge && alreadyTalking.nudge.key);
+  ok('searched, saved nothing, but DID get a cover letter → do not ask (they made progress)',
+    pick({ searches: 3, savedJobs: 0, coverLetters: 4 }).nudge == null);
 
-  const neverStarted = life.pickNudge({ ...base, daysSinceSignup: 30 }, state({
-    recent: [{ at: NOW - 5 * DAY, responded: true }, { at: NOW - 12 * DAY, responded: true }],
-  }), onlyCheckin);
-  ok('someone who never got started is not asked "did something break?" — nothing broke',
-    !neverStarted.nudge, neverStarted.nudge && neverStarted.nudge.key);
+  ok('never searched at all → do not ask (nothing has broken yet)',
+    pick({ searches: 0, savedJobs: 0, coverLetters: 0 }).nudge == null);
 
-  const applied = life.pickNudge({ ...stalled, applications: 2 }, state({
-    recent: [{ at: NOW - 5 * DAY, responded: true }, { at: NOW - 12 * DAY, responded: true }],
-  }), onlyCheckin);
-  ok('someone who applied successfully is not asked either', !applied.nudge, applied.nudge && applied.nudge.key);
+  ok('already applied → do not ask (the flow worked)',
+    pick({ searches: 2, savedJobs: 1, coverLetters: 1, applications: 1 }).nudge == null);
+
+  ok('already talking to support → do not ask (it would fork the thread)',
+    pick({ searches: 4, repeatSearches: 4, hasOpenSupportThread: true }).nudge == null);
+
+  ok('saved a job then went quiet for days → ask',
+    pick({ searches: 2, savedJobs: 2, coverLetters: 0, daysSinceLastSeen: 5 }).nudge != null);
+
+  ok('saved a job yesterday → do not ask yet',
+    pick({ searches: 2, savedJobs: 2, coverLetters: 0, daysSinceLastSeen: 1 }).nudge == null);
+
+  ok('it no longer waits on a count of earlier nudges',
+    life.NUDGES.every((n) => n.requiresPriorNudges == null));
 }
 
 // ── 8b. A blocked top-priority nudge must not silence the rest ────────────────────────────────
@@ -331,9 +325,10 @@ console.log('\nregistry sanity');
   const dupes = life.NUDGES.map((n) => n.key).filter((k, i, a) => a.indexOf(k) !== i);
   ok('no duplicate nudge keys', dupes.length === 0, dupes);
 
-  ok('the support check-in is last in the ladder',
-    life.NUDGES[life.NUDGES.length - 1].key === 'nudge_support_checkin',
-    life.NUDGES[life.NUDGES.length - 1].key);
+  ok('the support check-in sits above the generic re-engagement nudges',
+    life.NUDGES.findIndex((n) => n.key === 'nudge_support_checkin')
+      < life.NUDGES.findIndex((n) => n.key === 'nudge_best_matches'),
+    life.NUDGES.map((n) => n.key).join(','));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

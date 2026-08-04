@@ -12,9 +12,11 @@
 //  • ONE nudge per user per run, ever. The registry is ordered by where someone is stuck, earliest
 //    blocker first, and the first applicable entry wins. Sending two in one sweep is the fastest way
 //    to make an app feel like spam.
-//  • The support check-in is LAST and needs REQUIRE_PRIOR_NUDGES earlier nudges behind it. "Are you
-//    facing any issue?" is a reasonable question after we have tried to help and nothing moved; as a
-//    first contact it is a non-sequitur.
+//  • "Are you facing any issue?" fires on EVIDENCE, not on a nudge count. It used to wait for two
+//    earlier nudges as a proxy for "we tried to help and nothing moved" — which delayed the question
+//    by days for exactly the people who needed it the day it broke. It now asks whoever ran a search
+//    and came away with nothing (a repeated identical search is the strongest signal we hold), and
+//    never asks someone who made real progress or who never attempted a search at all.
 //  • Every decision — sent, skipped, why — is returned, and `dryRun` runs the entire pipeline
 //    including the gate without sending anything. Never ship a change to this file without looking
 //    at a dry run first; the previous match-push shipped without one and pushed "7 new commercial
@@ -40,8 +42,8 @@ const RUN_EVERY_HOURS = parseFloat(process.env.LIFECYCLE_NUDGE_HOURS || '6');
 const SCAN_LIMIT = parseInt(process.env.LIFECYCLE_SCAN_LIMIT || '2000', 10);
 /** Ceiling on pushes actually sent per sweep. */
 const SEND_LIMIT = parseInt(process.env.LIFECYCLE_SEND_LIMIT || '300', 10);
-/** How many earlier nudges someone must have had before we ask "is something broken?". */
-const REQUIRE_PRIOR_NUDGES = parseInt(process.env.LIFECYCLE_SUPPORT_AFTER || '2', 10);
+/** Kept for the admin API's shape; no nudge now gates on it (see the support check-in above). */
+const REQUIRE_PRIOR_NUDGES = parseInt(process.env.LIFECYCLE_SUPPORT_AFTER || '0', 10);
 
 const int = (v, d = 0) => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : d);
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -133,6 +135,17 @@ const NUDGES = [
     done: () => true,
   },
   {
+    key: 'nudge_support_checkin',
+    templateKey: 'support_checkin',
+    label: 'Are you facing any issue?',
+    // ⚠️ ONE DAY, not two. Someone who searched four times in sixteen minutes and got nothing has
+    // already had the bad experience; making them wait another day to be asked about it is the
+    // wrong trade. The template's own suggestWhen carries the real gate — evidence that they TRIED
+    // and came away with nothing — so this no longer waits on a count of earlier nudges.
+    minDaysSinceSignup: 1,
+    done: (s) => num(s.applications) > 0 || num(s.savedJobs) > 0,
+  },
+  {
     key: 'nudge_best_matches',
     templateKey: 'best_matches',
     label: 'Your best matches are waiting',
@@ -145,14 +158,6 @@ const NUDGES = [
     label: 'Welcome back (dormant)',
     minDaysSinceSignup: 7,
     done: (s) => s.daysSinceLastSeen != null && num(s.daysSinceLastSeen) < 7,
-  },
-  {
-    key: 'nudge_support_checkin',
-    templateKey: 'support_checkin',
-    label: 'Are you facing any issue?',
-    minDaysSinceSignup: 2,
-    requiresPriorNudges: REQUIRE_PRIOR_NUDGES,
-    done: () => true,
   },
 ];
 

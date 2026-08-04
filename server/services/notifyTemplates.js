@@ -512,14 +512,40 @@ const TEMPLATES = [
     title: (ctx) => greet(ctx, (n) => `${n}, did something not work?`, 'Did something not work?'),
     body: () => 'You started but did not get through. If something broke or was confusing, tell us in one line — a real person reads every message and replies here.',
     suggestWhen: (s) => {
-      // Only ask people who TRIED and stalled. Asking someone who never opened the app "did
-      // something go wrong?" is noise — nothing went wrong, they simply have not started.
+      // ASK THE PEOPLE WHO TRIED AND GOT NOTHING — that is the whole rule.
+      //
+      // This used to wait for two earlier nudges before it would fire, which was a proxy for "we
+      // tried to help and nothing moved". The proxy was wrong: it delayed the question by days for
+      // exactly the people who needed it on the day it broke. What we actually want is evidence of
+      // a FAILED ATTEMPT, and the app already records it.
+      //
+      // ⚠️ "Searched and saved nothing" is NOT enough on its own. Several users searched, saved
+      // nothing, and still generated cover letters — they got where they were going by another
+      // route, and asking them what went wrong is noise. Progress of ANY kind disqualifies.
       if (s.hasOpenSupportThread) return { applicable: false, reason: 'Already has an open support conversation — asking again would fork it.' };
-      if (nOf(s.applications)) return { suggested: false, reason: 'Has applied to a job — the flow worked for them.' };
-      const tried = nOf(s.searches) || nOf(s.savedJobs) || nOf(s.coverLetters) || !!s.hasResume;
-      if (!tried) return { applicable: false, reason: 'Never got far enough for anything to break — activation nudges fit better.' };
-      if (nOf(s.daysSinceSignup) < 2) return { suggested: false, reason: 'Signed up in the last 2 days — give them room.' };
-      return { suggested: true, reason: `Tried the app (${s.searches} searches, ${s.savedJobs} saved, ${s.coverLetters} letters) and never applied.` };
+      if (nOf(s.applications)) return { applicable: false, reason: 'Has applied to a job — the flow worked for them.' };
+
+      const searches = nOf(s.searches);
+      const repeats = nOf(s.repeatSearches);
+      const progress = nOf(s.savedJobs) + nOf(s.coverLetters);
+
+      // The strongest signal we hold: running the SAME search again and again. Nobody repeats a
+      // search that worked.
+      if (repeats >= 2 && !progress) {
+        return { suggested: true, reason: `Ran the same search ${repeats}x and it produced nothing — a retry loop, not a browse.` };
+      }
+      // Searched at all and came away with nothing to show for it.
+      if (searches >= 1 && !progress) {
+        return { suggested: true, reason: `${plural(searches, 'search')} and not one saved job or letter — the search is not working for them.` };
+      }
+      // Got as far as saving something, then stalled before applying.
+      if (nOf(s.savedJobs) && !nOf(s.coverLetters) && nOf(s.daysSinceLastSeen) >= 3) {
+        return { suggested: true, reason: `Saved ${s.savedJobs} job(s) then stopped — last seen ${s.daysSinceLastSeen}d ago.` };
+      }
+      if (!searches && !progress) {
+        return { applicable: false, reason: 'Never attempted a search — nothing has broken yet, so an activation nudge fits better.' };
+      }
+      return { suggested: false, reason: 'Made real progress (saved jobs / letters) — no evidence anything is broken.' };
     },
   },
 

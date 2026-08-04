@@ -486,7 +486,7 @@ const DB_STATE_FIELDS = ['hasParsedResume', 'parseStatus', 'resumeSkillCount', '
   'credits', 'creditsExpireInDays', 'platform', 'appVersion', 'savedJobs', 'coverLetters', 'coverLetters7d',
   'appliedCoverLetters', 'applications', 'applications7d', 'searches', 'events30d', 'firstEvent',
   'lastEvent', 'daysSinceLastSeen', 'newJobsThisWeek', 'pendingApplication',
-  'trialDaysLeft', 'lettersLeft', 'resumesLeft', 'hasOpenSupportThread'];
+  'trialDaysLeft', 'lettersLeft', 'resumesLeft', 'hasOpenSupportThread', 'repeatSearches'];
 
 // A state built from the user row alone. Every DB-backed field is present with a neutral value so a
 // template that reads one cannot crash — but stateTierFor() only hands this to templates that read
@@ -509,7 +509,7 @@ function lightUserState(u) {
     coverLetters7d: 0, appliedCoverLetters: 0, applications: 0, applications7d: 0, searches: 0,
     events30d: 0, firstEvent: null, lastEvent: null, daysSinceLastSeen: null,
     strongMatches: 0, matchedJobCount: 0, topMatch: null, newJobsThisWeek: 0, pendingApplication: null,
-    trialDaysLeft: null, lettersLeft: 0, resumesLeft: 0, hasOpenSupportThread: false,
+    trialDaysLeft: null, lettersLeft: 0, resumesLeft: 0, hasOpenSupportThread: false, repeatSearches: 0,
     light: true,
   };
 }
@@ -622,6 +622,7 @@ async function buildUserState(userIdOrRow, opts = {}) {
   // (ensureTrial), and a reporting/notification read must never mutate the account it is describing.
   const quota = await quotaStateOf(id);
   const hasOpenSupportThread = await hasOpenThread(id);
+  const repeatSearches = await repeatSearchCount(id);
 
   return {
     userId: id,
@@ -664,7 +665,25 @@ async function buildUserState(userIdOrRow, opts = {}) {
     lettersLeft: quota.lettersLeft,
     resumesLeft: quota.resumesLeft,
     hasOpenSupportThread,
+    repeatSearches,
   };
+}
+
+// How many times did this person run the SAME search? Retrying one input is the clearest
+// frustration signal we hold: user 85 pasted an unusable link FOUR times in 16 minutes and got
+// nothing back, because the app never told her it could not read that kind of link. One search is
+// a try; four identical searches is someone who thinks it should be working.
+async function repeatSearchCount(userId) {
+  try {
+    if (!(await tableExists('app_events'))) return 0;
+    const r = await g(
+      `SELECT MAX(c)::int AS n FROM (
+          SELECT COUNT(*)::int AS c FROM app_events
+           WHERE user_id = $1 AND event = 'job_search'
+           GROUP BY COALESCE(props->>'company', props->>'query', '')
+        ) t`, [userId]);
+    return r ? int(r.n) : 0;
+  } catch { return 0; }
 }
 
 // Trial/plan quota WITHOUT side effects. entitlements.getStatus() calls ensureTrial(), which CREATES
