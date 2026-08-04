@@ -55,7 +55,13 @@ function valueFor(f) {
   if (/gender|\bsex\b/.test(L)) return pick(/prefer not|decline|not to say/i) || null;
 
   if (/dial|calling code|phone code|country code/.test(L)) return PROFILE.dial;
-  if (/\bcountry\b|country of residence|where.*(based|live)/.test(L) && !/citizen|national|birth|tax|passport/.test(L)) {
+  // ⚠️ A label is only a COUNTRY field if the word is the label's subject, not a word inside a
+  // sentence. "Are you legally authorized to work within the country in which..." is a yes/no
+  // question; matching /country/ anywhere in it answered it with "Netherlands". Long labels that
+  // read as questions are excluded.
+  if (/\bcountry\b|country of residence|where.*(based|live)/.test(L)
+      && !/citizen|national|birth|tax|passport/.test(L)
+      && !(L.length > 45 || /\?|^(are|do|will|have|can|would|is)\b/.test(L.trim()))) {
     return pick(new RegExp('^' + PROFILE.country + '$', 'i')) || PROFILE.country;
   }
   if (/first name|given name|forename/.test(L)) return PROFILE.first_name;
@@ -152,11 +158,14 @@ async function auditOne(browser, job) {
         await page.evaluate((js) => { try { eval(js); } catch (e) { window.__cvfFillErr = String(e && e.message); } }, fillJsFor(values));
         await page.waitForTimeout(6000);
         // Measure what is genuinely set now.
-        out.filled = await page.evaluate((wanted) => {
+        const labelByKey = {};
+        list.forEach((f) => { if (f.key) labelByKey[f.key] = String(f.label || f.name || '').slice(0, 60); });
+        out.filled = await page.evaluate(({ wanted, labels }) => {
           const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
           let hit = 0, miss = 0;
+          const missed = [];
           const els = Array.from(document.querySelectorAll('input,textarea,select'));
-          Object.entries(wanted).forEach(([, want]) => {
+          Object.entries(wanted).forEach(([key, want]) => {
             const w = norm(want);
             if (!w) return;
             const found = els.some((el) => {
@@ -164,10 +173,11 @@ async function auditOne(browser, job) {
               if (t === 'checkbox' || t === 'radio') return el.checked;
               return norm(el.value).indexOf(w) >= 0 || (w.indexOf(norm(el.value)) >= 0 && norm(el.value).length > 2);
             });
-            if (found) hit++; else miss++;
+            if (found) hit++;
+            else { miss++; missed.push({ label: labels[key] || key, wanted: String(want).slice(0, 40) }); }
           });
-          return { hit, miss, fillErr: window.__cvfFillErr || null };
-        }, values);
+          return { hit, miss, missed, fillErr: window.__cvfFillErr || null };
+        }, { wanted: values, labels: labelByKey });
       } else out.filled = { hit: 0, miss: 0 };
     }
     out.submits = await page.evaluate(() => window.__cvfSubmits || 0).catch(() => 0);

@@ -1212,6 +1212,18 @@ async function runPostgresMigrations(db) {
                      ON notifications(user_id, type, created_at DESC)`);
         console.log('✅ Migration 032: user_nudge_log + quota_grants done');
 
+        // ── Migration 033: where the application FORM actually lives ──
+        // 46% of our job_urls point at an aggregator whose page has no form at all, and following
+        // the outbound apply link costs a fetch. Cache the answer per listing so the second user to
+        // open the same job does not pay for it again.
+        await col(`CREATE TABLE IF NOT EXISTS apply_url_resolutions (
+            job_url TEXT PRIMARY KEY,
+            apply_url TEXT NOT NULL,
+            resolved_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_apply_url_res_at ON apply_url_resolutions(resolved_at DESC)`);
+        console.log('✅ Migration 033: apply_url_resolutions done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);
