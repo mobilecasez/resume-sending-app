@@ -5510,6 +5510,19 @@ RULES:
             }
         } catch (_) {}
 
+        // ⚠️ FINAL GUARD: an EMPTY value is worse than no value. The device treats every key in
+        // `values` as an instruction to set that control, so "" tells it to BLANK the field — which
+        // on a dial-code picker showing +91 wipes it back to nothing and reads to the user as
+        // "autofill broke it". The AI path already filters empties; the learned Q&A overlay and the
+        // option-snapping passes did not, and one of them is where a live "" for the phone country
+        // code came from. Guard the exit instead of each of the four entrances.
+        let blanked = 0;
+        for (const k of Object.keys(values)) {
+            const v = values[k];
+            if (v == null || (typeof v !== 'boolean' && String(v).trim() === '')) { delete values[k]; blanked++; }
+        }
+        if (blanked) console.warn(`[aiHub] autofillMap dropped ${blanked} EMPTY value(s) that would have blanked a field (user ${userId})`);
+
         return res.json({
             success: true,
             values,
