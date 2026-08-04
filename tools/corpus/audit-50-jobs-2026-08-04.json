@@ -1,0 +1,958 @@
+[
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31289073",
+  "employer": "ÅKERS SWEDEN AB",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/addi/e40c5f2b-7096-4208-97a2-5c29027a9b12",
+  "employer": "Addi",
+  "host": "jobs.ashbyhq.com",
+  "reachedVia": "apply-button",
+  "fields": 8,
+  "byType": {
+   "file": 2,
+   "text": 3,
+   "tel": 1,
+   "email": 1,
+   "textarea": 1
+  },
+  "withOptions": 0,
+  "targeted": 3,
+  "filled": {
+   "hit": 3,
+   "miss": 0,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31245890",
+  "employer": "Abrha, Iyob",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/acommerce/jobs/7529450",
+  "employer": "Acommerce",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 11,
+  "byType": {
+   "text": 8,
+   "tel": 1,
+   "file": 2
+  },
+  "withOptions": 4,
+  "targeted": 7,
+  "filled": {
+   "hit": 5,
+   "miss": 2,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://jobb.ahlsell.se/jobs/rm?rmpage=job&rmjob=4904&utm_medium=talentech_publishing&utm_source=jobtip",
+  "employer": "Ahlsell Sverige AB",
+  "host": "jobb.ahlsell.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://www.job-room.ch/jobseeker/a5fed22d-2ab8-4718-b898-922b952f87e4",
+  "employer": "AC Personaldienste AG",
+  "host": "job-room.ch",
+  "reachedVia": "apply-button",
+  "fields": 3,
+  "byType": {
+   "text": 3
+  },
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://ats.talentadore.com/apply/erfaren-logistik-och-resurskoordinator-till-hemtjansten---var-med-och-bygg-upp-en-ny-logistikfunktion/m5nzgR",
+  "employer": "AB SOLOM",
+  "host": "ats.talentadore.com",
+  "reachedVia": "apply-button",
+  "fields": 10,
+  "byType": {
+   "text": 5,
+   "email": 1,
+   "tel": 1,
+   "textarea": 1,
+   "select-one": 1,
+   "checkbox": 1
+  },
+  "withOptions": 1,
+  "targeted": 4,
+  "filled": {
+   "hit": 4,
+   "miss": 0,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://career.aimopark.se/jobs/8053122-garagevard/applications/new?promotion=2096882-arbetsformedlingen",
+  "employer": "Aimo Park Sweden AB",
+  "host": "career.aimopark.se",
+  "reachedVia": "apply-button",
+  "fields": 10,
+  "byType": {
+   "radio": 3,
+   "text": 2,
+   "email": 1,
+   "tel": 1,
+   "textarea": 1,
+   "checkbox": 2
+  },
+  "withOptions": 3,
+  "targeted": 4,
+  "filled": {
+   "hit": 4,
+   "miss": 0,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://nordiskakliniken.teamtailor.com/jobs/8015630-underskoterska-for-nattjanst-i-goteborg/337d23a2-32ec-480f-b6a5-fe3be86b6ee7",
+  "employer": "AB Nordiska Kliniken Stockholm",
+  "host": "nordiskakliniken.teamtailor.com",
+  "reachedVia": "apply-button",
+  "fields": 7,
+  "byType": {
+   "text": 3,
+   "email": 1,
+   "tel": 1,
+   "textarea": 1,
+   "checkbox": 1
+  },
+  "withOptions": 0,
+  "targeted": 3,
+  "filled": {
+   "hit": 3,
+   "miss": 0,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31311565",
+  "employer": "Advokatfirman Edelhjelm AB",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/30989811",
+  "employer": "Affes salong HB",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://career.pitchler.com/Agaton Omsorg AB/8f216fb9-2eb5-4433-9999-033578bf8d45/ad/f8798ae1-f109-438a-b9fb-e6564f905ec6",
+  "employer": "Agaton Omsorg AB",
+  "host": "career.pitchler.com",
+  "reachedVia": "apply-button",
+  "fields": 5,
+  "byType": {
+   "text": 2,
+   "email": 1,
+   "tel": 1,
+   "checkbox": 1
+  },
+  "withOptions": 0,
+  "targeted": 3,
+  "filled": {
+   "hit": 3,
+   "miss": 0,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "http://www.staffrec.se/viewjob.php?source=AMS&id=136329",
+  "employer": "AB Ny Kollega i Skåne",
+  "host": "staffrec.se",
+  "reachedVia": "apply-button",
+  "fields": 1,
+  "byType": {
+   "text": 1
+  },
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "http://www.aiassistans.com",
+  "employer": "Ai Assistans AB",
+  "host": "aiassistans.com",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://access.tidvis.se/lediga_tjanster/vi-soker-dig-med-hjarta-och-humor-personlig-assistent-3/",
+  "employer": "Access Assistans i Sverige AB",
+  "host": "access.tidvis.se",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://careers.abb/sweden/se/job/JR00034020/Senior-Software-Developer-and-Team-Lead-Marine-Ports",
+  "employer": "ABB AB",
+  "host": "careers.abb",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31229264",
+  "employer": "Abduljabbar, Ahmed Myasar Abduljabba",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://www.job-room.ch/jobseeker/8093b735-9fc6-49cb-b9cb-0238b3d1ad53",
+  "employer": "AGROOS PERSONAL AG",
+  "host": "job-room.ch",
+  "reachedVia": "apply-button",
+  "fields": 3,
+  "byType": {
+   "text": 3
+  },
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31165345",
+  "employer": "ABF NORR",
+  "host": "arbetsformedlingen.se",
+  "error": "page.goto: Timeout 45000ms exceeded.\nCall log:\n  - navigating to \"https://arbetsformedlingen.se/platsbanken/annonser/31165345\", waiting until \"domcontentloaded\""
+ },
+ {
+  "url": "https://www.job-room.ch/jobseeker/a15f68af-0051-46db-9485-2379e874e06a",
+  "employer": "Airport Casino Basel AG",
+  "host": "job-room.ch",
+  "reachedVia": "apply-button",
+  "fields": 3,
+  "byType": {
+   "text": 3
+  },
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://receptionvik6070.careers.haileyhr.app/sv-SE/job/6eb456f0-9c0b-4bcb-bc95-762f6e25d5f9/19259432-4ce7-4e18-946d-40842dac7384/33686335-b58d-4de3-a2b6-5255cfccb91a",
+  "employer": "A Hotell i Uppsala AB",
+  "host": "receptionvik6070.careers.haileyhr.app",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://karriar.aimpoint.se/jobs/7976191-industrial-lead/applications/new?promotion=2072698-arbetsformedlingen",
+  "employer": "AIMPOINT AKTIEBOLAG",
+  "host": "karriar.aimpoint.se",
+  "reachedVia": "apply-button",
+  "fields": 10,
+  "byType": {
+   "text": 5,
+   "email": 1,
+   "tel": 1,
+   "textarea": 1,
+   "checkbox": 2
+  },
+  "withOptions": 0,
+  "targeted": 4,
+  "filled": {
+   "hit": 4,
+   "miss": 0,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://ssa.teamtailor.com/jobs/7712016-ledare-boll-lek-for-barn-2-6-ar-ht26-sprid-rorelsegladjen/applications/new?promotion=2070182-arbetsformedlingen",
+  "employer": "Active Academy Nordic AB",
+  "host": "ssa.teamtailor.com",
+  "reachedVia": "apply-button",
+  "fields": 16,
+  "byType": {
+   "radio": 3,
+   "textarea": 6,
+   "checkbox": 2,
+   "text": 3,
+   "email": 1,
+   "tel": 1
+  },
+  "withOptions": 3,
+  "targeted": 3,
+  "filled": {
+   "hit": 3,
+   "miss": 0,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31014280",
+  "employer": "Abbas Transport Sverige AB",
+  "host": "arbetsformedlingen.se",
+  "error": "page.goto: Timeout 45000ms exceeded.\nCall log:\n  - navigating to \"https://arbetsformedlingen.se/platsbanken/annonser/31014280\", waiting until \"domcontentloaded\""
+ },
+ {
+  "url": "https://careers.akzonobel.com/job/Malm%C3%B6-Technical-Service-Advisor/1412387133/",
+  "employer": "Akzo Nobel Decorative Coatings AB",
+  "host": "careers.akzonobel.com",
+  "reachedVia": "direct",
+  "fields": 3,
+  "byType": {
+   "text": 2,
+   "number": 1
+  },
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31309281",
+  "employer": "12 & 12 BEHANDLINGSHEM AB",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://apply.workspacerecruit.com/job/17840",
+  "employer": "AB Dogman",
+  "host": "apply.workspacerecruit.com",
+  "reachedVia": "apply-button",
+  "fields": 3,
+  "byType": {
+   "text": 1,
+   "email": 1,
+   "password": 1
+  },
+  "withOptions": 0,
+  "targeted": 1,
+  "filled": {
+   "hit": 1,
+   "miss": 0,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 4,
+  "ok": true
+ },
+ {
+  "url": "https://www.yourfirm.de/job/detail/YF-43593/?utm_source=bundesagentur&utm_medium=unpaid-partner&utm_campaign=000",
+  "employer": "AFRA GmbH",
+  "host": "yourfirm.de",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://www.jobs.ch/de/stellenangebote/detail/1de0caa5-80f4-4e81-9660-2a95832ac7f9/?utm_source=job-room.ch&utm_medium=affiliate&utm_campaign=wb:jobs|tg:b2c|cn:ch|lg:de|ct:targeting,nonbrand,job|cd:feedonomics-jobroom|mg:job-application|pd:n|tt:organic",
+  "employer": "Abacus Business Solutions AG",
+  "host": "jobs.ch",
+  "reachedVia": "direct",
+  "fields": 1,
+  "byType": {
+   "textarea": 1
+  },
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31232512",
+  "employer": "Adanella Entrepreneur AB",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31241360",
+  "employer": "AKTIEBOLAGET BURMANS UR & GULD & OPTIK",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://a-assistans.se/jobba-hos-oss/registrera-dig/",
+  "employer": "A-ASSISTANS LEIMIR AB",
+  "host": "a-assistans.se",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://acciona-energia.com/en/careers/jobs-usa-canada",
+  "employer": "Acciona Energía",
+  "host": "acciona-energia.com",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31308640",
+  "employer": "AC Proviant Hornsberg AB",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31256918",
+  "employer": "AB HELMILJÖ I LUDVIKA",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://easyapply.jobs/r/EI2GjME26LBjBE3ctVQX",
+  "employer": "Addici Security AB",
+  "host": "easyapply.jobs",
+  "reachedVia": "direct",
+  "fields": 18,
+  "byType": {
+   "text": 2,
+   "email": 1,
+   "tel": 1,
+   "url": 1,
+   "textarea": 1,
+   "file": 2,
+   "checkbox": 2,
+   "radio": 8
+  },
+  "withOptions": 8,
+  "targeted": 3,
+  "filled": {
+   "hit": 3,
+   "miss": 0,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://career.svenskaspel.se/jobs/7915866-strategy-manager/applications/new?promotion=2076238-arbetsformedlingen",
+  "employer": "AB SVENSKA SPEL",
+  "host": "career.svenskaspel.se",
+  "reachedVia": "direct",
+  "fields": 10,
+  "byType": {
+   "radio": 1,
+   "checkbox": 3,
+   "textarea": 2,
+   "text": 2,
+   "email": 1,
+   "tel": 1
+  },
+  "withOptions": 1,
+  "targeted": 4,
+  "filled": {
+   "hit": 4,
+   "miss": 0,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://www.arbeitsagentur.de/jobsuche/jobdetail/10001-1003333009-S",
+  "employer": "Ai-Bridge GmbH",
+  "host": "arbeitsagentur.de",
+  "reachedVia": "direct",
+  "fields": 1,
+  "byType": {
+   "text": 1
+  },
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/ag1/jobs/5288434008",
+  "employer": "Ag1",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 17,
+  "byType": {
+   "text": 12,
+   "tel": 1,
+   "file": 2,
+   "textarea": 2
+  },
+  "withOptions": 5,
+  "targeted": 10,
+  "filled": {
+   "hit": 7,
+   "miss": 3,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://jobb.bostader.boras.se/jobs/8013090-vi-soker-fastighetsskotare/applications/new?promotion=2116595-arbetsformedlingen",
+  "employer": "AKTIEBOLAGET BOSTÄDER I BORÅS",
+  "host": "jobb.bostader.boras.se",
+  "reachedVia": "direct",
+  "fields": 11,
+  "byType": {
+   "radio": 2,
+   "textarea": 2,
+   "text": 3,
+   "email": 1,
+   "tel": 1,
+   "checkbox": 2
+  },
+  "withOptions": 2,
+  "targeted": 4,
+  "filled": {
+   "hit": 4,
+   "miss": 0,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://www.arbeitsagentur.de/jobsuche/jobdetail/10000-1207106105-S",
+  "employer": "AKK Altonaer Kinderkrankenhaus gGmbH",
+  "host": "arbeitsagentur.de",
+  "reachedVia": "direct",
+  "fields": 1,
+  "byType": {
+   "text": 1
+  },
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31202094",
+  "employer": "ÅKERSTEDTS VERKSTADS AKTIEBOLAG",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://www.academicwork.se/lediga-jobb/p/platsbanken/575URK",
+  "employer": "ACADEMIC WORK SWEDEN AB",
+  "host": "academicwork.se",
+  "reachedVia": "apply-button",
+  "error": "page.evaluate: Execution context was destroyed, most likely because of a navigation"
+ },
+ {
+  "url": "https://www.jobup.ch/fr/emplois/detail/696d2329-ee7e-4fdd-b2fe-0c6d21891d92/?utm_source=job-room.ch&utm_medium=affiliate&utm_campaign=wb:jobup|tg:b2c|cn:ch|lg:fr|ct:targeting,nonbrand,job|cd:feedonomics-jobroom|mg:job-application|pd:n|tt:organic",
+  "employer": "Academic Work Switzerland SA",
+  "host": "jobup.ch",
+  "reachedVia": "direct",
+  "fields": 1,
+  "byType": {
+   "textarea": 1
+  },
+  "withOptions": 1,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 4,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/acumen/jobs/8635730002",
+  "employer": "Acumen",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 13,
+  "byType": {
+   "text": 8,
+   "tel": 1,
+   "file": 1,
+   "textarea": 3
+  },
+  "withOptions": 1,
+  "targeted": 8,
+  "filled": {
+   "hit": 6,
+   "miss": 2,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://absolutebarbecues.com/career-opportunities/",
+  "employer": "Absolute Barbecues (AB's)",
+  "host": "absolutebarbecues.com",
+  "reachedVia": "direct",
+  "fields": 2,
+  "byType": {
+   "select-one": 2
+  },
+  "withOptions": 2,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://karriar.adeocare.se/jobs/8111642-underskoterska-adeocare-norrkoping/applications/new?promotion=2112701-arbetsformedlingen",
+  "employer": "Adeocare AB",
+  "host": "karriar.adeocare.se",
+  "reachedVia": "apply-button",
+  "fields": 10,
+  "byType": {
+   "radio": 3,
+   "checkbox": 1,
+   "text": 3,
+   "email": 1,
+   "tel": 1,
+   "textarea": 1
+  },
+  "withOptions": 3,
+  "targeted": 2,
+  "filled": {
+   "hit": 1,
+   "miss": 1,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://www.jobup.ch/fr/emplois/detail/3dea68ec-b5eb-46ef-9283-3fa4292d7af6/?utm_source=job-room.ch&utm_medium=affiliate&utm_campaign=wb:jobup|tg:b2c|cn:ch|lg:fr|ct:targeting,nonbrand,job|cd:feedonomics-jobroom|mg:job-application|pd:n|tt:organic",
+  "employer": "ACTUAL SWITZERLAND SA",
+  "host": "jobup.ch",
+  "reachedVia": "direct",
+  "fields": 1,
+  "byType": {
+   "textarea": 1
+  },
+  "withOptions": 1,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 4,
+  "ok": true
+ },
+ {
+  "url": "https://jobb.ahlens.se/jobs/7779470-chef-lojalitet-crm-till-ahlens/applications/new?promotion=2016644-arbetsformedlingen",
+  "employer": "Åhléns AB",
+  "host": "jobb.ahlens.se",
+  "reachedVia": "apply-button",
+  "fields": 12,
+  "byType": {
+   "radio": 5,
+   "textarea": 1,
+   "text": 2,
+   "email": 1,
+   "tel": 1,
+   "checkbox": 2
+  },
+  "withOptions": 5,
+  "targeted": 4,
+  "filled": {
+   "hit": 4,
+   "miss": 0,
+   "fillErr": null
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31212464",
+  "employer": "AKTIEBOLAG BERGHEMS MEKANISKA VERKSTAD",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byType": {},
+  "withOptions": 0,
+  "targeted": 0,
+  "filled": {
+   "hit": 0,
+   "miss": 0
+  },
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ }
+]
