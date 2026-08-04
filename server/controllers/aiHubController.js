@@ -5278,6 +5278,20 @@ PHONE — apply these before answering any phone field:
 RULES:
 - Use ONLY real values from the profile for personal facts. NEVER invent names, emails, phones, dates, or employers.
 - For a "select" or "radio" field, the value MUST be EXACTLY one of its provided options (e.g. "Yes"/"No", or an exact option label), copied verbatim — including its language ("Ja"/"Nein", "Oui"/"Non").
+- RADIO GROUPS ("widget":"radiogroup"): ONE field with an "options" array — exactly one answer,
+  copied verbatim from that array. The "label" is the whole question, which on some forms is a
+  paragraph; read all of it before answering.
+- TAG / SKILL FIELDS ("widget":"chips"): the page stores these as chips, one per answer. Return a
+  COMMA-SEPARATED list of the candidate's own values from the profile, most relevant first, max 10.
+- REPEATING SECTIONS ("widget":"repeater"): an "add another" region — its "label" is the region's
+  heading and description ("Experience (optional) Please highlight your work experience...",
+  "Education (optional) Please enter the name of the universities..."). Its value is a JSON ARRAY of
+  row objects, newest first, at most 3 rows, built ONLY from the candidate's resume:
+    "rp:...|repeater": [{"Company":"Acme Ltd","Position":"Senior Engineer","Start date":"2021-04","End date":"2024-08"}]
+  Use plain-English keys naming what each column holds (Company, Position, Title, Start date,
+  End date, School, University, Degree, Field of study, Grade) — the app matches them to whatever
+  the employer's own row actually asks for. Dates as YYYY-MM or YYYY-MM-DD. NEVER invent an employer,
+  a school, a title or a date: if the resume does not hold enough for a row, omit the field entirely.
 - A field with "widget":"combobox" is a custom dropdown. If it lists "options", copy one of them exactly. If it has NO options list, it is a live type-ahead (a city, school or employer picker): give the FULL natural value the candidate would type — "London, United Kingdom" rather than "London".
 - CHECKBOXES (type "checkbox"): return a value ONLY when the box should be TICKED. Never return "No"/"false"/"" for a checkbox — omit it instead (the candidate may have ticked it themselves and a "No" would UNTICK it). NEVER tick a checkbox — or pick the affirmative side of a radio — that agrees to terms, a privacy policy, GDPR/data processing, a declaration of truth, or any consent: put those in "skipped" as "needs your consent".
 - COUNTRY fields: a plain "Country" / "Country of Residence" field takes the profile's country, copied into the field's own spelling. A "Country of Citizenship", "Nationality", "Country of Birth", "Tax residence" or "Passport country" field is a LEGAL question — put it in "skipped" as "needs your judgement" unless the profile has an explicit "nationality" value that answers it.
@@ -5298,11 +5312,15 @@ RULES:
       unless the profile says otherwise.
     • "Do you have experience with X?" / "Years of experience in X" → answer from the résumé's
       skills and experience_years. Never inflate: if X is absent, say so honestly or skip.
-- CHECKBOX GROUPS: several checkboxes can share ONE question — each field is a separate box whose
-  LABEL is one choice ("He/him", "She/her", "They/them", "Prefer not to say"). To pick a choice,
-  return that box's OWN label text as its value (e.g. key "l:he/him|checkbox" → "He/him"). Return a
-  value ONLY for the box that should be ticked; leave the siblings out entirely — never send "No".
-    • Pronouns / gender questions → ONLY if the profile includes an explicit "gender" value. Map it to an option that is LITERALLY present in the field: gender "male" → a He/Him or Male option; "female" → a She/Her or Female option; "prefer not to say" → a "Prefer not to say" / neutral / decline option. If the profile has NO gender value, OMIT the field entirely (leave it blank for the user). NEVER infer gender or pronouns from the candidate's name or anything else.
+- CHECKBOX GROUPS ("widget":"checkboxgroup"): ONE field, ONE question, with an "options" array of
+  the choices ("He/him", "She/her", "They/them", "Prefer not to say"). Answer it with the option
+  text copied EXACTLY from its own options array. Several answers are allowed — separate them with
+  commas ("English, French") — but only when the question really does accept more than one. Omit the
+  field entirely to leave every box unticked; never send "No" or "None".
+    • An older form of this exists: a checkbox whose own LABEL is a single choice, with no options
+      array. There, return that box's own label text as its value (key "l:he/him|checkbox" →
+      "He/him") and leave its siblings out entirely.
+    • Pronouns / gender questions (whether a checkboxgroup, a radiogroup or a select) → ONLY if the profile includes an explicit "gender" value. Map it to an option that is LITERALLY present in the field: gender "male" → a He/Him or Male option; "female" → a She/Her or Female option; "prefer not to say" → a "Prefer not to say" / neutral / decline option. If the profile has NO gender value, OMIT the field entirely (leave it blank for the user). NEVER infer gender or pronouns from the candidate's name or anything else.
 - DO NOT answer — put in "skipped" with "needs your judgement" — any question that needs the candidate's own judgement or legal/personal attestation:
     • work authorization / right to work / visa / sponsorship / immigration status
     • salary / compensation / notice period / availability date
@@ -5476,6 +5494,16 @@ RULES:
                 if (!f || !Array.isArray(f.options) || !f.options.length) continue;
                 const cur = String(values[k]);
                 if (f.options.some((o) => String(o) === cur)) continue;      // already exact
+                // A multi-answer field carries SEVERAL answers in one value. Snapping the whole
+                // comma list against the option list matches nothing, so "English, French" was
+                // deleted wholesale as "no matching option". Snap the parts, keep what resolves.
+                if (isMultiField(f)) {
+                    const kept = snapMultiValue(f.options, cur);
+                    if (kept) { values[k] = kept.join(', '); continue; }
+                    if (f.optionsTruncated || f.optionsUnknown) continue;
+                    delete values[k]; skipped[k] = 'no matching option';
+                    continue;
+                }
                 const snap = snapToOption(f.options, cur);
                 if (snap) { values[k] = snap; continue; }
                 // Only DELETE when we can see the whole list. Against a truncated one, "not found"
@@ -5495,8 +5523,14 @@ RULES:
                 if (String(f.type || '').toLowerCase() !== 'checkbox') continue;
                 const v = values[f.key];
                 if (v === undefined) continue;
-                const truthy = v === true || /^(yes|true|on|1|checked|ja|oui|si|sim|tak)$/i.test(String(v).trim());
-                if (!truthy) delete values[f.key];
+                // A checkbox GROUP's answer is an option LABEL ("They/them"), not a boolean. The
+                // truthy test below deleted every one of them, so a correct group answer never
+                // reached the device at all and the client's own label-matching branch was dead
+                // code. Keep the parts that ARE options — that is provably not an untick, because
+                // the client only ever ticks a member whose label it matched.
+                const keep = keepCheckboxValue(f, v);
+                if (keep === null) delete values[f.key];
+                else values[f.key] = keep;
             }
         } catch (e) { console.warn('[aiHub] autofillMap checkbox pass skipped:', e.message); }
 
@@ -5521,6 +5555,14 @@ RULES:
         let blanked = 0;
         for (const k of Object.keys(values)) {
             const v = values[k];
+            // A repeater's value is an ARRAY of row objects. String(v) on it is meaningless, so it
+            // is checked for emptiness structurally — and a row that is not an object is not a row.
+            if (Array.isArray(v)) {
+                const rows = v.filter((r) => r && typeof r === 'object' && !Array.isArray(r) && Object.keys(r).length);
+                if (!rows.length) { delete values[k]; blanked++; }
+                else values[k] = rows.slice(0, 3);
+                continue;
+            }
             if (v == null || (typeof v !== 'boolean' && String(v).trim() === '')) { delete values[k]; blanked++; }
         }
         if (blanked) console.warn(`[aiHub] autofillMap dropped ${blanked} EMPTY value(s) that would have blanked a field (user ${userId})`);
@@ -5601,6 +5643,46 @@ async function autofillFiles(req, res) {
 // Normalize a form field's question into a stable match key so the SAME question on a
 // DIFFERENT portal resolves to the same memory row. Lowercase, drop punctuation/“*”/
 // “(required)”, collapse whitespace → spaceless token.
+// A field that carries SEVERAL answers in one value: a checkbox group, or a chips/tag widget.
+function isMultiField(f) { return !!(f && (f.multi === true || f.widget === 'checkboxgroup' || f.widget === 'chips')); }
+function splitAnswers(v) { return String(v == null ? '' : v).split(/\s*[,;|]\s*/).map((x) => x.trim()).filter(Boolean); }
+// Resolve each part of a multi-answer value onto a real option. Returns the resolved list, or null
+// when nothing resolved. Snapping the WHOLE comma list matched nothing, so "English, French" used to
+// be deleted wholesale as "no matching option".
+function snapMultiValue(options, v) {
+    const parts = splitAnswers(v);
+    if (!parts.length) return null;
+    const kept = [];
+    for (const part of parts) {
+        if (options.some((o) => String(o) === part)) { if (kept.indexOf(part) < 0) kept.push(part); continue; }
+        const sp = snapToOption(options, part);
+        if (sp && kept.indexOf(sp) < 0) kept.push(sp);
+    }
+    return kept.length ? kept : null;
+}
+// Does this checkbox value survive to the device?
+//   * a checkbox GROUP answers with an option LABEL ("They/them") — keep the parts that ARE options.
+//     This is provably not an untick: the client only ever ticks a member whose label it matched.
+//   * a LONE checkbox answers with a boolean — anything falsy is dropped, because keepUser() cannot
+//     protect a checkbox and a "No" would UNTICK a box the applicant ticked by hand.
+// Returns the value to keep, or null to delete it.
+function keepCheckboxValue(field, v) {
+    if (v === undefined) return undefined;
+    const opts = (field && Array.isArray(field.options)) ? field.options.map(String) : [];
+    if (opts.length) {
+        // Return the OPTION's own spelling, not the applicant's: everything downstream compares
+        // against the page's exact text, and handing it "they/them" for "They/them" only works by
+        // accident of a case-insensitive matcher.
+        const kept = [];
+        for (const part of splitAnswers(v)) {
+            const hit = opts.find((o) => o.toLowerCase() === part.toLowerCase());
+            if (hit && kept.indexOf(hit) < 0) kept.push(hit);
+        }
+        if (kept.length) return kept.join(', ');
+    }
+    const truthy = v === true || /^(yes|true|on|1|checked|ja|oui|si|sim|tak)$/i.test(String(v).trim());
+    return truthy ? v : null;
+}
 function normalizeQ(s) {
     return String(s || '')
         .toLowerCase()
@@ -5799,6 +5881,10 @@ module.exports = {
     getJobUrlOverride,
     setJobUrlOverride,
     autofillMap,
+    // exported for the post-pass unit test (no database needed)
+    snapMultiValue,
+    keepCheckboxValue,
+    isMultiField,
     autofillFiles,
     recordAutofillMemory,
     smartFillData,
