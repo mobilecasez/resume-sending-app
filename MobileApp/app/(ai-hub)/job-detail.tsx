@@ -1596,8 +1596,13 @@ const JS_HELPERS = `
           var got=dialOf(dialShownOf(dialEl));
           // The picker's code must be a genuine prefix of this number. That single test is both
           // "did our pick land" and "do these two fields still describe the user's number".
-          var split=!!(got && full.indexOf(got)===0 && full.length>got.length);
-          var target=split ? full.slice(got.length) : '+'+full;
+          var landed=!!(got && full.indexOf(got)===0 && full.length>got.length);
+          // ...and splitting must ALSO be something phoneLocal would have done. It owns the label
+          // guard: "Phone number (including country code)" keeps its code even next to a dial
+          // picker, and reconciling without asking would strip the very thing that label requests.
+          var intl='+'+full, split=landed;
+          try{ if(landed && phoneLocal(intl, numEl)===intl) split=false; }catch(e){}
+          var target=split ? full.slice(got.length) : intl;
           if(sameAnswer(numEl.value, target)) return;        // already in the right shape
           bringIntoView(numEl);
           try{ numEl.focus(); }catch(e){}
@@ -1606,8 +1611,9 @@ const JS_HELPERS = `
           if(sameAnswer(numEl.value, target)){ filled[phoneRec.s]=true; delete fails[phoneRec.s]; }
           else { delete filled[phoneRec.s]; fails[phoneRec.s]={key:phoneRec.s,label:nlbl(numEl).slice(0,90),why:'please check your phone number'}; }
           // Say so out loud. A dial picker we could not set is the user's to fix, and they need to
-          // know the number now carries its country code so they do not add it twice.
-          if(!split && dsig){
+          // know the number now carries its country code so they do not add it twice. Keyed on
+          // LANDED, not on split: a label that asked for the full number is not a picker failure.
+          if(!landed && dsig){
             delete filled[dsig];
             fails[dsig]={key:dsig,label:nlbl(dialEl).slice(0,90),why:'we could not set the country code — your full international number is in the phone box instead'};
           }
@@ -1731,7 +1737,21 @@ const JS_HELPERS = `
       var d=s.replace(/[^0-9]/g,''); if(!d) return '';
       if(/^\\s*\\+/.test(s)) return d;
       if(/^\\s*00\\d/.test(s)) return d.replace(/^0+/,'');     // 0091… is +91…
-      return wd ? wd+d : '';
+      if(!wd) return '';
+      // No "+" and no "00", so these digits are NATIONAL and the code has to be prepended — but
+      // only where that is a fact rather than a guess. The server's own split hands us a bare
+      // national number, while a learned or model-written answer can arrive in any shape:
+      //   "919970020596" (their number, no plus) → blind concatenation invents +91919970020596
+      //   "09970020596"  (national trunk zero)   → blind concatenation invents +9109970020596
+      // Both were then WRITTEN INTO the number box on the pick-failed path — unsplit, and wrong.
+      // A trunk zero is never part of the international number, so drop it (Italy keeps its 0 —
+      // the same exception splitPhone makes on the server). Digits that ALREADY begin with the
+      // code are genuinely ambiguous: "9198765432" is both "91 + 98765432" and a valid ten-digit
+      // Indian mobile, and no length rule tells them apart without a per-country table. So we
+      // return '' and phoneReconcile leaves the box exactly as the page has it; the dropdown we
+      // could not set is still reported by drain(). Never invent a number to look complete.
+      if(d.indexOf(wd)===0) return '';
+      return wd + (wd==='39' ? d : d.replace(/^0+/,''));
     }catch(e){ return ''; }
   }
   // Does this page carry a SEPARATE dial-code control (a phone-code select, or a combo labeled

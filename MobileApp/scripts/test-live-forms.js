@@ -327,6 +327,25 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   ok('the number keeps its country code when nothing set the picker', digits(noDial.phone) === '919970020596', noDial.phone);
   ok('THE REAL FORM WAS NEVER SUBMITTED (no-dial case)', noDial.submits === 0, noDial.submits);
 
+  // ── The restore path must not INVENT a number ────────────────────────────────────────────────
+  // The server's own split hands us a bare national number, but a learned answer (harvested from
+  // what the user typed by hand) or a model-written one arrives in whatever shape they wrote it.
+  // Prepending the dial code blind then wrote a number that belongs to nobody into the box on the
+  // pick-failed path — the exact class of bug the invariant exists to prevent, one step later.
+  console.log('\nphone split — the number ALREADY carries its code (no plus) and the pick FAILS');
+  const dupe = await runFill({ [DIAL_KEY]: '+91', [NUM_KEY]: '919970020596' }, true);
+  console.log('    result:', JSON.stringify(dupe));
+  ok('the country code is not prepended a SECOND time', digits(dupe.phone) !== '91919970020596', dupe.phone);
+  ok('an ambiguous number is left exactly as the page has it', digits(dupe.phone) === '919970020596', dupe.phone);
+  ok('THE REAL FORM WAS NEVER SUBMITTED (already-coded case)', dupe.submits === 0, dupe.submits);
+
+  console.log('\nphone split — a national TRUNK ZERO and the pick FAILS');
+  const trunk = await runFill({ [DIAL_KEY]: '+91', [NUM_KEY]: '09970020596' }, true);
+  console.log('    result:', JSON.stringify(trunk));
+  ok('the trunk zero is dropped, not buried inside the country code', digits(trunk.phone) !== '9109970020596', trunk.phone);
+  ok('the restored number is the real international one', digits(trunk.phone) === '919970020596', trunk.phone);
+  ok('THE REAL FORM WAS NEVER SUBMITTED (trunk-zero case)', trunk.submits === 0, trunk.submits);
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   await browser.close();
   process.exit(fail ? 1 : 0);
