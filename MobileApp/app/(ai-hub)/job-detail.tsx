@@ -582,6 +582,326 @@ const JS_HELPERS = `
     return 'd:'+p+'|'+t;
   }
   function radioQuestion(el){ var name=el.name; var esc=(window.CSS&&CSS.escape)?CSS.escape(name||''):(name||''); var rs=name?document.querySelectorAll('input[type=radio][name="'+esc+'"]'):[el]; var opts=[]; for(var i=0;i<rs.length;i++){ var o=nlbl(rs[i])||rs[i].value||''; if(o) opts.push(o); } var p=el.parentElement,h=0; while(p&&h<8){ var txt=(p.innerText||'').replace(/\\s+/g,' ').trim(); var strip=txt; for(var k=0;k<opts.length;k++){ if(opts[k]) strip=strip.split(opts[k]).join(' '); } strip=strip.replace(/\\s+/g,' ').replace(/\\*/g,'').trim(); if(strip.length>=4&&strip.length<=180) return strip; h++; p=p.parentElement; } return nlbl(el); }
+  // ── GROUPS: one question, many members ───────────────────────────────────────────────────────
+  // Radios and checkboxes are the DOMINANT control type on real application forms (93 radios / 87
+  // checkboxes / 27 groups across 28 measured pages), and neither was handled as a group.
+  //   • RADIOS were grouped by sig(), which is the NAME attribute. A design-system form renders its
+  //     radios with no name at all — measured on Revolut, where the "Yes, I consent / No, I don't
+  //     consent" pair arrived as two unrelated one-option "groups" that no mapper could answer.
+  //   • CHECKBOXES were never grouped. Where they DO share a name (Lever) sig() gave every member
+  //     the same key and snap()'s dedupe kept only the first: 74 visible boxes collapsed to 8
+  //     fields labelled "LICSW" / "ADHD" / "He/him", carrying no options and no question.
+  // Group identity is therefore structural, and its fallback is the members' OWN text — never a
+  // framework id, which changes on every render.
+  function grpType(el){ var t=(el.type||'').toLowerCase(); return (t==='radio'||t==='checkbox')?t:''; }
+  // The SMALLEST ancestor that holds every member and no other kind of control. Smallest matters:
+  // the next one up on the measured Revolut form also swallows the section heading, and the one
+  // above that swallows the whole form.
+  function grpHost(el, t){
+    var chain=[], p=el.parentElement, h=0, max=0;
+    while(p && h<8){
+      var ins=[]; try{ ins=p.querySelectorAll?p.querySelectorAll('input,textarea,select'):[]; }catch(e){}
+      var same=0, other=0;
+      for(var i=0;i<ins.length;i++){
+        var tt=(ins[i].type||'').toLowerCase();
+        if(tt===t) same++;
+        else if(['hidden','submit','reset','image'].indexOf(tt)<0) other++;
+      }
+      if(other>0) break;                       // grew past the group's own box
+      chain.push({el:p, same:same}); if(same>max) max=same;
+      h++; p=p.parentElement;
+    }
+    if(max<2) return null;
+    for(var j=0;j<chain.length;j++){ if(chain[j].same===max) return chain[j].el; }
+    return null;
+  }
+  // Members by NAME first (that is what the HTML says a radio group is), else by the structural
+  // host. Filtering ctrls() rather than building a selector avoids CSS.escape entirely — a name
+  // holding a quote or a bracket used to throw and lose the whole group.
+  function grpMembers(el, t){
+    var out=[], i, all=ctrls();
+    if(el.name){
+      for(i=0;i<all.length;i++){ if((all[i].type||'').toLowerCase()===t && all[i].name===el.name) out.push(all[i]); }
+      if(out.length>=2) return out;
+      out=[];
+    }
+    var host=grpHost(el,t);
+    if(host){ for(i=0;i<all.length;i++){ if((all[i].type||'').toLowerCase()===t){ try{ if(host.contains(all[i])) out.push(all[i]); }catch(e){} } } }
+    return out.length>=2?out:[];
+  }
+  function grpOpts(mem){
+    var out=[];
+    for(var i=0;i<mem.length;i++){ var o=(nlbl(mem[i])||mem[i].value||'').replace(/\\s+/g,' ').trim().slice(0,80); if(o&&out.indexOf(o)<0) out.push(o); }
+    return out;
+  }
+  // The question is the host's text with every option label subtracted. Climb until something is
+  // left over: the host of a pill row is often just the pills.
+  // Stop at the NEAREST ancestor that has anything left over — that is the question. Climbing on
+  // past it only adds the section heading and eventually the whole form. A long leftover is still
+  // the right text (Revolut's consent question is a whole paragraph), so it is sliced, not rejected:
+  // rejecting it fell through to the fallback and labelled the group with its own first option.
+  function grpQuestion(host, opts, fallbackEl){
+    var p=host, h=0;
+    while(p && h<5){
+      var txt=(p.innerText||'').replace(/\\s+/g,' ').trim(), strip=txt;
+      for(var k=0;k<opts.length;k++){ if(opts[k]) strip=strip.split(opts[k]).join(' '); }
+      strip=strip.replace(/\\s+/g,' ').replace(/\\*/g,'').trim();
+      if(strip.length>=4 && strip.length<=600) return strip.slice(0,220);
+      h++; p=p.parentElement;
+    }
+    return fallbackEl?nlbl(fallbackEl):'';
+  }
+  // Stable key for the WHOLE group.
+  //  • named group  → 'n:<name>|<type>', byte-identical to what sig() already returns, so every
+  //    server mapping and every learned answer keyed on the old value still lands.
+  //  • unnamed group → structure (the host's DOM path) plus meaning (the question and the first
+  //    options). Path alone can repeat between two identical branches; text alone can repeat
+  //    between two identically-worded questions. Together they have not collided on any real page.
+  function grpKey(el){
+    var t=grpType(el); if(!t) return null;
+    try{ if(el.__cvfGrpK!==undefined) return el.__cvfGrpK; }catch(e){}
+    var key=null;
+    var mem=grpMembers(el,t);
+    if(mem.length>=2){
+      if(el.name) key='n:'+el.name+'|'+t;
+      else {
+        var host=grpHost(el,t);
+        var opts=grpOpts(mem);
+        var q=grpQuestion(host,opts,null);
+        key=('g:'+t+'|'+(host?domPath(host):'')+'|'+(q+'#'+opts.slice(0,3).join('~')).toLowerCase()).slice(0,160);
+      }
+    }
+    for(var i=0;i<mem.length;i++){ try{ mem[i].__cvfGrpK=key; }catch(e){} }
+    try{ el.__cvfGrpK=key; }catch(e){}
+    return key;
+  }
+  // Match the intended answer to one member. Exact, then starts-with, then a confident Yes/No
+  // rewording ("yes" against "Yes, I consent"), then contains, then the shared fuzzy matcher.
+  // Ordered so the SPECIFIC beats the merely-overlapping: "no" must never latch onto "Yes, I do not
+  // object" just because it contains the letters.
+  function grpPick(mem, want){
+    var w=cleanTxt(want).toLowerCase(); if(!w) return null;
+    var i, l, labels=[], sw=null, ct=null;
+    for(i=0;i<mem.length;i++) labels.push(cleanTxt(nlbl(mem[i])||mem[i].value||'').toLowerCase());
+    for(i=0;i<mem.length;i++){
+      l=labels[i]; if(!l) continue;
+      if(l===w) return mem[i];
+      if(!sw && l.indexOf(w)===0) sw=mem[i];
+      if(!ct && (l.indexOf(w)>=0 || (w.length>=4 && w.indexOf(l)>=0))) ct=mem[i];
+    }
+    if(sw) return sw;
+    var yn = /^(yes|y|true|1)$/.test(w) ? 1 : (/^(no|n|false|0)$/.test(w) ? 2 : 0);
+    if(yn){
+      for(i=0;i<mem.length;i++){
+        l=labels[i]; if(!l) continue;
+        if(yn===1 && /^(yes|ja|oui|si|sim|tak|yep)\\b/.test(l)) return mem[i];
+        if(yn===2 && /^(no|nein|non|nao|nie|nej)\\b/.test(l)) return mem[i];
+      }
+    }
+    if(ct) return ct;
+    var pool=[]; for(i=0;i<mem.length;i++) pool.push({text:labels[i], el:mem[i]});
+    var fz=pickOptFuzzy(pool, w);
+    return fz?fz.el:null;
+  }
+  // ── Visually-hidden controls that the applicant CAN see and click ────────────────────────────
+  // 42 of 120 radios and 15 of 103 checkboxes across the corpus are opacity:0 / offsetParent-null /
+  // display:none natives sitting under a visible pill or tile. vis() rejected all of them, so
+  // snap() never scanned them, fillVisible() never filled them, and they were never even reported
+  // as skipped — on Workable the engine claimed zero radio groups on a form with three REQUIRED
+  // yes/no questions. The discriminator is the proxy: a hidden control with nothing visible standing
+  // in for it is not a question being asked, and a cookie banner's categories are never ours.
+  var CB_BANNER=/cookie|onetrust|cookiebot|truste|usercentrics|klaro|gdpr-?(banner|bar)|consent-?(banner|bar|manager)|privacy-?(banner|bar)/i;
+  function inBanner(el){
+    var p=el, h=0;
+    while(p && h<7){
+      try{
+        var hay=String(p.id||'')+' '+cbClassOf(p)+' '+String((p.getAttribute&&p.getAttribute('data-testid'))||'');
+        if(CB_BANNER.test(hay)) return true;
+      }catch(e){}
+      h++; p=p.parentElement;
+    }
+    return false;
+  }
+  function proxyOf(el){
+    try{
+      if(el.labels){ for(var i=0;i<el.labels.length;i++){ if(vis(el.labels[i])) return el.labels[i]; } }
+      if(el.id){ try{ var lf=document.querySelector('label[for="'+(window.CSS&&CSS.escape?CSS.escape(el.id):el.id)+'"]'); if(lf&&vis(lf)) return lf; }catch(e){} }
+      var p=el.parentElement,h=0;
+      while(p&&h<3){
+        if(vis(p)){ var r=p.getBoundingClientRect(); if(r.width>0&&r.height>0&&r.height<=200) return p; }
+        h++; p=p.parentElement;
+      }
+    }catch(e){}
+    return null;
+  }
+  // vis() for anything that is not a tick control; vis-OR-visible-proxy for radios and checkboxes.
+  function visCtl(el){
+    if(vis(el)) return true;
+    var t=(el.type||'').toLowerCase();
+    if(t!=='radio'&&t!=='checkbox') return false;
+    if(inBanner(el)) return false;
+    return !!proxyOf(el);
+  }
+  // Tick a control that may be invisible: the native setter first (React reads that), then the
+  // visible pill as a fallback. Guarded on el.checked so we can never TOGGLE OFF what just landed.
+  function tickOn(el){
+    try{
+      if(el.checked) return true;
+      bringIntoView(el);
+      setChecked(el,true);
+      if(el.checked) return true;
+      var px=proxyOf(el);
+      if(px && px!==el){ cbSafeClick(px); }
+      if(!el.checked && !vis(el)){ try{ el.click(); }catch(e){} }
+    }catch(e){}
+    try{ return !!el.checked; }catch(e){ return false; }
+  }
+  // Consent wording, on the option label or the group's question. Every control we tick that matches
+  // this is listed back to the applicant before they submit — they agreed to it, so they must see it.
+  var CB_CONSENT=/\\b(consent|agree|agreement|privacy|gdpr|terms|permission|authoris|authoriz|policy|declaration|declare|process my|processing of my|opt[- ]?in|einverstanden|zustimm|datenschutz|akzeptier|consens|accepte|autorise|acuerdo|acepto|consinto)\\b/i;
+  function isConsentText(s){ try{ return CB_CONSENT.test(String(s||'')); }catch(e){ return false; } }
+  // ── REPEATERS: "add another" regions ─────────────────────────────────────────────────────────
+  // Vendors word the button differently — "+ Add" (Workable), "Add file" (Personio), "Add"
+  // (Revolut) — so TEXT MATCHING IS NOT DETECTION. The test is structural and it is the click
+  // itself: a repeater is a control which, when pressed, increases the number of form controls.
+  //
+  // ⚠️ Count the DOCUMENT, not the button's own container. Measured on the real Revolut form: "Add"
+  // under "Experience (optional)" takes the document from 22 controls to 27 (Company, Position,
+  // Start date, End date, "I still work here") while the button's own container, and even the
+  // <form>, are byte-identical afterwards — the new row is rendered into a portal.
+  //
+  // The scan only names CANDIDATES; it never clicks. The click that proves a repeater also adds a
+  // row, and a row we have no data for is a row the applicant has to delete by hand.
+  var RP_DENY=/\\b(attach|attachment|upload|browse|choose|file|photo|image|remove|delete|close|cancel|back|previous|clear|reset|edit|search|filter|sign|login|register|show|hide|more|less|help|menu|share|copy|print|download)\\b/i;
+  function rpKey(el){
+    try{ if(el.__cvfRpK) return el.__cvfRpK; }catch(e){}
+    var k=('rp:'+domPath(el)+'|repeater').slice(0,160);
+    try{ el.__cvfRpK=k; }catch(e){}
+    return k;
+  }
+  // The region a candidate belongs to: the nearest ancestor carrying real prose (its heading and
+  // description) beyond the button's own word — that prose is what tells the mapper whether this
+  // repeats jobs, schools or documents.
+  function rpRegion(el){
+    var p=el.parentElement,h=0,btx=cbText(el);
+    while(p&&h<5){
+      if(p.tagName==='FORM') return null;
+      var tx=(p.innerText||'').replace(/\\s+/g,' ').trim();
+      if(tx.length>420) return null;
+      var rest=btx?tx.split(btx).join(' ').replace(/\\s+/g,' ').trim():tx;
+      if(rest.length>=8) return {el:p, label:rest};
+      h++; p=p.parentElement;
+    }
+    return null;
+  }
+  function repeaterCands(){
+    var out=[], cands=[];
+    try{ cands=deepQuery('button,[role=button],a[role=button]'); }catch(e){ return out; }
+    for(var i=0;i<cands.length && out.length<4;i++){
+      var b=cands[i];
+      try{
+        if(!vis(b)) continue;
+        if(!(b.closest && b.closest('form'))) continue;             // page chrome is never a repeater
+        var at=String((b.getAttribute&&b.getAttribute('type'))||'').toLowerCase();
+        if(at==='submit'||at==='reset'||at==='image') continue;
+        if(b.getAttribute && b.getAttribute('form')) continue;      // submits a form it is not inside
+        var tx=cbText(b);
+        if(!tx || tx.length>24) continue;
+        if(CB_SUBMIT.test(tx) || RP_DENY.test(tx)) continue;
+        var al=(b.getAttribute&&(b.getAttribute('aria-label')||b.getAttribute('title')))||'';
+        if(al && (CB_SUBMIT.test(al)||RP_DENY.test(al))) continue;
+        if(isCombo(b)) continue;
+        if(b.querySelector && b.querySelector('input,textarea,select')) continue;
+        var reg=rpRegion(b); if(!reg) continue;
+        out.push({el:b, key:rpKey(b), label:reg.label});
+      }catch(e){}
+    }
+    return out;
+  }
+  // ── CHIP / TAG inputs ────────────────────────────────────────────────────────────────────────
+  // A tag widget keeps its answers as CHIPS, not as the input's value: setNative writes text that
+  // disappears on blur and still reads back as a successful fill, which is exactly what "adding
+  // skills does not work" looks like from the inside.
+  // Claim chip mode only on hard structural evidence. A plain "Skills" text box that genuinely
+  // takes a comma-separated list must keep the plain-text path — and chipFill falls back to it
+  // anyway, so a false positive costs nothing.
+  var CHIP_CLS=/multi-?value|(^|[-_])chips?([-_]|$)|(^|[-_])tags?([-_]|$)|(^|[-_])tokens?([-_]|$)|(^|[-_])pills?([-_]|$)/i;
+  function isChipInput(el){
+    try{
+      if(!el || el.tagName!=='INPUT') return false;
+      var t=(el.type||'').toLowerCase();
+      if(['text','search',''].indexOf(t)<0) return false;
+      if(el.readOnly) return false;
+      if(el.getAttribute && el.getAttribute('aria-multiselectable')==='true') return true;
+      var w=cbCtrl(el);
+      if(w && w.querySelector){
+        if(w.querySelector('[class*=multi-value],[class*=multiValue]')) return true;
+        var kids=w.querySelectorAll('[class]');
+        for(var i=0;i<kids.length&&i<80;i++){ if(kids[i]!==el && CHIP_CLS.test(cbClassOf(kids[i]))) return true; }
+      }
+    }catch(e){}
+    return false;
+  }
+  // Everything the widget currently shows as chosen, as normalised text. Used to VERIFY a chip
+  // landed — el.value is worthless here, it is cleared on every commit.
+  function chipTexts(el){
+    var out=[];
+    try{
+      var w=cbCtrl(el); if(!w||!w.querySelectorAll) return out;
+      var ns=w.querySelectorAll('[class*=multi-value],[class*=multiValue],[class*=chip],[class*=tag],[class*=token],[class*=pill],li,[role=button]');
+      for(var i=0;i<ns.length&&out.length<40;i++){
+        if(ns[i]===el) continue;
+        if(ns[i].querySelector && ns[i].querySelector('input')) continue;
+        var t=cbNorm(cbText(ns[i]).replace(/[\\u00D7\\u2715\\u2716\\u274C]/g,'').replace(/\\bremove\\b/i,'').trim());
+        if(t && t.length<=60 && out.indexOf(t)<0) out.push(t);
+      }
+    }catch(e){}
+    return out;
+  }
+  // A synthetic Enter never triggers the browser's own implicit form submission (default actions
+  // only run for trusted events) — but the PAGE's own keydown handler can still call submit(). So
+  // every Enter we send is wrapped in a shield: for the length of the dispatch, a submit is not
+  // something the applicant asked for, and it is refused on all three routes.
+  // Answer a whole group at once. Returns {ok, label, why, consented[]}. Never unticks anything:
+  // a member the applicant already chose is counted as a hit and left exactly as it is.
+  function grpSet(anyMember, t, v){
+    var res={ok:false,label:'',why:'none of these answers matched the options',consented:[]};
+    var mem=grpMembers(anyMember,t);
+    if(mem.length<2){ res.why='we could not read this question\\u2019s options'; return res; }
+    var opts=grpOpts(mem);
+    res.label=grpQuestion(grpHost(anyMember,t),opts,anyMember);
+    var wants=multiVals(v); if(!wants.length) wants=[String(v)];
+    wants=(t==='radio')?wants.slice(0,1):wants.slice(0,10);
+    var hits=0;
+    for(var i=0;i<wants.length;i++){
+      var m=grpPick(mem, wants[i]);
+      if(!m) continue;
+      var was=!!m.checked;
+      if(was || tickOn(m)){
+        hits++;
+        if(!was && isConsentText(nlbl(m)+' '+res.label)) res.consented.push({label:res.label.slice(0,140), answer:cleanTxt(nlbl(m)).slice(0,80)});
+      }
+      if(t==='radio') break;
+    }
+    res.ok=hits>0;
+    return res;
+  }
+  function chipEnter(el){
+    var block=function(e){ try{ e.preventDefault(); e.stopImmediatePropagation(); }catch(_){} };
+    var ps=null, pr=null;
+    try{
+      document.addEventListener('submit', block, true);
+      ps=window.HTMLFormElement.prototype.submit; pr=window.HTMLFormElement.prototype.requestSubmit;
+      window.HTMLFormElement.prototype.submit=function(){};
+      window.HTMLFormElement.prototype.requestSubmit=function(){};
+      var opts={bubbles:true,cancelable:true,key:'Enter',code:'Enter',keyCode:13,which:13};
+      el.dispatchEvent(new KeyboardEvent('keydown',opts));
+      el.dispatchEvent(new KeyboardEvent('keypress',opts));
+      el.dispatchEvent(new KeyboardEvent('keyup',opts));
+    }catch(e){}
+    try{ document.removeEventListener('submit', block, true); }catch(e){}
+    try{ if(ps) window.HTMLFormElement.prototype.submit=ps; if(pr) window.HTMLFormElement.prototype.requestSubmit=pr; }catch(e){}
+  }
   function fire(el){ el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); }
   function setNative(el, value){ var proto=el.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:(el.tagName==='SELECT'?window.HTMLSelectElement.prototype:window.HTMLInputElement.prototype); var d=Object.getOwnPropertyDescriptor(proto,'value'); if(d&&d.set) d.set.call(el,value); else el.value=value; fire(el); }
   function setChecked(el, val){ var d=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'checked'); if(d&&d.set) d.set.call(el,val); else el.checked=val; el.dispatchEvent(new Event('click',{bubbles:true})); fire(el); }
@@ -1401,6 +1721,9 @@ const JS_HELPERS = `
     try {
       var total = 0; for(var kk in bySig){ if(Object.prototype.hasOwnProperty.call(bySig,kk)) total++; }
       var filled={}, fails={}, deferred=[], dseen={};
+      // Groups are answered ONCE for all their members; chips and repeaters need their own async
+      // phase (a menu to open, a row to appear) so they queue up exactly like the dropdowns do.
+      var grpDone={}, chipQ=[], cseen={}, repQ=[], consented=[];
       // The phone number we wrote, and the number we were HANDED before splitting it. Kept so the
       // split can be undone at the end if the dial half never landed (see phoneReconcile).
       var phoneRec=null;
@@ -1409,8 +1732,27 @@ const JS_HELPERS = `
         for (var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
           if (['hidden','submit','reset','image','file'].indexOf(t)>=0) continue;
           if (t==='button' && !isCombo(el)) continue;   // a button-shaped input that IS a combo (Revolut) stays in
-          if (!vis(el)) continue;
+          if (!visCtl(el)) continue;                    // opacity-0 tick controls with a visible pill are real
           var s = sig(el);
+          // ── GROUPS ────────────────────────────────────────────────────────────────────────
+          // One question, one answer, one attempt — across every member. Handled before the
+          // per-control path so a checkbox group with several answers is not cut short by the
+          // filled[] short-circuit, and so a radio group can pick the BEST member rather than the
+          // first one whose label happens to contain the wanted text.
+          var gt0 = grpType(el);
+          if (gt0){
+            var gk0 = grpKey(el);
+            if (gk0 && (gk0 in bySig) && !grpDone[gk0]){
+              grpDone[gk0]=1;
+              var gv0 = bySig[gk0];
+              if (gv0==null || gv0===''){ filled[gk0]=true; }
+              else {
+                var gr0 = grpSet(el, gt0, gv0);
+                if (gr0.ok){ filled[gk0]=true; delete fails[gk0]; for(var gc=0;gc<gr0.consented.length;gc++) consented.push(gr0.consented[gc]); }
+                else fails[gk0]={key:gk0,label:(gr0.label||nlbl(el)).slice(0,90),why:gr0.why};
+              }
+            }
+          }
           if (!(s in bySig)) continue;
           if (filled[s]) continue;
           var v = bySig[s]; if (v==null || v===''){ filled[s]=true; continue; }
@@ -1442,7 +1784,7 @@ const JS_HELPERS = `
                 var fz=pickOptFuzzy([{text:ol}], want);
                 rok = !!fz;
               }
-              if (rok){ bringIntoView(el); setChecked(el,true); if(el.checked) filled[s]=true; }
+              if (rok && tickOn(el)){ filled[s]=true; noteConsent(el); }
             } else if (el.tagName==='SELECT'){
               bringIntoView(el);
               // MULTI-select: pick every value we can match, not just the first. "Preferred work
@@ -1482,7 +1824,7 @@ const JS_HELPERS = `
               var affirm=/^(yes|true|on|1|checked|y)$/i.test(rawv);
               var negate=/^(no|false|off|0|unchecked|n)$/i.test(rawv);
               if (v===true || affirm){
-                bringIntoView(el); setChecked(el,true); if(el.checked) filled[s]=true;
+                if (tickOn(el)){ filled[s]=true; noteConsent(el); }
               } else if (v===false || negate){
                 // An explicit "no" must never UNTICK something the candidate ticked themselves.
                 filled[s]=true;
@@ -1495,11 +1837,23 @@ const JS_HELPERS = `
                   if(!w||!lab) continue;
                   if(lab===w || lab.indexOf(w)>=0 || w.indexOf(lab)>=0 || pickOptFuzzy([{text:lab}], w)){ hit=true; break; }
                 }
-                if (hit){ bringIntoView(el); setChecked(el,true); if(el.checked) filled[s]=true; }
+                if (hit){ if(tickOn(el)){ filled[s]=true; noteConsent(el); } }
                 else filled[s]=true;   // a sibling box in this group is the answer — leave this one alone
               }
             } else {
               var vv=String(v);
+              // ── CHIPS ──────────────────────────────────────────────────────────────────────
+              // A tag widget stores its answers as chips, not in the input's value: writing the
+              // text here reads back as a successful fill and then vanishes on blur. Queue it for
+              // the async phase, which opens the menu / presses Enter and VERIFIES each chip.
+              if (isChipInput(el)){
+                if (!cseen[s]){
+                  cseen[s]=1;
+                  fails[s]={key:s,label:nlbl(el).slice(0,90),why:'we could not add these — please add them yourself'};
+                  if (chipQ.length<4) chipQ.push({s:s, v:v, label:nlbl(el).slice(0,90)});
+                }
+                continue;
+              }
               // A phone box next to a separate dial-code picker gets the LOCAL number only —
               // otherwise "+91 98765…" lands beside an already-selected "+91". REMEMBER the number
               // we were given: this strip is a bet that the dial picker will accept "+91", and
@@ -1519,6 +1873,190 @@ const JS_HELPERS = `
               else fails[s]={key:s,label:nlbl(el).slice(0,90),why:'the field rejected the value'};
             }
           } catch(e){}
+        }
+      }
+      // RULE: anything we agree to on the applicant's behalf is shown back to them, in full, before
+      // they submit. A tick they never saw is a tick they never made.
+      function noteConsent(el, q){
+        try{
+          var lab=cleanTxt(nlbl(el));
+          if(!isConsentText(lab+' '+(q||''))) return;
+          for(var i=0;i<consented.length;i++){ if(consented[i].label===(q||lab)) return; }
+          if(consented.length<8) consented.push({label:(q||lab).slice(0,140), answer:(q?lab:'Ticked').slice(0,80)});
+        }catch(e){}
+      }
+      // ── CHIP PHASE ───────────────────────────────────────────────────────────────────────────
+      // Per widget, per value: open the menu and click the row if there is one, else send a
+      // shielded Enter — then CHECK that a chip actually appeared. Only a chip that is visible in
+      // the widget counts; el.value proves nothing, it is cleared on every commit.
+      function chipFill(el, v, cb){
+        var wants=multiVals(v); if(!wants.length) wants=[String(v)];
+        wants=wants.slice(0,10);
+        var added=0, missed=[], i=0, t0=Date.now();
+        function has(w){
+          var have=chipTexts(el), n=cbNorm(w);
+          if(!n) return false;
+          for(var k=0;k<have.length;k++){ if(have[k]===n || have[k].indexOf(n)>=0) return true; }
+          return false;
+        }
+        function next(){
+          if(i>=wants.length || Date.now()-t0>16000 || cbAborted()){ finish(); return; }
+          var w=wants[i++];
+          if(has(w)){ added++; next(); return; }          // already there — the applicant's own chip
+          var pre=cbPreOpen();
+          bringIntoView(el);
+          try{ el.focus(); }catch(e){}
+          try{ setNative(el, w); }catch(e){}
+          setTimeout(function(){
+            var pop=cbPopup(el, pre), picked=false;
+            if(pop){
+              var os=cbOptions(el, pop), best=null, n=cbNorm(w);
+              for(var j=0;j<os.length;j++){
+                var tx=cbNorm(cbText(os[j]));
+                if(tx===n){ best=os[j]; break; }
+                if(!best && n && tx.indexOf(n)===0) best=os[j];
+              }
+              if(best) picked=cbSafeClick(best);
+            }
+            setTimeout(function(){
+              if(!picked && !has(w)) chipEnter(el);
+              setTimeout(function(){
+                if(has(w)) added++;
+                else { missed.push(w); try{ setNative(el,''); }catch(e){} }
+                next();
+              }, 340);
+            }, picked?420:140);
+          }, 520);
+        }
+        function finish(){
+          // LAST RESORT: it was not a chip widget after all. Write the plain list exactly as the old
+          // text path did, so a wrong guess about the widget can never lose the answer.
+          if(added===0){ try{ el.focus(); setNative(el, String(v)); el.dispatchEvent(new Event('blur',{bubbles:true})); el.blur(); }catch(e){} }
+          try{ cbEnsureNoneOpen(); }catch(e){}
+          cb({added:added, missed:missed, wanted:wants.length});
+        }
+        next();
+      }
+      function drainChips(done){
+        if(!chipQ.length){ done(); return; }
+        cbGuardOn();
+        var ci=0, t0=Date.now();
+        function fin(){ cbGuardOff(); done(); }
+        function step(){
+          if(ci>=chipQ.length || Date.now()-t0>40000 || cbAborted()){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); return; }
+          var d=chipQ[ci++], el=null, all=ctrls();
+          for(var j=0;j<all.length;j++){ if(sig(all[j])===d.s && vis(all[j])){ el=all[j]; break; } }
+          if(!el){ setTimeout(step,60); return; }
+          chipFill(el, d.v, function(r){
+            if(r.added>=r.wanted){ filled[d.s]=true; delete fails[d.s]; }
+            else if(r.added>0) fails[d.s]={key:d.s,label:d.label,why:'added '+r.added+' of '+r.wanted+' — the rest still need you'};
+            else fails[d.s]={key:d.s,label:d.label,why:'we could not add these — please add them yourself'};
+            setTimeout(step,220);
+          });
+        }
+        step();
+      }
+      // ── REPEATER PHASE ───────────────────────────────────────────────────────────────────────
+      // Click, then COUNT. If the document did not gain controls, this was not a repeater: stop,
+      // and never press it again. Everything here runs behind a submit shield — a submit fired by
+      // one of our synthetic clicks is by definition not something the applicant asked for.
+      function rpFillRow(fresh, row, cb){
+        var keys=[]; for(var kk2 in row){ if(Object.prototype.hasOwnProperty.call(row,kk2)) keys.push(kk2); }
+        var i=0;
+        function valFor(el){
+          var L=cleanTxt(nlbl(el)).toLowerCase(); if(!L) return null;
+          var j;
+          for(j=0;j<keys.length;j++){ if(cleanTxt(keys[j]).toLowerCase()===L) return row[keys[j]]; }
+          var pool=[]; for(j=0;j<keys.length;j++) pool.push({text:keys[j]});
+          var fz=pickOptFuzzy(pool, L);
+          return fz ? row[fz.text] : null;
+        }
+        function step(){
+          if(i>=fresh.length || cbAborted()){ cb(); return; }
+          var el=fresh[i++], t=(el.type||'').toLowerCase();
+          if(['hidden','submit','reset','image','file','button'].indexOf(t)>=0 && !isCombo(el)){ step(); return; }
+          var v=valFor(el);
+          if(v==null || v===''){ step(); return; }
+          try{
+            if(t==='checkbox'){ if(/^(yes|true|on|1|checked)$/i.test(String(v))) tickOn(el); step(); return; }
+            if(t==='radio'){ var gkr=grpKey(el); if(gkr) grpSet(el,'radio',v); else if(grpPick([el],String(v))) tickOn(el); step(); return; }
+            if(el.tagName==='SELECT'){ var mo=pickOpt(el.options,String(v)); if(mo) setNative(el,mo.value); step(); return; }
+            if(isCombo(el)){ openAndPick(el, String(v), function(){ setTimeout(step,260); }); return; }
+            if(t==='date'||t==='month') v=dateVal(v);
+            bringIntoView(el);
+            try{ el.focus(); }catch(e){}
+            setNative(el, String(v));
+            try{ el.dispatchEvent(new Event('blur',{bubbles:true})); el.blur(); }catch(e){}
+          }catch(e){}
+          step();
+        }
+        step();
+      }
+      function rpRun(d, cb){
+        var rows=d.rows.slice(0,3), added=0, t0=Date.now();
+        function step(){
+          if(added>=rows.length || Date.now()-t0>18000 || cbAborted()){ cb(added); return; }
+          var btn=null, all=[];
+          try{ all=deepQuery('button,[role=button],a[role=button]'); }catch(e){}
+          for(var j=0;j<all.length;j++){ if(vis(all[j]) && rpKey(all[j])===d.s){ btn=all[j]; break; } }
+          if(!btn){ cb(added); return; }
+          if(!d.label){ try{ var rg=rpRegion(btn); if(rg) d.label=rg.label.slice(0,90); }catch(e){} }
+          var beforeSet=ctrls(), url=location.href;
+          bringIntoView(btn);
+          if(!cbSafeClick(btn)){ cb(added); return; }
+          setTimeout(function(){
+            if(location.href!==url){ cb(added); return; }     // it navigated — hands off, permanently
+            var after=ctrls(), fresh=[];
+            for(var a=0;a<after.length;a++){ if(beforeSet.indexOf(after[a])<0) fresh.push(after[a]); }
+            // THE STRUCTURAL TEST — and note it counts the DOCUMENT: a repeater row is routinely
+            // rendered into a portal outside the button's container and outside the form.
+            if(!fresh.length){ cb(added); return; }
+            var row=rows[added]; added++;
+            rpFillRow(fresh, row, function(){ setTimeout(step, 360); });
+          }, 1100);
+        }
+        step();
+      }
+      function drainRepeaters(done){
+        if(!repQ.length){ done(); return; }
+        var block=function(e){ try{ e.preventDefault(); e.stopImmediatePropagation(); }catch(_){} };
+        var ps=null, pr=null;
+        try{
+          document.addEventListener('submit', block, true);
+          ps=window.HTMLFormElement.prototype.submit; pr=window.HTMLFormElement.prototype.requestSubmit;
+          window.HTMLFormElement.prototype.submit=function(){};
+          window.HTMLFormElement.prototype.requestSubmit=function(){};
+        }catch(e){}
+        cbGuardOn();
+        var ri=0, t0=Date.now();
+        function fin(){
+          cbGuardOff();
+          try{ document.removeEventListener('submit', block, true); }catch(e){}
+          try{ if(ps) window.HTMLFormElement.prototype.submit=ps; if(pr) window.HTMLFormElement.prototype.requestSubmit=pr; }catch(e){}
+          done();
+        }
+        function step(){
+          if(ri>=repQ.length || Date.now()-t0>40000 || cbAborted()){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); return; }
+          var d=repQ[ri++];
+          rpRun(d, function(n){
+            if(n>0){ filled[d.s]=true; delete fails[d.s]; }
+            else fails[d.s]={key:d.s,label:(d.label||'extra entries').slice(0,90),why:'we could not add these rows — please add them yourself'};
+            setTimeout(step, 260);
+          });
+        }
+        step();
+      }
+      // Repeater keys never appear in ctrls() (they are buttons), so they are collected straight
+      // from the mapping rather than during the scroll pass.
+      function collectRepeaters(){
+        for(var k in bySig){
+          if(!Object.prototype.hasOwnProperty.call(bySig,k)) continue;
+          if(String(k).indexOf('rp:')!==0) continue;
+          var rows=bySig[k];
+          if(typeof rows==='string'){ try{ rows=JSON.parse(rows); }catch(e){ rows=null; } }
+          if(!rows || !rows.length || typeof rows[0]!=='object' || Array.isArray(rows[0])){ filled[k]=true; continue; }
+          if(repQ.length<3) repQ.push({s:k, rows:rows, label:''});
+          else filled[k]=true;
         }
       }
       // Drain the custom dropdowns ONE AT A TIME (each needs its own popup open, so they cannot
@@ -1625,7 +2163,9 @@ const JS_HELPERS = `
         var fl=[], n=0;
         for(var k in fails){ if(Object.prototype.hasOwnProperty.call(fails,k) && !filled[k] && fl.length<12) fl.push(fails[k]); }
         for(var k2 in filled){ if(Object.prototype.hasOwnProperty.call(filled,k2)) n++; }
-        post({type:'FILLED', count:n, total:total, failed:fl, frame:frameFlag});
+        // The consent list is not decoration: RULE — every agreement we tick on the applicant's
+        // behalf is named back to them, in its own wording, before they press submit.
+        post({type:'FILLED', count:n, total:total, failed:fl, consented:consented, frame:frameFlag});
       }
       var passes = 0;
       function pass(){
@@ -1636,9 +2176,19 @@ const JS_HELPERS = `
           if (after > before && after < total && passes < 5){ pass(); }
           // Close every picker BEFORE reconciling: a full-screen sheet still on top of the phone box
           // would swallow the focus/typing that puts the international number back.
-          else { drain(function(){ try{ cbCloseAllOpened(); }catch(e){} setTimeout(function(){ phoneReconcile(); report(); }, 180); }); }
+          else {
+            drain(function(){
+              drainChips(function(){
+                drainRepeaters(function(){
+                  try{ cbCloseAllOpened(); }catch(e){}
+                  setTimeout(function(){ phoneReconcile(); report(); }, 180);
+                });
+              });
+            });
+          }
         });
       }
+      collectRepeaters();
       pass();
     } catch(e){ post({type:'AUTOFILL_ERROR', error:String((e && e.message) || e)}); }
   }
@@ -2034,22 +2584,54 @@ const READ_FIELDS_JS = `(function(){
       for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
         if(['hidden','submit','reset','image'].indexOf(t)>=0) continue;
         if(t==='button' && !isCombo(el)) continue;   // button-shaped inputs that ARE dropdowns (Revolut) stay in
-        if(!vis(el)) continue;
+        if(!visCtl(el)) continue;                    // a hidden tick control with a VISIBLE pill is a real question
         if(isWidgetInternal(el)) continue;
         var s=sig(el);
-        if(t==='radio'){
-          if(!rgroups[s]){ rgroups[s]={key:s,tag:'radio',type:'radio',name:(el.name||'').slice(0,60),label:radioQuestion(el).slice(0,180),required:!!el.required,options:[]}; out.push(rgroups[s]); }
-          var ol=(nlbl(el)||el.value||'').slice(0,80); if(ol&&rgroups[s].options.indexOf(ol)<0) rgroups[s].options.push(ol);
-          continue;
+        // A radio or checkbox GROUP is ONE field with an options list, never N unrelated controls.
+        var gt=grpType(el);
+        if(gt){
+          var gk=grpKey(el);
+          if(gk){
+            if(!rgroups[gk]){
+              var gmem=grpMembers(el,gt), gopts=grpOpts(gmem), greq=false;
+              for(var gi=0;gi<gmem.length;gi++){ if(gmem[gi].required) greq=true; }
+              var gq=grpQuestion(grpHost(el,gt),gopts,el).slice(0,200);
+              rgroups[gk]={key:gk,tag:gt,type:gt,widget:(gt==='radio'?'radiogroup':'checkboxgroup'),
+                name:(el.name||'').slice(0,60),label:gq,required:greq,options:gopts.slice(0,60)};
+              if(gt==='checkbox') rgroups[gk].multi=true;
+              if(isConsentText(gq+' '+gopts.join(' '))) rgroups[gk].consent=true;
+              out.push(rgroups[gk]);
+            }
+            continue;
+          }
+          if(gt==='radio'){
+            // A lone radio keeps exactly the shape it always had.
+            if(!rgroups[s]){ rgroups[s]={key:s,tag:'radio',type:'radio',name:(el.name||'').slice(0,60),label:radioQuestion(el).slice(0,180),required:!!el.required,options:[]}; out.push(rgroups[s]); }
+            var ol=(nlbl(el)||el.value||'').slice(0,80); if(ol&&rgroups[s].options.indexOf(ol)<0) rgroups[s].options.push(ol);
+            continue;
+          }
         }
         if(seen[s]) continue; seen[s]=true;
         var f={key:s,tag:el.tagName.toLowerCase(),type:t,name:(el.name||'').slice(0,60),placeholder:(el.placeholder||'').slice(0,80),label:nlbl(el).slice(0,140),required:!!el.required,accept:(el.getAttribute&&el.getAttribute('accept'))||''};
         if(el.tagName==='SELECT'){ var _all=Array.prototype.slice.call(el.options).map(function(o){return (o.text||'').trim();}).filter(Boolean); f.options=_all.slice(0,80); // A 240-country list truncated to 80 hides India. Flag it so the server does not read the
           // first 80 rows as the whole list and delete the value as "no matching option".
           if(_all.length>80) f.optionsTruncated=true; }
+        else if(isChipInput(el)){ f.widget='chips'; f.multi=true; f.optionsUnknown=true; }
         else if(isCombo(el)){ f.widget='combobox'; f.optionsUnknown=true; }
+        if(t==='checkbox' && isConsentText(f.label)) f.consent=true;   // lone agreement box
         out.push(f);
       }
+      // "Add another" regions. Reported UNCLICKED — the click that proves a repeater is a repeater
+      // also adds a row, and a row we have no data for is a row the applicant has to delete. So the
+      // scan only says "this looks like one"; runFill clicks it exactly when rows arrived for it.
+      try{
+        var rc=repeaterCands();
+        for(var ri=0;ri<rc.length;ri++){
+          if(seen[rc[ri].key]) continue; seen[rc[ri].key]=true;
+          out.push({key:rc[ri].key,tag:'button',type:'repeater',widget:'repeater',name:'',
+            label:rc[ri].label.slice(0,140),required:false,multi:true,rowsUnknown:true});
+        }
+      }catch(e){}
     }
     // SPA forms (SmartRecruiters one-click, Workday, etc.) render their inputs AFTER first paint, so a
     // single scan finds nothing → "No fillable fields found". Retry for ~5s until fields appear.
@@ -2161,18 +2743,45 @@ const FRAME_AGENT_JS = `(function(){
         for(var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
           if(['hidden','submit','reset','image'].indexOf(t)>=0) continue;
           if(t==='button' && !isCombo(el)) continue;
-          if(!vis(el)) continue;
+          if(!visCtl(el)) continue;
           if(isWidgetInternal(el)) continue;
           var s=sig(el);
-          if(t==='radio'){ if(!rgroups[s]){ rgroups[s]={key:s,tag:'radio',type:'radio',name:(el.name||'').slice(0,60),label:radioQuestion(el).slice(0,180),required:!!el.required,options:[]}; out.push(rgroups[s]); } var ol=(nlbl(el)||el.value||'').slice(0,80); if(ol&&rgroups[s].options.indexOf(ol)<0) rgroups[s].options.push(ol); continue; }
+          // Same group rule as the main frame — an ATS iframe carries exactly the same yes/no
+          // questions and pronoun lists, and they must arrive as ONE field there too.
+          var gt=grpType(el);
+          if(gt){
+            var gk=grpKey(el);
+            if(gk){
+              if(!rgroups[gk]){
+                var gmem=grpMembers(el,gt), gopts=grpOpts(gmem), greq=false;
+                for(var gi=0;gi<gmem.length;gi++){ if(gmem[gi].required) greq=true; }
+                var gq=grpQuestion(grpHost(el,gt),gopts,el).slice(0,200);
+                rgroups[gk]={key:gk,tag:gt,type:gt,widget:(gt==='radio'?'radiogroup':'checkboxgroup'),name:(el.name||'').slice(0,60),label:gq,required:greq,options:gopts.slice(0,60)};
+                if(gt==='checkbox') rgroups[gk].multi=true;
+                if(isConsentText(gq+' '+gopts.join(' '))) rgroups[gk].consent=true;
+                out.push(rgroups[gk]);
+              }
+              continue;
+            }
+            if(gt==='radio'){ if(!rgroups[s]){ rgroups[s]={key:s,tag:'radio',type:'radio',name:(el.name||'').slice(0,60),label:radioQuestion(el).slice(0,180),required:!!el.required,options:[]}; out.push(rgroups[s]); } var ol=(nlbl(el)||el.value||'').slice(0,80); if(ol&&rgroups[s].options.indexOf(ol)<0) rgroups[s].options.push(ol); continue; }
+          }
           if(seen[s]) continue; seen[s]=true;
           var f={key:s,tag:el.tagName.toLowerCase(),type:t,name:(el.name||'').slice(0,60),placeholder:(el.placeholder||'').slice(0,80),label:nlbl(el).slice(0,140),required:!!el.required,accept:(el.getAttribute&&el.getAttribute('accept'))||''};
           if(el.tagName==='SELECT'){ var _all=Array.prototype.slice.call(el.options).map(function(o){return (o.text||'').trim();}).filter(Boolean); f.options=_all.slice(0,80); // A 240-country list truncated to 80 hides India. Flag it so the server does not read the
           // first 80 rows as the whole list and delete the value as "no matching option".
           if(_all.length>80) f.optionsTruncated=true; }
+          else if(isChipInput(el)){ f.widget='chips'; f.multi=true; f.optionsUnknown=true; }
           else if(isCombo(el)){ f.widget='combobox'; f.optionsUnknown=true; }
+          if(t==='checkbox' && isConsentText(f.label)) f.consent=true;
           out.push(f);
         }
+        try{
+          var rc=repeaterCands();
+          for(var ri=0;ri<rc.length;ri++){
+            if(seen[rc[ri].key]) continue; seen[rc[ri].key]=true;
+            out.push({key:rc[ri].key,tag:'button',type:'repeater',widget:'repeater',name:'',label:rc[ri].label.slice(0,140),required:false,multi:true,rowsUnknown:true});
+          }
+        }catch(e){}
       }
       // Retry for ~5s so a cross-origin ATS iframe that renders its form late still gets scanned.
       // A child frame that finds nothing must still say DONE — otherwise RN waits for a frame that
@@ -2775,8 +3384,12 @@ export default function JobDetailScreen() {
   const fillCapRef     = useRef<any>(null);
   const runTimerRef    = useRef<any>(null);      // whole-run ceiling (a hung mapping used to spin forever)
   const failedAccumRef = useRef<any[]>([]);      // per-field failures merged across frames
+  // Every consent / agreement control the fill TICKED. RULE: the applicant sees, in the wording the
+  // employer used, everything they are about to agree to — before they press submit.
+  const consentAccumRef = useRef<any[]>([]);
   const fillFinalizedRef = useRef<number>(-1);   // gen whose fill stage already finalized
   const [autofillFailed, setAutofillFailed] = useState<any[]>([]);
+  const [autofillConsented, setAutofillConsented] = useState<any[]>([]);
   // Multi-step forms. Both the main frame and every iframe answer a probe, so we must not act on
   // whichever lands first — on an iframe-hosted ATS the main frame reports "not a wizard" while the
   // iframe holds the truth.
@@ -3573,6 +4186,7 @@ export default function JobDetailScreen() {
     if (skills > 0) parts.push(`${fields > 0 ? 'added' : 'Added'} ${skills} skill${skills === 1 ? '' : 's'}`);
     const failed = failedAccumRef.current.filter((f: any) => f && f.label);
     setAutofillFailed(failed.slice(0, 6));
+    setAutofillConsented(consentAccumRef.current.slice(0, 6));
     if (!parts.length) {
       finishAutofill('done', failed.length
         ? "We couldn't fill this form automatically — the questions below still need you."
@@ -3628,8 +4242,10 @@ export default function JobDetailScreen() {
     pendingScanFramesRef.current = 0;
     pendingFillFramesRef.current = 0;
     failedAccumRef.current = [];
+    consentAccumRef.current = [];
     fillFinalizedRef.current = -1;
     setAutofillFailed([]);
+    setAutofillConsented([]);
     wizProbeRef.current = { seq: wizProbeRef.current.seq + 1, reports: [] };
     for (const r of [fieldsTimerRef, skillsTimerRef, fieldsCapRef, fillCapRef, runTimerRef, filledTimerRef, wizTimerRef]) {
       if (r.current) { clearTimeout(r.current); r.current = null; }
@@ -3704,6 +4320,7 @@ export default function JobDetailScreen() {
 
     const failed = failedAccumRef.current.filter((x: any) => x && x.label);
     setAutofillFailed(failed.slice(0, 6));
+    setAutofillConsented(consentAccumRef.current.slice(0, 6));
     const did = f > 0 || sk > 0
       ? `Filled ${f} field${f === 1 ? '' : 's'}${sk > 0 ? ` and added ${sk} skill${sk === 1 ? '' : 's'}` : ''}`
       : 'Nothing on this step matched your profile';
@@ -3988,6 +4605,11 @@ export default function JobDetailScreen() {
       if (Array.isArray(msg.failed)) {
         for (const f of msg.failed) {
           if (f && f.key && !failedAccumRef.current.some((x: any) => x.key === f.key)) failedAccumRef.current.push(f);
+        }
+      }
+      if (Array.isArray(msg.consented)) {
+        for (const c of msg.consented) {
+          if (c && c.label && !consentAccumRef.current.some((x: any) => x.label === c.label)) consentAccumRef.current.push(c);
         }
       }
       const finalizeFill = () => {
@@ -5300,6 +5922,23 @@ export default function JobDetailScreen() {
                   </View>
                 )}
 
+                {autofillConsented.length > 0 && (
+                  <View style={s.afConsentBox}>
+                    <View style={s.afFailHead}>
+                      <Ionicons name="shield-checkmark-outline" size={14} color={T.blue} />
+                      <Text style={s.afConsentTitle}>YOU AGREED TO — CHECK BEFORE YOU SUBMIT</Text>
+                    </View>
+                    <ScrollView style={s.afFailScroll} nestedScrollEnabled>
+                      {autofillConsented.map((c: any, i: number) => (
+                        <View key={c.label || i} style={s.afFailRow}>
+                          <Text style={s.afFailLabel} numberOfLines={3}>{c.label}</Text>
+                          {!!c.answer && <Text style={s.afConsentAnswer}>Answered: {c.answer}</Text>}
+                        </View>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+
                 {autofillFailed.length > 0 && (
                   <View style={s.afFailBox}>
                     <View style={s.afFailHead}>
@@ -5860,6 +6499,9 @@ const s = StyleSheet.create({
   afFailRow:      { paddingVertical: 5, borderTopWidth: 1, borderTopColor: '#FEF3C7' },
   afFailLabel:    { fontSize: 13, fontWeight: '600', color: T.ink },
   afFailWhy:      { fontSize: 11, color: T.textFaint, marginTop: 1 },
+  afConsentBox:   { marginTop: 12, alignSelf: 'stretch', backgroundColor: '#EFF6FF', borderRadius: 12, borderWidth: 1, borderColor: '#BFDBFE', padding: 12 },
+  afConsentTitle: { fontSize: 10.5, fontWeight: '800', color: '#1D4ED8', letterSpacing: 0.6 },
+  afConsentAnswer:{ fontSize: 11, color: '#1D4ED8', marginTop: 1, fontWeight: '600' },
   afSteps:   { alignSelf: 'stretch', marginTop: 18, gap: 12 },
   afStepRow: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 20 },
   afStepText:{ fontSize: 13.5, color: T.textFaint, flex: 1 },
