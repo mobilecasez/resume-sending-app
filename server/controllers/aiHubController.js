@@ -5037,8 +5037,12 @@ function resolveUserCountry(user, meta) {
         const t = String(text || '').toLowerCase();
         if (!t) return null;
         // longest name first so "united states" wins over a bare "us" fragment
+        // ⚠️ Escape the name before it becomes a pattern. Country names are plain today, but a
+        // single "." or "(" in a future entry would otherwise build a regex that matches the wrong
+        // thing — or throws, which in this function means the whole autofill request 500s.
+        const esc = (x) => String(x).replace(/[.*+?^${}()|[\]\\]/g, (c) => '\\' + c);
         const hit = names.slice().sort((a, b) => b.length - a.length)
-            .find((n) => new RegExp('(^|[^a-z])' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\function splitPhone(raw, countryHint) {') + '([^a-z]|$)').test(t));
+            .find((n) => { try { return new RegExp('(^|[^a-z])' + esc(n) + '([^a-z]|$)').test(t); } catch (e) { return false; } });
         return hit || null;
     };
     const title = (s) => String(s || '').replace(/\b[a-z]/g, (c) => c.toUpperCase());
@@ -5194,7 +5198,12 @@ async function autofillMap(req, res) {
 
         // Fill in the country BEFORE the model ever sees the profile. Without this the model is
         // told nothing and every country field on every form keeps the site's geo-IP default.
-        const _cty = resolveUserCountry(user, meta);
+        // ⚠️ NEVER let working out a country take the whole request down with it. This call was
+        // unguarded, so any throw inside it 500'd autofillMap and the app showed nothing at all —
+        // a nice-to-have field turning into a total outage of the feature.
+        let _cty = { country: null, source: null };
+        try { _cty = resolveUserCountry(user, meta) || _cty; }
+        catch (e) { console.warn('[aiHub] resolveUserCountry failed (continuing without it):', e.message); }
         const profile = { ...(user || {}), resume_metadata: meta || undefined, builder_resume: builder || undefined };
         if (!String(profile.country || '').trim() && _cty.country) {
             profile.country = _cty.country;
