@@ -5278,9 +5278,17 @@ PHONE — apply these before answering any phone field:
 RULES:
 - Use ONLY real values from the profile for personal facts. NEVER invent names, emails, phones, dates, or employers.
 - For a "select" or "radio" field, the value MUST be EXACTLY one of its provided options (e.g. "Yes"/"No", or an exact option label), copied verbatim — including its language ("Ja"/"Nein", "Oui"/"Non").
-- RADIO GROUPS ("widget":"radiogroup"): ONE field with an "options" array — exactly one answer,
-  copied verbatim from that array. The "label" is the whole question, which on some forms is a
-  paragraph; read all of it before answering.
+- RADIO GROUPS ("widget":"radiogroup"): ONE field with an "options" array — exactly ONE answer,
+  copied verbatim from that array. Never return two answers for one of these. The "label" is the
+  whole question, which on some forms is a paragraph; read all of it before answering.
+- ANY field carrying "consent":true is an agreement / declaration / permission control. Put it in
+  "skipped" as "needs your consent" — never answer it — unless it is "required":true AND agreeing is
+  the only way the form can be submitted at all.
+- ANY field carrying "multi":true accepts SEVERAL answers in one comma-separated value. A field
+  without it accepts exactly one.
+- The demographic rule below applies to EVERY shape, including a radiogroup, a checkboxgroup, a
+  chips field and a repeater: race, ethnicity, disability, veteran status, age → omit the field
+  entirely. Never derive any of them from the candidate's name, country, language or résumé.
 - TAG / SKILL FIELDS ("widget":"chips"): the page stores these as chips, one per answer. Return a
   COMMA-SEPARATED list of the candidate's own values from the profile, most relevant first, max 10.
 - REPEATING SECTIONS ("widget":"repeater"): an "add another" region — its "label" is the region's
@@ -5292,6 +5300,10 @@ RULES:
   End date, School, University, Degree, Field of study, Grade) — the app matches them to whatever
   the employer's own row actually asks for. Dates as YYYY-MM or YYYY-MM-DD. NEVER invent an employer,
   a school, a title or a date: if the resume does not hold enough for a row, omit the field entirely.
+    • WHICH SECTION the region wants is in its own label: a work/experience/employment region takes
+      the candidate's EMPLOYERS, an education/university/school region takes their SCHOOLS. Never
+      put an employer in an education region or a school in a work region.
+    • Every cell must be a plain string. Do not nest objects or arrays inside a row.
 - A field with "widget":"combobox" is a custom dropdown. If it lists "options", copy one of them exactly. If it has NO options list, it is a live type-ahead (a city, school or employer picker): give the FULL natural value the candidate would type — "London, United Kingdom" rather than "London".
 - CHECKBOXES (type "checkbox"): return a value ONLY when the box should be TICKED. Never return "No"/"false"/"" for a checkbox — omit it instead (the candidate may have ticked it themselves and a "No" would UNTICK it). NEVER tick a checkbox — or pick the affirmative side of a radio — that agrees to terms, a privacy policy, GDPR/data processing, a declaration of truth, or any consent: put those in "skipped" as "needs your consent".
 - COUNTRY fields: a plain "Country" / "Country of Residence" field takes the profile's country, copied into the field's own spelling. A "Country of Citizenship", "Nationality", "Country of Birth", "Tax residence" or "Passport country" field is a LEGAL question — put it in "skipped" as "needs your judgement" unless the profile has an explicit "nationality" value that answers it.
@@ -5481,6 +5493,55 @@ RULES:
             }
         } catch (e) { console.warn('[aiHub] saved-answers overlay skipped:', e.message); }
 
+        // ── Post-pass 2b: the shapes the model does not have to be trusted with ────
+        // Repeaters, chip inputs and work authorisation are derivable from data the candidate
+        // supplied themselves, so they are computed here rather than hoped for from the model.
+        // Every branch is additive: it fires only when the field is STILL empty after the AI and
+        // the learned answers, and only when the résumé actually holds the fact.
+        //
+        // ⚠️ BACKWARD COMPATIBILITY. All of this keys off `widget` / `multi` / `consent`, which the
+        // shipped app never sends. An older build's payload takes exactly the same path through
+        // this function as it did before.
+        try {
+            let det = 0;
+            for (const f of nonFile) {
+                const widget = String(f.widget || '').toLowerCase();
+                const isRep = widget === 'repeater' || String(f.type || '').toLowerCase() === 'repeater';
+                if (isRep) {
+                    // Whatever the model produced is forced into row shape first; only a repeater
+                    // left EMPTY is built from the résumé.
+                    if (values[f.key] != null) {
+                        const norm = normalizeRepeaterValue(values[f.key]);
+                        if (norm) { values[f.key] = norm; continue; }
+                        delete values[f.key];
+                    }
+                    const kind = repeaterKind(fieldQuestion(f));
+                    if (!kind) continue;                              // unnameable region → leave it
+                    const rows = buildRepeaterRows(kind, profile);
+                    if (rows.length) { values[f.key] = rows; delete skipped[f.key]; det++; }
+                    else if (skipped[f.key] == null) skipped[f.key] = 'not in your profile';
+                    continue;
+                }
+                if (values[f.key] != null) continue;                  // AI or a learned answer won
+                if (f.consent === true) continue;                     // never invented here (RULE below)
+                if (widget === 'chips') {
+                    const chips = chipsAnswer(f, profile);
+                    if (chips) { values[f.key] = chips; delete skipped[f.key]; det++; }
+                    continue;
+                }
+                const wa = learnedWorkAuthAnswer(f, portalQA);
+                if (wa) {
+                    const opts = Array.isArray(f.options) ? f.options : [];
+                    const snap = opts.length ? snapSingleValue(opts, wa) : wa;
+                    // Against a KNOWN option list that does not contain it, the applicant's own
+                    // earlier answer is not usable here — say so instead of forcing it in.
+                    if (snap) { values[f.key] = snap; delete skipped[f.key]; det++; }
+                    else if (!opts.length || f.optionsTruncated || f.optionsUnknown) { values[f.key] = wa; delete skipped[f.key]; det++; }
+                }
+            }
+            if (det) console.log(`[aiHub] deterministic pass filled ${det} new-shape field(s) for user ${userId}`);
+        } catch (e) { console.warn('[aiHub] autofillMap new-shape pass skipped:', e.message); }
+
         // NOTE: the saved-answers overlay runs HERE, before passes 3 and 4 — not after them.
         // Running it last let a learned "No" land on a checkbox after pass 4 had already
         // removed exactly those values, re-introducing the untick it exists to prevent, and
@@ -5504,7 +5565,10 @@ RULES:
                     delete values[k]; skipped[k] = 'no matching option';
                     continue;
                 }
-                const snap = snapToOption(f.options, cur);
+                // A ONE-answer field (a radiogroup, a select) that came back naming two answers
+                // keeps its first, provided that first answer is cleanly one of the options —
+                // "Yes, French" used to be deleted whole even though "Yes" was right there.
+                const snap = snapSingleValue(f.options, cur);
                 if (snap) { values[k] = snap; continue; }
                 // Only DELETE when we can see the whole list. Against a truncated one, "not found"
                 // means "not in the first 80 rows" — pass it through and let the device match it
@@ -5533,6 +5597,27 @@ RULES:
                 else values[f.key] = keep;
             }
         } catch (e) { console.warn('[aiHub] autofillMap checkbox pass skipped:', e.message); }
+
+        // ── Post-pass 5: consent is the applicant's to give ────────────────────────
+        // The scan now flags any group or lone checkbox whose wording carries agreement
+        // ("I consent to…", "I agree to the privacy policy", "I declare the above is true").
+        // Agreeing to something on someone's behalf is not autofill, so:
+        //   • an OPTIONAL consent is never answered by us — it is handed back as
+        //     "needs your consent" and the applicant ticks it if they want to;
+        //   • a REQUIRED consent may keep the model's answer, because the form cannot be
+        //     submitted without it — and the device lists every consent it ticked back to the
+        //     applicant, in the employer's own wording, before they submit.
+        // Old builds send no `consent` flag, so none of this changes their result.
+        try {
+            let held = 0;
+            for (const f of nonFile) {
+                if (f.consent !== true) continue;
+                if (values[f.key] != null && f.required === true) continue;
+                if (values[f.key] != null) { delete values[f.key]; held++; }
+                skipped[f.key] = 'needs your consent';
+            }
+            if (held) console.log(`[aiHub] held back ${held} optional consent answer(s) for user ${userId}`);
+        } catch (e) { console.warn('[aiHub] autofillMap consent pass skipped:', e.message); }
 
         // Tell the app WHICH questions were deliberately left blank and why, so it can name them
         // instead of quietly reporting a smaller number than the form actually has.
@@ -5682,6 +5767,238 @@ function keepCheckboxValue(field, v) {
     }
     const truthy = v === true || /^(yes|true|on|1|checked|ja|oui|si|sim|tak)$/i.test(String(v).trim());
     return truthy ? v : null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The four shapes the scan started emitting (radiogroup, checkboxgroup, chips,
+// repeater) and what the SERVER is allowed to answer them with WITHOUT a model.
+//
+// Everything below is deterministic: it reads only what the candidate themselves
+// supplied (their résumé, their builder CV, their own answers to past forms) and
+// refuses when that data is absent. Nothing here infers a demographic, and
+// nothing here ticks a consent.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A single-answer field (a radiogroup, a select) whose value must end up being ONE option.
+// snapToOption alone deletes "Yes, French" — a model naming two answers for a one-answer
+// question — even though its FIRST answer is a real option. Take that first answer rather
+// than throwing the whole thing away, but only on a clean match (exact / starts-with),
+// never on the fuzzy shortest-contains fallback, which is too loose to pick a side with.
+function snapSingleValue(options, v) {
+    const whole = snapToOption(options, v);
+    if (whole) return whole;
+    const parts = splitAnswers(v);
+    if (parts.length < 2) return null;
+    const want = String(parts[0]).trim().toLowerCase();
+    if (!want) return null;
+    const exact = options.find((o) => String(o).trim().toLowerCase() === want);
+    if (exact) return exact;
+    const starts = options.filter((o) => String(o).trim().toLowerCase().indexOf(want) === 0);
+    return starts.length === 1 ? starts[0] : null;
+}
+
+// Which résumé section does an "add another" region want? The label is the region's whole
+// heading + description ("Experience (optional) Please highlight your work experience…").
+// Decided by weight of evidence, and DELIBERATELY answers null on a tie: a repeater we
+// cannot name is one we must not fill, because filling it means typing an employer into
+// an education row.
+function repeaterKind(label) {
+    const L = String(label || '').toLowerCase();
+    if (!L) return null;
+    const edu = (L.match(/educat|universit|college|school|degree|diploma|academic|qualification|studies|alma mater|ausbildung|opleiding/g) || []).length;
+    const exp = (L.match(/experien|employ|work history|career|previous position|job history|professional history|berufserfahrung|werkervaring/g) || []).length;
+    if (edu === exp) return null;
+    return edu > exp ? 'education' : 'experience';
+}
+
+const _MONTHS = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+// Normalise a résumé date to the YYYY-MM / YYYY-MM-DD the client's date handling expects.
+// A year on its own STAYS a year — inventing a month is inventing a fact. "Present" and its
+// translations stay verbatim: on a text control that is the right answer, and on a real date
+// control the client reads the value back and tells the applicant it did not land.
+function normResumeDate(raw) {
+    const s = String(raw == null ? '' : raw).trim();
+    if (!s) return '';
+    if (/^\d{4}-\d{2}(-\d{2})?$/.test(s)) return s;
+    if (/^\d{4}$/.test(s)) return s;
+    const m = s.match(/([a-z]{3})[a-z]*\.?\s*,?\s*(\d{4})/i);
+    if (m && _MONTHS[m[1].toLowerCase()]) return m[2] + '-' + _MONTHS[m[1].toLowerCase()];
+    const m2 = s.match(/^(\d{1,2})[\/.](\d{4})$/);
+    if (m2) return m2[2] + '-' + String(m2[1]).padStart(2, '0');
+    const m3 = s.match(/\b(19|20)\d{2}\b/);
+    if (/present|current|ongoing|now|till date|heute|actuel/i.test(s)) return s.slice(0, 20);
+    return m3 ? m3[0] : s.slice(0, 20);
+}
+const _cellText = (x) => String(x == null ? '' : x).replace(/\s+/g, ' ').trim().slice(0, 120);
+
+// Build the rows for an "add another" region from what the candidate actually wrote.
+// Rows are newest-first (a résumé lists the current job first) and capped at 3, which is what
+// the client will click for. A row needs a real anchor — an employer or a school — or it is
+// not a row at all and is dropped rather than half-invented.
+//
+// Several plain-English keys can carry the SAME value on purpose ("Position" and "Title",
+// "School" and "University" and "Institution"): the client fuzzy-matches these keys against
+// whatever the employer's own row happens to call that column, so offering the synonyms
+// raises the hit rate without ever changing what is typed.
+function buildRepeaterRows(kind, profile) {
+    const rows = [];
+    const builder = (profile && profile.builder_resume) || null;
+    const meta = (profile && profile.resume_metadata) || null;
+    const asArr = (x) => (Array.isArray(x) ? x : (typeof x === 'string' ? (() => { try { const p = JSON.parse(x); return Array.isArray(p) ? p : []; } catch { return []; } })() : []));
+    if (kind === 'experience') {
+        for (const e of asArr(builder && builder.experience)) {
+            if (!e || typeof e !== 'object') continue;
+            const company = _cellText(e.company || e.employer || e.organisation || e.organization);
+            const role = _cellText(e.role || e.title || e.position || e.job_title);
+            if (!company) continue;                       // no employer → not a work row
+            const r = { Company: company };
+            if (role) { r.Position = role; r.Title = role; }
+            const sd = normResumeDate(e.start_date || e.from);
+            const ed = normResumeDate(e.end_date || e.to);
+            if (sd) r['Start date'] = sd;
+            if (ed) r['End date'] = ed;
+            const loc = _cellText(e.location);
+            if (loc) r.Location = loc;
+            rows.push(r);
+            if (rows.length >= 3) break;
+        }
+        return rows;
+    }
+    if (kind === 'education') {
+        const src = asArr(builder && builder.education).length ? asArr(builder && builder.education) : asArr(meta && meta.education);
+        for (const e of src) {
+            if (!e || typeof e !== 'object') continue;
+            const school = _cellText(e.institution || e.school || e.university || e.college);
+            const degree = _cellText(e.degree);
+            if (!school) continue;                        // no school → not an education row
+            const r = { School: school, University: school, Institution: school };
+            if (degree) r.Degree = degree;
+            const field = _cellText(e.field_of_study || e.field || e.major);
+            if (field) { r['Field of study'] = field; r.Major = field; }
+            const ed = normResumeDate(e.end_date || e.year || e.graduation_year);
+            if (ed) { r['End date'] = ed; r.Year = ed; }
+            const sd = normResumeDate(e.start_date);
+            if (sd) r['Start date'] = sd;
+            const grade = _cellText(e.grade || e.gpa);
+            if (grade) r.Grade = grade;
+            rows.push(r);
+            if (rows.length >= 3) break;
+        }
+        return rows;
+    }
+    return rows;
+}
+
+// Accept whatever the model produced for a repeater and force it into the shape the device can
+// use: an ARRAY of flat row objects of short strings. A JSON string, a single object, numbers,
+// nested arrays and empty rows all arrive in practice; none of them are rejected outright,
+// because a mangled envelope around real résumé rows is still real résumé rows.
+function normalizeRepeaterValue(v) {
+    let val = v;
+    if (typeof val === 'string') {
+        const t = val.trim();
+        if (!t) return null;
+        try { val = JSON.parse(t); } catch { return null; }
+    }
+    if (val && typeof val === 'object' && !Array.isArray(val)) val = [val];
+    if (!Array.isArray(val)) return null;
+    const rows = [];
+    for (const raw of val) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+        const row = {};
+        let n = 0;
+        for (const k of Object.keys(raw)) {
+            if (n >= 8) break;
+            const key = _cellText(k).slice(0, 40);
+            const cell = raw[k];
+            if (!key || cell == null || typeof cell === 'object') continue;
+            const txt = _cellText(cell);
+            if (!txt) continue;
+            row[key] = /date|from|until|till|year/i.test(key) ? normResumeDate(txt) : txt;
+            n++;
+        }
+        if (Object.keys(row).length) rows.push(row);
+        if (rows.length >= 3) break;
+    }
+    return rows.length ? rows : null;
+}
+
+// The candidate's OWN skills / spoken languages, for a chip (tag) input.
+// A chips field is NOT automatically a skills field — "Preferred work locations" is one too —
+// so this answers only the two questions a résumé provably contains, and null otherwise.
+const _CHIPS_SKILLS = /skill|technolog|expertise|competenc|proficienc|tool|tech stack|framework|specialit|specialt|kenntnis|vaardigh/i;
+const _CHIPS_LANGS = /\blanguages?\b|\bsprachen\b|\btalen\b|\blangues\b/i;
+function chipsAnswer(field, profile) {
+    const q = String((field && (field.label || field.name || field.placeholder)) || '');
+    if (!q) return null;
+    const builder = (profile && profile.builder_resume) || null;
+    const meta = (profile && profile.resume_metadata) || null;
+    const list = [];
+    const push = (arr) => { for (const x of (Array.isArray(arr) ? arr : [])) { const t = _cellText(typeof x === 'object' && x ? (x.name || x.language || '') : x); if (t && list.indexOf(t) < 0) list.push(t); } };
+    // Programming languages are a SKILL; spoken languages are not. Decide on the wording, and
+    // let an explicit "programming/coding" qualifier pull a "languages" field back to skills.
+    const langy = _CHIPS_LANGS.test(q);
+    const spoken = langy && !/programming|coding|code|software|technical/i.test(q);
+    if (spoken) {
+        push(builder && builder.languages);
+        push(meta && meta.languages);
+    } else if (_CHIPS_SKILLS.test(q) || langy) {       // "Programming languages" is a skills question
+        push(builder && builder.skills && builder.skills.technical);
+        push(meta && meta.skills);
+        const tech = meta && meta.technical_skills;
+        if (tech && typeof tech === 'object' && !Array.isArray(tech)) for (const k of Object.keys(tech)) push(tech[k]);
+        push(builder && builder.skills && builder.skills.soft);
+        push(meta && meta.soft_skills);
+    } else return null;
+    return list.length ? list.slice(0, 10).join(', ') : null;
+}
+
+// ── Work authorisation, answered ONLY from the applicant's own past answer ───
+// There is no work-authorisation column on the profile — the only place this fact exists is
+// user_job_portal_details, where the applicant typed it themselves on an earlier form. The
+// existing learned overlay already replays it when the wording is IDENTICAL; this widens that
+// to the same question reworded, which is the normal case across two different ATSs.
+//
+// ⚠️ THE TWO RULES THAT KEEP THIS HONEST, because a wrong answer here is a false legal
+// statement on a real application:
+//   1. NO POLARITY FLIP. "Are you authorised to work?" and "Do you require sponsorship?" have
+//      opposite answers, so an answer is replayed only onto the SAME topic. A question that
+//      reads as both is ambiguous and is left alone.
+//   2. SAME COUNTRY. "Authorised to work in India" says nothing about Germany. Both questions
+//      must name the same country, or neither may name one.
+const _WORKAUTH_TOPICS = [
+    { id: 'authorised', re: /\b(?:authoriz|authoris)\w*\s+to\s+work|\bright\s+to\s+work|\beligible\s+to\s+work|\blegally\s+(?:entitled|permitted|allowed)\s+to\s+work|\bwork\s+(?:permit|authoriz|authoris)|\bpermission\s+to\s+work/i },
+    { id: 'sponsorship', re: /\bsponsor\w*|\bvisa\s+(?:support|sponsorship)/i },
+];
+function workAuthTopic(question) {
+    const q = String(question || '');
+    if (!q) return null;
+    const hits = _WORKAUTH_TOPICS.filter((t) => t.re.test(q));
+    return hits.length === 1 ? hits[0].id : null;      // both → ambiguous, neither → not this question
+}
+function _countryIn(question) {
+    const t = String(question || '').toLowerCase();
+    if (!t) return '';
+    const names = Object.keys(DIAL_CODES).filter((k) => k.length > 3);
+    const esc = (x) => String(x).replace(/[.*+?^${}()|[\]\\]/g, (c) => '\\' + c);
+    const hit = names.slice().sort((a, b) => b.length - a.length)
+        .find((n) => { try { return new RegExp('(^|[^a-z])' + esc(n) + '([^a-z]|$)').test(t); } catch (e) { return false; } });
+    return hit || '';
+}
+// Returns the applicant's own earlier answer to the same work-authorisation question, or null.
+function learnedWorkAuthAnswer(field, portalQA) {
+    const q = String((field && (field.label || field.name || field.placeholder)) || '');
+    const topic = workAuthTopic(q);
+    if (!topic || !Array.isArray(portalQA) || !portalQA.length) return null;
+    const country = _countryIn(q);
+    for (const row of portalQA) {                      // already ordered by use_count DESC
+        const ans = String((row && row.answer) || '').trim();
+        if (!ans || ans.length > 60) continue;         // an essay is not a yes/no answer
+        if (workAuthTopic(row && row.question) !== topic) continue;
+        if (_countryIn(row && row.question) !== country) continue;
+        return ans;
+    }
+    return null;
 }
 function normalizeQ(s) {
     return String(s || '')
@@ -5885,6 +6202,14 @@ module.exports = {
     snapMultiValue,
     keepCheckboxValue,
     isMultiField,
+    snapSingleValue,
+    repeaterKind,
+    normResumeDate,
+    buildRepeaterRows,
+    normalizeRepeaterValue,
+    chipsAnswer,
+    workAuthTopic,
+    learnedWorkAuthAnswer,
     autofillFiles,
     recordAutofillMemory,
     smartFillData,
