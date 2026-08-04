@@ -24,6 +24,8 @@ const notifPrefs = require('./notificationPrefs');
 const expoPush = require('./expoPushService');
 const templates = require('./notifyTemplates');
 const { deriveUserField } = require('../utils/jobTaxonomy');
+const geoRank = require('../utils/geoRank');       // country-then-distance comparator (shared with the feed)
+const geoContext = require('./geoContext');        // …and the per-user anchor + honest-fallback decision
 
 const DEDUPE_HOURS = 72;              // never repeat a template to the same user inside this window
 const DEFAULT_MAX_RECIPIENTS = 500;   // bulk-send default cap
@@ -339,12 +341,17 @@ async function resumeContext(userId) {
   const resume = await d.getResume(userId);
   const skills = d.skillsOf(resume);
   const fieldObj = deriveUserField(resume);
-  return { resume, skills, field: fieldObj ? fieldObj.field : null, roleCategory: fieldObj ? fieldObj.roleCategory : null };
+  const field = fieldObj ? fieldObj.field : null;
+  // The SAME geo context the user's own Explore feed and search use, so an admin match view and a
+  // push notification can never quote a different "top match" from what the app shows.
+  const geo = await geoContext.getGeoContext(userId, { field });
+  return { resume, skills, field, roleCategory: fieldObj ? fieldObj.roleCategory : null, geo };
 }
 
 // Ranked global_jobs for a user's skills. Mirrors the user's own default Explore view:
-// freshest BASE_CAP candidates → per-employer diversity → min-match floor → best match first.
-async function rankedJobs(userSkills, { field = null, limit = 20, minMatch = MIN_MATCH } = {}) {
+// freshest BASE_CAP candidates → per-employer diversity → min-match floor → country/distance then
+// best match first (geoRank — same comparator as the feed; a no-op when we have no country on file).
+async function rankedJobs(userSkills, { field = null, limit = 20, minMatch = MIN_MATCH, geo = null } = {}) {
   if (!userSkills || !userSkills.length) return { jobs: [], total: 0, strong: 0 };
   if (!(await tableExists('global_jobs'))) return { jobs: [], total: 0, strong: 0, unavailable: 'global_jobs table missing' };
   const params = [];
@@ -354,13 +361,17 @@ async function rankedJobs(userSkills, { field = null, limit = 20, minMatch = MIN
   if (field) where.push(`field = ${P(field)}`);
   const lim = Math.min(Math.max(int(limit, 20), 1), 100);
   const floor = Math.min(Math.max(int(minMatch, 0), 0), 100);
+  const applyGeo = !!(geo && geo.active && geo.anchor && geo.anchor.country);
+  const geoSel = applyGeo ? `, ${geoRank.tierSql(geo.anchor, P, { countryCol: 'country', locationCol: 'location' })} AS geo_tier` : '';
+  const geoOrd = applyGeo ? geoRank.orderSql(geo.mode, { tier: 'geo_tier', match: 'match' }) + ', ' : '';
+  const baseOrder = (applyGeo && geo.mode === 'country-first') ? 'geo_tier ASC, last_seen DESC' : 'last_seen DESC';
   const sql = `
     WITH base AS (
-      SELECT ${GJ_FIELDS}, ${matchExpr} AS match
+      SELECT ${GJ_FIELDS}, ${matchExpr} AS match${geoSel}
       FROM global_jobs WHERE ${where.join(' AND ')}
-      ORDER BY last_seen DESC LIMIT ${BASE_CAP}
+      ORDER BY ${baseOrder} LIMIT ${BASE_CAP}
     ), ranked AS (
-      SELECT *, ROW_NUMBER() OVER (PARTITION BY employer_name ORDER BY match DESC NULLS LAST, last_seen DESC) AS rn
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY employer_name ORDER BY ${geoOrd}match DESC NULLS LAST, last_seen DESC) AS rn
       FROM base
     ), filtered AS (
       SELECT * FROM ranked WHERE match >= ${floor}
@@ -369,7 +380,7 @@ async function rankedJobs(userSkills, { field = null, limit = 20, minMatch = MIN
            COUNT(*) OVER ()::int AS total_filtered,
            (COUNT(*) FILTER (WHERE match >= 50) OVER ())::int AS strong_total
     FROM filtered
-    ORDER BY match DESC NULLS LAST, rn ASC, last_seen DESC
+    ORDER BY ${geoOrd}match DESC NULLS LAST, rn ASC, last_seen DESC
     LIMIT ${P(lim)}`;
   const rows = await q(sql, params);
   if (!rows) return { jobs: [], total: 0, strong: 0, unavailable: 'match query failed' };
@@ -389,19 +400,21 @@ async function rankedJobs(userSkills, { field = null, limit = 20, minMatch = MIN
 // check `advertisable` before putting a match % (or a "top match") in a notification. Stage 3 used to
 // be stage 2, which is how best_matches could advertise a 0% "top match".
 async function bestJobsFor(rc, limit) {
-  let out = await rankedJobs(rc.skills, { field: rc.field, limit });
+  const geo = rc.geo || null;
+  let out = await rankedJobs(rc.skills, { field: rc.field, limit, geo });
   let scope = rc.field || 'all';
   if (!out.jobs.length && rc.field) {
-    out = await rankedJobs(rc.skills, { field: null, limit });
+    out = await rankedJobs(rc.skills, { field: null, limit, geo });
     scope = `all (no jobs in the "${rc.field}" scope)`;
   }
-  if (out.jobs.length) return { ...out, scope, floor: MIN_MATCH, advertisable: true };
-  const any = await rankedJobs(rc.skills, { field: null, limit, minMatch: 0 });
+  if (out.jobs.length) return { ...out, scope, floor: MIN_MATCH, advertisable: true, geo };
+  const any = await rankedJobs(rc.skills, { field: null, limit, minMatch: 0, geo });
   return {
     ...any,
     scope: `all, unfiltered (nothing reaches the ${MIN_MATCH}% floor)`,
     floor: 0,
     advertisable: false,
+    geo,
   };
 }
 
@@ -422,6 +435,15 @@ async function getMatchedJobs(userId, limit = 20) {
     matchFloor: out.floor,
     advertisable: out.advertisable,
     userField: rc.field,
+    geo: rc.geo && rc.geo.active ? {
+      mode: rc.geo.mode,
+      country: rc.geo.anchor.country,
+      city: rc.geo.anchor.city || null,
+      cityKnown: !!rc.geo.anchor.city,
+      fieldJobsInCountry: rc.geo.fieldJobsInCountry,
+      notice: rc.geo.notice || null,
+      explain: geoRank.describe(rc.geo),
+    } : { mode: null, country: null, notice: null, explain: 'geo ranking off (no country on file)' },
     candidatePool: BASE_CAP,
     note: `Ranked over the freshest ${BASE_CAP} active jobs — the same pool and formula the user's Explore feed uses.`
       + (out.advertisable ? '' : ` ⚠️ Nothing clears the ${MIN_MATCH}% floor — these are shown unfiltered for inspection and must NOT be quoted in a notification.`),

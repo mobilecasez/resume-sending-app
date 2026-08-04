@@ -5,6 +5,8 @@ const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const dbConfig = require('../../db-config');
+const geoRank = require('../utils/geoRank');            // ONE country-then-distance comparator, shared app-wide
+const geoContext = require('../services/geoContext');   // …and the per-user / per-interest anchor behind it
 
 const parseSkills = (v) => {
   const arr = Array.isArray(v) ? v : String(v || '').split(',');
@@ -123,7 +125,15 @@ router.get('/interests/suggested', authenticateToken, async (req, res) => {
       const { rn, country_total, ...job } = r;
       g.jobs.push(job);
     }
-    res.json({ success: true, skills, groups: groups.slice(0, 6) });
+    // The user's own country goes first when it is here at all. No guard is needed: a group only
+    // exists because it already holds jobs matching this résumé, so "their country first" cannot
+    // bury them the way an unconditional country-first sort of the whole directory would.
+    const geo = await geoContext.getGeoContext(req.user.id);
+    if (geo.active) {
+      const home = geo.anchor.country;
+      groups.sort((a, b) => (geoRank.canonCountry(b.country) === home ? 1 : 0) - (geoRank.canonCountry(a.country) === home ? 1 : 0));
+    }
+    res.json({ success: true, skills, groups: groups.slice(0, 6), homeCountry: geo.active ? geo.anchor.country : null });
   } catch (e) {
     console.error('[interests] suggested:', e.message);
     res.status(500).json({ error: 'Could not load suggestions' });
@@ -249,10 +259,14 @@ router.get('/interests/:id/jobs', authenticateToken, async (req, res) => {
     }
     const likeAny = lowered.map((_, i) => `(LOWER(skills::text) LIKE $${i + 2} OR LOWER(title) LIKE $${i + 2})`).join(' OR ');
     const params = [it.country, ...lowered.map((s) => `%${s}%`)];
-    const cityRank = it.city
-      ? `CASE WHEN LOWER(location) LIKE $${params.length + 1} THEN 0 ELSE 1 END`
-      : '1';
-    if (it.city) params.push(`%${String(it.city).toLowerCase()}%`);
+    // Nearest first inside the country the user picked. This was a local
+    // `CASE WHEN LOWER(location) LIKE '%city%'`; it now runs the SHARED tier (geoRank) so a saved
+    // interest orders identically to the feed — de-accented ("Genève" matches a "geneva" interest),
+    // word-bounded, and with "All France (remote)" counting as the country rather than as far away.
+    const P = (v) => { params.push(v); return '$' + params.length; };
+    const cityRank = geoRank.tierSql(
+      geoContext.contextForPlace(it.country, it.city).anchor, P,
+      { countryCol: 'country', locationCol: 'location' });
     const total = await dbConfig.query(
       `SELECT COUNT(*)::int AS n FROM global_jobs WHERE is_active AND country = $1 AND (${likeAny})`,
       params.slice(0, 1 + lowered.length));

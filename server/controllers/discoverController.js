@@ -21,6 +21,8 @@ const aiJobExtractor = require('../services/aiJobExtractor');   // fetch-detail:
 const jobCapture = require('./jobCaptureController');   // fetch-detail fallback: visible page TEXT → structured job (SPA/iframe-proof)
 const { chargeCredits, getEventCost } = require('../services/eventCosts');   // credit metering for AI search + live fetch
 const synonyms = require('../utils/searchSynonyms');   // .net⇄dotnet, node⇄node.js, sde⇄software engineer …
+const geoRank = require('../utils/geoRank');            // ONE country-then-distance comparator, shared app-wide
+const geoContext = require('../services/geoContext');   // …and the per-user anchor/mode behind it
 
 const BASE_CAP = 1500;         // diversify + match-rank the freshest N candidates (bounds correlated-subquery cost)
 const DEFAULT_MIN_MATCH = 10;  // in the résumé-scoped default view, hide sub-10% noise
@@ -82,6 +84,22 @@ function matchExprSql(skillsParam) {
   END)`;
 }
 
+// What the client is allowed to say about the ordering. `notice` is the one honest line for the UI
+// ("No Science & Research roles in France yet — showing the closest matches elsewhere."); it is null
+// whenever nothing needs explaining. `applied` is false when the geo term made no difference at all,
+// so the app never claims a location ordering it did not get.
+function geoSummary(geo, applied) {
+  if (!geo || !geo.active) return { applied: false, mode: null, country: null, city: null, notice: null };
+  return {
+    applied: !!applied,
+    mode: geo.mode,
+    country: geo.anchor.country,
+    city: geo.anchor.city || null,
+    cityKnown: !!geo.anchor.city,
+    notice: geo.notice || null,
+  };
+}
+
 async function discoverJobs(req, res) {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 50);
@@ -105,6 +123,10 @@ async function discoverJobs(req, res) {
     const userFieldObj = deriveUserField(resume);
     const useMatchSort = wantMatchSort && !noProfile;
     const applyMinMatch = minMatch > 0 && !noProfile;
+    // Where this user lives, and whether their own field has enough jobs there for country-first to
+    // help rather than bury them (see geoRank.js). Same context object the search, the admin match
+    // view and the notifier use, so all four agree on the order.
+    const geo = await geoContext.getGeoContext(req.user && req.user.id, { field: userFieldObj ? userFieldObj.field : null });
 
     // ── WHERE (shared by list + count) ──
     const wParams = [];
@@ -124,15 +146,25 @@ async function discoverJobs(req, res) {
     const params = [...wParams];
     const P = (v) => { params.push(v); return '$' + params.length; };
     const matchExpr = noProfile ? 'NULL::int' : matchExprSql(P(userSkills));
-    const rnOrder = useMatchSort ? 'match DESC NULLS LAST, last_seen DESC' : 'last_seen DESC';
-    const finalOrder = useMatchSort ? 'match DESC NULLS LAST, rn ASC, last_seen DESC' : 'rn ASC, last_seen DESC';
+    // Geo term. With sort=recent there is no match to interleave with, so only the strong
+    // (country-first) mode applies — the honest fallback must never turn "newest" into "nearest".
+    const applyGeo = geo.active && (useMatchSort || geo.mode === 'country-first');
+    const geoSel = applyGeo ? `, ${geoRank.tierSql(geo.anchor, P, { countryCol: 'country', locationCol: 'location' })} AS geo_tier` : '';
+    const geoOrd = !applyGeo ? ''
+      : (useMatchSort ? geoRank.orderSql(geo.mode, { tier: 'geo_tier', match: 'match' }) : 'geo_tier ASC') + ', ';
+    // The candidate window is the freshest BASE_CAP rows, so in country-first mode it has to be
+    // drawn nearest-first as well — otherwise "France first" can only reorder whatever handful of
+    // French jobs happened to land in a worldwide freshness window.
+    const baseOrder = (applyGeo && geo.mode === 'country-first') ? 'geo_tier ASC, last_seen DESC' : 'last_seen DESC';
+    const rnOrder = geoOrd + (useMatchSort ? 'match DESC NULLS LAST, last_seen DESC' : 'last_seen DESC');
+    const finalOrder = geoOrd + (useMatchSort ? 'match DESC NULLS LAST, rn ASC, last_seen DESC' : 'rn ASC, last_seen DESC');
     const minClause = applyMinMatch ? `WHERE match >= ${minMatch}` : '';
 
     const sql = `
       WITH base AS (
-        SELECT ${FIELDS}, ${matchExpr} AS match
+        SELECT ${FIELDS}, ${matchExpr} AS match${geoSel}
         FROM global_jobs WHERE ${whereSql}
-        ORDER BY last_seen DESC LIMIT ${BASE_CAP}
+        ORDER BY ${baseOrder} LIMIT ${BASE_CAP}
       ), ranked AS (
         SELECT *, ROW_NUMBER() OVER (PARTITION BY employer_name ORDER BY ${rnOrder}) AS rn FROM base
       ), filtered AS (
@@ -171,6 +203,7 @@ async function discoverJobs(req, res) {
       userField: userFieldObj ? userFieldObj.field : null,
       userRoleCategory: userFieldObj ? userFieldObj.roleCategory : null,
       appliedField: field || null, minMatch: applyMinMatch ? minMatch : 0,
+      geo: geoSummary(geo, applyGeo),
     });
   } catch (e) {
     console.error('[discover] jobs error:', e.message);
@@ -447,6 +480,7 @@ async function aiSearch(req, res) {
     const noProfile = userSkills.length === 0;
     const userFieldObj = deriveUserField(resume);
     const loc = await getUserProfileLoc(req.user && req.user.id);
+    const geo = await geoContext.getGeoContext(req.user && req.user.id, { field: userFieldObj ? userFieldObj.field : null });
     const parsed = await parseSearchQuery(rawQuery, loc);
     // "near me / my area" → resolve to the user's saved city (deterministic; wins over the AI).
     if (NEAR_ME_RE.test(rawQuery) && loc) {
@@ -507,14 +541,21 @@ async function aiSearch(req, res) {
     // description-only hit) — ranks the most on-point jobs to the top, even without a résumé.
     const relExpr = kwWords.length ? '(' + kwWords.map((w) => `(CASE WHEN LOWER(title) LIKE ${P('%' + w + '%')} THEN 1 ELSE 0 END)`).join(' + ') + ')' : '0';
     const useMatchSort = !noProfile;
-    const rnOrder = 'rel DESC, ' + (useMatchSort ? 'match DESC NULLS LAST, last_seen DESC' : 'last_seen DESC');
-    const finalOrder = 'rel DESC, ' + (useMatchSort ? 'match DESC NULLS LAST, rn ASC, last_seen DESC' : 'rn ASC, last_seen DESC');
+    // Home-country ordering — but NOT when the searcher named a place themselves. "…in Sweden" is
+    // already a hard filter; re-sorting that by where they live would be answering a question they
+    // did not ask.
+    const applyGeo = geo.active && !parsed.location;
+    const geoSel = applyGeo ? `, ${geoRank.tierSql(geo.anchor, P, { countryCol: 'country', locationCol: 'location' })} AS geo_tier` : '';
+    const geoOrd = applyGeo ? geoRank.orderSql(geo.mode, { tier: 'geo_tier', match: 'match' }) + ', ' : '';
+    const baseOrder = (applyGeo && geo.mode === 'country-first') ? 'geo_tier ASC, last_seen DESC' : 'last_seen DESC';
+    const rnOrder = 'rel DESC, ' + geoOrd + (useMatchSort ? 'match DESC NULLS LAST, last_seen DESC' : 'last_seen DESC');
+    const finalOrder = 'rel DESC, ' + geoOrd + (useMatchSort ? 'match DESC NULLS LAST, rn ASC, last_seen DESC' : 'rn ASC, last_seen DESC');
 
     const sql = `
       WITH base AS (
-        SELECT ${FIELDS}, ${matchExpr} AS match, ${relExpr} AS rel, ${locMatchExpr} AS loc_match
+        SELECT ${FIELDS}, ${matchExpr} AS match, ${relExpr} AS rel, ${locMatchExpr} AS loc_match${geoSel}
         FROM global_jobs WHERE ${whereSql}
-        ORDER BY last_seen DESC LIMIT ${BASE_CAP}
+        ORDER BY ${baseOrder} LIMIT ${BASE_CAP}
       ), ranked AS (
         SELECT *, ROW_NUMBER() OVER (PARTITION BY employer_name ORDER BY ${rnOrder}) AS rn FROM base
       )
@@ -578,6 +619,7 @@ async function aiSearch(req, res) {
       success: true, urlDetected: false, parsed, jobs, total, offset, limit,
       hasMore: jobs.length === limit && (offset + jobs.length) < total, noProfile, enriching,
       userField: userFieldObj ? userFieldObj.field : null,
+      geo: geoSummary(geo, applyGeo),
       xray: buildXray(parsed),   // the app runs this dork in a hidden on-device WebView → POST /discover/hydrate-urls
     });
   } catch (e) {

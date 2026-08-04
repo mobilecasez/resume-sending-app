@@ -23,6 +23,8 @@ const { createFixRequest, recentDeadAttempt } = require('../services/employerFix
 const expoPush = require('../services/expoPushService');
 const { getEventCost, chargeCredits, refundCredits } = require('../services/eventCosts');
 const { emit } = require('../services/track');   // first-party analytics
+const geoRank = require('../utils/geoRank');            // ONE country-then-distance comparator, shared app-wide
+const geoContext = require('../services/geoContext');   // …and the per-user anchor/mode behind it
 
 // ─── Batch tuning ─────────────────────────────────────────────────────────────
 // How many job-detail pages to scrape + process per Gemini call
@@ -2515,18 +2517,13 @@ async function keywordJobSearch(query, userId) {
     const words = q.toLowerCase().split(/[^a-zà-ÿ0-9.#+]+/i).filter((w) => w.length >= 3);
     if (!words.length) return [];
 
-    // The user's own country (résumé header / profile) ranks first — "no jobs where users live"
-    // was the second-biggest complaint in the pain report.
-    let country = null;
-    try {
-        const r = await dbConfig.get(
-            `SELECT LOWER(LEFT(raw_text, 600)) AS head FROM resume_metadata
-              WHERE user_id = $1 AND parse_status = 'done' ORDER BY id DESC LIMIT 1`, [userId]);
-        if (r && r.head) {
-            const { countryFromResume } = require('../services/demandResearch');
-            country = typeof countryFromResume === 'function' ? countryFromResume(r.head) : null;
-        }
-    } catch (_) {}
+    // The user's own country ranks first — "no jobs where users live" was the second-biggest
+    // complaint in the pain report. This used to be a local `CASE WHEN country = <résumé country>`;
+    // it now goes through the SHARED comparator (geoRank), so this list, the Explore feed, the
+    // search and the notifier order jobs by exactly the same rule — including the city tier and the
+    // guard that stops country-first burying a user whose field has nothing in their country.
+    const geo = await geoContext.getGeoContext(userId);
+    const country = geo.active ? geo.anchor.country : null;
 
     const params = [];
     const P = (v) => { params.push(v); return '$' + params.length; };
@@ -2534,7 +2531,8 @@ async function keywordJobSearch(query, userId) {
         const p = P('%' + w + '%');
         return `(LOWER(title) LIKE ${p} OR LOWER(employer_name) LIKE ${p} OR LOWER(COALESCE(skills::text,'')) LIKE ${p} OR LOWER(COALESCE(location,'')) LIKE ${p})`;
     }).join(' OR ');
-    const rank = country ? `CASE WHEN country = ${P(country)} THEN 0 ELSE 1 END, ` : '';
+    // No résumé match score is computed on this path, so the geo tier is the whole geo term.
+    const rank = geo.active ? `${geoRank.tierSql(geo.anchor, P, { countryCol: 'country', locationCol: 'location' })}, ` : '';
     const rows = await dbConfig.query(
         `SELECT job_url, title, employer_name, employer_domain, location, work_mode, job_type,
                 salary, experience, responsibilities, skills, country

@@ -1,4 +1,24 @@
 const dbConfig = require('../../db-config');
+const geoRank = require('../utils/geoRank');       // country-then-distance comparator (shared with the feed)
+const geoContext = require('./geoContext');        // …and the per-user anchor + honest-fallback decision
+
+/**
+ * The geo ORDER-BY prefix for the tracked-employer job lists. These rows live in `jobs`, not
+ * global_jobs, so there is no country column — the tier is read off locations.raw_text alone.
+ * Returns '' (and therefore byte-identical SQL to before this feature) whenever we have no country
+ * for the user, or whenever their field is too thin in that country for country-first to help.
+ */
+async function geoOrderPrefix(userId, params) {
+    try {
+        const geo = await geoContext.getGeoContext(userId);
+        if (!geo.active || geo.mode !== 'country-first') return '';
+        const P = (v) => { params.push(v); return '$' + params.length; };
+        return geoRank.tierSql(geo.anchor, P, { locationCol: 'l.raw_text', countryCol: null }) + ', ';
+    } catch (e) {
+        console.warn('[geo] dashboard ordering skipped:', e.message);
+        return '';
+    }
+}
 
 /**
  * Create a new async job
@@ -386,19 +406,23 @@ async function getUserDashboard(userId) {
         .map((e) => e.id);
     const jobsByEmp = {}, skillsByJob = {}, contactsByJob = {}, totalByEmp = {}, contactsCountByEmp = {};
     if (completedIds.length) {
+        // Nearest-first inside each employer, then best match — the same order the feed uses, so the
+        // 20 jobs we keep per employer are the 20 nearest ones rather than 20 anywhere in the world.
+        const jobParams = [userId, completedIds, DASH_JOBS_PER_EMP];
+        const geoOrd = await geoOrderPrefix(userId, jobParams);
         const jobRows = await dbConfig.query(
             `SELECT * FROM (
                SELECT j.id, j.employer_id, j.title, j.experience, j.salary, j.job_type, j.work_mode,
                       j.urgent, j.created_at, j.job_url, j.responsibilities,
                       ujm.match_score, ujm.scored_at, l.raw_text AS location_text,
-                      row_number() OVER (PARTITION BY j.employer_id ORDER BY ujm.match_score DESC NULLS LAST, j.created_at DESC, j.id) AS rn,
+                      row_number() OVER (PARTITION BY j.employer_id ORDER BY ${geoOrd}ujm.match_score DESC NULLS LAST, j.created_at DESC, j.id) AS rn,
                       COUNT(*) OVER (PARTITION BY j.employer_id)::int AS emp_total
                FROM jobs j
                JOIN user_job_matches ujm ON j.id = ujm.job_id
                LEFT JOIN locations l ON j.location_id = l.id
                WHERE ujm.user_id = $1 AND j.is_active = TRUE AND j.employer_id = ANY($2::uuid[])
              ) t WHERE rn <= $3 ORDER BY employer_id, rn`,
-            [userId, completedIds, DASH_JOBS_PER_EMP]
+            jobParams
         );
         const jobIds = [];
         for (const r of jobRows) { (jobsByEmp[r.employer_id] = jobsByEmp[r.employer_id] || []).push(r); totalByEmp[r.employer_id] = r.emp_total; jobIds.push(r.id); }
@@ -486,6 +510,8 @@ async function getUserDashboard(userId) {
 async function getEmployerJobsPage(userId, employerId, offset = 0, limit = 40) {
     limit = Math.min(Math.max(parseInt(limit, 10) || 40, 1), 100);
     offset = Math.max(parseInt(offset, 10) || 0, 0);
+    const pageParams = [userId, employerId, offset, limit];
+    const geoOrd = await geoOrderPrefix(userId, pageParams);   // same order as the dashboard page 1
     const jobRows = await dbConfig.query(
         `SELECT j.id, j.employer_id, j.title, j.experience, j.salary, j.job_type, j.work_mode,
                 j.urgent, j.created_at, j.job_url, j.responsibilities,
@@ -495,9 +521,9 @@ async function getEmployerJobsPage(userId, employerId, offset = 0, limit = 40) {
          JOIN user_job_matches ujm ON j.id = ujm.job_id
          LEFT JOIN locations l ON j.location_id = l.id
          WHERE ujm.user_id = $1 AND j.is_active = TRUE AND j.employer_id = $2
-         ORDER BY ujm.match_score DESC NULLS LAST, j.created_at DESC, j.id
+         ORDER BY ${geoOrd}ujm.match_score DESC NULLS LAST, j.created_at DESC, j.id
          OFFSET $3 LIMIT $4`,
-        [userId, employerId, offset, limit]
+        pageParams
     );
     const jobIds = jobRows.map((r) => r.id);
     const skillsByJob = {}, contactsByJob = {};

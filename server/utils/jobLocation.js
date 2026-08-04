@@ -89,4 +89,7 @@ function resolveCountry(location, boardRegion) {
     || 'Global';
 }
 
-module.exports = { countryFromLocation, resolveCountry, CLEAN_LABEL };
+// COUNTRY_PATTERNS is exported so geoRank.js can reuse the SAME "is this location in country X"
+// rule for ranking (in JS and, transliterated \b→\y, in SQL) instead of writing a second one that
+// would drift from this one.
+module.exports = { countryFromLocation, resolveCountry, CLEAN_LABEL, COUNTRY_PATTERNS };
