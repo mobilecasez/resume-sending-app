@@ -6012,6 +6012,31 @@ function buildRepeaterRows(kind, profile) {
 // use: an ARRAY of flat row objects of short strings. A JSON string, a single object, numbers,
 // nested arrays and empty rows all arrive in practice; none of them are rejected outright,
 // because a mangled envelope around real résumé rows is still real résumé rows.
+// The row VOCABULARY the client fuzzy-matches against the employer's own column headings:
+// Company, Position, Title, Start date, End date, School, University, Degree, Field of study,
+// Grade. buildRepeaterRows emits exactly those. The MODEL does not — measured on the live Revolut
+// form, it returned {"Company":…,"Role":…}, and "Role" is not a word the client knows, so a
+// perfectly good employer row was carrying a key nothing could place. The contract is ours to
+// keep, not the model's to remember: whatever synonym comes back is renamed onto it here, and the
+// synonym PAIRS the deterministic builder offers ("Position" and "Title" both) are offered too,
+// which is what raises the hit rate against a column we have not seen before.
+const _ROW_SYNONYMS = [
+    [/^(company|employer|organisation|organization|firm|business|company name)$/i, ['Company']],
+    [/^(position|role|job title|title|job role|designation|post)$/i, ['Position', 'Title']],
+    [/^(school|university|college|institution|institute|academy|school name)$/i, ['School', 'University', 'Institution']],
+    [/^(degree|qualification|diploma|award)$/i, ['Degree']],
+    [/^(field of study|field|major|subject|course|discipline|specialisation|specialization)$/i, ['Field of study', 'Major']],
+    [/^(grade|gpa|result|classification|marks)$/i, ['Grade']],
+    [/^(start date|start|from|started|date from|begin|start year)$/i, ['Start date']],
+    [/^(end date|end|to|until|till|finished|date to|end year|completion date)$/i, ['End date']],
+    [/^(location|city|place|based in)$/i, ['Location']],
+];
+function canonicalRowKeys(key) {
+    const k = String(key || '').trim();
+    if (!k) return null;
+    for (const [re, names] of _ROW_SYNONYMS) if (re.test(k)) return names;
+    return [k];                                    // an unknown column is passed through untouched
+}
 function normalizeRepeaterValue(v) {
     let val = v;
     if (typeof val === 'string') {
@@ -6027,13 +6052,17 @@ function normalizeRepeaterValue(v) {
         const row = {};
         let n = 0;
         for (const k of Object.keys(raw)) {
-            if (n >= 8) break;
+            // Cap the COLUMNS WE EMIT, not the source keys: one source key now expands into its
+            // synonym pair, so counting sources would let a row grow past what the device shows.
+            if (n >= 8 || Object.keys(row).length >= 14) break;
             const key = _cellText(k).slice(0, 40);
             const cell = raw[k];
             if (!key || cell == null || typeof cell === 'object') continue;
             const txt = _cellText(cell);
             if (!txt) continue;
-            row[key] = /date|from|until|till|year/i.test(key) ? normResumeDate(txt) : txt;
+            const value = /date|from|until|till|year/i.test(key) ? normResumeDate(txt) : txt;
+            // Rename onto the vocabulary the client knows, and keep the synonym pair with it.
+            for (const name of (canonicalRowKeys(key) || [key])) if (row[name] === undefined) row[name] = value;
             n++;
         }
         if (Object.keys(row).length) rows.push(row);

@@ -173,6 +173,21 @@ ok('the sponsorship question gets the sponsorship answer', learnedWorkAuthAnswer
 ok('an essay-length saved answer is not a yes/no', learnedWorkAuthAnswer({ label: 'Right to work in Germany?' }, [{ question: 'Are you authorised to work in Germany?', answer: 'x'.repeat(80) }]) === null);
 ok('nothing saved → nothing replayed', learnedWorkAuthAnswer({ label: 'Right to work in Germany?' }, []) === null);
 
+// MEASURED ON THE LIVE REVOLUT FORM: the model returned {"Company":…,"Role":…}. "Role" is not a
+// word the client fuzzy-matches against the employer's column headings, so a perfectly good
+// employer row carried a key nothing could place. The vocabulary is the server's to keep.
+console.log('\na row key the model invented is renamed onto the vocabulary the client knows');
+const asRow = (o) => normalizeRepeaterValue([o])[0];
+ok('"Role" becomes the Position/Title pair', JSON.stringify(asRow({ Role: 'Project Manager' })) === '{"Position":"Project Manager","Title":"Project Manager"}', asRow({ Role: 'Project Manager' }));
+ok('"Employer" becomes Company', JSON.stringify(asRow({ Employer: 'Metasys' })) === '{"Company":"Metasys"}', asRow({ Employer: 'Metasys' }));
+ok('"Institution" becomes School/University/Institution', Object.keys(asRow({ Institution: 'C-DAC' })).join(',') === 'School,University,Institution', asRow({ Institution: 'C-DAC' }));
+ok('"Major" becomes Field of study', asRow({ Major: 'Chemistry' })['Field of study'] === 'Chemistry', asRow({ Major: 'Chemistry' }));
+ok('"From"/"To" become Start date / End date', JSON.stringify(asRow({ From: '2021-04', To: '2024-08' })) === '{"Start date":"2021-04","End date":"2024-08"}', asRow({ From: '2021-04', To: '2024-08' }));
+ok('a renamed date column is still date-normalised', asRow({ Role: 'x', From: 'June 2013' })['Start date'] === '2013-06', asRow({ Role: 'x', From: 'June 2013' }));
+ok('an already-correct row is unchanged', JSON.stringify(asRow({ Company: 'Acme', 'Start date': '2021-04' })) === '{"Company":"Acme","Start date":"2021-04"}', asRow({ Company: 'Acme', 'Start date': '2021-04' }));
+ok('a column we have no synonym for is passed through, not dropped', asRow({ 'Reason for leaving': 'Relocated' })['Reason for leaving'] === 'Relocated');
+ok('the first spelling of a duplicated column wins', asRow({ Role: 'Chemist', Position: 'Analyst' }).Position === 'Chemist', asRow({ Role: 'Chemist', Position: 'Analyst' }));
+
 console.log('\ndemographics are recognised wherever they hide, and only gender has a source');
 ok('ethnicity is protected', demographicTopic('Please select your ethnicity (optional)') === 'protected');
 ok('race is protected', demographicTopic('What is your race?') === 'protected');
