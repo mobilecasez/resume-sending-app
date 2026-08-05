@@ -2940,55 +2940,18 @@ const JS_HELPERS = `
           }
         });
       }
-      // ── THE COUNTRY CODE GOES FIRST, BEFORE ANYTHING ELSE ────────────────────────────────────
-      // It used to go last but one. Dropdowns are deferred to drain(), drain() runs after up to
-      // five scroll-and-fill passes over the whole document, and the run has a hard 55s ceiling —
-      // so on a long form on a real phone the dial picker is competing for the seconds that are
-      // left, against a Mac where it never has to. Every measurement I can make on a desktop shows
-      // it landing; the device it does not land on is not one I can put under a debugger.
+      // ⚠️ THE COUNTRY CODE IS FILLED BY drain(), WITH EVERY OTHER DROPDOWN — NOT AHEAD OF THEM.
       //
-      // Rather than keep guessing at the reason it starves, take it out of the race. It is ONE
-      // control, it is the field the applicant notices first, and the phone number beside it is
-      // split on the assumption that it worked — so it earns its place at the front of the queue.
-      // Everything after this is unchanged: if the pick fails here, drain() still tries it in turn,
-      // and phoneReconcile still restores the full international number at the end.
-      function dialFirst(next){
-        try{
-          var els=ctrls(), i, dial=null;
-          for(i=0;i<els.length;i++){
-            if(!isDialCtrl(els[i]) || !visCtl(els[i])) continue;
-            var ds=sig(els[i]);
-            if(!(ds in bySig)) continue;
-            if(cbUserAnswered(els[i])) break;        // their own choice — never overridden
-            dial=els[i]; break;
-          }
-          if(!dial){ next(); return; }
-          var dsig=sig(dial), dv=String(bySig[dsig]==null?'':bySig[dsig]);
-          if(!dv){ next(); return; }
-          // ⚠️ THIS STEP GATES THE ENTIRE FILL, so it is fenced twice: openAndPick has its own
-          // watchdog, and this one fires even if openAndPick is never reached. Nothing here may
-          // cost the applicant the other twenty fields.
-          var went=false;
-          function go(){ if(went) return; went=true; setTimeout(next, 150); }
-          var fence=setTimeout(go, 11000);
-          cbGuardOn();
-          openAndPick(dial, dv, function(good){
-            try{ clearTimeout(fence); }catch(e){}
-            try{ cbGuardOff(); }catch(e){}
-            try{ cbEnsureNoneOpen(); }catch(e){}
-            // Either way this widget is now SETTLED. Marking it seen stops drain() opening the
-            // most expensive picker on the page a second time — on a 240-row virtualised sheet
-            // that retry is several seconds bought for a field we already answered or already
-            // reported, and those seconds come out of the same 95-second run.
-            dseen[dsig]=1;
-            if(good){ filled[dsig]=true; delete fails[dsig]; }
-            else fails[dsig]={key:dsig,label:nlbl(dial).slice(0,90),why:'dropdown — please pick this one yourself'};
-            go();
-          });
-        }catch(e){ next(); }
-      }
+      // Build 147 pulled it to the front of the run on a hunch that it was being starved of time.
+      // That hunch was never evidenced, and moving it caused the exact failure the user then
+      // reported: "its not even opening that dropdown". The early attempt marked the picker SEEN
+      // so drain() would not re-open the most expensive sheet on the page — which meant one
+      // attempt, taken before the form had settled, and if it missed, the control was never
+      // touched again. A retry that costs seconds is worth more than a first try that costs the
+      // field. Anything that claims this widget needs special sequencing has to prove it on a
+      // device first.
       collectRepeaters();
-      dialFirst(pass);
+      pass();
     } catch(e){ post({type:'AUTOFILL_ERROR', error:String((e && e.message) || e)}); }
   }
 
