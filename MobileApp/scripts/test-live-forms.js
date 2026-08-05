@@ -382,6 +382,18 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   ok('the restored number is the real international one', digits(trunk.phone) === '919970020596', trunk.phone);
   ok('THE REAL FORM WAS NEVER SUBMITTED (trunk-zero case)', trunk.submits === 0, trunk.submits);
 
+  // ── A WHOLE NUMBER ARRIVES IN THE DIAL SLOT ──────────────────────────────────────────────────
+  // Not hypothetical: reproduced end to end. When the server misread the picker it answered the
+  // DIAL key with "+919970020596". phoneReconcile asked wantDial() what code that was, wantDial
+  // read its first four digits and said "9199", and the reconcile prepended THAT to the national
+  // digits — writing +91999970020596, fourteen digits belonging to nobody, into the number box.
+  console.log('\nphone split — the DIAL key is answered with a whole phone number');
+  const wrongDial = await runFill({ [DIAL_KEY]: '+919970020596', [NUM_KEY]: '9970020596' }, true);
+  console.log('    result:', JSON.stringify(wrongDial));
+  ok('no invented number is written into the box', digits(wrongDial.phone) !== '91999970020596', wrongDial.phone);
+  ok('the number box is left exactly as it was filled', digits(wrongDial.phone) === '9970020596', wrongDial.phone);
+  ok('THE REAL FORM WAS NEVER SUBMITTED (whole-number-as-dial case)', wrongDial.submits === 0, wrongDial.submits);
+
 
   // ══════════════════════════════════════════════════════════════════════════════════════════════
   // GROUPS, REPEATERS, CHIPS and HIDDEN-BUT-VISIBLE tick controls.
