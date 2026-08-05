@@ -62,9 +62,15 @@ function valueFor(f) {
   if (/gender|\bsex\b/.test(L)) return pick(/prefer not|decline|not to say/i) || null;
 
   if (/dial|calling code|phone code|country code/.test(L)) return PROFILE.dial;
+  // ⚠️ ASK THE OPTION LIST WHAT THIS CONTROL STORES, not the label. Greenhouse labels its
+  // intl-tel-input selector "Country*", and its options are "Netherlands +31" — so the widget holds
+  // a DIAL CODE. Wanting the country NAME there made a correct fill score as a miss on every
+  // greenhouse page in the sample. Measured, not assumed: >60% of the options carry a "+NN".
+  const dialish = opts.length >= 3 && opts.filter((o) => /\+\s*\d{1,4}/.test(o)).length / opts.length > 0.6;
   if (/\bcountry\b|country of residence|where.*(based|live)/.test(L)
       && !/citizen|national|birth|tax|passport/.test(L)
       && !(L.length > 45 || /\?|^(are|do|will|have|can|would|is)\b/.test(L.trim()))) {
+    if (dialish) return PROFILE.dial;
     return pick(new RegExp('^' + PROFILE.country + '$', 'i')) || PROFILE.country;
   }
   if (/first name|given name|forename/.test(L)) return PROFILE.first_name;
@@ -176,7 +182,20 @@ const VERIFY_JS = (helpers) => `(function(){
           try{ var w1=owners[0].closest('[class*=select],[class*=Select],[class*=combo],[class*=dropdown]')||owners[0].parentElement;
                if(w1 && norm(w1.innerText).indexOf(want)>=0) hit=true; }catch(e){}
         }
-        if(!hit) why='empty or different value ('+norm(owners[0].value).slice(0,24)+')';
+        if(!hit){
+          // ⚠️ READ IT THE WAY THE ENGINE READS IT. A trigger-style picker CLEARS its own .value
+          // after a real pick and shows the choice in a separate node, and the two checks above
+          // (el.value, then the nearest select-ish ancestor's innerText) miss BOTH. Measured on
+          // job-boards.greenhouse.io/natera: the Gender picker was set to "Decline To Self
+          // Identify" — cbShown() said so — and this verifier scored it "empty or different
+          // value ()". That single blind spot is most of what made "custom dropdown 4%".
+          // test-live-forms-e2e.js already had to switch to cbShown for exactly this reason.
+          // Guarded: an older engine may not export it, and then nothing changes.
+          try{ if(typeof cbShown==='function'){ var sh=norm(cbShown(owners[0]));
+               if(sh && (sh.indexOf(want)>=0 || (want.indexOf(sh)>=0 && sh.length>2))) hit=true; } }catch(e){}
+        }
+        if(!hit) why='empty or different value ('+norm(owners[0].value).slice(0,24)
+          +(function(){ try{ return typeof cbShown==='function' ? ', shows '+JSON.stringify(norm(cbShown(owners[0])).slice(0,20)) : ''; }catch(e){ return ''; } })()+')';
       }
       out[key]={hit:hit, why:why};
     });
@@ -223,7 +242,11 @@ async function auditOne(browser, job) {
     const fields = await page.evaluate(async (scanJs) => {
       return await new Promise((resolve) => {
         const got = [];
-        window.ReactNativeWebView = { postMessage: (s) => { try { const o = JSON.parse(s); if (o && o.type === 'FIELDS') { got.push(o.fields || []); } } catch (e) {} } };
+        // ⚠️ KEEP EVERY MESSAGE, not just FIELDS. The fill announces completion on this same bridge
+        // ("FILLED"), and with the old shim that message went nowhere — so the harness had no way
+        // to know when the run had finished and fell back to a fixed sleep.
+        window.__msgs = [];
+        window.ReactNativeWebView = { postMessage: (s) => { try { const o = JSON.parse(s); window.__msgs.push(o); if (o && o.type === 'FIELDS') { got.push(o.fields || []); } } catch (e) {} } };
         try { eval(scanJs); } catch (e) { return resolve({ error: String(e && e.message) }); }
         const t0 = Date.now();
         const poll = () => {
@@ -254,7 +277,18 @@ async function auditOne(browser, job) {
       if (out.targeted) {
         const ctrlsBefore = await page.evaluate(() => document.querySelectorAll('input,textarea,select').length);
         await page.evaluate((js) => { try { eval(js); } catch (e) { window.__cvfFillErr = String(e && e.message); } }, fillJsFor(values));
-        await page.waitForTimeout(6000);
+        // ⚠️ WAIT FOR THE FILL TO SAY IT IS DONE. A flat 6s measured the page in the middle of the
+        // run: text boxes are set synchronously, but every combobox is opened, searched and clicked
+        // asynchronously — on Revolut the same engine takes 17-45 SECONDS to report. That is the
+        // whole of "custom dropdown 4%": text 99% / dropdown 4% is not two capabilities, it is one
+        // capability measured before it had finished. Verified on natera, where the Gender picker
+        // reads empty at 6s and carries "Decline To Self Identify" once the run reports.
+        // The FILLED message is the engine's own completion signal; the timeout is a backstop, and
+        // fillReported records which of the two happened so a slow page cannot silently score low.
+        out.fillReported = await page.waitForFunction(
+          () => Array.isArray(window.__msgs) && window.__msgs.some((m) => m && m.type === 'FILLED'),
+          null, { timeout: 180000 }).then(() => true).catch(() => false);
+        await page.waitForTimeout(2500);   // let the last widget's own re-render settle
         out.ctrlsAdded = (await page.evaluate(() => document.querySelectorAll('input,textarea,select').length)) - ctrlsBefore;
 
         // (a) the OLD, loose verifier — kept verbatim so the 88% baseline stays comparable.
