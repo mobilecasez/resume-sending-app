@@ -5125,6 +5125,16 @@ function isPhoneNumberField(f) {
     if (_NOT_MY_PHONE.test(raw)) return false;
     const q = canonicalQ(raw);
     if (/phonecode/.test(q)) return false;
+    // ⚠️ THE DIAL-CODE CONTROL IS NOT THE NUMBER CONTROL. This used to be decided on the wording
+    // alone, and Revolut's picker is labelled "Search phone country codes" — which canonicalises
+    // to "searchphonecountrycodes". That does NOT contain the "phonecode" token above, but it DOES
+    // match the "phone" test below, so the SAME control came back from both filters. The code pass
+    // set it to "+91"; the number pass then stripped "the dial code the page will reject" out of
+    // it, leaving ""; the final empty guard dropped that, and the dial code was silently never
+    // sent — measured live on production, one dropped empty value on every single request.
+    // Ask the code detector instead of guessing from words: it reads the OPTION LIST, so it holds
+    // whatever a vendor calls the control.
+    if (isPhoneCodeField(f)) return false;
     if (String((f && f.type) || '').toLowerCase() === 'tel') return true;
     return /(^|[a-z])phone($|[a-z])/.test(q);
 }
@@ -5407,7 +5417,11 @@ RULES:
                     let chosen = null;
                     if (opts.length) {
                         const exact = opts.filter((o) => String(o).replace(/[^\d]/g, '') === _ph.dial);
-                        const cName = String((user && user.country) || '').toLowerCase();
+                        // Use the RESOLVED country, not the raw column. One dial code can belong to
+                        // several countries ("United States (+1)" / "Canada (+1)"), and the column
+                        // is null for most accounts — including both of ours on production — so
+                        // reading it raw threw away the only thing that could tell them apart.
+                        const cName = String(profile.country || '').toLowerCase();
                         chosen = (cName && exact.find((o) => String(o).toLowerCase().indexOf(cName) >= 0)) || exact[0] || null;
                         if (!chosen) chosen = snapToOption(opts, '+' + _ph.dial);
                     }
@@ -5563,6 +5577,52 @@ RULES:
             if (det) console.log(`[aiHub] deterministic pass filled ${det} new-shape field(s) for user ${userId}`);
             if (guarded) console.warn(`[aiHub] dropped ${guarded} INVENTED work-authorisation answer(s) for user ${userId}`);
         } catch (e) { console.warn('[aiHub] autofillMap new-shape pass skipped:', e.message); }
+
+        // ── Post-pass 2c: DEMOGRAPHICS ARE NEVER INFERRED ──────────────────────────
+        // Enforced here rather than trusted to the prompt, for the same reason the work-
+        // authorisation guard exists: the prompt held when the question was asked alone and broke
+        // when the payload got big. Race, ethnicity, disability, veteran status, sexual
+        // orientation and religion have NO source we could honestly answer from — there is no
+        // column for them and a name/country/language/résumé does not imply them — so any answer
+        // is deleted and handed back to the applicant.
+        //
+        // Gender is the exception, and ONLY from the profile's own explicit value: whatever the
+        // model said is replaced by the option that matches what the candidate themselves stated,
+        // and if they stated nothing the question is left blank. That closes the case the prompt
+        // could only ask for — "Marta" arriving as She/her because the model read the name.
+        //
+        // Runs BEFORE the option-snap so anything it writes is still snapped to the page's own
+        // spelling, and it applies to every shape: radiogroup, checkboxgroup, select, lone box.
+        try {
+            let refused = 0, corrected = 0;
+            for (const f of nonFile) {
+                const topic = demographicTopic(fieldQuestion(f));
+                if (!topic) continue;
+                if (topic === 'protected') {
+                    if (values[f.key] !== undefined) { delete values[f.key]; refused++; }
+                    skipped[f.key] = 'needs your judgement';
+                    continue;
+                }
+                // A LONE pronoun checkbox offers exactly one choice: itself. Matching against its
+                // own label is what makes "tick She/her, refuse He/him" fall out of the same rule
+                // that drives a group — and stops us writing the raw profile word ("Female") into
+                // a box the page labelled "She/her".
+                const isLoneBox = String(f.type || '').toLowerCase() === 'checkbox' && !(Array.isArray(f.options) && f.options.length);
+                const want = genderOptionFor(profile.gender, isLoneBox ? [fieldQuestion(f)] : f.options);
+                if (!want) {                                  // no stated gender → nobody's to answer
+                    if (values[f.key] !== undefined) { delete values[f.key]; refused++; }
+                    skipped[f.key] = 'needs your judgement';
+                    continue;
+                }
+                if (values[f.key] === undefined || String(values[f.key]).trim().toLowerCase() !== want.toLowerCase()) {
+                    if (values[f.key] !== undefined) corrected++;
+                    values[f.key] = want;                     // the profile's answer, in the page's words
+                    delete skipped[f.key];
+                }
+            }
+            if (refused) console.warn(`[aiHub] refused ${refused} demographic answer(s) — never inferred (user ${userId})`);
+            if (corrected) console.warn(`[aiHub] replaced ${corrected} gender answer(s) with the profile's own value (user ${userId})`);
+        } catch (e) { console.warn('[aiHub] autofillMap demographic pass skipped:', e.message); }
 
         // NOTE: the saved-answers overlay runs HERE, before passes 3 and 4 — not after them.
         // Running it last let a learned "No" land on a checkbox after pass 4 had already
@@ -5817,7 +5877,15 @@ function keepCheckboxValue(field, v) {
         if (kept.length) return kept.join(', ');
     }
     const truthy = v === true || /^(yes|true|on|1|checked|ja|oui|si|sim|tak)$/i.test(String(v).trim());
-    return truthy ? v : null;
+    if (truthy) return v;
+    // A LONE checkbox that is one choice of a question ("He/him", "She/her") is answered with its
+    // OWN LABEL — that is the older per-box shape the prompt still documents and the shipped app
+    // still sends. The boolean test above dropped every one of them, so the server told the model
+    // to answer that way and then deleted the answer. Keeping it cannot untick anything: the value
+    // IS this box's label, so it can only ever mean "tick this one".
+    const own = String((field && (field.label || field.name)) || '').trim();
+    if (own && String(v).trim().toLowerCase() === own.toLowerCase()) return own;
+    return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6002,6 +6070,50 @@ function chipsAnswer(field, profile) {
         push(meta && meta.soft_skills);
     } else return null;
     return list.length ? list.slice(0, 10).join(', ') : null;
+}
+
+// ── Demographics: never inferred, from anything, ever ────────────────────────
+// The prompt has always said so. The prompt is not enough, and we have the measurement to prove
+// it: the SAME model that correctly skips a work-authorisation question asked on its own answered
+// it "Yes" for a real account once the payload got big. Ethnicity, race, disability, veteran
+// status, sexual orientation and religion have no column on the profile and no honest source at
+// all — a name, a country, a language or a résumé cannot imply them — so whatever the model says
+// about them is a guess about a person, on their real job application. It is dropped here.
+//
+// GENDER is the one exception, and only because there IS an explicit profile column for it. It is
+// answered from that value and nothing else — never from a name.
+const _DEMO_PROTECTED = /\b(ethnic\w*|race|racial|hispanic|latin[ox]|indigenous|aboriginal|first nations|disabilit\w*|disabled|impairment|neurodiver\w*|veteran|ex-forces|armed forces|military status|military service|sexual orientation|lgbt\w*|transgender|caste|religion|religious|age (?:range|group|band|bracket))\b/i;
+const _DEMO_GENDER = /\bgender\b|\bpronouns?\b|\bsex\b/i;
+// A lone checkbox in a pronoun group carries no question at all — its whole label is "He/him".
+// That is the shape the SHIPPED app sends (Revolut asks it exactly this way), and without this
+// the guard would miss the one demographic control most likely to be guessed from a name.
+const _DEMO_PRONOUN_LABEL = /^\s*(?:he|she|they|him|her|them|ze|xe)\s*[\/|,·-]\s*(?:him|her|them|his|hers|theirs|zir|xem)\s*$/i;
+function demographicTopic(question) {
+    const q = String(question || '');
+    if (!q) return null;
+    if (_DEMO_PROTECTED.test(q)) return 'protected';
+    if (_DEMO_GENDER.test(q) || _DEMO_PRONOUN_LABEL.test(q)) return 'gender';
+    return null;
+}
+// Which bucket a piece of gender wording falls in. "female" is tested before "male" on purpose.
+function _genderBucket(text) {
+    const t = String(text || '').trim().toLowerCase();
+    if (!t) return null;
+    if (/prefer not|rather not|decline|do not wish|don.t wish|not disclose|not to say|undisclosed/.test(t)) return 'decline';
+    if (/non.?binary|enby|genderqueer|gender.?fluid|they\s*\/?\s*them|\bthey\b/.test(t)) return 'nonbinary';
+    if (/\bfemale\b|\bwoman\b|\bwomen\b|\bshe\b|she\s*\/?\s*her|\bf\b|\bmrs?\b|weiblich|femme|femenino|vrouw/.test(t)) return 'female';
+    if (/\bmale\b|\bman\b|\bmen\b|\bhe\b|he\s*\/?\s*him|\bm\b|\bmr\b|m(ä|ae)nnlich|homme|masculino|\bman\b/.test(t)) return 'male';
+    return null;
+}
+// The option THIS field offers that matches the candidate's own stated gender — or null, which
+// means we leave the question for them. A field with no options takes the profile value verbatim.
+function genderOptionFor(gender, options) {
+    const want = _genderBucket(gender);
+    if (!want) return null;
+    const opts = Array.isArray(options) ? options.map(String) : [];
+    if (!opts.length) return String(gender).trim() || null;
+    for (const o of opts) if (_genderBucket(o) === want) return o;
+    return null;
 }
 
 // ── Work authorisation, answered ONLY from the applicant's own past answer ───
@@ -6261,6 +6373,10 @@ module.exports = {
     chipsAnswer,
     workAuthTopic,
     learnedWorkAuthAnswer,
+    demographicTopic,
+    genderOptionFor,
+    isPhoneCodeField,
+    isPhoneNumberField,
     autofillFiles,
     recordAutofillMemory,
     smartFillData,

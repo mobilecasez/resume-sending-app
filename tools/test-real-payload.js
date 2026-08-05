@@ -39,6 +39,18 @@ const LEGACY = [
  {key:'f18',tag:'input',type:'radio',label:"No, I don't consent"},
 ];
 
+// The protected demographic questions, in the SHAPES that reach us — a select, a radio group and
+// a checkbox group. None of them has a source on the profile, so none of them may come back with
+// a value, whichever shape it arrives in.
+const DEMO = [
+ {key:'n:eeo[disability]|radio',tag:'input',type:'radio',widget:'radiogroup',name:'eeo[disability]',
+  label:'Do you have a disability, or have you ever had one?',options:['Yes','No','I do not wish to answer']},
+ {key:'g:radio|form>fieldset:nth-of-type(9)|what is your race#white~asian~other',tag:'input',type:'radio',widget:'radiogroup',
+  label:'What is your race?',options:['White','Asian','Other']},
+ {key:'n:orientation|select',tag:'select',type:'select',label:'Sexual orientation',
+  options:['Heterosexual','LGBTQ+','Prefer not to say']},
+];
+
 // ── NEXT: the new shapes, with the keys and labels the live scan actually produces
 const NEXT = [
  {key:'n:name|text',tag:'input',type:'text',name:'name',label:'Full name',required:true},
@@ -120,6 +132,23 @@ async function callServer(uid, fields, label) {
               .every((f) => f.optionsTruncated || f.options.indexOf(String(L.values[f.key])) >= 0),
         LEGACY.filter((f) => f.options && L.values[f.key] !== undefined && !f.optionsTruncated && f.options.indexOf(String(L.values[f.key])) < 0).map((f) => [f.label, L.values[f.key]]));
       ok('ethnicity is NOT answered', L.values['f10'] === undefined, L.values['f10']);
+      // MEASURED LIVE, and the reason this assertion exists: Revolut labels its dial picker
+      // "Search phone country codes". That misses the "phonecode" token the number-field test
+      // excludes on, but matches its "phone" test, so the SAME control was filled with "+91" and
+      // then had the dial code stripped back out of it, leaving "" — dropped by the empty guard.
+      // On production this showed as one dropped empty value on EVERY request and a dial picker
+      // that never filled.
+      ok('the dial-code picker is actually filled (not emptied by the number pass)',
+        typeof L.values['f3'] === 'string' && /^\+?\d{1,4}$/.test(String(L.values['f3']).trim()),
+        { code: L.values['f3'], why: L.skipMap['f3'], number: L.values['f4'] });
+      ok('…and the number half does not repeat that dial code',
+        L.values['f3'] === undefined || L.values['f4'] === undefined ||
+        String(L.values['f4']).replace(/[^\d]/g, '').indexOf(String(L.values['f3']).replace(/[^\d]/g, '')) !== 0,
+        { code: L.values['f3'], number: L.values['f4'] });
+      // A lone pronoun box may only be ticked from an explicit profile gender — and never two of
+      // them at once, which would be the model guessing rather than reading.
+      ok('at most ONE pronoun box is ticked', ['f14', 'f15', 'f16'].filter((k) => L.values[k] !== undefined).length <= 1,
+        ['f14', 'f15', 'f16'].map((k) => L.values[k]));
       ok('no lone checkbox comes back falsy (a "No" would untick the applicant)',
         ['f14', 'f15', 'f16'].every((k) => L.values[k] === undefined || /^(yes|true|on|1|he\/him|she\/her|they\/them)$/i.test(String(L.values[k]))),
         ['f14', 'f15', 'f16'].map((k) => L.values[k]));
@@ -180,6 +209,18 @@ async function callServer(uid, fields, label) {
         ok('at most 10 chips', String(sk).split(/\s*,\s*/).length <= 10, String(sk).split(/\s*,\s*/).length);
       }
       ok('no value is an empty string', Object.keys(N.values).every((k) => Array.isArray(N.values[k]) || String(N.values[k]).trim() !== ''));
+    }
+
+    // ── RULE 2, on production, in every shape it can arrive as ───────────────────
+    // Sent as its OWN payload as well as inside the big one: the work-authorisation case proved
+    // the model behaves differently when a question is asked alone, so a demographic refusal that
+    // only holds in company is not a refusal we can rely on.
+    const D = await callServer(uid, DEMO, 'DEMOGRAPHICS asked on their own (RULE 2)');
+    if (D) {
+      for (const f of DEMO) {
+        ok('"' + f.label.slice(0, 34) + '" is never answered for them', D.values[f.key] === undefined, D.values[f.key]);
+        ok('…and is handed back so they can answer it themselves', !!D.skipMap[f.key], D.skipMap[f.key]);
+      }
     }
   }
   console.log('\n' + pass + ' passed, ' + fail + ' failed');

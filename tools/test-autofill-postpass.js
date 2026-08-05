@@ -14,6 +14,7 @@ const {
     snapMultiValue, keepCheckboxValue, isMultiField,
     snapSingleValue, repeaterKind, normResumeDate, buildRepeaterRows,
     normalizeRepeaterValue, chipsAnswer, workAuthTopic, learnedWorkAuthAnswer,
+    demographicTopic, genderOptionFor, isPhoneCodeField, isPhoneNumberField,
 } = require('../server/controllers/aiHubController.js');
 
 let pass = 0, fail = 0;
@@ -171,6 +172,48 @@ ok('the sponsorship answer is NOT reused for the authorisation question',
 ok('the sponsorship question gets the sponsorship answer', learnedWorkAuthAnswer({ label: 'Would you need sponsorship now or in future?' }, QA) === 'No');
 ok('an essay-length saved answer is not a yes/no', learnedWorkAuthAnswer({ label: 'Right to work in Germany?' }, [{ question: 'Are you authorised to work in Germany?', answer: 'x'.repeat(80) }]) === null);
 ok('nothing saved → nothing replayed', learnedWorkAuthAnswer({ label: 'Right to work in Germany?' }, []) === null);
+
+console.log('\ndemographics are recognised wherever they hide, and only gender has a source');
+ok('ethnicity is protected', demographicTopic('Please select your ethnicity (optional)') === 'protected');
+ok('race is protected', demographicTopic('What is your race?') === 'protected');
+ok('disability is protected', demographicTopic('Do you have a disability, or have you ever had one?') === 'protected');
+ok('veteran status is protected', demographicTopic('Are you a protected veteran?') === 'protected');
+ok('sexual orientation is protected', demographicTopic('Sexual orientation') === 'protected');
+ok('religion is protected', demographicTopic('What is your religion?') === 'protected');
+ok('an age BAND is protected', demographicTopic('Which age range are you in?') === 'protected');
+ok('…but plain date of birth is NOT — it is a profile fact the form legitimately needs', demographicTopic('Date of birth') === null);
+ok('gender is its own topic', demographicTopic('Gender') === 'gender');
+ok('so is a pronoun question', demographicTopic('Which pronouns do you use? (optional)') === 'gender');
+ok('and a lone box whose whole label IS a pronoun pair', demographicTopic('She/her') === 'gender', demographicTopic('She/her'));
+ok('"They/them" too', demographicTopic('They/them') === 'gender');
+ok('an ordinary question is not a demographic one', demographicTopic('How did you hear about this role?') === null);
+ok('nor is a company whose name contains a stray word', demographicTopic('Have you previously been employed by Essex Water?') === null, demographicTopic('Have you previously been employed by Essex Water?'));
+
+console.log('\nthe gender answer is the PROFILE‘s, spelled the way the page spells it');
+ok('"Male" → the Male option', genderOptionFor('Male', ['Male', 'Female', 'Non-binary', 'Prefer not to say']) === 'Male');
+ok('"Male" → the He/him option when that is how the page asks', genderOptionFor('Male', ['He/him', 'She/her', 'They/them']) === 'He/him');
+ok('"Female" → She/her, and never the Male option', genderOptionFor('Female', ['He/him', 'She/her', 'They/them']) === 'She/her');
+ok('"female" does not match the "male" bucket', genderOptionFor('female', ['Male', 'Female']) === 'Female');
+ok('"Prefer not to say" finds the decline option', genderOptionFor('Prefer not to say', ['Male', 'Female', 'I decline to answer']) === 'I decline to answer');
+ok('"Non-binary" finds They/them', genderOptionFor('Non-binary', ['He/him', 'She/her', 'They/them']) === 'They/them');
+ok('no stated gender → no answer', genderOptionFor('', ['Male', 'Female']) === null);
+ok('a stated gender the page does not offer → no answer', genderOptionFor('Non-binary', ['Male', 'Female']) === null);
+ok('a free-text gender field takes the profile value as written', genderOptionFor('Female', []) === 'Female');
+
+console.log('\na dial-code control is NEVER the number control (the live "" that ate +91)');
+const REVOLUT_DIAL = { type: 'button', label: 'Search phone country codes',
+    options: ['+1', '+7', '+20', '+31', '+44', '+49', '+91'] };
+ok('Revolut‘s "Search phone country codes" IS a dial-code control', isPhoneCodeField(REVOLUT_DIAL) === true);
+ok('…and is NOT treated as the phone-number control', isPhoneNumberField(REVOLUT_DIAL) === false, isPhoneNumberField(REVOLUT_DIAL));
+ok('a plain tel input still is the number control', isPhoneNumberField({ type: 'tel', label: 'Phone number' }) === true);
+ok('"Country Phone Code" is still a dial-code control', isPhoneCodeField({ label: 'Country Phone Code', options: ['+1', '+44', '+49', '+91', '+31'] }) === true);
+ok('a referee‘s phone is nobody‘s number to fill', isPhoneNumberField({ type: 'tel', label: 'Emergency contact phone' }) === false);
+
+console.log('\na lone checkbox answered with its OWN label is a tick, not an untick');
+ok('"She/her" on the She/her box survives', keepCheckboxValue({ label: 'She/her', options: [] }, 'She/her') === 'She/her', keepCheckboxValue({ label: 'She/her', options: [] }, 'She/her'));
+ok('…in the page‘s own spelling', keepCheckboxValue({ label: 'He/him', options: [] }, 'he/him') === 'He/him');
+ok('a "No" on a lone box is still deleted', keepCheckboxValue({ label: 'She/her', options: [] }, 'No') === null);
+ok('and so is another box‘s label', keepCheckboxValue({ label: 'She/her', options: [] }, 'They/them') === null);
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
