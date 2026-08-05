@@ -1881,22 +1881,35 @@ const JS_HELPERS = `
   }
 
   // Custom dropdowns hide their options until opened, so the AI was being asked to free-text a field
-  // that only accepts one of N exact values. Open each one ONCE (bounded: 6 widgets, 2.5s total,
-  // empty filter), read the list, then Escape+blur to restore it. Any widget that already SHOWS an
-  // answer is skipped, so the user's own work is never disturbed. The submit guard is on for the
-  // whole phase — the same protection skillsJs gives its chip clicks.
+  // that only accepts one of N exact values. Open each one ONCE, read the list, then Escape+blur to
+  // restore it. Any widget that already SHOWS an answer is skipped, so the user's own work is never
+  // disturbed. The submit guard is on for the whole phase.
+  //
+  // ⚠️ THE CAP OF 6 WAS THE DROPDOWN BUG. Measured over 17 real forms carrying 131 custom dropdowns:
+  // only 52 (40%) ever reached the server WITH an option list. A Greenhouse posting with 21
+  // dropdowns enumerated five and handed over sixteen marked optionsUnknown — Citizenship Status,
+  // "are you legally authorized to work", every demographic question. The server cannot pick an
+  // option it was never shown, so those came back wrong or empty and it looked like the picker was
+  // broken. It was not: given a real option the engine sets them. The fix is to read MORE of them.
+  //
+  // The real budget is TIME, not count, so the count ceiling is now generous and the wall-clock
+  // budget (below) is what actually stops us. ENUM_MAX exists only so a pathological page with
+  // hundreds of pickers cannot spin forever.
+  var ENUM_MAX = 40;
   function enumCombos(list, done){
     var q=[];
-    for(var i=0;i<list.length&&q.length<6;i++){ if(list[i].widget==='combobox') q.push(list[i]); }
+    for(var i=0;i<list.length&&q.length<ENUM_MAX;i++){ if(list[i].widget==='combobox') q.push(list[i]); }
     if(!q.length){ done(); return; }
     cbGuardOn();
     var qi=0, t0=Date.now();
     function fin(){ cbGuardOff(); done(); }
     function step(){
-      // Budget raised from 2.5s: a full-screen picker needs ~0.6-1s to render, so the old cap gave
-      // up after ~4 widgets and every remaining dropdown reached the AI with NO options — which is
-      // why they came back with wrong or empty values.
-      if(qi>=q.length || Date.now()-t0>16000 || cbAborted()){ cbEnsureNoneOpen(); fin(); return; }
+      // Budget: a full-screen picker needs ~0.6-1s to render. 16s covered ~6 widgets; a
+      // dropdown-dense Greenhouse form has 21, and every one we skip is a field the server must
+      // guess at. Scaled to the queue and capped, so a normal form is unchanged and a heavy one
+      // gets the time it needs. cbAborted() still lets the app stop us at any point.
+      var budget = Math.min(45000, 6000 + q.length * 2200);
+      if(qi>=q.length || Date.now()-t0>budget || cbAborted()){ cbEnsureNoneOpen(); fin(); return; }
       var f=q[qi++], el=null, all=ctrls();
       for(var j=0;j<all.length;j++){ if(sig(all[j])===f.key){ el=all[j]; break; } }
       if(!el || cbAnswered(el)){ step(); return; }
