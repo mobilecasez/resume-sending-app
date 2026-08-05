@@ -1414,13 +1414,22 @@ const JS_HELPERS = `
   // phrasings the server sent for this column — the model that read the résumé is the right place
   // to know a Post Graduate Diploma is a Master's-level qualification — then our own derived
   // tokens, which are the ones held to the stricter test, and finally the unfiltered list.
-  function cbLadder(want, alts){
+  // ⚠️ EVERY EXTRA RUNG COSTS REAL SECONDS, AND THE RUN HAS A CEILING. The app abandons the whole
+  // thing at 95s and tells the applicant it took too long — so a ladder that searches harder on
+  // one widget is buying that widget's answer with some other field's chance of being filled at
+  // all. Measured: an unbounded ladder took the Revolut fill from ~45s to 52.6s ON A MAC, which is
+  // over the line on a phone. Hence: no derived rungs where they cannot help (a dial picker is
+  // matched by pickDial against the code, not by word tokens), at most two of them, and
+  // openAndPick caps how many rungs may actually be TYPED.
+  function cbLadder(want, alts, skipDerived){
     var out=[{q:String(want), strict:false}], i;
     if(alts && alts.length) for(i=0;i<alts.length&&i<4;i++){ var a=cleanTxt(alts[i]); if(a) out.push({q:a, strict:false}); }
-    var t=cbToks(want), long=[];
-    for(i=0;i<t.length;i++){ if(t[i].length>=5) long.push(t[i]); }
-    long.sort(function(a,b){ return b.length-a.length; });
-    for(i=0;i<long.length&&i<3;i++) out.push({q:long[i], strict:true});
+    if(!skipDerived){
+      var t=cbToks(want), long=[];
+      for(i=0;i<t.length;i++){ if(t[i].length>=5) long.push(t[i]); }
+      long.sort(function(a,b){ return b.length-a.length; });
+      for(i=0;i<long.length&&i<2;i++) out.push({q:long[i], strict:true});
+    }
     out.push({q:'', strict:false});     // the old behaviour: clear the filter, judge the whole list
     return out;
   }
@@ -2048,10 +2057,17 @@ const JS_HELPERS = `
     // widget that does not self-dismiss.
     function finish(ok){
       if(fin) return; fin=true;
+      try{ if(wd) clearTimeout(wd); }catch(e){}
       try{ cbForceClose(el, popEl, preC); }catch(e){}
       try{ cbEnsureNoneOpen(); }catch(e){}
       cb(ok);
     }
+    // ⚠️ ONE WIDGET MUST NEVER BE ABLE TO END THE RUN. Every path below is asynchronous — waiting
+    // for a sheet, waiting for a filter to settle — and a widget that opens but never renders rows
+    // simply stops calling back. The phases that call this are chained, so a single stall does not
+    // fail one field, it silently abandons every field after it. This is the backstop that turns
+    // that into "this one is yours to pick".
+    var wd=setTimeout(function(){ finish(false); }, 9000);
     if(cbAborted()){ finish(false); return; }
     bringIntoView(el);   // an off-screen widget renders its popup outside the viewport → "no options"
     var pre=cbPreOpen(), preC=cbBaselineCtrls();
@@ -2086,10 +2102,17 @@ const JS_HELPERS = `
         // The popup can appear only on this second look — the search box is only findable now.
         if(trig && !sb) sb=cbSearchBox(el, pop);
         var rbox = trig ? sb : el;          // whichever box holds our filter text
-        var lad=cbLadder(want, alts), li=0;
+        // A dial picker is judged by pickDial against the CODE; word tokens off "+91" find nothing
+        // and only spend the clock, so it gets the value rung and the whole-list rung, nothing else.
+        var lad=cbLadder(want, alts, isCountryLabel(nlbl(el))), li=0, typed=0;
         // Read the list AS IT STANDS and try to commit a row. Never "first row wins": a list that
         // simply does not contain the answer must end as a question for the applicant.
-        function judge(step){
+        // ⚠️ WRAPPED, because a throw in here does not fail this field — it escapes a setTimeout
+        // callback, finish() is never reached, and every phase chained behind this one is silently
+        // abandoned. That is the difference between "one dropdown is yours" and "Auto Fill did
+        // nothing at all".
+        function judge(step){ try{ judgeInner(step); }catch(e){ finish(false); } }
+        function judgeInner(step){
           if(cbAborted()){ finish(false); return; }
           var p2=cbPopup(el, pre)||pop;
           if(p2 && p2.el) popEl=p2.el;
@@ -2117,17 +2140,23 @@ const JS_HELPERS = `
             finish(ok);
           },300);
         }
-        function attempt(){
+        function attempt(){ try{ attemptInner(); }catch(e){ finish(false); } }
+        function attemptInner(){
           if(cbAborted()){ finish(false); return; }
           if(li>=lad.length){ finish(false); return; }
           var step=lad[li++];
-          // No filter box means the list cannot be narrowed — but a later ladder entry is still
-          // worth judging, because an alternate PHRASING can match a row the raw value did not.
+          // No filter box means the list cannot be narrowed — but a later rung is still worth
+          // judging, because an alternate PHRASING can match a row the raw value did not. That
+          // costs nothing: same list, no typing, no settle wait.
           if(!rbox){ judge(step); return; }
+          // Typing IS the expensive part (type, wait for the widget to re-filter, re-read). Three
+          // is the whole budget for one widget; past that the field is the applicant's.
+          if(typed>=3){ finish(false); return; }
+          typed++;
           try{ rbox.focus(); }catch(e){}
           try{ setNative(rbox,''); }catch(e){}
           if(step.q){ try{ setNative(rbox, li===1 ? cbFilterFor(el, step.q) : String(step.q)); }catch(e){} }
-          setTimeout(function(){ judge(step); }, 420);
+          setTimeout(function(){ judge(step); }, 380);
         }
         attempt();
       },450);
@@ -2936,12 +2965,25 @@ const JS_HELPERS = `
           if(!dial){ next(); return; }
           var dsig=sig(dial), dv=String(bySig[dsig]==null?'':bySig[dsig]);
           if(!dv){ next(); return; }
+          // ⚠️ THIS STEP GATES THE ENTIRE FILL, so it is fenced twice: openAndPick has its own
+          // watchdog, and this one fires even if openAndPick is never reached. Nothing here may
+          // cost the applicant the other twenty fields.
+          var went=false;
+          function go(){ if(went) return; went=true; setTimeout(next, 150); }
+          var fence=setTimeout(go, 11000);
           cbGuardOn();
           openAndPick(dial, dv, function(good){
+            try{ clearTimeout(fence); }catch(e){}
             try{ cbGuardOff(); }catch(e){}
             try{ cbEnsureNoneOpen(); }catch(e){}
+            // Either way this widget is now SETTLED. Marking it seen stops drain() opening the
+            // most expensive picker on the page a second time — on a 240-row virtualised sheet
+            // that retry is several seconds bought for a field we already answered or already
+            // reported, and those seconds come out of the same 95-second run.
+            dseen[dsig]=1;
             if(good){ filled[dsig]=true; delete fails[dsig]; }
-            setTimeout(next, 200);
+            else fails[dsig]={key:dsig,label:nlbl(dial).slice(0,90),why:'dropdown — please pick this one yourself'};
+            go();
           });
         }catch(e){ next(); }
       }
@@ -5026,11 +5068,18 @@ export default function JobDetailScreen() {
     if (!smartData) { getSmartFillData().then(setSmartData).catch(() => {}); }
     // WHOLE-RUN ceiling. The scan watchdog below disarms the moment fields arrive, which left a hung
     // mapping (the server's own AI timeout is 60s) spinning the overlay with no honest way out.
+    // ⚠️ 95s was NOT enough headroom, and the failure it produced looked like a total outage.
+    // The budget is scan + the AI mapping (measured at 15-17s against production, and a phone on a
+    // slow connection is worse) + the in-page fill, which self-limits at 55s. That already sums
+    // past 95 on a bad day — and when this fires the applicant sees an error on a form where the
+    // engine was still legitimately working, which reads as "Auto Fill does nothing". The engine
+    // now reports by its own deadline in every path (openAndPick is individually fenced), so this
+    // is a backstop for a genuine hang, not a race the normal case can lose.
     runTimerRef.current = setTimeout(() => {
       if (autofillRef.current.active && autofillRef.current.gen === gen) {
         finishAutofill('error', 'This form took too long. Anything already filled has been kept — please finish the rest by hand.');
       }
-    }, 95000);
+    }, 120000);
     // WATCHDOG: the scan retries internally (SPA forms render late). If nothing ever comes back,
     // fail honestly instead of leaving the overlay spinning forever.
     if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
