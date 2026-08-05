@@ -38,7 +38,19 @@ const jwt = require('jsonwebtoken');
 const { chromium } = require('playwright');
 
 const REPO = path.join(__dirname, '..', '..');
-const SRC = fs.readFileSync(path.join(REPO, 'MobileApp', 'app', '(ai-hub)', 'job-detail.tsx'), 'utf8');
+// ⚠️ THE USER IS NOT ON HEAD, AND "--variant nooptions" DOES NOT PUT THEM THERE. That variant
+// reshapes the PAYLOAD to build 144's shape and then fills with the WORKING TREE's engine — so it
+// answers "will the next build work", not "does the phone in their hand work today". The client
+// half of the answer lives in whichever job-detail.tsx was compiled into the build they have:
+//   node MobileApp/scripts/test-live-forms-e2e.js --client /tmp/job-detail-b144.tsx
+// (extract it with: git show 35c859e:MobileApp/app/\(ai-hub\)/job-detail.tsx > /tmp/job-detail-b144.tsx)
+// Both the SCAN and the FILL then come from that build, which is the only way a server-side fix can
+// be shown to reach a user who cannot upgrade.
+const CLIENT_SRC = (() => {
+    const i = process.argv.indexOf('--client');
+    return i >= 0 ? process.argv[i + 1] : path.join(REPO, 'MobileApp', 'app', '(ai-hub)', 'job-detail.tsx');
+})();
+const SRC = fs.readFileSync(CLIENT_SRC, 'utf8');
 const raw = (n) => { const m = SRC.match(new RegExp('(?:export )?const ' + n + ' = `([\\s\\S]*?)`;\\n')); if (!m) throw new Error('no ' + n); return m[1]; };
 const rawFn = (n) => { const m = SRC.match(new RegExp('function ' + n + '\\([^)]*\\)[^{]*\\{[\\s\\S]*?return `([\\s\\S]*?)`;\\s*\\}')); if (!m) throw new Error('no fn ' + n); return m[1]; };
 const JS_HELPERS = new Function('JS_HELPERS', 'return `' + raw('JS_HELPERS') + '`;')('');
@@ -155,7 +167,8 @@ const PROBE = `(function(){
 (async () => {
   if (!process.env.JWT_SECRET) { console.error('JWT_SECRET missing — cannot act as a real user'); process.exit(1); }
   const token = jwt.sign({ id: USER, email: 'harness@local' }, process.env.JWT_SECRET);
-  console.log('E2E AUTO FILL — user ' + USER + '  ·  ' + API + '\n  page: ' + URL);
+  console.log('E2E AUTO FILL — user ' + USER + '  ·  ' + API + '\n  page: ' + URL
+    + '\n  client: ' + CLIENT_SRC + (CLIENT_SRC.indexOf(REPO) === 0 ? '  (working tree)' : '  ⚠️ NOT THE WORKING TREE'));
 
   const browser = await chromium.launch();
   const ctx = await browser.newContext({
