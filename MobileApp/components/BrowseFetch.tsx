@@ -291,11 +291,6 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
 
   // "Start a new search" — jump straight back to the results page this session began at, instead of
   // tapping back through every company site the user opened along the way.
-  const goHome = useCallback(() => {
-    if (!homeUrl || !webRef.current) return;
-    if (fetchingRef.current) { Alert.alert('Fetching in progress', 'Please wait a few seconds — your job is being read and saved.'); return; }
-    try { webRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(homeUrl)}; true;`); } catch {}
-  }, [homeUrl]);
 
   // Address bar: open what was typed — a link goes straight there, anything else Google-searches.
   const toggleLinkBar = useCallback(() => {
@@ -304,6 +299,12 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
       if (!v) setLinkText(currentUrlRef.current || '');
       return !v;
     });
+  }, []);
+  // The search control. Opens the box EMPTY — the old behaviour prefilled the current address,
+  // so anyone wanting to search had to clear a long URL first. Tapping it again closes it.
+  const openSearchBar = useCallback(() => {
+    if (fetchingRef.current) { Alert.alert('Fetching in progress', 'Please wait a few seconds — your job is being read and saved.'); return; }
+    setLinkOpen((v) => { if (!v) setLinkText(''); return !v; });
   }, []);
   const openTypedLink = useCallback(() => {
     const t = linkText.trim();
@@ -640,13 +641,18 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           <Text style={styles.host} numberOfLines={1}>{platform}</Text>
           <Text style={styles.hint} numberOfLines={1}>{host}</Text>
         </View>
-        {!!homeUrl && !onSearchPage && (
-          <TouchableOpacity onPress={goHome} style={[styles.navBtn, fetching && styles.navBtnOff]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="search" size={17} color={fetching ? '#94A3B8' : '#0F172A'} />
-          </TouchableOpacity>
-        )}
-        <TouchableOpacity onPress={toggleLinkBar} style={[styles.navBtn, linkOpen && styles.navBtnActive, fetching && styles.navBtnOff]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Ionicons name="link-outline" size={18} color={fetching ? '#94A3B8' : linkOpen ? '#fff' : '#0F172A'} />
+        {/* SEARCH — always available, on every page including Google's own results.
+            It used to re-navigate to the ORIGINAL search URL, which is a google.com address: iOS
+            hands those to the Google app, so tapping "search" left CVApplyr entirely. It now opens
+            the box below, which already accepts either a pasted link or a search phrase and stays
+            in this window. */}
+        <TouchableOpacity onPress={openSearchBar} style={[styles.navBtn, linkOpen && styles.navBtnActive, fetching && styles.navBtnOff]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Ionicons name="search" size={17} color={fetching ? '#94A3B8' : linkOpen ? '#fff' : '#0F172A'} />
+        </TouchableOpacity>
+        {/* …and LEAVING for the phone's own browser is now its own clearly separate control,
+            rather than something you could arrive at by looking for search. */}
+        <TouchableOpacity onPress={openInBrowser} style={[styles.navBtn, fetching && styles.navBtnOff]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Ionicons name="open-outline" size={18} color={fetching ? '#94A3B8' : '#0F172A'} />
         </TouchableOpacity>
         <TouchableOpacity onPress={toggleTranslate} style={[styles.navBtn, webTranslated && styles.navBtnActive]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           {webTranslating
@@ -783,6 +789,18 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         onOpenWindow={(e: any) => {
           const target = e?.nativeEvent?.targetUrl;
           if (target) beginAuthFlow(target);   // remembers the page so we can come back
+        }}
+        // ⚠️ EVERY http(s) PAGE STAYS IN THIS WINDOW. Without an explicit decision here, a
+        // navigation to an address the OS claims — google.com is the one that bit us, because the
+        // Google app registers it — can be handed to that app instead, and the user is suddenly
+        // outside CVApplyr with their search session gone. Leaving is now only ever something
+        // they ask for, via the button next to the search one.
+        onShouldStartLoadWithRequest={(req: any) => {
+          const u = req?.url || '';
+          if (!u || u === 'about:blank') return true;
+          if (/^https?:\/\//i.test(u)) return true;
+          if (/^(mailto|tel|sms|facetime|maps|geo):/i.test(u)) { Linking.openURL(u).catch(() => {}); return false; }
+          return false;                       // app-scheme deep links (googleapp://, linkedin://…)
         }}
       />
 
