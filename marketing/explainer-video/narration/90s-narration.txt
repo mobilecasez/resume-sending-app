@@ -1,0 +1,39 @@
+CVApplyr — 90-second explainer. Narration only, in scene order.
+Presenter is a HOST explaining the product, never a customer claiming an outcome.
+Delivery: calm, conversational, ~2.2 words/second. Pause 0.3s before each numbered step.
+
+[01 — presenter, full frame, no screen]
+Applying for jobs is mostly retyping. Your name, your number, your history — over and over, into a different form every time. This is the app that stops that. Let me show you the whole thing in about a minute.
+
+[02 — over 02-set-it-up-once.mp4]
+First, you fill in your details one time. Name, phone, address — the things every application asks for.
+
+[03 — over 03-resume-photo-signature.mp4]
+Add your résumé and a photo. And if you don't have a signature saved anywhere, it'll draw one from your name — pick a style, save, done. That's the last time you type any of it.
+
+[04 — over 04-ai-writes-your-resume.mp4]
+No résumé yet? Tell it your story in rough notes and it writes one for you.
+
+[05 — over 05-pick-a-country-format.mp4]
+Then pick the format for where you're applying — a German CV and a US résumé are not the same document — and download it.
+
+[06 — over 06-search-live-jobs.mp4]
+Now the jobs. You search the live web from inside the app, so you're looking at real, current listings — not a stale copy of them.
+
+[07 — over 07-fetch-and-save.mp4]
+Found one? One tap pulls the whole posting in and saves it.
+
+[08 — over 08-cover-letter-writes-itself.mp4]
+It reads the role, looks up the company, and writes a cover letter for that specific job — not a template with the name swapped.
+
+[09 — over 09-letter-format-and-download.mp4]
+Same idea with the letter format. Pick your region, download as PDF or Word.
+
+[10 — over 10-auto-fill-the-form.mp4]
+Then the part that actually saves the time. Open the employer's own application form, tap the robot, and it fills the whole thing in — your details, the dropdowns, the questions your résumé already answers — and attaches the right files.
+
+[11 — over 11-submitted-and-tracked.mp4]
+Submit. It's logged on your dashboard automatically.
+
+[12 — presenter, full frame, app icon lower third]
+Set up once, then it's find a job, and apply. That's it. It's called CVApplyr — free to start, on iPhone and Android.
