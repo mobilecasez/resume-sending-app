@@ -1,0 +1,2466 @@
+[
+ {
+  "url": "https://boards.greenhouse.io/spacex/jobs/8658744002?gh_jid=8658744002",
+  "employer": "Spacex",
+  "host": "boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 31,
+  "byArch": {
+   "text": 10,
+   "custom dropdown": 21
+  },
+  "targeted": 9,
+  "targetsByArch": {
+   "text": 6,
+   "custom dropdown": 3
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 6,
+   "miss": 3
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "First Name*",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Last Name*",
+    "wanted": "Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Preferred First Name",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email*",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Country*",
+    "wanted": "Netherlands",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "Phone*",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Location (City)*",
+    "wanted": "Amsterdam",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn Profile",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "GPA (Doctorate)*",
+    "wanted": "65000",
+    "hit": false,
+    "why": "empty or different value ()"
+   }
+  ],
+  "keyed": {
+   "hit": 6,
+   "miss": 3
+  },
+  "archScore": {
+   "text": {
+    "hit": 6,
+    "miss": 0
+   },
+   "custom dropdown": {
+    "hit": 0,
+    "miss": 3
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://jobs.elastic.co/jobs?gh_jid=8071641&gh_jid=8071641",
+  "employer": "Elastic",
+  "host": "jobs.elastic.co",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/29729886",
+  "employer": "BRÖSARPS GÄSTGIFVERI AKTIEBOLAG",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/resolvetosavelives/jobs/5268661008",
+  "employer": "Resolvetosavelives",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "direct",
+  "fields": 1,
+  "byArch": {
+   "text": 1
+  },
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/webflow/jobs/7914493",
+  "employer": "Webflow",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 28,
+  "byArch": {
+   "text": 9,
+   "custom dropdown": 19
+  },
+  "targeted": 8,
+  "targetsByArch": {
+   "text": 6,
+   "custom dropdown": 2
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 6,
+   "miss": 2
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "First Name*",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Last Name*",
+    "wanted": "Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email*",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Country",
+    "wanted": "Netherlands",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "Phone",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Location (City)",
+    "wanted": "Amsterdam",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn Profile",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Website",
+    "wanted": "https://example.com/alex-taylo",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 6,
+   "miss": 2
+  },
+  "archScore": {
+   "text": {
+    "hit": 6,
+    "miss": 0
+   },
+   "custom dropdown": {
+    "hit": 0,
+    "miss": 2
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://web103.reachmee.com/ext/I017/662/main?site=2&validator=a8902bc2fa67733e80f0e7f45ffb7dcb&lang=SE&rmpage=job&rmjob=5181&utm_medium=talentech_publishing&utm_source=jobtip",
+  "employer": "VALLENTUNA KOMMUN",
+  "host": "web103.reachmee.com",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/guidepostmontessori/jobs/8031479",
+  "employer": "Guidepostmontessori",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "direct",
+  "fields": 3,
+  "byArch": {
+   "text": 1,
+   "custom dropdown": 2
+  },
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://goteborgsstad.varbi.com/se/what:job/jobID:936993/type:job/where:125/apply:1",
+  "employer": "GÖTEBORGS KOMMUN",
+  "host": "goteborgsstad.varbi.com",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://jobs.smartrecruiters.com/Colliers/744000139510854",
+  "employer": "Colliers",
+  "host": "jobs.smartrecruiters.com",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/docebo/018e4ae4-eda1-4d10-8ae7-b78d52c13f72",
+  "employer": "Docebo",
+  "host": "jobs.ashbyhq.com",
+  "reachedVia": "apply-button",
+  "fields": 12,
+  "byArch": {
+   "text": 9,
+   "custom dropdown": 3
+  },
+  "targeted": 6,
+  "targetsByArch": {
+   "text": 6
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 6,
+   "miss": 0
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "Full Name",
+    "wanted": "Alex Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Phone Number",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn Profile",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "What is your preferred name (if different from your full name)?",
+    "wanted": "Alex Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "What is your desired annual base salary?",
+    "wanted": "65000",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 6,
+   "miss": 0
+  },
+  "archScore": {
+   "text": {
+    "hit": 6,
+    "miss": 0
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://sofi.com/careers/job/7628707003?gh_jid=7628707003",
+  "employer": "Sofi",
+  "host": "sofi.com",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/adyen/jobs/8009789",
+  "employer": "Adyen",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 9,
+  "byArch": {
+   "text": 7,
+   "custom dropdown": 1,
+   "lone checkbox": 1
+  },
+  "targeted": 5,
+  "targetsByArch": {
+   "text": 4,
+   "custom dropdown": 1
+  },
+  "ctrlsAdded": -1,
+  "loose": {
+   "hit": 3,
+   "miss": 2
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "First Name*",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Last Name*",
+    "wanted": "Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email*",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Country*",
+    "wanted": "Netherlands",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "Phone*",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 4,
+   "miss": 1
+  },
+  "archScore": {
+   "text": {
+    "hit": 4,
+    "miss": 0
+   },
+   "custom dropdown": {
+    "hit": 0,
+    "miss": 1
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/grafanalabs/jobs/5982444004",
+  "employer": "Grafanalabs",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 23,
+  "byArch": {
+   "text": 10,
+   "custom dropdown": 13
+  },
+  "targeted": 11,
+  "targetsByArch": {
+   "text": 7,
+   "custom dropdown": 4
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 7,
+   "miss": 4
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "First Name*",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Last Name*",
+    "wanted": "Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Preferred First Name",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email*",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Country*",
+    "wanted": "Netherlands",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "Phone*",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Location (City)*",
+    "wanted": "Amsterdam",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Are you currently eligible to work in your country of residence?*",
+    "wanted": "Yes",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Do you now or in the future require visa sponsorship to continue worki",
+    "wanted": "No",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "Do you have at lest 2 years of experience with Go? *",
+    "wanted": "6",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn Profile*",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 7,
+   "miss": 4
+  },
+  "archScore": {
+   "text": {
+    "hit": 7,
+    "miss": 0
+   },
+   "custom dropdown": {
+    "hit": 0,
+    "miss": 4
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://careers.datadoghq.com/detail/7959962/?gh_jid=7959962",
+  "employer": "Datadog",
+  "host": "careers.datadoghq.com",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://boards.greenhouse.io/braze/jobs/7915390?gh_jid=7915390",
+  "employer": "Braze",
+  "host": "boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 1,
+  "byArch": {
+   "text": 1
+  },
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://jobb.skill.se/jobs/7984808-industriarbetare-sokes-till-vaderstad/applications/new?promotion=2075231-arbetsformedlingen",
+  "employer": "Skill Kompetenspartner AB",
+  "host": "jobb.skill.se",
+  "reachedVia": "apply-button",
+  "fields": 12,
+  "byArch": {
+   "lone radio": 2,
+   "text": 8,
+   "lone checkbox": 2
+  },
+  "targeted": 4,
+  "targetsByArch": {
+   "text": 2,
+   "lone checkbox": 2
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 4,
+   "miss": 0
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "E-post* Obligatoriskt",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Telefon* Obligatoriskt",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "lone checkbox",
+    "label": "Obligatoriskt. När jag skickar in ansökan godkänner jag Integritetspol",
+    "wanted": "yes",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "lone checkbox",
+    "label": "Ja, Skill Kompetenspartner AB får även skicka framtida jobberbjudanden",
+    "wanted": "yes",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 4,
+   "miss": 0
+  },
+  "archScore": {
+   "text": {
+    "hit": 2,
+    "miss": 0
+   },
+   "lone checkbox": {
+    "hit": 2,
+    "miss": 0
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://boards.greenhouse.io/glossier/jobs/7956709?gh_jid=7956709",
+  "employer": "Glossier",
+  "host": "boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 13,
+  "byArch": {
+   "text": 10,
+   "custom dropdown": 3
+  },
+  "targeted": 9,
+  "targetsByArch": {
+   "text": 6,
+   "custom dropdown": 3
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 5,
+   "miss": 4
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "First Name*",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Last Name*",
+    "wanted": "Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email*",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Country",
+    "wanted": "Netherlands",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "Phone",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn Profile (please write N/A if you do not have one)*",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Website",
+    "wanted": "https://example.com/alex-taylo",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Will you require U.S. work authorization (e.g., visa sponsorship) now ",
+    "wanted": "Yes",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Have you previously worked at Glossier in any capacity (i.e. contracto",
+    "wanted": "Amsterdam",
+    "hit": false,
+    "why": "empty or different value ()"
+   }
+  ],
+  "keyed": {
+   "hit": 6,
+   "miss": 3
+  },
+  "archScore": {
+   "text": {
+    "hit": 6,
+    "miss": 0
+   },
+   "custom dropdown": {
+    "hit": 0,
+    "miss": 3
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/twitch/jobs/8565777002",
+  "employer": "Twitch",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 36,
+  "byArch": {
+   "text": 11,
+   "custom dropdown": 24,
+   "lone checkbox": 1
+  },
+  "targeted": 11,
+  "targetsByArch": {
+   "text": 8,
+   "custom dropdown": 3
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 7,
+   "miss": 4
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "First Name*",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Last Name*",
+    "wanted": "Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email*",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Country*",
+    "wanted": "Netherlands",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "Phone*",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Location (City)*",
+    "wanted": "Amsterdam",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Start date month",
+    "wanted": "1 month",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "Start date year",
+    "wanted": "1 month",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn Profile",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Website",
+    "wanted": "https://example.com/alex-taylo",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "What is your expected total base pay compensation for your next role. ",
+    "wanted": "65000",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 7,
+   "miss": 4
+  },
+  "archScore": {
+   "text": {
+    "hit": 7,
+    "miss": 1
+   },
+   "custom dropdown": {
+    "hit": 0,
+    "miss": 3
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://careers.nintendo.com/?gh_jid=4299949009",
+  "employer": "Nintendo",
+  "host": "careers.nintendo.com",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://jobs.lever.co/sonarsource/77930fd1-95e9-4e18-bda5-1b6d290fb0bf",
+  "employer": "Sonarsource",
+  "host": "jobs.lever.co",
+  "reachedVia": "apply-button",
+  "fields": 18,
+  "byArch": {
+   "native select": 3,
+   "text": 10,
+   "lone radio": 3,
+   "lone checkbox": 2
+  },
+  "targeted": 8,
+  "targetsByArch": {
+   "text": 6,
+   "lone radio": 1,
+   "lone checkbox": 1
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 8,
+   "miss": 0
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "Full name ✱",
+    "wanted": "Alex Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email ✱",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Phone ✱",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn URL ✱",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "What is your current notice period? ✱",
+    "wanted": "1 month",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "What is your current notice period? ✱",
+    "wanted": "1 month",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "lone radio",
+    "label": "What gender do you identify as?",
+    "wanted": "Prefer not to say",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "lone checkbox",
+    "label": "Yes, Sonar can contact me about future job opportunities for up to 3 y",
+    "wanted": "yes",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 8,
+   "miss": 0
+  },
+  "archScore": {
+   "text": {
+    "hit": 6,
+    "miss": 0
+   },
+   "lone radio": {
+    "hit": 1,
+    "miss": 0
+   },
+   "lone checkbox": {
+    "hit": 1,
+    "miss": 0
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31286113",
+  "employer": "English Kitchen AB",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31308601",
+  "employer": "Suki Sushi AB",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://hemmapartner.teamtailor.com/jobs/8143386-ventilationstekniker-till-hemmapartner/applications/new?promotion=2121631-arbetsformedlingen",
+  "employer": "Hemmapartner AB",
+  "host": "hemmapartner.teamtailor.com",
+  "reachedVia": "apply-button",
+  "fields": 11,
+  "byArch": {
+   "lone radio": 3,
+   "text": 6,
+   "lone checkbox": 2
+  },
+  "targeted": 4,
+  "targetsByArch": {
+   "text": 2,
+   "lone checkbox": 2
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 4,
+   "miss": 0
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "E-post* Obligatoriskt",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Telefon* Obligatoriskt",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "lone checkbox",
+    "label": "Obligatoriskt. När jag skickar in min ansökan godkänner jag HemmaPartn",
+    "wanted": "yes",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "lone checkbox",
+    "label": "Ja, HemmaPartner får även kontakta mig och skicka framtida jobberbjuda",
+    "wanted": "yes",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 4,
+   "miss": 0
+  },
+  "archScore": {
+   "text": {
+    "hit": 2,
+    "miss": 0
+   },
+   "lone checkbox": {
+    "hit": 2,
+    "miss": 0
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31254548",
+  "employer": "TB-Group AB",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://jobs.smartrecruiters.com/freshworks/744000141175259",
+  "employer": "Freshworks",
+  "host": "jobs.smartrecruiters.com",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://jobs.smartrecruiters.com/SGS/744000141313709",
+  "employer": "SGS",
+  "host": "jobs.smartrecruiters.com",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/encora10/jobs/5112144007",
+  "employer": "Encora10",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "direct",
+  "fields": 2,
+  "byArch": {
+   "text": 1,
+   "custom dropdown": 1
+  },
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://go.talentech.io/CLmlV?utm_source=jobtip",
+  "employer": "Martin & Servera Aktiebolag",
+  "host": "go.talentech.io",
+  "reachedVia": "apply-button",
+  "fields": 1,
+  "byArch": {
+   "text": 1
+  },
+  "targeted": 1,
+  "targetsByArch": {
+   "text": 1
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 1,
+   "miss": 0
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "Prenumerera på våra nyhetsbrev",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 1,
+   "miss": 0
+  },
+  "archScore": {
+   "text": {
+    "hit": 1,
+    "miss": 0
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/blankstreet/jobs/7811924003",
+  "employer": "Blankstreet",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "direct",
+  "fields": 3,
+  "byArch": {
+   "text": 1,
+   "custom dropdown": 2
+  },
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "http://www.hioscar.com/careers/7977782?gh_jid=7977782",
+  "employer": "Oscar",
+  "host": "hioscar.com",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://jobb.aurapersonal.se/jobs/6838175-juniormekaniker-hisingen/applications/new?promotion=2073151-arbetsformedlingen",
+  "employer": "Aura Personal AB",
+  "host": "jobb.aurapersonal.se",
+  "reachedVia": "apply-button",
+  "fields": 11,
+  "byArch": {
+   "text": 8,
+   "lone radio": 1,
+   "lone checkbox": 2
+  },
+  "targeted": 4,
+  "targetsByArch": {
+   "text": 2,
+   "lone checkbox": 2
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 4,
+   "miss": 0
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "E-post* Obligatoriskt",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Telefon* Obligatoriskt",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "lone checkbox",
+    "label": "Obligatoriskt. När jag skickar in ansökan godkänner jag Integritetspol",
+    "wanted": "yes",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "lone checkbox",
+    "label": "Ja, Aura Personal får även skicka framtida jobberbjudanden till mig.",
+    "wanted": "yes",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 4,
+   "miss": 0
+  },
+  "archScore": {
+   "text": {
+    "hit": 2,
+    "miss": 0
+   },
+   "lone checkbox": {
+    "hit": 2,
+    "miss": 0
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://www.avepoint.com/careers/job-detail?gh_jid=6339047",
+  "employer": "Avepoint",
+  "host": "avepoint.com",
+  "reachedVia": "direct",
+  "fields": 1,
+  "byArch": {
+   "text": 1
+  },
+  "targeted": 1,
+  "targetsByArch": {
+   "text": 1
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 1,
+   "miss": 0
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "Ready to see AvePoint in action? Experience the power of comprehensive",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 1,
+   "miss": 0
+  },
+  "archScore": {
+   "text": {
+    "hit": 1,
+    "miss": 0
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/handshake/6a644ba3-0afd-441c-a8d6-38e12ff0624a",
+  "employer": "Handshake",
+  "host": "jobs.ashbyhq.com",
+  "reachedVia": "apply-button",
+  "fields": 11,
+  "byArch": {
+   "text": 9,
+   "lone radio": 1,
+   "custom dropdown": 1
+  },
+  "targeted": 4,
+  "targetsByArch": {
+   "text": 3,
+   "lone radio": 1
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 4,
+   "miss": 0
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "Email",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Phone number",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "lone radio",
+    "label": "Yes - I consent to receiving text messages",
+    "wanted": "Yes - I consent to receiving t",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn Profile (indicate N/A if you don't have one)",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 4,
+   "miss": 0
+  },
+  "archScore": {
+   "text": {
+    "hit": 3,
+    "miss": 0
+   },
+   "lone radio": {
+    "hit": 1,
+    "miss": 0
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://www.coupang.jobs/en/jobs/?gh_jid=7737216",
+  "employer": "Coupang",
+  "host": "coupang.jobs",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://jobs.smartrecruiters.com/Ramboll3/744000129972373-hseq-lead-to-ramboll-buildings",
+  "employer": "Ramboll Sweden AB",
+  "host": "jobs.smartrecruiters.com",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://stripe.com/jobs/search?gh_jid=7589978",
+  "employer": "Stripe",
+  "host": "stripe.com",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 4,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31226161",
+  "employer": "Nentreprenör Sverige AB",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/agoda/jobs/6146290",
+  "employer": "Agoda",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 22,
+  "byArch": {
+   "text": 9,
+   "custom dropdown": 13
+  },
+  "targeted": 10,
+  "targetsByArch": {
+   "text": 6,
+   "custom dropdown": 4
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 8,
+   "miss": 2
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "First Name*",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Last Name*",
+    "wanted": "Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email*",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Country*",
+    "wanted": "Netherlands",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Phone*",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Location (City)*",
+    "wanted": "Amsterdam",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn Profile",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Website",
+    "wanted": "https://example.com/alex-taylo",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Do you agree to Agoda’s use of personal data from your application to ",
+    "wanted": "65000",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Email me about other job openings within the Booking Holding’s entitie",
+    "wanted": "alex.taylor@example.com",
+    "hit": false,
+    "why": "empty or different value ()"
+   }
+  ],
+  "keyed": {
+   "hit": 7,
+   "miss": 3
+  },
+  "archScore": {
+   "text": {
+    "hit": 6,
+    "miss": 0
+   },
+   "custom dropdown": {
+    "hit": 1,
+    "miss": 3
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/speechify/jobs/5974296004",
+  "employer": "Speechify",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 16,
+  "byArch": {
+   "text": 10,
+   "custom dropdown": 6
+  },
+  "targeted": 7,
+  "targetsByArch": {
+   "text": 5,
+   "custom dropdown": 2
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 6,
+   "miss": 1
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "First Name*",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Last Name*",
+    "wanted": "Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email*",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Country",
+    "wanted": "Netherlands",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Phone",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn Profile",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Gender",
+    "wanted": "Decline To Self Identify",
+    "hit": false,
+    "why": "empty or different value ()"
+   }
+  ],
+  "keyed": {
+   "hit": 6,
+   "miss": 1
+  },
+  "archScore": {
+   "text": {
+    "hit": 5,
+    "miss": 0
+   },
+   "custom dropdown": {
+    "hit": 1,
+    "miss": 1
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://jobb.tellusgruppen.se/jobs/7886084-kokspersonal-och-kockar-sokes-till-osteraker/applications/new?promotion=2046190-arbetsformedlingen",
+  "employer": "Tellusgruppen AB",
+  "host": "jobb.tellusgruppen.se",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://jobs.lever.co/qonto/b749aee3-d560-43f6-98f4-201caa6aa17e",
+  "employer": "Qonto",
+  "host": "jobs.lever.co",
+  "reachedVia": "direct",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://trinityhealth.wd1.myworkdayjobs.com/jobs/job/MOQ---Davenport-HealthPlex/Clinic-Registered-Nurse--RN---Pediatrics_00684914-1",
+  "employer": "Trinityhealth",
+  "host": "trinityhealth.wd1.myworkdayjobs.com",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 1,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/anthropic/jobs/5205704008",
+  "employer": "Anthropic",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 24,
+  "byArch": {
+   "text": 13,
+   "custom dropdown": 11
+  },
+  "targeted": 9,
+  "targetsByArch": {
+   "text": 7,
+   "custom dropdown": 2
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 7,
+   "miss": 2
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "First Name*",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Last Name*",
+    "wanted": "Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email*",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Country",
+    "wanted": "Netherlands",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "Phone",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Website",
+    "wanted": "https://example.com/alex-taylo",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Do you require visa sponsorship? *",
+    "wanted": "No",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn Profile",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "What is the address from which you plan on working? If you would need ",
+    "wanted": "Keizersgracht 1, Amsterdam",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 7,
+   "miss": 2
+  },
+  "archScore": {
+   "text": {
+    "hit": 7,
+    "miss": 0
+   },
+   "custom dropdown": {
+    "hit": 0,
+    "miss": 2
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://jobs.ashbyhq.com/uipath/fcce2522-1a45-44a5-b205-6362296639f5",
+  "employer": "Uipath",
+  "host": "jobs.ashbyhq.com",
+  "reachedVia": "apply-button",
+  "fields": 10,
+  "byArch": {
+   "text": 8,
+   "lone radio": 1,
+   "custom dropdown": 1
+  },
+  "targeted": 7,
+  "targetsByArch": {
+   "text": 6,
+   "lone radio": 1
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 7,
+   "miss": 0
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "Full name",
+    "wanted": "Alex Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Preferred first name",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email address",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Phone number",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "lone radio",
+    "label": "Yes - I consent to receiving text messages",
+    "wanted": "Yes - I consent to receiving t",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn profile link/handle",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Website link (github, portfolio, other)",
+    "wanted": "https://example.com/alex-taylo",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 7,
+   "miss": 0
+  },
+  "archScore": {
+   "text": {
+    "hit": 6,
+    "miss": 0
+   },
+   "lone radio": {
+    "hit": 1,
+    "miss": 0
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/cloverhealth/jobs/7339624",
+  "employer": "Cloverhealth",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "apply-button",
+  "fields": 24,
+  "byArch": {
+   "text": 15,
+   "custom dropdown": 9
+  },
+  "targeted": 12,
+  "targetsByArch": {
+   "text": 8,
+   "custom dropdown": 4
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 8,
+   "miss": 4
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "First Name*",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Last Name*",
+    "wanted": "Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email*",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Country*",
+    "wanted": "Netherlands",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "Phone*",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Location (City)*",
+    "wanted": "Amsterdam",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "Legal First Name*",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Legal Last Name*",
+    "wanted": "Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "LinkedIn Profile",
+    "wanted": "https://www.linkedin.com/in/ex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Do you have a legal right to work in the United States?*",
+    "wanted": "Yes",
+    "hit": false,
+    "why": "empty or different value ()"
+   },
+   {
+    "arch": "text",
+    "label": "Please indicate the base salary you expect for the role that you are a",
+    "wanted": "65000",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "custom dropdown",
+    "label": "Gender",
+    "wanted": "Decline To Self Identify",
+    "hit": false,
+    "why": "empty or different value ()"
+   }
+  ],
+  "keyed": {
+   "hit": 8,
+   "miss": 4
+  },
+  "archScore": {
+   "text": {
+    "hit": 8,
+    "miss": 0
+   },
+   "custom dropdown": {
+    "hit": 0,
+    "miss": 4
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/doordashusa/jobs/7975277",
+  "employer": "Doordashusa",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "direct",
+  "fields": 2,
+  "byArch": {
+   "text": 1,
+   "custom dropdown": 1
+  },
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31226460",
+  "employer": "Anettes hemtjänst på Gotland AB",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ },
+ {
+  "url": "https://www.carvana.com/careers/apply?gh_jid=7858435",
+  "employer": "Carvana",
+  "host": "carvana.com",
+  "reachedVia": "apply-button",
+  "fields": 5,
+  "byArch": {
+   "text": 5
+  },
+  "targeted": 5,
+  "targetsByArch": {
+   "text": 5
+  },
+  "ctrlsAdded": 0,
+  "loose": {
+   "hit": 4,
+   "miss": 1
+  },
+  "perField": [
+   {
+    "arch": "text",
+    "label": "First Name*",
+    "wanted": "Alex",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Last Name*",
+    "wanted": "Taylor",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Email*",
+    "wanted": "alex.taylor@example.com",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "Phone*",
+    "wanted": "612345678",
+    "hit": true,
+    "why": ""
+   },
+   {
+    "arch": "text",
+    "label": "How did you hear about this job? If referred by a Carvana employee, pl",
+    "wanted": "Alex Taylor",
+    "hit": true,
+    "why": ""
+   }
+  ],
+  "keyed": {
+   "hit": 5,
+   "miss": 0
+  },
+  "archScore": {
+   "text": {
+    "hit": 5,
+    "miss": 0
+   }
+  },
+  "fillErr": null,
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://job-boards.greenhouse.io/adyen/jobs/8020248",
+  "employer": "Adyen",
+  "host": "job-boards.greenhouse.io",
+  "reachedVia": "direct",
+  "fields": 1,
+  "byArch": {
+   "text": 1
+  },
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 3,
+  "ok": true
+ },
+ {
+  "url": "https://arbetsformedlingen.se/platsbanken/annonser/31300070",
+  "employer": "Skånska Ord & Bord AB",
+  "host": "arbetsformedlingen.se",
+  "reachedVia": "apply-button",
+  "fields": 0,
+  "byArch": {},
+  "targeted": 0,
+  "targetsByArch": {},
+  "loose": {
+   "hit": 0,
+   "miss": 0
+  },
+  "keyed": {
+   "hit": 0,
+   "miss": 0
+  },
+  "archScore": {},
+  "perField": [],
+  "submits": 0,
+  "navigations": 2,
+  "ok": true
+ }
+]
