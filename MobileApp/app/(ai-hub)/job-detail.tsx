@@ -2466,8 +2466,11 @@ const JS_HELPERS = `
       //   • exactly ONE disabled candidate, or we press nothing
       //   • it must have been disabled at row-open and enabled by our fill: that transition is the
       //     widget itself saying the row is now complete
-      //   • and RP_NEVER still refuses the words that could never be a row commit
-      var RP_NEVER=/\\b(submit|apply|application|send|pay|buy|delete|remove|absenden|abschicken|bewerben|bewerbung|einreichen|envoyer|soumettre|postuler|candidature|enviar|postular|solicitud|invia|inviare|candidati|candidatura|verzenden|versturen|solliciteer|sollicitatie|indienen|submeter|candidatar|wyslij|aplikuj|skicka|ansok|ansokan)\\b/i;
+      //   • and CB_SUBMIT — the SAME word list as every other click in this file, not a relaxed
+      //     one. An earlier draft here carved out "confirm" so a row-commit called Confirm could be
+      //     pressed, and that carve-out also let "Continue" and "Next" through, which on the last
+      //     step of a wizard IS the submit button. A vendor whose row-commit is called Confirm gets
+      //     "please press the row's own save button" instead. That is the right trade.
       function rpDisabled(b){ try{ return !!b.disabled || (b.getAttribute && b.getAttribute('aria-disabled')==='true'); }catch(e){ return false; } }
       function rpCommitCand(fresh){
         try{
@@ -2494,9 +2497,9 @@ const JS_HELPERS = `
             var inField=false;
             for(j=0;j<fresh.length;j++){ if(b===fresh[j] || b.contains(fresh[j]) || fresh[j].contains(b)){ inField=true; break; } }
             if(inField) continue;
-            if(RP_NEVER.test(cbText(b))) continue;
+            if(CB_SUBMIT.test(cbText(b))) continue;
             var al=(b.getAttribute&&(b.getAttribute('aria-label')||b.getAttribute('title')))||'';
-            if(al && RP_NEVER.test(al)) continue;
+            if(al && CB_SUBMIT.test(al)) continue;
             off.push(b);
           }
           return off.length===1 ? off[0] : null;          // ambiguous means press nothing
@@ -2507,15 +2510,8 @@ const JS_HELPERS = `
       function rpCommit(b){
         try{
           if(!b || !document.contains(b) || !vis(b) || rpDisabled(b)) return false;
-          if(RP_NEVER.test(cbText(b))) return false;
-          var at=String((b.getAttribute&&b.getAttribute('type'))||'').toLowerCase();
-          if(at==='submit'||at==='image'||at==='reset') return false;
-          if(b.getAttribute && b.getAttribute('form')) return false;
-          if(b.closest && b.closest('button[type=submit],input[type=submit]')) return false;
-          b.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
-          b.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
-          if(b.click) b.click(); else b.dispatchEvent(new MouseEvent('click',{bubbles:true}));
-          return true;
+          bringIntoView(b);
+          return cbSafeClick(b);      // the same guarded click as everything else on this page
         }catch(e){ return false; }
       }
       function rpRun(d, cb){
