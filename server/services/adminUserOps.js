@@ -272,18 +272,44 @@ function urlAliasIds(rawUrl) {
 
 // global_jobs has no gj_ column and cannot index one, so a gj_ id is resolved by:
 //   1. an exact hit in admin_notification_log.params->>'jobUrl' (we store the URL when we send), then
-//   2. a cached hash of the freshest GJ_SCAN_LIMIT job_urls.
+//   2. a paged walk of global_jobs that hashes each job_url and stops at the first hit.
 // Never silently gives up: `truncated` says when the scan hit its ceiling without a hit.
-const GJ_SCAN_LIMIT = 60000;
-let _hashCache = { at: 0, map: new Map(), scanned: 0 };
-async function hashIndex() {
-  if (Date.now() - _hashCache.at < 10 * 60 * 1000 && _hashCache.map.size) return _hashCache;
-  if (!(await tableExists('global_jobs'))) return { at: Date.now(), map: new Map(), scanned: 0 };
-  const rows = await q(`SELECT job_url FROM global_jobs ORDER BY last_seen DESC LIMIT ${GJ_SCAN_LIMIT}`);
-  const map = new Map();
-  for (const r of rows || []) for (const a of urlAliasIds(r.job_url)) if (!map.has(a)) map.set(a, r.job_url);
-  _hashCache = { at: Date.now(), map, scanned: (rows || []).length };
-  return _hashCache;
+// ⚠️ THE CEILING USED TO DECIDE WHICH JOBS COULD BE SENT. This held the freshest 60,000 job_urls
+// in one cached Map — but the directory passed 120,000 during the firehose work, so any posting
+// outside the newest half simply could not be named in a notification: "needs a jobId and it could
+// not be resolved". A real Coinbase job the admin was looking at on screen, with its URL right
+// there, was unsendable because of a number chosen when the table was smaller.
+//
+// Raising the number only moves the wall (and a permanent 240k-entry Map is not free). Instead the
+// scan now WALKS THE WHOLE TABLE IN PAGES AND STOPS AT THE FIRST HIT: memory stays flat at one
+// page, coverage is complete, and the usual case exits on page one because ids are minted from the
+// feed the user is looking at, which is ordered exactly the same way. GJ_SCAN_CAP is a runaway
+// guard, not a coverage limit — if it is ever reached the caller is told honestly.
+const GJ_PAGE = 20000;
+const GJ_SCAN_CAP = 400000;
+// Small LRU of ids we have already resolved: an admin sending several notifications about the same
+// job should pay for the walk once.
+const _hashHits = new Map();
+async function scanForHash(id) {
+  if (_hashHits.has(id)) return { job_url: _hashHits.get(id), scanned: 0, exhausted: false };
+  if (!(await tableExists('global_jobs'))) return { job_url: null, scanned: 0, exhausted: false };
+  let scanned = 0;
+  for (let offset = 0; offset < GJ_SCAN_CAP; offset += GJ_PAGE) {
+    const rows = await q(
+      `SELECT job_url FROM global_jobs ORDER BY last_seen DESC, job_url LIMIT ${GJ_PAGE} OFFSET ${offset}`);
+    if (!rows || !rows.length) return { job_url: null, scanned, exhausted: false };   // end of table
+    scanned += rows.length;
+    for (const r of rows) {
+      for (const a of urlAliasIds(r.job_url)) {
+        if (a !== id) continue;
+        if (_hashHits.size > 500) _hashHits.clear();
+        _hashHits.set(id, r.job_url);
+        return { job_url: r.job_url, scanned, exhausted: false };
+      }
+    }
+    if (rows.length < GJ_PAGE) return { job_url: null, scanned, exhausted: false };   // last page
+  }
+  return { job_url: null, scanned, exhausted: true };
 }
 async function resolveGlobalJobHash(gjId) {
   const id = String(gjId || '').trim();
@@ -295,13 +321,15 @@ async function resolveGlobalJobHash(gjId) {
         ORDER BY created_at DESC LIMIT 1`, [id]);
     if (r && r.job_url) return { job_url: r.job_url, truncated: false, via: 'notification_log' };
   }
-  const idx = await hashIndex();
-  const hit = idx.map.get(id);
+  const s = await scanForHash(id);
   return {
-    job_url: hit || null,
-    truncated: !hit && idx.scanned >= GJ_SCAN_LIMIT,
-    via: hit ? 'hash_scan' : null,
-    scanned: idx.scanned,
+    job_url: s.job_url || null,
+    // TRUNCATED now means what it says: we ran out of runaway-guard, not out of an arbitrary
+    // window. A job that is genuinely gone from the directory reports "not found", which is a
+    // different problem with a different answer.
+    truncated: !s.job_url && s.exhausted,
+    via: s.job_url ? 'hash_scan' : null,
+    scanned: s.scanned,
   };
 }
 
@@ -1476,7 +1504,7 @@ async function sendToUser({ userId, templateKey, jobId, overrides, adminId, batc
   else if (tpl.needsJob && st && st.topMatch) job = st.topMatch;
   if (tpl.needsJob && (!job || job.notFound)) {
     const logId = await release('job_not_found');
-    return { ok: false, skipped: 'job_not_found', logId, error: `Template '${tpl.key}' needs a jobId and it could not be resolved${job && job.truncated ? ' (gj_ hash scan hit its 60k-row ceiling)' : ''}.` };
+    return { ok: false, skipped: 'job_not_found', logId, error: `Template '${tpl.key}' needs a jobId and it could not be resolved${job && job.truncated ? ' (the job is no longer in the directory)' : ''}.` };
   }
 
   const ctx = { firstName: st ? st.firstName : '', fullName: st ? st.fullName : '', state: st || {}, job };
