@@ -172,6 +172,32 @@ const COUNTRY = { key: 'f5', tag: 'select', type: 'select', label: 'Country', na
         DB.user = { ...DB.user, gender: saved };
     }
 
+    // ⚠️ THE SHAPE THE SCAN ACTUALLY PRODUCES ON ASHBY. When a group's host holds nothing but its
+    // own options there is no question to read, so grpQuestion() falls back to a MEMBER'S label —
+    // the engine says so in its own comment. The guard read the question and nothing else, so a
+    // gender group asking "Male" and a race group asking "White" walked past it and kept whatever
+    // the model said. Verified against production: the "Male" one came back ANSWERED.
+    console.log('\na demographic group with NO question — its options are the question');
+    {
+        const saved = DB.user.gender;
+        DB.user = { ...DB.user, gender: null };
+        const GK = 'g:radio|form>div:nth-of-type(9)|male#male~female~non-binary';
+        const RK = 'g:radio|form>div:nth-of-type(10)|white#white~asian';
+        const F = [
+            { key: GK, tag: 'input', type: 'radio', widget: 'radiogroup', label: 'Male', options: ['Male', 'Female', 'Non-binary', 'Prefer not to say'] },
+            { key: RK, tag: 'input', type: 'radio', widget: 'radiogroup', label: 'White',
+              options: ['American Indian or Alaska Native', 'Asian', 'Black or African American', 'Hispanic or Latino', 'White', 'Two or More Races', 'Decline To Self Identify'] },
+        ];
+        const r = await run(F, { values: { [GK]: 'Female', [RK]: 'White' }, skipped: {} });
+        ok('a gender group whose "question" is one of its options is still guarded', r.v[GK] === undefined, r.v[GK]);
+        ok('so is a race group whose "question" is one of its options', r.v[RK] === undefined, r.v[RK]);
+        ok('both are handed back to the applicant', r.why[GK] === 'needs your judgement' && r.why[RK] === 'needs your judgement', r.why);
+        DB.user = { ...DB.user, gender: saved };
+        // With a stated gender the same field is answered from the PROFILE, in the page's spelling.
+        const r2 = await run([F[0]], { values: { [GK]: 'Non-binary' }, skipped: {} });
+        ok('…and with a stated gender it is answered from the profile, not from the model', r2.v[GK] === 'Female', r2.v[GK]);
+    }
+
     console.log('\nconsent stays the applicant’s to give, and the new shapes carry it too');
     {
         const F = [

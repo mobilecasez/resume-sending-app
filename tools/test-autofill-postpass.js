@@ -14,7 +14,8 @@ const {
     snapMultiValue, keepCheckboxValue, isMultiField,
     snapSingleValue, repeaterKind, normResumeDate, buildRepeaterRows,
     normalizeRepeaterValue, chipsAnswer, workAuthTopic, learnedWorkAuthAnswer,
-    demographicTopic, genderOptionFor, isPhoneCodeField, isPhoneNumberField,
+    demographicTopic, demographicTopicOf, genderOptionFor, isPhoneCodeField, isPhoneNumberField,
+    isWorkAuthQuestion,
 } = require('../server/controllers/aiHubController.js');
 
 let pass = 0, fail = 0;
@@ -208,6 +209,40 @@ ok('and a lone box whose whole label IS a pronoun pair', demographicTopic('She/h
 ok('"They/them" too', demographicTopic('They/them') === 'gender');
 ok('an ordinary question is not a demographic one', demographicTopic('How did you hear about this role?') === null);
 ok('nor is a company whose name contains a stray word', demographicTopic('Have you previously been employed by Essex Water?') === null, demographicTopic('Have you previously been employed by Essex Water?'));
+
+// ⚠️ MEASURED, not imagined: when a group's host holds nothing but its own options the scan has no
+// question to send, so grpQuestion() falls back to a MEMBER'S label and the field arrives asking
+// "Male" or "White". Neither is a demographic WORD, so the question-only guard let both through —
+// verified against production, the "Male" one came back ANSWERED. The options are the question.
+console.log('\na demographic group with no question is still recognised — from its options');
+const topicOf = (label, options) => demographicTopicOf({ label, options });
+ok('a gender group labelled with one of its own options', topicOf('Male', ['Male', 'Female', 'Non-binary', 'Prefer not to say']) === 'gender');
+ok('a pronoun group labelled "He/him"', topicOf('He/him', ['He/him', 'She/her', 'They/them']) === 'gender');
+ok('the EEO race list, labelled "White"', topicOf('White', ['American Indian or Alaska Native', 'Asian', 'Black or African American', 'Hispanic or Latino', 'White', 'Two or More Races', 'Decline To Self Identify']) === 'protected');
+ok('a short ethnicity list, labelled "Asian"', topicOf('Asian', ['Asian', 'Black', 'Hispanic', 'White', 'Mixed', 'Prefer not to say']) === 'protected');
+ok('the veteran list', topicOf('I am not a protected veteran', ['I identify as one or more of the classifications of a protected veteran', 'I am not a protected veteran', 'I decline to answer']) === 'protected');
+ok('the disability list', topicOf('Yes, I have a disability', ['Yes, I have a disability', 'No, I do not have a disability', 'I do not want to answer']) === 'protected');
+// …and the ordinary questions it must NOT swallow. Each of these was a real option list.
+ok('a yes/no question with a decline option is NOT gender', topicOf('Have you worked here before?', ['Yes', 'No', 'Prefer not to say']) === null);
+ok('a source-of-application list is not a demographic', topicOf('How did you hear about us?', ['LinkedIn', 'Referral', 'Job board', 'Veterans job board', 'Other']) === null, topicOf('How did you hear about us?', ['LinkedIn', 'Referral', 'Job board', 'Veterans job board', 'Other']));
+ok('a benefits list with ONE "disability" row is not a demographic', topicOf('Which benefits interest you?', ['Health insurance', 'Disability insurance', 'Pension']) === null);
+ok('a size list is not a gender question', topicOf('T-shirt size', ['S', 'M', 'L', 'XL']) === null);
+ok('a language list is not a demographic', topicOf('Languages', ['English', 'French', 'German']) === null);
+ok('an office list containing "Isle of Man" is not a gender question', topicOf('Which office?', ['Isle of Man', 'London', 'Dublin']) === null);
+// A Mr/Mrs list IS a gender question in disguise, and answering it from a first name is exactly
+// the inference we refuse. \\bmrs?\\b used to match "Mr" in the FEMALE branch, which is tested
+// first, so every title list resolved the male option as female.
+ok('a Mr/Mrs title list is treated as gender', topicOf('Title', ['Mr', 'Mrs', 'Miss', 'Ms']) === 'gender');
+ok('"Mr" is the male option, not the female one', genderOptionFor('Male', ['Mr', 'Mrs']) === 'Mr', genderOptionFor('Male', ['Mr', 'Mrs']));
+ok('"Mrs" is the female one', genderOptionFor('Female', ['Mr', 'Mrs']) === 'Mrs', genderOptionFor('Female', ['Mr', 'Mrs']));
+
+console.log('\nthe work-authorisation guard covers the wording that asks BOTH halves');
+ok('a combined question has no single topic (so nothing may be replayed onto it)',
+   workAuthTopic('Are you legally authorized to work in the US, and will you require visa sponsorship?') === null);
+ok('…but it IS a work-authorisation question, so the guard still fires',
+   isWorkAuthQuestion('Are you legally authorized to work in the US, and will you require visa sponsorship?') === true);
+ok('each half on its own is still a single topic', workAuthTopic('Are you legally authorized to work in the US?') === 'authorised' && workAuthTopic('Will you require visa sponsorship?') === 'sponsorship');
+ok('an ordinary question is neither', isWorkAuthQuestion('What is your notice period?') === false);
 
 console.log('\nthe gender answer is the PROFILE‘s, spelled the way the page spells it');
 ok('"Male" → the Male option', genderOptionFor('Male', ['Male', 'Female', 'Non-binary', 'Prefer not to say']) === 'Male');

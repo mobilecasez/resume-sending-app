@@ -5604,7 +5604,10 @@ RULES:
         try {
             let refused = 0, corrected = 0;
             for (const f of nonFile) {
-                const topic = demographicTopic(fieldQuestion(f));
+                // demographicTopicOf, not demographicTopic: a group whose host holds nothing but its
+                // own options arrives labelled with one of them ("Male", "White"), and neither word
+                // is a demographic WORD. Its option list always is.
+                const topic = demographicTopicOf(f);
                 if (!topic) continue;
                 if (topic === 'protected') {
                     if (values[f.key] !== undefined) { delete values[f.key]; refused++; }
@@ -6126,7 +6129,7 @@ function chipsAnswer(field, profile) {
 //
 // GENDER is the one exception, and only because there IS an explicit profile column for it. It is
 // answered from that value and nothing else — never from a name.
-const _DEMO_PROTECTED = /\b(ethnic\w*|race|racial|hispanic|latin[ox]|indigenous|aboriginal|first nations|disabilit\w*|disabled|impairment|neurodiver\w*|veteran|ex-forces|armed forces|military status|military service|sexual orientation|lgbt\w*|transgender|caste|religion|religious|age (?:range|group|band|bracket))\b/i;
+const _DEMO_PROTECTED = /\b(ethnic\w*|race[sd]?|racial|hispanic|latin[ox]|indigenous|aboriginal|first nations|disabilit\w*|disabled|impairment|neurodiver\w*|veteran|ex-forces|armed forces|military status|military service|sexual orientation|lgbt\w*|transgender|caste|religion|religious|age (?:range|group|band|bracket))\b/i;
 const _DEMO_GENDER = /\bgender\b|\bpronouns?\b|\bsex\b/i;
 // A lone checkbox in a pronoun group carries no question at all — its whole label is "He/him".
 // That is the shape the SHIPPED app sends (Revolut asks it exactly this way), and without this
@@ -6145,9 +6148,43 @@ function _genderBucket(text) {
     if (!t) return null;
     if (/prefer not|rather not|decline|do not wish|don.t wish|not disclose|not to say|undisclosed/.test(t)) return 'decline';
     if (/non.?binary|enby|genderqueer|gender.?fluid|they\s*\/?\s*them|\bthey\b/.test(t)) return 'nonbinary';
-    if (/\bfemale\b|\bwoman\b|\bwomen\b|\bshe\b|she\s*\/?\s*her|\bf\b|\bmrs?\b|weiblich|femme|femenino|vrouw/.test(t)) return 'female';
-    if (/\bmale\b|\bman\b|\bmen\b|\bhe\b|he\s*\/?\s*him|\bm\b|\bmr\b|m(ä|ae)nnlich|homme|masculino|\bman\b/.test(t)) return 'male';
+    // ⚠️ \bmrs?\b matched "Mr" as well as "Mrs", and female is tested first — so on a field whose
+    // options are titles ("Mr" / "Mrs") every applicant resolved to the male option being read as
+    // female. The honorifics are split explicitly instead.
+    if (/\bfemale\b|\bwoman\b|\bwomen\b|\bshe\b|she\s*\/?\s*her|\bf\b|\bmrs\b|\bms\b|\bmiss\b|weiblich|femme|femenino|vrouw/.test(t)) return 'female';
+    if (/\bmale\b|\bman\b|\bmen\b|\bhe\b|he\s*\/?\s*him|\bm\b|\bmr\b|m(ä|ae)nnlich|homme|masculino/.test(t)) return 'male';
     return null;
+}
+// ── The same question, asked WITHOUT a question ──────────────────────────────────────────────
+// ⚠️ demographicTopic() reads the field's wording, and the scan cannot always give it one. When a
+// group's host holds nothing but its own options — measured on Ashby's demographic block, and
+// written down in the engine's own comment — grpQuestion() falls back to a MEMBER'S label, so the
+// gender group arrives asking "Male" and the race group asking "White". Neither word is in either
+// pattern above, so post-pass 2c never ran on them and the model's answer stood: verified against
+// production, a radiogroup labelled "Male" with the four gender options came back ANSWERED.
+//
+// So the OPTIONS are read too. They are the one part of a demographic control that is always
+// unmistakable — a race list, a veteran list and a gender list each name themselves.
+// Option wordings that exist for one purpose only. One of these is enough on its own.
+const _DEMO_OPT_ONLY = /\b(hispanic|latin[ox]|protected veteran|two or more races|decline to self.?identif\w*|prefer not to (?:say|answer|disclose|identify)\s*(?:my)?\s*(?:race|ethnicity|gender)|i (?:have|do not have|don.t have) a disability)\b/i;
+function _demographicTopicFromOptions(options) {
+    const opts = (Array.isArray(options) ? options : []).map(String).filter(Boolean);
+    if (opts.length < 2) return null;
+    // TWO options, not one: a single "Disability insurance" entry in a list of benefits is not a
+    // demographic question, while a real EEO list says the word in nearly every row. The exception
+    // is a wording that can only ever be one — "Hispanic or Latino", "Decline to self identify".
+    if (opts.some((o) => _DEMO_OPT_ONLY.test(o))) return 'protected';
+    if (opts.filter((o) => _DEMO_PROTECTED.test(o)).length >= 2) return 'protected';
+    const buckets = new Set();
+    for (const o of opts) { const b = _genderBucket(o); if (b) buckets.add(b); }
+    // "Prefer not to say" on its own is on half the option lists ever written, so it can never be
+    // the thing that makes a question a gender question.
+    if (buckets.size >= 2 && (buckets.has('male') || buckets.has('female') || buckets.has('nonbinary'))) return 'gender';
+    return null;
+}
+// The whole field, not just its label. Use this everywhere the guard runs.
+function demographicTopicOf(field) {
+    return demographicTopic(fieldQuestion(field)) || _demographicTopicFromOptions(field && field.options);
 }
 // The option THIS field offers that matches the candidate's own stated gender — or null, which
 // means we leave the question for them. A field with no options takes the profile value verbatim.
@@ -6431,6 +6468,7 @@ module.exports = {
     isWorkAuthQuestion,
     learnedWorkAuthAnswer,
     demographicTopic,
+    demographicTopicOf,
     genderOptionFor,
     isPhoneCodeField,
     isPhoneNumberField,
