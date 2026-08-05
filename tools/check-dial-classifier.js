@@ -33,8 +33,16 @@ process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgresql://test@localh
 const SRVCLF = require(path.join(REPO, 'server', 'controllers', 'aiHubController.js'));
 if (typeof SRVCLF.isPhoneCodeField !== 'function') { console.error('server classifier not exported'); process.exit(1); }
 
-// A label that genuinely names a dial control. Anything else claimed by the classifier is suspect.
+// A label that genuinely names a dial control.
+// ⚠️ THE LABEL IS NOT THE ONLY EVIDENCE, and judging by it alone made this tool cry wolf on its
+// first run: greenhouse labels its intl-tel-input selector "Country*" while its options are
+// "Netherlands +31", so claiming it as a dial control is RIGHT and five correct claims were printed
+// as SUSPECT. A claim is only suspect when neither the wording nor the option list supports it.
 const REALLY_DIAL = /(dial|calling\s*code|country\s*code|phone\s*code|code\s*country|vorwahl|prefix|indicatif|prefisso|\+\d)/i;
+const dialOptions = (f) => {
+    const o = Array.isArray(f && f.options) ? f.options.map(String) : [];
+    return o.length >= 3 && o.filter((x) => /\+\s*\d{1,4}/.test(x)).length / o.length > 0.6;
+};
 // A label that must NEVER be claimed: these are residence / nationality / plain-country questions,
 // and writing "+91" into one is worse than leaving it blank.
 const NEVER_DIAL = /^(current\s*country|country|country\s*of\s*residence|nationality|citizenship|location|state|province|region|city)\b/i;
@@ -81,10 +89,12 @@ async function scan(browser, job) {
         out.fields = (fields || []).length;
         const nonFile = (fields || []).filter((f) => f && f.key && String(f.type || '').toLowerCase() !== 'file');
         // Exactly the two calls the server makes, with the same positional context.
-        out.code = nonFile.filter(SRVCLF.isPhoneCodeField).map((f) => ({ key: f.key, label: String(f.label || '').slice(0, 50) }));
+        out.code = nonFile.filter(SRVCLF.isPhoneCodeField).map((f) => ({ key: f.key, label: String(f.label || '').slice(0, 50), dialOpts: dialOptions(f) }));
         out.num = nonFile.filter(SRVCLF.isPhoneNumberField).map((f) => ({ key: f.key, label: String(f.label || '').slice(0, 50) }));
         out.both = out.code.filter((c) => out.num.some((n) => n.key === c.key));
-        out.suspect = out.code.filter((c) => !REALLY_DIAL.test(c.label) || NEVER_DIAL.test(c.label.trim()));
+        // Suspect = the wording does not name a dial control AND the options do not hold dial codes.
+        // A residence question claimed anyway (NEVER_DIAL) stays suspect whatever its options say.
+        out.suspect = out.code.filter((c) => (!REALLY_DIAL.test(c.label) && !c.dialOpts) || (NEVER_DIAL.test(c.label.trim()) && !c.dialOpts));
         out.submits = await page.evaluate(() => window.__cvfSubmits || 0).catch(() => 0);
     } catch (e) { out.error = String(e && e.message).slice(0, 120); }
     await ctx.close().catch(() => {});
