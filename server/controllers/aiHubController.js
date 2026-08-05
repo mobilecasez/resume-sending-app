@@ -5551,8 +5551,16 @@ RULES:
                 // only thing standing between a user and that, so the rule is enforced here:
                 // this class of question keeps a value ONLY when the value is the applicant's own
                 // earlier answer to the SAME question (no polarity flip, same country).
-                const waTopic = workAuthTopic(fieldQuestion(f));
-                if (waTopic) {
+                //
+                // ⚠️ THE GUARD ASKS isWorkAuthQuestion, NOT workAuthTopic. A question that asks
+                // BOTH halves at once — "Are you legally authorized to work in the US, and will you
+                // now or in the future require visa sponsorship?", which is how Greenhouse and Lever
+                // routinely word it — has NO single topic, so workAuthTopic() returns null. Reading
+                // that null as "not a work-authorisation question" left the model's answer standing
+                // on the very question we are least able to answer. Ambiguous now means guarded and
+                // never replayed: learnedWorkAuthAnswer still keys off workAuthTopic, so it returns
+                // nothing here and the question goes back to the applicant.
+                if (isWorkAuthQuestion(fieldQuestion(f))) {
                     const wa = learnedWorkAuthAnswer(f, portalQA);
                     if (wa) {
                         const opts = Array.isArray(f.options) ? f.options : [];
@@ -6168,6 +6176,18 @@ function workAuthTopic(question) {
     const hits = _WORKAUTH_TOPICS.filter((t) => t.re.test(q));
     return hits.length === 1 ? hits[0].id : null;      // both → ambiguous, neither → not this question
 }
+// ⚠️ AMBIGUOUS IS STILL A WORK-AUTHORISATION QUESTION, and it is the commonest wording of all:
+//   "Are you legally authorized to work in the United States, and will you now or in the future
+//    require visa sponsorship for employment?"
+// workAuthTopic() answers null there — correctly, because the two halves have OPPOSITE answers and
+// no earlier answer of the applicant's may be replayed onto it. But the guard read that same null
+// as "not this question" and left whatever the model said in place. So the one question the guard
+// cannot answer was also the one question it did not protect. This is the guard's test; the topic
+// function stays exactly as it is, so nothing is ever replayed onto an ambiguous question.
+function isWorkAuthQuestion(question) {
+    const q = String(question || '');
+    return !!q && _WORKAUTH_TOPICS.some((t) => t.re.test(q));
+}
 function _countryIn(question) {
     const t = String(question || '').toLowerCase();
     if (!t) return '';
@@ -6401,6 +6421,7 @@ module.exports = {
     normalizeRepeaterValue,
     chipsAnswer,
     workAuthTopic,
+    isWorkAuthQuestion,
     learnedWorkAuthAnswer,
     demographicTopic,
     genderOptionFor,

@@ -202,6 +202,26 @@ const COUNTRY = { key: 'f5', tag: 'select', type: 'select', label: 'Country', na
         DB.portalQA = [];
     }
 
+    // ⚠️ THE COMBINED WORDING IS THE COMMON ONE on Greenhouse and Lever, and it used to walk
+    // straight through the guard: two topics match, so workAuthTopic() answers null, and the guard
+    // read that as "not a work-authorisation question" and kept whatever the model had said.
+    console.log('\nthe question that asks BOTH halves at once is guarded too');
+    {
+        const K = 'n:eeo[auth]|radio';
+        const F = [{ key: K, tag: 'input', type: 'radio', widget: 'radiogroup', name: 'eeo[auth]', required: true,
+            label: 'Are you legally authorized to work in the United States, and will you now or in the future require visa sponsorship for employment?',
+            options: ['Yes', 'No'] }];
+        const r = await run(F, { values: { [K]: 'Yes' }, skipped: {} });
+        ok('the model\'s answer to the combined question is dropped', r.v[K] === undefined, r.v[K]);
+        ok('…and it is handed back to the applicant', r.why[K] === 'needs your judgement', r.why);
+        // …and NOTHING may be replayed onto it either: the two halves have opposite answers, so an
+        // earlier "No" to a sponsorship question says nothing about the authorisation half.
+        DB.portalQA = [{ q_key: 'x', question: 'Will you now or in the future require visa sponsorship for employment?', answer: 'No' }];
+        const r3 = await run(F, { values: {}, skipped: {} });
+        ok('an earlier answer to ONE half is never replayed onto the combined question', r3.v[K] === undefined, r3.v[K]);
+        DB.portalQA = [];
+    }
+
     console.log('\nBACKWARD COMPATIBILITY — the payload the SHIPPED build sends, which carries none of the new flags');
     {
         const LEGACY = [DIAL, PHONE, COUNTRY,
