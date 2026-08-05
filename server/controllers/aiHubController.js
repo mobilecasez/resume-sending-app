@@ -5438,6 +5438,10 @@ RULES:
         const nonFile = (fields || []).filter((f) => f && f.key && String(f.type || '').toLowerCase() !== 'file');
         const values = {};
         const skipped = {};
+        // Alternate phrasings for repeater ROW columns whose picker holds a controlled vocabulary
+        // ("Post Graduate Diploma" -> "Master's degree"). Keyed by field, one entry per row. Sent
+        // BESIDE the rows, never inside them — see repeaterRowAlts for why that matters.
+        const rowAlts = {};
         const aiValues = (parsed && parsed.values && typeof parsed.values === 'object') ? parsed.values : {};
         let bogus = 0;
         for (const k of Object.keys(aiValues)) {
@@ -5588,13 +5592,22 @@ RULES:
                     // left EMPTY is built from the résumé.
                     if (values[f.key] != null) {
                         const norm = normalizeRepeaterValue(values[f.key]);
-                        if (norm) { values[f.key] = norm; continue; }
+                        if (norm) {
+                            values[f.key] = norm;
+                            const a = repeaterRowAlts(norm);
+                            if (a) rowAlts[f.key] = a;
+                            continue;
+                        }
                         delete values[f.key];
                     }
                     const kind = repeaterKind(fieldQuestion(f));
                     if (!kind) continue;                              // unnameable region → leave it
                     const rows = buildRepeaterRows(kind, profile);
-                    if (rows.length) { values[f.key] = rows; delete skipped[f.key]; det++; }
+                    if (rows.length) {
+                        values[f.key] = rows; delete skipped[f.key]; det++;
+                        const a = repeaterRowAlts(rows);
+                        if (a) rowAlts[f.key] = a;
+                    }
                     else if (skipped[f.key] == null) skipped[f.key] = 'not in your profile';
                     continue;
                 }
@@ -5801,10 +5814,17 @@ RULES:
             if (v == null || (typeof v !== 'boolean' && String(v).trim() === '')) { delete values[k]; blanked++; }
         }
         if (blanked) console.warn(`[aiHub] autofillMap dropped ${blanked} EMPTY value(s) that would have blanked a field (user ${userId})`);
+        // Alternates only ever describe rows we are actually sending, and only as many as survived
+        // the trim above. A stale entry would pair row 3's degree with row 1's.
+        for (const k of Object.keys(rowAlts)) {
+            if (!Array.isArray(values[k])) { delete rowAlts[k]; continue; }
+            rowAlts[k] = rowAlts[k].slice(0, values[k].length);
+        }
 
         return res.json({
             success: true,
             values,
+            rowAlts,
             skipped: skippedOut,
             resumeFileKeys: parsed && Array.isArray(parsed.resumeFileKeys) ? parsed.resumeFileKeys : [],
             coverLetterFileKeys: parsed && Array.isArray(parsed.coverLetterFileKeys) ? parsed.coverLetterFileKeys : [],
@@ -6017,6 +6037,71 @@ function normResumeDate(raw) {
     return m3 ? m3[0] : s.slice(0, 20);
 }
 const _cellText = (x) => String(x == null ? '' : x).replace(/\s+/g, ' ').trim().slice(0, 120);
+
+// ── ALTERNATE PHRASINGS FOR A COLUMN WHOSE PICKER HOLDS A CONTROLLED VOCABULARY ──────────────
+// Measured on the live Revolut education row: its Degree column is a NINE-ITEM list
+//   A-levels · AA degree · Bachelor's degree · Doctoral degree · GCSE · High school diploma/GED ·
+//   Master's degree · Not Applicable · (…) — all "or equivalent"
+// and the value we send is what the résumé says: "Post Graduate Diploma in Advanced Computing
+// (PG-DAC)". No search term in that string returns a row, so the column stayed empty and the row's
+// own Add button — which the missing columns keep disabled — could never be pressed.
+//
+// The device cannot solve this by loosening its matcher: typing the one word that DOES return a row
+// ("Diploma") returns "High school diploma/GED or equivalent", and committing that would state a
+// school-leaving certificate for someone holding a postgraduate qualification. So the equivalence
+// is decided HERE, where the résumé is, and the device is handed the alternatives to TRY — it still
+// has to find one of them in the employer's own list, and still commits nothing if it cannot.
+//
+// ⚠️ These are EQUIVALENT PHRASINGS ONLY, never near-neighbours. "Advanced Computing" does not
+// become "Computer Science" here: that is a different claim about the applicant's studies, and an
+// unfilled column the applicant completes beats a filled one that misstates them.
+function degreeAlts(raw) {
+    const s = String(raw || '').toLowerCase();
+    if (!s) return [];
+    // Order matters: a "Post Graduate Diploma" is postgraduate first and a diploma second.
+    if (/\b(ph\.?\s?d|doctor(al|ate)?|dphil)\b/.test(s)) return ["Doctoral degree", 'Doctorate', 'PhD'];
+    if (/\b(m\.?\s?sc|m\.?\s?tech|m\.?\s?eng|mba|m\.?\s?a|m\.?\s?com|master|post\s?grad|postgrad|pg[-\s]?d|pgd)/.test(s)) return ["Master's degree", 'Master', 'Postgraduate'];
+    if (/\b(b\.?\s?sc|b\.?\s?tech|b\.?\s?eng|b\.?\s?e|b\.?\s?a|b\.?\s?com|bca|bba|bachelor|under\s?grad)/.test(s)) return ["Bachelor's degree", 'Bachelor', 'Undergraduate'];
+    if (/\bassociate\b/.test(s)) return ['Associate degree', 'AA degree'];
+    if (/\b(high school|higher secondary|secondary|hsc|ssc|10\+2|12th|a[-\s]?levels?|gcse)\b/.test(s)) return ['High school diploma', 'Secondary school', 'A-levels'];
+    if (/\b(diploma|certificate)\b/.test(s)) return ['Diploma'];
+    return [];
+}
+// A school's searchable NAME, when the résumé buried it in an aside. Real example:
+//   "Govt Arts & Science College, Kumbakonam (Bharathidasan University)"
+// returns nothing typed whole, while "Bharathidasan University" — the awarding body in brackets —
+// is an exact row in the employer's index. Purely structural: no institution is invented.
+function schoolAlts(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return [];
+    const out = [];
+    const paren = s.match(/\(([^)]{4,80})\)/);
+    if (paren && /univ|college|institut|school|academy|polytech/i.test(paren[1])) out.push(paren[1].trim());
+    const head = s.split(/[,(]/)[0].trim();          // the name before the first comma or bracket
+    if (head && head.length >= 4 && head !== s) out.push(head);
+    return out.filter((x, i) => x && out.indexOf(x) === i).slice(0, 3);
+}
+// The alternates for a whole repeater, one entry per row: [{ Degree:[...], University:[...] }, …].
+//
+// ⚠️ THIS TRAVELS BESIDE THE ROWS, NEVER INSIDE THEM. A build that predates this feature walks a
+// row's keys and fuzzy-matches each one against the employer's column headings; an extra key in
+// there would eventually be matched to some column and its value typed in as "[object Object]".
+// Older clients simply never read the sibling field, so they cannot be broken by it.
+function repeaterRowAlts(rows) {
+    let any = false;
+    const out = (rows || []).map((r) => {
+        const school = r && (r.School || r.University || r.Institution);
+        const sA = schoolAlts(school), dA = degreeAlts(r && r.Degree);
+        const alts = {};
+        // Every key that carries the school name gets the same alternates — the client matches
+        // whichever of them the employer's own column happens to be called.
+        if (sA.length) { alts.School = sA; alts.University = sA; alts.Institution = sA; }
+        if (dA.length) alts.Degree = dA;
+        if (Object.keys(alts).length) any = true;
+        return alts;
+    });
+    return any ? out : null;
+}
 
 // Build the rows for an "add another" region from what the candidate actually wrote.
 // Rows are newest-first (a résumé lists the current job first) and capped at 3, which is what

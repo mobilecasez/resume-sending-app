@@ -1382,6 +1382,48 @@ const JS_HELPERS = `
     }
     return String(want);
   }
+  // ── MATCHING RÉSUMÉ PROSE AGAINST A CONTROLLED VOCABULARY ───────────────────────────────────
+  // Measured on the live Revolut education row. Its column pickers are ordinary listboxes with
+  // ordinary search boxes and our machinery drives them perfectly — but what we type is résumé
+  // prose and what they hold is a curated list:
+  //     "C-DAC ACTS (Advanced Computing Training School), Pune, Maharashtra"  ->  No results found
+  //     "Bharathidasan"                                                       ->  Bharathidasan University
+  // A single literal query is the whole reason every education column came back empty. So we try a
+  // LADDER of queries instead of one.
+  //
+  // ⚠️ WHAT THIS GUARDS IS NOT THE EMPTY FIELD, IT IS THE FALSE ONE. Typing the word "Diploma" into
+  // that 9-item degree list returns "High school diploma/GED or equivalent". Accepting it would put
+  // a school-leaving certificate on the application of someone holding a postgraduate diploma —
+  // strictly worse than leaving the column for them to fill. So a query WE invented may only commit
+  // an option that says nothing the applicant's own value does not already say.
+  var CB_STOP=/^(of|the|and|or|in|at|for|a|an|de|la|el|und|van|von|equivalent|degree|university|college|school|institute|institution|academy|department|studies|study)$/;
+  function cbToks(s){
+    var out=[], parts=cleanTxt(s).toLowerCase().split(/[^a-z0-9]+/), i;
+    for(i=0;i<parts.length;i++){ var p=parts[i]; if(!p||p.length<4||CB_STOP.test(p)) continue; if(out.indexOf(p)<0) out.push(p); }
+    return out;
+  }
+  // Every distinctive word the OPTION carries must also appear in what we were given. One shared
+  // word is not a match ("diploma"); an option that claims nothing extra IS one.
+  function cbCovers(want, optText){
+    var ot=cbToks(optText); if(!ot.length) return false;
+    var w=' '+cleanTxt(want).toLowerCase().replace(/[^a-z0-9]+/g,' ')+' ', i;
+    for(i=0;i<ot.length;i++){ if(w.indexOf(' '+ot[i]+' ')<0) return false; }
+    return true;
+  }
+  // The queries to try, in order: the value itself (right often enough), then any ALTERNATE
+  // phrasings the server sent for this column — the model that read the résumé is the right place
+  // to know a Post Graduate Diploma is a Master's-level qualification — then our own derived
+  // tokens, which are the ones held to the stricter test, and finally the unfiltered list.
+  function cbLadder(want, alts){
+    var out=[{q:String(want), strict:false}], i;
+    if(alts && alts.length) for(i=0;i<alts.length&&i<4;i++){ var a=cleanTxt(alts[i]); if(a) out.push({q:a, strict:false}); }
+    var t=cbToks(want), long=[];
+    for(i=0;i<t.length;i++){ if(t[i].length>=5) long.push(t[i]); }
+    long.sort(function(a,b){ return b.length-a.length; });
+    for(i=0;i<long.length&&i<3;i++) out.push({q:long[i], strict:true});
+    out.push({q:'', strict:false});     // the old behaviour: clear the filter, judge the whole list
+    return out;
+  }
   // Does this widget accept MORE THAN ONE answer? (react-select multi, chips/tokens already
   // rendered, aria-multiselectable, or a label that asks for plural places/languages/skills.)
   function isMultiCombo(el){
@@ -1623,9 +1665,26 @@ const JS_HELPERS = `
   // "Shown" is not always "answered": an UNTOUCHED country / dial-code widget showing the page's
   // geo-IP default (+44 on a UK site) is nobody's answer — the exact "it never changes the phone
   // country code when one is already there" complaint. Mirrors selIsUserAnswer's select rule.
+  // Did the PERSON answer this control, as opposed to the page answering it for them?
+  //
+  // Two kinds of evidence, and only two:
+  //   • a trusted change/input event  — unambiguous, the value moved under their hands
+  //   • a trusted TAP followed by the shown value actually changing — the only signal available on
+  //     a trigger-style picker, which emits no change event of its own
+  //
+  // The tap ALONE is not evidence, and treating it as evidence is what left the wrong country code
+  // standing on a form the server had answered correctly (see the click handler in FOCUS_DETECT_JS).
+  function cbUserAnswered(el){
+    try{
+      if(el.__cvfTouched) return true;
+      if(!el.__cvfTapped) return false;
+      var now=cleanTxt(cbShown(el)||''), then=cleanTxt(el.__cvfTapShown||'');
+      return !!now && now!==then;
+    }catch(e){ return false; }
+  }
   function cbAnswered(el){
     var sh=cbShown(el); if(!sh) return false;
-    try{ if(isCountryLabel(nlbl(el)) && !el.__cvfTouched) return false; }catch(e){}
+    try{ if(isCountryLabel(nlbl(el)) && !cbUserAnswered(el)) return false; }catch(e){}
     return true;
   }
   // Close a widget popup without ever pressing Enter (implicit submit) — and WITHOUT closing the host
@@ -1981,7 +2040,8 @@ const JS_HELPERS = `
   //    relevance-ranked autocompletes; on a list that simply doesn't contain the answer it commits a
   //    random row — a wrong dial code, or a fabricated answer to a legal question — and then reports
   //    it as filled. An unanswered question the user can see beats a wrong one they cannot.
-  function openAndPick(el, v, cb){
+  // alts: optional alternate phrasings for this one value, supplied by the server alongside it.
+  function openAndPick(el, v, cb, alts){
     var want=String(v), fin=false, trig=isComboTrigger(el), sb=null, popEl=null;
     // ALWAYS close, success or failure. Closing only on failure is what left a stack of sheets on
     // screen for the user to dismiss by hand — a pick that works still leaves the sheet up on any
@@ -2023,40 +2083,53 @@ const JS_HELPERS = `
         var pop=cbPopup(el, pre);
         if(!pop){ finish(false); return; }
         popEl=pop.el; cbNoteOpened(el, popEl);   // remembered so the final sweep can guarantee closure
-        function pickFrom(os, retried){
+        // The popup can appear only on this second look — the search box is only findable now.
+        if(trig && !sb) sb=cbSearchBox(el, pop);
+        var rbox = trig ? sb : el;          // whichever box holds our filter text
+        var lad=cbLadder(want, alts), li=0;
+        // Read the list AS IT STANDS and try to commit a row. Never "first row wins": a list that
+        // simply does not contain the answer must end as a question for the applicant.
+        function judge(step){
           if(cbAborted()){ finish(false); return; }
-          var rbox = trig ? sb : el;   // whichever box holds our filter text
-          function retry(){
-            // our search filter may not match how this list spells things — clear it once and re-read
-            try{ setNative(rbox,''); }catch(e){}
-            setTimeout(function(){ var p2=cbPopup(el, pre)||pop; pickFrom(cbOptions(el, p2), true); }, 380);
+          var p2=cbPopup(el, pre)||pop;
+          if(p2 && p2.el) popEl=p2.el;
+          var os=cbOptions(el, p2), m=null;
+          if(os.length){
+            var pool=[]; for(var i=0;i<os.length;i++) pool.push({text:cbText(os[i]),el:os[i]});
+            m=isCountryLabel(nlbl(el)) ? pickDial(pool,want) : null;
+            if(!m) m=pickOpt(pool, step.q||want);
+            if(!m && step.q && step.q!==want) m=pickOpt(pool, want);
+            // A query WE invented clears a higher bar than one we were handed: the row must contain
+            // the token we searched for AND claim nothing the applicant's own value does not.
+            if(m && step.strict){
+              var mt=cleanTxt(m.text).toLowerCase();
+              if(mt.indexOf(String(step.q).toLowerCase())<0 || !cbCovers(want, m.text)) m=null;
+            }
           }
-          if(!os.length){ if(rbox && !retried){ retry(); return; } finish(false); return; }
-          var pool=[]; for(var i=0;i<os.length;i++) pool.push({text:cbText(os[i]),el:os[i]});
-          var m=isCountryLabel(nlbl(el)) ? pickDial(pool,want) : null;
-          if(!m) m=pickOpt(pool,want);
-          if((!m || !m.el) && rbox && !retried){ retry(); return; }
-          if(!m || !m.el || !cbSafeClick(m.el)){ finish(false); return; }
+          if(!m || !m.el){ attempt(); return; }
+          if(!cbSafeClick(m.el)){ finish(false); return; }
           setTimeout(function(){
             // Verify against what the widget SHOWS. el.value is not evidence for typeable combos —
             // we typed it ourselves, so comparing it to the wanted value reported success on every
             // run that misfired. (For triggers el.value IS framework-set — cbShown handles that.)
-            var shown=cbNorm(cbShown(el)), mt=cbNorm(m.text), ok=false;
-            try{ if(shown&&mt) ok = shown.indexOf(mt.slice(0,20))>=0 || mt.indexOf(shown.slice(0,20))>=0; }catch(e){}
+            var shown=cbNorm(cbShown(el)), mt2=cbNorm(m.text), ok=false;
+            try{ if(shown&&mt2) ok = shown.indexOf(mt2.slice(0,20))>=0 || mt2.indexOf(shown.slice(0,20))>=0; }catch(e){}
             finish(ok);
           },300);
         }
-        // The popup can appear only on this second look — the search box then still needs typing.
-        if(trig && !sb){
-          sb=cbSearchBox(el, pop);
-          if(sb){
-            try{ sb.focus(); }catch(e){}
-            try{ setNative(sb, cbFilterFor(el, want)); }catch(e){}
-            setTimeout(function(){ pickFrom(cbOptions(el, cbPopup(el, pre)||pop), false); }, 380);
-            return;
-          }
+        function attempt(){
+          if(cbAborted()){ finish(false); return; }
+          if(li>=lad.length){ finish(false); return; }
+          var step=lad[li++];
+          // No filter box means the list cannot be narrowed — but a later ladder entry is still
+          // worth judging, because an alternate PHRASING can match a row the raw value did not.
+          if(!rbox){ judge(step); return; }
+          try{ rbox.focus(); }catch(e){}
+          try{ setNative(rbox,''); }catch(e){}
+          if(step.q){ try{ setNative(rbox, li===1 ? cbFilterFor(el, step.q) : String(step.q)); }catch(e){} }
+          setTimeout(function(){ judge(step); }, 420);
         }
-        pickFrom(cbOptions(el, pop), false);
+        attempt();
       },450);
     });
   }
@@ -2339,15 +2412,28 @@ const JS_HELPERS = `
       // Fill one revealed row and REPORT WHAT LANDED. Cheap controls first: a combo can burn several
       // seconds opening its sheet, and on the measured form that starved the date boxes completely.
       function rpFillRow(fresh, row, deadline, cb){
-        var keys=[]; for(var kk2 in row){ if(Object.prototype.hasOwnProperty.call(row,kk2)) keys.push(kk2); }
+        // __alts is our own contract key, not a column: alternate phrasings the server derived from
+        // the résumé for the columns whose picker holds a controlled vocabulary. It must never be
+        // matched against a column heading or typed into anything.
+        var rowAlts=(row && row.__alts && typeof row.__alts==='object') ? row.__alts : null;
+        var keys=[]; for(var kk2 in row){ if(Object.prototype.hasOwnProperty.call(row,kk2) && kk2!=='__alts') keys.push(kk2); }
         var landed=0, tried=0, missed=[];
-        function valFor(el){
+        // Which row key answers this column? Returns the key, so the value and its alternates are
+        // always read from the SAME entry.
+        function keyFor(el){
           var L=cleanTxt(nlbl(el)).toLowerCase(); if(!L) return null;
           var j2;
-          for(j2=0;j2<keys.length;j2++){ if(cleanTxt(keys[j2]).toLowerCase()===L) return row[keys[j2]]; }
+          for(j2=0;j2<keys.length;j2++){ if(cleanTxt(keys[j2]).toLowerCase()===L) return keys[j2]; }
           var pool=[]; for(j2=0;j2<keys.length;j2++) pool.push({text:keys[j2]});
           var fz=pickOptFuzzy(pool, L);
-          return fz ? row[fz.text] : null;
+          return fz ? fz.text : null;
+        }
+        function valFor(el){ var k=keyFor(el); return k==null ? null : row[k]; }
+        function altsFor(el){
+          if(!rowAlts) return null;
+          var k=keyFor(el); if(k==null) return null;
+          var a=rowAlts[k];
+          return (a && a.length) ? a : null;
         }
         function note(el){ var n=cleanTxt(nlbl(el)).slice(0,40); if(n && missed.indexOf(n)<0) missed.push(n); }
         var plain=[], combos=[], dates=[], boxes=[], i2;
@@ -2400,7 +2486,7 @@ const JS_HELPERS = `
             if(good) landed++; else note(el3);
             try{ cbEnsureNoneOpen(); }catch(e){}
             setTimeout(nextCombo, 220);
-          });
+          }, altsFor(el3));
         }
         // ── THE DATE COLUMNS ─────────────────────────────────────────────────────────────────
         // Given their OWN budget, deliberately not the combo deadline: the combos come first and
@@ -2825,8 +2911,42 @@ const JS_HELPERS = `
           }
         });
       }
+      // ── THE COUNTRY CODE GOES FIRST, BEFORE ANYTHING ELSE ────────────────────────────────────
+      // It used to go last but one. Dropdowns are deferred to drain(), drain() runs after up to
+      // five scroll-and-fill passes over the whole document, and the run has a hard 55s ceiling —
+      // so on a long form on a real phone the dial picker is competing for the seconds that are
+      // left, against a Mac where it never has to. Every measurement I can make on a desktop shows
+      // it landing; the device it does not land on is not one I can put under a debugger.
+      //
+      // Rather than keep guessing at the reason it starves, take it out of the race. It is ONE
+      // control, it is the field the applicant notices first, and the phone number beside it is
+      // split on the assumption that it worked — so it earns its place at the front of the queue.
+      // Everything after this is unchanged: if the pick fails here, drain() still tries it in turn,
+      // and phoneReconcile still restores the full international number at the end.
+      function dialFirst(next){
+        try{
+          var els=ctrls(), i, dial=null;
+          for(i=0;i<els.length;i++){
+            if(!isDialCtrl(els[i]) || !visCtl(els[i])) continue;
+            var ds=sig(els[i]);
+            if(!(ds in bySig)) continue;
+            if(cbUserAnswered(els[i])) break;        // their own choice — never overridden
+            dial=els[i]; break;
+          }
+          if(!dial){ next(); return; }
+          var dsig=sig(dial), dv=String(bySig[dsig]==null?'':bySig[dsig]);
+          if(!dv){ next(); return; }
+          cbGuardOn();
+          openAndPick(dial, dv, function(good){
+            try{ cbGuardOff(); }catch(e){}
+            try{ cbEnsureNoneOpen(); }catch(e){}
+            if(good){ filled[dsig]=true; delete fails[dsig]; }
+            setTimeout(next, 200);
+          });
+        }catch(e){ next(); }
+      }
       collectRepeaters();
-      pass();
+      dialFirst(pass);
     } catch(e){ post({type:'AUTOFILL_ERROR', error:String((e && e.message) || e)}); }
   }
 
@@ -2861,7 +2981,7 @@ const JS_HELPERS = `
       // selectedIndex = <United States> leaves NOTHING in the DOM to distinguish it from a real
       // choice — so we trust the touch flag FOCUS_DETECT_JS sets on genuine user gestures instead.
       if(isCountrySelect(el)){
-        if(el.__cvfTouched) return true;
+        if(cbUserAnswered(el)) return true;
         if(o.defaultSelected) return false;
         if(i===0) return false;
         return false;
@@ -2881,7 +3001,7 @@ const JS_HELPERS = `
       // An UNTOUCHED country / dial-code widget holding the page's default is nobody's answer —
       // same rule selIsUserAnswer applies to native selects. A trusted user gesture (FOCUS_DETECT
       // marks __cvfTouched) still protects a real choice.
-      if(isCombo(el) && isCountryLabel(nlbl(el)) && !el.__cvfTouched) return false;
+      if(isCombo(el) && isCountryLabel(nlbl(el)) && !cbUserAnswered(el)) return false;
       var cv=cleanTxt(el.value||'');
       if(!cv) return false;
       return cv.toLowerCase()!==cleanTxt(v).toLowerCase();
@@ -3326,9 +3446,32 @@ const FOCUS_DETECT_JS = `(function(){
   };
   document.addEventListener('change', mark, true);
   document.addEventListener('input', mark, true);
-  // Trigger-style dropdowns (input[type=button]) get no native change/input event when the user
-  // picks — a trusted CLICK on the control is the gesture that proves the selection is theirs.
-  document.addEventListener('click', mark, true);
+  // ⚠️ A TAP IS NOT AN ANSWER — and reading it as one is why "+91" never landed.
+  //
+  // Trigger-style dropdowns (input[type=button]) fire no native change/input event when the user
+  // picks, so a trusted CLICK used to be recorded as proof the selection was theirs. But the very
+  // first thing an applicant does with a code picker showing the wrong country is TAP IT — to fix
+  // it by hand. Tap, scroll a 240-row sheet, give up, close. Nothing changed, yet from that moment
+  // the control was flagged as personally answered, cbAnswered() returned true, and Auto Fill
+  // skipped it on every later run. The server was answering "+91" correctly the whole time and the
+  // engine was throwing the answer away one line before it could be used.
+  //
+  // So record the tap and WHAT THE CONTROL SHOWED at that moment. cbUserAnswered() then treats it
+  // as their answer only if the displayed value actually moved afterwards — a click FOLLOWED BY a
+  // change. Opening a picker and closing it proves only that they looked.
+  document.addEventListener('click', function(ev){
+    try{
+      if(!ev || !ev.isTrusted) return;
+      var t=ev.target; if(!t) return;
+      if(t.tagName!=='SELECT' && t.tagName!=='INPUT' && t.tagName!=='TEXTAREA'){
+        try{ t = t.closest && t.closest('select,input,textarea'); }catch(e){ t=null; }
+      }
+      if(!t) return;
+      if(t.__cvfTapped) return;                       // keep the FIRST snapshot, not the latest
+      t.__cvfTapped = true;
+      try{ t.__cvfTapShown = cbShown(t) || ''; }catch(e){ t.__cvfTapShown = ''; }
+    }catch(e){}
+  }, true);
   document.addEventListener('focus', function(ev){
     try {
       var el = ev.target; if(!el) return; var tag = el.tagName;
@@ -4995,6 +5138,25 @@ export default function JobDetailScreen() {
       const data = await postAndPoll('/ai-hub/autofill-map', { fields, coverLetterHtml, jobTitle: job.title, companyName: companyNameCL || employer.name }, token);
       if (!stillValid(gen)) return;
       const values = (data && data.values) || {};
+      // ── ALTERNATE PHRASINGS FOR REPEATER ROW COLUMNS ────────────────────────────────────────
+      // The server sends these BESIDE the rows (a build that predates the feature would treat an
+      // extra key inside a row as a column and type "[object Object]" into it). Merge them onto
+      // the rows here, under the one key the engine knows, so the row-filling code can try
+      // "Master's degree" when the résumé's own "Post Graduate Diploma in Advanced Computing
+      // (PG-DAC)" finds nothing in the employer's nine-item list.
+      try {
+        const ra = data && data.rowAlts;
+        if (ra) {
+          for (const k of Object.keys(ra)) {
+            const rows = values[k];
+            if (!Array.isArray(rows) || !Array.isArray(ra[k])) continue;
+            rows.forEach((r: any, i: number) => {
+              const a = ra[k][i];
+              if (r && typeof r === 'object' && a && Object.keys(a).length) r.__alts = a;
+            });
+          }
+        }
+      } catch {}
       const clText = clPlainText(coverLetterHtml);
       if (clText) { for (const f of fields) { if (isCoverLetterTextarea(f)) values[f.key] = clText; } }
       try { smartValuesRef.current = { ...smartValuesRef.current, ...values }; } catch {}

@@ -321,6 +321,20 @@ const PROBE = `(function(){
     fields, coverLetterHtml: '', jobTitle: 'Legal Counsel (Loyalty)', companyName: 'Revolut',
   }, token).catch((e) => { console.log('  MAP FAILED: ' + e.message); return null; });
   const values = (data && data.values) || {};
+  // The app merges the server's sibling `rowAlts` onto the rows before it fills — alternate
+  // phrasings for repeater columns whose picker holds a controlled vocabulary. Doing the same here
+  // is what makes LEG 3 the real path: without it this test would exercise a fill the app never runs.
+  let altCount = 0;
+  try {
+    const ra = data && data.rowAlts;
+    if (ra) for (const k of Object.keys(ra)) {
+      const rows = values[k];
+      if (!Array.isArray(rows) || !Array.isArray(ra[k])) continue;
+      rows.forEach((r, i) => { const a = ra[k][i]; if (r && a && Object.keys(a).length) { r.__alts = a; altCount++; } });
+    }
+  } catch (e) {}
+  if (altCount) console.log('    row alternates merged onto ' + altCount + ' row(s): '
+    + JSON.stringify(Object.values(data.rowAlts)[0][0] || {}).slice(0, 200));
   const skipMap = {};
   for (const s of (Array.isArray(data && data.skipped) ? data.skipped : [])) skipMap[s.key] = s.why;
   console.log('  server answered ' + Object.keys(values).length + '/' + fields.length + ' fields'
@@ -392,10 +406,21 @@ const PROBE = `(function(){
 
   ok('THE FORM WAS NEVER SUBMITTED (fill)', dom.submits.length === 0, dom.submits);
   ok('the fill actually reported back', !filledTimeout);
-  ok('THE DIAL PICKER ENDS UP ON THE USER\'S OWN CODE', /\+?91\b/.test(String(dom.dialShows)), { shows: dom.dialShows, sent: dialF && values[dialF.key] });
+  // ⚠️ The expected code is the one THE SERVER SENT for this account, not a constant. This used to
+  // be a hardcoded /91/, which quietly turned a correct +33 for a France-based user into two red
+  // lines that said nothing about the engine. The claim worth testing is the same for everyone:
+  // the picker must end on the code the server answered with, and the number box must never be
+  // left holding national digits under some other country's code.
+  const wantCode = String((dialF && values[dialF.key]) || '').match(/\+?(\d{1,4})/);
+  const wantDigits = wantCode ? wantCode[1] : null;
+  const shownDigits = String(dom.dialShows || '').match(/\+?(\d{1,4})/);
+  ok('THE DIAL PICKER ENDS UP ON THE CODE THE SERVER SENT',
+    !!wantDigits && !!shownDigits && shownDigits[1] === wantDigits,
+    { shows: dom.dialShows, sent: dialF && values[dialF.key] });
   ok('the number box is not left as national digits under a foreign code',
-    /\+?91\b/.test(String(dom.dialShows)) || String(dom.phone || '').replace(/[^\d]/g, '').indexOf('91') === 0,
-    { dial: dom.dialShows, phone: dom.phone });
+    (!!wantDigits && !!shownDigits && shownDigits[1] === wantDigits)
+    || String(dom.phone || '').replace(/[^\d]/g, '').indexOf(String(wantDigits || '')) === 0,
+    { dial: dom.dialShows, phone: dom.phone, sent: dialF && values[dialF.key] });
   const sheetsOf = (c) => c.popups.filter((p) => (p.inputs || 0) < 2);   // an option sheet, not a row
   ok('the fill leaves no dropdown or sheet open', sheetsOf(afterFill.now).length === 0, sheetsOf(afterFill.now));
 

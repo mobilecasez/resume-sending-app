@@ -885,6 +885,81 @@ function helpersSourceProblems() {
     await p.close();
   }
 
+
+  // ── A TAP IS NOT AN ANSWER ───────────────────────────────────────────────────────────────────
+  // The bug this locks down: an applicant looking at a code picker that reads "+44" taps it to fix
+  // it by hand, scrolls, gives up, closes. Nothing changed — but the tap used to be recorded as
+  // proof the value was theirs, so cbAnswered() returned true and Auto Fill skipped the field on
+  // every later run. The server had been answering "+91" correctly the whole time.
+  {
+    const p = await browser.newPage();
+    await p.route('**/*', (r) => r.fulfill({
+      status: 200, contentType: 'text/html; charset=utf-8',
+      body: `<html><body><form>
+        <span><input id="dial" type="button" aria-haspopup="listbox" aria-labelledby="dl" placeholder=" " value="+44"><div id="dl">Search phone country codes</div></span>
+        <span><input id="dial2" type="button" aria-haspopup="listbox" aria-labelledby="dl2" placeholder=" " value="+44"><div id="dl2">Search phone country codes</div></span>
+      </form></body></html>`,
+    }));
+    await p.goto('https://tap.example.com/apply');
+    await p.evaluate(FOCUS_DETECT_JS);
+    // A REAL tap (isTrusted) on the first picker, and nothing else.
+    await p.click('#dial');
+    // A real tap on the second picker, and then the widget actually changes what it shows.
+    await p.click('#dial2');
+    await p.evaluate(() => { document.getElementById('dial2').value = '+91'; });
+    const r = await p.evaluate(new Function('return (function(){' + JS_HELPERS + `
+      var a=document.getElementById('dial'), b=document.getElementById('dial2');
+      return {
+        tappedA: !!a.__cvfTapped, tappedB: !!b.__cvfTapped,
+        touchedA: !!a.__cvfTouched,
+        shownA: cbShown(a), shownB: cbShown(b),
+        userAnsweredA: cbUserAnswered(a), userAnsweredB: cbUserAnswered(b),
+        answeredA: cbAnswered(a), answeredB: cbAnswered(b),
+        keepA: keepUser(a, 'button', '+91')
+      };
+    })();`));
+    ok('a real tap IS recorded (the signal still exists)', r.tappedA === true && r.tappedB === true, r);
+    ok('...but a tap alone is NOT a change event', r.touchedA === false, r);
+    ok('A PICKER THE PERSON ONLY OPENED IS NOT "ANSWERED" — so +91 still gets written',
+      r.userAnsweredA === false && r.answeredA === false, r);
+    ok('...and keepUser does not protect it either', r.keepA === false, r);
+    ok('a tap FOLLOWED BY the shown value changing IS their answer', r.userAnsweredB === true && r.answeredB === true, r);
+  }
+
+  // ── MATCHING RÉSUMÉ PROSE TO A CONTROLLED LIST, WITHOUT INVENTING A QUALIFICATION ────────────
+  // Revolut's Degree column is a nine-item list. "Diploma" is the one word from the applicant's
+  // "Post Graduate Diploma in Advanced Computing (PG-DAC)" that returns a row — and the row it
+  // returns is "High school diploma/GED or equivalent". Committing that would state a
+  // school-leaving certificate for someone holding a postgraduate qualification.
+  {
+    const p = await browser.newPage();
+    await p.route('**/*', (r) => r.fulfill({ status: 200, contentType: 'text/html', body: '<html><body></body></html>' }));
+    await p.goto('https://match.example.com/apply');
+    const r = await p.evaluate(new Function('return (function(){' + JS_HELPERS + `
+      var PGD='Post Graduate Diploma in Advanced Computing (PG-DAC)';
+      var SCHOOL='Govt Arts & Science College, Kumbakonam (Bharathidasan University)';
+      return {
+        falseDegree: cbCovers(PGD, 'High school diploma/GED or equivalent'),
+        trueDegree:  cbCovers("Master's degree", "Master's degree or equivalent"),
+        trueSchool:  cbCovers(SCHOOL, 'Bharathidasan University'),
+        wrongSchool: cbCovers('C-DAC ACTS (Advanced Computing Training School), Pune, Maharashtra', 'Chonbuk Sanup University of Technology'),
+        ladder:      cbLadder(SCHOOL, ['Bharathidasan University']).map(function(x){ return x.q + '|' + (x.strict?'strict':'open'); }),
+        degLadder:   cbLadder(PGD, ["Master's degree"]).map(function(x){ return x.q; })
+      };
+    })();`));
+    ok('THE WRONG QUALIFICATION IS REFUSED: a postgraduate diploma is not a high-school diploma',
+      r.falseDegree === false, r);
+    ok('...while the equivalent phrasing the server sent IS accepted', r.trueDegree === true, r);
+    ok('a university named in an aside IS matched', r.trueSchool === true, r);
+    ok('...and an unrelated university with one shared word is not', r.wrongSchool === false, r);
+    ok('the ladder tries the value, then the server\'s alternates, then our own tokens',
+      r.ladder[0].indexOf('Govt Arts') === 0 && r.ladder[1] === 'Bharathidasan University|open'
+      && r.ladder.some((x) => x.indexOf('|strict') > 0) && r.ladder[r.ladder.length - 1] === '|open', r.ladder);
+    ok('...and the degree alternate is tried before any word we picked out ourselves',
+      r.degLadder[1] === "Master's degree", r.degLadder);
+    await p.close();
+  }
+
   await browser.close();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
