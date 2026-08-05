@@ -6,7 +6,9 @@ time-lapse — so a voiceover can sit over them without drifting out of sync.
 ```
 SCRIPT.md                  the full script: scene table, presenter brief, cutdowns, guardrails
 narration/                 the spoken lines, per scene, ready to paste into a TTS / avatar tool
-shots-90s/                 10 clips for the 90-second master   (496x1080, phone only)
+shots-90s/                 10 clips for the 90-second master   (496x1080, all realtime)
+shots-90s-ai-ready/        the SAME 10 clips, every one 3-10s  <- USE THIS for AI video tools
+                           + PROMPTS.md: per-clip prompt and the narration line for each
 shots-30s/                 4 clips for the 30-second ad        (496x1080)
 shots-15s-vertical/        4 clips for Reels/TikTok/Shorts     (1080x1920, padded)
 ```
