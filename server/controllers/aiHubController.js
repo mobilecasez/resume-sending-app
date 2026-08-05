@@ -6068,9 +6068,16 @@ function normalizeRepeaterValue(v) {
             if (!key || cell == null || typeof cell === 'object') continue;
             const txt = _cellText(cell);
             if (!txt) continue;
-            const value = /date|from|until|till|year/i.test(key) ? normResumeDate(txt) : txt;
             // Rename onto the vocabulary the client knows, and keep the synonym pair with it.
-            for (const name of (canonicalRowKeys(key) || [key])) if (row[name] === undefined) row[name] = value;
+            const names = canonicalRowKeys(key) || [key];
+            // ⚠️ Decide "is this a date?" from the name we are ABOUT TO EMIT, not from the model's
+            // own word. The rename maps "From"/"To" onto "Start date"/"End date", but this test read
+            // the source key: "To" matches nothing, so the same fact reached the device normalised
+            // as "2024-08" when the model said "End date" and raw as "August 2024" when it said
+            // "To". One column, one shape, whatever the model happened to call it.
+            const isDate = names.some((nm) => /date|from|until|till|year/i.test(nm)) || /date|from|until|till|year/i.test(key);
+            const value = isDate ? normResumeDate(txt) : txt;
+            for (const name of names) if (row[name] === undefined) row[name] = value;
             n++;
         }
         if (Object.keys(row).length) rows.push(row);

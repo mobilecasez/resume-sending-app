@@ -184,6 +184,11 @@ ok('"Institution" becomes School/University/Institution', Object.keys(asRow({ In
 ok('"Major" becomes Field of study', asRow({ Major: 'Chemistry' })['Field of study'] === 'Chemistry', asRow({ Major: 'Chemistry' }));
 ok('"From"/"To" become Start date / End date', JSON.stringify(asRow({ From: '2021-04', To: '2024-08' })) === '{"Start date":"2021-04","End date":"2024-08"}', asRow({ From: '2021-04', To: '2024-08' }));
 ok('a renamed date column is still date-normalised', asRow({ Role: 'x', From: 'June 2013' })['Start date'] === '2013-06', asRow({ Role: 'x', From: 'June 2013' }));
+// ⚠️ The "is this a date?" test has to read the name we EMIT, not the model's own word. "From"
+// happens to contain the word "from"; "To", "Started" and "Finished" contain none of them, so the
+// same fact used to reach the device normalised or raw depending purely on the model's phrasing.
+ok('"To" is date-normalised even though the word itself is not date-ish', asRow({ To: 'August 2024' })['End date'] === '2024-08', asRow({ To: 'August 2024' }));
+ok('"Started"/"Finished" are too', asRow({ Started: 'Aug 2015', Finished: 'March 2021' })['Start date'] === '2015-08' && asRow({ Started: 'Aug 2015', Finished: 'March 2021' })['End date'] === '2021-03', asRow({ Started: 'Aug 2015', Finished: 'March 2021' }));
 ok('an already-correct row is unchanged', JSON.stringify(asRow({ Company: 'Acme', 'Start date': '2021-04' })) === '{"Company":"Acme","Start date":"2021-04"}', asRow({ Company: 'Acme', 'Start date': '2021-04' }));
 ok('a column we have no synonym for is passed through, not dropped', asRow({ 'Reason for leaving': 'Relocated' })['Reason for leaving'] === 'Relocated');
 ok('the first spelling of a duplicated column wins', asRow({ Role: 'Chemist', Position: 'Analyst' }).Position === 'Chemist', asRow({ Role: 'Chemist', Position: 'Analyst' }));
