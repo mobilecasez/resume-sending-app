@@ -4974,9 +4974,15 @@ function canonicalQ(s) {
         .replace(/\s+/g, ' ')
         .trim();
     // Order matters: code folds BEFORE phone folds, so "phone country code" -> phonecode.
+    //
+    // ⚠️ "codes?", NOT "code". Revolut's picker is labelled "Search phone country codeS" — the
+    // plural has no word boundary after "code", so the fold never fired, canonicalQ returned
+    // "searchphonecountrycodes", the phonecode token was never produced, and the very next test
+    // (/(^|[a-z])phone($|[a-z])/) claimed the picker as the phone NUMBER field instead. That single
+    // missing "s" is what left +44 standing on a real applicant's form.
     const FOLD = [
-        [/\b(country|international|dial|calling|isd|idd)\s*(phone\s*)?code\b/g, 'phonecode'],
-        [/\bphone\s*(country|dial)\s*code\b/g, 'phonecode'],
+        [/\b(country|international|dial|calling|isd|idd)\s*(phone\s*)?codes?\b/g, 'phonecode'],
+        [/\bphone\s*(country|dial)\s*codes?\b/g, 'phonecode'],
         [/\bvorwahl\b|\blandesvorwahl\b/g, 'phonecode'],
         [/\bphone\s*(no|nr|number)\b/g, 'phone'],
         // "contact" is deliberately NOT folded to "phone": it made "Contact Name",
@@ -5106,8 +5112,50 @@ function splitPhone(raw, countryHint) {
     return { dial: dial || hint, national: dial === '39' ? national : national.replace(/^0+/, '') };
 }
 
+// A dial picker with NO usable name of its own, recognised by WHERE IT SITS. Deliberately narrow:
+// the only combo this may claim is one whose label says nothing at all ("", "+", "Code", "Prefix")
+// and which is within two positions of the phone NUMBER box.
+//
+// ⚠️ "Current country" sits ONE position from Revolut's phone box. Claiming it would write "+91"
+// into a residence question — a worse bug than the one this exists to fix — so a label that names
+// anything, including a country, disqualifies the field here and is left to the tests above.
+const _NAMELESS_DIAL = /^(|code|codes|phonecode|prefix|dial|intl|international|areacode|countrycode)$/;
+function _dialByShape(f, i, list, q) {
+    if (!Array.isArray(list) || typeof i !== 'number') return false;
+    if (!_NAMELESS_DIAL.test(q)) return false;
+    const widget = String((f && f.widget) || '').toLowerCase();
+    const type = String((f && f.type) || '').toLowerCase();
+    // It has to be a CHOOSER. A nameless text box beside a phone number is an extension, not a code.
+    if (!(widget === 'combobox' || widget === 'select' || type === 'select' || type === 'select-one'
+          || (type === 'button' && widget !== 'repeater'))) return false;
+    for (let d = 1; d <= 2; d++) {
+        for (const j of [i - d, i + d]) {
+            const n = list[j];
+            if (!n) continue;
+            if (String(n.type || '').toLowerCase() === 'tel') return true;
+            const nq = canonicalQ(fieldQuestion(n));
+            if (!/phonecode/.test(nq) && /(^|[a-z])phone($|[a-z])/.test(nq)) return true;
+        }
+    }
+    return false;
+}
+
 // Is this field a country DIAL-CODE control (as opposed to a plain country control)?
-function isPhoneCodeField(f) {
+//
+// ⚠️ THE OPTION LIST IS NOT ALWAYS ON THE WIRE, and this used to depend on it entirely. Revolut's
+// picker is labelled "Search phone country codes" and carries its identity in a 240-row virtualised
+// sheet; when the device's enumeration budget runs out, that list never reaches us. Measured on the
+// real scanned field: with options isPhoneCodeField=true / isPhoneNumberField=false; with the
+// options gone isPhoneCodeField=false and isPhoneNumberField=TRUE — so the dial PICKER was processed
+// as the phone NUMBER control, no dial value was produced, and nothing was written to `skipped`
+// either. Four tests now, in order of how much each can be trusted:
+//   1. the device measured it itself (isDialCtrl) — new builds only; old builds omit the key
+//   2. the wording (the fold in canonicalQ no longer insists on a SINGULAR "code")
+//   3. the option list
+//   4. structure — a nameless chooser sitting beside the phone number box
+// `i` and `list` arrive for free from Array.prototype.filter(isPhoneCodeField).
+function isPhoneCodeField(f, i, list) {
+    if (f && f.isPhoneCode === true) return true;
     const q = canonicalQ(fieldQuestion(f));
     if (/phonecode/.test(q)) return true;
     const opts = Array.isArray(f && f.options) ? f.options : [];
@@ -5115,12 +5163,12 @@ function isPhoneCodeField(f) {
         const codey = opts.filter((o) => /\+\s*\d{1,4}/.test(String(o))).length;
         if (codey / opts.length > 0.6) return true;   // "Germany (+49)", "+49", "DE +49" …
     }
-    return false;
+    return _dialByShape(f, i, list, q);
 }
 // Someone ELSE's phone number. These fields ask for a referee, a manager or a next of kin — writing
 // the candidate's own number into them is worse than leaving them blank, because it looks answered.
 const _NOT_MY_PHONE = /\b(emergency|next\s*of\s*kin|kin|referee|reference|referrer|referral|guardian|parent|spouse|partner|manager|supervisor|employer|company|recruiter|agency|alternate|alternative|other|witness|beneficiary|notfall|angehoriger)\b/i;
-function isPhoneNumberField(f) {
+function isPhoneNumberField(f, i, list) {
     const raw = fieldQuestion(f);
     if (_NOT_MY_PHONE.test(raw)) return false;
     const q = canonicalQ(raw);
@@ -5132,9 +5180,9 @@ function isPhoneNumberField(f) {
     // set it to "+91"; the number pass then stripped "the dial code the page will reject" out of
     // it, leaving ""; the final empty guard dropped that, and the dial code was silently never
     // sent — measured live on production, one dropped empty value on every single request.
-    // Ask the code detector instead of guessing from words: it reads the OPTION LIST, so it holds
-    // whatever a vendor calls the control.
-    if (isPhoneCodeField(f)) return false;
+    // Ask the code detector instead of guessing from words — and hand it the SAME position context
+    // we were given, or the option-less picker comes back true from here again.
+    if (isPhoneCodeField(f, i, list)) return false;
     if (String((f && f.type) || '').toLowerCase() === 'tel') return true;
     return /(^|[a-z])phone($|[a-z])/.test(q);
 }
@@ -5432,6 +5480,15 @@ RULES:
                     if (!chosen && (partial || !opts.length)) chosen = '+' + _ph.dial;
                     if (chosen) { values[f.key] = chosen; delete skipped[f.key]; }
                     else if (values[f.key] == null) skipped[f.key] = 'no matching option';
+                }
+            }
+            // ⚠️ NEVER FAIL SILENTLY ON THE DIAL CODE. When the picker was misread, no value was
+            // produced AND no `skipped` entry either — so the app had nothing to name and the user
+            // saw a form reported as filled with +44 still sitting in it. A dial control we
+            // recognised and did not answer is now always said out loud, whatever the reason.
+            for (const f of codeF) {
+                if (values[f.key] == null && skipped[f.key] == null) {
+                    skipped[f.key] = _ph.dial ? 'no matching option' : 'needs your country code';
                 }
             }
             const codeFilled = codeF.some((c) => values[c.key] != null);
