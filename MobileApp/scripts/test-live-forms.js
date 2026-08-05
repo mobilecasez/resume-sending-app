@@ -434,6 +434,30 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
     .map((c) => ({ l: (c.labels && c.labels[0] ? c.labels[0].innerText : '').trim().slice(0, 20), on: c.checked })).filter((c) => c.on).map((c) => c.l));
   ok('the applicant\'s own She/her tick survives a group fill for a different option', keepMine.before === true && kept.some((l) => /she\/her/i.test(l)), kept);
 
+  // ⚠️ THE RADIO CASE IS THE DESTRUCTIVE ONE, and it is a CONSENT question on this form. Ticking a
+  // radio unchecks its sibling, so filling this group over an answer the applicant had already
+  // given REVERSED their refusal — measured on this page — and the review panel then told them
+  // they had agreed to it. A checkbox can only ever be added to; a radio replaces.
+  console.log('\nGROUPS — a radio consent the applicant answered is NEVER flipped');
+  await page.evaluate(() => {
+    const r = [...document.querySelectorAll('input[type=radio]')].find((x) => /don.t consent/i.test((x.labels && x.labels[0] ? x.labels[0].innerText : '')));
+    r.click();
+    r.__cvfTouched = true;      // exactly what FOCUS_DETECT_JS marks on a real, trusted gesture
+  });
+  await page.waitForTimeout(800);
+  await page.evaluate(fillJsFactory({ [consentG.key]: 'Yes, I consent' }));
+  await page.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 60000 }).catch(() => {});
+  const cflip = await page.evaluate(() => ({
+    on: [...document.querySelectorAll('input[type=radio]')].filter((c) => c.checked)
+      .map((c) => ((c.labels && c.labels[0] ? c.labels[0].innerText : '') || '').trim().slice(0, 30)),
+    consented: ((window.__msgs || []).filter((m) => m.type === 'FILLED').pop() || {}).consented || [],
+    submits: window.__submits,
+  }));
+  ok('their "No, I don\'t consent" is still the selected option', cflip.on.some((l) => /don.t consent/i.test(l)), cflip.on);
+  ok('we did not select the opposite side for them', !cflip.on.some((l) => /^yes, i consent/i.test(l)), cflip.on);
+  ok('and the review panel does not claim they agreed to anything', cflip.consented.length === 0, cflip.consented);
+  ok('THE REAL FORM WAS NEVER SUBMITTED (consent not flipped)', cflip.submits.length === 0, cflip.submits);
+
   console.log('\nREPEATERS — detected structurally, and reported UNCLICKED by the scan');
   fields = await freshScan(URL);
   const reps = fields.filter((f) => f.widget === 'repeater');
@@ -667,7 +691,12 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
     const jwt = require(path.join(REPO, 'node_modules', 'jsonwebtoken'));
     const API = process.env.AUTOFILL_TEST_API || 'https://cvapplyr-website-production.up.railway.app';
     if (!process.env.JWT_SECRET) throw new Error('no JWT_SECRET in .env');
-    const live = await freshScan(URL);
+    // This section runs LAST, after a dozen navigations, and the employer throttles: the first
+    // scan here times out often enough that a single attempt made the whole section vanish into
+    // its own "skipped" branch. One retry, with a longer settle.
+    let live = null;
+    try { live = await freshScan(URL); }
+    catch (e) { await page.waitForTimeout(20000); live = await freshScan(URL, 16000); }
     const token = jwt.sign({ id: Number(process.env.AUTOFILL_TEST_USER || 1), email: 'x@y.z' }, process.env.JWT_SECRET);
     const resp = await fetch(API + '/api/ai-hub/autofill-map', {
       method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
@@ -725,19 +754,29 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
       }
       const before = await page.evaluate(() => document.querySelectorAll('input,textarea,select').length);
       await page.evaluate(fillJsFactory({ [expKey]: [probe] }));
+      // Wait for the MARKER to appear, not merely for a FILLED message: the repeater phase reports
+      // when its whole queue is done, and reading the DOM on that signal alone raced the row and
+      // measured an empty form. Fall back to the message so a genuine failure still reports.
+      await page.waitForFunction((mark) => [...document.querySelectorAll('input,textarea')].some((i) => String(i.value || '').indexOf(mark) === 0), 'SYNTHETIC', { timeout: 180000 }).catch(() => {});
       await page.waitForFunction(() => window.__msgs && window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 180000 }).catch(() => {});
       const landed = await page.evaluate(() => {
         const out = {};
         // Text-ish controls only: a checkbox reports value "on" whether or not it is ticked, and
         // listing those made an untouched form look like something had been filled in.
+        // ⚠️ input[type=button] STAYS IN. This employer renders the row's Company and Position as
+        // button-shaped combobox triggers, not text boxes — excluding them made this reader return
+        // {} on a row the engine had filled correctly (verified: value "SYNTHETIC1" sat in the
+        // Company trigger while these two assertions reported it missing).
         for (const i of [...document.querySelectorAll('input,textarea')]) {
-          if (['checkbox', 'radio', 'hidden', 'submit', 'button'].indexOf((i.type || '').toLowerCase()) >= 0) continue;
+          if (['checkbox', 'radio', 'hidden', 'submit', 'image', 'file'].indexOf((i.type || '').toLowerCase()) >= 0) continue;
           const l = ((i.labels && i.labels[0] ? i.labels[0].innerText : '') || i.getAttribute('placeholder') || '').trim();
           if (l && i.value) out[l] = String(i.value);
         }
-        return { out, ctrls: document.querySelectorAll('input,textarea,select').length, submits: window.__submits };
+        return { out, ctrls: document.querySelectorAll('input,textarea,select').length, submits: window.__submits,
+                 report: (window.__msgs || []).filter((m) => m.type === 'FILLED').pop() };
       });
       console.log('    columns the server\'s keys reached:', JSON.stringify(landed.out));
+      console.log('    device report:', JSON.stringify(landed.report).slice(0, 300));
       ok('the row really opened (the click added controls)', landed.ctrls > before, [before, landed.ctrls]);
       const hit = (col, key) => Object.keys(landed.out).some((l) => col.test(l) && landed.out[l] === expect[key]);
       const companyKey = Object.keys(expect).find((k) => /company|employer/i.test(k));

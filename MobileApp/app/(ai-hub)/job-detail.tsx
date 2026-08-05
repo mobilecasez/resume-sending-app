@@ -941,12 +941,39 @@ const JS_HELPERS = `
     next();
   }
 
+  // Has the PERSON already answered this question? A checked member that either carries the trusted-
+  // gesture mark FOCUS_DETECT_JS sets, or is checked while NOT being the markup's own default, is an
+  // answer somebody made — the applicant, through a native click or through a design-system pill that
+  // updates the hidden native for them. Only a page default (defaultChecked, untouched) is ours to
+  // replace. Getting this wrong in the safe direction costs one missed fill, reported honestly;
+  // getting it wrong in the other direction reverses somebody's consent.
+  function grpTheirs(mem){
+    try{
+      for(var i=0;i<mem.length;i++){
+        var m=mem[i]; if(!m || !m.checked) continue;
+        if(m.__cvfTouched) return true;
+        if(!m.defaultChecked) return true;
+      }
+    }catch(e){}
+    return false;
+  }
   function grpSet(anyMember, t, v){
     var res={ok:false,label:'',why:'none of these answers matched the options',consented:[]};
     var mem=grpMembers(anyMember,t);
     if(mem.length<2){ res.why='we could not read this question\\u2019s options'; return res; }
     var opts=grpOpts(mem);
     res.label=grpQuestion(grpHost(anyMember,t),opts,anyMember);
+    // ⚠️ A RADIO TICK IS DESTRUCTIVE, AND THE APPLICANT'S OWN ANSWER WINS.
+    // Measured live on the real Revolut form: the applicant had chosen "No, I don't consent" by
+    // hand and this function ticked "Yes, I consent" over the top — which unchecks the sibling, so
+    // their refusal was gone and the review panel then told them they had agreed. keepUser() cannot
+    // catch it (it returns false for every radio and checkbox, and it runs AFTER this path), so the
+    // check lives here. It is the rule selIsUserAnswer already applies to a country <select>: a
+    // member the person actually operated, or one that is checked without being the markup's own
+    // default, is theirs.
+    // Checkboxes are deliberately NOT covered: ticking one never removes another, so answering a
+    // part-answered checkbox group ADDS to what they chose instead of replacing it.
+    if(t==='radio' && grpTheirs(mem)){ res.ok=true; res.theirs=true; return res; }
     var wants=multiVals(v); if(!wants.length) wants=[String(v)];
     wants=(t==='radio')?wants.slice(0,1):wants.slice(0,10);
     var hits=0;
@@ -1674,9 +1701,25 @@ const JS_HELPERS = `
           if(all) break;
           host=host.parentElement; h++;
         }
-        if(host && host.setAttribute) host.setAttribute('data-cvf-row','1');
+        // ⚠️ NEVER MARK THE FORM, THE BODY OR THE DOCUMENT. The click that reveals a row can also
+        // reveal a control somewhere else entirely, and then the smallest node holding them ALL is
+        // the form. cbProtected() answers true for anything CONTAINING a marked node, so a marker
+        // that high makes every popup un-closable — which is precisely the sheet-stacking bug this
+        // file has already had to fix twice. A row we cannot mark still has its element list.
+        if(host && host.setAttribute && host.tagName!=='FORM' && host.tagName!=='BODY' && host.tagName!=='HTML'){
+          host.setAttribute('data-cvf-row','1');
+          if(__cvfRowHosts.indexOf(host)<0) __cvfRowHosts.push(host);
+        }
       }
     }catch(e){}
+  }
+  // Leave the employer's DOM as we found it. The marker is a run-scoped flag, but the ATTRIBUTE
+  // outlives the run: left behind, the NEXT Auto Fill on the same page treats every node containing
+  // it as protected and stops closing pickers. Called once the run has finished touching the page.
+  var __cvfRowHosts = [];
+  function cbReleaseRows(){
+    try{ for(var i=0;i<__cvfRowHosts.length;i++){ try{ __cvfRowHosts[i].removeAttribute('data-cvf-row'); }catch(e){} } }catch(e){}
+    __cvfRowHosts = []; __cvfKeep = [];
   }
   function cbProtected(n){
     try{
@@ -1735,7 +1778,18 @@ const JS_HELPERS = `
     try{ window.removeEventListener('beforeunload', __cvfG.b, true); }catch(e){}
     __cvfG.on=false;
   }
-  function cbAborted(){ try{ if(__cvfG.url && location.href!==__cvfG.url) __cvfG.aborted=true; }catch(e){} return __cvfG.aborted; }
+  // ⚠️ ONE WALL CLOCK FOR THE WHOLE FILL. The phases have their own caps — dropdowns 30s, chips 40s
+  // (+26s inside the widget being drained), repeaters 50s (+22s +9s inside the one being driven) —
+  // and they run in SEQUENCE, so their worst cases ADD UP to well over two minutes. The app gives
+  // the entire run 95 seconds (runTimerRef) and then tells the applicant it took too long. There is
+  // no channel to stop an injected script, so past that moment the engine was still clicking "Add"
+  // buttons and opening pickers on a form whose overlay had already gone. Every phase now checks
+  // this deadline as well as its own, and it is set BELOW the app's ceiling so the run always ends
+  // by reporting rather than by being abandoned mid-gesture.
+  var __cvfRunEnd = 0;
+  function cvfDeadlineIn(ms){ __cvfRunEnd = Date.now() + ms; }
+  function cvfOutOfTime(){ return !!__cvfRunEnd && Date.now() > __cvfRunEnd; }
+  function cbAborted(){ try{ if(__cvfG.url && location.href!==__cvfG.url) __cvfG.aborted=true; }catch(e){} return __cvfG.aborted || cvfOutOfTime(); }
   // Type-then-CLICK. cb(true|false). Never throws, never presses Enter, never clicks a submit.
   //
   // Two rules earn their keep here:
@@ -1886,6 +1940,11 @@ const JS_HELPERS = `
   // had required dropdowns sitting empty — and on react-select pages that was silently ALL of them.
   function runFill(bySig, frameFlag){
     try {
+      // The app abandons the whole run at 95s (runTimerRef) and cannot stop an injected script, so
+      // the in-page work must finish first. Scan + server mapping have already spent part of that
+      // budget by the time we get here (the mapping alone measured 18s against production), which
+      // is why this is 55s and not 90.
+      cvfDeadlineIn(55000);
       var total = 0; for(var kk in bySig){ if(Object.prototype.hasOwnProperty.call(bySig,kk)) total++; }
       var filled={}, fails={}, deferred=[], dseen={};
       // Groups are answered ONCE for all their members; chips and repeaters need their own async
@@ -1951,7 +2010,11 @@ const JS_HELPERS = `
                 var fz=pickOptFuzzy([{text:ol}], want);
                 rok = !!fz;
               }
-              if (rok && tickOn(el)){ filled[s]=true; noteConsent(el); }
+              // wasOn first: tickOn() reports success for a box that was ALREADY ticked, and telling
+              // the applicant "you agreed to this" about a box they ticked themselves is noise in
+              // the one panel that must only ever list what WE agreed to on their behalf.
+              var rWas=!!el.checked;
+              if (rok && tickOn(el)){ filled[s]=true; if(!rWas) noteConsent(el); }
             } else if (el.tagName==='SELECT'){
               bringIntoView(el);
               // MULTI-select: pick every value we can match, not just the first. "Preferred work
@@ -1990,8 +2053,9 @@ const JS_HELPERS = `
               var rawv=String(v).trim();
               var affirm=/^(yes|true|on|1|checked|y)$/i.test(rawv);
               var negate=/^(no|false|off|0|unchecked|n)$/i.test(rawv);
+              var cbWas=!!el.checked;
               if (v===true || affirm){
-                if (tickOn(el)){ filled[s]=true; noteConsent(el); }
+                if (tickOn(el)){ filled[s]=true; if(!cbWas) noteConsent(el); }
               } else if (v===false || negate){
                 // An explicit "no" must never UNTICK something the candidate ticked themselves.
                 filled[s]=true;
@@ -2004,7 +2068,7 @@ const JS_HELPERS = `
                   if(!w||!lab) continue;
                   if(lab===w || lab.indexOf(w)>=0 || w.indexOf(lab)>=0 || pickOptFuzzy([{text:lab}], w)){ hit=true; break; }
                 }
-                if (hit){ if(tickOn(el)){ filled[s]=true; noteConsent(el); } }
+                if (hit){ if(tickOn(el)){ filled[s]=true; if(!cbWas) noteConsent(el); } }
                 else filled[s]=true;   // a sibling box in this group is the answer — leave this one alone
               }
             } else {
@@ -2055,8 +2119,11 @@ const JS_HELPERS = `
       function drainChips(done){
         if(!chipQ.length){ done(); return; }
         cbGuardOn();
-        var ci=0, t0=Date.now();
-        function fin(){ cbGuardOff(); done(); }
+        var ci=0, t0=Date.now(), cfin=false, cwd=null;
+        // Same rule as the repeater phase: while cbGuardOn() is on, a submit is preventDefault'ed.
+        // A callback that never fires must not leave the applicant unable to submit their own form.
+        function fin(){ if(cfin) return; cfin=true; try{ if(cwd) clearTimeout(cwd); }catch(e){} cbGuardOff(); done(); }
+        cwd=setTimeout(function(){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); }, 50000);
         function step(){
           if(ci>=chipQ.length || Date.now()-t0>40000 || cbAborted()){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); return; }
           var d=chipQ[ci++], el=null, all=ctrls();
@@ -2231,13 +2298,22 @@ const JS_HELPERS = `
           window.HTMLFormElement.prototype.requestSubmit=function(){};
         }catch(e){}
         cbGuardOn();
-        var ri=0, t0=Date.now();
+        var ri=0, t0=Date.now(), finished=false, wd=null;
+        // ⚠️ THE SHIELD MUST COME OFF, on every path. While it is on, document-level submit is
+        // preventDefault'ed and HTMLFormElement.prototype.submit/requestSubmit are stubs — so if
+        // this phase ever ended without running fin() (an async throw anywhere in the click →
+        // measure → fill chain, a callback that never fires), the applicant would press Submit on
+        // their own application and NOTHING would happen, for as long as the page stayed open.
+        // fin() is therefore idempotent and a watchdog runs it whatever else does or does not.
         function fin(){
+          if(finished) return; finished=true;
+          try{ if(wd) clearTimeout(wd); }catch(e){}
           cbGuardOff();
           try{ document.removeEventListener('submit', block, true); }catch(e){}
           try{ if(ps) window.HTMLFormElement.prototype.submit=ps; if(pr) window.HTMLFormElement.prototype.requestSubmit=pr; }catch(e){}
           done();
         }
+        wd=setTimeout(function(){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); }, 62000);
         function step(){
           if(ri>=repQ.length || Date.now()-t0>50000 || cbAborted()){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); return; }
           var d=repQ[ri++];
@@ -2371,6 +2447,9 @@ const JS_HELPERS = `
       function report(){
         // Leave the page as we found it: no half-open pickers for the user to dismiss by hand.
         try{ cbCloseAllOpened(); }catch(e){}
+        // …and no marker of ours left on their DOM. Order matters: the sweep above is what the
+        // row protection exists for, so the release runs strictly after it.
+        try{ cbReleaseRows(); }catch(e){}
         var fl=[], n=0;
         // also-flagged entries are reported EVEN THOUGH the field counted as filled: a repeater that added
         // two rows but could not set their dates is a success the applicant still has to finish.
