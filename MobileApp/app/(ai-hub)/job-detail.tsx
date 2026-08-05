@@ -1073,6 +1073,166 @@ const JS_HELPERS = `
     if(!isNaN(t)){ var dt=new Date(t); return dt.getFullYear()+'-'+('0'+(dt.getMonth()+1)).slice(-2)+'-'+('0'+dt.getDate()).slice(-2); }
     return s;
   }
+  // ── A DATE PICKER DISGUISED AS A TEXT BOX ──────────────────────────────────────────────────
+  // Measured on the live Revolut experience row: input[type=text] readOnly=true, opened by a
+  // calendar portal. SIX ways of writing to it were tried and all six were reverted — setNative,
+  // readOnly=false then setNative, a _valueTracker reset, calling React's own onChange handler,
+  // and REAL trusted keystrokes with readOnly both true and false. The value belongs to the
+  // picker's state, so the only way in is to drive the picker. Everything below is structural:
+  // no class names, no vendor knowledge, and no English words — a month is chosen by its INDEX
+  // in a twelve-cell grid, never by reading the word in the cell.
+  //
+  // Three families, told apart by the DOM alone:
+  //   native      type is date/month          -> setNative(dateVal(v)), which already worked
+  //   masked text readOnly false              -> setNative, which already worked
+  //   calendar    readOnly true               -> everything below
+  function dpIsPickerBox(el){
+    try{
+      if(!el || el.tagName!=='INPUT') return false;
+      var t=(el.type||'').toLowerCase();
+      if(t!=='text') return false;                       // native and masked boxes are not this
+      return !!(el.readOnly || (el.getAttribute && el.getAttribute('readonly')!=null));
+    }catch(e){ return false; }
+  }
+  var __dpPanel=null, __dpCells=[], __dpNav=null;
+  // The panel is the SMALLEST visible subtree that shows a 4-digit year AND holds at least seven
+  // visible cells. Re-resolved after every press, because the widget re-renders its own subtree.
+  function dpPanel(){
+    var best=null, bestLen=1e9;
+    try{
+      var ns=deepQuery('[role=dialog],[role=grid],[role=application],div,span,section');
+      for(var i=0;i<ns.length && i<4000;i++){
+        var n=ns[i];
+        if(!vis(n)) continue;
+        var t=''; try{ t=String(n.innerText||''); }catch(e){}
+        if(t.length>900 || !/(^|[^0-9])(19|20)[0-9][0-9]([^0-9]|$)/.test(t)) continue;
+        var cs=[]; try{ cs=n.querySelectorAll('[role=gridcell],[role=option],td,button'); }catch(e){}
+        var vc=0; for(var c=0;c<cs.length;c++){ if(vis(cs[c])) vc++; }
+        if(vc<7) continue;
+        if(t.length<bestLen){ bestLen=t.length; best=n; }
+      }
+    }catch(e){}
+    __dpPanel=best; return best;
+  }
+  // The page the panel is showing. More than one year on screen means we are looking at something
+  // we have not proven we can read, and the answer is null — never a guess.
+  function dpYear(){
+    if(!__dpPanel) return null;
+    var t=''; try{ t=String(__dpPanel.innerText||''); }catch(e){}
+    var m=t.match(/(19|20)[0-9][0-9]/g); if(!m) return null;
+    var set={}, ks=[], k;
+    for(var i=0;i<m.length;i++) set[m[i]]=1;
+    for(k in set){ if(Object.prototype.hasOwnProperty.call(set,k)) ks.push(k); }
+    return ks.length===1 ? Number(ks[0]) : null;
+  }
+  function dpCells(){
+    __dpCells=[]; if(!__dpPanel) return __dpCells;
+    var q=[]; try{ q=__dpPanel.querySelectorAll('[role=gridcell]'); }catch(e){}
+    if(!q.length){ try{ q=__dpPanel.querySelectorAll('td,button'); }catch(e){} }
+    for(var i=0;i<q.length;i++){ if(vis(q[i])) __dpCells.push(q[i]); }
+    return __dpCells;
+  }
+  // The two navigation controls, found by STRUCTURE: interactive elements inside the panel that
+  // are not cells and that share one parent, of which there are exactly two. Back is the one that
+  // comes first in DOM order — which flips under dir=rtl, so the direction is read, not assumed.
+  function dpNav(){
+    __dpNav=null; if(!__dpPanel) return null;
+    var cells=dpCells(), btns=[], q=[], i, c;
+    try{ q=__dpPanel.querySelectorAll('button,[role=button]'); }catch(e){}
+    for(i=0;i<q.length;i++){
+      var e0=q[i]; if(!vis(e0)) continue;
+      var inCell=false;
+      for(c=0;c<cells.length;c++){ if(cells[c]===e0 || cells[c].contains(e0)){ inCell=true; break; } }
+      if(!inCell) btns.push(e0);
+    }
+    for(var a=0;a<btns.length;a++){
+      var group=[];
+      for(var b=0;b<btns.length;b++){ if(btns[b].parentElement===btns[a].parentElement) group.push(btns[b]); }
+      if(group.length===2){ __dpNav=group; break; }
+    }
+    if(__dpNav){
+      try{
+        var d='', p=__dpPanel, h=0;
+        while(p && !d && h<12){ d=(p.getAttribute&&p.getAttribute('dir'))||''; p=p.parentElement; h++; }
+        if(String(d).toLowerCase()==='rtl') __dpNav=[__dpNav[1],__dpNav[0]];
+      }catch(e){}
+    }
+    return __dpNav;
+  }
+  // ⚠️ CB_SUBMIT contains the word "next", so cbSafeClick REFUSES a calendar's forward control and
+  // every future date (a graduation date) is unreachable through it. This is the same click with
+  // every STRUCTURAL guard kept — no type=submit, no form attribute, not inside a submit control,
+  // no navigating anchor, nothing disabled — and the WORD test dropped. It is unreachable except
+  // through a node already resolved as a calendar panel, which is what makes that safe.
+  function dpClick(el){
+    try{
+      if(!el || !__dpPanel || !__dpPanel.contains(el)) return false;
+      var at=String((el.getAttribute&&el.getAttribute('type'))||'').toLowerCase();
+      if(at==='submit'||at==='image'||at==='reset') return false;
+      if(el.closest && el.closest('button[type=submit],input[type=submit]')) return false;
+      if(el.getAttribute && el.getAttribute('form')) return false;
+      var a=null; try{ a=el.closest?el.closest('a'):null; }catch(e){}
+      if(a){ var h=a.getAttribute('href')||''; if(h && h!=='#' && h.indexOf('javascript:')!==0) return false; }
+      if(el.disabled) return false;
+      if(el.getAttribute && el.getAttribute('aria-disabled')==='true') return false;
+      el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
+      el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+      if(el.click) el.click(); else el.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+      return true;
+    }catch(e){ return false; }
+  }
+  // Drive one calendar to one date. Async — each press has to re-render before the next read.
+  // Gives up EARLY and honestly at every point where it would otherwise be guessing: a panel that
+  // shows two years, a press that does not move the year, a grid that is not twelve cells, a
+  // disabled cell. "Still needs you" is a true statement; a wrong date on an application is not.
+  function dpSetDate(el, v, cb){
+    var want=dateVal(String(v==null?'':v));
+    var mm=want.match(/^(\\d{4})-(\\d{2})/);
+    if(!mm){ cb(false); return; }
+    var wantY=Number(mm[1]), wantM=Number(mm[2]), before=String(el.value||''), guard=0;
+    try{ bringIntoView(el); }catch(e){}
+    try{ el.focus(); }catch(e){}
+    try{ el.click(); }catch(e){}
+    setTimeout(function(){
+      if(!dpPanel()){ cb(false); return; }
+      // ⚠️ REGISTER IT AS OURS. While a repeater row is protected, cbEnsureNoneOpen only dismisses
+      // sheets this run opened — so a calendar nobody had told it about would be left standing on
+      // the applicant's screen on every path out of here, including the early ones.
+      try{ cbNoteOpened(el, __dpPanel); }catch(e){}
+      function pick(){
+        var cells=dpCells();
+        // TWELVE cells is a month grid and the index IS the month, in every language and locale.
+        // A day grid (28+) needs the month resolved first and is not attempted here.
+        if(cells.length!==12){ cb(false); return; }
+        var c=cells[wantM-1];
+        if(!c){ cb(false); return; }
+        if(c.disabled){ cb(false); return; }
+        if(c.getAttribute && c.getAttribute('aria-disabled')==='true'){ cb(false); return; }
+        if(!dpClick(c)){ cb(false); return; }
+        setTimeout(function(){
+          var now=String(el.value||'');
+          // The only honest evidence: the box changed, and it now carries the year we asked for.
+          cb(!!now && now!==before && now.indexOf(String(wantY))>=0);
+        }, 420);
+      }
+      function stepYear(){
+        var y=dpYear();
+        if(y==null){ cb(false); return; }
+        if(y===wantY){ pick(); return; }
+        var nav=dpNav();
+        if(!nav){ cb(false); return; }
+        if(guard++>40){ cb(false); return; }
+        if(!dpClick(nav[y>wantY?0:1])){ cb(false); return; }
+        setTimeout(function(){
+          if(!dpPanel()){ cb(false); return; }
+          var y2=dpYear();
+          if(y2==null || y2===y){ cb(false); return; }   // the press did nothing — stop, never loop
+          stepYear();
+        }, 280);
+      }
+      stepYear();
+    }, 900);
+  }
   // Values that mean "several answers": an array, or a comma/semicolon/pipe list.
   function multiVals(v){
     if(Array.isArray(v)) return v.map(function(x){ return String(x).trim(); }).filter(Boolean);
@@ -1098,7 +1258,12 @@ const JS_HELPERS = `
   // \\d{1,4} — NOT \\d[\\d\\s\\-]{0,5}: that form swallows the number after the code, so
   // dialOf("+91 98765 43210") returned "91987" and every read-back comparison failed.
   function dialOf(s){ var m=cleanTxt(s).match(/\\+\\s*(\\d{1,4})/); return m ? m[1] : ''; }
-  function wantDial(v){ var s=cleanTxt(v); var m=s.match(/\\+\\s*(\\d{1,4})/); if(m) return m[1]; m=s.match(/^00(\\d{1,4})$/); if(m) return m[1]; m=s.match(/^(\\d{1,4})$/); if(m) return m[1]; return ''; }
+  // ⚠️ A WHOLE PHONE NUMBER IS NOT A DIAL CODE. wantDial("+919970020596") used to answer "9199" —
+  // its first four digits — and phoneReconcile then prepended that to the national digits and wrote
+  // +91999970020596 into the number box: fourteen digits belonging to nobody. Reproduced live when
+  // the server misread the picker and answered the DIAL key with the full number. Five or more
+  // digits running together is a number; no dial code on earth is.
+  function wantDial(v){ var s=cleanTxt(v); if(/^\\+?\\s*\\d{5,}$/.test(s.replace(/[\\s.\\-()]/g,''))) return ''; var m=s.match(/\\+\\s*(\\d{1,4})/); if(m) return m[1]; m=s.match(/^00(\\d{1,4})$/); if(m) return m[1]; m=s.match(/^(\\d{1,4})$/); if(m) return m[1]; return ''; }
   function isoOf(s){ var t=cleanTxt(s); return /^[A-Za-z]{2}$/.test(t) ? t.toUpperCase() : ''; }
   function optText(o){ return cleanTxt(o&&o.text!=null?o.text:o); }
   function optVal(o){ return String(o&&o.value!=null?o.value:'').toUpperCase(); }
@@ -2169,12 +2334,16 @@ const JS_HELPERS = `
           return fz ? row[fz.text] : null;
         }
         function note(el){ var n=cleanTxt(nlbl(el)).slice(0,40); if(n && missed.indexOf(n)<0) missed.push(n); }
-        var plain=[], combos=[], i2;
+        var plain=[], combos=[], dates=[], boxes=[], i2;
         for(i2=0;i2<fresh.length;i2++){
           var e0=fresh[i2], t0r=(e0.type||'').toLowerCase();
           if(['hidden','submit','reset','image','file'].indexOf(t0r)>=0) continue;
           if(!visCtl(e0)) continue;
-          if(isCombo(e0)) combos.push(e0);
+          if(t0r==='checkbox') boxes.push(e0);
+          // A readOnly text box is a calendar wearing a text box's clothes. It goes to dates, not
+          // to plain — setNative on it is the write that has been silently reverted all along.
+          if(dpIsPickerBox(e0)) dates.push(e0);
+          else if(isCombo(e0)) combos.push(e0);
           else if(t0r!=='button') plain.push(e0);
         }
         for(var p2=0;p2<plain.length;p2++){
@@ -2207,7 +2376,7 @@ const JS_HELPERS = `
         }
         var ci2=0;
         function nextCombo(){
-          if(ci2>=combos.length || ci2>=3 || Date.now()>deadline || cbAborted()){ cb({landed:landed, tried:tried, missed:missed}); return; }
+          if(ci2>=combos.length || ci2>=3 || Date.now()>deadline || cbAborted()){ startDates(); return; }
           var el3=combos[ci2++], v3=valFor(el3);
           if(v3==null||v3===''){ nextCombo(); return; }
           tried++;
@@ -2215,6 +2384,41 @@ const JS_HELPERS = `
             if(good) landed++; else note(el3);
             try{ cbEnsureNoneOpen(); }catch(e){}
             setTimeout(nextCombo, 220);
+          });
+        }
+        // ── THE DATE COLUMNS ─────────────────────────────────────────────────────────────────
+        // Given their OWN budget, deliberately not the combo deadline: the combos come first and
+        // routinely eat several seconds each, and sharing one clock is exactly how the date boxes
+        // ended up with nothing left. They are also what the row's commit control is waiting on,
+        // so leaving them empty means the row can never be saved — by us OR by the applicant.
+        var di2=0, dDeadline=0;
+        // "Present" is not a date and no calendar can express it. The row's own checkbox is what
+        // that word means, and there is exactly one candidate or we do nothing: this ticks a box on
+        // an application, so it happens only when the applicant's own résumé says the role is
+        // current AND the row leaves no doubt which box says so.
+        var PRESENTISH=/^(present|current|currently|now|ongoing|to date|till date|till now|until now|heden|actueel|aktuell|heute|presente|actuel|actualmente)$/i;
+        function stillHereBox(){
+          var free=[], b;
+          for(b=0;b<boxes.length;b++){ var vb=valFor(boxes[b]); if(vb==null||vb==='') free.push(boxes[b]); }
+          return free.length===1 ? free[0] : null;
+        }
+        function startDates(){ dDeadline=Date.now()+18000; nextDate(); }
+        function nextDate(){
+          if(di2>=dates.length || Date.now()>dDeadline || cbAborted()){ cb({landed:landed, tried:tried, missed:missed}); return; }
+          var el4=dates[di2++], v4=valFor(el4);
+          if(v4==null||v4===''){ nextDate(); return; }
+          if(PRESENTISH.test(cleanTxt(v4))){
+            var sh=stillHereBox();
+            tried++;
+            if(sh && tickOn(sh)) landed++; else note(el4);
+            nextDate(); return;
+          }
+          tried++;
+          dpSetDate(el4, v4, function(good){
+            if(good) landed++; else note(el4);
+            // A calendar is a popup like any other: never start the next one on top of this one.
+            try{ cbEnsureNoneOpen(); }catch(e){}
+            setTimeout(nextDate, 220);
           });
         }
         nextCombo();
@@ -2237,9 +2441,77 @@ const JS_HELPERS = `
         }
         return out;
       }
+      // ── THE ROW'S OWN COMMIT CONTROL ─────────────────────────────────────────────────────────
+      // A modal-style repeater does not absorb its row until something INSIDE the row is pressed.
+      // Measured live on Revolut: the row portal is a span[role=dialog] holding exactly two visible
+      // buttons that share one parent — one enabled, one DISABLED, and the disabled one is the
+      // commit control, disabled precisely because the required date columns were empty. It is
+      // found by that STATE, never by a word: "Add" is one vendor's wording, and cbSafeClick would
+      // refuse "Confirm" anyway.
+      //
+      // ⚠️ Everything here is about not pressing the applicant's Submit button by accident:
+      //   • the host must contain every fresh control and must not be the form, body or document
+      //   • the host must be ROW-SIZED — a container holding the whole application has no business
+      //     being mistaken for a row, so its field count is bounded
+      //   • exactly ONE disabled candidate, or we press nothing
+      //   • it must have been disabled at row-open and enabled by our fill: that transition is the
+      //     widget itself saying the row is now complete
+      //   • and RP_NEVER still refuses the words that could never be a row commit
+      var RP_NEVER=/\\b(submit|apply|application|send|pay|buy|delete|remove|absenden|abschicken|bewerben|bewerbung|einreichen|envoyer|soumettre|postuler|candidature|enviar|postular|solicitud|invia|inviare|candidati|candidatura|verzenden|versturen|solliciteer|sollicitatie|indienen|submeter|candidatar|wyslij|aplikuj|skicka|ansok|ansokan)\\b/i;
+      function rpDisabled(b){ try{ return !!b.disabled || (b.getAttribute && b.getAttribute('aria-disabled')==='true'); }catch(e){ return false; } }
+      function rpCommitCand(fresh){
+        try{
+          if(!fresh || !fresh.length) return null;
+          var host=null, i, j;
+          for(i=0;i<fresh.length;i++){ var dg=null; try{ dg=fresh[i].closest('[role=dialog],[aria-modal="true"],dialog[open]'); }catch(e){} if(dg){ host=dg; break; } }
+          if(!host){
+            host=fresh[0].parentElement;
+            for(var h=0; host && h<10; h++){
+              var all=true;
+              for(i=0;i<fresh.length;i++){ if(!host.contains(fresh[i])){ all=false; break; } }
+              if(all && host.querySelector && host.querySelector('button,[role=button]')) break;
+              host=host.parentElement;
+            }
+          }
+          if(!host || host.tagName==='FORM' || host.tagName==='BODY' || host.tagName==='HTML') return null;
+          for(i=0;i<fresh.length;i++){ if(!host.contains(fresh[i])) return null; }
+          var fields=0; try{ fields=host.querySelectorAll('input,select,textarea').length; }catch(e){ return null; }
+          if(fields>fresh.length+4) return null;          // that is a page, not a row
+          var q=[]; try{ q=host.querySelectorAll('button,[role=button]'); }catch(e){}
+          var off=[];
+          for(i=0;i<q.length;i++){
+            var b=q[i]; if(!vis(b) || !rpDisabled(b)) continue;
+            var inField=false;
+            for(j=0;j<fresh.length;j++){ if(b===fresh[j] || b.contains(fresh[j]) || fresh[j].contains(b)){ inField=true; break; } }
+            if(inField) continue;
+            if(RP_NEVER.test(cbText(b))) continue;
+            var al=(b.getAttribute&&(b.getAttribute('aria-label')||b.getAttribute('title')))||'';
+            if(al && RP_NEVER.test(al)) continue;
+            off.push(b);
+          }
+          return off.length===1 ? off[0] : null;          // ambiguous means press nothing
+        }catch(e){ return null; }
+      }
+      // Press it only once the widget has ENABLED it. Still disabled means the row is not complete,
+      // and a row we cannot complete is one the applicant finishes — not one we force.
+      function rpCommit(b){
+        try{
+          if(!b || !document.contains(b) || !vis(b) || rpDisabled(b)) return false;
+          if(RP_NEVER.test(cbText(b))) return false;
+          var at=String((b.getAttribute&&b.getAttribute('type'))||'').toLowerCase();
+          if(at==='submit'||at==='image'||at==='reset') return false;
+          if(b.getAttribute && b.getAttribute('form')) return false;
+          if(b.closest && b.closest('button[type=submit],input[type=submit]')) return false;
+          b.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
+          b.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+          if(b.click) b.click(); else b.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+          return true;
+        }catch(e){ return false; }
+      }
       function rpRun(d, cb){
         var rows=d.rows.slice(0,3), added=0, landedAll=0, missed=[], btn=null, t0=Date.now();
-        function out(){ return {rows:added, landed:landedAll, missed:missed}; }
+        function out(){ return {rows:added, landed:landedAll, missed:missed, saved:savedAll, unsaved:unsavedAll}; }
+        var savedAll=0, unsavedAll=0;
         // Adding a row MOVES the DOM, so a path-based key can stop matching the button it named.
         // Hold the element while it is still attached, and fall back to the region's own wording —
         // that does not move — before giving up.
@@ -2258,7 +2530,7 @@ const JS_HELPERS = `
         }
         var lastRow=null;
         function step(){
-          if(added>=rows.length || Date.now()-t0>22000 || cbAborted()){ cb(out()); return; }
+          if(added>=rows.length || Date.now()-t0>45000 || cbAborted()){ cb(out()); return; }
           // NEVER press Add again while the row we just filled is still on screen. Measured live:
           // pressing it a second time on Revolut RESET the open row, throwing away the company and
           // position we had just set. A repeater that has not absorbed the previous row is not
@@ -2285,14 +2557,28 @@ const JS_HELPERS = `
             if(!fresh.length){ cb(out()); return; }
             cbKeepCtrls(fresh);            // from here on, our own sweep must not dismiss this row
             lastRow=fresh;
+            // Captured BEFORE the fill: the commit control is identified by being the one thing in
+            // the row that the vendor has disabled while the row is incomplete.
+            var commit=rpCommitCand(fresh);
             var row=rows[added]; added++;
-            rpFillRow(fresh, row, Date.now()+9000, function(r){
+            rpFillRow(fresh, row, Date.now()+11000, function(r){
               landedAll+=r.landed;
               for(var m=0;m<r.missed.length;m++){ if(missed.indexOf(r.missed[m])<0) missed.push(r.missed[m]); }
               // An empty row is worse than no row. If the first one took nothing, stop rather than
               // opening more rows the applicant would have to delete by hand.
               if(r.landed===0){ cb(out()); return; }
-              setTimeout(step, 320);
+              // Nothing is open on top of the row when we reach for its commit control.
+              try{ cbEnsureNoneOpen(); }catch(e){}
+              var pressed=rpCommit(commit);
+              setTimeout(function(){
+                // Did it actually commit? The row's controls leaving the document is the widget
+                // saying yes. Anything else is reported as still needing the applicant.
+                var gone=true;
+                try{ for(var z2=0;z2<fresh.length;z2++){ if(document.contains(fresh[z2])){ gone=false; break; } } }catch(e){}
+                if(pressed && gone) savedAll++;
+                else if(commit) unsavedAll++;
+                setTimeout(step, 320);
+              }, pressed ? 700 : 0);
             });
           }, 1100);
         }
@@ -2326,9 +2612,14 @@ const JS_HELPERS = `
           try{ if(ps) window.HTMLFormElement.prototype.submit=ps; if(pr) window.HTMLFormElement.prototype.requestSubmit=pr; }catch(e){}
           done();
         }
-        wd=setTimeout(function(){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); }, 62000);
+        // ⚠️ The budgets grew when the date columns started being DRIVEN rather than typed into.
+        // A calendar costs about a second to open and a quarter of a second per year of paging, so
+        // a two-date row is ~10s that the old 9s row deadline could never contain — which is why the
+        // dates were always the thing left empty. Every ceiling below is a safety net, not a plan:
+        // a row that fills quickly still exits immediately.
+        wd=setTimeout(function(){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); }, 105000);
         function step(){
-          if(ri>=repQ.length || Date.now()-t0>50000 || cbAborted()){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); return; }
+          if(ri>=repQ.length || Date.now()-t0>90000 || cbAborted()){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); return; }
           var d=repQ[ri++];
           rpRun(d, function(r){
             var lab=(d.label||'extra entries').slice(0,90);
@@ -2338,6 +2629,10 @@ const JS_HELPERS = `
               // Partial success is still success — but the boxes we could not set are named, and
               // the also-flag makes report() show this alongside the field being counted as filled.
               if(r.missed.length) fails[d.s]={key:d.s,label:lab,why:'added '+r.rows+(r.rows===1?' entry':' entries')+' — '+r.missed.slice(0,3).join(', ')+' still needs you',also:true};
+              // A row this widget never absorbed is not an entry, whatever we managed to type into
+              // it. The applicant has to press the row's own save control, and they can only do
+              // that if we say so.
+              else if(r.unsaved>0) fails[d.s]={key:d.s,label:lab,why:'filled '+r.unsaved+(r.unsaved===1?' entry':' entries')+' — please press the row\\'s own save button',also:true};
             }
             else if(r.rows>0) fails[d.s]={key:d.s,label:lab,why:'this section only accepts typing — please fill in the row we opened'};
             else fails[d.s]={key:d.s,label:lab,why:'we could not add these — please add them yourself'};
@@ -2463,6 +2758,14 @@ const JS_HELPERS = `
         // …and no marker of ours left on their DOM. Order matters: the sweep above is what the
         // row protection exists for, so the release runs strictly after it.
         try{ cbReleaseRows(); }catch(e){}
+        // ⚠️ AND THEN SWEEP AGAIN. This is the whole of the "popups left open" bug. While a row is
+        // held, cbCloseAllOpened takes its cbHoldingRow branch: it blurs the triggers and RETURNS
+        // EARLY, skipping both the escalation ladder and the final cbEnsureNoneOpen — for EVERY
+        // popup on the page, not just the protected row. The row protection is right and stays;
+        // what was missing is a second pass once the rows have been released and there is nothing
+        // left to protect. Sweeping the same page twice is free when it is already clean.
+        try{ cbCloseAllOpened(); }catch(e){}
+        try{ cbEnsureNoneOpen(); }catch(e){}
         var fl=[], n=0;
         // also-flagged entries are reported EVEN THOUGH the field counted as filled: a repeater that added
         // two rows but could not set their dates is a success the applicant still has to finish.
@@ -2923,6 +3226,12 @@ const READ_FIELDS_JS = `(function(){
           if(_all.length>80) f.optionsTruncated=true; }
         else if(isChipInput(el)){ f.widget='chips'; f.multi=true; f.optionsUnknown=true; }
         else if(isCombo(el)){ f.widget='combobox'; f.optionsUnknown=true; }
+        // ⚠️ THE DEVICE ALREADY KNOWS THIS AND NEVER SAID SO. A dial-code picker is identified
+        // here, on the real page, from the control's own label and shape — while the server has
+        // been inferring it from a 240-row option list that its own enumeration budget routinely
+        // fails to deliver, and calling the picker a phone NUMBER field whenever it did not.
+        // Strictly additive: an older server ignores a key it does not read.
+        try{ if(isDialCtrl(el)) f.isPhoneCode=true; }catch(e){}
         if(t==='checkbox' && isConsentText(f.label)) f.consent=true;   // lone agreement box
         out.push(f);
       }
@@ -3077,6 +3386,7 @@ const FRAME_AGENT_JS = `(function(){
           if(_all.length>80) f.optionsTruncated=true; }
           else if(isChipInput(el)){ f.widget='chips'; f.multi=true; f.optionsUnknown=true; }
           else if(isCombo(el)){ f.widget='combobox'; f.optionsUnknown=true; }
+          try{ if(isDialCtrl(el)) f.isPhoneCode=true; }catch(e){}   // see the note at the other emit site
           if(t==='checkbox' && isConsentText(f.label)) f.consent=true;
           out.push(f);
         }
