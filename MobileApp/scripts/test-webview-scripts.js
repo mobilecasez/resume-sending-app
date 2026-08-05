@@ -832,6 +832,59 @@ function helpersSourceProblems() {
     ok('two next-ish controls → refuse (ambiguous)', amb.canNext === false && amb.why === 'ambiguous', amb);
   }
 
+  // ── the final sweep, WHILE A REPEATER ROW IS HELD ─────────────────────────
+  // "Some dropdowns are opened and then not closed" was traced to cbCloseAllOpened returning early
+  // on the row-protected path, and the fix was to call cbEnsureNoneOpen() inside that branch. But
+  // that branch CLEARS __cvfOpened first, and while a row is held cbEnsureNoneOpen skips every node
+  // cbWeOpened() does not recognise — and cbWeOpened reads __cvfOpened. Cleared list, nothing
+  // recognised, nothing swept: the call was there and could not close anything.
+  //
+  // This asserts the OUTCOME (a stray sheet is gone, the row survives) rather than the call, so it
+  // cannot be satisfied by putting the call back in the wrong order again.
+  console.log('\nthe final sweep while a repeater row is held');
+  {
+    const p = await ctx.newPage();
+    await p.route('**/*', (r) => r.fulfill({
+      status: 200, contentType: 'text/html; charset=utf-8',
+      body: `<html><body>
+        <form id="f">
+          <input id="trig" type="button" aria-haspopup="listbox" aria-label="Search phone country codes" placeholder=" ">
+          <div id="row" class="Portal-rui"><span>Add experience</span>
+            <input id="c1" type="button" aria-haspopup="listbox" aria-label="Company" placeholder=" ">
+            <input id="c2" type="button" aria-haspopup="listbox" aria-label="Position" placeholder=" ">
+            <button id="addrow" disabled>Add</button><button id="cancelrow">Cancel</button>
+          </div>
+          <div id="sheet" class="Sheet-rui" role="listbox">
+            <input id="sb" type="search" placeholder="Search">
+            <div role="option">India</div><div role="option">Ireland</div><div role="option">Israel</div>
+          </div>
+        </form>
+        <script>
+          // A Revolut-shaped sheet: Escape ON ITS OWN SEARCH BOX closes it. Nothing else does.
+          document.getElementById('sb').addEventListener('keydown', function(e){
+            if(e.key==='Escape'){ document.getElementById('sheet').style.display='none'; }
+          });
+        </script></body></html>`,
+    }));
+    await p.goto('https://sweep.example.com/apply');
+    const r = await p.evaluate(new Function('return (function(){' + JS_HELPERS + `
+      var row=document.getElementById('row'), sheet=document.getElementById('sheet');
+      // Exactly what the repeater phase does: hold the row's own controls, and register the sheet
+      // we opened so the sweep is allowed to touch it.
+      cbKeepCtrls([document.getElementById('c1'), document.getElementById('c2'), document.getElementById('addrow')]);
+      cbNoteOpened(document.getElementById('trig'), sheet);
+      var before = { holding: cbHoldingRow(), weOpened: cbWeOpened(sheet), sheetVisible: vis(sheet), rowProtected: cbProtected(row) };
+      cbCloseAllOpened();
+      return { before: before, sheetStillOpen: vis(sheet), rowStillThere: vis(row),
+               rowCtrlsAlive: !!(document.getElementById('c1') && document.getElementById('c2')) };
+    })();`));
+    ok('the fixture is set up the way the engine sets it up (row held, sheet ours, sheet open)',
+      r.before.holding === true && r.before.weOpened === true && r.before.sheetVisible === true && r.before.rowProtected === true, r.before);
+    ok('A STRAY SHEET IS ACTUALLY CLOSED while a repeater row is held', r.sheetStillOpen === false, r);
+    ok('...and the held row is NOT torn down doing it', r.rowStillThere === true && r.rowCtrlsAlive === true, r);
+    await p.close();
+  }
+
   await browser.close();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

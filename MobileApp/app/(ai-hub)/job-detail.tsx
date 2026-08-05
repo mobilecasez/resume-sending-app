@@ -1913,7 +1913,6 @@ const JS_HELPERS = `
     // a discarded row is lost work.
     if(cbHoldingRow()){
       for(var g=0;g<__cvfOpened.length;g++){ try{ cbClose(__cvfOpened[g].el); }catch(e){} }
-      __cvfOpened = [];
       // ⚠️ AND THEN CHECK. This early return is the whole of the "dropdowns left open" bug: it
       // skipped not only the escalation ladder but the final sweep, for EVERY popup on the page —
       // not just the row it exists to protect. A blur is a request; cbEnsureNoneOpen is the part
@@ -1921,9 +1920,16 @@ const JS_HELPERS = `
       // (cbProtected) and, while a row is held, limits itself to sheets THIS RUN opened
       // (cbWeOpened), never bubbles Escape and never clicks a backdrop.
       //
+      // ⚠️ SWEEP FIRST, CLEAR AFTER — and never the other way round. cbWeOpened() answers out of
+      // __cvfOpened, and while a row is held cbEnsureNoneOpen SKIPS every node it does not
+      // recognise. Clearing the list first therefore made the sweep recognise nothing and close
+      // nothing: the call was present, the popups stayed open, and the bug this branch exists to
+      // fix survived the fix. Asserted now in test-webview-scripts.js by outcome, not by call.
+      //
       // Sweeping after RELEASING the rows would also have worked and is exactly wrong: measured, it
       // finds the row's own Cancel and throws away the entry that could not be saved.
       try{ cbEnsureNoneOpen(); }catch(e){}
+      __cvfOpened = [];
       return;
     }
     for(var i=0;i<__cvfOpened.length;i++){
