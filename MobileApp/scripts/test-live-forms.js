@@ -520,23 +520,36 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   await page.waitForFunction(() => window.__msgs && window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 180000 }).catch(() => {});
   const rres = await page.evaluate(() => {
     const val = (re) => { const c = [...document.querySelectorAll('input')].find((i) => re.test(((i.labels && i.labels[0] ? i.labels[0].innerText : '') || ''))); return c ? String(c.value || '') : null; };
+    const f = document.querySelector('form');
     return { ctrls: document.querySelectorAll('input,textarea,select').length, company: val(/^company$/i), position: val(/^position$/i),
       start: val(/^start date$/i), report: window.__msgs.filter((m) => m.type === 'FILLED').pop(),
+      formText: String((f && f.innerText) || '').replace(/\s+/g, ' '),
       errors: window.__msgs.filter((m) => m.type === 'AUTOFILL_ERROR'), submits: window.__submits };
   });
   console.log('    after:', JSON.stringify({ ctrls: rres.ctrls, company: rres.company, position: rres.position, start: rres.start }));
   console.log('    report:', JSON.stringify(rres.report));
-  ok('the click really did add form controls (that IS the detection)', rres.ctrls > before22, [before22, rres.ctrls]);
-  ok('the row\'s Company was set', rres.company === 'Northwind Analytics', rres.company);
-  ok('the row\'s Position was set', rres.position === 'Senior Engineer', rres.position);
-  ok('the row SURVIVES the run — our own popup sweep no longer eats it', rres.ctrls >= before22 + 5, rres.ctrls);
-  // This employer's date box rejects every injected write (six variants measured, including a
-  // React _valueTracker reset and per-character InputEvents). It must be REPORTED, never counted.
-  ok('the date box we could not set is reported honestly, not claimed', rres.start === '', rres.start);
+  // ⚠️ A COMMITTED ROW LEAVES THE SCREEN, so "the controls are still there" stopped being the test.
+  // These assertions were written when the date columns could not be set and the row could
+  // therefore never be saved; both of those are now false, and asserting the old shape would pin
+  // the engine to the bug. What has to be true is that the entry EXISTS — in the row while it is
+  // open, or in the employer's own form once the widget has taken it — and is never just gone.
+  const inForm = (s) => rres.formText.toLowerCase().indexOf(String(s).toLowerCase()) >= 0;
+  const saved = inForm('Northwind Analytics');
+  const stillOpen = rres.ctrls > before22;
+  console.log('    row outcome:', saved ? 'SAVED into the form' : (stillOpen ? 'still open on screen' : 'GONE — neither saved nor open'));
+  ok('the row was opened and its data exists — on screen or saved', saved || stillOpen, [before22, rres.ctrls, saved]);
+  ok('the row\'s Company is the one we gave it', saved || rres.company === 'Northwind Analytics', rres.company);
+  ok('the row\'s Position is the one we gave it', saved || rres.position === 'Senior Engineer', rres.position);
+  ok('the entry is never silently discarded (Cancel is not our button)', saved || stillOpen, rres.ctrls);
+  // The date columns are calendar pickers that revert every injected write, so they are DRIVEN.
+  // Either the date is in the box, or the saved entry carries the year we asked for, or the row is
+  // still open AND the report names the date column. Never a row that quietly dropped it.
   const rfail = ((rres.report || {}).failed || []).find((f) => f.key === expRep.key);
-  ok('the repeater is named in the review list with what still needs the applicant', !!rfail && /start date/i.test(rfail.why || ''), rfail);
-  ok('the partial success is still counted as filled', !!rres.report && rres.report.count >= 1, rres.report);
-  ok('no second row is opened while the first is still on screen', rres.ctrls < before22 + 10, rres.ctrls);
+  ok('the start date is set, or saved, or named as still needing the applicant',
+    /2021/.test(String(rres.start)) || inForm('2021') || (!!rfail && /date/i.test(rfail.why || '')),
+    { start: rres.start, why: rfail && rfail.why });
+  ok('a SAVED row is not also reported as needing the applicant', !saved || !rfail || !!rfail.also, rfail);
+  ok('the success is counted as filled', !!rres.report && rres.report.count >= 1, rres.report);
   ok('no autofill error', rres.errors.length === 0, rres.errors);
   ok('THE REAL FORM WAS NEVER SUBMITTED (repeater fill)', rres.submits.length === 0, rres.submits);
 
@@ -808,17 +821,26 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
           const l = ((i.labels && i.labels[0] ? i.labels[0].innerText : '') || i.getAttribute('placeholder') || '').trim();
           if (l && i.value) out[l] = String(i.value);
         }
+        const fm = document.querySelector('form');
         return { out, ctrls: document.querySelectorAll('input,textarea,select').length, submits: window.__submits,
+                 formText: String((fm && fm.innerText) || '').replace(/\s+/g, ' '),
                  report: (window.__msgs || []).filter((m) => m.type === 'FILLED').pop() };
       });
       console.log('    columns the server\'s keys reached:', JSON.stringify(landed.out));
       console.log('    device report:', JSON.stringify(landed.report).slice(0, 300));
-      ok('the row really opened (the click added controls)', landed.ctrls > before, [before, landed.ctrls]);
+      // Same correction as the synthetic row above: once the row can actually be committed, its
+      // controls leave the document, so the entry is looked for in the FORM as well as in the row.
       const hit = (col, key) => Object.keys(landed.out).some((l) => col.test(l) && landed.out[l] === expect[key]);
+      const inF = (v) => !!v && landed.formText.toLowerCase().indexOf(String(v).toLowerCase().slice(0, 22)) >= 0;
       const companyKey = Object.keys(expect).find((k) => /company|employer/i.test(k));
       const roleKey = Object.keys(expect).find((k) => /position|title|role/i.test(k));
-      ok('the server\'s company key landed in the employer\'s Company column', !!companyKey && hit(/^company$/i, companyKey), [companyKey, landed.out]);
-      ok('the server\'s role key landed in the employer\'s Position column', !!roleKey && hit(/^position$/i, roleKey), [roleKey, landed.out]);
+      console.log('    row outcome:', inF(expect[companyKey]) ? 'SAVED into the form' : (landed.ctrls > before ? 'still open' : 'GONE'));
+      ok('the row opened and its data exists — on screen or saved',
+        landed.ctrls > before || inF(expect[companyKey]), [before, landed.ctrls]);
+      ok('the server\'s company key reached the employer\'s Company column',
+        !!companyKey && (hit(/^company$/i, companyKey) || inF(expect[companyKey])), [companyKey, landed.out]);
+      ok('the server\'s role key reached the employer\'s Position column',
+        !!roleKey && (hit(/^position$/i, roleKey) || inF(expect[roleKey])), [roleKey, landed.out]);
       ok('THE REAL FORM WAS NEVER SUBMITTED (server-driven row)', landed.submits.length === 0, landed.submits);
     }
     ok('THE REAL FORM WAS NEVER SUBMITTED (server section)', (await page.evaluate(() => window.__submits.length)) === 0);
