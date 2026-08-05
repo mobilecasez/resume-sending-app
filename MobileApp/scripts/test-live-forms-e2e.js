@@ -1,18 +1,28 @@
-// END-TO-END AUTO FILL — all three legs, for real, in one run.
+// END-TO-END AUTO FILL — all four legs, for real, in one run. The sibling of test-live-forms.js.
 //
-//   node tools/e2e-autofill-live.js [--user 1] [--url <apply url>] [--json out.json]
+//   node MobileApp/scripts/test-live-forms-e2e.js [--user 1] [--variant fresh] [--json out.json]
 //
-// WHY THIS EXISTS. MobileApp/scripts/test-live-forms.js asserts "the dial picker shows +91" and
-// PASSES, while the same action on a real phone leaves +44. It passes because it HAND-BUILDS the
-// values object:  runFill({ [DIAL_KEY]: '+91', [NUM_KEY]: '9970020596' }).  That proves the ENGINE
-// can set a field when handed a perfect value. It proves nothing about whether the value ARRIVES,
-// in the shape the engine expects, under the key the engine will look up.
+// WHY THIS EXISTS, AND WHY IT LIVES HERE. test-live-forms.js asserted "the dial picker shows +91"
+// and PASSED for weeks while the same action on a real phone left +44. It passed because it
+// HAND-BUILDS the values object:  runFill({ [DIAL_KEY]: '+91', [NUM_KEY]: '9970020596' }).  That
+// proves the ENGINE can set a field when handed a perfect value. It proves nothing about whether
+// the value is ever PRODUCED — and the bug was entirely in the producing. A synthetic assertion
+// must never again be the only thing standing between us and a user-visible failure, so the real
+// path now has a test that lives beside the synthetic one and is run with it.
 //
-// The real path has three legs:
-//     scan (READ_FIELDS_JS)  ->  POST /api/ai-hub/autofill-map  ->  values  ->  fillJs
-// This harness runs all three: the REAL scan off the REAL page, the REAL fields posted to the REAL
-// production endpoint as a REAL user (same __async + job-status polling the app uses), and the
-// REAL response fed into fillJs. Then it reads the DOM.
+// The real path has three legs, and this runs all three plus a fourth that needs no network:
+//   LEG 0  the SERVER'S OWN classifier, called directly on the fields the scan just produced
+//   LEG 1  the real READ_FIELDS_JS on the real page
+//   LEG 2  those exact scanned fields POSTed to the real production endpoint as a real user,
+//          with the app's own __async + /job-status polling, not a plain sync POST
+//   LEG 3  the server's unedited response fed into the real fillJs, then the DOM read back
+//
+// VARIANTS (--variant):
+//   fresh          a page nobody has touched
+//   touched        the app's own FOCUS_DETECT_JS installed and the person taps the dial picker once
+//   nooptions      BUILD 144 ON A SLOW PHONE: the dial dropdown did not enumerate AND the build
+//                  predates the isPhoneCode hint. This is the shape on the user's actual phone.
+//   nooptions-flag the same lost option list, on a build that DOES send isPhoneCode
 //
 // ⚠️ TWO HARD RULES — these are strangers' live application forms.
 //   1. NEVER SUBMIT. Submit is neutralised on five layers BEFORE anything is touched, and every
@@ -27,7 +37,7 @@ const path = require('path');
 const jwt = require('jsonwebtoken');
 const { chromium } = require('playwright');
 
-const REPO = path.join(__dirname, '..');
+const REPO = path.join(__dirname, '..', '..');
 const SRC = fs.readFileSync(path.join(REPO, 'MobileApp', 'app', '(ai-hub)', 'job-detail.tsx'), 'utf8');
 const raw = (n) => { const m = SRC.match(new RegExp('(?:export )?const ' + n + ' = `([\\s\\S]*?)`;\\n')); if (!m) throw new Error('no ' + n); return m[1]; };
 const rawFn = (n) => { const m = SRC.match(new RegExp('function ' + n + '\\([^)]*\\)[^{]*\\{[\\s\\S]*?return `([\\s\\S]*?)`;\\s*\\}')); if (!m) throw new Error('no fn ' + n); return m[1]; };
@@ -46,14 +56,17 @@ const API = process.env.AUTOFILL_TEST_API || 'https://cvapplyr-website-productio
 const USER = Number(arg('user', '1'));
 const URL = arg('url', 'https://www.revolut.com/careers/apply/4ee78ed3-1222-4265-aca8-d6f147f7d15a/');
 const OUT = arg('json', null);
-// fresh      — a page nobody has touched (what every existing harness tests)
-// touched    — the app's own FOCUS_DETECT_JS is installed and the PERSON has tapped the dial picker
-//              once, exactly as someone does when they wonder why it still says +44
-// nooptions  — the scan ran, but the dial dropdown did NOT enumerate (it timed out / was skipped).
-//              This is not a hand-made payload: it is the REAL scan with the one thing a slow phone
-//              loses, sent to the REAL server and fed to the REAL fill.
 const VARIANT = arg('variant', 'fresh');
 const CPU = Number(arg('cpu', '1'));   // Chromium CPU throttling — a real iPhone is not a Mac
+// The server's OWN exported classifier, called on the fields the scan produces. No network, no
+// model, no mocks: this is the function that decides whether a dial value exists at all, and the
+// only reason the dial bug survived four fixes is that nothing ever called it with a real field.
+process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgresql://test@localhost:5432/test';
+let SRVCLF = null;
+try {
+  const c = require(path.join(REPO, 'server', 'controllers', 'aiHubController.js'));
+  if (typeof c.isPhoneCodeField === 'function') SRVCLF = c;
+} catch (e) { console.log('  (server classifier not loadable here: ' + e.message + ')'); }
 
 let pass = 0, fail = 0;
 const record = [];
@@ -115,8 +128,13 @@ const PROBE = `(function(){
         for (var j=0;j<seen.length;j++){ if (seen[j].contains(n) || n.contains(seen[j])) { dupe = true; break; } }
         if (dupe) continue;
         seen.push(n);
+        // A repeater ROW is portal-rendered and therefore popup-SHAPED, but it is not a stray
+        // dropdown: it is the applicant's own half-finished entry, deliberately kept and named
+        // back to them. Counting FIELDS is what tells the two apart — an option sheet has at most
+        // its own search box.
         out.push({ cls: String((n.className && n.className.baseVal) || n.className || '').slice(0,50),
                    rows: n.querySelectorAll('button,li,[role=option]').length,
+                   inputs: n.querySelectorAll('input:not([type=search]),select,textarea').length,
                    text: String(n.innerText||'').replace(/\\s+/g,' ').slice(0,60) });
       }
     } catch(e){}
@@ -228,13 +246,49 @@ const PROBE = `(function(){
   // Model the ONE thing a slow phone loses: enumCombos gives a widget 2200ms to render its sheet
   // and skips any control cbAnswered() calls already answered. Either way the field reaches the
   // server exactly as the scan first built it — combobox, optionsUnknown, no options.
-  if (VARIANT === 'nooptions') {
-    head('MUTATION — the dial dropdown did not enumerate (2.2s sheet timeout, or cbAnswered skipped it)');
+  if (VARIANT === 'nooptions' || VARIANT === 'nooptions-flag') {
+    head('MUTATION — the dial dropdown did not enumerate (2.2s sheet timeout, or cbAnswered skipped it)'
+      + (VARIANT === 'nooptions' ? '\nAND the build is 144, which does not send the isPhoneCode hint' : ''));
     const d = fields.find((f) => /phone country|country code|dial/i.test(f.label || ''));
     if (!d) { console.log('  no dial field'); process.exit(1); }
-    console.log('  before: options=' + (d.options || []).length + ' truncated=' + !!d.optionsTruncated + ' unknown=' + !!d.optionsUnknown);
+    console.log('  before: options=' + (d.options || []).length + ' truncated=' + !!d.optionsTruncated
+      + ' unknown=' + !!d.optionsUnknown + ' isPhoneCode=' + !!d.isPhoneCode);
     delete d.options; delete d.optionsTruncated; d.optionsUnknown = true;
+    // ⚠️ BUILD 144 IS WHAT THE USER IS HOLDING. It predates the isPhoneCode hint, so leaving the
+    // hint in would prove the NEXT build works and say nothing about the phone in their hand.
+    if (VARIANT === 'nooptions') delete d.isPhoneCode;
     console.log('  after : ' + JSON.stringify(d));
+  }
+
+  // ══ LEG 0 — the server's own classifier, on the fields the scan just made ══════════════════
+  // No network. This is the function whose answer decides whether a dial value can exist, and it
+  // is asserted on the REAL field shape rather than on anything written by hand.
+  if (SRVCLF) {
+    head('LEG 0 — CLASSIFY (the server\'s exported isPhoneCodeField / isPhoneNumberField, no network)');
+    const nonFile = fields.filter((f) => f && f.key && String(f.type || '').toLowerCase() !== 'file');
+    const codeF = nonFile.filter(SRVCLF.isPhoneCodeField).map((f) => f.key);
+    const numF = nonFile.filter(SRVCLF.isPhoneNumberField).map((f) => f.key);
+    console.log('  dial fields   : ' + JSON.stringify(codeF));
+    console.log('  number fields : ' + JSON.stringify(numF));
+    const dk = (fields.find((f) => /phone country|country code|dial/i.test(f.label || '')) || {}).key;
+    ok('the server RECOGNISES the dial picker in the shape the scan actually sends it',
+      !!dk && codeF.indexOf(dk) >= 0, { dialKey: dk, codeF });
+    ok('and does NOT also hand the same picker to the phone-NUMBER pass', !dk || numF.indexOf(dk) < 0, { dialKey: dk, numF });
+    ok('the two filters never claim the same field', codeF.every((k) => numF.indexOf(k) < 0), { codeF, numF });
+    // The residence question sits one position from the phone box on this page. Claiming it would
+    // write "+91" into "Current country" — a worse bug than the one being fixed.
+    const ck = (fields.find((f) => /^current country$/i.test((f.label || '').trim())) || {}).key;
+    if (ck) ok('"Current country" is NOT claimed as a dial control', codeF.indexOf(ck) < 0, { countryKey: ck, codeF });
+    // And the same field with its options stripped must still classify — this is the regression
+    // that four separate fixes missed, so it is asserted on every run, in every variant.
+    if (dk) {
+      const bare = fields.map((f) => (f.key === dk ? Object.assign({}, f, { options: undefined, optionsTruncated: undefined, optionsUnknown: true, isPhoneCode: undefined }) : f))
+        .filter((f) => String(f.type || '').toLowerCase() !== 'file');
+      const bareCode = bare.filter(SRVCLF.isPhoneCodeField).map((f) => f.key);
+      const bareNum = bare.filter(SRVCLF.isPhoneNumberField).map((f) => f.key);
+      ok('WITH NO OPTION LIST AND NO CLIENT HINT the dial picker is still a dial picker', bareCode.indexOf(dk) >= 0, { bareCode });
+      ok('...and is still not mistaken for the phone number field', bareNum.indexOf(dk) < 0, { bareNum });
+    }
   }
 
   // ══ LEG 2 — the REAL server, on the REAL scanned payload ═══════════════════════════════════
@@ -318,7 +372,8 @@ const PROBE = `(function(){
   ok('the number box is not left as national digits under a foreign code',
     /\+?91\b/.test(String(dom.dialShows)) || String(dom.phone || '').replace(/[^\d]/g, '').indexOf('91') === 0,
     { dial: dom.dialShows, phone: dom.phone });
-  ok('the fill leaves no popup open', afterFill.now.popups.length === 0, afterFill.now.popups);
+  const sheetsOf = (c) => c.popups.filter((p) => (p.inputs || 0) < 2);   // an option sheet, not a row
+  ok('the fill leaves no dropdown or sheet open', sheetsOf(afterFill.now).length === 0, sheetsOf(afterFill.now));
 
   // ── The repeater, measured: what is actually IN the ROW the fill opened? ─────────────────────
   // Read the ROW ITSELF (the portal the repeater renders into), not the host form — the row is
@@ -344,15 +399,21 @@ const PROBE = `(function(){
           placeholder: (c.placeholder || '').slice(0, 24),
           // A checkbox/radio .value is the markup's "on" whether it is ticked or not — printing it
           // as the value made every tick box look ticked. Report the STATE for those.
+          // ⚠️ READ IT THE WAY THE ENGINE DOES. A trigger-style picker CLEARS its own .value after
+          // a real pick and shows the choice in a separate node, so reading .value reported every
+          // successful pick as empty — the harness would have called a working row broken.
           value: /^(checkbox|radio)$/.test((c.type || '').toLowerCase())
             ? (c.checked ? 'CHECKED' : 'unchecked')
-            : String(c.value == null ? '' : c.value).slice(0, 34),
+            : String((() => { try { return window.__cvf.cbShown(c) || c.value || ''; } catch (e) { return c.value || ''; } })()).slice(0, 34),
           combo: (() => { try { return !!window.__cvf.isCombo(c); } catch (e) { return null; } })(),
           readOnly: !!c.readOnly, disabled: !!c.disabled,
           text: /^(button)$/.test(c.tagName.toLowerCase()) ? String(c.innerText || '').replace(/\s+/g, ' ').slice(0, 26) : '',
         })),
     }));
   });
+  const repFailures = ((dom.report && dom.report.failed) || []).filter((f) => String(f.key || '').indexOf('rp:') === 0);
+  console.log('  rows still on screen after the fill: ' + rowDom.length);
+  console.log('  what the engine said about the repeaters: ' + JSON.stringify(repFailures));
   for (const r of rowDom) {
     console.log('\n  ROW: ' + r.heading);
     for (const c of r.controls) {
@@ -363,32 +424,82 @@ const PROBE = `(function(){
     const dates = r.controls.filter((c) => /date|from|to|start|end|month|year/i.test(c.label + ' ' + c.placeholder));
     console.log('    -> date columns: ' + dates.length + '  '
       + JSON.stringify(dates.map((d) => ({ label: d.label, tag: d.tag + '/' + d.type, isPicker: d.combo, value: d.value }))));
-    const saveish = r.controls.filter((c) => /^(save|add|done|confirm|apply|ok|submit)$/i.test((c.text || '').trim()));
-    console.log('    -> save/confirm control INSIDE the row: ' + JSON.stringify(saveish.map((s) => ({ text: s.text, disabled: s.disabled }))));
-    ok('the row has a save/confirm control (which the fill never presses)', saveish.length > 0, saveish);
-    ok('every date column in the row actually got a value', dates.length === 0 || dates.every((d) => d.value !== ''), dates);
-    ok('the row\'s save control is not left disabled', saveish.length === 0 || saveish.every((s) => !s.disabled), saveish);
+    // The commit control is read the way the ENGINE reads it — a disabled button in the row that is
+    // not one of the row's own fields — so the harness cannot pass by finding a different button.
+    const saveish = r.controls.filter((c) => /^(button)$/.test(c.tag) && !/^(cancel|close|back)$/i.test((c.text || '').trim()) && (c.text || '').trim());
+    console.log('    -> commit control INSIDE the row: ' + JSON.stringify(saveish.map((s) => ({ text: s.text, disabled: s.disabled }))));
+    // A row still on screen is a row the applicant has to finish, so these are the two things that
+    // decide whether they can: the dates, and whether the widget will accept the row at all.
+    const stillWork = r.controls.some((c) => c.value === 'CHECKED' && /still|current|present/i.test(c.label));
+    const stuck = saveish.length > 0 && saveish.every((s) => s.disabled);
+    // A row can be genuinely unfinishable — the profile may hold no start date for a course. The
+    // guarantee is not "always saved"; it is NEVER SILENT. So a stuck row must be NAMED, and named
+    // with every column that is still empty, or the applicant fixes what we listed and is still
+    // stuck on what we did not.
+    const empties = r.controls
+      .filter((c) => c.tag !== 'button' && c.value === '' && c.label && !/optional/i.test(c.label))
+      .map((c) => c.label);
+    const named = repFailures.map((f) => String(f.why || '')).join(' | ');
+    console.log('    -> still empty: ' + JSON.stringify(empties) + (stuck ? '   (COMMIT DISABLED)' : ''));
+    ok('every date column in the row got a value (or the row says the role is current, or the row is reported)',
+      dates.length === 0 || stillWork || dates.every((d) => d.value !== '') || stuck, dates);
+    ok('a row whose commit control is still disabled is REPORTED, not left silently stuck',
+      !stuck || repFailures.length > 0, { stuck, repFailures });
+    ok('...and every still-empty column in that row is named to the applicant',
+      !stuck || empties.every((L) => named.toLowerCase().indexOf(String(L).toLowerCase().slice(0, 18)) >= 0),
+      { empties, named });
+  }
+  // A committed row LEAVES THE SCREEN. If the server sent rows and none is on screen, either the
+  // widget absorbed them (good) or nothing was ever opened (bad) — the engine's own report is what
+  // tells those apart, so it is asserted rather than inferred from an empty screen.
+  const sentRows = reps.filter((r) => Array.isArray(values[r.key]) && values[r.key].length);
+  for (const r of sentRows) {
+    const failed = repFailures.find((f) => f.key === r.key);
+    const filledIt = !!(dom.report && dom.report.count > 0) && (!failed || failed.also);
+    console.log('  ' + r.key.slice(0, 46).padEnd(48) + (failed ? 'engine says: ' + failed.why : 'engine reports it filled'));
+    ok('the repeater "' + String(r.label || r.key).slice(0, 32) + '" was not abandoned', filledIt, failed);
   }
 
-  // Is the date column a PICKER or a typeable box? Click it and watch. (Clicking a date box opens a
-  // calendar; it cannot submit anything, and the shield is still up.)
-  head('REPEATER — are the date columns pickers? (measured by opening one)');
-  const dateProbe = await page.evaluate(async () => {
-    const el = [...document.querySelectorAll('input[type=text]')]
-      .find((i) => /start date/i.test(window.__cvf.nlbl(i) || '') && i.getBoundingClientRect().width);
-    if (!el) return { found: false };
-    const before = window.__census().popups.length;
-    const writable = (() => { try { const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value'); d.set.call(el, '2013-06'); const v = el.value; d.set.call(el, ''); return v === '2013-06'; } catch (e) { return null; } })();
-    el.click();
-    await new Promise((r) => setTimeout(r, 1200));
-    const after = window.__census();
-    return { found: true, readOnly: el.readOnly, type: el.type, writable,
-      popupsBefore: before, popupsAfter: after.popups.length,
-      opened: after.popups.map((p) => p.text.slice(0, 60)) };
+  // ── DIRECT EVIDENCE THAT THE ROW WAS SAVED ─────────────────────────────────────────────────
+  // "The row left the screen" is necessary and NOT sufficient — Cancel removes a row too. The
+  // employer's own form has to be showing the entry afterwards, in the applicant's own words.
+  const formText = await page.evaluate(() => {
+    const f = document.querySelector('form');
+    return String((f && f.innerText) || '').replace(/\s+/g, ' ');
   });
-  console.log('    ' + JSON.stringify(dateProbe, null, 1).replace(/\n\s*/g, ' '));
-  ok('the date column is a PICKER, not a typeable box (so setNative can never stick)',
-    dateProbe.found === true && (dateProbe.readOnly === true || dateProbe.popupsAfter > dateProbe.popupsBefore), dateProbe);
+  for (const r of sentRows) {
+    const failed = repFailures.find((f) => f.key === r.key);
+    const first = values[r.key][0] || {};
+    const marks = Object.keys(first).map((k) => String(first[k] == null ? '' : first[k])).filter((v) => v.length > 6);
+    const present = marks.filter((v) => formText.toLowerCase().indexOf(v.toLowerCase().slice(0, 22)) >= 0);
+    console.log('  ' + String(r.key).slice(0, 44).padEnd(46) + 'row values now visible in the FORM: '
+      + present.length + '/' + marks.length + '  ' + JSON.stringify(present.slice(0, 2)).slice(0, 120));
+    // Only claimed for a repeater the engine reported as complete. One that was reported as needing
+    // the applicant is allowed to be unsaved — that is the honest outcome, and it is asserted above.
+    if (!failed) ok('the entry is actually IN the form, not just off the screen', present.length > 0, { marks, sample: formText.slice(0, 200) });
+  }
+
+  // ── Nothing left on screen for the user to dismiss ──────────────────────────────────────────
+  // Measured again after a settle: a widget that closes on an animation frame would otherwise be
+  // counted as "left open", and one that resists closing would be counted as closed.
+  head('POPUPS — is the page actually left clean?');
+  await page.waitForTimeout(1500);
+  const settled = await censusNow();
+  const strays = sheetsOf(settled.now);
+  const rowsLeft = settled.now.popups.filter((p) => (p.inputs || 0) >= 2);
+  console.log('  still open 1.5s after the fill reported: ' + strays.length + ' dropdown/sheet, ' + rowsLeft.length + ' repeater row');
+  if (strays.length) console.log('    RESISTED: ' + JSON.stringify(strays));
+  if (rowsLeft.length) console.log('    ROW KEPT (deliberate): ' + JSON.stringify(rowsLeft.map((p) => p.text)));
+  ok('the run leaves NO dropdown or sheet open for the user to dismiss', strays.length === 0, strays);
+  ok('and no orphan search box from a sheet that never closed', settled.now.searchBoxes === 0, settled.now.searchBoxes);
+  // A row IS allowed to stay — it holds the applicant's entry and cancelling it would throw that
+  // away. It is not allowed to stay SILENTLY.
+  ok('any row still on screen was named in the report', rowsLeft.length === 0 || repFailures.length > 0,
+    { rowsLeft: rowsLeft.map((p) => p.text), repFailures });
+  // The engine's own marker must not outlive the run: left behind, the NEXT Auto Fill on this page
+  // treats every node containing it as protected and stops closing pickers at all.
+  const leftovers = await page.evaluate(() => document.querySelectorAll('[data-cvf-row]').length);
+  ok('no data-cvf-row marker is left on the employer\'s DOM', leftovers === 0, leftovers);
 
   const finalSub = await submits();
   ok('THE FORM WAS NEVER SUBMITTED (whole run)', finalSub.s.length === 0, finalSub);

@@ -1914,6 +1914,16 @@ const JS_HELPERS = `
     if(cbHoldingRow()){
       for(var g=0;g<__cvfOpened.length;g++){ try{ cbClose(__cvfOpened[g].el); }catch(e){} }
       __cvfOpened = [];
+      // ⚠️ AND THEN CHECK. This early return is the whole of the "dropdowns left open" bug: it
+      // skipped not only the escalation ladder but the final sweep, for EVERY popup on the page —
+      // not just the row it exists to protect. A blur is a request; cbEnsureNoneOpen is the part
+      // that verifies. It is safe to run here because it already refuses to touch a protected row
+      // (cbProtected) and, while a row is held, limits itself to sheets THIS RUN opened
+      // (cbWeOpened), never bubbles Escape and never clicks a backdrop.
+      //
+      // Sweeping after RELEASING the rows would also have worked and is exactly wrong: measured, it
+      // finds the row's own Cancel and throws away the entry that could not be saved.
+      try{ cbEnsureNoneOpen(); }catch(e){}
       return;
     }
     for(var i=0;i<__cvfOpened.length;i++){
@@ -2577,6 +2587,29 @@ const JS_HELPERS = `
                 try{ for(var z2=0;z2<fresh.length;z2++){ if(document.contains(fresh[z2])){ gone=false; break; } } }catch(e){}
                 if(pressed && gone) savedAll++;
                 else if(commit) unsavedAll++;
+                // ⚠️ A ROW THAT WILL NOT COMMIT MUST NAME EVERYTHING STILL EMPTY IN IT, not only the
+                // columns we tried and failed at. Measured: the education row reported three
+                // pickers and said nothing about its two date columns — because the profile held no
+                // date for them, so nothing was ever attempted. The applicant would have fixed the
+                // three named things and still been unable to save. The widget's own disabled
+                // commit control is the test for "not finishable", and it needs no vendor knowledge.
+                if(!gone && commit && rpDisabled(commit)){
+                  try{
+                    for(var z3=0;z3<fresh.length;z3++){
+                      var fc=fresh[z3];
+                      if(!visCtl(fc)) continue;
+                      var ft=(fc.type||'').toLowerCase();
+                      if(['hidden','submit','reset','image','file','button'].indexOf(ft)>=0) continue;
+                      if(ft==='checkbox'||ft==='radio'){ if(fc.checked) continue; }
+                      else if(cleanTxt(cbShown(fc)) || cleanTxt(fc.value)) continue;
+                      var fn=cleanTxt(nlbl(fc)).slice(0,40);
+                      // A column the employer marked optional is not what the row is waiting on,
+                      // and listing it sends the applicant to fill in a GPA that changes nothing.
+                      if(fc.required!==true && /\\((optional|opcional|facultatif|optioneel|optionnel|opzionale|freiwillig)\\)/i.test(fn)) continue;
+                      if(fn && missed.indexOf(fn)<0) missed.push(fn);
+                    }
+                  }catch(e){}
+                }
                 setTimeout(step, 320);
               }, pressed ? 700 : 0);
             });
@@ -2628,11 +2661,13 @@ const JS_HELPERS = `
               delete fails[d.s];
               // Partial success is still success — but the boxes we could not set are named, and
               // the also-flag makes report() show this alongside the field being counted as filled.
-              if(r.missed.length) fails[d.s]={key:d.s,label:lab,why:'added '+r.rows+(r.rows===1?' entry':' entries')+' — '+r.missed.slice(0,3).join(', ')+' still needs you',also:true};
-              // A row this widget never absorbed is not an entry, whatever we managed to type into
-              // it. The applicant has to press the row's own save control, and they can only do
-              // that if we say so.
-              else if(r.unsaved>0) fails[d.s]={key:d.s,label:lab,why:'filled '+r.unsaved+(r.unsaved===1?' entry':' entries')+' — please press the row\\'s own save button',also:true};
+              // A row this widget never absorbed is not a saved entry, whatever we managed to put
+              // into it — so the wording says what is left to do, and never claims a saved entry
+              // the applicant does not have.
+              var why='';
+              if(r.missed.length) why='added '+r.rows+(r.rows===1?' entry':' entries')+' — '+r.missed.slice(0,6).join(', ')+' still needs you';
+              if(r.unsaved>0) why=(why?why+', then press':'filled '+r.unsaved+(r.unsaved===1?' entry':' entries')+' — please press')+' the row\\'s own save button';
+              if(why) fails[d.s]={key:d.s,label:lab,why:why.slice(0,140),also:true};
             }
             else if(r.rows>0) fails[d.s]={key:d.s,label:lab,why:'this section only accepts typing — please fill in the row we opened'};
             else fails[d.s]={key:d.s,label:lab,why:'we could not add these — please add them yourself'};
@@ -2758,14 +2793,6 @@ const JS_HELPERS = `
         // …and no marker of ours left on their DOM. Order matters: the sweep above is what the
         // row protection exists for, so the release runs strictly after it.
         try{ cbReleaseRows(); }catch(e){}
-        // ⚠️ AND THEN SWEEP AGAIN. This is the whole of the "popups left open" bug. While a row is
-        // held, cbCloseAllOpened takes its cbHoldingRow branch: it blurs the triggers and RETURNS
-        // EARLY, skipping both the escalation ladder and the final cbEnsureNoneOpen — for EVERY
-        // popup on the page, not just the protected row. The row protection is right and stays;
-        // what was missing is a second pass once the rows have been released and there is nothing
-        // left to protect. Sweeping the same page twice is free when it is already clean.
-        try{ cbCloseAllOpened(); }catch(e){}
-        try{ cbEnsureNoneOpen(); }catch(e){}
         var fl=[], n=0;
         // also-flagged entries are reported EVEN THOUGH the field counted as filled: a repeater that added
         // two rows but could not set their dates is a success the applicant still has to finish.

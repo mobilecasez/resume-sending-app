@@ -239,6 +239,42 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   ok('the virtualised country list is reported as PARTIAL too', scan.countryPartial === true, scan);
   ok('a SHORT, fully-rendered list (gender) is NOT falsely flagged partial', scan.genderN > 0 && scan.genderPartial === false, scan);
 
+  // ── ⚠️ THE GAP THAT LET THE DIAL BUG SURVIVE FOUR FIXES ───────────────────────────────────────
+  // Everything below this line hands the engine a values object THIS FILE WROTE — runFill({ [DIAL_KEY]:
+  // '+91', ... }). That proves the engine can set a field when handed a perfect value, and it is worth
+  // proving. It says NOTHING about whether a dial value is ever PRODUCED, and for four fixes running
+  // that was the entire bug: the server read the picker as a phone NUMBER field, emitted no dial value
+  // and no skip, and every assertion here still passed while a real phone sat on +44.
+  //
+  // So the producer is asserted too, HERE, against the fields the scan just made — no network, no
+  // model, just the server's own exported classifier. The full three-leg run (real server, real
+  // response, real fill) lives in the sibling: node MobileApp/scripts/test-live-forms-e2e.js
+  console.log('\nthe SERVER can tell what these fields are (the half this file used to skip)');
+  const scannedFields = await page.evaluate(() => window.__msgs.find((m) => m.type === 'FIELDS').fields);
+  try {
+    process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgresql://test@localhost:5432/test';
+    const SRV = require(path.join(REPO, 'server', 'controllers', 'aiHubController.js'));
+    const nonFile = scannedFields.filter((f) => f && f.key && String(f.type || '').toLowerCase() !== 'file');
+    const codeF = nonFile.filter(SRV.isPhoneCodeField).map((f) => f.key);
+    const numF = nonFile.filter(SRV.isPhoneNumberField).map((f) => f.key);
+    console.log('    server sees dial:', JSON.stringify(codeF), ' number:', JSON.stringify(numF));
+    ok('the server recognises the dial picker in the shape the scan sends it', codeF.indexOf(scan.dialKey) >= 0, { codeF, dialKey: scan.dialKey });
+    ok('and does not ALSO hand that picker to the phone-number pass', numF.indexOf(scan.dialKey) < 0, { numF });
+    ok('the residence-country picker is not mistaken for a dial control',
+      codeF.every((k) => !/current country/i.test(k)), codeF);
+    // The regression itself: the option list is what the device fails to deliver on a slow phone,
+    // and the identity must not depend on it.
+    const bare = nonFile.map((f) => (f.key === scan.dialKey
+      ? Object.assign({}, f, { options: undefined, optionsTruncated: undefined, optionsUnknown: true, isPhoneCode: undefined })
+      : f));
+    ok('WITH NO OPTION LIST AND NO CLIENT HINT it is still a dial control',
+      bare.filter(SRV.isPhoneCodeField).map((f) => f.key).indexOf(scan.dialKey) >= 0, scan.dialKey);
+    ok('...and still not the phone number field',
+      bare.filter(SRV.isPhoneNumberField).map((f) => f.key).indexOf(scan.dialKey) < 0, scan.dialKey);
+  } catch (e) {
+    ok('the server classifier could be loaded and asserted against', false, e.message);
+  }
+
   // ── THE ATOMIC-SPLIT INVARIANT ────────────────────────────────────────────────────────────────
   // The number half and the dial half must succeed or fail TOGETHER. Never "split and wrong".
   const DIAL_KEY = scan.dialKey, NUM_KEY = scan.numKey;
