@@ -34,8 +34,8 @@ import {
 } from '../../services/subscriptionService';
 import {
   isStoreBillingAvailable, fetchSubscriptionProducts, purchaseSubscription, finishSubscription,
-  getOwnedSubscriptions, openManageSubscriptions,
-  type StoreSubscriptionProduct,
+  getOwnedSubscriptions, openManageSubscriptions, PLAY_REPLACEMENT,
+  type StoreSubscriptionProduct, type PlayReplacementMode,
 } from '../../services/storeBilling';
 import type { Purchase } from 'react-native-iap';
 
@@ -78,6 +78,21 @@ const PRIVACY_URL = 'https://cvapplyr.com/privacy-policy';
 function skuFor(p: Plan): string | null {
   const sku = Platform.OS === 'ios' ? p.productIos : Platform.OS === 'android' ? p.productAndroid : null;
   return sku || null;
+}
+
+/**
+ * What it takes to move a Play user from the subscription they already own onto a new one:
+ * which purchase is being replaced, and on what terms (`mode` — see PLAY_REPLACEMENT).
+ */
+type Replacement = { token: string; sku: string; mode: PlayReplacementMode };
+
+/** A store expiry as a plain date — never a phrase that pretends to know one we do not have. */
+function whenText(iso?: string | null): string {
+  if (!iso) return 'your renewal date';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return 'your renewal date';
+  try { return d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }); }
+  catch { return d.toDateString(); }
 }
 
 export default function PlansScreen() {
@@ -177,13 +192,44 @@ export default function PlansScreen() {
     return () => { alive.current = false; };
   }, [loadStatus, storeUsable, settleAll]);
 
-  /** The plan the store thinks is already owned, if any — needed for an Android upgrade/downgrade. */
-  const ownedTokenExcept = useCallback(async (sku: string): Promise<string | null> => {
-    if (Platform.OS !== 'android' || !status?.plans) return null;
-    const skus = status.plans.map(skuFor).filter((x): x is string => !!x);
+  /**
+   * Android only: the subscription this purchase must REPLACE, and on what terms.
+   *
+   * ⚠️ The terms are the whole point. Play settles a replacement according to `replacementMode`, and
+   * the wrong mode either gives the new tier's monthly quota away for $0 or takes money for days the
+   * user already owns. Which one is correct depends entirely on the DIRECTION of the move, so this
+   * places both ends on the server's plan ladder (`status.plans`, cheapest first) and picks:
+   *   upgrade   → CHARGE_PRORATED_PRICE — bill the difference for the rest of the cycle, renewal
+   *               date (and therefore the quota window) untouched.
+   *   downgrade → DEFERRED — charge nothing, change nothing until the paid period ends.
+   *
+   * `{ ok: false }` means we could not place one of the two on the ladder. That is not a case to
+   * paper over with a default: no purchase at all is cheaper than one settled on guessed terms.
+   */
+  const replacementFor = useCallback(async (
+    target: Plan, targetSku: string,
+  ): Promise<{ ok: true; replacement: Replacement | null } | { ok: false }> => {
+    const plans = status?.plans || [];
+    if (Platform.OS !== 'android' || !plans.length) return { ok: true, replacement: null };
+    const skus = plans.map(skuFor).filter((x): x is string => !!x);
     const owned = await getOwnedSubscriptions(skus);
-    const other = owned.find((p) => p.productId !== sku && p.purchaseToken);
-    return other?.purchaseToken ?? null;
+    const other = owned.find((p) => p.productId !== targetSku && p.purchaseToken);
+    const token = other?.purchaseToken;
+    if (!other || !token) return { ok: true, replacement: null };   // nothing to replace: a fresh buy
+
+    const fromIdx = plans.findIndex((p) => skuFor(p) === other.productId);
+    const toIdx = plans.findIndex((p) => p.key === target.key);
+    if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return { ok: false };
+
+    const upgrade = toIdx > fromIdx;
+    return {
+      ok: true,
+      replacement: {
+        token,
+        sku: other.productId,
+        mode: upgrade ? PLAY_REPLACEMENT.CHARGE_PRORATED_PRICE : PLAY_REPLACEMENT.DEFERRED,
+      },
+    };
   }, [status]);
 
   const choose = useCallback(async (p: Plan) => {
@@ -220,14 +266,31 @@ export default function PlansScreen() {
       // Same token on both stores: it is what lets a later renewal/refund webhook be attributed to
       // this user instead of landing with a NULL user_id like every store_notifications row today.
       const account = await storeAccountToken();
+
+      // Android only: switching plans must REPLACE the old subscription, not stack a second one —
+      // and the settlement terms are a money decision, so they are computed, never defaulted.
+      // Apple handles all of this itself through the subscription group (upgrade takes effect now,
+      // downgrade at the next renewal), which is why there is nothing to pass on iOS.
+      const rep = await replacementFor(p, prod.sku);
+      if (!rep.ok) {
+        Alert.alert(
+          'Change this in Google Play',
+          'We could not tell how your current subscription relates to this one, and we will not guess '
+          + 'when a charge depends on it. Use Manage subscription to change plans, or contact support '
+          + '— you have not been charged.'
+        );
+        return;
+      }
+      const swap = rep.replacement;
+
       const outcome = await purchaseSubscription({
         sku: prod.sku,
         offerToken: prod.offerToken,
         appAccountToken: account,
         obfuscatedAccountId: account,
-        // Android only: switching plans must REPLACE the old subscription (with proration), not
-        // stack a second one. Apple handles this itself through the subscription group.
-        replacePurchaseToken: await ownedTokenExcept(prod.sku),
+        replacePurchaseToken: swap?.token ?? null,
+        replacementMode: swap?.mode ?? null,
+        replacedSku: swap?.sku ?? null,
       });
 
       if (outcome.status === 'cancelled') return;             // the user said no. Say nothing.
@@ -256,8 +319,26 @@ export default function PlansScreen() {
       const fresh = await loadStatus();
 
       if (result === 'confirmed') {
-        const label = fresh?.subscription?.label || p.label;
-        Alert.alert('You’re on ' + label, `${p.letters} cover letters and ${p.resumes} resume generations are available every month.`);
+        // What the user is on is the SERVER's answer, not the plan they tapped. A downgrade is
+        // deferred by both stores — the tier they paid for runs to the end of its period and the
+        // cheaper one starts after — so "You're on Starter" would be a lie they could check, and it
+        // would promise a monthly allowance that has not started yet.
+        const activeKey = fresh?.subscription?.planKey ?? null;
+        if (activeKey === p.key) {
+          const label = fresh?.subscription?.label || p.label;
+          Alert.alert('You’re on ' + label, `${p.letters} cover letters and ${p.resumes} resume generations are available every month.`);
+        } else if (fresh?.subscription) {
+          Alert.alert(
+            'Plan change scheduled',
+            `You keep ${fresh.subscription.label} and its full monthly allowance until `
+            + `${whenText(fresh.subscription.periodEnd)}. ${p.label} starts then — nothing has been charged today.`
+          );
+        } else {
+          Alert.alert(
+            'Purchase complete',
+            'Your purchase went through. Your plan will appear here in a moment — reopen this screen if it does not.'
+          );
+        }
       } else if (result === 'retry') {
         // Paid, not yet activated. Do not claim a subscription that the server has not written.
         Alert.alert(
@@ -270,7 +351,7 @@ export default function PlansScreen() {
     } finally {
       if (alive.current) setBusyKey(null);
     }
-  }, [busyKey, restoring, store, storeUsable, storeName, status, settleOne, loadStatus, ownedTokenExcept]);
+  }, [busyKey, restoring, store, storeUsable, storeName, status, settleOne, loadStatus, replacementFor]);
 
   const restore = useCallback(async () => {
     if (busyKey || restoring) return;

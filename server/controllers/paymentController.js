@@ -1,6 +1,9 @@
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 const { notifyCreditsAdded } = require('./notificationsController');
+// Sandbox vs Production. Read services/storeEnvironment.js before touching anything that uses it —
+// it is what stops a $0 TestFlight transaction from buying real credits.
+const STORE_ENV = require('../services/storeEnvironment');
 
 // Initialize Razorpay instance
 let razorpayInstance = null;
@@ -259,76 +262,103 @@ async function verifyPayment(req, res, dbConfig) {
 
         const orderData = orderResult;
 
-        // Update payment order status
-        await dbConfig.run(`
-            UPDATE payment_orders 
-            SET status = 'completed', 
-                payment_id = ?,
-                signature = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE order_id = ? AND user_id = ?
-        `, [razorpay_payment_id, razorpay_signature, razorpay_order_id, userId]);
-
-        // Add credits to user account in user_credits table
+        // ── THE GRANT ────────────────────────────────────────────────────────────────────────────
+        // Same defect as the Apple path, same fix. A valid signature is replayable: the client can
+        // POST /verify twice (retry, double-tap, two tabs) with identical parameters and every check
+        // passes both times. The unconditional UPDATE + add-credits sequence therefore credited one
+        // payment twice.
+        //
+        // The state transition IS the guard: `AND status <> 'completed'` makes the UPDATE itself
+        // decide the winner under a row lock. changes === 0 means somebody already completed this
+        // order, and the credits go with it. Order flip + credit + ledger commit together.
         console.log('💳 Adding credits:', { credits: orderData.credits, userId });
-        
-        // Check if user has a credit record
-        const existingCredits = await dbConfig.get(
-            'SELECT * FROM user_credits WHERE user_id = ?',
-            [userId]
-        );
-        
-        if (!existingCredits) {
-            // Create new credit record
-            console.log('Creating new credit record for user:', userId);
-            await dbConfig.run(`
-                INSERT INTO user_credits (user_id, credits_remaining, credits_total, last_purchase_date)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            `, [userId, orderData.credits, orderData.credits]);
-        } else {
-            // Update existing credit record
-            console.log('Updating existing credits. Current:', existingCredits.credits_remaining);
-            await dbConfig.run(`
-                UPDATE user_credits 
-                SET credits_remaining = credits_remaining + ?,
-                    credits_total = credits_total + ?,
-                    last_purchase_date = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = ?
-            `, [orderData.credits, orderData.credits, userId]);
+
+        if (typeof dbConfig.withTransaction !== 'function') {
+            console.error('❌ dbConfig.withTransaction unavailable — refusing to grant non-atomically');
+            return res.status(503).json({
+                error: 'Payment confirmation is temporarily unavailable. Your payment is safe and will be applied automatically.',
+                retryable: true
+            });
         }
 
-        // Create transaction record
-        await dbConfig.run(`
-            INSERT INTO credit_transactions (
-                user_id, transaction_type, credits_change, description, 
-                balance_after, created_at
-            ) VALUES (?, ?, ?, ?, 
-                (SELECT credits_remaining FROM user_credits WHERE user_id = ?),
-                CURRENT_TIMESTAMP
-            )
-        `, [
-            userId,
-            'purchase',
-            orderData.credits,
-            `Purchased ${orderData.package_name} - Payment ID: ${razorpay_payment_id}`,
-            userId
-        ]);
+        let grant;
+        try {
+            grant = await dbConfig.withTransaction(async (tx) => {
+                const claimed = await tx.run(`
+                    UPDATE payment_orders
+                    SET status = 'completed',
+                        payment_id = ?,
+                        signature = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE order_id = ? AND user_id = ? AND status <> 'completed'
+                `, [razorpay_payment_id, razorpay_signature, razorpay_order_id, userId]);
 
-        // Fetch updated user data from user_credits
-        const userData = await dbConfig.get(
-            'SELECT credits_remaining as credits FROM user_credits WHERE user_id = ?',
-            [userId]
-        );
-        
-        console.log('✅ Credits added successfully! New balance:', userData?.credits);
-        try { await notifyCreditsAdded(userId, orderData.credits, (userData.credits - orderData.credits), userData.credits, 'purchase'); } catch (_) {}
+                if (!claimed.changes) {
+                    const current = await tx.get(
+                        'SELECT credits_remaining as credits FROM user_credits WHERE user_id = ?',
+                        [userId]
+                    );
+                    return { duplicate: true, credits: current?.credits || 0 };
+                }
+
+                const credited = await tx.get(`
+                    INSERT INTO user_credits (user_id, credits_remaining, credits_total, last_purchase_date, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET credits_remaining = user_credits.credits_remaining + EXCLUDED.credits_remaining,
+                        credits_total = user_credits.credits_total + EXCLUDED.credits_total,
+                        last_purchase_date = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    RETURNING credits_remaining as credits
+                `, [userId, orderData.credits, orderData.credits]);
+
+                const balance = credited?.credits || 0;
+
+                await tx.run(`
+                    INSERT INTO credit_transactions (
+                        user_id, transaction_type, credits_change, description,
+                        balance_after, created_at
+                    ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                `, [
+                    userId,
+                    'purchase',
+                    orderData.credits,
+                    `Purchased ${orderData.package_name} - Payment ID: ${razorpay_payment_id}`,
+                    balance
+                ]);
+
+                return { duplicate: false, credits: balance };
+            });
+        } catch (dbError) {
+            console.error('❌ Grant transaction failed (rolled back, nothing granted):', dbError.message);
+            return res.status(503).json({
+                error: 'We could not finish applying your payment. Nothing was lost — it will be applied automatically.',
+                retryable: true
+            });
+        }
+
+        if (grant.duplicate) {
+            console.log('💳 Order already completed, not crediting again:', razorpay_order_id);
+            return res.json({
+                success: true,
+                message: 'Payment already processed',
+                credits: grant.credits,
+                creditsAdded: 0,
+                alreadyProcessed: true,
+                packageName: orderData.package_name,
+                orderId: razorpay_order_id,
+                paymentId: razorpay_payment_id
+            });
+        }
+
+        console.log('✅ Credits added successfully! New balance:', grant.credits);
+        try { await notifyCreditsAdded(userId, orderData.credits, (grant.credits - orderData.credits), grant.credits, 'purchase'); } catch (_) {}
         try { require('../services/adminNotifier').notifyNewPurchase(userId, { credits: orderData.credits, amount: (orderData.amount != null ? orderData.amount / 100 : null), currency: orderData.currency || 'INR', source: 'Razorpay' }).catch(() => {}); } catch (_) {}
 
         res.json({
             success: true,
             message: 'Payment successful!',
-            credits: userData.credits,
+            credits: grant.credits,
             creditsAdded: orderData.credits,
             packageName: orderData.package_name,
             orderId: razorpay_order_id,
@@ -552,7 +582,10 @@ async function verifyApplePurchase(req, res, dbConfig) {
             return res.status(400).json({ error: 'Missing transaction ID' });
         }
 
-        // Check if this transaction was already processed (prevent duplicate credits)
+        // Fast path only — NOT the duplicate guard. Two devices restoring the same Apple ID hit this
+        // SELECT concurrently and both see nothing. The real guard is the UNIQUE INSERT on
+        // payment_orders.order_id inside the transaction below; this just saves a round trip to Apple
+        // in the common "user reopened the app" case.
         const existingTransaction = await dbConfig.get(
             'SELECT id FROM payment_orders WHERE payment_id = ? AND status = ?',
             [transactionId, 'completed']
@@ -594,6 +627,9 @@ async function verifyApplePurchase(req, res, dbConfig) {
 
         let verifiedProductId = null;
         let verifiedTransactionId = null;
+        // Sandbox or Production? TestFlight StoreKit is ALWAYS Sandbox, so this decides whether the
+        // transaction below is money or a test. Set in every verification branch; never defaulted.
+        let purchaseEnvironment = null;
 
         const appleApi = require('../services/appleStoreApi');
         if (appleApi.isConfigured()) {
@@ -622,7 +658,10 @@ async function verifyApplePurchase(req, res, dbConfig) {
             }
             verifiedProductId = tx.productId;
             verifiedTransactionId = String(tx.transactionId || transactionId);
-            console.log(`🍎 Apple-verified: product=${verifiedProductId}, txId=${verifiedTransactionId}, env=${tx._environment}`);
+            // appleStoreApi normalises this from the SIGNED payload first, the answering host
+            // second. It used to be logged and then ignored — that is DEFECT 1.
+            purchaseEnvironment = tx._environment || null;
+            console.log(`🍎 Apple-verified: product=${verifiedProductId}, txId=${verifiedTransactionId}, env=${purchaseEnvironment}`);
         } else if (!hasReceipt || isJWS) {
             // No server API key and nothing Apple can validate for us → refuse. FAIL CLOSED.
             console.error('🍎 App Store Server API not configured and no verifiable receipt — refusing');
@@ -633,10 +672,14 @@ async function verifyApplePurchase(req, res, dbConfig) {
         } else {
             // Legacy receipt: Validate with Apple's verifyReceipt endpoint
             let verifyResult = await validateReceiptWithApple(receiptData, false);
-            
+            purchaseEnvironment = STORE_ENV.PRODUCTION;
+
             if (verifyResult.status === 21007) {
+                // 21007 is literally "this is a sandbox receipt sent to production". Apple has just
+                // told us this transaction is not money — record that, do not merely retry.
                 console.log('🍎 Sandbox receipt detected, retrying with sandbox URL...');
                 verifyResult = await validateReceiptWithApple(receiptData, true);
+                purchaseEnvironment = STORE_ENV.SANDBOX;
             }
 
             console.log('🍎 Apple verification status:', verifyResult.status);
@@ -666,9 +709,40 @@ async function verifyApplePurchase(req, res, dbConfig) {
                 }
             }
             
+            // The receipt body names the environment too ("Sandbox" / "Production"); prefer it.
+            purchaseEnvironment = STORE_ENV.normalizeEnvironment(verifyResult.environment) || purchaseEnvironment;
             verifiedProductId = productId;
             verifiedTransactionId = transactionId;
         }
+
+        // ── THE SANDBOX GATE (DEFECT 1) ──────────────────────────────────────────────────────────
+        // Everything above proves the transaction is REAL. It does not prove it was PAID FOR.
+        // TestFlight StoreKit is always Sandbox, and Apple's guidance (which appleStoreApi follows)
+        // is to retry the Sandbox API when Production says "not found" — so a $0 tester purchase
+        // verifies perfectly, and each retry of it carries a fresh transactionId, defeating the
+        // order-id dedupe. Verified-but-sandbox therefore has to be its own answer.
+        //
+        // Why a plain refusal here, when subscriptions get a real per-environment entitlement:
+        // credits are ONE pooled integer on user_credits. There is no sandbox balance to grant into
+        // and no way to tell a sandbox credit from a bought one once it is added, so the only
+        // fail-closed option is not to add it. A tester still exercises the whole path — sheet,
+        // receipt, App Store Server API, order row — and an admin can top up credits directly for
+        // test accounts. Subscriptions, which DO have a per-environment row, keep working normally
+        // in Sandbox (services/storeEnvironment.js).
+        //
+        // 200, not 4xx, and the order row is written first: the client must FINISH this transaction.
+        // An unfinished iOS consumable is redelivered on every launch forever, so answering "error"
+        // to a tester would wedge their queue.
+        if (!purchaseEnvironment) {
+            // Verified, but we cannot say which store it came from. Never guess on the money side.
+            console.error('🍎 Purchase environment unknown — refusing to credit', transactionId);
+            return res.status(503).json({
+                error: 'Purchase verification is temporarily unavailable. Your purchase is safe and will be applied automatically.',
+                retryable: true,
+            });
+        }
+        // (the Sandbox branch itself needs the resolved plan for payment_orders.package_id, so it
+        //  sits just below the plan lookup)
 
         // Look up the plan from our database using the Apple product ID
         const planName = APPLE_PRODUCT_TO_PLAN[verifiedProductId];
@@ -688,81 +762,161 @@ async function verifyApplePurchase(req, res, dbConfig) {
         const finalTransactionId = verifiedTransactionId || transactionId;
         console.log(`🍎 Plan found: ${plan.name}, Credits: ${plan.credits}, txId: ${finalTransactionId}`);
 
-        // Record the payment order
+        // The Sandbox half of the gate above. Recorded, never credited. `status = 'sandbox'` keeps
+        // it out of every revenue query (all of which filter on 'completed') AND out of the
+        // fast-path duplicate check, while `order_id` UNIQUE still makes a repeat harmless.
+        if (purchaseEnvironment === STORE_ENV.SANDBOX) {
+            console.warn(`🍎 SANDBOX purchase — NO credits granted. user=${userId} product=${verifiedProductId} txId=${finalTransactionId}`);
+            try {
+                await dbConfig.run(`
+                    INSERT INTO payment_orders (
+                        order_id, user_id, package_id, plan_id, amount, currency,
+                        status, payment_id, environment, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT (order_id) DO NOTHING
+                `, [`apple_${finalTransactionId}`, userId, plan.id, plan.id, 0, 'USD',
+                    'sandbox', finalTransactionId, STORE_ENV.SANDBOX]);
+            } catch (e) {
+                // Audit trail only — a failure here cannot grant anything, so it is not fatal.
+                console.error('🍎 Failed to record sandbox order:', e.message);
+            }
+            const cur = await dbConfig.get(
+                'SELECT credits_remaining as credits FROM user_credits WHERE user_id = ?', [userId]).catch(() => null);
+            return res.json({
+                success: true,
+                sandbox: true,
+                environment: STORE_ENV.SANDBOX,
+                message: 'Sandbox (TestFlight) purchase verified. Credit packs are not granted for test '
+                    + 'purchases — ask an admin to add test credits.',
+                credits: cur?.credits || 0,
+                creditsAdded: 0,
+                transactionId: finalTransactionId,
+            });
+        }
+
+        // ── THE GRANT ────────────────────────────────────────────────────────────────────────────
+        // ⚠️ THE ORDER RECORD IS THE GUARD, NOT A LOG LINE. This block used to SELECT for an existing
+        // order, then INSERT inside a try/catch that swallowed the failure ("credits are more
+        // important than the order record") and credited unconditionally. Two concurrent POSTs for
+        // ONE transaction id — the same Apple ID on two devices, or a Restore racing
+        // drainUnfinishedApplePurchases — both saw nothing, the second INSERT hit
+        // payment_orders.order_id UNIQUE, the violation was swallowed, and one payment bought two
+        // credit packs. The unique key existed the whole time; it just was not being used.
+        //
+        // Now: the INSERT ... ON CONFLICT DO NOTHING decides. Credits are added ONLY on the request
+        // that actually created the row (changes === 1). The loser of the race grants nothing and
+        // reports the purchase as already processed — which is the truth.
+        //
+        // Both statements run in ONE transaction, so there is no window where the order is recorded
+        // without credits (charged, nothing given) or credits exist without an order row (invisible
+        // to support, and creditable again on the next retry).
+        const orderId = `apple_${finalTransactionId}`;
+
+        if (typeof dbConfig.withTransaction !== 'function') {
+            // Fail CLOSED. Without a transaction we cannot grant safely; the client keeps the
+            // purchase unfinished and retries rather than risking a double or partial grant.
+            console.error('🍎 dbConfig.withTransaction unavailable — refusing to grant non-atomically');
+            return res.status(503).json({
+                error: 'Purchase verification is temporarily unavailable. Your purchase is safe and will be applied automatically.',
+                retryable: true,
+            });
+        }
+
+        let grant;
         try {
-            await dbConfig.run(`
-                INSERT INTO payment_orders (
-                    order_id, user_id, package_id, plan_id, amount, currency,
-                    status, payment_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `, [
-                `apple_${finalTransactionId}`,
-                userId,
-                plan.id,
-                plan.id,
-                plan.price,
-                'USD',
-                'completed',
-                finalTransactionId,
-            ]);
+            grant = await dbConfig.withTransaction(async (tx) => {
+                const inserted = await tx.run(`
+                    INSERT INTO payment_orders (
+                        order_id, user_id, package_id, plan_id, amount, currency,
+                        status, payment_id, environment, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT (order_id) DO NOTHING
+                    RETURNING id
+                `, [
+                    orderId,
+                    userId,
+                    plan.id,
+                    plan.id,
+                    plan.price,
+                    'USD',
+                    'completed',
+                    finalTransactionId,
+                    // Only ever 'Production' here — the Sandbox branch returned long before this.
+                    // Stored so a later audit can prove which orders were real money.
+                    purchaseEnvironment,
+                ]);
+
+                if (!inserted.changes) {
+                    // Somebody already recorded this exact transaction. Do NOT credit again.
+                    const current = await tx.get(
+                        'SELECT credits_remaining as credits FROM user_credits WHERE user_id = ?',
+                        [userId]
+                    );
+                    return { duplicate: true, credits: current?.credits || 0 };
+                }
+
+                // Upsert, not check-then-act: two first-ever purchases racing on a brand-new user
+                // would both find no row and both INSERT, and one of them would blow up mid-grant.
+                const credited = await tx.get(`
+                    INSERT INTO user_credits (user_id, credits_remaining, credits_total, last_purchase_date, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET credits_remaining = user_credits.credits_remaining + EXCLUDED.credits_remaining,
+                        credits_total = user_credits.credits_total + EXCLUDED.credits_total,
+                        last_purchase_date = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    RETURNING credits_remaining as credits
+                `, [userId, plan.credits, plan.credits]);
+
+                const balance = credited?.credits || 0;
+
+                await tx.run(`
+                    INSERT INTO credit_transactions (
+                        user_id, transaction_type, credits_change, description,
+                        balance_after, created_at
+                    ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                `, [
+                    userId,
+                    'purchase',
+                    plan.credits,
+                    `Apple IAP: ${plan.name} - Transaction: ${finalTransactionId}`,
+                    balance,
+                ]);
+
+                return { duplicate: false, credits: balance };
+            });
         } catch (dbError) {
-            console.error('🍎 Failed to save order record:', dbError.message);
-            // Continue anyway - credits are more important than the order record
+            // Nothing committed. Retryable on purpose: the client must keep the transaction
+            // unfinished and try again rather than finish it and lose the purchase.
+            console.error('🍎 Grant transaction failed (rolled back, nothing granted):', dbError.message);
+            return res.status(503).json({
+                error: 'We could not finish applying your purchase. Nothing was lost — it will be applied automatically.',
+                retryable: true,
+            });
         }
 
-        // Add credits to user account
-        const existingCredits = await dbConfig.get(
-            'SELECT * FROM user_credits WHERE user_id = ?',
-            [userId]
-        );
-
-        if (!existingCredits) {
-            await dbConfig.run(`
-                INSERT INTO user_credits (user_id, credits_remaining, credits_total, last_purchase_date)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            `, [userId, plan.credits, plan.credits]);
-        } else {
-            await dbConfig.run(`
-                UPDATE user_credits 
-                SET credits_remaining = credits_remaining + ?,
-                    credits_total = credits_total + ?,
-                    last_purchase_date = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = ?
-            `, [plan.credits, plan.credits, userId]);
+        if (grant.duplicate) {
+            console.log('🍎 Transaction already granted (unique guard):', finalTransactionId);
+            return res.json({
+                success: true,
+                message: 'Purchase already processed',
+                credits: grant.credits,
+                creditsAdded: 0,
+                alreadyProcessed: true,
+                transactionId: finalTransactionId,
+            });
         }
 
-        // Create transaction record
-        await dbConfig.run(`
-            INSERT INTO credit_transactions (
-                user_id, transaction_type, credits_change, description,
-                balance_after, created_at
-            ) VALUES (?, ?, ?, ?,
-                (SELECT credits_remaining FROM user_credits WHERE user_id = ?),
-                CURRENT_TIMESTAMP
-            )
-        `, [
-            userId,
-            'purchase',
-            plan.credits,
-            `Apple IAP: ${plan.name} - Transaction: ${finalTransactionId}`,
-            userId,
-        ]);
-
-        // Fetch updated balance
-        const userData = await dbConfig.get(
-            'SELECT credits_remaining as credits FROM user_credits WHERE user_id = ?',
-            [userId]
-        );
-
-        console.log('🍎 Credits added successfully! New balance:', userData?.credits);
-        try { await notifyCreditsAdded(userId, plan.credits, ((userData?.credits || 0) - plan.credits), (userData?.credits || 0), 'purchase'); } catch (_) {}
+        console.log('🍎 Credits added successfully! New balance:', grant.credits);
+        // Side effects only on the request that actually granted — otherwise the loser of a race
+        // pushes "credits added" and alerts the admin to a second purchase that never happened.
+        try { await notifyCreditsAdded(userId, plan.credits, (grant.credits - plan.credits), grant.credits, 'purchase'); } catch (_) {}
         try { require('../services/adminNotifier').notifyNewPurchase(userId, { credits: plan.credits, amount: plan.price, currency: plan.currency || 'USD', plan: plan.name, source: 'Apple IAP' }).catch(() => {}); } catch (_) {}
 
         res.json({
             success: true,
             message: 'Purchase verified and credits added!',
-            credits: userData?.credits || 0,
+            credits: grant.credits,
             creditsAdded: plan.credits,
             packageName: plan.name,
             transactionId: finalTransactionId,

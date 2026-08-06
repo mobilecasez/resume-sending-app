@@ -62,15 +62,32 @@ function initializeConnection() {
 }
 
 /**
+ * Convert question mark placeholders (?) to PostgreSQL ($1, $2, ...).
+ * Extracted verbatim from query/get/run so the transaction helper below speaks the same dialect.
+ */
+function toPg(sql) {
+    let paramIndex = 1;
+    return sql.replace(/\?/g, () => `$${paramIndex++}`);
+}
+
+/**
+ * For INSERT queries, add RETURNING id to get lastID (if not already present).
+ * Skip for upserts (ON CONFLICT) — those tables use non-id primary keys.
+ */
+function addReturningId(pgSql) {
+    if (pgSql.trim().toUpperCase().startsWith('INSERT') && !/RETURNING/i.test(pgSql) && !/ON CONFLICT/i.test(pgSql)) {
+        return pgSql.replace(/;?\s*$/, ' RETURNING id');
+    }
+    return pgSql;
+}
+
+/**
  * Execute query with automatic parameter conversion
  */
 function query(sql, params = []) {
     return new Promise((resolve, reject) => {
-        // Convert question mark placeholders (?) to PostgreSQL ($1, $2, etc.)
-        let pgSql = sql;
-        let paramIndex = 1;
-        pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
-        
+        const pgSql = toPg(sql);
+
         db.query(pgSql, params, (err, result) => {
             if (err) {
                 reject(err);
@@ -86,10 +103,8 @@ function query(sql, params = []) {
  */
 function get(sql, params = []) {
     return new Promise((resolve, reject) => {
-        let pgSql = sql;
-        let paramIndex = 1;
-        pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
-        
+        const pgSql = toPg(sql);
+
         db.query(pgSql, params, (err, result) => {
             if (err) {
                 reject(err);
@@ -105,16 +120,8 @@ function get(sql, params = []) {
  */
 function run(sql, params = []) {
     return new Promise((resolve, reject) => {
-        let pgSql = sql;
-        let paramIndex = 1;
-        pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
-        
-        // For INSERT queries, add RETURNING id to get lastID (if not already present)
-        // Skip for upserts (ON CONFLICT) — those tables use non-id primary keys
-        if (pgSql.trim().toUpperCase().startsWith('INSERT') && !/RETURNING/i.test(pgSql) && !/ON CONFLICT/i.test(pgSql)) {
-            pgSql = pgSql.replace(/;?\s*$/, ' RETURNING id');
-        }
-        
+        const pgSql = addReturningId(toPg(sql));
+
         db.query(pgSql, params, (err, result) => {
             if (err) {
                 reject(err);
@@ -127,6 +134,59 @@ function run(sql, params = []) {
         });
     });
 }
+
+/**
+ * Run `fn` inside ONE database transaction on ONE pooled client.
+ *
+ * ⚠️ WHY THIS EXISTS — money. query/get/run each borrow a different connection from the pool, so a
+ * sequence of them is a sequence of independently committed statements. On the purchase paths that
+ * means a crash (or a pod restart, or a rejected statement) between "record the order" and "add the
+ * credits" leaves the user charged with nothing granted — or recorded as granted twice. Everything
+ * inside `fn` commits together or not at all.
+ *
+ * `fn` receives a tx object with the same query/get/run surface as the module, bound to the single
+ * client that holds the transaction. Do NOT call the module-level dbConfig.query/get/run inside
+ * `fn`: those go to other connections and are NOT part of the transaction.
+ *
+ * Any throw rolls back and re-throws — callers on the money path must treat a throw as "nothing
+ * happened" and fail closed (503/retry), never as "probably fine, continue".
+ */
+async function withTransaction(fn) {
+    const client = await db.connect();
+    const exec = (sql, params = []) => client.query(toPg(sql), params);
+    try {
+        await client.query('BEGIN');
+        const tx = {
+            query: async (sql, params = []) => (await exec(sql, params)).rows,
+            get: async (sql, params = []) => (await exec(sql, params)).rows[0] || null,
+            run: async (sql, params = []) => {
+                const result = await client.query(addReturningId(toPg(sql)), params);
+                return {
+                    lastID: result.rows && result.rows[0] ? result.rows[0].id : null,
+                    // rowCount is 0 when ON CONFLICT DO NOTHING suppressed the insert — that is the
+                    // signal callers use to detect "somebody already did this".
+                    changes: result.rowCount,
+                    rows: result.rows || []
+                };
+            },
+            client
+        };
+        const out = await fn(tx);
+        await client.query('COMMIT');
+        return out;
+    } catch (err) {
+        try { await client.query('ROLLBACK'); } catch (rollbackErr) {
+            console.error('❌ ROLLBACK failed:', rollbackErr.message);
+        }
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
+/** PostgreSQL unique_violation. A caught 23505 means "someone else already inserted this row". */
+const UNIQUE_VIOLATION = '23505';
+const isUniqueViolation = (err) => Boolean(err && err.code === UNIQUE_VIOLATION);
 
 /**
  * Execute raw query (use original db connection)
@@ -159,6 +219,9 @@ module.exports = {
     query,
     get,
     run,
+    withTransaction,
+    isUniqueViolation,
+    UNIQUE_VIOLATION,
     rawDb,
     getDbType,
     close

@@ -19,6 +19,7 @@
 const crypto = require('crypto');
 const dbConfig = require('../../db-config');
 const { getEventCost, chargeCredits } = require('./eventCosts');
+const { PRODUCTION, normalizeEnvironment, requestEnvironment } = require('./storeEnvironment');
 
 // ── The plan catalog. priceUsd is a DISPLAY FALLBACK ONLY — see the warning below. ────────────
 // ⚠️ priceUsd MUST NOT reach a buy button. Outside the US the store charges the local price tier,
@@ -122,11 +123,34 @@ async function ensureTrial(userId, deviceId, ipHash) {
 }
 
 // ── core reads ────────────────────────────────────────────────────────────────────────────────
-async function activeSubscription(userId) {
+/**
+ * The plan a user is entitled to IN ONE ENVIRONMENT. See services/storeEnvironment.js for why the
+ * environment exists at all; the short version is that TestFlight StoreKit is always Sandbox, so
+ * without this scope a $0 test purchase was a real production plan.
+ *
+ * The three cases in the WHERE clause, and why each is what it is:
+ *   • store IS NOT NULL AND environment = $2 — a purchase earned in THIS environment. The only way
+ *     a store-backed plan is ever honoured.
+ *   • store IS NOT NULL AND environment <> $2 — invisible. A Sandbox row cannot satisfy a Production
+ *     check and a Production row cannot satisfy a Sandbox one. This is the whole fix.
+ *   • store IS NULL — admin/legacy grants (adminSetSubscription, source 'admin'). Environment-
+ *     agnostic on purpose: they were never earned in a store, they are how comps and support fixes
+ *     are issued today, and every one of them predates this column. Scoping them would silently
+ *     revoke plans nobody bought.
+ * A store row whose environment is NULL matches NOTHING — fail closed. Migration 036 backfills the
+ * rows that predate the column and adds a CHECK so no new one can be written without it.
+ *
+ * @param {string} [environment] 'Production' | 'Sandbox'. Defaults to Production: every internal
+ *        caller (nudges, admin screens, cron) is asking about real money, and an unrecognised value
+ *        must never widen what is visible.
+ */
+async function activeSubscription(userId, environment = PRODUCTION) {
+  const env = normalizeEnvironment(environment) || PRODUCTION;
   const rows = await dbConfig.query(
     `SELECT * FROM user_subscriptions
      WHERE user_id = $1 AND status = 'active' AND period_end > NOW()
-     ORDER BY period_end DESC LIMIT 1`, [userId]);
+       AND (store IS NULL OR environment = $2)
+     ORDER BY period_end DESC LIMIT 1`, [userId, env]);
   return (rows && rows[0]) || null;
 }
 
@@ -154,10 +178,15 @@ async function allowanceIn(userId, kind, base, since) {
 // Full picture for the app: plan, trial, remaining, used — one call.
 async function getStatus(userId, req) {
   const deviceId = req ? deviceIdOf(req) : null;
-  const sub = await activeSubscription(userId);
+  const env = requestEnvironment(req || {});
+  const sub = await activeSubscription(userId, env);
   const plan = sub ? planByKey(sub.plan_key) : null;
   const out = {
     plans: PLANS, trial: TRIAL,
+    // The environment this answer was computed in. The app persists it off a verify/restore
+    // response (services/storeEnv.ts) and echoes it back as x-store-env; surfacing it here is what
+    // makes "why does my TestFlight plan not show up" answerable instead of a mystery.
+    environment: env,
     // `store`/`autoRenew` let the paywall say "managed in the App Store" and hide a buy button that
     // would charge a second time on the other platform, instead of quietly selling a duplicate.
     subscription: sub ? {
@@ -180,6 +209,21 @@ async function getStatus(userId, req) {
     out.via = 'plan';
     return out;
   }
+  // DIAGNOSTIC ONLY — never acted on. When a user holds a live store plan in the OTHER environment
+  // we say so, because the alternative is a TestFlight tester (or the founder) staring at a paywall
+  // that shows nothing after a purchase that visibly succeeded. The app must NOT switch environment
+  // on the strength of this: an environment is adopted only from a fresh verify/restore, i.e. from
+  // a purchase this build's own StoreKit actually produced. Reading it as permission would re-open
+  // exactly the crossover this whole change closes.
+  try {
+    const other = await dbConfig.query(
+      `SELECT environment FROM user_subscriptions
+        WHERE user_id = $1 AND status = 'active' AND period_end > NOW()
+          AND store IS NOT NULL AND environment IS NOT NULL AND environment <> $2
+        ORDER BY period_end DESC LIMIT 1`, [userId, env]);
+    out.otherEnvironmentSubscription = (other && other[0]) ? other[0].environment : null;
+  } catch { out.otherEnvironmentSubscription = null; }
+
   const trial = await ensureTrial(userId, deviceId, ipHashOf(req || {}));
   if (trial && !trial.blocked) {
     const active = new Date(trial.ends_at) > new Date();
@@ -211,7 +255,9 @@ async function canConsumeMany(userId, kind, count, req) {
   const n = Math.max(1, parseInt(count, 10) || 1);
   const deviceId = req ? deviceIdOf(req) : null;
 
-  const sub = await activeSubscription(userId);
+  // ⚠️ ORDER IS LOAD-BEARING and unchanged: plan → trial → legacy credits. The only thing added
+  // here is WHICH plan is visible — a store plan earned in another environment is not one of them.
+  const sub = await activeSubscription(userId, requestEnvironment(req || {}));
   if (sub) {
     const plan = planByKey(sub.plan_key);
     if (plan) {
@@ -252,7 +298,9 @@ async function canConsumeMany(userId, kind, count, req) {
 async function consumeOnSuccess(userId, kind, detail = {}, req) {
   try {
     const deviceId = req ? deviceIdOf(req) : null;
-    const sub = await activeSubscription(userId);
+    // Same environment scope as the gate. If these two disagreed, a sandbox tester would be let
+    // through canConsumeMany and then charged legacy credits by consumeOnSuccess (or vice versa).
+    const sub = await activeSubscription(userId, requestEnvironment(req || {}));
     let via = 'credits';
     if (sub && planByKey(sub.plan_key)) {
       const plan = planByKey(sub.plan_key);
@@ -323,8 +371,30 @@ async function adminSetSubscription(userId, planKey) {
 //     (store, original_transaction_id) from Migration 035, so a replay recomputes the same state
 //     onto the same row: idempotent by construction, not by remembering notification ids.
 //
-// Monotonic on purpose: an out-of-order delivery can only move period_end FORWARD. The one thing
-// allowed to pull access back is `terminal` (refund / revoke / chargeback), which is explicit.
+// ⚠️ period_end IS THE STORE'S NUMBER. Not GREATEST(old, new), not a guess, not a floor. It used to
+// be GREATEST(old, new) "so an out-of-order delivery can only move access forward", and that was a
+// free-money bug: a Play plan change is charged by PRORATION, which pays $0 today and SHORTENS the
+// expiry. Keeping the old, longer expiry handed the user the new tier AND the old tier's remaining
+// days for nothing. There is no need for the floor either — nothing in this file writes a value a
+// notification claimed. Both callers (services/storeSubscriptions.js) re-read Apple/Google over TLS
+// immediately before calling in, so EXCLUDED.period_end is the store's answer as of seconds ago; a
+// re-ordered notification just makes us ask the store again and get the same current truth. The
+// worst a stale in-flight read can now do is expire access a few seconds early, which the next
+// notification or the app's own verify-on-launch corrects. The old behaviour's worst case was a
+// free month.
+//
+// ⚠️ period_start IS THE QUOTA WINDOW, AND IT ONLY MOVES WHEN THE USER PAYS. usedSince() counts
+// every generation since period_start against the plan's allowance, so advancing it mints a fresh
+// bucket of letters. It therefore advances on exactly one signal: the store reporting a NEW PAID
+// transaction (Apple transactionId / Play latestOrderId changing — both are minted per payment).
+// It is deliberately NOT keyed on:
+//   • plan_key changing — that was the other half of the free-quota bug. A mid-cycle tier change
+//     is not a new billing period; the user pays a prorated difference for the SAME window, so the
+//     allowance grows and what they already spent still counts against it.
+//   • period_end moving forward — a billing-retry grace period and Apple's goodwill extensions both
+//     push the expiry out with no payment behind them, and that used to reset the window in full.
+// Unknown/absent transaction id → the window does not move. Failing closed here costs a user
+// nothing they paid for; failing open costs a month of quota per event.
 //
 // Legacy credits are untouched by every path in here.
 async function storeSetSubscription({
@@ -341,50 +411,90 @@ async function storeSetSubscription({
   if (!txn) return { error: 'missing_original_transaction_id' };
   const end = periodEnd instanceof Date ? periodEnd : new Date(periodEnd);
   if (!end || isNaN(end.getTime())) return { error: 'invalid_period_end' };
-  const start = periodStart ? new Date(periodStart) : null;
+  let start = periodStart ? new Date(periodStart) : null;
+  if (start && isNaN(start.getTime())) return { error: 'invalid_period_start' };
+  // ⚠️ A quota window may not start in the FUTURE. usedSince() counts `created_at >= period_start`,
+  // so a future start counts NOTHING, for as long as it lasts — an unmetered plan, not a generous
+  // one. It is reachable without any bug of ours: Play's WITH_TIME_PRORATION converts the unused
+  // value of an expensive plan into TIME on a cheap one (25 days of Max ≈ 250 days of Starter), and
+  // the cycle start storeSubscriptions.js derives from the store's expiry then lands months ahead.
+  // The app no longer asks for that mode, but old installs still can, so the ceiling lives here at
+  // the write rather than in the client that happens to be current. Clamping only ever makes MORE
+  // usage count, never less.
+  if (start && start.getTime() > Date.now()) start = new Date();
+  // `terminal` (refund / revoke / chargeback) no longer needs its own SQL branch: period_end is the
+  // store's number unconditionally now, and a terminal event arrives carrying an expiry of NOW().
+  // It stays in the signature as an assertion — a caller that says "this entitlement is finished"
+  // while also saying "status: active" has computed something self-contradictory, and writing that
+  // row would leave a refunded user with live access. Refuse rather than pick one of the two.
+  if (terminal && status === 'active') return { error: 'terminal_with_active_status' };
+  // ⚠️ THE SANDBOX GATE. A store row without a known environment cannot be scoped, and an unscoped
+  // row is exactly the bug: a TestFlight $0 purchase satisfying a production quota check. Both
+  // callers always know the answer — Apple names the environment in the signed payload AND by which
+  // host answered, Google by testPurchase — so this is unreachable in normal operation. When it
+  // does fire the caller returns 503 (see subscriptionPurchaseController.DENIED), the transaction
+  // stays unfinished, and the retry succeeds. Nothing is lost; nothing is granted on a guess.
+  const env = normalizeEnvironment(environment);
+  if (!env) return { error: 'unknown_environment' };
 
-  const rows = await dbConfig.query(
+  // ONE transaction. The upsert and the supersede are the two halves of the invariant "exactly one
+  // active entitlement per user"; run apart, a failure between them leaves the user holding two
+  // active rows. Note the shape here is already replay-safe in a way the consumable credit path was
+  // not: this SETS absolute state (plan, window, expiry) computed from the store's own answer — it
+  // never ADDS to a balance — so a redelivered notification converges instead of granting twice.
+  return await dbConfig.withTransaction(async (tx) => {
+  const rows = await tx.query(
     `INSERT INTO user_subscriptions
        (user_id, plan_key, status, source, product_id, store, original_transaction_id,
         purchase_token, latest_transaction_id, environment, auto_renew, acknowledged, store_state,
         period_start, period_end, created_at, updated_at)
      VALUES ($1,$2,$3,$4,$5,$4,$6,$7,$8,$9,$10,COALESCE($11,FALSE),$12,
              COALESCE($13, NOW()), $14, NOW(), NOW())
-     ON CONFLICT (store, original_transaction_id)
-       WHERE store IS NOT NULL AND original_transaction_id IS NOT NULL
+     -- ⚠️ environment IS PART OF THE KEY (Migration 036). Apple's Sandbox and Production
+     -- originalTransactionId namespaces are independent small integers and CAN collide, so the old
+     -- two-column key let a sandbox test purchase upsert straight onto a paying customer's row —
+     -- rewriting their plan, window and expiry from a $0 transaction. Keyed this way the two
+     -- environments cannot address the same row at all.
+     ON CONFLICT (store, environment, original_transaction_id)
+       WHERE store IS NOT NULL AND original_transaction_id IS NOT NULL AND environment IS NOT NULL
      DO UPDATE SET
        plan_key   = EXCLUDED.plan_key,
        status     = EXCLUDED.status,
        product_id = EXCLUDED.product_id,
        purchase_token        = COALESCE(EXCLUDED.purchase_token, user_subscriptions.purchase_token),
        latest_transaction_id = COALESCE(EXCLUDED.latest_transaction_id, user_subscriptions.latest_transaction_id),
-       environment           = COALESCE(EXCLUDED.environment, user_subscriptions.environment),
+       -- environment is NOT assigned here: it is a key column now, so the matched row already has
+       -- this exact value. Letting it be updated would mean a row could change environment.
        auto_renew            = COALESCE(EXCLUDED.auto_renew, user_subscriptions.auto_renew),
        acknowledged          = user_subscriptions.acknowledged OR EXCLUDED.acknowledged,
        store_state           = COALESCE(EXCLUDED.store_state, user_subscriptions.store_state),
-       -- A new billing cycle must reset the quota window, so period_start advances to the moment
-       -- the old cycle ended. A plan change starts a fresh window at the change. Anything else
-       -- (a replay, a status-only notification) leaves the window exactly where it was.
+       -- ⚠️ THE MONEY LINES. Read the two period_start / period_end notes above this function before
+       -- changing either — between them they decide whether a month of quota is sold or given away.
        --
-       -- ⚠️ The outer GREATEST is not decoration: period_start must NEVER move backwards. Google's
-       -- subscriptionsv2 reports startTime = when the subscription was FIRST granted, not when the
-       -- current cycle began, so a plan change on a long-lived Play token would otherwise rewind the
-       -- window to the original signup date — and usedSince() would then count every cover letter
-       -- the user has ever generated against this month's allowance. A user who upgrades after six
-       -- months would pay and find the new plan already exhausted. Refusing to rewind costs at most
-       -- one partial window on an upgrade; rewinding costs somebody their month.
+       -- The window advances ONLY when the store minted a new PAID transaction (Apple mints a new
+       -- transactionId per charge, Play a new latestOrderId), and then only forwards. Not on a plan
+       -- change, not on an expiry extension, not on a replay.
+       --
+       -- $13, not EXCLUDED.period_start: the VALUES list COALESCEs that column to NOW(), so using
+       -- EXCLUDED here would read "the caller told us no start date" as "open a fresh window today".
+       -- The outer GREATEST keeps it monotonic — Google's subscriptionsv2 startTime is when the
+       -- subscription was FIRST granted, so anything derived from it must never be allowed to rewind
+       -- the window to the signup date; usedSince() would then bill this month's allowance for every
+       -- cover letter the user has ever generated.
        period_start = GREATEST(user_subscriptions.period_start, CASE
-         WHEN EXCLUDED.plan_key <> user_subscriptions.plan_key THEN EXCLUDED.period_start
-         WHEN EXCLUDED.period_end > user_subscriptions.period_end
-           THEN GREATEST(user_subscriptions.period_end, EXCLUDED.period_start)
+         WHEN $13::timestamptz IS NOT NULL
+          AND EXCLUDED.latest_transaction_id IS NOT NULL
+          AND EXCLUDED.latest_transaction_id IS DISTINCT FROM user_subscriptions.latest_transaction_id
+           THEN $13::timestamptz
          ELSE user_subscriptions.period_start END),
-       period_end = CASE
-         WHEN $15::boolean THEN EXCLUDED.period_end
-         ELSE GREATEST(user_subscriptions.period_end, EXCLUDED.period_end) END,
+       -- Exactly what the store says, in both directions. A refund/revoke arrives as an expiry of
+       -- NOW() and so needs no special case; a proration that shortens the term is honoured instead
+       -- of being floored back to the term the user no longer has.
+       period_end = EXCLUDED.period_end,
        updated_at = NOW()
      RETURNING *, (xmax = 0) AS _inserted`,
     [uid, planKey, status, source, productId || null, txn, purchaseToken, latestTxnId,
-     environment, autoRenew, acknowledged, storeState, start, end, Boolean(terminal)]
+     env, autoRenew, acknowledged, storeState, start, end]
   );
   const row = rows && rows[0];
   if (!row) return { error: 'upsert_failed' };
@@ -405,23 +515,40 @@ async function storeSetSubscription({
   // locked row) it reads non-zero, i.e. it errs toward staying quiet rather than alerting twice.
   const created = row._inserted === true;
 
-  // One active entitlement per user. This is also the "subscribed on both stores" fix: whichever
-  // store wrote last wins, the other row goes to 'superseded', and the paywall can then tell the
-  // user where the live subscription is managed instead of quietly billing them twice.
+  // One active entitlement per user, PER ENVIRONMENT. This is still the "subscribed on both stores"
+  // fix: whichever store wrote last wins, the other row goes to 'superseded', and the paywall can
+  // tell the user where the live subscription is managed instead of quietly billing them twice.
+  //
+  // ⚠️ THE ENVIRONMENT SCOPE IS NOT COSMETIC. Unscoped, this statement was a second, independent way
+  // for a sandbox purchase to reach production: the founder verifying a $0 TestFlight purchase would
+  // mark their own REAL paid subscription 'superseded' and lose it, and the same would happen to any
+  // user who is also a tester. A Sandbox write therefore only supersedes Sandbox rows.
+  //
+  // A Production write additionally retires admin/legacy rows (store IS NULL) — they are
+  // environment-agnostic comps, and a real payment should replace one. A Sandbox write must not
+  // touch them: a test purchase cannot take away a comp somebody was given.
   if (supersede && row.status === 'active' && new Date(row.period_end) > new Date()) {
-    await dbConfig.query(
+    await tx.query(
       `UPDATE user_subscriptions SET status = 'superseded', updated_at = NOW()
-        WHERE user_id = $1 AND id <> $2 AND status = 'active'`, [claimedBy, row.id]);
+        WHERE user_id = $1 AND id <> $2 AND status = 'active'
+          AND (environment = $3 OR ($3 = '${PRODUCTION}' AND store IS NULL))`,
+      [claimedBy, row.id, env]);
   }
-  return { ok: true, created, transferBlocked, row };
+  return { ok: true, created, transferBlocked, row, environment: env };
+  });
 }
 
-/** The store-backed row for a user, if any (used by the paywall to say where it is managed). */
-async function storeSubscriptionFor(userId) {
+/**
+ * The store-backed row for a user, if any (used by the paywall to say where it is managed).
+ * Environment-scoped like every other entitlement read — a Sandbox row must not make a production
+ * paywall claim the user already has a subscription somewhere.
+ */
+async function storeSubscriptionFor(userId, environment = PRODUCTION) {
+  const env = normalizeEnvironment(environment) || PRODUCTION;
   const rows = await dbConfig.query(
     `SELECT * FROM user_subscriptions
-      WHERE user_id = $1 AND store IS NOT NULL
-      ORDER BY period_end DESC LIMIT 1`, [userId]);
+      WHERE user_id = $1 AND store IS NOT NULL AND environment = $2
+      ORDER BY period_end DESC LIMIT 1`, [userId, env]);
   return (rows && rows[0]) || null;
 }
 
@@ -431,4 +558,6 @@ module.exports = {
   adminSetSubscription, storeSetSubscription, storeSubscriptionFor, deviceIdOf, ipHashOf,
   // exported for the lifecycle nudges (which must know what a user has LEFT before offering more)
   activeSubscription, usedSince, bonusSince, allowanceIn, planByKey, KIND_QUOTA_FIELD,
+  // re-exported so callers do not have to know where the environment vocabulary lives
+  PRODUCTION, normalizeEnvironment, requestEnvironment,
 };

@@ -45,6 +45,35 @@ export type PurchaseOutcome =
   /** The store refused, or we never heard back. */
   | { status: 'failed'; message: string };
 
+/**
+ * Google Play `replacementMode` — how Play settles the money when one subscription replaces another.
+ *
+ * ⚠️ ONLY THESE TWO ARE SAFE FOR THIS PRICING LADDER, and the reason is that every plan we sell is a
+ * QUOTA (30 letters, 100, 1000…) metered over the billing period, not a feature flag. Any mode that
+ * moves the renewal date therefore also moves the quota window, and the server counts usage from the
+ * start of that window:
+ *
+ *   1 WITH_TIME_PRORATION  ❌ — what this file used to hardcode. Charges $0 today and converts the
+ *       unused value into TIME on the new plan. Upgrading shortens the term, downgrading can extend
+ *       it enormously (25 days of Max ≈ 8 months of Starter). Either way the user gets a different
+ *       tier's allowance without a payment, which is exactly the free-quota hole this replaces.
+ *   3 WITHOUT_PRORATION    ❌ — new tier immediately, no charge, no credit. A free upgrade.
+ *   5 CHARGE_FULL_PRICE    ❌ — bills a whole new month on the spot and throws away the days the
+ *       user already paid for. Defensible for a feature upgrade, indefensible mid-cycle here.
+ *   2 CHARGE_PRORATED_PRICE ✅ UPGRADES. Bills the difference for the remainder of the cycle NOW and
+ *       leaves the renewal date alone — so the window is untouched, the allowance simply gets bigger
+ *       and what has already been spent still counts against it. (Play rejects this for downgrades.)
+ *   6 DEFERRED             ✅ DOWNGRADES. Nothing is charged and nothing changes until the renewal
+ *       date the user has already paid for; the cheaper tier starts then. The only downgrade mode
+ *       that neither refunds money we cannot claw back nor hands over free time.
+ */
+export const PLAY_REPLACEMENT = {
+  CHARGE_PRORATED_PRICE: 2,
+  DEFERRED: 6,
+} as const;
+
+export type PlayReplacementMode = (typeof PLAY_REPLACEMENT)[keyof typeof PLAY_REPLACEMENT];
+
 type IapModule = typeof import('react-native-iap');
 
 const isExpoGo = Constants.appOwnership === 'expo';
@@ -186,6 +215,18 @@ export async function purchaseSubscription(opts: {
   obfuscatedAccountId?: string | null;
   /** Play upgrade/downgrade: the token of the subscription being replaced. */
   replacePurchaseToken?: string | null;
+  /**
+   * REQUIRED whenever `replacePurchaseToken` is set — see PLAY_REPLACEMENT. There is deliberately no
+   * default: the caller is the only code that knows whether this is an upgrade or a downgrade, and
+   * guessing costs real money in both directions.
+   */
+  replacementMode?: PlayReplacementMode | null;
+  /**
+   * The sku being replaced. A DEFERRED change reports the OLD product back (the current purchase is
+   * what stays live until renewal), so without this the result is filtered out as "not ours" and the
+   * caller waits out the full timeout on a change the store actually accepted.
+   */
+  replacedSku?: string | null;
 }): Promise<PurchaseOutcome> {
   const m = iap();
   if (!m) return { status: 'unavailable' };
@@ -195,6 +236,12 @@ export async function purchaseSubscription(opts: {
     // Base plan not activated, or the user is eligible for no offer. Do not open a sheet that fails.
     return { status: 'failed', message: 'This plan is not on sale on Google Play yet.' };
   }
+  // Fail closed. Opening the sheet without a mode is what made Play fall back to WITH_TIME_PRORATION,
+  // and no purchase at all is cheaper than one settled on the wrong terms.
+  if (opts.replacePurchaseToken && !opts.replacementMode) {
+    console.log('[storeBilling] refusing a replacement with no replacementMode for', opts.sku);
+    return { status: 'failed', message: 'We could not work out how to switch this plan. Please manage it in Google Play.' };
+  }
 
   // Race the listener against the direct return: iOS StoreKit 2 usually resolves requestPurchase
   // with the Purchase, Android usually delivers it only through the listener.
@@ -203,15 +250,20 @@ export async function purchaseSubscription(opts: {
   const race = new Promise<PurchaseOutcome>((res) => { resolveRace = res; });
   const settle = (o: PurchaseOutcome) => { if (!settled) { settled = true; resolveRace(o); } };
 
+  // Both skus count as "ours": on a DEFERRED downgrade Play hands back the purchase that is still
+  // live (the one being replaced), which is the confirmation that the change was accepted.
+  const ours = (productId?: string) =>
+    !!productId && (productId === opts.sku || (!!opts.replacedSku && productId === opts.replacedSku));
+
   inFlightSku = opts.sku;
   const subs: { remove(): void }[] = [];
   try {
     subs.push(m.purchaseUpdatedListener((purchase: Purchase) => {
-      if (purchase?.productId !== opts.sku) return;   // not ours — App.js's listener owns credit packs
+      if (!ours(purchase?.productId)) return;   // not ours — App.js's listener owns credit packs
       settle(classify(purchase));
     }));
     subs.push(m.purchaseErrorListener((err: PurchaseError) => {
-      if (err?.productId && err.productId !== opts.sku) return;
+      if (err?.productId && !ours(err.productId)) return;
       settle(fromError(err));
     }));
   } catch (e: any) {
@@ -235,19 +287,20 @@ export async function purchaseSubscription(opts: {
           skus: [opts.sku],
           subscriptionOffers: opts.offerToken ? [{ sku: opts.sku, offerToken: opts.offerToken }] : [],
           ...(opts.obfuscatedAccountId ? { obfuscatedAccountId: opts.obfuscatedAccountId } : {}),
-          ...(opts.replacePurchaseToken
+          ...(opts.replacePurchaseToken && opts.replacementMode
             ? {
                 purchaseToken: opts.replacePurchaseToken,
-                // 1 = WITH_TIME_PRORATION. An upgrade must credit the unused period; without an
-                // explicit mode Play may charge the full new price immediately.
-                replacementMode: 1,
+                // Never hardcoded. See PLAY_REPLACEMENT: 2 for an upgrade (bill the difference now,
+                // keep the renewal date and therefore the quota window), 6 for a downgrade (change
+                // nothing until the period the user already paid for runs out).
+                replacementMode: opts.replacementMode,
               }
             : {}),
         },
       },
     });
     const one = firstPurchase(direct);
-    if (one && one.productId === opts.sku) settle(classify(one));
+    if (one && ours(one.productId)) settle(classify(one));
   } catch (e: any) {
     settle(fromError(e));
   }

@@ -7,6 +7,9 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { API_BASE } from '../config';
 import { deviceHeader, getDeviceId } from './deviceId';
+// Importing this installs the x-store-env default header (see services/storeEnv.ts). app/_layout.tsx
+// loads THIS module at startup, so that side effect lands before the first quota-gated request.
+import { rememberStoreEnv, storeEnvHeader } from './storeEnv';
 
 async function session(): Promise<any | null> {
   try {
@@ -34,6 +37,15 @@ export type SubscriptionStatus = {
   used: { letters: number; resumes: number };
   via: 'plan' | 'trial' | null;
   legacyCredits?: number;
+  /** The App Store environment this answer was computed in — 'Production' for every real customer. */
+  environment?: 'Production' | 'Sandbox';
+  /**
+   * DIAGNOSTIC ONLY. Set when the user holds a live store plan in the OTHER environment (e.g. a
+   * TestFlight sandbox subscription while this request ran as Production). It exists so "I bought it
+   * and nothing happened" is explainable in a support conversation. ⚠️ Never switch environment on
+   * the strength of it — an environment is adopted only from a verify/restore this build performed.
+   */
+  otherEnvironmentSubscription?: 'Production' | 'Sandbox' | null;
 };
 /**
  * The store that manages the user's CURRENT subscription, when it is not the store this build runs
@@ -86,7 +98,10 @@ export type UsageItem = {
 };
 
 export async function fetchSubscriptionStatus(): Promise<SubscriptionStatus> {
-  const headers = { ...(await authHeader()), ...(await deviceHeader()) };
+  // x-store-env joins the request so a TestFlight tester's SANDBOX plan is visible to them and
+  // invisible to everyone else. Sent explicitly rather than relying on the axios default purely to
+  // avoid racing storeEnv's first SecureStore read on a cold start.
+  const headers = { ...(await authHeader()), ...(await deviceHeader()), ...(await storeEnvHeader()) };
   const { data } = await axios.get(`${API_BASE}/subscription/status`, { headers, timeout: 20000 });
   return data as SubscriptionStatus;
 }
@@ -174,6 +189,13 @@ export type StoreVerifyResult = {
    */
   retryable: boolean;
   message: string | null;
+  /**
+   * The App Store environment the SERVER confirmed this purchase in. 'Sandbox' means TestFlight /
+   * a sandbox Apple ID / a Play licence tester — a real entitlement, but only within Sandbox. This
+   * is the single input that can ever move the app out of Production, and it is already persisted
+   * by the time this resolves.
+   */
+  environment?: 'Production' | 'Sandbox' | null;
 };
 
 /**
@@ -194,7 +216,7 @@ export async function verifyStoreSubscription(input: {
   const fail = (retryable: boolean, message: string): StoreVerifyResult =>
     ({ confirmed: false, planKey: null, periodEnd: null, retryable, message });
 
-  const headers = { ...(await authHeader()), ...(await deviceHeader()) };
+  const headers = { ...(await authHeader()), ...(await deviceHeader()), ...(await storeEnvHeader()) };
   if (!headers.Authorization) return fail(true, 'Please sign in so we can attach this to your account.');
 
   try {
@@ -207,12 +229,19 @@ export async function verifyStoreSubscription(input: {
     }, { headers, timeout: 30000 });
 
     if (data?.success) {
+      // ⚠️ BEFORE returning. The server has just told us which App Store environment this purchase
+      // was actually made in, straight from Apple/Google. Persisting it here is the ONLY way the app
+      // ever leaves Production, and it has to happen before the caller refreshes the entitlement —
+      // otherwise a TestFlight tester's next /subscription/status call still asks as Production and
+      // reports "no plan" for the purchase that just succeeded, and they buy it again.
+      await rememberStoreEnv(data.environment);
       return {
         confirmed: true,
         planKey: data.planKey ?? null,
         periodEnd: data.periodEnd ?? null,
         retryable: false,
         message: null,
+        environment: data.environment ?? null,
       };
     }
     return fail(false, data?.error || 'The store purchase could not be verified.');

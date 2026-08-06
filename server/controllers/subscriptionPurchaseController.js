@@ -19,6 +19,11 @@ const play = require('../services/playStoreApi');
 const uidOf = (req) => parseInt((req.user && (req.user.id || req.user.userId)), 10);
 
 // Reasons where the STORE gave a definitive "no". Anything else means we failed to ask.
+//
+// ⚠️ 'unknown_environment' is deliberately NOT in here. It means the store answered but we could not
+// tell Sandbox from Production, and an entitlement we cannot scope is one we refuse to write (see
+// entitlements.storeSetSubscription). That is OUR failure, not the store's, so it must be a 503:
+// retryable, transaction left unfinished, nothing granted on a guess.
 const DENIED = new Set([
   'transaction_unknown_to_apple', 'token_unknown_to_google', 'no_known_subscription_product',
   'bundle_mismatch', 'missing_original_transaction_id', 'missing_purchase_token',
@@ -49,10 +54,19 @@ async function respond(req, res, result) {
     });
   }
   store.notifyIfNew(result);
+  // ⚠️ Compute the entitlement snapshot in the environment the STORE just confirmed, not the one the
+  // app claimed on the way in. On the very first TestFlight purchase the app still believes it is in
+  // Production (that is the safe default it ships with), so without this line the response would
+  // report "no plan" for the purchase it just successfully verified — and the tester would buy
+  // again. Server-set, never read from the request body: see storeEnvironment.requestEnvironment.
+  req.storeEnv = result.environment || null;
   const status = await ents.getStatus(uidOf(req), req).catch(() => null);
   return res.json({
     success: true, planKey: result.planKey, productId: result.productId,
-    periodEnd: result.periodEnd, store: result.store, environment: result.environment,
+    periodEnd: result.periodEnd, store: result.store,
+    // The app persists this and sends it back as x-store-env from now on. It is the ONLY way an
+    // app instance ever adopts Sandbox, which is what keeps a real customer in Production forever.
+    environment: result.environment,
     ...(status ? { entitlement: status } : {}),
   });
 }
@@ -108,22 +122,35 @@ async function restorePurchases(req, res) {
   const appleIds = (Array.isArray(b.appleTransactionIds) ? b.appleTransactionIds : []).slice(0, 25);
   const googleTokens = (Array.isArray(b.googlePurchaseTokens) ? b.googlePurchaseTokens : []).slice(0, 25);
   const results = [];
+  // The environment of whatever we actually restored, for the same reason as verify: the snapshot
+  // below and the value the app persists must describe the purchases the store just confirmed.
+  // Sandbox only wins if nothing production-grade was restored — a device holding both must land in
+  // Production, because that is the one where the user's money is.
+  let restoredEnv = null;
+  const noteEnv = (r) => {
+    if (!r || !r.ok || !r.environment) return;
+    if (restoredEnv !== ents.PRODUCTION) restoredEnv = r.environment;
+  };
   for (const id of appleIds) {
     try {
       const r = await store.applyAppleSubscription({ userId, originalTransactionId: '', transactionId: String(id) });
-      if (r.ok) store.notifyIfNew(r);
+      if (r.ok) { store.notifyIfNew(r); noteEnv(r); }
       results.push({ store: 'apple', id: String(id).slice(0, 40), ok: !!r.ok, planKey: r.planKey || null, reason: r.reason || null });
     } catch (e) { results.push({ store: 'apple', ok: false, reason: 'lookup_failed' }); }
   }
   for (const t of googleTokens) {
     try {
       const r = await store.applyGoogleSubscription({ userId, purchaseToken: String(t) });
-      if (r.ok) store.notifyIfNew(r);
+      if (r.ok) { store.notifyIfNew(r); noteEnv(r); }
       results.push({ store: 'google', ok: !!r.ok, planKey: r.planKey || null, reason: r.reason || null });
     } catch (e) { results.push({ store: 'google', ok: false, reason: 'lookup_failed' }); }
   }
+  if (restoredEnv) req.storeEnv = restoredEnv;
   const status = await ents.getStatus(userId, req).catch(() => null);
-  return res.json({ success: true, restored: results.filter((r) => r.ok).length, results, ...(status ? { entitlement: status } : {}) });
+  return res.json({
+    success: true, restored: results.filter((r) => r.ok).length, results,
+    environment: restoredEnv, ...(status ? { entitlement: status } : {}),
+  });
 }
 
 /**

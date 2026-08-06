@@ -25,6 +25,7 @@ const ents = require('./entitlements');
 const products = require('./storeProducts');
 const apple = require('./appleStoreApi');
 const play = require('./playStoreApi');
+const { PRODUCTION, SANDBOX, normalizeEnvironment, isProduction } = require('./storeEnvironment');
 
 const ms = (v) => {
   if (v == null) return null;
@@ -65,13 +66,24 @@ async function userIdForAccountToken(token) {
   return rows && rows[0] ? Number(rows[0].user_id) : null;
 }
 
-/** Fall back to the user already welded to this store identity (renewals of a known purchase). */
-async function userIdForStoreTxn(store, originalTxnId, purchaseToken) {
+/**
+ * Fall back to the user already welded to this store identity (renewals of a known purchase).
+ *
+ * Environment-scoped when the caller knows it. Sandbox and Production transaction-id / purchase-token
+ * namespaces are independent and can collide, so without the scope a sandbox renewal could be
+ * attributed to whichever real customer happens to hold the same id — writing a Sandbox row against
+ * their account. Harmless to their production entitlement (it cannot see Sandbox rows) but wrong,
+ * and it would put a stranger's test purchase in their history. `environment` is optional so the
+ * unscoped legacy behaviour is still available where the environment genuinely is not known yet.
+ */
+async function userIdForStoreTxn(store, originalTxnId, purchaseToken, environment = null) {
+  const env = normalizeEnvironment(environment);
   const rows = await dbConfig.query(
     `SELECT user_id FROM user_subscriptions
       WHERE store = $1 AND (original_transaction_id = $2 OR ($3 <> '' AND purchase_token = $3))
+        AND ($4::text IS NULL OR environment = $4)
       ORDER BY updated_at DESC NULLS LAST LIMIT 1`,
-    [store, String(originalTxnId || ''), String(purchaseToken || '')]);
+    [store, String(originalTxnId || ''), String(purchaseToken || ''), env]);
   return rows && rows[0] ? Number(rows[0].user_id) : null;
 }
 
@@ -122,6 +134,14 @@ async function applyAppleSubscription({ userId = null, originalTransactionId, tr
   const tx = it.transaction;
   const rn = it.renewal || {};
 
+  // Which App Store did this actually come from? Apple tells us three times over — in the signed
+  // transaction payload, in the /subscriptions response body, and by which host answered — and
+  // appleStoreApi normalises all three to 'Production' | 'Sandbox' | null. TestFlight is ALWAYS
+  // Sandbox, so this value is what stops a $0 tester purchase from becoming a production plan.
+  // No fallback to Production: an environment we cannot name is refused (see storeSetSubscription).
+  const environment = normalizeEnvironment(tx.environment) || normalizeEnvironment(res.environment);
+  if (!environment) return { ok: false, reason: 'unknown_environment', retryable: true };
+
   // Ownership: a FAMILY_SHARED entitlement is real, but it is not a purchase this account made.
   // Honour it (Apple requires it) and record it so support can tell the two apart.
   const ownership = tx.inAppOwnershipType || 'PURCHASED';
@@ -144,7 +164,7 @@ async function applyAppleSubscription({ userId = null, originalTransactionId, tr
 
   const uid = userId
     || await userIdForAccountToken(tx.appAccountToken)
-    || await userIdForStoreTxn('apple', it.originalTransactionId || origTxn, null);
+    || await userIdForStoreTxn('apple', it.originalTransactionId || origTxn, null, environment);
   // RETRYABLE on purpose. A first purchase races: Apple's SUBSCRIBED notification often lands before
   // the app's own verify call, and until that call creates the row there is nothing to attribute to
   // except appAccountToken. Answering 500 makes Apple redeliver (5 times over 3 days), by which
@@ -162,7 +182,7 @@ async function applyAppleSubscription({ userId = null, originalTransactionId, tr
     periodEnd,
     status,
     terminal,
-    environment: res.environment || tx.environment || null,
+    environment,
     autoRenew: rn.autoRenewStatus != null ? Number(rn.autoRenewStatus) === 1 : null,
     acknowledged: true,                                          // Apple has no acknowledge step
     storeState: `${it.status}:${ownership}`,
@@ -172,7 +192,7 @@ async function applyAppleSubscription({ userId = null, originalTransactionId, tr
     ok: true, store: 'apple', userId: Number(w.row.user_id), planKey: sub.planKey,
     productId: tx.productId, status, periodEnd, created: w.created,
     transferBlocked: w.transferBlocked, ownership,
-    environment: res.environment || null,
+    environment,
   };
 }
 
@@ -233,11 +253,17 @@ async function applyGoogleSubscription({ userId = null, purchaseToken, voided = 
   let cycleStart = expiry ? monthBefore(expiry) : started;
   if (started && (!cycleStart || cycleStart < started)) cycleStart = started;
 
+  // Play's equivalent of Apple's Sandbox: `testPurchase` is set on any purchase made by a licence
+  // tester or from an internal-test track — $0, and it must not buy a production plan. Google
+  // answers this on every subscriptionsv2 read, so unlike Apple there is no "unknown" case.
+  // Computed BEFORE attribution because the token lookups below are scoped by it.
+  const environment = p.testPurchase ? SANDBOX : PRODUCTION;
+
   const ext = p.externalAccountIdentifiers || {};
   const uid = userId
     || await userIdForAccountToken(ext.obfuscatedExternalAccountId)
-    || await userIdForStoreTxn('google', token, token)
-    || (p.linkedPurchaseToken ? await userIdForStoreTxn('google', p.linkedPurchaseToken, p.linkedPurchaseToken) : null);
+    || await userIdForStoreTxn('google', token, token, environment)
+    || (p.linkedPurchaseToken ? await userIdForStoreTxn('google', p.linkedPurchaseToken, p.linkedPurchaseToken, environment) : null);
   // Retryable for the same reason as Apple: Pub/Sub redelivers, and by the next attempt the app's
   // own verify call has usually created the row we can attribute to.
   if (!uid) return { ok: false, reason: 'unattributed', retryable: true, productId: line.l.productId };
@@ -258,7 +284,7 @@ async function applyGoogleSubscription({ userId = null, purchaseToken, voided = 
     periodEnd,
     status,
     terminal,
-    environment: p.testPurchase ? 'Sandbox' : 'Production',
+    environment,
     autoRenew: line.l.autoRenewingPlan ? Boolean(line.l.autoRenewingPlan.autoRenewEnabled) : null,
     acknowledged: acked,
     storeState: state,
@@ -266,11 +292,15 @@ async function applyGoogleSubscription({ userId = null, purchaseToken, voided = 
   if (w.error) return { ok: false, reason: w.error };
 
   // Retire the token this purchase replaced, so an upgrade cannot leave two live rows.
+  // Environment-scoped for the same reason the supersede in storeSetSubscription is: a test-track
+  // purchase must never be able to retire a real customer's row, and purchase tokens are not
+  // guaranteed to be distinct across the two.
   if (p.linkedPurchaseToken) {
     await dbConfig.query(
       `UPDATE user_subscriptions SET status = 'superseded', updated_at = NOW()
-        WHERE store = 'google' AND original_transaction_id = $1 AND status = 'active'`,
-      [String(p.linkedPurchaseToken)]).catch(() => {});
+        WHERE store = 'google' AND original_transaction_id = $1 AND environment = $2
+          AND status = 'active'`,
+      [String(p.linkedPurchaseToken), environment]).catch(() => {});
   }
 
   // ⚠️ ONLY NOW. Google auto-refunds and revokes anything unacknowledged after 3 days, so
@@ -290,20 +320,29 @@ async function applyGoogleSubscription({ userId = null, purchaseToken, voided = 
     ok: true, store: 'google', userId: Number(w.row.user_id), planKey: line.sub.planKey,
     productId: line.l.productId, status, periodEnd, created: w.created,
     transferBlocked: w.transferBlocked, acknowledged,
-    environment: p.testPurchase ? 'Sandbox' : 'Production',
+    environment,
   };
 }
 
-/** Fire the admin "new purchase" alert exactly once per subscription row. Never throws. */
+/**
+ * Fire the admin "new purchase" alert exactly once per subscription row. Never throws.
+ *
+ * A Sandbox purchase is a TEST, not revenue. It is still worth announcing (it is the founder's
+ * confirmation that a TestFlight purchase went all the way through) but it must be unmistakable and
+ * it must not carry a price — an alert saying "Max — $49.99" for a $0 sandbox transaction is how a
+ * test gets counted as a sale in the only revenue signal that arrives in real time.
+ */
 function notifyIfNew(result) {
   if (!result || !result.ok || !result.created || result.status !== 'active') return;
   try {
     const plan = ents.planByKey(result.planKey);
+    const real = isProduction(result.environment);
+    const storeName = result.store === 'apple' ? 'Apple subscription' : 'Play subscription';
     require('./adminNotifier').notifyNewPurchase(result.userId, {
       plan: plan ? plan.label : result.planKey,
-      amount: plan ? plan.priceUsd : null,
+      amount: real ? (plan ? plan.priceUsd : null) : 0,
       currency: 'USD',
-      source: result.store === 'apple' ? 'Apple subscription' : 'Play subscription',
+      source: real ? storeName : `${storeName} — SANDBOX TEST (no money)`,
     }).catch(() => {});
   } catch (_) {}
 }

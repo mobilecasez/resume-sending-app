@@ -1301,6 +1301,69 @@ async function runPostgresMigrations(db) {
         )`);
         console.log('✅ Migration 035: store-backed subscriptions done');
 
+        // ── Migration 036: PER-ENVIRONMENT ENTITLEMENT (Sandbox never satisfies Production) ──
+        // Migration 035 added user_subscriptions.environment and then used it for nothing: the
+        // column was written and never read. Every entitlement check selected on status/period_end
+        // alone, so a purchase made in Apple's SANDBOX — which is the only environment TestFlight
+        // has — produced an ordinary production plan. Free, and repeatable: each sandbox purchase
+        // carries a fresh transactionId, so the (store, original_transaction_id) key never matched
+        // and never deduped. services/storeEnvironment.js documents the full model.
+        //
+        // This migration makes the environment structural rather than decorative:
+        //
+        //   1. payment_orders.environment — the CONSUMABLE credit path needs the same distinction.
+        //      A sandbox credit-pack purchase is now recorded with status 'sandbox' and grants
+        //      nothing (there is only one pooled credit balance, so there is nothing safe to add to).
+        //   2. Backfill. Store rows written before this column meant anything are labelled
+        //      'Production'. ⚠️ THIS IS THE ONE GUESS IN THE CHANGE, and it is deliberate: the
+        //      subscription purchase path is not deployed yet, so a store row that exists today came
+        //      from the production webhook against the live App Store / Play consoles. The
+        //      alternative — leaving them unlabelled, which under the new rules matches nothing —
+        //      would revoke a paying customer's plan to protect against a sandbox row that cannot
+        //      exist. Audit after deploy: SELECT id, user_id, store, original_transaction_id FROM
+        //      user_subscriptions WHERE store IS NOT NULL ORDER BY created_at;
+        //   3. environment joins the UNIQUE KEY. Apple's Sandbox and Production
+        //      originalTransactionId namespaces are independent and CAN collide, so the old
+        //      two-column key let a sandbox test purchase upsert onto a real customer's row and
+        //      rewrite their plan, window and expiry. storeSetSubscription()'s ON CONFLICT targets
+        //      the new three-column index, so this migration must run BEFORE that code serves
+        //      traffic — it does, db-init runs at boot.
+        //   4. A CHECK so no future code path can write a store row with no environment.
+        //
+        // Untouched on purpose: admin/legacy rows (store IS NULL) keep environment NULL and stay
+        // environment-agnostic — they were never earned in a store, and adminSetSubscription is
+        // still how comps and support fixes are issued. Legacy credit balances and the trial are
+        // not referenced here at all.
+        await col(`ALTER TABLE payment_orders ADD COLUMN IF NOT EXISTS environment TEXT`);
+        await col(`UPDATE user_subscriptions SET environment = 'Production'
+                     WHERE store IS NOT NULL AND environment IS NULL`);
+        await col(`UPDATE user_subscriptions SET environment = 'Production'
+                     WHERE store IS NOT NULL AND environment ILIKE 'production'
+                       AND environment <> 'Production'`);
+        await col(`UPDATE user_subscriptions SET environment = 'Sandbox'
+                     WHERE store IS NOT NULL AND environment ILIKE 'sandbox'
+                       AND environment <> 'Sandbox'`);
+        await col(`UPDATE payment_orders SET environment = 'Production'
+                     WHERE environment IS NULL AND order_id LIKE 'apple%' AND status = 'completed'`);
+        // Create the new key BEFORE dropping the old one, so there is never a window without a
+        // uniqueness guarantee on store purchases.
+        await col(`CREATE UNIQUE INDEX IF NOT EXISTS uq_user_subscriptions_store_env_txn
+                     ON user_subscriptions(store, environment, original_transaction_id)
+                     WHERE store IS NOT NULL AND original_transaction_id IS NOT NULL
+                       AND environment IS NOT NULL`);
+        await col(`DROP INDEX IF EXISTS uq_user_subscriptions_store_txn`);
+        // Idempotent CHECK: Postgres has no ADD CONSTRAINT IF NOT EXISTS, so drop-then-add. Runs
+        // after the backfill, so an existing row cannot make it fail.
+        await col(`ALTER TABLE user_subscriptions DROP CONSTRAINT IF EXISTS chk_user_subscriptions_environment`);
+        await col(`ALTER TABLE user_subscriptions ADD CONSTRAINT chk_user_subscriptions_environment
+                     CHECK (store IS NULL OR environment IN ('Sandbox','Production'))`);
+        // Every entitlement read is now (user_id, status, period_end, environment).
+        await col(`CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_env_active
+                     ON user_subscriptions(user_id, environment, period_end) WHERE status = 'active'`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_payment_orders_environment
+                     ON payment_orders(environment) WHERE environment IS NOT NULL`);
+        console.log('✅ Migration 036: per-environment entitlement done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

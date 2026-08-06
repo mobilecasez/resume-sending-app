@@ -1640,6 +1640,11 @@ function AppContent() {
   //   for these credit packs — Play has zero in-app products — so there is no compliant way to
   //   sell them on Android today, and the only honest answer is to say so and point at the monthly
   //   plans, which DO go through Play Billing the moment those products exist.
+  //
+  // ⚠️ The Android branch below is now a BACKSTOP, not the disclosure. Telling the user only after
+  // they tapped a "$4.99 · Buy Plan" button meant the price and the button were both fiction until
+  // the alert appeared; the packages grid states it at render instead and shows no buy button on
+  // Android at all. This stays in case any other caller reaches here.
   const handleBuyPackage = async (pkg) => {
     console.log('💳 Buy package clicked:', pkg);
 
@@ -6602,7 +6607,11 @@ function exportSig(){
           <View style={styles.packagesCreditCard}>
             <Text style={styles.packagesCreditLabel}>💳 YOUR CURRENT CREDITS</Text>
             <Text style={styles.packagesCreditNumber}>{creditBalance}</Text>
-            <Text style={styles.packagesCreditSubtext}>Purchase credits to continue generating cover letters</Text>
+            <Text style={styles.packagesCreditSubtext}>
+              {Platform.OS === 'android'
+                ? 'Any credits you already have keep working. New credit packs are iPhone-only.'
+                : 'Purchase credits to continue generating cover letters'}
+            </Text>
           </View>
 
           {/* Packages Section */}
@@ -6615,7 +6624,11 @@ function exportSig(){
             <>
               <View style={styles.packagesSectionHeader}>
                 <Text style={styles.packagesSectionTitle}>Available Packages</Text>
-                <Text style={styles.packagesSectionSubtitle}>Select a package below to get started</Text>
+                <Text style={styles.packagesSectionSubtitle}>
+                  {Platform.OS === 'android'
+                    ? 'These packs are sold on iPhone only — shown here for reference'
+                    : 'Select a package below to get started'}
+                </Text>
               </View>
 
               <View style={styles.packagesGrid}>
@@ -6642,10 +6655,17 @@ function exportSig(){
                       )}
                     </View>
 
-                    {/* Package Price - Large and Centered */}
+                    {/* Package Price - Large and Centered.
+                        ⚠️ ANDROID SHOWS NO PRICE. These credit packs exist only as Apple IAP
+                        products — Play has none, and selling them any other way is a Play Payments
+                        violation. Rendering "$<amount>" here quoted a price that nothing on this
+                        device can charge, next to a live "Buy Plan" button, and the user only found
+                        out it was fiction AFTER tapping. Say it at render instead. */}
                     <View style={styles.packagePriceSection}>
                       <View style={styles.packagePriceContainer}>
-                        {Platform.OS === 'ios' && iapProducts.length > 0 ? (
+                        {Platform.OS === 'android' ? (
+                          <Text style={styles.packageUnavailablePrice}>Not sold on Android</Text>
+                        ) : Platform.OS === 'ios' && iapProducts.length > 0 ? (
                           // Show Apple IAP localized price on iOS
                           <Text style={styles.packagePrice}>
                             {(() => {
@@ -6687,16 +6707,35 @@ function exportSig(){
                       </View>
                     </View>
 
-                    {/* Buy Button */}
-                    <TouchableOpacity 
-                      style={[
-                        styles.packageBuyButton,
-                        pkg.is_popular === 1 && styles.packageBuyButtonPopular
-                      ]}
-                      onPress={() => handleBuyPackage(pkg)}
-                    >
-                      <Text style={styles.packageBuyButtonText}>💳 Buy Plan</Text>
-                    </TouchableOpacity>
+                    {/* Buy Button. On Android there is nothing to buy, so there is no buy button —
+                        the row points at the monthly plans, which DO go through Play Billing. */}
+                    {Platform.OS === 'android' ? (
+                      <>
+                        <Text style={styles.packageAndroidNote}>
+                          Credit packs can only be bought on iPhone. On Android, the monthly plans
+                          cover the same generations and are billed through Google Play.
+                        </Text>
+                        <TouchableOpacity
+                          style={styles.packagePlansButton}
+                          onPress={() => {
+                            try { require('expo-router').router?.push?.('/(subscription)/plans'); }
+                            catch (e) { console.warn('nav to plans failed:', e?.message); }
+                          }}
+                        >
+                          <Text style={styles.packagePlansButtonText}>See monthly plans</Text>
+                        </TouchableOpacity>
+                      </>
+                    ) : (
+                      <TouchableOpacity
+                        style={[
+                          styles.packageBuyButton,
+                          pkg.is_popular === 1 && styles.packageBuyButtonPopular
+                        ]}
+                        onPress={() => handleBuyPackage(pkg)}
+                      >
+                        <Text style={styles.packageBuyButtonText}>💳 Buy Plan</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 ))}
               </View>
@@ -14687,6 +14726,14 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#8B5CF6',
   },
+  // Android: there is no purchasable price for these packs, so the slot says so instead of showing
+  // a number. Deliberately muted and small — it is a status, not an amount.
+  packageUnavailablePrice: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#9CA3AF',
+    paddingVertical: 12,
+  },
   packageDetailsSection: {
     marginBottom: 28,
     backgroundColor: '#F9FAFB',
@@ -14758,6 +14805,25 @@ const styles = StyleSheet.create({
   packageBuyButtonText: {
     color: 'white',
     fontSize: 17,
+    fontWeight: '700',
+  },
+  packageAndroidNote: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#6B7280',
+    marginBottom: 14,
+  },
+  packagePlansButton: {
+    backgroundColor: '#F3F4F6',
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  packagePlansButtonText: {
+    color: '#4B5563',
+    fontSize: 16,
     fontWeight: '700',
   },
   emptyPackagesContainer: {

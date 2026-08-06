@@ -17,6 +17,7 @@ const path = require('path');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { BUNDLE_ID } = require('./storeProducts');
+const { PRODUCTION, SANDBOX, normalizeEnvironment } = require('./storeEnvironment');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
@@ -81,16 +82,26 @@ async function apiGet(base, pathname, { timeoutMs = 12000 } = {}) {
 }
 
 // Apple's own guidance: query Production first; only a "not found" answer means "maybe sandbox".
-// Any other failure is NOT retried in sandbox — a sandbox receipt must never satisfy a production
-// purchase, and quietly falling through to sandbox is how test purchases become free real plans.
+// Any other failure is NOT retried in sandbox.
+//
+// ⚠️ THE SANDBOX RETRY IS NOT THE SAFETY BOUNDARY — services/storeEnvironment.js is. This function
+// exists precisely so a TestFlight tester's sandbox purchase CAN be verified; what keeps that
+// purchase from becoming a real entitlement is that `environment` below is carried onto the
+// subscription/order row and scopes every later entitlement check. Turning this retry off (the
+// APPLE_ALLOW_SANDBOX=0 escape hatch, kept only for an emergency) does not make production safer,
+// it just makes TestFlight purchases fail outright.
+//
+// `environment` always names the base URL that actually ANSWERED, so a caller can never mistake a
+// sandbox answer for a production one. When the sandbox retry is skipped we return the production
+// 404 with environment null: nothing was confirmed, so there is no environment to claim.
 async function apiGetEitherEnv(pathname) {
   const prod = await apiGet(PROD_BASE, pathname);
-  if (prod.status === 200) return { ...prod, environment: 'Production' };
+  if (prod.status === 200) return { ...prod, environment: PRODUCTION };
   const notFound = prod.status === 404 || (prod.body && Number(prod.body.errorCode) === 4040010);
-  if (!notFound) return { ...prod, environment: 'Production' };
-  if (process.env.APPLE_ALLOW_SANDBOX === '0') return { ...prod, environment: 'Production' };
+  if (!notFound) return { ...prod, environment: PRODUCTION };
+  if (process.env.APPLE_ALLOW_SANDBOX === '0') return { ...prod, environment: null };
   const sb = await apiGet(SANDBOX_BASE, pathname);
-  return { ...sb, environment: 'Sandbox' };
+  return { ...sb, environment: sb.status === 200 ? SANDBOX : null };
 }
 
 // ── JWS handling ──────────────────────────────────────────────────────────────────────────────
@@ -181,7 +192,11 @@ async function getTransactionInfo(transactionId) {
   }
   const tx = decodeJwsPayload(r.body.signedTransactionInfo);
   if (!tx) throw new Error('apple_transaction_decode_failed');
-  tx._environment = tx.environment || r.environment;
+  // Apple states the environment twice: inside the signed payload and by which host answered.
+  // Prefer the payload (it is what Apple signed), fall back to the host. Normalised so callers
+  // compare against exactly two strings; null when neither said anything we recognise, which
+  // storeSetSubscription() and the credit path both treat as "refuse to grant".
+  tx._environment = normalizeEnvironment(tx.environment) || normalizeEnvironment(r.environment);
   return tx;
 }
 
@@ -211,7 +226,10 @@ async function getAllSubscriptionStatuses(originalTransactionId) {
     }
   }
   return {
-    environment: r.body.environment || r.environment,
+    // Normalised to 'Production' | 'Sandbox' | null. null is deliberate and must NOT be defaulted
+    // by the caller: an entitlement whose environment we cannot name cannot be scoped, so it is
+    // refused rather than assumed to be production.
+    environment: normalizeEnvironment(r.body.environment) || normalizeEnvironment(r.environment),
     bundleId: r.body.bundleId || null,
     items: out.filter((x) => x.transaction),
   };
