@@ -22,10 +22,11 @@ const { PRODUCTION, SANDBOX, normalizeEnvironment } = require('./storeEnvironmen
 const ROOT = path.resolve(__dirname, '..', '..');
 
 // ── credentials ───────────────────────────────────────────────────────────────────────────────
-// ⚠️ The App Store Server API wants an IN-APP PURCHASE key (App Store Connect → Users and Access →
-// Integrations → In-App Purchase), which has its OWN key id and its own issuer id — it is NOT
-// necessarily the same key as the App Store Connect API key used by tools/asc-provision-*.js.
-// Configure explicitly; we fall back to the on-disk ASC keys only so a local dry run can be tried.
+// Apple documents a dedicated IN-APP PURCHASE key for this API, but a team App Store Connect API
+// key authenticates against it too — probed 2026-08-07: both 33Y3J5248R and 8B7UN3VG74 signed with
+// issuer bc162399-… got `404 Transaction id not found` (auth accepted) rather than 401. Production
+// therefore runs on APPLE_IAP_KEY_ID=8B7UN3VG74 with the ASC issuer. If Apple ever tightens this the
+// symptom is every purchase answering 503; the fix is a real In-App Purchase key in the same vars.
 const KEY_ID   = process.env.APPLE_IAP_KEY_ID   || process.env.ASC_KEY_ID   || '';
 const ISSUER   = process.env.APPLE_IAP_ISSUER_ID || process.env.ASC_ISSUER_ID || '';
 const KEY_PATH = process.env.APPLE_IAP_KEY_PATH || (KEY_ID ? path.join(ROOT, 'Keys', `AuthKey_${KEY_ID}.p8`) : '');
@@ -115,9 +116,10 @@ function decodeJwsPayload(jws) {
 // Apple Root CA - G3 is the root of every App Store Server JWS chain. Supply the real certificate
 // (Keys/AppleRootCA-G3.cer, DER or PEM) or set APPLE_ROOT_CA_G3_PEM; the fingerprint below is the
 // published value and is used only when no certificate file is present.
-// ⚠️ ASSUMPTION: confirm this fingerprint against https://www.apple.com/certificateauthority/
-//    before relying on it. A wrong value can only make verification FAIL (never wrongly pass), and
-//    entitlement is re-fetched from Apple over TLS regardless, so the blast radius is a log line.
+// VERIFIED 2026-08-07 against https://www.apple.com/certificateauthority/AppleRootCA-G3.cer —
+// the fingerprint below is that certificate's real SHA-256. Production also sets
+// APPLE_ROOT_CA_G3_PEM, so the stronger whole-certificate comparison below is the live path and
+// this constant is only the fallback.
 const APPLE_ROOT_G3_SHA256 = (process.env.APPLE_ROOT_CA_G3_SHA256
   || '63343ABFB89A6A03EBB57E9B3F5FA7BE7C4F5C756F3017B3A8C488C3653E9179').toUpperCase().replace(/[^0-9A-F]/g, '');
 
