@@ -1,15 +1,30 @@
-// First-party analytics intake + store server-notification webhooks. ADDITIVE.
+// First-party analytics intake + store server-notification webhooks.
 // - POST /api/analytics/track : the app reports events (open auth; records user_id if a valid token is sent)
-// - POST /api/webhooks/apple-notifications : Apple App Store Server Notifications V2 (real-time purchases/refunds/subs)
+// - POST /api/webhooks/apple-notifications : Apple App Store Server Notifications V2
 // - POST /api/webhooks/google-rtdn : Google Play Real-Time Developer Notifications (via Pub/Sub push)
-// These NEVER grant entitlements/credits (the existing /payment/verify-* flow stays authoritative); they
-// only record events for the live dashboard, so they return fast and never error the caller. Because
-// nothing of value is granted here, we DECODE (not full x5c-chain-verify) the self-signed payloads —
-// the worst case of a forged payload is a polluted analytics number, never a fraudulent credit.
+//
+// ⚠️ THESE NOW DRIVE ENTITLEMENT (renew / cancel / refund / expire / grace), which they did not
+// before — a renewal used to leave user_subscriptions frozen at whatever the purchase call wrote.
+// Two properties keep that safe on endpoints that anyone on the internet can POST to:
+//
+//   1. AUTHENTICITY. Apple's payload is x5c-chain-verified and root-pinned; Google's Pub/Sub push
+//      is OIDC-JWT-verified. Both previously decoded without verifying anything at all.
+//   2. THE BODY IS ONLY A POINTER. Even a perfectly signed notification is not believed: we take
+//      the transaction id / purchase token out of it and RE-FETCH the state from the store's own
+//      API over TLS. A forged notification can therefore only ask us to look something up, and the
+//      answer comes from Apple or Google, not from the caller. An unverified payload is refused
+//      outright unless we already hold a row for that purchase.
+//
+// Idempotency is inherited from storeSetSubscription()'s upsert: a redelivered notification
+// recomputes identical state onto the same row and can never double-grant.
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const live = require('../services/liveAnalytics');
 const dbConfig = require('../../db-config');
+const appleApi = require('../services/appleStoreApi');
+const playApi = require('../services/playStoreApi');
+const storeSubs = require('../services/storeSubscriptions');
+const storeProducts = require('../services/storeProducts');
 
 // Hash the client IP (never store it raw) so we can dedup a person's repeat installs by network
 // without holding PII. Salted so hashes aren't reversible/rainbow-tableable.
@@ -94,33 +109,91 @@ function appleClassify(type, subtype) {
   }
 }
 
-async function appleNotifications(req, res) {
+// Is this original_transaction_id one we already hold? Used to decide whether an UNVERIFIED payload
+// is worth acting on: a purchase we already know about cannot be used to fish for anything new.
+async function knownAppleTxn(originalTransactionId) {
+  if (!originalTransactionId) return false;
   try {
-    const env = req.body && req.body.signedPayload ? decodeJws(req.body.signedPayload) : null;
-    if (env) {
-      const tx = env.data && env.data.signedTransactionInfo ? decodeJws(env.data.signedTransactionInfo) : null;
-      const rnw = env.data && env.data.signedRenewalInfo ? decodeJws(env.data.signedRenewalInfo) : null;
-      const bundleId = (env.data && env.data.bundleId) || (tx && tx.bundleId) || null;
-      // Only ignore if it's clearly another app's bundle; TEST/edge payloads (no bundleId) still record.
-      if (!bundleId || bundleId === APPLE_BUNDLE_ID) {
-        await live.recordStoreNotification({
-          store: 'apple',
-          notificationType: env.notificationType || null,
-          subtype: env.subtype || null,
-          event: appleClassify(env.notificationType, env.subtype),
-          transactionId: tx ? tx.transactionId : null,
-          originalTransactionId: (tx && tx.originalTransactionId) || (rnw && rnw.originalTransactionId) || null,
-          productId: (tx && tx.productId) || (rnw && rnw.productId) || null,
-          price: tx && tx.price != null ? tx.price / 1000 : null,   // Apple sends price in milliunits
-          currency: (tx && tx.currency) || (rnw && rnw.currency) || null,
-          environment: (env.data && env.data.environment) || (tx && tx.environment) || null,
-          dedupeKey: env.notificationUUID ? 'a_' + env.notificationUUID : null,
-          payload: env,
-        });
+    const rows = await dbConfig.query(
+      `SELECT 1 FROM user_subscriptions WHERE store = 'apple' AND original_transaction_id = $1 LIMIT 1`,
+      [String(originalTransactionId)]);
+    return Boolean(rows && rows.length);
+  } catch { return false; }
+}
+
+async function appleNotifications(req, res) {
+  let transient = false;
+  try {
+    const signed = req.body && req.body.signedPayload;
+    if (!signed) return res.status(200).end();
+
+    // 1. AUTHENTICITY. Root-pinned x5c chain + ES256 signature. Null means "not proven Apple".
+    const verified = appleApi.verifySignedPayload(signed);
+    const env = verified || decodeJws(signed);        // unverified copy is for logging/pointers only
+    if (!env) return res.status(200).end();
+
+    const tx = env.data && env.data.signedTransactionInfo
+      ? (verified ? appleApi.verifySignedPayload(env.data.signedTransactionInfo) : null) || decodeJws(env.data.signedTransactionInfo)
+      : null;
+    const rnw = env.data && env.data.signedRenewalInfo ? decodeJws(env.data.signedRenewalInfo) : null;
+    const bundleId = (env.data && env.data.bundleId) || (tx && tx.bundleId) || null;
+    if (bundleId && bundleId !== APPLE_BUNDLE_ID) return res.status(200).end();   // another app
+
+    const originalTransactionId = (tx && tx.originalTransactionId) || (rnw && rnw.originalTransactionId) || null;
+    const productId = (tx && tx.productId) || (rnw && rnw.productId) || null;
+    const event = appleClassify(env.notificationType, env.subtype);
+
+    // 2. ENTITLEMENT. Never from the payload — always a fresh read from Apple keyed by the pointer.
+    let userId = null;
+    const isOurSub = storeProducts.isSubscriptionProduct(productId);
+    const mayAct = verified || await knownAppleTxn(originalTransactionId);
+    if (isOurSub && originalTransactionId && mayAct && appleApi.isConfigured()) {
+      try {
+        const r = await storeSubs.applyAppleSubscription({ originalTransactionId });
+        if (r.ok) {
+          userId = r.userId;
+          storeSubs.notifyIfNew(r);
+          console.log(`[apple-webhook] ${env.notificationType}/${env.subtype || '-'} → user ${userId} ${r.planKey} ${r.status} until ${r.periodEnd}`);
+        } else if (r.retryable) {
+          transient = true;   // ask Apple to redeliver rather than lose a renewal
+        } else {
+          console.warn(`[apple-webhook] not applied: ${r.reason} (${productId})`);
+        }
+      } catch (e) {
+        transient = true;
+        console.error('[apple-webhook] apply failed:', e.message);
       }
+    } else if (isOurSub && originalTransactionId && mayAct && !appleApi.isConfigured()) {
+      // The notification is real and ours, and we simply cannot ask Apple yet (key not set). Dropping
+      // it with a 200 loses a renewal or a refund permanently. Ask Apple to bring it back instead.
+      transient = true;
+      console.error('[apple-webhook] App Store Server API not configured — asking Apple to redeliver');
+    } else if (isOurSub && !verified) {
+      console.warn('[apple-webhook] refused UNVERIFIED payload for an unknown transaction');
     }
-  } catch (_) {}
-  return res.status(200).end();
+
+    // 3. ANALYTICS. Recorded either way; user_id is now filled in whenever we could attribute it.
+    await live.recordStoreNotification({
+      store: 'apple',
+      notificationType: (verified ? '' : 'UNVERIFIED:') + (env.notificationType || ''),
+      subtype: env.subtype || null,
+      event,
+      transactionId: tx ? tx.transactionId : null,
+      originalTransactionId,
+      productId,
+      price: tx && tx.price != null ? tx.price / 1000 : null,   // Apple sends price in milliunits
+      currency: (tx && tx.currency) || (rnw && rnw.currency) || null,
+      environment: (env.data && env.data.environment) || (tx && tx.environment) || null,
+      userId,
+      dedupeKey: env.notificationUUID ? 'a_' + env.notificationUUID : null,
+      payload: env,
+    });
+  } catch (e) {
+    console.error('[apple-webhook]', e.message);
+  }
+  // 500 makes Apple redeliver (up to 5 times over 3 days). Only used for OUR transient failures —
+  // a forged or irrelevant payload always gets 200 so nobody can farm retries.
+  return res.status(transient ? 500 : 200).end();
 }
 
 // ── Google Play Real-Time Developer Notifications (Pub/Sub push) ────────────────────────────────
@@ -156,27 +229,81 @@ function googleClassify(dn) {
   return { event: 'other', type: 'unknown', token: null, product: null };
 }
 
-async function googleRtdn(req, res) {
+async function knownPlayToken(purchaseToken) {
+  if (!purchaseToken) return false;
   try {
+    const rows = await dbConfig.query(
+      `SELECT 1 FROM user_subscriptions
+        WHERE store = 'google' AND (original_transaction_id = $1 OR purchase_token = $1) LIMIT 1`,
+      [String(purchaseToken)]);
+    return Boolean(rows && rows.length);
+  } catch { return false; }
+}
+
+async function googleRtdn(req, res) {
+  let transient = false;
+  try {
+    // 1. AUTHENTICITY. Pub/Sub signs every push with an OIDC token; before this the endpoint took
+    //    an unauthenticated POST from anywhere and believed it.
+    const auth = await playApi.verifyPubSubPush(req);
+
     const msg = req.body && req.body.message;
     let dn = null;
     if (msg && msg.data) { try { dn = JSON.parse(Buffer.from(msg.data, 'base64').toString('utf8')); } catch {} }
-    if (dn) {
-      const c = googleClassify(dn);
-      await live.recordStoreNotification({
-        store: 'google',
-        notificationType: c.type,
-        subtype: null,
-        event: c.event,
-        transactionId: c.token,
-        productId: c.product,
-        environment: dn.packageName && /sandbox|test/i.test(dn.packageName) ? 'Sandbox' : 'Production',
-        dedupeKey: (msg && msg.messageId) ? 'g_' + msg.messageId : null,
-        payload: dn,
-      });
+    if (!dn) return res.status(200).end();
+    if (dn.packageName && dn.packageName !== storeProducts.PLAY_PACKAGE) return res.status(200).end();
+
+    const c = googleClassify(dn);
+    const voided = Boolean(dn.voidedPurchaseNotification);
+    // voidedPurchase productType: 1 = subscription, 2 = one-time. Only subscriptions belong here;
+    // a voided credit pack is a different (consumable) refund path and must not clear a plan.
+    const voidedIsSub = voided && Number(dn.voidedPurchaseNotification.productType || 1) === 1;
+
+    // 2. ENTITLEMENT — re-read from Google, never from this body.
+    let userId = null;
+    const token = c.token;
+    const isSubEvent = Boolean(dn.subscriptionNotification) || voidedIsSub;
+    const mayAct = auth.verified || await knownPlayToken(token);
+    if (isSubEvent && token && mayAct && playApi.isConfigured()) {
+      try {
+        const r = await storeSubs.applyGoogleSubscription({ purchaseToken: token, voided: voidedIsSub });
+        if (r.ok) {
+          userId = r.userId;
+          storeSubs.notifyIfNew(r);
+          console.log(`[play-webhook] ${c.type} → user ${userId} ${r.planKey} ${r.status} until ${r.periodEnd}`);
+        } else if (r.retryable) {
+          transient = true;
+        } else {
+          console.warn(`[play-webhook] not applied: ${r.reason}`);
+        }
+      } catch (e) {
+        transient = true;
+        console.error('[play-webhook] apply failed:', e.message);
+      }
+    } else if (isSubEvent && token && mayAct && !playApi.isConfigured()) {
+      transient = true;   // same as Apple: a real event we cannot yet resolve must be redelivered
+      console.error('[play-webhook] Play Developer API not configured — asking Pub/Sub to redeliver');
+    } else if (isSubEvent && !auth.verified) {
+      console.warn(`[play-webhook] refused UNVERIFIED push (${auth.reason}) for an unknown token`);
     }
-  } catch (_) {}
-  return res.status(200).end();
+
+    await live.recordStoreNotification({
+      store: 'google',
+      notificationType: (auth.verified ? '' : 'UNVERIFIED:') + c.type,
+      subtype: null,
+      event: c.event,
+      transactionId: token,
+      productId: c.product,
+      userId,
+      environment: dn.packageName && /sandbox|test/i.test(dn.packageName) ? 'Sandbox' : 'Production',
+      dedupeKey: (msg && msg.messageId) ? 'g_' + msg.messageId : null,
+      payload: dn,
+    });
+  } catch (e) {
+    console.error('[play-webhook]', e.message);
+  }
+  // Pub/Sub redelivers on any non-2xx; reserve that for our own transient failures.
+  return res.status(transient ? 500 : 200).end();
 }
 
 module.exports = { track, appleNotifications, googleRtdn, appleClassify, googleClassify };

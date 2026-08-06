@@ -13,7 +13,7 @@ const dbConfig = require('../../db-config');
 const ROUTINES = [
   {
     key: 'demand_research', name: 'Demand Research', icon: '🎯', intervalHours: 12,
-    description: 'Walks every user’s saved job interests (place + skills), researches the live web for matching postings via grounded AI, stores them in global_jobs, and pushes “New matching jobs for you” to the users they fit.',
+    description: 'Builds demand from saved job interests AND from the skills + location on the résumé of everyone who joined or uploaded a CV in the last 7 days, researches the live web for matching postings via grounded AI, stores them in global_jobs, and pushes “New matching jobs for you” to the users they fit.',
     run: () => require('../services/demandResearch').runDemandResearch(),
   },
   {

@@ -23,6 +23,10 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { API_BASE, PRODUCTION_API_URL } from './config';
 import { router as expoRouter } from 'expo-router'; // AI Hub navigation
 import { registerForPushNotificationsAsync } from './services/pushNotificationService'; // AI Hub — push notifications
+// Read-only: tells this file's GLOBAL purchase listeners when the subscription screen owns the
+// transaction currently in flight. Importing it does NOT open a billing connection — storeBilling
+// only touches the native module lazily, inside its own calls.
+import { subscriptionPurchaseInFlight } from './services/storeBilling';
 import SplashScreen from './components/SplashScreen';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import HomeScreen, { clearHomeScreenCache } from './components/HomeScreen';
@@ -76,37 +80,77 @@ WebBrowser.maybeCompleteAuthSession();
 const isExpoGo = Constants.appOwnership === 'expo';
 const createNoopSubscription = () => ({ remove: () => {} });
 
-let RazorpayCheckout = null;
+// ⚠️ Monthly SUBSCRIPTIONS (`com.cvapplyr.mobile.sub.*`) are NOT handled in this file. They are
+// bought, verified and finished by app/(subscription)/plans.tsx via services/storeBilling.ts,
+// against /payment/verify-apple-sub — a different server endpoint and a different entitlement.
+//
+// This matters because the IAP listeners below are GLOBAL: they fire for every transaction on the
+// device, including subscriptions. Without the prefix check in verifyAndCreditApplePurchase(), a
+// subscription purchase would be POSTed to the CONSUMABLE endpoint (/payment/verify-apple), come
+// back "Unknown product ID", pop a false "Purchase Error" at someone who just paid, and — worst —
+// be finishTransaction()'d before the subscription server had confirmed anything.
+//
+// ⚠️ The prefix is `com.cvapplyr.mobile.sub.` — the ids that actually EXIST in App Store Connect
+// (group 22290874). It is NOT `com.cvapplyr.sub.`: that namespace was never created, and because
+// the four consumables already own `com.cvapplyr.mobile.<name>`, the subscriptions had to be
+// registered one level deeper. A prefix that does not match the real ids silently disables this
+// guard, which is exactly the failure it exists to prevent. The consumables are
+// `com.cvapplyr.mobile.starter` etc. and do NOT match this prefix.
+const IAP_SUBSCRIPTION_PREFIX = 'com.cvapplyr.mobile.sub.';
+
+// ⚠️ react-native-razorpay is deliberately NOT loaded here any more. It was only ever used to sell
+// the credit packs on Android, which is in-app digital content and must go through Google Play
+// Billing (Play Payments policy). Leaving the module bound would make re-introducing that flow a
+// one-line change. The dependency itself is left in package.json — removing it is a native-build
+// change, and this file must not be the thing that triggers one.
 let nativeIapAvailable = false;
 
-// Fallbacks for Expo Go / missing native module scenarios
+// Fallbacks for Expo Go / missing native module scenarios.
+// ⚠️ EVERY react-native-iap symbol used anywhere in this file must appear here. Three of them
+// (getAvailablePurchases, getReceiptIOS, purchaseErrorListener) were used but never declared, so
+// the very first call threw ReferenceError — which killed listener registration AND the
+// unfinished-purchase sweep, i.e. the entire recovery path for a charged-but-undelivered purchase.
 let initConnection = async () => false;
 let fetchProducts = async () => [];
 let requestPurchase = async () => null;
 let finishTransaction = async () => {};
 let purchaseUpdatedListener = () => createNoopSubscription();
+let purchaseErrorListener = () => createNoopSubscription();
+let getAvailablePurchases = async () => [];
+let getReceiptIOS = async () => null;
 
 // Load native payment modules in real builds (dev build / TestFlight / App Store / Play Store)
 // These modules are NOT available in Expo Go — guard with try/catch so the app doesn't crash
 if (!isExpoGo) {
   try {
     const iap = require('react-native-iap');
-    initConnection       = iap.initConnection;
-    fetchProducts        = iap.getProducts;
-    requestPurchase      = iap.requestPurchase;
-    finishTransaction    = iap.finishTransaction;
-    purchaseUpdatedListener = iap.purchaseUpdatedListener;
-    nativeIapAvailable   = true;
-    console.log('✅ react-native-iap loaded');
+    // ⚠️ `getProducts` does not exist in react-native-iap 15.x — the export is `fetchProducts`.
+    // When this was `iap.getProducts` the binding was `undefined`, the call threw inside initIAP()
+    // and `iapProducts` stayed `[]` forever, so the paywall fell back to raw USD instead of
+    // Apple's localized displayPrice. Non-US users were quoted one price and charged another.
+    //
+    // Verified against react-native-iap 15.3.1 lib/typescript/src/index.d.ts. Checked before
+    // assignment rather than after: an undefined binding must never replace the safe no-op
+    // fallback, or the failure surfaces only once a card has already been charged.
+    const REQUIRED_IAP = ['initConnection', 'fetchProducts', 'requestPurchase', 'finishTransaction',
+      'purchaseUpdatedListener', 'purchaseErrorListener', 'getAvailablePurchases', 'getReceiptIOS'];
+    const missing = REQUIRED_IAP.filter((k) => typeof iap[k] !== 'function');
+    if (missing.length) {
+      console.error('⚠️ react-native-iap is missing expected exports — IAP disabled:', missing.join(', '));
+    } else {
+      initConnection          = iap.initConnection;
+      fetchProducts           = iap.fetchProducts;
+      requestPurchase         = iap.requestPurchase;
+      finishTransaction       = iap.finishTransaction;
+      purchaseUpdatedListener = iap.purchaseUpdatedListener;
+      purchaseErrorListener   = iap.purchaseErrorListener;
+      getAvailablePurchases   = iap.getAvailablePurchases;
+      getReceiptIOS           = iap.getReceiptIOS;
+      nativeIapAvailable      = true;
+      console.log('✅ react-native-iap loaded');
+    }
   } catch (e) {
     console.warn('⚠️ react-native-iap not available:', e.message);
-  }
-
-  try {
-    RazorpayCheckout = require('react-native-razorpay').default;
-    console.log('✅ react-native-razorpay loaded');
-  } catch (e) {
-    console.warn('⚠️ react-native-razorpay not available:', e.message);
   }
 }
 
@@ -1031,18 +1075,99 @@ function AppContent() {
     userTokenRef.current = user?.token || null;
   }, [user?.token]);
 
-  // Shared Apple IAP verification function — called from both listener and requestPurchase result
-  const verifyAndCreditApplePurchase = async (purchase) => {
+  // ── Charged-but-unverified purchases ────────────────────────────────────────────────────────
+  // A purchase whose server verification never completed is money taken with nothing delivered.
+  // Two rules make it recoverable, and BOTH were broken before:
+  //   1. NEVER finishTransaction() until the server has confirmed. An unfinished transaction stays
+  //      in StoreKit's queue, so getAvailablePurchases() hands it back on the next launch. Finish
+  //      it early and Apple forgets it — the money is gone with no way to reconstruct the claim.
+  //   2. ALWAYS remove the txId from processedTransactionsRef on a non-final outcome, or the
+  //      in-session dedupe guard makes every retry a no-op.
+  // This list is belt-and-braces on top of (1): it survives an app kill, so recovery does not
+  // depend on StoreKit still offering the transaction. Entries: { txId, productId, receipt, at }.
+  const PENDING_IAP_KEY = 'pendingApplePurchases';
+
+  const readPendingApplePurchases = async () => {
+    try {
+      const raw = await AsyncStorage.getItem(PENDING_IAP_KEY);
+      const list = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      console.warn('🍎 pending purchases read failed:', e.message);
+      return [];
+    }
+  };
+
+  const rememberPendingApplePurchase = async (entry) => {
+    try {
+      const list = await readPendingApplePurchases();
+      const next = list.filter((p) => p && p.txId !== entry.txId);
+      next.push({ ...entry, at: Date.now() });
+      // Bounded: keep the 20 most recent. A consumable that Apple no longer knows about can never
+      // be credited, so an unbounded list would only grow forever.
+      await AsyncStorage.setItem(PENDING_IAP_KEY, JSON.stringify(next.slice(-20)));
+    } catch (e) {
+      console.warn('🍎 pending purchases write failed:', e.message);
+    }
+  };
+
+  const forgetPendingApplePurchase = async (txId) => {
+    try {
+      const list = await readPendingApplePurchases();
+      const next = list.filter((p) => p && p.txId !== txId);
+      if (next.length === list.length) return;
+      await AsyncStorage.setItem(PENDING_IAP_KEY, JSON.stringify(next));
+    } catch (e) {
+      console.warn('🍎 pending purchases prune failed:', e.message);
+    }
+  };
+
+  // One POST to /payment/verify-apple. Resolves with the HTTP status + body, or throws when the
+  // request itself never completed. The distinction matters: "the server answered no" is final,
+  // "we could not reach the server" is not, and the old code collapsed both into one alert.
+  const postAppleVerification = async ({ token, receipt, productId, txId }) => {
+    const res = await fetch(`${API_BASE}/payment/verify-apple`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        receiptData: receipt || '',
+        productId,
+        transactionId: txId,
+      }),
+    });
+    let data = null;
+    try { data = await res.json(); } catch { /* non-JSON error page */ }
+    return { status: res.status, data: data || {} };
+  };
+
+  // Shared Apple IAP verification function — called from both listener and requestPurchase result.
+  // Returns a result object (never undefined) so callers such as handleRestorePurchases can tell
+  // "credited now" from "already had it" from "still pending".
+  //
+  // `background: true` is used by the launch sweep and by Restore Purchases, where the user did not
+  // just tap Buy. It suppresses the per-transaction alerts and the screen change — those callers
+  // report once at the end — so a recovery from a purchase made days ago cannot yank someone out of
+  // whatever they were doing. It changes NOTHING about what is granted or finished.
+  const verifyAndCreditApplePurchase = async (purchase, { background = false } = {}) => {
+    // Not ours. The subscription screen owns this transaction — do not verify it here, do not
+    // finish it here, and above all do not alert about it. See IAP_SUBSCRIPTION_PREFIX.
+    if (typeof purchase?.productId === 'string' && purchase.productId.startsWith(IAP_SUBSCRIPTION_PREFIX)) {
+      return { skipped: 'subscription' };
+    }
+
     const txId = purchase.transactionId || purchase.id;
     if (!txId) {
       console.warn('🍎 No transaction ID on purchase, skipping');
-      return;
+      return { skipped: 'no_transaction_id' };
     }
 
     // Guard against duplicate processing (listener + requestPurchase return may both fire)
     if (processedTransactionsRef.current.has(txId)) {
       console.log('🍎 Transaction already processed:', txId);
-      return;
+      return { skipped: 'in_flight' };
     }
     processedTransactionsRef.current.add(txId);
 
@@ -1067,53 +1192,88 @@ function AppContent() {
 
     const token = userTokenRef.current;
     if (!token) {
+      // Logged out mid-purchase. The transaction stays unfinished and is remembered, so it is
+      // retried the moment a session exists again.
       console.error('🍎 No user token for verification — user may not be logged in');
-      Alert.alert('Error', 'Please log in and try again.');
       processedTransactionsRef.current.delete(txId);
-      return;
+      await rememberPendingApplePurchase({ txId, productId: purchase.productId, receipt });
+      if (!background) {
+        Alert.alert('Almost there', 'Please log in — your purchase is saved and will be applied automatically.');
+      }
+      return { pending: true, reason: 'no_token', txId };
     }
 
-    try {
-      console.log('🍎 Sending verification to server...');
-      const verifyResponse = await fetch(`${API_BASE}/payment/verify-apple`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          receiptData: receipt || '',
-          productId: purchase.productId,
-          transactionId: txId,
-        }),
-      });
+    // Hold the purchase open and retry a few times before giving up on this session. Most
+    // "network error" reports are a few seconds of dead signal right after the Apple sheet closes.
+    const BACKOFF_MS = [0, 2000, 5000];
+    let outcome = null;
+    let lastError = null;
+    for (let attempt = 0; attempt < BACKOFF_MS.length; attempt++) {
+      if (BACKOFF_MS[attempt]) await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+      try {
+        console.log(`🍎 Sending verification to server (attempt ${attempt + 1})...`);
+        outcome = await postAppleVerification({ token, receipt, productId: purchase.productId, txId });
+        break;
+      } catch (error) {
+        lastError = error;
+        console.warn(`🍎 Verification attempt ${attempt + 1} failed:`, error.message);
+      }
+    }
 
-      const verifyData = await verifyResponse.json();
-      console.log('🍎 Server verification response:', verifyData);
+    // "We could not ask" — either the request never completed, or the server told us it could not
+    // reach Apple (503 / retryable). Both are non-final: do NOT finish the transaction, do NOT
+    // burn the dedupe entry, and record it for the next launch.
+    const unreachable = !outcome;
+    const retryable = !unreachable && (outcome.status === 503 || outcome.data.retryable === true);
+    if (unreachable || retryable) {
+      console.error('🍎 Verification not final:',
+        unreachable ? (lastError && lastError.message) : `HTTP ${outcome.status}`);
+      processedTransactionsRef.current.delete(txId);
+      await rememberPendingApplePurchase({ txId, productId: purchase.productId, receipt });
+      if (!background) {
+        Alert.alert(
+          'Purchase saved',
+          "We couldn't confirm your purchase with the App Store just now. Nothing is lost — reopen the "
+          + 'app once you are back online and your credits will be added automatically. Contact support '
+          + 'if they have not appeared within 24 hours.',
+          [{ text: 'OK', onPress: () => setScreen('dashboard') }]
+        );
+      }
+      return { pending: true, reason: unreachable ? 'network' : 'server_retryable', txId };
+    }
 
-      if (verifyData.success) {
-        try {
-          await finishTransaction({ purchase, isConsumable: true });
-          console.log('🍎 Transaction finished with Apple');
-        } catch (finishErr) {
-          console.warn('🍎 finishTransaction error (non-fatal):', finishErr.message);
-        }
+    const verifyData = outcome.data;
+    console.log('🍎 Server verification response:', verifyData);
 
-        // Reload credit balance
-        try {
-          const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
-            headers: { 'Authorization': `Bearer ${token}` },
-          });
-          if (creditsResponse.ok) {
-            const creditsData = await creditsResponse.json();
-            if (creditsData.success) {
-              setCreditBalance(creditsData.balance || 0);
-            }
+    if (verifyData.success) {
+      // Only now is it safe to hand the transaction back to Apple.
+      try {
+        await finishTransaction({ purchase, isConsumable: true });
+        console.log('🍎 Transaction finished with Apple');
+      } catch (finishErr) {
+        console.warn('🍎 finishTransaction error (non-fatal):', finishErr.message);
+      }
+      await forgetPendingApplePurchase(txId);
+
+      // Reload credit balance
+      try {
+        const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (creditsResponse.ok) {
+          const creditsData = await creditsResponse.json();
+          if (creditsData.success) {
+            setCreditBalance(creditsData.balance || 0);
           }
-        } catch (e) {
-          console.log('🍎 Failed to reload credits (non-fatal)');
         }
+      } catch (e) {
+        console.log('🍎 Failed to reload credits (non-fatal)');
+      }
 
+      // A purchase recovered in the background (launch sweep / Restore) must not hijack the screen
+      // or pop a celebration for something the user bought days ago. The balance above is already
+      // refreshed either way, and those callers report once at the end.
+      if (!verifyData.alreadyProcessed && !background) {
         setScreen('');
         setTimeout(() => {
           Alert.alert(
@@ -1122,23 +1282,84 @@ function AppContent() {
             [{ text: 'Awesome!', onPress: () => setScreen('dashboard') }]
           );
         }, 100);
-      } else {
-        try {
-          await finishTransaction({ purchase, isConsumable: true });
-        } catch (e) { /* ignore */ }
-        Alert.alert('Purchase Error', verifyData.error || 'Failed to verify purchase. Please contact support.');
       }
-    } catch (error) {
-      console.error('🍎 Server verification network error:', error);
-      Alert.alert(
-        'Verification Pending',
-        'Purchase received! Credits will be added shortly.',
-        [{ text: 'OK', onPress: () => setScreen('dashboard') }]
-      );
+      return { credited: true, alreadyProcessed: Boolean(verifyData.alreadyProcessed), txId };
+    }
+
+    // A definite NO from the server (Apple does not know this transaction, product mismatch,
+    // refunded, unknown product). Retrying can never turn this into a yes, so finishing is correct
+    // — leaving it unfinished would replay the same rejection on every launch forever.
+    try {
+      await finishTransaction({ purchase, isConsumable: true });
+    } catch (e) { /* ignore */ }
+    await forgetPendingApplePurchase(txId);
+    console.warn('🍎 Verification rejected:', outcome.status, verifyData.error);
+    if (!background) {
+      Alert.alert('Purchase Error', verifyData.error || 'Failed to verify purchase. Please contact support.');
+    }
+    return { failed: true, error: verifyData.error || null, txId };
+  };
+
+  // Recovery driver. Runs on every IAP init and after a login, and is the whole reason a purchase
+  // interrupted by a dead network is not lost:
+  //   a) StoreKit still holds every transaction we never finished → re-verify with the real
+  //      purchase object, which is the only way finishTransaction() can be called correctly.
+  //   b) Anything we recorded but StoreKit no longer offers is retried by id. It cannot be
+  //      finished (no purchase object), but the server can still credit it, and the server is the
+  //      authority on whether the transaction is real.
+  const drainUnfinishedApplePurchases = async () => {
+    const seen = new Set();
+    try {
+      const available = await getAvailablePurchases({ alsoPublishToEventListenerIOS: false });
+      console.log('🍎 Unfinished purchases found:', available?.length || 0);
+      for (const p of (available || [])) {
+        const id = p && (p.transactionId || p.id);
+        if (id) seen.add(id);
+        if (p) await verifyAndCreditApplePurchase(p, { background: true });
+      }
+    } catch (e) {
+      console.log('🍎 getAvailablePurchases error (non-fatal):', e.message);
+    }
+
+    const token = userTokenRef.current;
+    if (!token) return;
+    const pending = await readPendingApplePurchases();
+    for (const entry of pending) {
+      if (!entry || !entry.txId || seen.has(entry.txId)) continue;
+      if (processedTransactionsRef.current.has(entry.txId)) continue;
+      try {
+        const { status, data } = await postAppleVerification({
+          token, receipt: entry.receipt, productId: entry.productId, txId: entry.txId,
+        });
+        if (status === 503 || data.retryable === true) continue;   // still not final — keep it
+        await forgetPendingApplePurchase(entry.txId);
+        if (data.success && !data.alreadyProcessed) {
+          console.log('🍎 Recovered pending purchase:', entry.txId);
+          try {
+            const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
+              headers: { 'Authorization': `Bearer ${token}` },
+            });
+            if (creditsResponse.ok) {
+              const creditsData = await creditsResponse.json();
+              if (creditsData.success) setCreditBalance(creditsData.balance || 0);
+            }
+          } catch { /* non-fatal */ }
+        }
+      } catch (e) {
+        console.log('🍎 Pending retry failed (will try again next launch):', e.message);
+      }
     }
   };
 
-  // Initialize Apple IAP connection (iOS only)
+  // Initialize Apple IAP connection (iOS only).
+  //
+  // ⚠️ The iOS-only guard is CORRECT and must stay. Everything this effect owns is the four Apple
+  // CONSUMABLE credit packs, which exist on the App Store and nowhere else. Android SUBSCRIPTIONS
+  // are not handled in this file at all: services/storeBilling.ts opens its own billing connection
+  // lazily and app/(subscription)/plans.tsx drives requestPurchase({ type: 'subs' }) with the base
+  // plan's offerToken. Widening this guard to Android would register a SECOND global
+  // purchaseUpdatedListener that would then race storeBilling's per-purchase listener for the same
+  // transaction, and would POST subscription receipts to the consumable endpoint.
   useEffect(() => {
     if (Platform.OS !== 'ios' || isExpoGo || !nativeIapAvailable) return;
 
@@ -1160,29 +1381,35 @@ function AppContent() {
 
         purchaseErrorSubscription.current = purchaseErrorListener((error) => {
           console.warn('🍎 Purchase error:', error);
-          if (error.code !== 'E_USER_CANCELLED') {
-            Alert.alert('Purchase Error', error.message || 'Something went wrong with the purchase.');
-          }
+
+          // Not ours. This listener is GLOBAL — StoreKit delivers subscription failures here too,
+          // and the subscription screen has already told the user what happened in its own words.
+          // A PurchaseError does not reliably carry a productId, so the in-flight sku from
+          // storeBilling is the fallback; without it, cancelling the subscription sheet stacked a
+          // second generic alert on top of the paywall.
+          const pid = String(error?.productId || '');
+          if (pid.startsWith(IAP_SUBSCRIPTION_PREFIX) || subscriptionPurchaseInFlight()) return;
+
+          // See the note in handleBuyPackageApple: v15 normalises this to 'user-cancelled'.
+          const code = String(error?.code || '');
+          if (code === 'user-cancelled' || code === 'E_USER_CANCELLED' || /cancel/i.test(code)) return;
+
+          Alert.alert('Purchase Error', error.message || 'Something went wrong with the purchase.');
         });
         console.log('🍎 Purchase listeners registered successfully');
 
-        // Fetch products from App Store
-        const products = await fetchProducts({ skus: IAP_PRODUCT_IDS });
-        console.log('🍎 IAP products fetched:', products.length, products.map(p => p.id));
-        if (mounted) setIapProducts(products);
-
-        // Process any unfinished purchases from previous sessions
+        // Fetch products from App Store. Wrapped on its own so a products failure can never skip
+        // the recovery sweep below — delivering a paid-for purchase matters more than prices.
         try {
-          const available = await getAvailablePurchases({ alsoPublishToEventListenerIOS: false });
-          console.log('🍎 Unfinished purchases found:', available?.length || 0);
-          if (available && available.length > 0) {
-            for (const p of available) {
-              await verifyAndCreditApplePurchase(p);
-            }
-          }
+          const products = (await fetchProducts({ skus: IAP_PRODUCT_IDS, type: 'in-app' })) || [];
+          console.log('🍎 IAP products fetched:', products.length, products.map(p => p.id));
+          if (mounted) setIapProducts(products);
         } catch (e) {
-          console.log('🍎 getAvailablePurchases error (non-fatal):', e.message);
+          console.warn('🍎 fetchProducts failed (prices fall back to USD):', e.message);
         }
+
+        // Process any purchase that was paid for but never confirmed (see drainUnfinishedApplePurchases)
+        await drainUnfinishedApplePurchases();
       } catch (error) {
         console.warn('🍎 IAP init error:', error.message);
       }
@@ -1374,11 +1601,26 @@ function AppContent() {
       console.log('🍎 Restore: found purchases:', available?.length || 0);
       if (available && available.length > 0) {
         let restored = 0;
+        let stillPending = 0;
+        let rejected = 0;
         for (const p of available) {
-          const result = await verifyAndCreditApplePurchase(p);
-          if (result) restored++;
+          // verifyAndCreditApplePurchase now ALWAYS returns an object, so the old `if (result)`
+          // counted "already processed" and "could not reach the server" as restorations.
+          // background:true so the loop reports once here instead of alerting per transaction.
+          const result = await verifyAndCreditApplePurchase(p, { background: true });
+          if (result?.credited && !result.alreadyProcessed) restored++;
+          else if (result?.pending) stillPending++;
+          else if (result?.failed) rejected++;
         }
-        Alert.alert('Restore Complete', restored > 0 ? `Successfully restored ${restored} purchase(s). Your credits have been updated.` : 'All purchases were already applied to your account.');
+        if (stillPending > 0) {
+          Alert.alert('Restore Incomplete',
+            `We couldn't reach our server for ${stillPending} purchase(s). They are saved — reopen the app when you are back online.`);
+        } else if (rejected > 0 && restored === 0) {
+          Alert.alert('Restore Failed',
+            `${rejected} purchase(s) could not be verified with the App Store. Please contact support.`);
+        } else {
+          Alert.alert('Restore Complete', restored > 0 ? `Successfully restored ${restored} purchase(s). Your credits have been updated.` : 'All purchases were already applied to your account.');
+        }
       } else {
         Alert.alert('No Purchases Found', 'There are no previous purchases to restore.');
       }
@@ -1390,17 +1632,37 @@ function AppContent() {
     }
   };
 
-  // Handle package purchase - routes to Apple IAP on iOS, Razorpay on Android
+  // Handle package purchase.
+  //
+  // iOS  → Apple In-App Purchase (the four approved consumable credit packs).
+  // Android → NOTHING. The Razorpay branch that used to be here was a Play Payments violation
+  //   (see the note where handleBuyPackageRazorpay was removed). There is no Play Billing product
+  //   for these credit packs — Play has zero in-app products — so there is no compliant way to
+  //   sell them on Android today, and the only honest answer is to say so and point at the monthly
+  //   plans, which DO go through Play Billing the moment those products exist.
   const handleBuyPackage = async (pkg) => {
     console.log('💳 Buy package clicked:', pkg);
 
     if (Platform.OS === 'ios') {
-      // ===== APPLE IN-APP PURCHASE (iOS) =====
       return handleBuyPackageApple(pkg);
-    } else {
-      // ===== RAZORPAY (Android) =====
-      return handleBuyPackageRazorpay(pkg);
     }
+
+    Alert.alert(
+      'Not available on Android yet',
+      'Credit packs can only be bought on iPhone at the moment. On Android, use the monthly plans — '
+      + 'they include cover letters and resume generations every month, and they are billed through '
+      + 'Google Play.',
+      [
+        { text: 'Not now', style: 'cancel' },
+        {
+          text: 'See plans',
+          onPress: () => {
+            try { require('expo-router').router?.push?.('/(subscription)/plans'); }
+            catch (e) { console.warn('nav to plans failed:', e?.message); }
+          },
+        },
+      ]
+    );
   };
 
   // Apple IAP purchase handler (iOS only)
@@ -1450,7 +1712,11 @@ function AppContent() {
       }
     } catch (error) {
       console.error('🍎 IAP purchase error:', error);
-      if (error.code === 'E_USER_CANCELLED') {
+      // ⚠️ react-native-iap 15 normalises this to the kebab-case OpenIAP code 'user-cancelled'
+      // (lib/module/utils/errorMapping.js). Matching only the legacy 'E_USER_CANCELLED' meant every
+      // user who tapped Cancel in the Apple sheet was shown a "Purchase Error" alert.
+      const code = String(error?.code || '');
+      if (code === 'user-cancelled' || code === 'E_USER_CANCELLED' || /cancel/i.test(code)) {
         console.log('Purchase cancelled by user');
         return;
       }
@@ -1462,143 +1728,23 @@ function AppContent() {
     }
   };
 
-  // Razorpay payment handler (Android only, kept for reference)
-  /* --- RAZORPAY COMMENTED OUT FOR iOS (Apple IAP used instead) ---
-  const handleBuyPackageRazorpay_iOS = async (pkg) => {
-    // This was the original Razorpay flow for iOS - now replaced by Apple IAP
-    // Keeping for reference in case needed for Android
-  };
-  --- END RAZORPAY iOS COMMENT --- */
-  
-  const handleBuyPackageRazorpay = async (pkg) => {
-    if (!RazorpayCheckout || typeof RazorpayCheckout.open !== 'function') {
-      Alert.alert(
-        'Not Available in Expo Go',
-        'Razorpay native checkout requires a development or production build. Please use Android build or TestFlight/production app.'
-      );
-      return;
-    }
-
-    try {
-      // Create Razorpay order
-      console.log('📞 Calling create-order API...');
-      const orderResponse = await fetch(`${API_BASE}/payment/create-order`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user?.token || ''}`
-        },
-        body: JSON.stringify({
-          packageId: pkg.id,
-          amount: parseFloat(pkg.amount)
-        })
-      });
-
-      console.log('📦 Order response status:', orderResponse.status);
-      const orderData = await orderResponse.json();
-      console.log('📦 Order data:', orderData);
-
-      if (!orderResponse.ok) {
-        throw new Error(orderData.error || 'Failed to create order');
-      }
-
-      // Use prefill data from backend (fetched from database)
-      const prefillData = orderData.prefill || {};
-      console.log('👤 Prefill data from backend:', prefillData);
-
-      // Open Razorpay native checkout
-      const options = {
-        description: pkg.name || 'Credit Package',
-        currency: orderData.currency,
-        key: orderData.keyId,
-        amount: orderData.amount, // Already in paise from server
-        name: 'CVApplyr',
-        order_id: orderData.orderId,
-        prefill: {
-          email: prefillData.email || '',
-          contact: prefillData.contact || '',
-          name: prefillData.name || ''
-        },
-        theme: { color: '#667eea' }
-      };
-
-      console.log('📲 Opening Razorpay native checkout, amount (paise):', orderData.amount);
-      
-      const paymentData = await RazorpayCheckout.open(options);
-      console.log('✅ Payment successful:', paymentData);
-
-      // Verify payment with backend
-      try {
-        const verifyResponse = await fetch(`${API_BASE}/payment/verify`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${user.token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            razorpay_order_id: paymentData.razorpay_order_id,
-            razorpay_payment_id: paymentData.razorpay_payment_id,
-            razorpay_signature: paymentData.razorpay_signature
-          })
-        });
-
-        const verifyData = await verifyResponse.json();
-        console.log('✅ Payment verification response:', verifyData);
-
-        if (verifyData.success) {
-          // Reload credits
-          try {
-            const creditsResponse = await fetch(`${API_BASE}/user/credits`, {
-              method: 'GET',
-              headers: {
-                'Authorization': `Bearer ${user.token}`,
-                'Content-Type': 'application/json',
-              }
-            });
-            if (creditsResponse.ok) {
-              const creditsData = await creditsResponse.json();
-              if (creditsData.success) {
-                setCreditBalance(creditsData.balance || 0);
-              }
-            }
-          } catch (reloadError) {
-            console.log('Failed to reload credits, using verification response');
-            setCreditBalance(verifyData.credits);
-          }
-
-          setScreen('');
-          setTimeout(() => {
-            Alert.alert(
-              '🎉 Payment Successful!',
-              `${verifyData.creditsAdded} credits have been added to your account!\n\nNew Balance: ${verifyData.credits} credits`,
-              [{ text: 'Awesome!', onPress: () => setScreen('dashboard') }]
-            );
-          }, 100);
-        } else {
-          throw new Error(verifyData.error || 'Verification failed');
-        }
-      } catch (verifyError) {
-        console.error('❌ Payment verification error:', verifyError);
-        Alert.alert(
-          'Verification Pending',
-          'Payment received! Credits will be added shortly. Please check your balance in a few minutes.',
-          [{ text: 'OK', onPress: () => setScreen('dashboard') }]
-        );
-      }
-    } catch (error) {
-      console.error('❌ Payment error:', error);
-      // Razorpay returns error code 0 when user cancels
-      if (error.code === 0 || error.description === 'Payment cancelled') {
-        console.log('Payment cancelled by user');
-        return;
-      }
-      Alert.alert(
-        'Payment Error',
-        error.description || error.message || 'Failed to initiate payment. Please try again.',
-        [{ text: 'OK' }]
-      );
-    }
-  };
+  // ⚠️ REMOVED: handleBuyPackageRazorpay (Razorpay native checkout for the Android credit packs).
+  //
+  // Credits are in-app digital content. Google Play Payments policy requires that in-app digital
+  // content sold inside an app distributed on Play is bought through Google Play Billing and
+  // nothing else — a third-party checkout for the same goods is a policy violation that risks the
+  // listing, not just the transaction. The flow that lived here created a Razorpay order via
+  // /payment/create-order, opened RazorpayCheckout, and credited the account via /payment/verify.
+  //
+  // It is deleted rather than disabled: a dormant, callable purchase function is one edit away from
+  // being live again, and the deleted code is in git history if a NON-digital use ever needs it.
+  // The server endpoints are untouched — the website still uses them, and the 19 existing
+  // payment_orders / balances bought under the old model keep working (entitlements.js still spends
+  // the legacy credit pool after plan and trial).
+  //
+  // Android therefore has exactly one supported purchase path: Google Play Billing, through
+  // app/(subscription)/plans.tsx. Play has zero products today, so that screen honestly reports
+  // "not on sale yet" until they exist.
 
   // Fetch profile data from backend
   const fetchProfileData = async () => {
@@ -6579,7 +6725,7 @@ function exportSig(){
           )}
         </ScrollView>
 
-        {/* Payment handled by native Razorpay SDK - no WebView needed */}
+        {/* Payment: Apple IAP on iOS; on Android, Google Play Billing via (subscription)/plans. */}
         <FloatingTabBar currentScreen="notifications" setScreen={setScreen} handleReview={handleReview} />
       </SafeAreaViewContext>
     );

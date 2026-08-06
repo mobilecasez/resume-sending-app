@@ -1261,6 +1261,46 @@ async function runPostgresMigrations(db) {
                    ON CONFLICT (key) DO NOTHING`);
         console.log('✅ Migration 034: instant_research_runs done (switch seeded OFF)');
 
+        // ── Migration 035: store-backed subscriptions (Apple / Google) ──
+        // user_subscriptions was built for ONE source ('admin') and had no way to say WHICH store
+        // purchase a row belongs to — no original_transaction_id, no purchase_token, and, worse, no
+        // unique key of any kind. A replayed Apple notification or a re-delivered Pub/Sub message
+        // would INSERT a second active row: two entitlements from one payment, and getStatus()
+        // silently picking whichever has the later period_end.
+        //
+        // The unique index below is the whole point. storeSetSubscription() upserts onto it, which
+        // makes every write idempotent by construction: replaying a notification recomputes the same
+        // state from the same store facts and lands on the same row.
+        //
+        // PARTIAL on purpose — legacy rows (source='admin', store NULL) are untouched and unaffected.
+        // Existing duplicate active rows, if any, are left alone: this migration does not delete or
+        // rewrite anyone's entitlement.
+        await col(`ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS store TEXT`);
+        await col(`ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS original_transaction_id TEXT`);
+        await col(`ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS purchase_token TEXT`);
+        await col(`ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS latest_transaction_id TEXT`);
+        await col(`ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS environment TEXT`);
+        await col(`ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS auto_renew BOOLEAN`);
+        await col(`ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT FALSE`);
+        await col(`ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS store_state TEXT`);
+        await col(`ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+        await col(`CREATE UNIQUE INDEX IF NOT EXISTS uq_user_subscriptions_store_txn
+                     ON user_subscriptions(store, original_transaction_id)
+                     WHERE store IS NOT NULL AND original_transaction_id IS NOT NULL`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_user_subscriptions_token
+                     ON user_subscriptions(purchase_token) WHERE purchase_token IS NOT NULL`);
+
+        // The reason every store_notifications row has user_id NULL: nothing ever told the store who
+        // the buyer was. This table is the missing link — one stable opaque token per user, sent as
+        // Apple's appAccountToken (must be a UUID) and Play's obfuscatedExternalAccountId, and read
+        // back off the webhook payload to attribute a renewal to an account.
+        await col(`CREATE TABLE IF NOT EXISTS user_store_tokens (
+            user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            account_token TEXT NOT NULL UNIQUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        console.log('✅ Migration 035: store-backed subscriptions done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

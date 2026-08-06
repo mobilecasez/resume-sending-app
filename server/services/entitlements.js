@@ -20,19 +20,46 @@ const crypto = require('crypto');
 const dbConfig = require('../../db-config');
 const { getEventCost, chargeCredits } = require('./eventCosts');
 
-// ── The plan catalog. Prices are DISPLAY values (the stores are the billing truth once wired). ──
+// ── The plan catalog. priceUsd is a DISPLAY FALLBACK ONLY — see the warning below. ────────────
+// ⚠️ priceUsd MUST NOT reach a buy button. Outside the US the store charges the local price tier,
+// which is not 4.99 USD converted; showing this number next to a working purchase button means the
+// user is quoted one price and billed another (an App Store rejection, and a real complaint).
+// The paywall renders a buyable row only from the store's own localized displayPrice; priceUsd is
+// for the disabled/not-yet-provisioned state.
+//
+// productAndroid was `cvapplyr_sub_*`, an id that has never existed on Play (Play has zero
+// subscriptions), so nothing is stranded by moving to ONE identifier on both stores. The canonical
+// table now lives in services/storeProducts.js and is asserted against below.
+//
+// ⚠️ productIos/productAndroid are `com.cvapplyr.mobile.sub.*` — the ids that EXIST in App Store
+// Connect (group 22290874). They are NOT `com.cvapplyr.sub.*`: that namespace was proposed but
+// never created on either store, and the app fetches its buyable SKUs from this very list, so the
+// wrong id here means fetchProducts returns nothing and the paywall has no buy button at all.
 const PLANS = [
   { key: 'starter', label: 'Starter', priceUsd: 4.99,  letters: 30,   resumes: 5,
-    productIos: 'com.cvapplyr.sub.starter', productAndroid: 'cvapplyr_sub_starter' },
+    productIos: 'com.cvapplyr.mobile.sub.starter', productAndroid: 'com.cvapplyr.mobile.sub.starter' },
   { key: 'plus',    label: 'Plus',    priceUsd: 9.99,  letters: 100,  resumes: 10,
-    productIos: 'com.cvapplyr.sub.plus', productAndroid: 'cvapplyr_sub_plus' },
+    productIos: 'com.cvapplyr.mobile.sub.plus', productAndroid: 'com.cvapplyr.mobile.sub.plus' },
   { key: 'pro',     label: 'Pro',     priceUsd: 14.99, letters: 150,  resumes: 15,
-    productIos: 'com.cvapplyr.sub.pro', productAndroid: 'cvapplyr_sub_pro' },
+    productIos: 'com.cvapplyr.mobile.sub.pro', productAndroid: 'com.cvapplyr.mobile.sub.pro' },
   { key: 'power',   label: 'Power',   priceUsd: 24.99, letters: 300,  resumes: 25,
-    productIos: 'com.cvapplyr.sub.power', productAndroid: 'cvapplyr_sub_power' },
+    productIos: 'com.cvapplyr.mobile.sub.power', productAndroid: 'com.cvapplyr.mobile.sub.power' },
   { key: 'max',     label: 'Max',     priceUsd: 49.99, letters: 1000, resumes: 50,
-    productIos: 'com.cvapplyr.sub.max', productAndroid: 'cvapplyr_sub_max' },
+    productIos: 'com.cvapplyr.mobile.sub.max', productAndroid: 'com.cvapplyr.mobile.sub.max' },
 ];
+
+// Drift guard. If this ever fires, one of the two tables was edited alone and a real purchase will
+// verify against a product id that maps to no plan — the user pays and gets nothing.
+try {
+  const sp = require('./storeProducts');
+  for (const p of PLANS) {
+    const want = sp.productIdForPlan(p.key);
+    if (want !== p.productIos || want !== p.productAndroid) {
+      console.error(`[entitlements] PRODUCT ID DRIFT for plan "${p.key}": catalog has ` +
+        `${p.productIos}/${p.productAndroid}, storeProducts.js has ${want}`);
+    }
+  }
+} catch (e) { console.warn('[entitlements] product id check skipped:', e.message); }
 const TRIAL = { key: 'trial', label: '7-day free trial', days: 7, letters: 5, resumes: 2 };
 const planByKey = (k) => PLANS.find((p) => p.key === k) || null;
 
@@ -131,7 +158,13 @@ async function getStatus(userId, req) {
   const plan = sub ? planByKey(sub.plan_key) : null;
   const out = {
     plans: PLANS, trial: TRIAL,
-    subscription: sub ? { planKey: sub.plan_key, label: plan ? plan.label : sub.plan_key, periodEnd: sub.period_end, source: sub.source } : null,
+    // `store`/`autoRenew` let the paywall say "managed in the App Store" and hide a buy button that
+    // would charge a second time on the other platform, instead of quietly selling a duplicate.
+    subscription: sub ? {
+      planKey: sub.plan_key, label: plan ? plan.label : sub.plan_key, periodEnd: sub.period_end,
+      source: sub.source, store: sub.store || null, productId: sub.product_id || null,
+      autoRenew: sub.auto_renew == null ? null : Boolean(sub.auto_renew),
+    } : null,
     remaining: { letters: 0, resumes: 0 },
     used: { letters: 0, resumes: 0 },
     via: null,
@@ -277,10 +310,125 @@ async function adminSetSubscription(userId, planKey) {
   return { ok: true, planKey };
 }
 
+// ── store-backed subscriptions (Apple / Google) ───────────────────────────────────────────────
+// The ONLY way a real purchase becomes an entitlement. Deliberately NOT adminSetSubscription with
+// a different source string:
+//
+//   • adminSetSubscription hardcodes NOW() + INTERVAL '30 days'. For a paid plan that guess is
+//     wrong in both directions — it keeps a lapsed user in, and it cuts off a paying user early
+//     whenever the store's expiry is later (annual promos, grace periods, billing retry, Apple's
+//     free extensions). period_end here comes from the store's expiry and nowhere else.
+//   • adminSetSubscription cancels-then-inserts. Replay that on a redelivered webhook and you have
+//     two active rows for one payment. This upserts onto the unique index
+//     (store, original_transaction_id) from Migration 035, so a replay recomputes the same state
+//     onto the same row: idempotent by construction, not by remembering notification ids.
+//
+// Monotonic on purpose: an out-of-order delivery can only move period_end FORWARD. The one thing
+// allowed to pull access back is `terminal` (refund / revoke / chargeback), which is explicit.
+//
+// Legacy credits are untouched by every path in here.
+async function storeSetSubscription({
+  userId, planKey, source, productId, originalTxnId,
+  periodStart = null, periodEnd, status = 'active', terminal = false,
+  purchaseToken = null, latestTxnId = null, environment = null,
+  autoRenew = null, acknowledged = null, storeState = null, supersede = true,
+}) {
+  const uid = parseInt(userId, 10);
+  if (!Number.isFinite(uid) || uid <= 0) return { error: 'invalid_user' };
+  if (!planByKey(planKey)) return { error: 'unknown_plan' };
+  if (source !== 'apple' && source !== 'google') return { error: 'invalid_source' };
+  const txn = String(originalTxnId || '').trim();
+  if (!txn) return { error: 'missing_original_transaction_id' };
+  const end = periodEnd instanceof Date ? periodEnd : new Date(periodEnd);
+  if (!end || isNaN(end.getTime())) return { error: 'invalid_period_end' };
+  const start = periodStart ? new Date(periodStart) : null;
+
+  const rows = await dbConfig.query(
+    `INSERT INTO user_subscriptions
+       (user_id, plan_key, status, source, product_id, store, original_transaction_id,
+        purchase_token, latest_transaction_id, environment, auto_renew, acknowledged, store_state,
+        period_start, period_end, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$4,$6,$7,$8,$9,$10,COALESCE($11,FALSE),$12,
+             COALESCE($13, NOW()), $14, NOW(), NOW())
+     ON CONFLICT (store, original_transaction_id)
+       WHERE store IS NOT NULL AND original_transaction_id IS NOT NULL
+     DO UPDATE SET
+       plan_key   = EXCLUDED.plan_key,
+       status     = EXCLUDED.status,
+       product_id = EXCLUDED.product_id,
+       purchase_token        = COALESCE(EXCLUDED.purchase_token, user_subscriptions.purchase_token),
+       latest_transaction_id = COALESCE(EXCLUDED.latest_transaction_id, user_subscriptions.latest_transaction_id),
+       environment           = COALESCE(EXCLUDED.environment, user_subscriptions.environment),
+       auto_renew            = COALESCE(EXCLUDED.auto_renew, user_subscriptions.auto_renew),
+       acknowledged          = user_subscriptions.acknowledged OR EXCLUDED.acknowledged,
+       store_state           = COALESCE(EXCLUDED.store_state, user_subscriptions.store_state),
+       -- A new billing cycle must reset the quota window, so period_start advances to the moment
+       -- the old cycle ended. A plan change starts a fresh window at the change. Anything else
+       -- (a replay, a status-only notification) leaves the window exactly where it was.
+       --
+       -- ⚠️ The outer GREATEST is not decoration: period_start must NEVER move backwards. Google's
+       -- subscriptionsv2 reports startTime = when the subscription was FIRST granted, not when the
+       -- current cycle began, so a plan change on a long-lived Play token would otherwise rewind the
+       -- window to the original signup date — and usedSince() would then count every cover letter
+       -- the user has ever generated against this month's allowance. A user who upgrades after six
+       -- months would pay and find the new plan already exhausted. Refusing to rewind costs at most
+       -- one partial window on an upgrade; rewinding costs somebody their month.
+       period_start = GREATEST(user_subscriptions.period_start, CASE
+         WHEN EXCLUDED.plan_key <> user_subscriptions.plan_key THEN EXCLUDED.period_start
+         WHEN EXCLUDED.period_end > user_subscriptions.period_end
+           THEN GREATEST(user_subscriptions.period_end, EXCLUDED.period_start)
+         ELSE user_subscriptions.period_start END),
+       period_end = CASE
+         WHEN $15::boolean THEN EXCLUDED.period_end
+         ELSE GREATEST(user_subscriptions.period_end, EXCLUDED.period_end) END,
+       updated_at = NOW()
+     RETURNING *, (xmax = 0) AS _inserted`,
+    [uid, planKey, status, source, productId || null, txn, purchaseToken, latestTxnId,
+     environment, autoRenew, acknowledged, storeState, start, end, Boolean(terminal)]
+  );
+  const row = rows && rows[0];
+  if (!row) return { error: 'upsert_failed' };
+
+  // The purchase stays welded to the account that first claimed it. Letting a second account adopt
+  // the same store transaction is how one Apple ID farms plans for a dozen users — and it would
+  // silently strip the plan from whoever paid.
+  const claimedBy = Number(row.user_id);
+  const transferBlocked = claimedBy !== uid;
+  // Did this statement INSERT, or did it take the DO UPDATE branch? That is what stops the
+  // "new purchase" admin alert firing again on every redelivered webhook.
+  //
+  // ⚠️ NOT a created_at/updated_at comparison. Both are stamped NOW() on insert, so a webhook that
+  // arrives within a second of the client's own verify call — the normal case, Apple's SUBSCRIBED
+  // notification races the app — measured a sub-second delta and reported a brand-new purchase for
+  // the second time. Postgres answers this exactly: xmax is 0 on a freshly inserted tuple and
+  // non-zero on one that an ON CONFLICT DO UPDATE touched. Where it is ambiguous (a concurrently
+  // locked row) it reads non-zero, i.e. it errs toward staying quiet rather than alerting twice.
+  const created = row._inserted === true;
+
+  // One active entitlement per user. This is also the "subscribed on both stores" fix: whichever
+  // store wrote last wins, the other row goes to 'superseded', and the paywall can then tell the
+  // user where the live subscription is managed instead of quietly billing them twice.
+  if (supersede && row.status === 'active' && new Date(row.period_end) > new Date()) {
+    await dbConfig.query(
+      `UPDATE user_subscriptions SET status = 'superseded', updated_at = NOW()
+        WHERE user_id = $1 AND id <> $2 AND status = 'active'`, [claimedBy, row.id]);
+  }
+  return { ok: true, created, transferBlocked, row };
+}
+
+/** The store-backed row for a user, if any (used by the paywall to say where it is managed). */
+async function storeSubscriptionFor(userId) {
+  const rows = await dbConfig.query(
+    `SELECT * FROM user_subscriptions
+      WHERE user_id = $1 AND store IS NOT NULL
+      ORDER BY period_end DESC LIMIT 1`, [userId]);
+  return (rows && rows[0]) || null;
+}
+
 module.exports = {
   PLANS, TRIAL,
   reportDevice, ensureTrial, getStatus, canConsumeMany, consumeOnSuccess, getUsage,
-  adminSetSubscription, deviceIdOf, ipHashOf,
+  adminSetSubscription, storeSetSubscription, storeSubscriptionFor, deviceIdOf, ipHashOf,
   // exported for the lifecycle nudges (which must know what a user has LEFT before offering more)
   activeSubscription, usedSince, bonusSince, allowanceIn, planByKey, KIND_QUOTA_FIELD,
 };

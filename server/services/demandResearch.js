@@ -1,8 +1,11 @@
-// Demand-driven job research — ADDITIVE, ISOLATED. Twice a day (env-tunable) this walks the
-// interests real users saved (skills + city/country) plus their résumé skills, asks a
-// Google-grounded Gemini call to FIND live postings for that demand — prioritising the user's own
-// city, then country, then remote/world — extracts each discovered posting with the existing
-// deterministic-first extractor, and upserts the results into global_jobs (the production feed).
+// Demand-driven job research — ADDITIVE, ISOLATED. Twice a day (env-tunable) this builds demand
+// clusters from TWO lanes — (1) the interests real users saved, and (2) the skills + location read
+// off the résumés of everyone who joined or uploaded a CV in the last DEMAND_RESEARCH_NEW_USER_DAYS
+// (default 7) — then asks a Google-grounded Gemini call to FIND live postings for that demand,
+// prioritising the user's own city, then country, then remote/world, extracts each discovered
+// posting with the existing deterministic-first extractor, and upserts the results into global_jobs
+// (the production feed). Lane 2 carries the routine in practice: user_job_interests is empty in
+// production, so before it existed every run ended with "nothing to research".
 // After a run, users whose interests just gained fresh matching jobs get ONE push
 // ("New matching jobs for you") — per-user daily dedupe, notification prefs respected.
 //
@@ -23,6 +26,8 @@ const INTERVAL_H = parseFloat(process.env.DEMAND_RESEARCH_HOURS || '12');
 const ENABLED = (process.env.DEMAND_RESEARCH_ENABLED || '1') === '1';
 const MAX_CLUSTERS_PER_RUN = parseInt(process.env.DEMAND_RESEARCH_CLUSTERS || '12', 10);
 const MAX_URLS_PER_CLUSTER = parseInt(process.env.DEMAND_RESEARCH_URLS || '8', 10);
+// How far back "recently added users" reaches for the résumé lane (see loadResumeClusters).
+const NEW_USER_DAYS = parseInt(process.env.DEMAND_RESEARCH_NEW_USER_DAYS || '7', 10);
 // Founder/test accounts never drive research or receive these pushes.
 // User 1 (the founder) is deliberately NOT excluded here: their saved interests must be
 // researched like anyone's, or the end-to-end loop (save interest → research → match push)
@@ -42,25 +47,101 @@ function geminiGrounded() {
   } catch { return null; }
 }
 
-// ── demand clusters: one per saved interest, freshest interests first ─────────────────────────
-async function loadClusters() {
+// ── demand clusters ───────────────────────────────────────────────────────────────────────────
+// TWO lanes feed the researcher, in priority order:
+//   1. saved interests — the user typed exactly what they want, so it outranks anything inferred;
+//   2. recent users' RÉSUMÉS — skills + location read straight off the CV.
+// Lane 2 exists because lane 1 has never produced a single cluster in production: user_job_interests
+// is empty for every user, so before this the routine logged "no user interests saved yet" twice a
+// day and researched nothing, while dozens of parsed résumés sat there describing exactly what those
+// people do and where they live.
+const clusterKey = (country, city, skills) =>
+  [String(country).toLowerCase(), String(city || '').toLowerCase(), skills.join(',').toLowerCase()].join('|');
+
+async function loadInterestClusters(clusters) {
   const rows = await dbConfig.query(
     `SELECT i.id, i.user_id, i.country, i.city, i.skills
        FROM user_job_interests i
        JOIN users u ON u.id = i.user_id AND u.deleted_at IS NULL
-      ORDER BY i.created_at DESC LIMIT 200`);
-  const clusters = new Map();   // key country|city|skills → { country, city, skills, userIds }
+      ORDER BY i.created_at DESC LIMIT 200`).catch(() => []);
   for (const r of rows || []) {
     if (TEST_USER_IDS.has(Number(r.user_id))) continue;
     let skills = [];
     try { skills = Array.isArray(r.skills) ? r.skills : JSON.parse(r.skills || '[]'); } catch {}
     skills = skills.map((s) => String(s).trim()).filter(Boolean).slice(0, 6);
     if (!skills.length || !r.country) continue;
-    const key = [String(r.country).toLowerCase(), String(r.city || '').toLowerCase(), skills.join(',').toLowerCase()].join('|');
-    if (!clusters.has(key)) clusters.set(key, { country: r.country, city: r.city || null, skills, userIds: new Set() });
+    const key = clusterKey(r.country, r.city, skills);
+    if (!clusters.has(key)) clusters.set(key, { country: r.country, city: r.city || null, skills, userIds: new Set(), lane: 'interest' });
     clusters.get(key).userIds.add(Number(r.user_id));
   }
-  return [...clusters.values()].slice(0, MAX_CLUSTERS_PER_RUN);
+}
+
+async function loadResumeClusters(clusters) {
+  // Lazy require — instantResearch requires THIS module back (for GENERIC_TERMS/discoverUrls), so a
+  // top-level require here would be a circular import. Same pattern as notifyMatchedUsers.
+  const ir = require('./instantResearch');
+  // "Recently added users" per the window, but keyed on the LATER of joining and parsing a résumé:
+  // someone who signed up three weeks ago and uploaded their CV yesterday is fresh demand too, and
+  // their upload is the moment we first learned what they do.
+  const rows = await dbConfig.query(
+    `SELECT u.id, u.country AS profile_country, u.city AS profile_city,
+            rm.job_titles, rm.skills, rm.technical_skills, rm.industries,
+            LOWER(rm.raw_text) AS resume_lower
+       FROM users u
+       JOIN LATERAL (SELECT job_titles, skills, technical_skills, industries, raw_text, parsed_at
+                       FROM resume_metadata
+                      WHERE user_id = u.id AND parse_status = 'done'
+                      ORDER BY id DESC LIMIT 1) rm ON true
+      WHERE u.deleted_at IS NULL
+        AND u.email NOT LIKE 'ats%@example.com'
+        AND GREATEST(u.created_at, COALESCE(rm.parsed_at, u.created_at)) > NOW() - ($1 || ' days')::interval
+      ORDER BY GREATEST(u.created_at, COALESCE(rm.parsed_at, u.created_at)) DESC
+      LIMIT 200`, [String(NEW_USER_DAYS)]).catch((e) => {
+    console.warn('[demandResearch] résumé clusters query failed:', e.message);
+    return [];
+  });
+
+  for (const u of rows || []) {
+    if (TEST_USER_IDS.has(Number(u.id))) continue;
+    // The RÉSUMÉ's own address wins over users.country. That column is largely IP-derived and is
+    // both sparse and wrong in production (a Kumbakonam chemist with a +91 number carries
+    // country='France'), and a wrong-country research run is worse than none: it fills the feed
+    // with jobs the user cannot take and then pushes them about it.
+    const country = countryFromResume(u.resume_lower) || (String(u.profile_country || '').trim() || null);
+    if (!country) continue;
+    const city = cityFromResume(u.resume_lower, country) || (String(u.profile_city || '').trim() || null);
+    // Reuse instantResearch's résumé→search-terms resolver rather than forking a second one, so the
+    // instant path and this 12-hourly path always ask for the same thing (occupation first, then
+    // concrete skills, filler words dropped).
+    const demand = ir.resolveDemand({ resumeMeta: u, country, city });
+    if (!demand || !demand.ok || !Array.isArray(demand.terms) || !demand.terms.length) continue;
+    // resolveDemand leads with a taxonomy bucket ("Design & UX — General") on the 'field' arm, and
+    // that guess is sometimes plain wrong — a Spanish sales advisor resolves to Design & UX, a
+    // waiter to Sales & Business Development. Their own job titles never are. So on that arm the
+    // bucket is demoted to last: still there to broaden the search, no longer leading it.
+    // The 'occupation' arm's head IS a real job title off the résumé, so it stays first.
+    const terms = demand.arm === 'field' && demand.terms.length > 1
+      ? [...demand.terms.slice(1), demand.terms[0]]
+      : demand.terms;
+    const skills = terms.slice(0, 6);
+    const key = clusterKey(country, city, skills);
+    if (!clusters.has(key)) clusters.set(key, { country, city: city || null, skills, userIds: new Set(), lane: 'resume' });
+    clusters.get(key).userIds.add(Number(u.id));
+  }
+}
+
+async function loadClusters() {
+  const clusters = new Map();   // key country|city|skills → { country, city, skills, userIds, lane }
+  await loadInterestClusters(clusters);          // explicit demand first…
+  const interestCount = clusters.size;
+  await loadResumeClusters(clusters);            // …then inferred demand, deduped against it
+  const all = [...clusters.values()];
+  return {
+    clusters: all.slice(0, MAX_CLUSTERS_PER_RUN),
+    fromInterests: interestCount,
+    fromResumes: all.length - interestCount,
+    total: all.length,
+  };
 }
 
 // ── discovery: grounded search for live posting URLs ──────────────────────────────────────────
@@ -239,18 +320,55 @@ const GENERIC_TERMS = new Set([
 
 // City/region → country, for résumés whose address line names a place but not the country
 // ("Port Coquitlam, BC" / "Noida, Uttar Pradesh"). Country values MUST match global_jobs.country.
+// This table does double duty: it also supplies the CITY for a résumé-derived research cluster
+// (see cityFromResume), so the grounded search can prioritise the user's own town.
 const REGION_COUNTRY = [
   [['british columbia', 'coquitlam', 'vancouver', 'ontario', 'toronto', 'alberta', 'calgary', 'quebec', 'montreal'], 'Canada'],
   [['texas', 'houston', 'california', 'new york', 'florida', 'chicago', 'seattle', 'hawaii'], 'US'],
-  [['noida', 'uttar pradesh', 'delhi', 'mumbai', 'bengaluru', 'bangalore', 'hyderabad', 'chennai', 'pune', 'kolkata', 'visakhapatnam', 'indore', 'gurgaon', 'gurugram'], 'India'],
+  [['noida', 'uttar pradesh', 'delhi', 'mumbai', 'bengaluru', 'bangalore', 'hyderabad', 'chennai', 'pune', 'kolkata', 'visakhapatnam', 'indore', 'gurgaon', 'gurugram', 'kumbakonam', 'tamil nadu', 'coimbatore', 'madurai', 'trichy', 'tiruchirappalli', 'salem', 'tumkur', 'mysore', 'mysuru', 'ahmedabad', 'jaipur', 'lucknow', 'nagpur', 'surat', 'kochi', 'ernakulam', 'thiruvananthapuram', 'bhopal', 'patna', 'karnataka', 'maharashtra', 'kerala', 'telangana'], 'India'],
   [['gauteng', 'centurion', 'johannesburg', 'cape town', 'pretoria', 'durban'], 'South Africa'],
   [['lisboa', 'lisbon', 'sintra', 'cacém', 'cacem', 'porto', 'cascais'], 'Portugal'],
-  [['casablanca', 'marrakech', 'marrakesh', 'rabat', 'tangier', 'tanger', 'agadir', 'belksiri', 'kenitra'], 'Morocco'],
-  [['grasse', 'paris', 'lyon', 'marseille', 'toulouse', 'boulevard fragonard'], 'France'],
+  [['casablanca', 'marrakech', 'marrakesh', 'rabat', 'tangier', 'tanger', 'agadir', 'belksiri', 'kenitra', 'ait melloul', 'oujda', 'fes', 'fès', 'meknes', 'meknès'], 'Morocco'],
+  // 'nice' is deliberately absent — as a whole word it is far more often the English adjective
+  // than the city, and a false hit here decides someone's country.
+  [['grasse', 'paris', 'lyon', 'marseille', 'toulouse', 'boulevard fragonard', 'valbonne', 'sophia antipolis', 'cannes', 'antibes', 'bordeaux', 'nantes', 'lille', 'strasbourg'], 'France'],
   [['london', 'manchester', 'birmingham', 'glasgow', 'edinburgh'], 'UK'],
   [['dubai', 'abu dhabi', 'sharjah'], 'UAE'],
-  [['taxila', 'islamabad', 'karachi', 'lahore', 'rawalpindi'], 'Pakistan'],
+  [['taxila', 'islamabad', 'karachi', 'lahore', 'rawalpindi', 'wahcant', 'peshawar', 'multan', 'faisalabad'], 'Pakistan'],
   [['colombo', 'kandy'], 'Sri Lanka'],
+  // Countries our real users actually live in that the list could not resolve before — every one
+  // of these was a user whose résumé named a place we simply had no mapping for, so they could
+  // never be researched and never receive a match push.
+  // 'tema' (the Ghanaian port) is deliberately absent — it is a whole word in Spanish/Italian
+  // ("tema" = topic/subject) and would claim those résumés for Ghana.
+  [['accra', 'kumasi', 'tamale', 'takoradi', 'sunyani', 'cape coast', 'ashanti'], 'Ghana'],
+  [['dhaka', 'chittagong', 'chattogram', 'sylhet', 'khulna', 'rajshahi', 'mohakhali'], 'Bangladesh'],
+  [['asunción', 'asuncion', 'san lorenzo', 'ciudad del este', 'encarnación', 'encarnacion', 'luque', 'capiatá', 'capiata'], 'Paraguay'],
+  [['addis ababa', 'adama', 'bahir dar', 'mekelle', 'hawassa'], 'Ethiopia'],
+  [['tashkent', 'samarkand', 'bukhara', 'namangan', 'andijan', 'fergana'], 'Uzbekistan'],
+  [['jalpa de cánovas', 'jalpa de canovas', 'purísima del rincón', 'purisima del rincon', 'guanajuato', 'león, gto', 'monterrey', 'guadalajara', 'ciudad de méxico', 'ciudad de mexico', 'querétaro', 'queretaro', 'puebla', 'tijuana'], 'Mexico'],
+  [['nairobi', 'mombasa', 'kisumu'], 'Kenya'],
+  [['lagos', 'abuja', 'ibadan', 'port harcourt'], 'Nigeria'],
+  [['cairo', 'alexandria', 'giza'], 'Egypt'],
+  [['manila', 'cebu', 'davao', 'quezon city'], 'Philippines'],
+  [['istanbul', 'ankara', 'izmir', 'i̇stanbul'], 'Turkey'],
+  [['kathmandu', 'pokhara'], 'Nepal'],
+  [['hanoi', 'ho chi minh', 'da nang'], 'Vietnam'],
+  [['jakarta', 'surabaya', 'bandung'], 'Indonesia'],
+  [['bucharest', 'cluj', 'timisoara', 'timișoara'], 'Romania'],
+  [['warsaw', 'warszawa', 'kraków', 'krakow', 'wrocław', 'wroclaw'], 'Poland'],
+  [['kyiv', 'kiev', 'lviv', 'kharkiv', 'odesa'], 'Ukraine'],
+  [['riyadh', 'jeddah', 'dammam'], 'Saudi Arabia'],
+  [['doha'], 'Qatar'], [['kuwait city'], 'Kuwait'], [['muscat'], 'Oman'],
+  [['amman'], 'Jordan'], [['beirut'], 'Lebanon'], [['tunis', 'sfax'], 'Tunisia'],
+  [['algiers', 'alger', 'oran'], 'Algeria'], [['dakar'], 'Senegal'],
+  [['kampala'], 'Uganda'], [['dar es salaam', 'dodoma'], 'Tanzania'],
+  [['harare'], 'Zimbabwe'], [['lusaka'], 'Zambia'],
+  [['bogotá', 'bogota', 'medellín', 'medellin', 'cali'], 'Colombia'],
+  [['lima', 'arequipa'], 'Peru'], [['santiago de chile'], 'Chile'],
+  [['buenos aires', 'córdoba, arg', 'cordoba, arg', 'rosario'], 'Argentina'],
+  [['montevideo'], 'Uruguay'], [['la paz, bol', 'santa cruz de la sierra'], 'Bolivia'],
+  [['são paulo', 'sao paulo', 'rio de janeiro', 'brasília', 'brasilia'], 'Brazil'],
 ];
 const COUNTRY_ALIASES = [
   ['canada', 'Canada'], ['united states', 'US'], ['u.s.a', 'US'], [' usa', 'US'],
@@ -261,22 +379,91 @@ const COUNTRY_ALIASES = [
   ['sweden', 'Sweden'], ['switzerland', 'Switzerland'], ['spain', 'Spain'], ['italy', 'Italy'],
   ['australia', 'Australia'], ['nigeria', 'Nigeria'], ['kenya', 'Kenya'], ['egypt', 'Egypt'],
   ['philippines', 'Philippines'], ['indonesia', 'Indonesia'], ['brazil', 'Brazil'],
+  ['ghana', 'Ghana'], ['bangladesh', 'Bangladesh'], ['paraguay', 'Paraguay'],
+  ['ethiopia', 'Ethiopia'], ['uzbekistan', 'Uzbekistan'], ['mexico', 'Mexico'],
+  ['méxico', 'Mexico'], ['turkey', 'Turkey'], ['türkiye', 'Turkey'], ['nepal', 'Nepal'],
+  ['vietnam', 'Vietnam'], ['viet nam', 'Vietnam'], ['romania', 'Romania'], ['poland', 'Poland'],
+  ['ukraine', 'Ukraine'], ['saudi arabia', 'Saudi Arabia'], ['qatar', 'Qatar'],
+  ['kuwait', 'Kuwait'], ['oman', 'Oman'], ['jordan', 'Jordan'], ['lebanon', 'Lebanon'],
+  ['tunisia', 'Tunisia'], ['tunisie', 'Tunisia'], ['algeria', 'Algeria'], ['algérie', 'Algeria'],
+  ['senegal', 'Senegal'], ['sénégal', 'Senegal'], ['uganda', 'Uganda'], ['tanzania', 'Tanzania'],
+  ['zimbabwe', 'Zimbabwe'], ['zambia', 'Zambia'], ['colombia', 'Colombia'], ['peru', 'Peru'],
+  ['perú', 'Peru'], ['chile', 'Chile'], ['argentina', 'Argentina'], ['uruguay', 'Uruguay'],
+  ['bolivia', 'Bolivia'], ['ireland', 'Ireland'], ['belgium', 'Belgium'], ['austria', 'Austria'],
+  ['denmark', 'Denmark'], ['norway', 'Norway'], ['finland', 'Finland'], ['greece', 'Greece'],
+  ['singapore', 'Singapore'], ['malaysia', 'Malaysia'], ['thailand', 'Thailand'],
+  ['new zealand', 'New Zealand'], ['japan', 'Japan'], ['south korea', 'South Korea'],
+  // Nationality lines ("Nationality : Indian") are the ONLY country signal on plenty of résumés —
+  // the whole-word match above deliberately stops "indian" counting as "india", so the demonym has
+  // to be listed in its own right. These sit at the bottom of a CV, so the earliest-mention rule
+  // still lets a real address line at the top win.
+  // ⚠️ Demonyms that are also LANGUAGE names are deliberately excluded — "Languages: French,
+  // Spanish, Arabic" must never decide where someone lives.
+  ['indian', 'India'], ['pakistani', 'Pakistan'], ['bangladeshi', 'Bangladesh'],
+  ['sri lankan', 'Sri Lanka'], ['ghanaian', 'Ghana'], ['nigerian', 'Nigeria'],
+  ['kenyan', 'Kenya'], ['ethiopian', 'Ethiopia'], ['moroccan', 'Morocco'],
+  ['marocaine', 'Morocco'], ['marocain', 'Morocco'], ['egyptian', 'Egypt'],
+  ['filipino', 'Philippines'], ['filipina', 'Philippines'], ['indonesian', 'Indonesia'],
+  ['south african', 'South Africa'], ['paraguaya', 'Paraguay'], ['paraguayo', 'Paraguay'],
+  ['paraguayan', 'Paraguay'], ['mexicana', 'Mexico'], ['mexicano', 'Mexico'],
+  ['mexican', 'Mexico'], ['colombiana', 'Colombia'], ['colombiano', 'Colombia'],
+  ['colombian', 'Colombia'], ['peruano', 'Peru'], ['peruvian', 'Peru'],
+  ['brasileiro', 'Brazil'], ['brazilian', 'Brazil'], ['ukrainian', 'Ukraine'],
+  ['romanian', 'Romania'], ['nepali', 'Nepal'], ['nepalese', 'Nepal'],
 ];
 
 // The user's own country from their résumé text — or null, in which case we DON'T push
 // (better silent than telling a Morocco waiter about jobs in India). EARLIEST mention wins:
 // the address line sits at the top of a résumé, while stray country words ("… clients in India")
 // can appear anywhere below it.
+// ⚠️ Place names must match as WHOLE WORDS. A bare indexOf() reads "Development Professional" as
+// Fès, Morocco ("pro-FES-sional"), Spanish "calidad" as Cali, Colombia, and "sistema" as Tema,
+// Ghana — and because the earliest hit wins, that filler beats the real address line at the top of
+// the résumé. Country is a HARD filter on every job we research and push, so a false hit here sends
+// a Kumasi banker jobs in Morocco. Accented letters count as word characters.
+const WORD = 'a-zà-ÿ';
+const placeIndex = (hay, needle) => {
+  const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = new RegExp(`(?:^|[^${WORD}])${esc}(?![${WORD}])`).exec(hay);
+  return m ? m.index : -1;
+};
+
 function countryFromResume(rawLower) {
   if (!rawLower) return null;
   let best = null, bestIdx = Infinity;
   const consider = (needle, country) => {
-    const i = rawLower.indexOf(needle);
+    const i = placeIndex(rawLower, needle);
     if (i >= 0 && i < bestIdx) { best = country; bestIdx = i; }
   };
   for (const [alias, country] of COUNTRY_ALIASES) consider(alias, country);
   for (const [places, country] of REGION_COUNTRY) for (const p of places) consider(p, country);
   return best;
+}
+
+// The user's own town, for the "prioritise their city first" half of the discovery prompt.
+// EARLIEST mention wins, same reasoning as countryFromResume — the address line is at the top of a
+// résumé while work history below it names every city the person has ever worked in.
+// A city is only accepted if it belongs to the country we already resolved: that is what stops a
+// Chennai-based logistics CV whose history mentions "Dubai Trade" from being researched as Dubai.
+// Region names ("tamil nadu", "karnataka") are skipped — they are not a searchable place.
+const NOT_A_CITY = new Set([
+  'tamil nadu', 'uttar pradesh', 'karnataka', 'maharashtra', 'kerala', 'telangana', 'gauteng',
+  'british columbia', 'ontario', 'alberta', 'quebec', 'texas', 'california', 'new york', 'florida',
+  'ashanti', 'guanajuato',
+]);
+function cityFromResume(rawLower, country) {
+  if (!rawLower || !country) return null;
+  let best = null, bestIdx = Infinity;
+  for (const [places, c] of REGION_COUNTRY) {
+    if (c !== country) continue;
+    for (const p of places) {
+      if (NOT_A_CITY.has(p)) continue;
+      const i = placeIndex(rawLower, p);
+      if (i >= 0 && i < bestIdx) { best = p; bestIdx = i; }
+    }
+  }
+  // Title-case for the prompt ("san lorenzo" → "San Lorenzo")
+  return best ? best.replace(/(^|[\s-])([a-zà-ÿ])/g, (_, s, ch) => s + ch.toUpperCase()) : null;
 }
 
 // "plumbing" must match "Plumber": crude suffix stem, used for the SQL LIKE; the ORIGINAL word
@@ -397,10 +584,10 @@ async function runDemandResearch() {
   _running = true;
   const startedAt = new Date().toISOString();
   try {
-    const clusters = await loadClusters();
+    const { clusters, fromInterests, fromResumes, total } = await loadClusters();
     if (!clusters.length) {
-      console.log('[demandResearch] no user interests yet — nothing to research');
-      await recordRun('ran — no user interests saved yet, nothing to research');
+      console.log('[demandResearch] no saved interests and no recent parsed résumés — nothing to research');
+      await recordRun(`ran — nothing to research (0 saved interests, 0 résumé clusters in the last ${NEW_USER_DAYS}d)`);
       return { clusters: 0 };
     }
     const model = geminiGrounded();
@@ -409,18 +596,23 @@ async function runDemandResearch() {
       await recordRun('SKIPPED — no GEMINI_API_KEY');
       return { error: 'no_key' };
     }
-    console.log(`[demandResearch] ${clusters.length} demand clusters`);
+    console.log(`[demandResearch] ${clusters.length}/${total} demand clusters (${fromInterests} interest, ${fromResumes} résumé)`);
     let jobsAdded = 0;
     for (const cluster of clusters) {
       const urls = await discoverUrls(model, cluster);
       for (const url of urls) jobsAdded += await ingestUrl(url, cluster);
-      console.log(`[demandResearch] ${cluster.skills[0]} @ ${cluster.city || cluster.country}: ${urls.length} urls`);
+      console.log(`[demandResearch] [${cluster.lane}] ${cluster.skills[0]} @ ${cluster.city || cluster.country}: ${urls.length} urls`);
     }
     const pushed = await notifyMatchedUsers(startedAt);
     const resumePushed = await notifyResumeMatchedUsers(startedAt).catch(() => 0);
     console.log(`[demandResearch] done — ${jobsAdded} jobs added, ${pushed}+${resumePushed} users notified`);
-    await recordRun(`ran — ${clusters.length} clusters, ${jobsAdded} jobs added, ${pushed} interest + ${resumePushed} résumé pushes`);
-    return { clusters: clusters.length, jobsAdded, pushed, resumePushed };
+    // The summary is what the admin routines page shows, so it names BOTH lanes — otherwise a run
+    // driven entirely by résumés still reads as if only interests exist.
+    const dropped = total > clusters.length ? `, ${total - clusters.length} over cap` : '';
+    await recordRun(
+      `ran — ${clusters.length} clusters (${fromInterests} interest + ${fromResumes} résumé${dropped}), ` +
+      `${jobsAdded} jobs added, ${pushed} interest + ${resumePushed} résumé pushes`);
+    return { clusters: clusters.length, fromInterests, fromResumes, jobsAdded, pushed, resumePushed };
   } catch (e) {
     console.error('[demandResearch] run failed:', e.message);
     await recordRun(`FAILED — ${String(e.message).slice(0, 200)}`);
@@ -453,6 +645,8 @@ function startDemandResearch() {
 // forking a second prompt is what stops the instant path and the 12-hourly path drifting apart.
 module.exports = {
   runDemandResearch, startDemandResearch, ingestUrl,
-  notifyMatchedUsers, notifyResumeMatchedUsers, countryFromResume,
+  notifyMatchedUsers, notifyResumeMatchedUsers, countryFromResume, cityFromResume,
   geminiGrounded, discoverUrls, GENERIC_TERMS,
+  // exported so the cluster lanes can be asserted without a grounded call or a push
+  loadClusters,
 };

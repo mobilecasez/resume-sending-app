@@ -1,0 +1,115 @@
+{
+  "expo": {
+    "name": "CVApplyr",
+    "slug": "cvapplyr",
+    "version": "3.1",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "cvapplyr",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.cvapplyr.mobile",
+      "buildNumber": "57",
+      "usesAppleSignIn": true,
+      "infoPlist": {
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": [
+              "com.googleusercontent.apps.151384459549-3rm4atu5eu3ekh9h4rhds6gbd9ecgeb6"
+            ]
+          }
+        ],
+        "ITSAppUsesNonExemptEncryption": false,
+        "LSApplicationQueriesSchemes": [
+          "ms-outlook",
+          "googlegmail",
+          "message",
+          "mailto"
+        ]
+      }
+    },
+    "android": {
+      "package": "com.cvapplyr.mobile",
+      "versionCode": 20,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "com.cvapplyr.mobile"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        },
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "msauth",
+              "host": "com.cvapplyr.app",
+              "path": "/callback"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#42577d",
+        "foregroundImage": "./assets/images/new-app-icon.png"
+      },
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "edgeToEdgeEnabled": false,
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-apple-authentication",
+      "react-native-iap",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#06091B"
+        }
+      ],
+      "expo-secure-store",
+      "expo-notifications",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "CVApplyr uses your photo library to set a profile picture and attach images to emails.",
+          "cameraPermission": "CVApplyr uses your camera to take a profile photo."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "newArchEnabled": true,
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "ec507052-8ddd-49ea-89ec-d278eb1c7f58"
+      }
+    },
+    "owner": "cvapplyr-zsellr"
+  }
+}

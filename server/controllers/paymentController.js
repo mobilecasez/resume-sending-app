@@ -573,49 +573,63 @@ async function verifyApplePurchase(req, res, dbConfig) {
             });
         }
 
-        // Determine if this is a StoreKit 2 JWS token, legacy receipt, or no receipt
+        // ⚠️ SECURITY — this block replaces two forgeable paths that were live in production:
+        //   1. "No receipt" trusted `productId` straight out of the request body. That is the branch
+        //      StoreKit 2 actually takes, so anyone holding a valid app JWT could POST an arbitrary
+        //      product id and mint credits. It is gone.
+        //   2. The JWS branch base64-DECODED the client's token and believed the payload. A JWS is
+        //      three base64 segments; anybody can write one. Decoding is not verification.
+        // Both are now answered by the App Store Server API over TLS with OUR key. If we cannot ask
+        // Apple, we grant nothing (503, retryable) — never "assume it's fine".
         const hasReceipt = receiptData && receiptData.length > 0;
         const isJWS = hasReceipt && receiptData.split('.').length === 3;
-        console.log(`🍎 Receipt format: ${!hasReceipt ? 'None (StoreKit 2 on-device verified)' : isJWS ? 'StoreKit 2 JWS' : 'Legacy base64'}`);
+        console.log(`🍎 Receipt format: ${!hasReceipt ? 'None (StoreKit 2)' : isJWS ? 'StoreKit 2 JWS' : 'Legacy base64'}`);
+
+        // This endpoint sells CONSUMABLE credit packs only. A subscription product arriving here
+        // would otherwise be paid for and delivered as credits instead of a plan.
+        const storeProducts = require('../services/storeProducts');
+        if (storeProducts.isSubscriptionProduct(productId)) {
+            return res.status(400).json({ error: 'Use /payment/verify-apple-sub for subscriptions' });
+        }
 
         let verifiedProductId = null;
         let verifiedTransactionId = null;
 
-        if (!hasReceipt) {
-            // StoreKit 2: No receipt available but Apple verified the purchase on-device
-            // Trust the productId and transactionId from the client
-            console.log('🍎 No receipt - using client-provided product/transaction info (StoreKit 2 on-device verification)');
-            verifiedProductId = productId;
-            verifiedTransactionId = transactionId;
-        } else if (isJWS) {
-            // StoreKit 2: Decode the JWS token (signed by Apple)
-            // The payload contains transaction details - decode the middle part
+        const appleApi = require('../services/appleStoreApi');
+        if (appleApi.isConfigured()) {
+            // AUTHORITATIVE PATH. The client's transactionId is only a pointer; every fact below
+            // comes from Apple's own response.
+            let tx;
             try {
-                const parts = receiptData.split('.');
-                const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-                console.log('🍎 JWS payload:', JSON.stringify(payload).substring(0, 200));
-                
-                verifiedProductId = payload.productId || payload.productID;
-                verifiedTransactionId = payload.transactionId || payload.originalTransactionId || String(payload.transactionID);
-                
-                // Verify the product matches what was claimed
-                if (verifiedProductId !== productId) {
-                    console.error(`🍎 Product mismatch: expected ${productId}, got ${verifiedProductId}`);
-                    return res.status(400).json({ error: 'Product ID mismatch in receipt' });
-                }
-
-                // Verify bundle ID matches our app
-                const bundleId = payload.bundleId || payload.appBundleId;
-                if (bundleId && bundleId !== 'com.cvapplyr.mobile') {
-                    console.error(`🍎 Bundle ID mismatch: ${bundleId}`);
-                    return res.status(400).json({ error: 'Invalid bundle ID in receipt' });
-                }
-
-                console.log(`🍎 JWS verified: product=${verifiedProductId}, txId=${verifiedTransactionId}, bundle=${bundleId}`);
-            } catch (decodeError) {
-                console.error('🍎 Failed to decode JWS:', decodeError.message);
-                return res.status(400).json({ error: 'Invalid receipt format' });
+                tx = await appleApi.getTransactionInfo(transactionId);
+            } catch (apiErr) {
+                console.error('🍎 App Store Server API unreachable:', apiErr.message);
+                return res.status(503).json({ error: 'Could not reach Apple to confirm this purchase', retryable: true });
             }
+            if (!tx) {
+                console.error('🍎 Apple does not know transaction', transactionId);
+                return res.status(400).json({ error: 'Transaction not found at Apple' });
+            }
+            if (tx.bundleId && tx.bundleId !== (process.env.APPLE_BUNDLE_ID || 'com.cvapplyr.mobile')) {
+                return res.status(400).json({ error: 'Invalid bundle ID in transaction' });
+            }
+            if (tx.productId !== productId) {
+                console.error(`🍎 Product mismatch: client said ${productId}, Apple says ${tx.productId}`);
+                return res.status(400).json({ error: 'Product ID mismatch' });
+            }
+            if (tx.revocationDate) {
+                return res.status(400).json({ error: 'This purchase was refunded' });
+            }
+            verifiedProductId = tx.productId;
+            verifiedTransactionId = String(tx.transactionId || transactionId);
+            console.log(`🍎 Apple-verified: product=${verifiedProductId}, txId=${verifiedTransactionId}, env=${tx._environment}`);
+        } else if (!hasReceipt || isJWS) {
+            // No server API key and nothing Apple can validate for us → refuse. FAIL CLOSED.
+            console.error('🍎 App Store Server API not configured and no verifiable receipt — refusing');
+            return res.status(503).json({
+                error: 'Purchase verification is temporarily unavailable. Your purchase is safe and will be applied automatically.',
+                retryable: true,
+            });
         } else {
             // Legacy receipt: Validate with Apple's verifyReceipt endpoint
             let verifyResult = await validateReceiptWithApple(receiptData, false);
