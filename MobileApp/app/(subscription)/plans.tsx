@@ -291,6 +291,12 @@ export default function PlansScreen() {
         replacePurchaseToken: swap?.token ?? null,
         replacementMode: swap?.mode ?? null,
         replacedSku: swap?.sku ?? null,
+        // ⚠️ What un-sticks an iOS plan change. Apple settles a move inside the subscription group
+        // itself and reports back the product that is STILL LIVE — on a downgrade that is the old
+        // one, because the change is deferred to the next renewal. `swap` is Android-only, so
+        // without the group list that answer is discarded as "not ours" and the row spins for the
+        // full store timeout even though the change went through.
+        groupSkus: (status?.plans || []).map(skuFor).filter((x): x is string => !!x),
       });
 
       if (outcome.status === 'cancelled') return;             // the user said no. Say nothing.
@@ -388,6 +394,10 @@ export default function PlansScreen() {
   if (loading) return <View style={s.center}><ActivityIndicator size="large" color={T.blue} /></View>;
 
   const current = status?.subscription?.planKey || null;
+  // A change the user has ALREADY made that has not started yet — a downgrade is deferred by both
+  // stores to the renewal date. It is neither the current plan nor something to sell again, and
+  // saying nothing about it is what makes a completed change look like it silently failed.
+  const pendingKey = status?.subscription?.pendingPlanKey || null;
   const source = status?.subscription?.source || null;
   const trial = status?.trialState;
   const trialActive = !current && trial?.active;
@@ -446,9 +456,13 @@ export default function PlansScreen() {
       {/* ── Plans ── */}
       {(status?.plans || []).map((p) => {
         const isCurrent = current === p.key;
+        const isPending = !isCurrent && pendingKey === p.key;
         const popular = p.key === POPULAR_KEY;
         const prod = store[p.key];
-        const buyable = !!prod && !otherStore && !isCurrent;
+        // Not buyable while it is already scheduled: the store would just re-accept the same change,
+        // and offering a Buy button for a plan the user has bought reads as though the first tap
+        // did nothing.
+        const buyable = !!prod && !otherStore && !isCurrent && !isPending;
         const thisBusy = busyKey === p.key;
         return (
           <TouchableOpacity
@@ -465,7 +479,11 @@ export default function PlansScreen() {
             )}
             <View style={s.planRow}>
               <View style={{ flex: 1 }}>
-                <Text style={s.planName}>{p.label}{isCurrent ? '  ·  current' : ''}</Text>
+                <Text style={s.planName}>
+                  {p.label}
+                  {isCurrent ? '  ·  current' : ''}
+                  {isPending ? `  ·  starts ${whenText(status?.subscription?.periodEnd)}` : ''}
+                </Text>
                 <Text style={s.planQuota}>{p.letters} cover letters / month</Text>
                 <Text style={s.planQuota}>{p.resumes} resume generations / month</Text>
               </View>

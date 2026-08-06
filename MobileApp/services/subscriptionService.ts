@@ -31,7 +31,17 @@ export type Plan = {
 export type SubscriptionStatus = {
   plans: Plan[];
   trial: { key: string; label: string; days: number; letters: number; resumes: number };
-  subscription: { planKey: string; label: string; periodEnd: string; source: string } | null;
+  subscription: {
+    planKey: string; label: string; periodEnd: string; source: string;
+    /**
+     * A plan change already made with the store that has not started yet. Both stores DEFER a
+     * downgrade to the renewal date, so between the tap and that date the user is on `planKey` and
+     * moving to this — and a screen that shows only `planKey` looks as though the change was lost.
+     * Null on the common path (renews as-is).
+     */
+    pendingPlanKey?: string | null;
+    pendingLabel?: string | null;
+  } | null;
   trialState?: { active: boolean; startedAt?: string; endsAt?: string; blocked?: string; used?: { letters: number; resumes: number } };
   remaining: { letters: number; resumes: number };
   used: { letters: number; resumes: number };

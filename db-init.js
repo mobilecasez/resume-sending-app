@@ -1364,6 +1364,15 @@ async function runPostgresMigrations(db) {
                      ON payment_orders(environment) WHERE environment IS NOT NULL`);
         console.log('✅ Migration 036: per-environment entitlement done');
 
+        // ── Migration 037: THE PLAN THAT STARTS NEXT ──────────────────────────────────────────
+        // A DOWNGRADE is deferred by both stores: the tier already paid for runs to the end of the
+        // period and the cheaper one begins at renewal. Apple says so in `autoRenewProductId`,
+        // which we were reading and throwing away — so the paywall showed only the live plan and a
+        // user who had just changed tier saw no trace of the change they had made seconds earlier.
+        // NULL means "renews as-is", which is the overwhelmingly common case.
+        await col(`ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS pending_plan_key TEXT`);
+        console.log('✅ Migration 037: scheduled plan change done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

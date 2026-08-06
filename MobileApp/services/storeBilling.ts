@@ -227,6 +227,17 @@ export async function purchaseSubscription(opts: {
    * caller waits out the full timeout on a change the store actually accepted.
    */
   replacedSku?: string | null;
+  /**
+   * Every subscription sku we sell. A change WITHIN a subscription group can report back a
+   * DIFFERENT product than the one just tapped, and on iOS there is no replacedSku to pass because
+   * Apple settles the swap inside the group itself: a DOWNGRADE is deferred, so StoreKit hands back
+   * the product that stays live until renewal. Membership of the group — not equality with `sku` —
+   * is therefore what makes a result ours. Without this, `ours()` rejects the only answer the store
+   * will ever give and the caller waits out the full 180s timeout on a change Apple accepted.
+   * Safe: settleOne re-verifies with Apple, so accepting a sibling here cannot grant anything the
+   * store has not confirmed — it only stops us ignoring the confirmation.
+   */
+  groupSkus?: string[] | null;
 }): Promise<PurchaseOutcome> {
   const m = iap();
   if (!m) return { status: 'unavailable' };
@@ -250,10 +261,16 @@ export async function purchaseSubscription(opts: {
   const race = new Promise<PurchaseOutcome>((res) => { resolveRace = res; });
   const settle = (o: PurchaseOutcome) => { if (!settled) { settled = true; resolveRace(o); } };
 
-  // Both skus count as "ours": on a DEFERRED downgrade Play hands back the purchase that is still
-  // live (the one being replaced), which is the confirmation that the change was accepted.
-  const ours = (productId?: string) =>
-    !!productId && (productId === opts.sku || (!!opts.replacedSku && productId === opts.replacedSku));
+  // Any sku in our subscription group counts as "ours": on a DEFERRED downgrade the store hands
+  // back the purchase that is still live (the one being replaced), which IS the confirmation that
+  // the change was accepted. Play names it for us via replacedSku; Apple does the swap itself and
+  // names nothing, so the group list is the only way to recognise its answer.
+  const group = new Set<string>([
+    opts.sku,
+    ...(opts.replacedSku ? [opts.replacedSku] : []),
+    ...(opts.groupSkus || []),
+  ]);
+  const ours = (productId?: string) => !!productId && group.has(productId);
 
   inFlightSku = opts.sku;
   const subs: { remove(): void }[] = [];

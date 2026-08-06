@@ -186,6 +186,17 @@ async function applyAppleSubscription({ userId = null, originalTransactionId, tr
     autoRenew: rn.autoRenewStatus != null ? Number(rn.autoRenewStatus) === 1 : null,
     acknowledged: true,                                          // Apple has no acknowledge step
     storeState: `${it.status}:${ownership}`,
+    // What this subscription will RENEW into. Apple settles a plan change inside the group itself:
+    // an upgrade takes effect at once (so this equals the live product and there is nothing
+    // pending), a DOWNGRADE is deferred and this is the only place Apple states it. Without it the
+    // paywall can only show the product still running and a user who has just switched tier sees no
+    // evidence of it. A product we do not sell resolves to null rather than being invented.
+    pendingPlanKey: (() => {
+      const next = rn.autoRenewProductId;
+      if (!next || next === tx.productId) return null;
+      const s = products.subscriptionForProduct(next);
+      return s ? s.planKey : null;
+    })(),
   });
   if (w.error) return { ok: false, reason: w.error };
   return {

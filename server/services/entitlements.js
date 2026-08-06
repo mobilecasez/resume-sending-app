@@ -150,7 +150,13 @@ async function activeSubscription(userId, environment = PRODUCTION) {
     `SELECT * FROM user_subscriptions
      WHERE user_id = $1 AND status = 'active' AND period_end > NOW()
        AND (store IS NULL OR environment = $2)
-     ORDER BY period_end DESC LIMIT 1`, [userId, env]);
+     -- ⚠️ A STORE ROW WINS, even against a comp that runs longer. Ordering by period_end alone
+     -- meant an admin grant (source 'admin', no store, typically a generous 30 days) outranked the
+     -- subscription the user is actually PAYING for, whose sandbox/monthly window is shorter. The
+     -- paywall then reported the comp as "your plan": the real purchase was invisible, there was no
+     -- way to see or manage it, and the obvious next move for the user is to buy it a second time.
+     -- Store first, then the later expiry among equals.
+     ORDER BY (store IS NOT NULL) DESC, period_end DESC LIMIT 1`, [userId, env]);
   return (rows && rows[0]) || null;
 }
 
@@ -193,6 +199,12 @@ async function getStatus(userId, req) {
       planKey: sub.plan_key, label: plan ? plan.label : sub.plan_key, periodEnd: sub.period_end,
       source: sub.source, store: sub.store || null, productId: sub.product_id || null,
       autoRenew: sub.auto_renew == null ? null : Boolean(sub.auto_renew),
+      // A plan change the user has already made that has not started yet — both stores defer a
+      // downgrade to the renewal date. Reporting it is what stops the screen looking as though the
+      // change never happened, which is when people tap Buy a second time.
+      pendingPlanKey: sub.pending_plan_key || null,
+      pendingLabel: sub.pending_plan_key
+        ? ((planByKey(sub.pending_plan_key) || {}).label || sub.pending_plan_key) : null,
     } : null,
     remaining: { letters: 0, resumes: 0 },
     used: { letters: 0, resumes: 0 },
@@ -402,6 +414,10 @@ async function storeSetSubscription({
   periodStart = null, periodEnd, status = 'active', terminal = false,
   purchaseToken = null, latestTxnId = null, environment = null,
   autoRenew = null, acknowledged = null, storeState = null, supersede = true,
+  // The plan this subscription will RENEW into, when the store says that differs from the live one
+  // (a deferred downgrade). Authoritative and always overwritten, never COALESCEd: a user who
+  // cancels a scheduled change must see it disappear, and only the store knows it has gone.
+  pendingPlanKey = null,
 }) {
   const uid = parseInt(userId, 10);
   if (!Number.isFinite(uid) || uid <= 0) return { error: 'invalid_user' };
@@ -447,8 +463,8 @@ async function storeSetSubscription({
     `INSERT INTO user_subscriptions
        (user_id, plan_key, status, source, product_id, store, original_transaction_id,
         purchase_token, latest_transaction_id, environment, auto_renew, acknowledged, store_state,
-        period_start, period_end, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$4,$6,$7,$8,$9,$10,COALESCE($11,FALSE),$12,
+        pending_plan_key, period_start, period_end, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$4,$6,$7,$8,$9,$10,COALESCE($11,FALSE),$12,$15,
              COALESCE($13, NOW()), $14, NOW(), NOW())
      -- ⚠️ environment IS PART OF THE KEY (Migration 036). Apple's Sandbox and Production
      -- originalTransactionId namespaces are independent small integers and CAN collide, so the old
@@ -468,6 +484,10 @@ async function storeSetSubscription({
        auto_renew            = COALESCE(EXCLUDED.auto_renew, user_subscriptions.auto_renew),
        acknowledged          = user_subscriptions.acknowledged OR EXCLUDED.acknowledged,
        store_state           = COALESCE(EXCLUDED.store_state, user_subscriptions.store_state),
+       -- Deliberately NOT COALESCEd: NULL is a real answer here ("renews as-is"), and it is the
+       -- answer whenever a user cancels a scheduled downgrade. Keeping the old value would leave
+       -- the paywall promising a plan change that is no longer going to happen.
+       pending_plan_key      = EXCLUDED.pending_plan_key,
        -- ⚠️ THE MONEY LINES. Read the two period_start / period_end notes above this function before
        -- changing either — between them they decide whether a month of quota is sold or given away.
        --
@@ -494,7 +514,8 @@ async function storeSetSubscription({
        updated_at = NOW()
      RETURNING *, (xmax = 0) AS _inserted`,
     [uid, planKey, status, source, productId || null, txn, purchaseToken, latestTxnId,
-     env, autoRenew, acknowledged, storeState, start, end]
+     env, autoRenew, acknowledged, storeState, start, end,
+     pendingPlanKey && planByKey(pendingPlanKey) ? pendingPlanKey : null]
   );
   const row = rows && rows[0];
   if (!row) return { error: 'upsert_failed' };
