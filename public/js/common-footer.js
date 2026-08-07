@@ -13,8 +13,8 @@
                 <div class="footer-section">
                     <h4>Product</h4>
                     <ul>
-                        <li><a href="/packages">Packages</a></li>
-                        <li><a href="/usage">Usage & Credits</a></li>
+                        <li><a href="/index.html#pricing">Pricing</a></li>
+                        <li><a href="/usage">Usage &amp; Credits</a></li>
                     </ul>
                 </div>
                 

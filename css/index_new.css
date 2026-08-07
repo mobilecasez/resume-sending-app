@@ -655,10 +655,12 @@ body { min-height: 100%; display: flex; flex-direction: column; }
 
   /* ============ PRICING ============ */
   .pricing { padding: 100px 48px; position: relative; z-index: 1; }
+  /* Five plans, not three. auto-fit rather than repeat(5,1fr) so the row reflows on its own at
+     narrow widths instead of squeezing five cards into a phone. */
   .pricing-grid {
     max-width: 1180px; margin: 0 auto;
-    display: grid; grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(205px, 1fr));
+    gap: 14px;
   }
   .price-card {
     padding: 32px 28px;
@@ -706,6 +708,11 @@ body { min-height: 100%; display: flex; flex-direction: column; }
     margin-bottom: 6px;
   }
   .price-amount .currency { color: var(--text-muted); font-size: 24px; }
+  /* "/mo" — these are recurring plans now, and the price is a lie without the period. */
+  .price-amount .per {
+    color: var(--text-muted); font-size: 16px; font-weight: 600; letter-spacing: 0;
+    margin-left: 2px;
+  }
   .price-credits {
     font-size: 14px; color: var(--text-secondary);
     margin-bottom: 24px;

@@ -94,7 +94,8 @@
         { "@type": "Question", "name": "Does CVApplyr write cover letters with AI?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. CVApplyr generates a tailored, role-specific cover letter for each company using AI, with region-aware wording, and lets you download it as PDF or Word." } },
         { "@type": "Question", "name": "Can CVApplyr find recruiter or hiring-manager emails?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. CVApplyr finds recruiters at your target companies and looks up and verifies their work email addresses so you can reach the right person directly." } },
         { "@type": "Question", "name": "Does CVApplyr build ATS-friendly resumes?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. The AI resume builder creates clean, ATS-ready resumes with region-specific templates and exports to PDF or Word." } },
-        { "@type": "Question", "name": "Is CVApplyr free to start?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. You can start CVApplyr for free and use credits for AI actions like searches, cover letters, and sends. Credit packs are available in-app." } }
+        { "@type": "Question", "name": "Is CVApplyr free to start?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Searching for jobs, auto-filling application forms, translating pages and downloading your documents are free. AI cover letters and tailored resumes start with a 7-day free trial that includes 5 cover letters and 2 resume generations, with no card required." } },
+        { "@type": "Question", "name": "How much does CVApplyr cost?", "acceptedAnswer": { "@type": "Answer", "text": "After the free trial, CVApplyr offers five monthly plans: Starter at 4.99 USD for 30 cover letters and 5 resumes, Plus at 9.99 USD for 100 and 10, Pro at 14.99 USD for 150 and 15, Power at 24.99 USD for 300 and 25, and Max at 49.99 USD for 1000 and 50. Plans are billed through the App Store or Google Play, renew monthly, and can be cancelled at any time." } }
       ]
     }
   ]
@@ -136,7 +137,7 @@
       </div>
       <div class="trust-text">
         <strong><span class="star">★★★★★</span> Loved by job seekers worldwide</strong>
-        Credits never expire · No monthly subscription
+        7-day free trial · Cancel any time
       </div>
     </div>
   </div>
@@ -234,17 +235,19 @@
       <p>Store your professional details, photo, and digital signature in one secure place. Personalise every send without re-typing.</p>
     </div>
 
-    <!-- Credit pricing teaser (wide footprint) -->
+    <!-- Plan teaser (wide footprint) -->
     <div class="feature wide">
       <div class="feature-icon">$</div>
-      <h3>Credit-based, never a subscription</h3>
-      <p>Pay only for the applications you send. Credits never expire, no monthly fees, no auto-renewals.</p>
+      <h3>A simple monthly plan — and a free trial first</h3>
+      <p>Searching, Auto Fill, translation and downloads are free. A plan covers the AI writing:
+         cover letters and tailored resumes, with a monthly allowance you pick. Cancel any time.</p>
       <div class="credit-chips">
-        <div class="credit-chip"><span class="price">$4.99</span><span class="qty">· 11 credits</span></div>
-        <div class="credit-chip"><span class="price">$12.99</span><span class="qty">· 28 credits</span></div>
-        <div class="credit-chip"><span class="price">$34.99</span><span class="qty">· 100 credits</span></div>
-        <div class="credit-chip"><span class="price">$149.99</span><span class="qty">· 500 credits</span></div>
-        <div class="credit-chip"><span class="price">$499.99</span><span class="qty">· 2,000 credits</span></div>
+        <div class="credit-chip"><span class="price">Free</span><span class="qty">· 7-day trial</span></div>
+        <div class="credit-chip"><span class="price">$4.99</span><span class="qty">· Starter</span></div>
+        <div class="credit-chip"><span class="price">$9.99</span><span class="qty">· Plus</span></div>
+        <div class="credit-chip"><span class="price">$14.99</span><span class="qty">· Pro</span></div>
+        <div class="credit-chip"><span class="price">$24.99</span><span class="qty">· Power</span></div>
+        <div class="credit-chip"><span class="price">$49.99</span><span class="qty">· Max</span></div>
       </div>
     </div>
 
@@ -357,61 +360,95 @@
 <section class="pricing" id="pricing">
   <div class="section-head">
     <span class="section-eyebrow">Pricing</span>
-    <h2>Pay as you apply.<br/><span class="accent">Credits never expire.</span></h2>
-    <p>Start small, scale when you need to. No subscriptions, no renewal traps.</p>
+    <h2>Start free.<br/><span class="accent">Then pick your pace.</span></h2>
+    <p>Every plan is a monthly allowance of AI cover letters and tailored resumes. Try it for 7 days
+       free — 5 cover letters and 2 resumes, no card needed.</p>
   </div>
 
+  <!-- ⚠️ These five cards must match server/services/entitlements.js PLANS exactly — same names,
+       same prices, same monthly allowances. scripts/check-pricing-parity.js fails the moment they
+       drift, because this page previously advertised credit packs for weeks after the app had
+       moved to subscriptions. -->
   <div class="pricing-grid">
     <!-- Starter -->
     <div class="price-card">
       <div class="price-name">Starter</div>
-      <div class="price-amount"><span class="currency">$</span>4.99</div>
-      <div class="price-credits"><strong>11</strong> credits · ~ $0.45 / application</div>
+      <div class="price-amount"><span class="currency">$</span>4.99<span class="per">/mo</span></div>
+      <div class="price-credits"><strong>30</strong> cover letters · <strong>5</strong> resumes / month</div>
       <ul class="price-features">
-        <li>11 job applications</li>
-        <li>AI cover-letter generation</li>
-        <li>Resume auto-attach</li>
-        <li>Application history</li>
-        <li>24/7 email support</li>
+        <li>Unlimited job search</li>
+        <li>Auto Fill on application forms</li>
+        <li>Page translation</li>
+        <li>PDF &amp; Word downloads</li>
       </ul>
-      <a href="/signup?plan=starter" class="btn btn-ghost">Get started</a>
+      <a href="/index.html#download" class="btn btn-ghost">Get the app</a>
     </div>
 
-    <!-- Professional - featured -->
+    <!-- Plus -->
+    <div class="price-card">
+      <div class="price-name">Plus</div>
+      <div class="price-amount"><span class="currency">$</span>9.99<span class="per">/mo</span></div>
+      <div class="price-credits"><strong>100</strong> cover letters · <strong>10</strong> resumes / month</div>
+      <ul class="price-features">
+        <li>Everything in Starter</li>
+        <li>Room for a steady search</li>
+        <li>Country-specific templates</li>
+        <li>Email support</li>
+      </ul>
+      <a href="/index.html#download" class="btn btn-ghost">Get the app</a>
+    </div>
+
+    <!-- Pro - featured -->
     <div class="price-card featured">
       <div class="price-badge">Most popular</div>
-      <div class="price-name">Professional</div>
-      <div class="price-amount"><span class="currency">$</span>12.99</div>
-      <div class="price-credits"><strong>28</strong> credits · ~ $0.46 / application</div>
+      <div class="price-name">Pro</div>
+      <div class="price-amount"><span class="currency">$</span>14.99<span class="per">/mo</span></div>
+      <div class="price-credits"><strong>150</strong> cover letters · <strong>15</strong> resumes / month</div>
       <ul class="price-features">
-        <li>28 job applications</li>
-        <li>AI cover-letter generation</li>
-        <li>Resume auto-attach</li>
-        <li>Application history</li>
-        <li>24/7 email support</li>
+        <li>Everything in Plus</li>
+        <li>For an active daily search</li>
+        <li>Tailored resume per role</li>
+        <li>Priority email support</li>
       </ul>
-      <a href="/signup?plan=professional" class="btn btn-primary">Get started <span class="arrow">→</span></a>
+      <a href="/index.html#download" class="btn btn-primary">Get the app <span class="arrow">→</span></a>
     </div>
 
-    <!-- Premium -->
+    <!-- Power -->
     <div class="price-card">
-      <div class="price-name">Premium</div>
-      <div class="price-amount"><span class="currency">$</span>34.99</div>
-      <div class="price-credits"><strong>100</strong> credits · ~ $0.35 / application</div>
+      <div class="price-name">Power</div>
+      <div class="price-amount"><span class="currency">$</span>24.99<span class="per">/mo</span></div>
+      <div class="price-credits"><strong>300</strong> cover letters · <strong>25</strong> resumes / month</div>
       <ul class="price-features">
-        <li>100 job applications</li>
-        <li>AI cover-letter generation</li>
-        <li>Resume auto-attach</li>
-        <li>Application history</li>
-        <li>Priority 24/7 support</li>
+        <li>Everything in Pro</li>
+        <li>High-volume applying</li>
+        <li>Bulk send in one go</li>
+        <li>Priority email support</li>
       </ul>
-      <a href="/signup?plan=premium" class="btn btn-ghost">Get started</a>
+      <a href="/index.html#download" class="btn btn-ghost">Get the app</a>
+    </div>
+
+    <!-- Max -->
+    <div class="price-card">
+      <div class="price-name">Max</div>
+      <div class="price-amount"><span class="currency">$</span>49.99<span class="per">/mo</span></div>
+      <div class="price-credits"><strong>1,000</strong> cover letters · <strong>50</strong> resumes / month</div>
+      <ul class="price-features">
+        <li>Everything in Power</li>
+        <li>Our largest monthly allowance</li>
+        <li>Career-change campaigns</li>
+        <li>Priority email support</li>
+      </ul>
+      <a href="/index.html#download" class="btn btn-ghost">Get the app</a>
     </div>
   </div>
 
   <div class="pricing-foot">
-    <strong>Need more?</strong> Enterprise (500 credits / $149.99) and Ultimate (2,000 credits / $499.99) packs available.
-    <a href="/index.html#contact">See all plans →</a>
+    <strong>Always free:</strong> searching for jobs, Auto Fill, page translation and downloading your
+    documents. A plan only covers AI cover-letter and resume generation.
+    <br/>
+    Plans are billed monthly through the App Store or Google Play and renew automatically until
+    cancelled. Cancel any time in your store account — cancelling stops the next renewal and you keep
+    the month you have paid for.
   </div>
 </section>
 
@@ -428,7 +465,7 @@
     </div>
     <div class="stat-cell">
       <div class="stat-big">$0</div>
-      <div class="stat-cell-label">Subscription fees</div>
+      <div class="stat-cell-label">To search, fill &amp; download</div>
     </div>
     <div class="stat-cell">
       <div class="stat-big">24/7</div>
@@ -459,7 +496,7 @@
   <div class="cta-wrap">
     <div class="cta-content">
       <h2>Your next role is <span class="accent">one bulk-send away.</span></h2>
-      <p>Free trial. No credit card required. Credits never expire.</p>
+      <p>7-day free trial. No credit card required. Cancel any time.</p>
       <a href="/register" class="btn btn-primary btn-lg">Start free trial <span class="arrow">→</span></a>
     </div>
   </div>
