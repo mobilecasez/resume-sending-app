@@ -36,8 +36,17 @@ async function getToken(): Promise<string | null> {
   }
 }
 
+// ⚠️ THE BUILD NUMBER, NOT JUST THE VERSION. "3.6" is shared by every build of 3.6, so when a
+// tester reported four fixes as still broken there was no way to tell whether they were running the
+// build that contained them — the answer was unknowable from the data, which cost a whole
+// diagnostic round. `3.6 (152)` answers it instantly.
+export const APP_BUILD: string =
+  String((Constants as any)?.expoConfig?.ios?.buildNumber
+      ?? (Constants as any)?.expoConfig?.android?.versionCode
+      ?? '');
 const APP_VERSION: string =
-  (Constants as any)?.expoConfig?.version || (Constants as any)?.manifest?.version || '';
+  ((Constants as any)?.expoConfig?.version || (Constants as any)?.manifest?.version || '')
+  + (APP_BUILD ? ` (${APP_BUILD})` : '');
 
 export async function track(event: string, props?: Record<string, any>): Promise<void> {
   try {

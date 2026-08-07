@@ -22,6 +22,7 @@ import { fetchJobDetail, saveCard, translateBatch, type LiveJobCard } from '../s
 import { isListingUrl, isSearchEngineUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS, STAY_IN_APP_JS } from '../utils/webviewAuth';
+import { APP_BUILD } from '../services/analytics';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../utils/webviewTranslate';
 import { PAGE_TEXT_FN, FORM_TOUCH_JS } from '../utils/webviewPageText';
 
@@ -217,6 +218,10 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const webRef = useRef<WebView>(null);
   const insets = useSafeAreaInsets();
   const [currentUrl, setCurrentUrl] = useState(url);
+  // What the WebView is told to LOAD (as opposed to where it has since navigated). Only the search
+  // box changes this; ordinary link taps move the page without touching it. See openTypedLink for
+  // why a search has to be a native load rather than injected JS.
+  const [navUri, setNavUri] = useState(url);
   const [canGoBack, setCanGoBack] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
@@ -307,11 +312,21 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   }, []);
   const openTypedLink = useCallback(() => {
     const t = linkText.trim();
-    if (!t || !webRef.current) return;
+    if (!t) return;
     const target = directUrlOf(t) || googleSearchUrl(t);
     setLinkOpen(false);
     Keyboard.dismiss();
-    try { webRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(target)}; true;`); } catch {}
+    // ⚠️ A NATIVE LOAD, NOT injectJavaScript. Searching used to set window.location.href from
+    // injected JS, and iOS still handed google.com to the GOOGLE APP — the search left CVApplyr
+    // entirely. Driving the WebView's own `source` makes this a loadRequest issued by the app,
+    // which is not a user-activated navigation and therefore can never be claimed by another app's
+    // universal links. Same destination, but it cannot escape.
+    setNavUri((prev) => {
+      // Re-searching the identical URL would not change state, so nothing would load. Reload
+      // explicitly rather than leaving the user looking at a dead Go button.
+      if (prev === target) { try { webRef.current?.reload(); } catch {} }
+      return target;
+    });
   }, [linkText]);
 
   // Re-check on every dock open: the user may have just signed in (or been signed out) since the
@@ -736,7 +751,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
 
       <WebView
         ref={webRef}
-        source={{ uri: url }}
+        source={{ uri: navUri }}
         style={{ flex: 1 }}
         onNavigationStateChange={(nav) => {
           if (nav.url && preAuthUrlRef.current && authOriginRef.current && !nav.loading) {
@@ -778,6 +793,15 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           if (xlateSettleRef.current) clearTimeout(xlateSettleRef.current);
           xlateSettleRef.current = setTimeout(() => runXlate('settle'), 2200);
         }}
+        // ⚠️ STAY_IN_APP_JS also runs BEFORE the page's own scripts. Injected only after load, our
+        // capture-phase listener is installed behind whatever the site registered first — and a
+        // single-page app like LinkedIn hydrates and starts handling clicks well before that point,
+        // so a link tapped early still reached the OS and opened the native app. Registering first
+        // is the whole mechanism. FRAME_GUARD_JS comes along because STAY_IN_APP_JS reads the
+        // __cvfSkipFrame flag it sets, and without it we would install inside captcha frames too.
+        // Re-injection is harmless: the __cvfStayHook guard makes the second run a no-op.
+        injectedJavaScriptBeforeContentLoaded={FRAME_GUARD_JS + '\n' + STAY_IN_APP_JS}
+        injectedJavaScriptBeforeContentLoadedForMainFrameOnly={false}
         injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + STAY_IN_APP_JS + '\n' + XLATE_WATCH_JS + '\n' + FORM_TOUCH_JS}
         injectedJavaScriptForMainFrameOnly={false}
         onMessage={(e) => onMessage(e.nativeEvent.data)}
@@ -822,7 +846,12 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
               <View style={styles.dockPlatIcon}><Ionicons name="globe-outline" size={15} color="#22D3EE" /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.dockPlatName} numberOfLines={1}>{platform}</Text>
-                <Text style={styles.dockPlatHost} numberOfLines={1}>{host}</Text>
+                {/* Build number in plain sight. A bug report that says "still broken" is only
+                    actionable if we know which build it was seen on, and the marketing version
+                    alone ("3.6") cannot tell 151 from 152. */}
+                <Text style={styles.dockPlatHost} numberOfLines={1}>
+                  {host}{APP_BUILD ? `  ·  build ${APP_BUILD}` : ''}
+                </Text>
               </View>
               <TouchableOpacity onPress={() => setDockOpen(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                 <Ionicons name="close" size={19} color="rgba(255,255,255,0.6)" />
