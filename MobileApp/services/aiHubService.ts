@@ -695,11 +695,20 @@ export type JobCLRecord = {
 export async function saveJobCoverLetter(jobId: string, data: {
   coverLetterHtml: string; companyName: string; websiteUrl: string; position: string;
   companyAddress?: string; companyLocations?: Array<{ address: string; city: string; country: string; isHeadquarters: boolean; matchesJobLocation?: boolean }>;
-}): Promise<void> {
+}): Promise<boolean> {
   try {
     const headers = await getAuthHeader();
     await axios.post(`${API_BASE}/ai-hub/jobs/${jobId}/cover-letter`, data, { headers });
-  } catch {}
+    return true;
+  } catch (e: any) {
+    // ⚠️ Was a bare `catch {}`. A cover letter costs the user credits and a minute of waiting, and
+    // a failed save looked EXACTLY like a successful one until they reopened the job and found it
+    // gone — with nothing anywhere to say why. Still non-throwing (no caller can do anything about
+    // it mid-flow), but never again silent.
+    console.warn('[aiHub] saveJobCoverLetter failed for', jobId, '→',
+      e?.response?.status || '', e?.response?.data?.error || e?.message || e);
+    return false;
+  }
 }
 
 export async function loadJobCoverLetter(jobId: string): Promise<JobCLRecord | null> {

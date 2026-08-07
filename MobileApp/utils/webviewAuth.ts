@@ -60,3 +60,50 @@ export const AUTH_FLOW_JS = `(function(){
   var realClose = window.close;
   window.close = function(){ post({type:'AUTH_DONE', reason:'self-close'}); try{ realClose.call(window); }catch(e){} };
 })(); true;`;
+
+// ── Stay in this window ───────────────────────────────────────────────────────
+// ⚠️ THE BUG THIS FIXES IS NOT VISIBLE IN onShouldStartLoadWithRequest. Tapping a LinkedIn link
+// opened the LinkedIn APP even though that handler returns true for every http(s) URL — because
+// iOS UNIVERSAL LINKS are resolved BEFORE the navigation is offered to the web view at all. When a
+// user activates a link that points at a domain some installed app has claimed, WKWebView hands it
+// straight to that app; our handler is never consulted, so there was nothing there to say no.
+//
+// The one property universal links depend on is that the navigation was USER-ACTIVATED. A scripted
+// navigation is exempt. So we take the tap ourselves and re-issue it as location.assign() — same
+// destination, same window, and the OS no longer treats it as an app-openable link.
+//
+// Deliberately surgical, because a blunt version breaks real sites:
+//   • non-http schemes (linkedin://, fb://, intent://) — blocked outright. That is a page trying to
+//     bounce the user into a native app, which is exactly what this browser must never do.
+//   • CROSS-ORIGIN links only get the rewrite. Universal links cannot fire same-origin, and taking
+//     over same-origin clicks would break every single-page app's own router (LinkedIn, Google and
+//     most job boards route in JS) by forcing a full reload on every internal navigation.
+//   • composedPath(), not target.closest(), so a link inside a shadow root is still found.
+export const STAY_IN_APP_JS = `(function(){
+  if (window.__cvfSkipFrame || window.__cvfStayHook) return; window.__cvfStayHook = true;
+  function abs(h){ try { return new URL(String(h), location.href).href; } catch(e){ return ''; } }
+  function anchorOf(ev){
+    try {
+      var path = ev.composedPath ? ev.composedPath() : null;
+      if (path) { for (var i=0;i<path.length;i++){ var n=path[i]; if (n && n.tagName && String(n.tagName).toLowerCase()==='a' && n.getAttribute && n.getAttribute('href')) return n; } }
+    } catch(e){}
+    try { return ev.target && ev.target.closest ? ev.target.closest('a[href]') : null; } catch(e){ return null; }
+  }
+  document.addEventListener('click', function(ev){
+    try {
+      if (ev.defaultPrevented) return;
+      if (ev.button && ev.button !== 0) return;
+      if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+      var a = anchorOf(ev); if (!a) return;
+      var raw = a.getAttribute('href') || '';
+      if (!raw || raw.charAt(0) === '#') return;
+      if (/^javascript:/i.test(raw)) return;
+      var u = abs(raw); if (!u) return;
+      if (!/^https?:/i.test(u)) { ev.preventDefault(); ev.stopPropagation(); return; }
+      var host = ''; try { host = new URL(u).hostname; } catch(e){ return; }
+      if (!host || host === location.hostname) return;
+      ev.preventDefault(); ev.stopPropagation();
+      window.location.assign(u);
+    } catch(e){}
+  }, true);
+})(); true;`;

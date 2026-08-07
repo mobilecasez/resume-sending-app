@@ -17,12 +17,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
-import * as WebBrowser from 'expo-web-browser';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchJobDetail, saveCard, translateBatch, type LiveJobCard } from '../services/aiHubService';
 import { isListingUrl, isSearchEngineUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
-import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../utils/webviewAuth';
+import { FRAME_GUARD_JS, AUTH_FLOW_JS, STAY_IN_APP_JS } from '../utils/webviewAuth';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../utils/webviewTranslate';
 import { PAGE_TEXT_FN, FORM_TOUCH_JS } from '../utils/webviewPageText';
 
@@ -461,14 +460,19 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     catch { applyWantRef.current = false; if (applyTimerRef.current) clearTimeout(applyTimerRef.current); goApply(); }
   }, [guardBusy, goApply]);
 
-  // Open the page in the phone's OWN browser. Always available: sometimes a site simply behaves
-  // better there, and sometimes you just want the page in the browser you normally use.
+  // Open the page in the phone's OWN browser — the DEFAULT one, Safari or Chrome, as a real
+  // handover out of CVApplyr.
+  //
+  // ⚠️ Linking.openURL, NOT WebBrowser.openBrowserAsync. openBrowserAsync shows
+  // SFSafariViewController, which is another in-app browser: it looked like a third window stacked
+  // on the two the user was already in, and it carries its own "Open in …" button, so the one
+  // control that is supposed to mean "leave" needed a second tap to actually leave.
   const openInBrowser = useCallback(() => {
     if (guardBusy()) return;
     setDockOpen(false);
     const u = currentUrlRef.current;
     if (!u || !/^https?:\/\//i.test(u)) return;
-    WebBrowser.openBrowserAsync(u).catch(() => { Linking.openURL(u).catch(() => {}); });
+    Linking.openURL(u).catch(() => {});
   }, [guardBusy]);
 
   // Sign in to LinkedIn INSIDE the app's own browser. iOS keeps Safari / SFSafariViewController /
@@ -649,11 +653,6 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         <TouchableOpacity onPress={openSearchBar} style={[styles.navBtn, linkOpen && styles.navBtnActive, fetching && styles.navBtnOff]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Ionicons name="search" size={17} color={fetching ? '#94A3B8' : linkOpen ? '#fff' : '#0F172A'} />
         </TouchableOpacity>
-        {/* …and LEAVING for the phone's own browser is now its own clearly separate control,
-            rather than something you could arrive at by looking for search. */}
-        <TouchableOpacity onPress={openInBrowser} style={[styles.navBtn, fetching && styles.navBtnOff]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Ionicons name="open-outline" size={18} color={fetching ? '#94A3B8' : '#0F172A'} />
-        </TouchableOpacity>
         <TouchableOpacity onPress={toggleTranslate} style={[styles.navBtn, webTranslated && styles.navBtnActive]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           {webTranslating
             ? <ActivityIndicator size="small" color="#06B6D4" />
@@ -661,6 +660,12 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         </TouchableOpacity>
         <TouchableOpacity onPress={() => { if (!fetching) webRef.current?.reload(); }} style={[styles.navBtn, fetching && styles.navBtnOff]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Ionicons name="refresh" size={17} color={fetching ? '#94A3B8' : '#0F172A'} />
+        </TouchableOpacity>
+        {/* LEAVING for the phone's own browser — the LAST control before close, because it is the
+            only one in this bar that ends the session. Nothing else in this browser ever hands a
+            page to another app, so this is the single, deliberate way out. */}
+        <TouchableOpacity onPress={openInBrowser} style={[styles.navBtn, fetching && styles.navBtnOff]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Ionicons name="open-outline" size={18} color={fetching ? '#94A3B8' : '#0F172A'} />
         </TouchableOpacity>
         <TouchableOpacity onPress={() => { if (guardBusy()) return; onClose(); }} style={[styles.navBtn, fetching && styles.navBtnOff]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Ionicons name="close" size={20} color={fetching ? '#94A3B8' : '#0F172A'} />
@@ -679,7 +684,11 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
             style={styles.linkInput}
             autoCapitalize="none"
             autoCorrect={false}
-            keyboardType="url"
+            // ⚠️ NOT keyboardType="url". iOS's URL keyboard has NO SPACE BAR — it replaces it with
+            // "/" and ".", so typing a space into a search phrase produced a slash and the box was
+            // usable only for addresses. This field takes EITHER a link or a search phrase, so it
+            // needs an ordinary keyboard; 'web-search' is the iOS one that keeps a Go key.
+            keyboardType={Platform.OS === 'ios' ? 'web-search' : 'default'}
             returnKeyType="go"
             autoFocus
             selectTextOnFocus
@@ -769,7 +778,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           if (xlateSettleRef.current) clearTimeout(xlateSettleRef.current);
           xlateSettleRef.current = setTimeout(() => runXlate('settle'), 2200);
         }}
-        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + XLATE_WATCH_JS + '\n' + FORM_TOUCH_JS}
+        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + STAY_IN_APP_JS + '\n' + XLATE_WATCH_JS + '\n' + FORM_TOUCH_JS}
         injectedJavaScriptForMainFrameOnly={false}
         onMessage={(e) => onMessage(e.nativeEvent.data)}
         javaScriptEnabled

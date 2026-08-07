@@ -4660,7 +4660,15 @@ async function saveJobCoverLetter(req, res) {
             INSERT INTO job_cover_letters (user_id, job_id, cover_letter_html, company_name, website_url, position, company_address, company_locations, status, updated_at)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'generated', CURRENT_TIMESTAMP)
             ON CONFLICT (user_id, job_id) DO UPDATE
-            SET cover_letter_html  = EXCLUDED.cover_letter_html,
+            -- ⚠️ NEVER let an empty body replace a real letter. Callers that only mean to change
+            -- something ALONGSIDE the letter (the office-address picker sends coverLetterHtml
+            -- defaulted to an empty string) would otherwise erase minutes of paid generation if
+            -- they ran before the letter had loaded into state. An empty write now keeps what is
+            -- already stored.
+            SET cover_letter_html  = CASE
+                                       WHEN COALESCE(EXCLUDED.cover_letter_html, '') = ''
+                                         THEN job_cover_letters.cover_letter_html
+                                       ELSE EXCLUDED.cover_letter_html END,
                 company_name       = EXCLUDED.company_name,
                 website_url        = EXCLUDED.website_url,
                 position           = EXCLUDED.position,
@@ -4822,9 +4830,15 @@ async function getJobStatuses(req, res) {
     try {
         await ensureCoverLetterTable();
         const rows = await dbConfig.query(
+            // ⚠️ j.id::text — jobs.id is UUID and jcl.job_id was widened to TEXT (see
+            // ensureCoverLetterTable, so a synthetic `gj_` id can hold a letter). Postgres has NO
+            // uuid = text operator, so the uncast join did not return fewer rows, it THREW
+            // "operator does not exist: uuid = text" on every single call. This endpoint therefore
+            // answered 500 always, and the list that asks it could never show that a job already
+            // had a cover letter — which reads exactly like the letter was lost.
             `SELECT jcl.job_id, jcl.status
              FROM job_cover_letters jcl
-             JOIN jobs j ON j.id = jcl.job_id
+             JOIN jobs j ON j.id::text = jcl.job_id
              WHERE jcl.user_id=$1 AND j.employer_id=$2`,
             [userId, employerId]
         );
