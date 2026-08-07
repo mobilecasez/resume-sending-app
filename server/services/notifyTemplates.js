@@ -317,14 +317,20 @@ const TEMPLATES = [
   },
   {
     key: 'how_it_works',
-    label: 'How CVApplyr works (tutorial)',
-    description: 'Opens the in-app video tutorial. For users who signed up and then stalled.',
+    label: 'How CVApplyr works (explainer video)',
+    description: 'Opens the 1:27 explainer film in-app. For users who signed up and then stalled. '
+      + 'Builds older than the tutorial screen fall back to the step-by-step guide, so this is safe '
+      + 'to send while the fleet is mixed.',
     category: 'reminders',
     notifType: 'reminder',
-    route: 'help',
+    route: 'tutorial',
     params: () => ({}),
-    title: () => 'See how CVApplyr works in 60 seconds ▶️',
-    body: () => 'Short guides: find jobs, generate a cover letter, and apply without retyping anything.',
+    // Curiosity, then the payoff, then the cost of looking — in that order. "90 seconds" is the
+    // permission-giver: the reason someone taps now instead of resolving to look later and never
+    // doing it. It is also true (1:27), which matters more than it sounds: a nudge that overstates
+    // itself is the last one a person opens.
+    title: () => 'Watch the app fill a job form for you ▶️',
+    body: () => 'The whole thing in 90 seconds — set up once, then find a job and apply without typing it all out again.',
     suggestWhen: (s) => {
       if (nOf(s.applications)) return { suggested: false, reason: 'Already applied — they know how it works.' };
       if (nOf(s.searches)) return { suggested: false, reason: 'Already searched — partly activated.' };

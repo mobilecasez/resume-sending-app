@@ -73,9 +73,28 @@ eq("'profile' + a bogus section falls back to 'profile'",
   resolveRoute({ route: 'profile', params: { section: 'hack../../etc' } }),
   { kind: 'handoff', handoff: 'profile', target: 'profile', storage: { key: FOCUS_TARGET_KEY, value: 'profile' } });
 
-eq("'help' flags the tutorial",
+eq("'help' flags the in-app guide",
   resolveRoute({ route: 'help' }),
   { kind: 'handoff', handoff: 'help', target: 'help', storage: { key: HELP_OPEN_KEY, value: '1' } });
+
+eq("'guide' is the same thing as 'help'",
+  resolveRoute({ route: 'guide' }),
+  { kind: 'handoff', handoff: 'help', target: 'help', storage: { key: HELP_OPEN_KEY, value: '1' } });
+
+// The explainer film. 'tutorial' used to be an alias of 'help'; it now has a screen of its own.
+// The wire value was kept BECAUSE of that history — a build shipped before this screen exists
+// resolves 'tutorial' to the guide rather than to nothing, so the how_it_works push is safe to
+// send while some of the fleet is still on an older build.
+eq("'tutorial' opens the explainer video",
+  resolveRoute({ route: 'tutorial' }),
+  { kind: 'navigate', pathname: '/(tutorial)', params: {} });
+
+eq("'video' is an accepted alias for it",
+  resolveRoute({ route: 'video' }),
+  { kind: 'navigate', pathname: '/(tutorial)', params: {} });
+
+ok("'tutorial' never lands on nothing (the how_it_works push depends on it)",
+  resolveRoute({ route: 'tutorial' }).kind !== 'none');
 
 // ── Lifecycle-nudge destinations (build 143) ──────────────────────────────────────────────────
 // These exist because the automated nudges point at them. A nudge whose route the app silently
@@ -116,7 +135,7 @@ eq("'rewards' opens Earn credits",
 // Every route the SERVER can emit must resolve. This is the assertion that would have caught a
 // template pointing at a route the app never learned.
 {
-  const serverRoutes = ['/(discover)', '/(ai-hub)', 'profile', 'help', 'support', 'usage', 'rewards'];
+  const serverRoutes = ['/(discover)', '/(ai-hub)', 'profile', 'help', 'support', 'usage', 'rewards', 'tutorial'];
   const dead = serverRoutes.filter((r) => resolveRoute({ route: r }).kind === 'none');
   ok('every route in the server contract resolves to something', dead.length === 0, dead);
 }

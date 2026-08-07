@@ -94,6 +94,7 @@ const ADMIN_SUPPORT = '/(admin)/support';
 const USAGE = '/(subscription)/usage';
 const PLANS = '/(subscription)/plans';
 const REWARDS = '/(rewards)';
+const TUTORIAL = '/(tutorial)';
 /** Thread ids are integers from a SERIAL column — anything else is not one of ours. */
 const THREAD_ID_RE = /^[0-9]{1,12}$/;
 
@@ -218,9 +219,21 @@ export function resolveRoute(data: any): PushRouteAction {
       return { kind: 'handoff', handoff: 'profile', target, storage: { key: FOCUS_TARGET_KEY, value: target } };
     }
 
+    // The explainer film. Split out of 'help' now that there is something to play — 'help'/'guide'
+    // still open the step-by-step in-app guide, which is a different thing and still the right
+    // answer for "show me how to do X".
+    //
+    // ⚠️ Deliberately keeping 'tutorial' as the wire value rather than inventing a new one. Builds
+    // shipped before this screen existed resolve 'tutorial' to the help hand-off, so a push sent
+    // while the fleet is mixed opens the guide on old builds and the video on new ones. Both are
+    // sensible; neither is a dead tap. Renaming it would strand every un-updated device on
+    // 'unknown-route' -> do nothing.
+    case 'tutorial':
+    case 'video':
+      return { kind: 'navigate', pathname: TUTORIAL, params: {} };
+
     case 'help':
     case 'guide':
-    case 'tutorial':
       return { kind: 'handoff', handoff: 'help', target: 'help', storage: { key: HELP_OPEN_KEY, value: '1' } };
 
     default:

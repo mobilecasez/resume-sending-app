@@ -2102,6 +2102,10 @@ export default function HomeScreen({
               { icon: 'git-branch-outline', title: 'Environment', sub: 'Point this device at another backend', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/environment'); } },
             ] : []).concat([
               null,
+              // Sits above Help & support on purpose: "show me the whole thing" is a different
+              // question from "something is broken", and the person who wants the tour should not
+              // have to work out that it lives inside a support screen.
+              { icon: 'play-circle-outline', title: 'How CVApplyr works', sub: 'Watch the 90-second walkthrough', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(tutorial)'); } },
               { icon: 'help-buoy-outline', title: 'Help & support', sub: 'Report a problem, chat with our team', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(support)'); } },
               null,
               { icon: 'document-text-outline', title: 'Terms & Conditions', sub: 'View terms of service',   onPress: () => { setShowSettings(false); setScreen('terms'); } },

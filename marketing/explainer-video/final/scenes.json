@@ -1,0 +1,196 @@
+{
+  "_comment": "The edit decision list. Each scene names its narration, its source footage with in/out points measured from the original .mov, and its on-screen text. Scene LENGTH is never set here - every scene is cut to the length of the narration audio Gemini returns, so the picture always fits the voice. Change text, re-run build.sh, and the whole film re-times itself.",
+  "voice": "Charon",
+  "sources": {
+    "profile": "/Volumes/External/Work/cvApplyr/Videos/July 2026/Edited/Profile Update.mov",
+    "resume": "/Volumes/External/Work/cvApplyr/Videos/July 2026/Edited/Resume Builder.mov",
+    "fetch": "/Volumes/External/Work/cvApplyr/Videos/July 2026/Edited/Fetch Job and Generate Cover Letter.mov",
+    "apply": "/Volumes/External/Work/cvApplyr/Videos/July 2026/Edited/Apply Job with Auto Fill.mov"
+  },
+  "phone_crop": "496:1080:712:0",
+  "scenes": [
+    {
+      "id": "01",
+      "kind": "anim",
+      "anim": "retyping",
+      "vo": "Applying for jobs is mostly retyping. The same details, into a different form, every time."
+    },
+    {
+      "id": "02",
+      "kind": "anim",
+      "vo": "This is the app that stops that. Here is the whole thing.",
+      "card": {
+        "big": "Set up once.",
+        "big2": "Then find a job, and apply.",
+        "kicker": "CVApplyr"
+      },
+      "anim": "title"
+    },
+    {
+      "id": "03",
+      "kind": "screen",
+      "source": "profile",
+      "in": 0.2,
+      "out": 4.6,
+      "vo": "You fill in your details once. Name, phone, address.",
+      "head": "Your details, once",
+      "sub": "Stored, not retyped",
+      "phase": "setup",
+      "phase_i": 1
+    },
+    {
+      "id": "04",
+      "kind": "screen",
+      "source": "profile",
+      "in": 4.6,
+      "out": 10.7,
+      "vo": "Add your résumé and a photo. No signature saved? It draws one from your name.",
+      "head": "Résumé, photo, signature",
+      "sub": "No signature saved? It draws one from your name",
+      "phase": "setup",
+      "phase_i": 2
+    },
+    {
+      "id": "05",
+      "kind": "screen",
+      "source": "resume",
+      "in": 0.6,
+      "out": 4.8,
+      "vo": "No résumé yet? Rough notes in, a written résumé out.",
+      "head": "No résumé yet?",
+      "sub": "Rough notes in — a written résumé out",
+      "phase": "setup",
+      "phase_i": 3
+    },
+    {
+      "id": "06",
+      "kind": "screen",
+      "source": "resume",
+      "in": 4.8,
+      "out": 9.25,
+      "vo": "Then pick the format for where you are applying. A German CV is not a US résumé.",
+      "head": "Formatted for the country",
+      "sub": "PDF or Word, ready to send",
+      "phase": "setup",
+      "phase_i": 4
+    },
+    {
+      "id": "07",
+      "kind": "screen",
+      "source": "fetch",
+      "in": 0.6,
+      "out": 7.6,
+      "vo": "Now the jobs. You search the live web from inside the app. Real, current listings.",
+      "head": "Search the live web",
+      "sub": "Real listings, not a stale copy",
+      "phase": "find",
+      "phase_i": 1
+    },
+    {
+      "id": "08",
+      "kind": "screen",
+      "source": "fetch",
+      "in": 10.6,
+      "out": 14.3,
+      "vo": "One tap pulls the whole posting in, and saves it.",
+      "head": "One tap to pull it in",
+      "sub": "The full posting, saved to your list",
+      "phase": "find",
+      "phase_i": 2
+    },
+    {
+      "id": "09",
+      "kind": "screen",
+      "source": "apply",
+      "in": 1.6,
+      "out": 6.0,
+      "vo": "It reads the role, researches the company, and writes a cover letter for that specific job.",
+      "head": "The cover letter writes itself",
+      "sub": "For that role — not a template",
+      "phase": "apply",
+      "phase_i": 1
+    },
+    {
+      "id": "10",
+      "kind": "screen",
+      "source": "apply",
+      "in": 6.0,
+      "out": 9.2,
+      "vo": "Pick your region, download as PDF or Word.",
+      "head": "Your region, your format",
+      "sub": "Download as PDF or Word",
+      "phase": "apply",
+      "phase_i": 2
+    },
+    {
+      "id": "11",
+      "kind": "screen",
+      "source": "apply",
+      "in": 11.4,
+      "out": 15.3,
+      "vo": "Then the part that saves real time. Open the employer's own form, and tap the robot.",
+      "head": "Auto Fill the employer's form",
+      "sub": "Their form, not ours",
+      "phase": "apply",
+      "phase_i": 3
+    },
+    {
+      "id": "12",
+      "kind": "screen",
+      "source": "apply",
+      "in": 15.3,
+      "out": 17.9,
+      "vo": "It fills the whole thing in. Details, dropdowns, the questions your résumé answers.",
+      "head": "Filled, and attached",
+      "sub": "Details · dropdowns · résumé · cover letter",
+      "phase": "apply",
+      "phase_i": 4
+    },
+    {
+      "id": "13",
+      "kind": "screen",
+      "source": "apply",
+      "in": 17.9,
+      "out": 18.92,
+      "vo": "Your files attach themselves. Submit, and it is logged on your dashboard.",
+      "head": "Submitted, and tracked",
+      "sub": "Logged on your dashboard",
+      "phase": "apply",
+      "phase_i": 5
+    },
+    {
+      "id": "14",
+      "kind": "anim",
+      "anim": "loop",
+      "vo": "So that is the whole loop. Find a job, and apply, without typing it all out again."
+    },
+    {
+      "id": "15",
+      "kind": "anim",
+      "vo": "CVApplyr. Free to start, on iPhone and Android.",
+      "card": {
+        "big": "CVApplyr",
+        "sub": "Free to start — iPhone and Android",
+        "url": "cvapplyr.com"
+      },
+      "anim": "end"
+    }
+  ],
+  "phases": [
+    {
+      "key": "setup",
+      "label": "Set up",
+      "n": 4
+    },
+    {
+      "key": "find",
+      "label": "Find",
+      "n": 2
+    },
+    {
+      "key": "apply",
+      "label": "Apply",
+      "n": 5
+    }
+  ]
+}
