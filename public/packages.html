@@ -473,8 +473,8 @@
         <!-- Packages Section -->
         <div class="packages-section">
             <div class="packages-section-header">
-                <h2>Available Packages</h2>
-                <p>Select a package below to get started</p>
+                <h2>Credit Packs</h2>
+                <p>No longer sold — CVApplyr runs on monthly plans in the app</p>
             </div>
             
             <div class="packages-grid" id="packagesGrid">
@@ -539,11 +539,21 @@
                 const packages = data.packages || [];
 
                 if (packages.length === 0) {
+                    // ⚠️ Not a "come back later" state — credit packs are retired, deliberately and
+                    // permanently. Saying otherwise leaves someone waiting for a purchase that will
+                    // never return, instead of sending them to the plans that replaced it.
                     grid.innerHTML = `
                         <div class="empty-state">
-                            <div class="empty-state-icon">📦</div>
-                            <div class="empty-state-text">No packages available</div>
-                            <div class="empty-state-subtext">Please check back later</div>
+                            <div class="empty-state-icon">📱</div>
+                            <div class="empty-state-text">Credit packs have been replaced by monthly plans</div>
+                            <div class="empty-state-subtext">
+                                Plans are bought in the CVApplyr app, starting with a 7-day free trial.
+                                Any credits you already hold stay on your account and are used once your
+                                plan or trial allowance runs out.<br><br>
+                                <a href="/index.html#pricing" style="color:#7FB2FF;font-weight:700;">See the plans</a>
+                                &nbsp;·&nbsp;
+                                <a href="/index.html#download" style="color:#7FB2FF;font-weight:700;">Get the app</a>
+                            </div>
                         </div>
                     `;
                     return;
