@@ -4808,12 +4808,24 @@ function urlAliasIds(rawUrl) {
 async function jobAliasMap(userId) {
     const alias = new Map();
     try {
+        // ⚠️ THIS USED TO SCAN user_job_matches WITH `LIMIT 4000` AND NO ORDER BY — which is not a
+        // cap, it is a silent lottery. A user with 4,610 matches got an ARBITRARY 4,000 of them,
+        // and for the founder every single job that actually held a cover letter fell in the
+        // excluded ~610: all 5 of 5 resolved to "not in map". Reopening a saved job then found
+        // nothing and offered to generate (and charge) again.
+        //
+        // The map only ever needs jobs that HAVE a letter — that is what it is used to look up.
+        // Driving it from job_cover_letters makes it both exact and tiny (5 rows here, not 4,000),
+        // so there is nothing left to truncate.
+        //
+        // j.id::text — jobs.id is uuid, job_cover_letters.job_id is TEXT. Uncast, Postgres has no
+        // uuid = text operator and this THROWS rather than returning less (same trap as
+        // getJobStatuses).
         const rows = await dbConfig.query(
             `SELECT j.id, j.job_url
-               FROM jobs j
-               JOIN user_job_matches m ON m.job_id = j.id
-              WHERE m.user_id = $1 AND j.job_url IS NOT NULL
-              LIMIT 4000`,
+               FROM job_cover_letters c
+               JOIN jobs j ON j.id::text = c.job_id
+              WHERE c.user_id = $1 AND j.job_url IS NOT NULL`,
             [userId]
         );
         (rows?.rows || rows || []).forEach((r) => {
