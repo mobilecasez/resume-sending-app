@@ -1,0 +1,21 @@
+{
+  "_comment": "Fill this in and re-run: node make-management-list.js --details details.json  — then it prints fully typed and you only sign it. Every value here must match your Certificate of Incorporation / MCA record exactly; a verifier cross-checks them.",
+  "company": "zSellr (OPC) Private Limited",
+  "address": "",
+  "cin": "",
+  "gstin": "",
+  "pan": "",
+  "email": "support@cvapplyr.com",
+  "website": "www.cvapplyr.com",
+  "ref": "",
+  "date": "",
+  "place": "",
+  "addressee": "The Authorised Officer",
+  "addresseeOrg": "BillDesk / Google Play — Payments Profile Verification",
+  "officials": [
+    { "name": "", "designation": "Director", "din": "" }
+  ],
+  "signatoryName": "",
+  "signatoryDesignation": "Director",
+  "signatoryDin": ""
+}
