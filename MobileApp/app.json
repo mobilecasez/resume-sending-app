@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "CVApplyr",
-    "slug": "cvapplyr-mobile",
+    "slug": "cvapplyr",
     "version": "3.6",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -108,9 +108,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "992a6de3-e46e-4788-953d-f799671672eb"
+        "projectId": "1e19c014-d8ab-4b50-82d2-5e7e88d965bb"
       }
     },
-    "owner": "zsellr"
+    "owner": "zsellr_01"
   }
 }
