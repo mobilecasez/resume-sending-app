@@ -48,6 +48,16 @@ export function directUrlOf(query: string): string | null {
 
 const NOT_COMPANY_RE = /linkedin\.com|licdn\.com|lnkd\.in|google\.[a-z.]+|bing\.com|duckduckgo|accounts\.|login\.|signin\.|auth[0-9]?\.|appleid\.apple|facebook\.com|about:blank/i;
 
+// The ONLY hosts the cancel-and-reload guard below applies to. Every other site navigates
+// normally — the blunt "cancel every cross-host navigation" version worked but made ordinary
+// browsing noticeably slower, because each hop paid for a cancelled navigation plus a fresh load.
+// LinkedIn is the one domain that actually claims its links as iOS universal links here, so it is
+// the only one that has to pay that price. lnkd.in is LinkedIn's own shortener and resolves to it.
+const APP_CLAIMED_HOST_RE = /(^|\.)(linkedin\.com|lnkd\.in)$/i;
+const isAppClaimedUrl = (u: string) => {
+  try { return APP_CLAIMED_HOST_RE.test(new URL(u).hostname); } catch { return false; }
+};
+
 const { height: SH } = Dimensions.get('window');
 
 // Real-browser UA (same fix as the job-detail apply WebView, commit d1f9627): Google rejects
@@ -229,6 +239,10 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   // navigation and replays it from script; without this, it would cancel its own replay too and
   // no link would ever open.
   const selfNavRef = useRef('');
+  // "Opening LinkedIn…" banner. Shown the instant the tap is intercepted, not when the load starts,
+  // because the gap between those two is exactly the dead-feeling part.
+  const [handoff, setHandoff] = useState(false);
+  const handoffTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [canGoBack, setCanGoBack] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
@@ -269,6 +283,20 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const webLoadingRef = useRef(false); // don't scan while a page load is in flight
 
   const platform = platformOf(currentUrl);
+
+  // The banner is cleared by onLoadEnd in the normal case. The timer is the safety net: if the load
+  // never ends (dead network, a redirect chain that stalls), the banner still goes away rather than
+  // sitting on screen forever claiming to be busy.
+  const hideHandoff = useCallback(() => {
+    if (handoffTimerRef.current) { clearTimeout(handoffTimerRef.current); handoffTimerRef.current = null; }
+    setHandoff(false);
+  }, []);
+  const showHandoff = useCallback(() => {
+    setHandoff(true);
+    if (handoffTimerRef.current) clearTimeout(handoffTimerRef.current);
+    handoffTimerRef.current = setTimeout(() => { handoffTimerRef.current = null; setHandoff(false); }, 20000);
+  }, []);
+  useEffect(() => () => { if (handoffTimerRef.current) clearTimeout(handoffTimerRef.current); }, []);
 
   const runXlate = useCallback((_why = 'toggle') => {
     if (!webRef.current || !xlateOnRef.current) return;
@@ -767,7 +795,15 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           <Ionicons name="sparkles" size={15} color="#fff" />
         </TouchableOpacity>
       )}
-      {pageLoading && <View style={styles.progress}><ActivityIndicator size="small" color="#06B6D4" /></View>}
+      {/* Intercepted LinkedIn tap. Deliberately louder than the plain page spinner: this path is
+          slower than a normal link, and the user's complaint was that nothing acknowledged the tap. */}
+      {handoff && (
+        <View style={styles.handoffBar}>
+          <ActivityIndicator size="small" color="#fff" />
+          <Text style={styles.handoffTx}>Opening LinkedIn inside CVApplyr…</Text>
+        </View>
+      )}
+      {pageLoading && !handoff && <View style={styles.progress}><ActivityIndicator size="small" color="#06B6D4" /></View>}
 
       <WebView
         ref={webRef}
@@ -806,6 +842,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         }}
         onLoadEnd={() => {
           setPageLoading(false); webLoadingRef.current = false;
+          hideHandoff();
           if (!xlateOnRef.current) return;
           setTimeout(() => runXlate('load'), 400);            // re-apply / flush a mid-load tap
           // Job pages routinely paint their body after load. One late sweep catches that without a
@@ -876,15 +913,26 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           // ⚠️ NOT just navigationType === 'click'. That was the b155 miss, and it is exactly the
           // reported case: a Google result link goes to google.com/url?q=… which 302-REDIRECTS to
           // linkedin.com. A redirect arrives here as 'other', not 'click', so a click-only guard
-          // waves it through and iOS hands it to the LinkedIn app. Every cross-host top-frame
-          // navigation has to be cancelled and re-issued, whatever triggered it.
-          if (Platform.OS === 'ios' && req?.isTopFrame !== false) {
+          // waves it through and iOS hands it to the LinkedIn app. The cancel has to cover the
+          // redirect too, whatever triggered it — which is fine, because the URL we see at that
+          // point IS the linkedin.com one.
+          //
+          // ⚠️ SCOPED TO LINKEDIN ON PURPOSE (b158). The first working version cancelled EVERY
+          // cross-host navigation, which is correct but costs a cancelled navigation plus a fresh
+          // load on every single hop between sites — browsing felt slow. LinkedIn is the domain
+          // that actually claims these links, so it is the only one that pays. Every other site
+          // takes the plain `return true` path it always did.
+          if (Platform.OS === 'ios' && req?.isTopFrame !== false && isAppClaimedUrl(u)) {
             // Our own re-issued navigation must be let through, or this cancels itself forever.
             if (selfNavRef.current === u) { selfNavRef.current = ''; return true; }
             let sameHost = false;
             try { sameHost = new URL(u).host === new URL(currentUrlRef.current || url).host; } catch {}
             if (!sameHost) {
               selfNavRef.current = u;
+              // The reload below is a full page load of a heavy site, and it starts from nothing —
+              // the tap looked like it did nothing for a second or two. Say so immediately, in the
+              // same tick as the tap, so the wait reads as progress rather than a dead link.
+              showHandoff();
               // ⚠️ setNavUri — a NATIVE load — not injectJavaScript. This is the difference between
               // b156 and this build, and it comes from the user's own experiment: pasting a
               // LinkedIn URL into the address bar opened it IN the web view, while tapping the same
@@ -999,6 +1047,8 @@ const styles = StyleSheet.create({
   host: { fontSize: 13.5, fontWeight: '800', color: '#0F172A' },
   hint: { fontSize: 10.5, color: '#64748B', marginTop: 1 },
   progress: { position: 'absolute', top: 100, alignSelf: 'center', zIndex: 5, backgroundColor: '#fff', borderRadius: 14, padding: 8, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 10, elevation: 6 },
+  handoffBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, marginHorizontal: 10, marginBottom: 8, backgroundColor: '#0A66C2', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
+  handoffTx: { color: '#fff', fontSize: 12.5, fontWeight: '700' },
   hintBar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 10, marginBottom: 8, backgroundColor: '#2563EB', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
   hintTx: { flex: 1, color: '#fff', fontSize: 12.5, fontWeight: '700', lineHeight: 16 },
   tipBar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 10, marginBottom: 8, backgroundColor: '#fff', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: '#E2E8F0' },
