@@ -225,6 +225,10 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   // How many link taps the stay-in-app guard has caught this session. Shown next to the build
   // number in the dock so a tester can see at a glance whether the guard is alive.
   const [stayKept, setStayKept] = useState(0);
+  // The one URL we have just re-issued ourselves. The policy check below cancels every cross-host
+  // navigation and replays it from script; without this, it would cancel its own replay too and
+  // no link would ever open.
+  const selfNavRef = useRef('');
   const [canGoBack, setCanGoBack] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
@@ -869,13 +873,25 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           //
           // The alternative found in research — WKNavigationActionPolicyAllow + 2 — is a PRIVATE
           // API and risks rejection. Not viable with a version in review.
-          if (Platform.OS === 'ios' && req?.navigationType === 'click') {
-            try {
-              webRef.current?.injectJavaScript(`window.location.assign(${JSON.stringify(u)}); true;`);
-            } catch {
-              setNavUri(u);                    // last resort: a native load still beats going nowhere
+          // ⚠️ NOT just navigationType === 'click'. That was the b155 miss, and it is exactly the
+          // reported case: a Google result link goes to google.com/url?q=… which 302-REDIRECTS to
+          // linkedin.com. A redirect arrives here as 'other', not 'click', so a click-only guard
+          // waves it through and iOS hands it to the LinkedIn app. Every cross-host top-frame
+          // navigation has to be cancelled and re-issued, whatever triggered it.
+          if (Platform.OS === 'ios' && req?.isTopFrame !== false) {
+            // Our own re-issued navigation must be let through, or this cancels itself forever.
+            if (selfNavRef.current === u) { selfNavRef.current = ''; return true; }
+            let sameHost = false;
+            try { sameHost = new URL(u).host === new URL(currentUrlRef.current || url).host; } catch {}
+            if (!sameHost) {
+              selfNavRef.current = u;
+              try {
+                webRef.current?.injectJavaScript(`window.location.assign(${JSON.stringify(u)}); true;`);
+              } catch {
+                setNavUri(u);                  // last resort: a native load still beats going nowhere
+              }
+              return false;
             }
-            return false;
           }
           return true;
         }}
