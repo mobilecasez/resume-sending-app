@@ -847,9 +847,37 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         onShouldStartLoadWithRequest={(req: any) => {
           const u = req?.url || '';
           if (!u || u === 'about:blank') return true;
-          if (/^https?:\/\//i.test(u)) return true;
           if (/^(mailto|tel|sms|facetime|maps|geo):/i.test(u)) { Linking.openURL(u).catch(() => {}); return false; }
-          return false;                       // app-scheme deep links (googleapp://, linkedin://…)
+          if (!/^https?:\/\//i.test(u)) return false;   // app-scheme deep links (linkedin://, googleapp://…)
+
+          // ⚠️⚠️ THIS IS THE UNIVERSAL-LINK FIX. Read before simplifying.
+          //
+          // This callback IS WKWebView's decidePolicyForNavigationAction (see RNCWebViewImpl.m —
+          // it reads navigationAction.navigationType and bridges the result). Returning true is
+          // .allow, and ALLOWING a user-activated navigation is precisely what lets iOS hand the
+          // URL to another app that owns the domain. Tapping a LinkedIn result on Google opened
+          // the LinkedIn app for exactly this reason: we said yes, and the OS took us up on it.
+          //
+          // No JavaScript can undo that — by the time the policy is allowed, the decision is the
+          // OS's. Three builds tried to fix it above this layer and could not.
+          //
+          // Apple's only public remedy is to CANCEL and load the URL yourself. So: deny the
+          // link-activated navigation, then re-issue the identical URL from script. A scripted
+          // navigation is not user-activated, so universal links do not apply to it, and it comes
+          // back through here as navigationType 'other' and is allowed. location.assign (rather
+          // than swapping `source`) keeps the page in session history, so Back still works.
+          //
+          // The alternative found in research — WKNavigationActionPolicyAllow + 2 — is a PRIVATE
+          // API and risks rejection. Not viable with a version in review.
+          if (Platform.OS === 'ios' && req?.navigationType === 'click') {
+            try {
+              webRef.current?.injectJavaScript(`window.location.assign(${JSON.stringify(u)}); true;`);
+            } catch {
+              setNavUri(u);                    // last resort: a native load still beats going nowhere
+            }
+            return false;
+          }
+          return true;
         }}
       />
 
