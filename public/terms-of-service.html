@@ -27,6 +27,15 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/css/styles_new.css">
+<style>
+  /* Apple requires the subscription title, length and price to be readable in the EULA itself,
+     so this table is content, not decoration — it must stay legible on a phone. */
+  .plan-terms { width: 100%; border-collapse: collapse; margin: 14px 0 6px; font-size: 15px; }
+  .plan-terms th, .plan-terms td { border: 1px solid #E2E8F0; padding: 9px 11px; text-align: left; vertical-align: top; }
+  .plan-terms th { background: #F1F5F9; font-weight: 700; }
+  .plan-terms-note { font-size: 14px; color: #475569; margin-top: 0; }
+  @media (max-width: 640px) { .plan-terms { font-size: 13.5px; } .plan-terms th, .plan-terms td { padding: 7px 8px; } }
+</style>
 </head>
 <body>
 
@@ -229,10 +238,23 @@
       <p>New users receive a 7-day free trial that includes 5 AI cover letters and 2 AI resume generations. No payment details are required to start the trial, and it does not convert into a paid plan on its own: a plan begins only if you choose to subscribe.</p>
 
       <h3>5.7 Subscription plans</h3>
-      <p>Paid plans are auto-renewable monthly subscriptions. The plans, their prices and their monthly allowances are shown in the app and on our website before you purchase.</p>
+      <p>Paid plans are auto-renewable monthly subscriptions. Every plan runs for a length of <strong>1 month</strong> and renews monthly until you cancel. The titles, lengths and prices are:</p>
+      <table class="plan-terms">
+        <thead><tr><th>Subscription title</th><th>Length</th><th>Price (US)</th><th>Monthly allowance</th></tr></thead>
+        <tbody>
+          <tr><td>cvapplyr Starter</td><td>1 month</td><td>US$4.99 / month</td><td>30 cover letters, 5 resumes</td></tr>
+          <tr><td>cvapplyr Plus</td><td>1 month</td><td>US$9.99 / month</td><td>100 cover letters, 10 resumes</td></tr>
+          <tr><td>cvapplyr Pro</td><td>1 month</td><td>US$14.99 / month</td><td>150 cover letters, 15 resumes</td></tr>
+          <tr><td>cvapplyr Power</td><td>1 month</td><td>US$24.99 / month</td><td>300 cover letters, 25 resumes</td></tr>
+          <tr><td>cvapplyr Max</td><td>1 month</td><td>US$49.99 / month</td><td>1000 cover letters, 50 resumes</td></tr>
+        </tbody>
+      </table>
+      <p class="plan-terms-note">Prices shown are the US prices. Outside the US the store charges its own local price tier for that plan, and the exact amount in your currency is always shown by the App Store or Google Play before you confirm the purchase.</p>
       <ul>
-        <li><strong>Billing.</strong> Plans are purchased and billed through the Apple App Store or Google Play, under the store account you used. We never see or store your card details.</li>
-        <li><strong>Automatic renewal.</strong> A plan renews automatically each month and your store account is charged at the then-current price, unless you cancel at least 24 hours before the end of the current period.</li>
+        <li><strong>Billing.</strong> Plans are purchased and billed through the Apple App Store or Google Play, under the store account you used. We never see or store your card details. <strong>On iOS, payment is charged to your Apple ID account at confirmation of purchase.</strong></li>
+        <li><strong>Automatic renewal.</strong> A plan renews automatically each month and your store account is charged at the then-current price, unless you cancel at least 24 hours before the end of the current period. Your account is charged for renewal <strong>within 24 hours prior to the end of the current period</strong>, at the price of the plan you hold.</li>
+        <li><strong>Managing your subscription.</strong> Subscriptions are managed by you, and auto-renewal can be turned off by going to your <strong>Account Settings</strong> on the App Store (Apple ID → Subscriptions) or Google Play after purchase.</li>
+        <li><strong>Free trial.</strong> Where a free trial is offered, any unused portion of that free trial period is forfeited when you purchase a subscription, to the extent such a trial is offered by the store.</li>
         <li><strong>Cancelling.</strong> You can cancel at any time in your Apple or Google account settings. Cancelling stops the next renewal; you keep the plan and its allowance until the end of the period you have already paid for.</li>
         <li><strong>Allowances.</strong> Your monthly allowance resets each billing period and does not carry over. Generation is only counted when it succeeds — a failed attempt never uses your allowance.</li>
         <li><strong>Changing plan.</strong> Moving to a more expensive plan takes effect immediately; moving to a cheaper one takes effect at your next renewal, as the app stores require. This is shown to you before you confirm.</li>
