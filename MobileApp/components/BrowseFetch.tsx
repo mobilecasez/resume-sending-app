@@ -885,11 +885,19 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
             try { sameHost = new URL(u).host === new URL(currentUrlRef.current || url).host; } catch {}
             if (!sameHost) {
               selfNavRef.current = u;
-              try {
-                webRef.current?.injectJavaScript(`window.location.assign(${JSON.stringify(u)}); true;`);
-              } catch {
-                setNavUri(u);                  // last resort: a native load still beats going nowhere
-              }
+              // ⚠️ setNavUri — a NATIVE load — not injectJavaScript. This is the difference between
+              // b156 and this build, and it comes from the user's own experiment: pasting a
+              // LinkedIn URL into the address bar opened it IN the web view, while tapping the same
+              // link opened the LinkedIn app. The paste path is exactly this — it changes `source`,
+              // so WKWebView issues loadRequest from app code and universal links never apply.
+              //
+              // b155/b156 replayed the URL with window.location.assign instead. That runs INSIDE
+              // the page, still inside the user's gesture, and iOS evidently still counts it as
+              // user-driven — so the app opened anyway. Same destination, wrong messenger.
+              //
+              // Changing source.uri calls loadRequest on the SAME WKWebView, so the back-forward
+              // list survives and Back still works.
+              setNavUri(u);
               return false;
             }
           }
