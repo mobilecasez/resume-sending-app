@@ -89,21 +89,46 @@ export const STAY_IN_APP_JS = `(function(){
     } catch(e){}
     try { return ev.target && ev.target.closest ? ev.target.closest('a[href]') : null; } catch(e){ return null; }
   }
-  document.addEventListener('click', function(ev){
+  function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
+  // ⚠️ target="_blank" MUST DIE BEFORE THE CLICK REACHES NATIVE. This is the case the click handler
+  // below cannot save us from: with setSupportMultipleWindows={false}, react-native-webview's iOS
+  // shim has no window to open a _blank link into and hands the URL to the system — which is
+  // precisely "the LinkedIn app opened". Neutralising the attribute on the way down means no
+  // _blank link ever reaches that code path, whatever the shim decides to do with one.
+  function deblank(a){
+    try {
+      var t = a.getAttribute('target');
+      if (t && t !== '_self') { a.setAttribute('target', '_self'); return true; }
+    } catch(e){}
+    return false;
+  }
+  // pointerdown fires BEFORE click, so the attribute is already gone by the time anything else runs.
+  ['pointerdown','mousedown','touchstart'].forEach(function(evt){
+    document.addEventListener(evt, function(ev){
+      try { var a = anchorOf(ev); if (a) deblank(a); } catch(e){}
+    }, true);
+  });
+  function onClick(ev){
     try {
       if (ev.defaultPrevented) return;
       if (ev.button && ev.button !== 0) return;
       if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
       var a = anchorOf(ev); if (!a) return;
+      deblank(a);
       var raw = a.getAttribute('href') || '';
       if (!raw || raw.charAt(0) === '#') return;
       if (/^javascript:/i.test(raw)) return;
       var u = abs(raw); if (!u) return;
-      if (!/^https?:/i.test(u)) { ev.preventDefault(); ev.stopPropagation(); return; }
+      if (!/^https?:/i.test(u)) { ev.preventDefault(); ev.stopPropagation(); post({type:'STAY_BLOCKED_SCHEME', url:u.slice(0,120)}); return; }
       var host = ''; try { host = new URL(u).hostname; } catch(e){ return; }
-      if (!host || host === location.hostname) return;
+      if (!host || host === location.hostname) return;   // same-origin: leave SPA routing alone
       ev.preventDefault(); ev.stopPropagation();
+      // Tell the app we handled it. Without this, "it still opened LinkedIn" and "our handler never
+      // ran" look identical from the outside, which is exactly how this bug survived two builds.
+      post({type:'STAY_INTERCEPT', host:host});
       window.location.assign(u);
     } catch(e){}
-  }, true);
+  }
+  document.addEventListener('click', onClick, true);
+  document.addEventListener('auxclick', onClick, true);
 })(); true;`;

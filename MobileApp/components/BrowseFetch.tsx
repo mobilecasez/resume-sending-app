@@ -222,6 +222,9 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   // box changes this; ordinary link taps move the page without touching it. See openTypedLink for
   // why a search has to be a native load rather than injected JS.
   const [navUri, setNavUri] = useState(url);
+  // How many link taps the stay-in-app guard has caught this session. Shown next to the build
+  // number in the dock so a tester can see at a glance whether the guard is alive.
+  const [stayKept, setStayKept] = useState(0);
   const [canGoBack, setCanGoBack] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
@@ -510,6 +513,19 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const onMessage = useCallback(async (raw: string) => {
     let payload: any = null; try { payload = JSON.parse(raw); } catch { return; }
     // Sign-in shim (see utils/webviewAuth.ts): iOS can never give the page a real popup.
+    // Evidence that the stay-in-app interceptor actually ran. "The LinkedIn app still opened" and
+    // "our handler never fired" are indistinguishable from the outside, and that ambiguity is what
+    // let this bug survive two builds. Now the log says which one it was.
+    if (payload && payload.__cvf && payload.type === 'STAY_INTERCEPT') {
+      console.log('[stay-in-app] kept in the web view:', payload.host);
+      setStayKept((n) => n + 1);
+      return;
+    }
+    if (payload && payload.__cvf && payload.type === 'STAY_BLOCKED_SCHEME') {
+      console.log('[stay-in-app] blocked an app-scheme link:', payload.url);
+      setStayKept((n) => n + 1);
+      return;
+    }
     if (payload && payload.__cvf && payload.type === 'AUTH_POPUP') { beginAuthFlow(String(payload.url || ''), String(payload.from || '')); return; }
     if (payload && payload.__cvf && payload.type === 'AUTH_DONE') { returnFromAuth(600); return; }
 
@@ -850,7 +866,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
                     actionable if we know which build it was seen on, and the marketing version
                     alone ("3.6") cannot tell 151 from 152. */}
                 <Text style={styles.dockPlatHost} numberOfLines={1}>
-                  {host}{APP_BUILD ? `  ·  build ${APP_BUILD}` : ''}
+                  {host}{APP_BUILD ? `  ·  build ${APP_BUILD}` : ''}{stayKept > 0 ? `  ·  kept ${stayKept}` : ''}
                 </Text>
               </View>
               <TouchableOpacity onPress={() => setDockOpen(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
