@@ -21,6 +21,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
 import { SlideCarousel, HELP_FAB } from './WelcomeExplainer';
 
 const { width: SW, height: SH } = Dimensions.get('window');
@@ -288,6 +289,7 @@ function StepList({ title, intro, steps, onZoom, onWatch }) {
 // `context` — which screen family hosts this instance ('home' | 'jobs' | 'resume' | 'cover'); it
 // decides which coach stage speaks first there (on Jobs: find → cover → apply before profile).
 export default function HelpAssistant({ attention = 0, context = 'home' }) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [view, setView] = useState('home');   // home | answer | tutorial
   const [answer, setAnswer] = useState(null);  // {title, intro, steps, video}
@@ -640,6 +642,19 @@ export default function HelpAssistant({ attention = 0, context = 'home' }) {
                   {/* Full sheet width and as tall as the sheet allows — at 340 the phone recording
                       was scaled down to about a third of its size and the UI in it was unreadable. */}
                   <SlideCarousel pageW={Math.min(SW, 520) - 24} imgH={Math.min(SH * 0.56, 560)} initialIndex={tutorialAt} />
+                  {/* The carousel is stills, which answer "where do I tap?" but never show the app
+                      actually doing the work. The narrated film does, and until now it was only
+                      reachable from a push — so anyone who opened the guide instead never found it.
+                      The sheet is closed first: it is a Modal, and pushing a route underneath it
+                      leaves the video playing behind a dimmed overlay. */}
+                  <TouchableOpacity
+                    style={s.filmBtn}
+                    activeOpacity={0.9}
+                    onPress={() => { closeSheet(); setTimeout(() => router.push('/(tutorial)'), 220); }}
+                  >
+                    <Ionicons name="play-circle" size={18} color="#fff" />
+                    <Text style={s.filmText}>Watch the full video with sound</Text>
+                  </TouchableOpacity>
                 </View>
               )}
               <View style={{ height: 10 }} />
@@ -762,6 +777,8 @@ const s = StyleSheet.create({
   },
   watchText: { fontSize: 13.5, fontWeight: '800', color: '#fff' },
   tutorialStage: { marginHorizontal: -16, paddingTop: 4, alignItems: 'center' },
+  filmBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#2563EB', borderRadius: 14, height: 48, marginTop: 12, marginBottom: 4, paddingHorizontal: 18, alignSelf: 'center' },
+  filmText: { fontSize: 14, fontWeight: '800', color: '#fff' },
 
   // One card per step. The shot is inset under the text (not full-bleed) so the instruction stays the
   // thing you read first; it is the FULL screen so nothing looks sliced off.
