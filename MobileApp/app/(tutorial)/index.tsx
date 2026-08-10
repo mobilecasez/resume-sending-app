@@ -20,7 +20,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { Video, ResizeMode } from 'expo-av';
+import { Video, ResizeMode, Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import { downloadAsync, getInfoAsync, cacheDirectory } from 'expo-file-system/legacy';
 import { API_BASE } from '../../config';
 import { track } from '../../services/analytics';
@@ -69,6 +69,33 @@ export default function TutorialScreen() {
       } catch { /* offline or server down — streaming already covered the user */ }
     })();
     return () => { alive = false; };
+  }, []);
+
+  // ⚠️ WITHOUT THIS THE FILM PLAYS SILENTLY FOR MOST PEOPLE. expo-av defaults
+  // playsInSilentModeIOS to FALSE, which means iOS honours the ring/silent switch — and that switch
+  // is left on silent by a large share of iPhone users. The video looked fine and simply had no
+  // narration, with nothing on screen to explain why. A muted explainer is a broken explainer: the
+  // whole point is the voice-over.
+  //
+  // Scoped to this screen on purpose. The mode is global to the app, and claiming the playback
+  // category app-wide would let any later sound ignore the user's silent switch — so it is restored
+  // on unmount. DoNotMix/DuckOthers because this is speech the user chose to listen to: it should
+  // interrupt music rather than fight it.
+  useEffect(() => {
+    Audio.setAudioModeAsync({
+      playsInSilentModeIOS: true,
+      allowsRecordingIOS: false,
+      staysActiveInBackground: false,
+      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+      interruptionModeAndroid: InterruptionModeAndroid.DuckOthers,
+      shouldDuckAndroid: true,
+      playThroughEarpieceAndroid: false,
+    }).catch(() => { /* session refused — the film still plays, just under the silent switch */ });
+    // Hand the silent switch back to the rest of the app on the way out.
+    return () => {
+      Audio.setAudioModeAsync({ playsInSilentModeIOS: false, allowsRecordingIOS: false })
+        .catch(() => {});
+    };
   }, []);
 
   useEffect(() => { track('tutorial_opened', { file: TUTORIAL_FILE }).catch(() => {}); }, []);
