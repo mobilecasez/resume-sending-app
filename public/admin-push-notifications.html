@@ -56,6 +56,13 @@
             background: #0B1120; color: #fff; font-weight: 700; border: none;
             border-radius: 12px; padding: 9px 18px; font-size: 0.82rem;
         }
+    .campaign-card { display:flex; align-items:center; gap:16px; flex-wrap:wrap; background:#0B1120; border:1px solid rgba(6,182,212,0.35); border-radius:14px; padding:16px 18px; margin:14px 0 18px; }
+    .campaign-main { flex:1; min-width:240px; }
+    .campaign-title { color:#fff; font-weight:700; font-size:1rem; }
+    .campaign-sub { color:#94A3B8; font-size:0.82rem; line-height:1.5; margin-top:4px; }
+    .campaign-sub b { color:#E2E8F0; }
+    .campaign-btn { display:inline-block; background:#06B6D4; color:#04222B; font-weight:700; font-size:0.86rem; text-decoration:none; padding:10px 18px; border-radius:10px; white-space:nowrap; }
+    .campaign-btn:hover { background:#22D3EE; }
     </style>
 </head>
 
@@ -65,6 +72,17 @@
     <div class="page-wrap">
         <h3 class="page-title">🔔 Push Notifications</h3>
         <div class="page-sub">Every automated push your users receive — each one can be switched off here instantly (takes effect within a minute, no deploy). Counts show how many actually went out.</div>
+        <!-- One-off campaign shortcut. It deliberately LINKS to the segment console rather than
+             sending from here: the preview, the recipient count and the type-the-word confirm are
+             the only things standing between a click and a push to every user on the platform. -->
+        <div class="campaign-card">
+            <div class="campaign-main">
+                <div class="campaign-title">▶️ Send the explainer video to everyone</div>
+                <div class="campaign-sub">Opens the send console with <b>Everyone reachable</b> and the <b>explainer video</b> already chosen. You still preview the exact recipient count and confirm before anything goes out.</div>
+            </div>
+            <a class="campaign-btn" href="/admin-segments?segment=reachable_all&amp;template=how_it_works">Set up the send</a>
+        </div>
+
         <div id="status" class="loading">Loading…</div>
 
         <div id="userSec" style="display:none;">

@@ -716,6 +716,25 @@
       await loadTemplates();
       await loadSegments();
       renderSendForm();   // shows the template error + Retry when the catalogue failed to load
+
+      // Deep link: ?segment=…&template=… lands the admin on a pre-picked send, from a shortcut
+      // elsewhere in the console. It ONLY pre-selects — the preview, the recipient count and the
+      // type-the-word confirm all still have to be done by hand. A one-click shortcut that also
+      // SENT would be a broadcast to every user behind a single click, which is exactly the
+      // mistake this page exists to prevent.
+      try {
+        var qp = new URLSearchParams(location.search);
+        var wantSeg = qp.get('segment'), wantTpl = qp.get('template');
+        if (wantSeg) {
+          selectSegment(wantSeg);
+          var row = document.querySelector('.urow[data-key="' + (window.CSS && CSS.escape ? CSS.escape(wantSeg) : wantSeg) + '"]');
+          if (row) { row.classList.add('active'); row.scrollIntoView({ block: 'nearest' }); }
+        }
+        if (wantTpl) {
+          var sel = document.getElementById('tplSel');
+          if (sel) { sel.value = wantTpl; sel.dispatchEvent(new Event('change')); }
+        }
+      } catch (e) { /* a bad link must never blank the page */ }
     })();
   </script>
 </body>
