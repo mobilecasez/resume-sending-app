@@ -39,7 +39,10 @@ function literal(name, open, close) {
   throw new Error(`unterminated ${name} literal in ${ENTITLEMENTS}`);
 }
 const PLANS = literal('PLANS', '[', ']');
-const TRIAL = literal('TRIAL', '{', '}');
+// `TRIAL` is now an alias (`const TRIAL = FREE;`) with no object literal to parse, so read the
+// real one. If the Free plan is ever renamed again this throws by name rather than silently
+// checking nothing.
+const TRIAL = literal('FREE', '{', '}');
 
 const html = fs.readFileSync(PAGE, 'utf8');
 const problems = [];
@@ -63,9 +66,19 @@ for (const p of PLANS) {
   }
 }
 
-// ── the trial ─────────────────────────────────────────────────────────────────────────────────
-if (!new RegExp(`${TRIAL.days}[- ]day free trial`, 'i').test(html)) {
-  problems.push(`the ${TRIAL.days}-day free trial is not mentioned`);
+// ── the Free plan ─────────────────────────────────────────────────────────────────────────────
+// It replaced the 7-day trial. The site must not still promise a trial that no longer exists, and
+// must state the monthly allowance a visitor actually gets for nothing.
+if (/free trial/i.test(html)) {
+  problems.push('the site still advertises a "free trial" — the Free plan replaced it');
+}
+if (!/free plan/i.test(html)) {
+  problems.push('the Free plan is not mentioned');
+}
+for (const [n, what] of [[TRIAL.letters, 'cover letter'], [TRIAL.resumes, 'resume']]) {
+  if (!new RegExp(`<strong>${n}</strong>`).test(html)) {
+    problems.push(`Free plan: ${what} allowance ${n} not shown`);
+  }
 }
 
 // ── claims that directly contradict a subscription business ───────────────────────────────────
@@ -88,4 +101,4 @@ if (problems.length) {
   console.error('\nUpdate the pricing section (and the FAQ JSON-LD) to match the catalog.');
   process.exit(1);
 }
-console.log(`✓ pricing parity: ${PLANS.length} plans + the ${TRIAL.days}-day trial all match entitlements.js`);
+console.log(`✓ pricing parity: ${PLANS.length} plans + the Free plan (${TRIAL.letters} letters / ${TRIAL.resumes} resume per ${TRIAL.days} days) all match entitlements.js`);

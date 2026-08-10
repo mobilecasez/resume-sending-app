@@ -61,7 +61,33 @@ try {
     }
   }
 } catch (e) { console.warn('[entitlements] product id check skipped:', e.message); }
-const TRIAL = { key: 'trial', label: '7-day free trial', days: 7, letters: 5, resumes: 2 };
+// ── The FREE plan (replaced the 7-day trial, 2026-08-10) ──────────────────────────────────────
+// It never expires. Instead of one 7-day window it grants the same allowance again every 30 days,
+// counted ROLLING from the day the user joined — not from the 1st of the month, so nobody who signs
+// up on the 29th gets a two-day "month".
+//
+// ⚠️ Still exported as TRIAL. quotaGrants.js and adminUserOps.js read `ent.TRIAL.letters/.resumes`,
+// and `user_trials` remains the anchor row (its started_at is the rolling origin). Renaming the
+// export would break those callers silently; the shape is unchanged, only days/resumes/label moved.
+// The in-flight 7-day trials convert on their own: the same started_at now anchors 30-day windows,
+// so nobody loses access at their old ends_at.
+const FREE = { key: 'free', label: 'Free plan', days: 30, letters: 5, resumes: 1 };
+const TRIAL = FREE;
+const FREE_WINDOW_MS = FREE.days * 24 * 60 * 60 * 1000;
+
+/** Start of the free window the user is in RIGHT NOW. Usage and bonus grants are both counted from
+ *  here, so the allowance refills on the anniversary of signup and never part-way through. */
+function freeWindowStart(startedAt) {
+  const start = new Date(startedAt).getTime();
+  if (!Number.isFinite(start)) return new Date();      // unparseable → treat as a fresh window
+  const now = Date.now();
+  if (now <= start) return new Date(start);
+  return new Date(start + Math.floor((now - start) / FREE_WINDOW_MS) * FREE_WINDOW_MS);
+}
+/** When the current allowance refills — shown in the app so "0 left" has a date attached. */
+function freeWindowEnd(startedAt) {
+  return new Date(freeWindowStart(startedAt).getTime() + FREE_WINDOW_MS);
+}
 const planByKey = (k) => PLANS.find((p) => p.key === k) || null;
 
 const KIND_QUOTA_FIELD = { cover_letter: 'letters', resume: 'resumes' };
@@ -238,17 +264,29 @@ async function getStatus(userId, req) {
 
   const trial = await ensureTrial(userId, deviceId, ipHashOf(req || {}));
   if (trial && !trial.blocked) {
-    const active = new Date(trial.ends_at) > new Date();
-    const uL = await usedSince(userId, 'cover_letter', 'trial', '$4', [trial.started_at]);
-    const uR = await usedSince(userId, 'resume', 'trial', '$4', [trial.started_at]);
-    const aL = await allowanceIn(userId, 'cover_letter', TRIAL.letters, trial.started_at);
-    const aR = await allowanceIn(userId, 'resume', TRIAL.resumes, trial.started_at);
-    out.trialState = { active, startedAt: trial.started_at, endsAt: trial.ends_at, used: { letters: uL, resumes: uR } };
-    if (active) {
+    // The free plan does not end, so `active` is now simply "not superseded by a paid plan".
+    // Usage is counted from the START OF THE CURRENT 30-DAY WINDOW, which is what makes the
+    // allowance refill instead of running out once and staying out.
+    const winStart = freeWindowStart(trial.started_at);
+    const winEnd = freeWindowEnd(trial.started_at);
+    const uL = await usedSince(userId, 'cover_letter', 'trial', '$4', [winStart]);
+    const uR = await usedSince(userId, 'resume', 'trial', '$4', [winStart]);
+    const aL = await allowanceIn(userId, 'cover_letter', FREE.letters, winStart);
+    const aR = await allowanceIn(userId, 'resume', FREE.resumes, winStart);
+    out.trialState = {
+      active: !sub, startedAt: trial.started_at,
+      // `endsAt` now means "when this allowance refills", not "when access dies". The app already
+      // renders it as a date, so it keeps working and simply reads as the reset day.
+      endsAt: winEnd.toISOString(), renewsAt: winEnd.toISOString(), windowStart: winStart.toISOString(),
+      used: { letters: uL, resumes: uR },
+    };
+    // ⚠️ A paid plan always wins. Filling these in when `sub` exists would overwrite the plan's
+    // own remaining counts a few lines above with the free allowance.
+    if (!sub) {
       out.used = { letters: uL, resumes: uR };
       out.remaining = { letters: Math.max(0, aL - uL), resumes: Math.max(0, aR - uR) };
-      out.bonus = { letters: aL - TRIAL.letters, resumes: aR - TRIAL.resumes };
-      out.via = 'trial';
+      out.bonus = { letters: aL - FREE.letters, resumes: aR - FREE.resumes };
+      out.via = 'free';
     }
   } else if (trial && trial.blocked) {
     out.trialState = { active: false, blocked: trial.blocked };
@@ -279,11 +317,13 @@ async function canConsumeMany(userId, kind, count, req) {
       // plan exhausted → fall through to credits fallback below (never to trial)
     }
   } else {
+    // Free plan: no expiry check any more — only "is there allowance left in THIS window".
     const trial = await ensureTrial(userId, deviceId, ipHashOf(req || {}));
-    if (trial && !trial.blocked && new Date(trial.ends_at) > new Date()) {
-      const used = await usedSince(userId, kind, 'trial', '$4', [trial.started_at]);
-      const allow = await allowanceIn(userId, kind, TRIAL[field], trial.started_at);
-      if (allow - used >= n) return { allowed: true, via: 'trial', remaining: allow - used };
+    if (trial && !trial.blocked) {
+      const winStart = freeWindowStart(trial.started_at);
+      const used = await usedSince(userId, kind, 'trial', '$4', [winStart]);
+      const allow = await allowanceIn(userId, kind, FREE[field], winStart);
+      if (allow - used >= n) return { allowed: true, via: 'free', remaining: allow - used };
     }
   }
 
@@ -321,9 +361,14 @@ async function consumeOnSuccess(userId, kind, detail = {}, req) {
       if (allow - used >= 1) via = 'plan';
     } else {
       const trial = await ensureTrial(userId, deviceId, null);
-      if (trial && !trial.blocked && new Date(trial.ends_at) > new Date()) {
-        const used = await usedSince(userId, kind, 'trial', '$4', [trial.started_at]);
-        const allow = await allowanceIn(userId, kind, TRIAL[KIND_QUOTA_FIELD[kind]], trial.started_at);
+      if (trial && !trial.blocked) {
+        const winStart = freeWindowStart(trial.started_at);
+        const used = await usedSince(userId, kind, 'trial', '$4', [winStart]);
+        const allow = await allowanceIn(userId, kind, FREE[KIND_QUOTA_FIELD[kind]], winStart);
+        // ⚠️ THE LEDGER SOURCE STAYS 'trial'. usage_ledger.source is what usedSince() matches on,
+        // and every historical free-tier row carries 'trial'. Writing 'free' here would make the
+        // counter stop seeing both the old rows AND the new ones — every user would silently get
+        // unlimited free generations. The user-facing name changed; the stored label must not.
         if (allow - used >= 1) via = 'trial';
       }
     }
