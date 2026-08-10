@@ -5,6 +5,18 @@ const router = express.Router();
 const { authenticateAdmin } = require('../middleware/auth');
 const notifier = require('../services/adminNotifier');
 
+// ── Forced-upgrade gate ───────────────────────────────────────────────────────────────────────
+// ⚠️ ios_min_build is the only switch here that can make the app unusable for everyone at once.
+// It is stored inert (0 = nobody blocked) and must be raised deliberately. Prefer the nudge floor.
+router.get('/admin/version-gate', authenticateAdmin, async (req, res) => {
+    try { res.json({ success: true, gate: await require('../services/versionGate').getGate() }); }
+    catch (e) { res.status(500).json({ error: 'Failed to load the version gate' }); }
+});
+router.post('/admin/version-gate', authenticateAdmin, async (req, res) => {
+    try { res.json({ success: true, gate: await require('../services/versionGate').setGate(req.body || {}) }); }
+    catch (e) { res.status(500).json({ error: 'Failed to save the version gate' }); }
+});
+
 // Current toggles
 router.get('/admin/notification-settings', authenticateAdmin, async (req, res) => {
     try { res.json({ success: true, settings: await notifier.getSettings(), categories: notifier.CATEGORIES }); }

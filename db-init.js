@@ -1373,6 +1373,32 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS pending_plan_key TEXT`);
         console.log('✅ Migration 037: scheduled plan change done');
 
+        // ── Migration 038: FORCED UPGRADE GATE ────────────────────────────────────────────────
+        // Two floors, not one. `min_build` HARD-BLOCKS: below it the app is unusable until the
+        // user updates. `nudge_build` only asks, with a dismissible sheet. Keeping them separate is
+        // the whole safety story — a hard block is the one setting that can lock every user out of
+        // the product at once, and with a single number the temptation is to raise it for changes
+        // that only warranted a nudge.
+        //
+        // ⚠️ SEEDED AT 0 = NOBODY IS BLOCKED. The gate ships inert and is armed by hand from the
+        // admin page, because a migration that both introduces a block and switches it on would
+        // lock out every user the moment it deployed — including everyone on a build that has no
+        // gate to show them the message.
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS app_version_gate (
+                id            INTEGER PRIMARY KEY DEFAULT 1,
+                ios_min_build     INTEGER NOT NULL DEFAULT 0,
+                ios_nudge_build   INTEGER NOT NULL DEFAULT 0,
+                android_min_code  INTEGER NOT NULL DEFAULT 0,
+                android_nudge_code INTEGER NOT NULL DEFAULT 0,
+                title         TEXT,
+                message       TEXT,
+                updated_at    TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT app_version_gate_singleton CHECK (id = 1)
+            )`);
+        await db.query(`INSERT INTO app_version_gate (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+        console.log('✅ Migration 038: app_version_gate done (inert — 0 blocks nobody)');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

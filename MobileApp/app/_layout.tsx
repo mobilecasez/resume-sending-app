@@ -8,6 +8,7 @@ import { track } from '../services/analytics';
 import { addNotificationResponseListener } from '../services/pushNotificationService';
 import { handleNotificationResponse, handleColdStartNotification } from '../services/pushRouting';
 import { applyEnvironmentOverride, defaultEnvironmentKey, urlForEnvironment } from '../config';
+import UpdateGate from '../components/UpdateGate';
 
 // Keep the splash screen visible until we explicitly hide it
 SplashScreen.preventAutoHideAsync();
@@ -326,17 +327,22 @@ export default function RootLayout() {
   if (!envReady) return null;
 
   return (
-    <Stack
-      initialRouteName="index"
-      screenOptions={{
-        headerShown: false,
-        contentStyle: { backgroundColor: '#06091B' },
-        animation: 'slide_from_right',
-      }}
-    >
-      <Stack.Screen name="index" options={{ animation: 'none' }} />
-      <Stack.Screen name="(ai-hub)" options={{ headerShown: false }} />
-      <Stack.Screen name="(resume-builder)" options={{ headerShown: false }} />
-    </Stack>
+    <>
+      <Stack
+        initialRouteName="index"
+        screenOptions={{
+          headerShown: false,
+          contentStyle: { backgroundColor: '#06091B' },
+          animation: 'slide_from_right',
+        }}
+      >
+        <Stack.Screen name="index" options={{ animation: 'none' }} />
+        <Stack.Screen name="(ai-hub)" options={{ headerShown: false }} />
+        <Stack.Screen name="(resume-builder)" options={{ headerShown: false }} />
+      </Stack>
+      {/* Mounted OUTSIDE the navigator so a hard block covers every route, including any screen
+          reached from a push deep link. It renders nothing at all unless the server says so. */}
+      <UpdateGate />
+    </>
   );
 }

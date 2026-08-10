@@ -20,4 +20,19 @@ router.get('/app-config', (req, res) => {
   });
 });
 
+// GET /api/app-version-gate?platform=ios&build=160 → { action: 'block' | 'nudge' | 'ok', … }
+// Public and unauthenticated on purpose: a blocked build must be told so BEFORE the user signs in,
+// and an expired token must never be the reason someone escapes a hard block.
+// ⚠️ Any failure answers 'ok'. A version check that 500s must not brick the app.
+router.get('/app-version-gate', async (req, res) => {
+  try {
+    const gate = require('../services/versionGate');
+    const out = await gate.evaluate({ platform: req.query.platform, build: req.query.build });
+    res.json({ success: true, ...out });
+  } catch (e) {
+    console.warn('[versionGate] evaluate failed:', e.message);
+    res.json({ success: true, action: 'ok' });
+  }
+});
+
 module.exports = router;
