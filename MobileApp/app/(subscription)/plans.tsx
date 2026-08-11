@@ -254,8 +254,8 @@ export default function PlansScreen() {
         `${p.label} — $${p.priceUsd.toFixed(2)}/month (US list)`,
         `${p.letters} cover letters + ${p.resumes} resume generations every month.\n\n` +
         (storeUsable
-          ? `${storeName} is not offering this plan yet, so it cannot be bought. Your free trial and any credits keep working.`
-          : 'Purchasing opens in the next update. Your free trial and any credits keep working until then.'),
+          ? `${storeName} is not offering this plan yet, so it cannot be bought. Your Free plan and any credits keep working.`
+          : 'Purchasing opens in the next update. Your Free plan and any credits keep working until then.'),
         [{ text: 'OK' }]
       );
       return;
@@ -406,6 +406,8 @@ export default function PlansScreen() {
     if (!iso) return '';
     try { return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); } catch { return ''; }
   })();
+  // `current` is a plan KEY, not the plan object — resolve it for display.
+  const currentLabel = (status?.plans || []).find((p: any) => p.key === current)?.label || current || 'a paid plan';
   const trialActive = !current && trial?.active;
   const busy = !!busyKey || restoring;
 
@@ -435,8 +437,19 @@ export default function PlansScreen() {
             ? `Active — ${Math.max(0, (status?.trial?.letters ?? 5) - (trial?.used?.letters || 0))} cover letters and ${Math.max(0, (status?.trial?.resumes ?? 1) - (trial?.used?.resumes || 0))} resume generations left${renewsOn ? `, refilling on ${renewsOn}` : ''}.`
             : trial?.blocked === 'device_trial_used'
               ? 'This device has already used its free allowance.'
-              : `Every account gets ${status?.trial?.letters ?? 5} cover letters and ${status?.trial?.resumes ?? 1} AI resume every ${status?.trial?.days ?? 30} days, free.`}
+              : `${status?.trial?.letters ?? 5} cover letters and ${status?.trial?.resumes ?? 1} AI resume every ${status?.trial?.days ?? 30} days, free. Searching, Auto Fill, translating and applying are always unlimited.`}
         </Text>
+        {/* ⚠️ A PAID PLAN HIDES NOTHING. The Free plan stays on this screen whatever you are on,
+            because a subscriber has to be able to SEE the thing they can fall back to. What a paid
+            plan changes is only which allowance is in EFFECT — so when one is active this says how
+            to get back rather than pretending the free tier stopped existing. You cannot "buy"
+            free: the store owns the subscription, so the honest instruction is to cancel there. */}
+        {current && !trialActive ? (
+          <Text style={s.trialFallback}>
+            You are on {currentLabel}. Cancel in your {storeName} account settings and you return to
+            the Free plan when the period you have paid for ends — nothing is lost in between.
+          </Text>
+        ) : null}
       </View>
 
       <Text style={s.freeNote}>
@@ -458,7 +471,7 @@ export default function PlansScreen() {
               ? `Monthly plans are not on sale on ${storeName} yet, so nothing below can be purchased. `
               : 'Purchasing is not available in this build, so nothing below can be purchased. '}
             The amounts shown are the US list prices for reference only — you would be charged your
-            own store’s local price. Your free trial and any credits keep working.
+            own store’s local price. Your Free plan and any credits keep working.
           </Text>
         </View>
       ) : null}
@@ -564,6 +577,7 @@ const s = StyleSheet.create({
   trialHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
   trialTitle: { fontSize: 15, fontWeight: '800', color: T.ink },
   trialBody: { fontSize: 12.5, color: T.muted, lineHeight: 18 },
+  trialFallback: { color: '#94A3B8', fontSize: 12.5, lineHeight: 18, marginTop: 8, fontStyle: 'italic' },
   freeNote: { fontSize: 12, color: '#047857', fontWeight: '600', lineHeight: 18, marginBottom: 14, marginLeft: 2 },
 
   noticeCard: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', backgroundColor: 'rgba(37,99,235,0.07)', borderRadius: 14, padding: 12, marginBottom: 12 },

@@ -4,7 +4,7 @@
 // journeys; tapping one opens a bottom-sheet with that person's full event timeline (oldest→newest),
 // an event rollup, profile completeness, and store purchases. Wired to GET /api/admin/user-journeys
 // and GET /api/admin/user-timeline (authenticateAdmin).
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
   SafeAreaView, RefreshControl, TextInput, Modal, Pressable, Platform, Switch,
@@ -352,6 +352,24 @@ export default function UserAnalyticsScreen() {
     finally { setTesting(false); setTimeout(() => setTestMsg(null), 2600); }
   }, []);
 
+  // Sorting happens on the page already fetched (limit 80). Sorting server-side would change
+  // WHICH 80 come back and shuffle people in and out of the list as you switch order.
+  const [sortMode, setSortMode] = useState<'recent' | 'events' | 'name'>('recent');
+  const sortedJourneys = useMemo(() => {
+    const a = journeys.slice();
+    if (sortMode === 'events') a.sort((x: any, y: any) => (Number(y.events) || 0) - (Number(x.events) || 0));
+    else if (sortMode === 'name') a.sort((x: any, y: any) => {
+      const nx = String(x.full_name || x.email || '').toLowerCase();
+      const ny = String(y.full_name || y.email || '').toLowerCase();
+      // Anonymous devices have no name — park them after the people you can identify rather than
+      // letting '' sort to the top and bury them.
+      if (!nx && !ny) return 0; if (!nx) return 1; if (!ny) return -1;
+      return nx < ny ? -1 : nx > ny ? 1 : 0;
+    });
+    else a.sort((x: any, y: any) => new Date(y.last_seen || 0).getTime() - new Date(x.last_seen || 0).getTime());
+    return a;
+  }, [journeys, sortMode]);
+
   const load = useCallback(async (q: string) => {
     const seq = ++searchSeq.current;
     try {
@@ -455,13 +473,28 @@ export default function UserAnalyticsScreen() {
               <Text style={styles.errorText}>{error}</Text>
             </View>
           )}
+          {journeys.length > 0 && (
+            <View style={styles.sortBar}>
+              <Text style={styles.sortLbl}>SORT</Text>
+              {([['recent', 'Recent'], ['events', 'Most events'], ['name', 'Name']] as ['recent' | 'events' | 'name', string][]).map(([k, label]) => (
+                <TouchableOpacity
+                  key={k}
+                  style={[styles.sortBtn, sortMode === k && styles.sortBtnOn]}
+                  activeOpacity={0.85}
+                  onPress={() => setSortMode(k)}
+                >
+                  <Text style={[styles.sortBtnTx, sortMode === k && styles.sortBtnTxOn]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
           {journeys.length === 0 && !error ? (
             <View style={styles.empty}>
               <Ionicons name="compass-outline" size={40} color={C.textFaint} />
               <Text style={styles.emptyText}>{query ? 'No journeys match your search.' : 'No user activity recorded yet.'}</Text>
             </View>
           ) : (
-            journeys.map((j) => <JourneyCard key={j.uid} j={j} onPress={() => setSelected(j)} />)
+            sortedJourneys.map((j) => <JourneyCard key={j.uid} j={j} onPress={() => setSelected(j)} />)
           )}
         </ScrollView>
       )}
@@ -511,6 +544,12 @@ const styles = StyleSheet.create({
   notifyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: C.border },
   notifyRowName: { fontSize: 13.5, fontWeight: '700', color: C.ink },
   notifyRowDesc: { fontSize: 11.5, color: C.textMuted, marginTop: 1 },
+  sortBar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingBottom: 10, flexWrap: 'wrap' },
+  sortLbl: { fontSize: 11, letterSpacing: 0.6, color: C.textFaint, fontWeight: '700', marginRight: 2 },
+  sortBtn: { paddingHorizontal: 11, paddingVertical: 5, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(11,15,34,0.10)' },
+  sortBtnOn: { backgroundColor: 'rgba(6,182,212,0.14)', borderColor: '#06B6D4' },
+  sortBtnTx: { fontSize: 12, fontWeight: '700', color: C.textMuted },
+  sortBtnTxOn: { color: C.ink },
   empty: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60, gap: 12 },
   emptyText: { fontSize: 13.5, color: C.textMuted, fontWeight: '600', textAlign: 'center', paddingHorizontal: 30 },
 

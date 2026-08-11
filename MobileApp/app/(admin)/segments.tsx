@@ -24,7 +24,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import LiveTargetWarning from '../../components/LiveTargetWarning';
 import TypeToConfirm, { confirmSatisfied } from '../../components/TypeToConfirm';
 import {
@@ -385,6 +385,11 @@ function TemplatePicker({
 
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function SegmentsScreen() {
+  // Deep link from the Push Notifications screen: pre-select a segment + template so a campaign is
+  // two taps away. It ONLY pre-selects — the preview, the recipient count and the confirm are all
+  // still done by hand. A genuine one-tap "send to everyone" would remove every guard this screen
+  // exists to provide.
+  const preset = useLocalSearchParams<{ segment?: string; template?: string }>();
   const router = useRouter();
 
   // ── catalogue ──
@@ -401,7 +406,7 @@ export default function SegmentsScreen() {
   const [tplWarning, setTplWarning] = useState<string | null>(null);
 
   // ── selection ──
-  const [segKey, setSegKey] = useState<string | null>(null);
+  const [segKey, setSegKey] = useState<string | null>((preset?.segment as string) || null);
   const [segListOpen, setSegListOpen] = useState(true);
   const [users, setUsers] = useState<AdminSegmentUsersResponse | null>(null);
   const [usersLoading, setUsersLoading] = useState(false);

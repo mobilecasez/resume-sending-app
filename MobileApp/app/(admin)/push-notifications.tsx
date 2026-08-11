@@ -109,6 +109,23 @@ export default function PushNotificationsScreen() {
         </View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 46 }} showsVerticalScrollIndicator={false}>
+          {/* One-off campaign. It ROUTES to Segments rather than sending: the preview, the
+              recipient count and the confirm are the only things between a tap and a push to
+              every user, and this codebase has already fired 25 unapproved pushes once. */}
+          <Text style={s.secTitle}>ONE-OFF CAMPAIGN</Text>
+          <TouchableOpacity
+            style={s.campaign}
+            activeOpacity={0.9}
+            onPress={() => router.push({ pathname: '/(admin)/segments', params: { segment: 'reachable_all', template: 'how_it_works' } } as never)}
+          >
+            <Ionicons name="play-circle" size={26} color="#06B6D4" />
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={s.campaignTitle}>Send the explainer video to everyone</Text>
+              <Text style={s.campaignSub}>Opens Segments with “Everyone reachable” and the video template ready. You still preview the exact count and confirm.</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={T.faint} />
+          </TouchableOpacity>
+
           <Text style={s.secTitle}>AUTOMATED PUSHES TO USERS</Text>
           {switches.map((sw) => (
             <View key={sw.key} style={s.card}>
@@ -172,6 +189,9 @@ const s = StyleSheet.create({
   retryBtn: { backgroundColor: T.card, borderRadius: 12, paddingHorizontal: 20, paddingVertical: 10 },
   retryTx: { color: T.cyan, fontWeight: '700', fontSize: 13 },
   secTitle: { color: T.faint, fontSize: 10.5, fontWeight: '800', letterSpacing: 1, marginBottom: 9, marginLeft: 2 },
+  campaign: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: 'rgba(6,182,212,0.08)', borderWidth: 1, borderColor: 'rgba(6,182,212,0.35)', borderRadius: 16, padding: 14, marginBottom: 20 },
+  campaignTitle: { color: '#F1F5F9', fontSize: 14.5, fontWeight: '800' },
+  campaignSub: { color: '#94A3B8', fontSize: 12, lineHeight: 17, marginTop: 3 },
   card: {
     flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: T.card,
     borderWidth: 1, borderColor: T.line, borderRadius: 18, padding: 14, marginBottom: 10,
