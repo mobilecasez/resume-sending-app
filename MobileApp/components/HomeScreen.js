@@ -2099,6 +2099,7 @@ export default function HomeScreen({
               { icon: 'megaphone-outline', title: 'Segments', sub: 'Target user groups with a push', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/segments'); } },
               { icon: 'notifications-outline', title: 'Push Notifications', sub: 'Automated user pushes — on/off + sent counts', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/push-notifications'); } },
               { icon: 'chatbubbles-outline', title: 'Support Inbox', sub: 'Issues users reported — reply directly', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/support'); } },
+              { icon: 'cloud-download-outline', title: 'App Updates', sub: 'Prompt — or require — everyone to update', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/app-updates'); } },
               { icon: 'git-branch-outline', title: 'Environment', sub: 'Point this device at another backend', onPress: () => { setShowSettings(false); require('expo-router').router?.push?.('/(admin)/environment'); } },
             ] : []).concat([
               null,

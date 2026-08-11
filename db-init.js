@@ -1399,6 +1399,22 @@ async function runPostgresMigrations(db) {
         await db.query(`INSERT INTO app_version_gate (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
         console.log('✅ Migration 038: app_version_gate done (inert — 0 blocks nobody)');
 
+        // ── Migration 039: ONE SWITCH INSTEAD OF TWO FLOORS ────────────────────────────────────
+        // 038 asked the admin to keep two build numbers in their head and work out which one to
+        // raise. What is actually wanted is "everyone should be on build N" plus a yes/no for
+        // whether that is compulsory, so that is what this stores: one target, one boolean.
+        //
+        // The 038 floors are LEFT IN PLACE and still honoured by evaluate(). Dropping them would
+        // silently disarm a gate that might already be armed on a running server; instead the
+        // target/mandatory pair is checked first and the old floors remain as a fallback.
+        //
+        // ⚠️ STILL SEEDED INERT (target 0, mandatory false). Nobody is blocked until it is armed
+        // by hand from Settings → App Updates.
+        await col(`ALTER TABLE app_version_gate ADD COLUMN IF NOT EXISTS ios_target_build INTEGER NOT NULL DEFAULT 0`);
+        await col(`ALTER TABLE app_version_gate ADD COLUMN IF NOT EXISTS android_target_code INTEGER NOT NULL DEFAULT 0`);
+        await col(`ALTER TABLE app_version_gate ADD COLUMN IF NOT EXISTS mandatory BOOLEAN NOT NULL DEFAULT FALSE`);
+        console.log('✅ Migration 039: app_version_gate target/mandatory done (inert)');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

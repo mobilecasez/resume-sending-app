@@ -1082,6 +1082,38 @@ export async function updateAdminNotifySettings(patch: Partial<AdminNotifySettin
   return data.settings || { installs: true, registrations: true, purchases: true };
 }
 
+// ── Admin: forced-upgrade gate ──────────────────────────────────────────────────
+// One target build per platform plus a single `mandatory` switch: ON hard-blocks anything older,
+// OFF shows a dismissible "there's an update" sheet. target 0 = the gate is off for that platform.
+export type VersionGate = {
+  ios_target_build: number; android_target_code: number; mandatory: boolean;
+  title?: string | null; message?: string | null; updated_at?: string | null;
+};
+
+export async function fetchVersionGate(): Promise<VersionGate> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE}/admin/version-gate`, { headers, timeout: 20000 });
+  const g = data?.gate || {};
+  return {
+    ios_target_build: Number(g.ios_target_build) || 0,
+    android_target_code: Number(g.android_target_code) || 0,
+    mandatory: !!g.mandatory,
+    title: g.title, message: g.message, updated_at: g.updated_at,
+  };
+}
+
+export async function saveVersionGate(patch: Partial<VersionGate>): Promise<VersionGate> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.post(`${API_BASE}/admin/version-gate`, patch, { headers, timeout: 20000 });
+  const g = data?.gate || {};
+  return {
+    ios_target_build: Number(g.ios_target_build) || 0,
+    android_target_code: Number(g.android_target_code) || 0,
+    mandatory: !!g.mandatory,
+    title: g.title, message: g.message, updated_at: g.updated_at,
+  };
+}
+
 /** Admin: fire a test push to all admin devices. */
 export async function sendAdminTestNotification(): Promise<{ sent: number; admins?: number }> {
   const headers = await getAuthHeader();

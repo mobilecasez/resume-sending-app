@@ -117,20 +117,21 @@ async function reportDevice(userId, deviceId, ipHash) {
   } catch (e) { console.warn('[entitlements] reportDevice:', e.message); }
 }
 
-// ── trial ─────────────────────────────────────────────────────────────────────────────────────
-// Returns the user's trial row, starting one lazily when they are eligible. Device rule: a device
-// id that already started a trial blocks NEW users on that device (the original trial user keeps
-// theirs). Old builds send no device id → per-user trial (best we can do until they update).
+// ── free plan ─────────────────────────────────────────────────────────────────────────────────
+// Returns the user's free-plan row (table still named user_trials), creating one lazily on first
+// read. Every account gets one — there is no eligibility test any more, because the free tier is
+// the baseline entitlement rather than a one-off promotion. See the note inside on the device rule.
 async function ensureTrial(userId, deviceId, ipHash) {
   const rows = await dbConfig.query('SELECT * FROM user_trials WHERE user_id = $1', [userId]);
   if (rows && rows.length) return rows[0];
 
-  if (deviceId) {
-    const dev = await dbConfig.query('SELECT * FROM trial_devices WHERE device_id = $1', [deviceId]);
-    if (dev && dev.length && Number(dev[0].first_user_id) !== Number(userId)) {
-      return { blocked: 'device_trial_used' };   // this device already consumed its one trial
-    }
-  }
+  // ⚠️ NO LONGER BLOCKS. The one-trial-per-device rule protected a ONE-SHOT trial, where a second
+  // account bought you a second helping. The Free plan refills every 30 days, so a new account
+  // gains nothing you would not get by waiting — while the block was permanent and total: a second
+  // person on the same phone (a shared tablet, a second-hand device, a reviewer making a test
+  // account) got ZERO free generations for ever, with paying as the only way out. That is the
+  // wrong trade now the free tier is the baseline entitlement rather than a promotion.
+  // The device is still recorded below, so abuse stays visible in the data if it ever appears.
 
   try {
     await dbConfig.query(
