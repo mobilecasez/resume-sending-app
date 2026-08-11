@@ -7951,13 +7951,25 @@ function exportSig(){
             <Text style={styles.legalParagraph}>By accessing and using CVApplyr, you accept and agree to be bound by these Terms and Conditions. If you do not agree, please discontinue use immediately.</Text>
 
             <Text style={styles.legalSection}>2. Service Description</Text>
-            <Text style={styles.legalParagraph}>CVApplyr is a credit-based platform that helps users create professional cover letters using AI technology and send them to potential employers via email.</Text>
+            <Text style={styles.legalParagraph}>CVApplyr helps you find jobs, fill in application forms, and create cover letters and tailored resumes using AI. Searching, Auto Fill, page translation, applying and downloading your documents are free to use. AI generation — cover letters and resumes — runs on a monthly allowance.</Text>
 
             <Text style={styles.legalSection}>3. User Account</Text>
             <Text style={styles.legalParagraph}>• You must provide accurate registration information{'\n'}• You are responsible for maintaining account security{'\n'}• One account per user is permitted{'\n'}• Sharing accounts is prohibited</Text>
 
-            <Text style={styles.legalSection}>4. Credits and Payment</Text>
-            <Text style={styles.legalParagraph}>• Credits are required for generating and sending cover letters{'\n'}• Credits are purchased through packages{'\n'}• All purchases are final unless otherwise stated in our Refund Policy{'\n'}• Credits expire after the validity period mentioned in the package{'\n'}• Prices are in USD</Text>
+            {/* ⚠️ Apple 3.1.2 requires the subscription TITLE, LENGTH and PRICE to be readable in the
+                app's own terms, alongside working links to the Terms of Use and Privacy Policy.
+                Keep this section in step with server/services/entitlements.js and the website terms —
+                scripts/check-pricing-parity.js guards the server side of that. */}
+            <Text style={styles.legalSection}>4. Free plan and subscriptions</Text>
+            <Text style={styles.legalParagraph}>Every account is on the <Text style={{ fontWeight: '700' }}>Free plan</Text>: 5 AI cover letters and 1 AI resume every 30 days, refilling automatically on a rolling 30-day cycle from the day you signed up. It does not expire, requires no payment details, and never converts into a paid plan on its own.</Text>
+            <Text style={styles.legalParagraph}>Paid plans are auto-renewable monthly subscriptions. Each runs for a length of 1 month and renews monthly until you cancel:{'\n'}{'\n'}• cvapplyr Starter — 1 month — US$4.99/month — 30 cover letters, 5 resumes{'\n'}• cvapplyr Plus — 1 month — US$9.99/month — 100 cover letters, 10 resumes{'\n'}• cvapplyr Pro — 1 month — US$14.99/month — 150 cover letters, 15 resumes{'\n'}• cvapplyr Power — 1 month — US$24.99/month — 300 cover letters, 25 resumes{'\n'}• cvapplyr Max — 1 month — US$49.99/month — 1000 cover letters, 50 resumes</Text>
+            <Text style={styles.legalParagraph}>Prices shown are the US prices; outside the US the store charges its own local price tier, and the exact amount in your currency is always shown before you confirm.{'\n'}{'\n'}• Payment is charged to your Apple ID account at confirmation of purchase.{'\n'}• Your subscription renews automatically unless auto-renew is turned off at least 24 hours before the end of the current period.{'\n'}• Your account is charged for renewal within 24 hours prior to the end of the current period.{'\n'}• You can manage your subscription and turn off auto-renewal in your device Account Settings after purchase.{'\n'}• Your monthly allowance resets each period and does not carry over. Generation is counted only when it succeeds.{'\n'}• Cancelling stops the next renewal; you keep your plan until the end of the period you have paid for, then return to the Free plan.</Text>
+            <Text style={styles.legalParagraph}>
+              Full terms:{' '}
+              <Text style={{ color: '#3D7EFC', fontWeight: '600' }} onPress={() => Linking.openURL('https://cvapplyr.com/terms-of-service.html')}>Terms of Use</Text>
+              {'   ·   '}
+              <Text style={{ color: '#3D7EFC', fontWeight: '600' }} onPress={() => Linking.openURL('https://cvapplyr.com/privacy-policy.html')}>Privacy Policy</Text>
+            </Text>
 
             <Text style={styles.legalSection}>5. Acceptable Use Policy</Text>
             <Text style={styles.legalParagraph}>You agree NOT to:{'\n'}• Use the service for spam or unsolicited emails{'\n'}• Upload malicious content{'\n'}• Violate any laws or regulations{'\n'}• Misrepresent yourself or your qualifications{'\n'}• Abuse the AI generation system</Text>
@@ -7978,7 +7990,7 @@ function exportSig(){
             <Text style={styles.legalParagraph}>CVApplyr is provided "as is". We are not liable for:{'\n'}• Job application outcomes{'\n'}• Email delivery failures{'\n'}• Data loss or corruption{'\n'}• Indirect or consequential damages</Text>
 
             <Text style={styles.legalSection}>11. Termination</Text>
-            <Text style={styles.legalParagraph}>We reserve the right to suspend or terminate accounts that violate these terms. Upon termination, unused credits are forfeited.</Text>
+            <Text style={styles.legalParagraph}>We reserve the right to suspend or terminate accounts that violate these terms. Upon termination, any unused allowance and any legacy credits are forfeited.</Text>
 
             <Text style={styles.legalSection}>12. Changes to Terms</Text>
             <Text style={styles.legalParagraph}>We may update these terms at any time. Continued use after changes constitutes acceptance.</Text>
@@ -8090,41 +8102,41 @@ function exportSig(){
             {/* Important Notice */}
             <View style={styles.importantNotice}>
               <Text style={styles.importantNoticeTitle}>⚠️ Important</Text>
-              <Text style={styles.importantNoticeText}>Credits are generally non-refundable once purchased. Please review this policy carefully before making a purchase.</Text>
+              <Text style={styles.importantNoticeText}>Subscriptions are bought from the App Store, so refunds are handled by Apple — not by us. The Free plan costs nothing and needs no refund.</Text>
             </View>
 
-            <Text style={styles.legalSection}>1. General Policy</Text>
-            <Text style={styles.legalParagraph}>All credit purchases on CVApplyr are final and non-refundable unless otherwise stated in this policy or required by law.</Text>
+            {/* ⚠️ We are NOT the merchant of record for a subscription. Telling a user to email us
+                for a refund sends them somewhere that cannot issue one; Apple's own request page is
+                the only route that works. Keep this in step with public/refund-policy.html. */}
+            <Text style={styles.legalSection}>1. Who issues the refund</Text>
+            <Text style={styles.legalParagraph}>Paid plans are sold by Apple through the App Store under your Apple ID. Apple, not CVApplyr, takes the payment and decides refunds under their own terms. We cannot issue, reverse or promise a refund for a store purchase.</Text>
 
-            <Text style={styles.legalSection}>2. Non-Refundable Credits</Text>
-            <Text style={styles.legalParagraph}>The following are NOT eligible for refunds:{'\n'}• Used credits (generated or sent cover letters){'\n'}• Expired credits after validity period{'\n'}• Promotional or bonus credits{'\n'}• Credits purchased more than 7 days ago{'\n'}• Account violations or terminations</Text>
+            <Text style={styles.legalSection}>2. How to request one</Text>
+            <Text style={styles.legalParagraph}>Request a refund from Apple directly at reportaproblem.apple.com, signed in with the Apple ID that made the purchase. Choose the CVApplyr subscription and tell them what went wrong. Apple usually responds within 48 hours.</Text>
+            <Text style={styles.legalParagraph}>
+              <Text style={{ color: '#3D7EFC', fontWeight: '600' }} onPress={() => Linking.openURL('https://reportaproblem.apple.com')}>Open reportaproblem.apple.com</Text>
+            </Text>
 
-            <Text style={styles.legalSection}>3. Eligible Refund Scenarios</Text>
-            <Text style={styles.legalParagraph}>Refunds may be considered in these cases:{'\n'}• Duplicate or accidental charges{'\n'}• Technical errors preventing credit delivery{'\n'}• Service unavailability for extended periods{'\n'}• Unused credits within 7 days of purchase</Text>
+            <Text style={styles.legalSection}>3. Cancelling instead</Text>
+            <Text style={styles.legalParagraph}>Cancelling is not the same as a refund. Turning off auto-renewal in your device Account Settings stops the next charge; you keep your plan and its allowance until the end of the period you have already paid for, then return to the Free plan. Cancelling mid-period does not refund that period.</Text>
 
-            <Text style={styles.legalSection}>4. Refund Request Process</Text>
-            <Text style={styles.legalParagraph}>To request a refund:{'\n'}1. Contact support@cvapplyr.com within 7 days{'\n'}2. Provide your transaction ID and reason{'\n'}3. Include any supporting documentation{'\n'}4. Wait for our team to review (2-5 business days){'\n'}5. Refund processed if approved (7-14 business days)</Text>
+            <Text style={styles.legalSection}>4. The Free plan</Text>
+            <Text style={styles.legalParagraph}>The Free plan is provided at no cost, so nothing about it is refundable. Its allowance does not carry over, and unused generations are not converted into anything else.</Text>
 
-            <Text style={styles.legalSection}>5. Refund Processing</Text>
-            <Text style={styles.legalParagraph}>• Approved refunds are processed to original payment method{'\n'}• Processing time: 7-14 business days{'\n'}• Bank processing may take additional time{'\n'}• Unused credits will be deducted from account</Text>
+            <Text style={styles.legalSection}>5. If something went wrong on our side</Text>
+            <Text style={styles.legalParagraph}>If a generation failed, was charged against your allowance in error, or the service was unavailable, contact support@cvapplyr.com. We can restore allowance on your account directly — that is usually faster than a store refund, and we would rather fix it than have you pay for something that did not work.</Text>
 
-            <Text style={styles.legalSection}>6. Partial Refunds</Text>
-            <Text style={styles.legalParagraph}>If you've used some credits from a package, partial refunds may be calculated as:{'\n'}(Total Amount × Unused Credits) ÷ Total Credits</Text>
+            <Text style={styles.legalSection}>6. Legacy credits</Text>
+            <Text style={styles.legalParagraph}>Credits bought before we moved to plans remain usable and do not expire while your account is active. They are non-refundable, are used only after your plan or Free allowance is exhausted, and are forfeited if an account is terminated for a breach of our Terms.</Text>
 
-            <Text style={styles.legalSection}>7. Credit Expiration</Text>
-            <Text style={styles.legalParagraph}>Credits expire according to the validity period of your purchased package. Expired credits cannot be refunded or extended.</Text>
+            <Text style={styles.legalSection}>7. Chargebacks and Disputes</Text>
+            <Text style={styles.legalParagraph}>• Please contact Apple or us before initiating a chargeback{'\n'}• Chargebacks may result in account suspension{'\n'}• We reserve the right to dispute illegitimate chargebacks{'\n'}• Evidence will be provided to payment processors</Text>
 
-            <Text style={styles.legalSection}>8. Chargebacks and Disputes</Text>
-            <Text style={styles.legalParagraph}>• Contact us before initiating a chargeback{'\n'}• Chargebacks may result in account suspension{'\n'}• We reserve the right to dispute illegitimate chargebacks{'\n'}• Evidence will be provided to payment processors</Text>
-
-            <Text style={styles.legalSection}>9. Modifications to Policy</Text>
+            <Text style={styles.legalSection}>8. Modifications to Policy</Text>
             <Text style={styles.legalParagraph}>We reserve the right to modify this refund policy. Changes will not affect purchases made before the modification date.</Text>
 
-            <Text style={styles.legalSection}>10. Free Credits</Text>
-            <Text style={styles.legalParagraph}>Credits received as bonuses, promotions, or sign-up rewards are not eligible for cash refunds.</Text>
-
-            <Text style={styles.legalSection}>11. Contact for Refunds</Text>
-            <Text style={styles.legalParagraph}>For refund requests or questions:{'\n'}Email: support@cvapplyr.com{'\n'}Subject: "Refund Request - [Transaction ID]"</Text>
+            <Text style={styles.legalSection}>9. Contact us</Text>
+            <Text style={styles.legalParagraph}>For questions about this policy or a problem with your allowance:{'\n'}Email: support@cvapplyr.com</Text>
 
             <Text style={styles.legalSection}>12. Legal Rights</Text>
             <Text style={styles.legalParagraph}>This policy does not affect your statutory rights as a consumer under applicable laws.</Text>
