@@ -7963,7 +7963,7 @@ function exportSig(){
             <Text style={styles.legalSection}>4. Free plan and subscriptions</Text>
             <Text style={styles.legalParagraph}>Every account is on the <Text style={{ fontWeight: '700' }}>Free plan</Text>: 5 AI cover letters and 1 AI resume every 30 days, refilling automatically on a rolling 30-day cycle from the day you signed up. It does not expire, requires no payment details, and never converts into a paid plan on its own.</Text>
             <Text style={styles.legalParagraph}>Paid plans are auto-renewable monthly subscriptions. Each runs for a length of 1 month and renews monthly until you cancel:{'\n'}{'\n'}• cvapplyr Starter — 1 month — US$4.99/month — 30 cover letters, 5 resumes{'\n'}• cvapplyr Plus — 1 month — US$9.99/month — 100 cover letters, 10 resumes{'\n'}• cvapplyr Pro — 1 month — US$14.99/month — 150 cover letters, 15 resumes{'\n'}• cvapplyr Power — 1 month — US$24.99/month — 300 cover letters, 25 resumes{'\n'}• cvapplyr Max — 1 month — US$49.99/month — 1000 cover letters, 50 resumes</Text>
-            <Text style={styles.legalParagraph}>Prices shown are the US prices; outside the US the store charges its own local price tier, and the exact amount in your currency is always shown before you confirm.{'\n'}{'\n'}• Payment is charged to your Apple ID account at confirmation of purchase.{'\n'}• Your subscription renews automatically unless auto-renew is turned off at least 24 hours before the end of the current period.{'\n'}• Your account is charged for renewal within 24 hours prior to the end of the current period.{'\n'}• You can manage your subscription and turn off auto-renewal in your device Account Settings after purchase.{'\n'}• Your monthly allowance resets each period and does not carry over. Generation is counted only when it succeeds.{'\n'}• Cancelling stops the next renewal; you keep your plan until the end of the period you have paid for, then return to the Free plan.</Text>
+            <Text style={styles.legalParagraph}>Prices shown are the US prices; outside the US the store charges its own local price tier, and the exact amount in your currency is always shown before you confirm.{'\n'}{'\n'}• Payment is charged to your {Platform.OS === 'android' ? 'Google Play account' : 'Apple ID account'} at confirmation of purchase.{'\n'}• Your subscription renews automatically unless auto-renew is turned off at least 24 hours before the end of the current period.{'\n'}• Your account is charged for renewal within 24 hours prior to the end of the current period.{'\n'}• You can manage your subscription and turn off auto-renewal in your {Platform.OS === 'android' ? 'Google Play' : 'Apple ID'} account settings after purchase.{'\n'}• Your monthly allowance resets each period and does not carry over. Generation is counted only when it succeeds.{'\n'}• Cancelling stops the next renewal; you keep your plan until the end of the period you have paid for, then return to the Free plan.</Text>
             <Text style={styles.legalParagraph}>
               Full terms:{' '}
               <Text style={{ color: '#3D7EFC', fontWeight: '600' }} onPress={() => Linking.openURL('https://cvapplyr.com/terms-of-service.html')}>Terms of Use</Text>
@@ -8102,23 +8102,27 @@ function exportSig(){
             {/* Important Notice */}
             <View style={styles.importantNotice}>
               <Text style={styles.importantNoticeTitle}>⚠️ Important</Text>
-              <Text style={styles.importantNoticeText}>Subscriptions are bought from the App Store, so refunds are handled by Apple — not by us. The Free plan costs nothing and needs no refund.</Text>
+              <Text style={styles.importantNoticeText}>Subscriptions are bought from the {Platform.OS === 'android' ? 'Google Play Store, so refunds are handled by Google' : 'App Store, so refunds are handled by Apple'} — not by us. The Free plan costs nothing and needs no refund.</Text>
             </View>
 
             {/* ⚠️ We are NOT the merchant of record for a subscription. Telling a user to email us
                 for a refund sends them somewhere that cannot issue one; Apple's own request page is
                 the only route that works. Keep this in step with public/refund-policy.html. */}
             <Text style={styles.legalSection}>1. Who issues the refund</Text>
-            <Text style={styles.legalParagraph}>Paid plans are sold by Apple through the App Store under your Apple ID. Apple, not CVApplyr, takes the payment and decides refunds under their own terms. We cannot issue, reverse or promise a refund for a store purchase.</Text>
+            <Text style={styles.legalParagraph}>Paid plans are sold by {Platform.OS === 'android' ? 'Google through the Play Store under your Google account. Google' : 'Apple through the App Store under your Apple ID. Apple'}, not CVApplyr, takes the payment and decides refunds under their own terms. We cannot issue, reverse or promise a refund for a store purchase.</Text>
 
             <Text style={styles.legalSection}>2. How to request one</Text>
-            <Text style={styles.legalParagraph}>Request a refund from Apple directly at reportaproblem.apple.com, signed in with the Apple ID that made the purchase. Choose the CVApplyr subscription and tell them what went wrong. Apple usually responds within 48 hours.</Text>
+            <Text style={styles.legalParagraph}>{Platform.OS === 'android'
+              ? 'Request a refund from Google directly at play.google.com/store/account/orderhistory, signed in with the account that made the purchase. Find the CVApplyr subscription and choose Report a problem.'
+              : 'Request a refund from Apple directly at reportaproblem.apple.com, signed in with the Apple ID that made the purchase. Choose the CVApplyr subscription and tell them what went wrong. Apple usually responds within 48 hours.'}</Text>
             <Text style={styles.legalParagraph}>
-              <Text style={{ color: '#3D7EFC', fontWeight: '600' }} onPress={() => Linking.openURL('https://reportaproblem.apple.com')}>Open reportaproblem.apple.com</Text>
+              <Text style={{ color: '#3D7EFC', fontWeight: '600' }} onPress={() => Linking.openURL(Platform.OS === 'android' ? 'https://play.google.com/store/account/orderhistory' : 'https://reportaproblem.apple.com')}>
+                {Platform.OS === 'android' ? 'Open your Google Play order history' : 'Open reportaproblem.apple.com'}
+              </Text>
             </Text>
 
             <Text style={styles.legalSection}>3. Cancelling instead</Text>
-            <Text style={styles.legalParagraph}>Cancelling is not the same as a refund. Turning off auto-renewal in your device Account Settings stops the next charge; you keep your plan and its allowance until the end of the period you have already paid for, then return to the Free plan. Cancelling mid-period does not refund that period.</Text>
+            <Text style={styles.legalParagraph}>Cancelling is not the same as a refund. Turning off auto-renewal in your {Platform.OS === 'android' ? 'Google Play' : 'Apple ID'} account settings stops the next charge; you keep your plan and its allowance until the end of the period you have already paid for, then return to the Free plan. Cancelling mid-period does not refund that period.</Text>
 
             <Text style={styles.legalSection}>4. The Free plan</Text>
             <Text style={styles.legalParagraph}>The Free plan is provided at no cost, so nothing about it is refundable. Its allowance does not carry over, and unused generations are not converted into anything else.</Text>
