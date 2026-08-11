@@ -249,21 +249,23 @@ async function recordStoreNotification(d) {
 // ── Per-user behavior drill-down (admin) ───────────────────────────────────────────────────────
 // List recent users with an activity summary, so the admin can pick one to inspect. Search by
 // email/name. Anonymous (pre-login) devices are grouped under their anon_id.
-async function getUserJourneys({ search = '', limit = 60 } = {}) {
-  // ⚠️ TEMPORARY: the client-supplied limit is IGNORED and everyone is returned.
-  //
-  // This endpoint never had a date filter — it returns the N most recently active users, and with
-  // 821 of them the shipped app's limit of 80 only reached back ~3 days. That looked like "analytics
-  // only keeps 2 days" when in fact nothing is pruned; the history runs to 29 Jun.
-  //
-  // Overriding here rather than raising the cap is deliberate: build 162 hard-codes `limit: 80`, so
-  // a bigger ceiling alone would change nothing until a new build shipped, and the whole point is
-  // to see the full list NOW.
-  //
-  // Cheap at this size (821 users / ~5k events, one grouped scan). REPLACE THIS WITH PAGINATION —
-  // an offset plus a server-side sort — before the event table grows, and delete this override then.
-  limit = 5000;
+async function getUserJourneys({ search = '', limit = 60, offset = 0, sort = 'recent' } = {}) {
+  // Paged. There is NO date filter and never was — the list is "most recently active first", so a
+  // small limit looked like a short retention window when in fact nothing is pruned.
+  limit = Math.min(Math.max(parseInt(limit, 10) || 60, 1), 500);
+  offset = Math.max(parseInt(offset, 10) || 0, 0);
   const term = String(search || '').trim().toLowerCase().slice(0, 80);
+  // ⚠️ SORT MUST BE SERVER-SIDE. Sorting a page client-side ranks only what happened to load, so
+  // "most events" could never surface the heaviest user unless they were also recently active.
+  // Whitelisted, never interpolated from raw input.
+  const ORDER = {
+    recent: 'MAX(ae.created_at) DESC',
+    events: 'COUNT(*) DESC, MAX(ae.created_at) DESC',
+    // Anonymous devices have no name; NULLS LAST keeps them behind people you can identify.
+    name: 'MIN(COALESCE(u.full_name, u.email)) ASC NULLS LAST',
+  };
+  const orderBy = ORDER[String(sort)] || ORDER.recent;
+
   const rows = await dbConfig.query(
     `SELECT ${UID} AS uid,
             MAX(ae.user_id) AS user_id,
@@ -279,11 +281,20 @@ async function getUserJourneys({ search = '', limit = 60 } = {}) {
        LEFT JOIN users u ON u.id = ae.user_id
       WHERE ($1 = '' OR LOWER(u.email) LIKE '%'||$1||'%' OR LOWER(u.full_name) LIKE '%'||$1||'%')
       GROUP BY ${UID}, u.email, u.full_name
-      ORDER BY MAX(ae.created_at) DESC
-      LIMIT ${limit}`,
+      ORDER BY ${orderBy}
+      LIMIT ${limit} OFFSET ${offset}`,
     [term]
   ).catch((e) => { console.error('[analytics] getUserJourneys:', e.message); return []; });
-  return { users: rows };
+
+  // Total so the screen can say "80 of 821" and know when to stop asking for more.
+  const tot = await dbConfig.get(
+    `SELECT COUNT(*)::int AS n FROM (
+       SELECT ${UID} FROM app_events ae LEFT JOIN users u ON u.id = ae.user_id
+        WHERE ($1 = '' OR LOWER(u.email) LIKE '%'||$1||'%' OR LOWER(u.full_name) LIKE '%'||$1||'%')
+        GROUP BY ${UID}) t`, [term]
+  ).catch(() => null);
+  const total = tot ? tot.n : rows.length;
+  return { users: rows, total, offset, limit, hasMore: offset + rows.length < total };
 }
 
 // Full event stream for one user (by numeric user_id) OR one anonymous device (by anon_id),

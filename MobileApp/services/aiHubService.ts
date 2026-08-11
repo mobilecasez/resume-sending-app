@@ -1038,12 +1038,15 @@ export type UserTimeline = {
 
 /** Admin: recent user/device journeys (searchable). */
 export async function fetchUserJourneys(
-  opts: { q?: string; limit?: number } = {},
-): Promise<{ users: UserJourney[] }> {
+  opts: { q?: string; limit?: number; offset?: number; sort?: 'recent' | 'events' | 'name' } = {},
+): Promise<{ users: UserJourney[]; total?: number; hasMore?: boolean; offset?: number }> {
   const headers = await getAuthHeader();
   const { data } = await axios.get(`${API_BASE}/admin/user-journeys`, {
     headers,
-    params: { q: opts.q || '', limit: opts.limit ?? 60 },
+    // `sort` goes to the SERVER on purpose. Ranking a page client-side ranks only what happened to
+    // load, so "most events" could never surface the heaviest user unless they were also recently
+    // active — exactly the flaw the first version of the sort chips shipped with.
+    params: { q: opts.q || '', limit: opts.limit ?? 60, offset: opts.offset ?? 0, sort: opts.sort || 'recent' },
     timeout: 30000,
   });
   return data;

@@ -622,9 +622,13 @@ export default function HelpAssistant({ attention = 0, context = 'home' }) {
                       <Ionicons name="chevron-forward" size={16} color="#B6C2D9" />
                     </TouchableOpacity>
                   ))}
-                  <TouchableOpacity style={s.tutorialBtn} activeOpacity={0.9} onPress={() => { setTutorialAt(0); setView('tutorial'); }}>
+                  {/* Opens the NARRATED FILM, not the stills. The carousel is still reachable from a
+                      topic's "Watch video tutorial" link, where jumping to one step is the faster
+                      answer — but "View tutorial" from the home sheet means "show me how this
+                      works", and for that the film with the voice-over is the real answer. */}
+                  <TouchableOpacity style={s.tutorialBtn} activeOpacity={0.9} onPress={() => { closeSheet(); setTimeout(() => router.push('/(tutorial)'), 220); }}>
                     <Ionicons name="play-circle-outline" size={18} color="#3B82F6" />
-                    <Text style={s.tutorialText}>View tutorial</Text>
+                    <Text style={s.tutorialText}>Watch the video tutorial</Text>
                   </TouchableOpacity>
                 </>
               )}

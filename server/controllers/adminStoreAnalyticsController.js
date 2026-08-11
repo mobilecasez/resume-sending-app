@@ -37,7 +37,10 @@ async function runUninstallSweep(req, res) {
 // Admin-only: recent users/devices with an activity summary (for the per-user drill-down page).
 async function getUserJourneys(req, res) {
   try {
-    const data = await liveAnalytics.getUserJourneys({ search: req.query.q || '', limit: req.query.limit });
+    const data = await liveAnalytics.getUserJourneys({
+      search: req.query.q || '', limit: req.query.limit,
+      offset: req.query.offset, sort: req.query.sort,
+    });
     return res.json(data);
   } catch (error) {
     console.error('[userJourneys] error:', error.message);

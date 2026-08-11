@@ -355,34 +355,46 @@ export default function UserAnalyticsScreen() {
   // Sorting happens on the page already fetched (limit 80). Sorting server-side would change
   // WHICH 80 come back and shuffle people in and out of the list as you switch order.
   const [sortMode, setSortMode] = useState<'recent' | 'events' | 'name'>('recent');
-  const sortedJourneys = useMemo(() => {
-    const a = journeys.slice();
-    if (sortMode === 'events') a.sort((x: any, y: any) => (Number(y.events) || 0) - (Number(x.events) || 0));
-    else if (sortMode === 'name') a.sort((x: any, y: any) => {
-      const nx = String(x.full_name || x.email || '').toLowerCase();
-      const ny = String(y.full_name || y.email || '').toLowerCase();
-      // Anonymous devices have no name — park them after the people you can identify rather than
-      // letting '' sort to the top and bury them.
-      if (!nx && !ny) return 0; if (!nx) return 1; if (!ny) return -1;
-      return nx < ny ? -1 : nx > ny ? 1 : 0;
-    });
-    else a.sort((x: any, y: any) => new Date(y.last_seen || 0).getTime() - new Date(x.last_seen || 0).getTime());
-    return a;
-  }, [journeys, sortMode]);
+  // ⚠️ NO local re-sort. The server ranks across ALL users; sorting the loaded page here would
+  // silently re-rank only what is on screen and contradict the page you just asked for.
+  const sortedJourneys = journeys;
 
-  const load = useCallback(async (q: string) => {
+  const PAGE = 80;
+  const [total, setTotal] = useState<number>(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const load = useCallback(async (q: string, mode: 'recent' | 'events' | 'name' = 'recent') => {
     const seq = ++searchSeq.current;
     try {
-      const d = await fetchUserJourneys({ q, limit: 80 });
+      const d = await fetchUserJourneys({ q, limit: PAGE, offset: 0, sort: mode });
       if (seq !== searchSeq.current) return;
       setError(null);
       setJourneys(d.users || []);
+      setTotal(d.total ?? (d.users || []).length);
+      setHasMore(!!d.hasMore);
     } catch {
       if (seq !== searchSeq.current) return;
       setError('Could not load journeys. Pull to retry.');
-      setJourneys([]);
+      setJourneys([]); setTotal(0); setHasMore(false);
     }
   }, []);
+
+  // Append the next page. Guarded on `loadingMore` so a double tap cannot request the same offset
+  // twice and duplicate rows, and on the search sequence so a search mid-fetch discards the reply.
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    const seq = searchSeq.current;
+    try {
+      const d = await fetchUserJourneys({ q: query, limit: PAGE, offset: journeys.length, sort: sortMode });
+      if (seq !== searchSeq.current) return;
+      setJourneys((prev) => prev.concat(d.users || []));
+      setTotal(d.total ?? total);
+      setHasMore(!!d.hasMore);
+    } catch { /* keep what is on screen; the button stays for another try */ }
+    finally { setLoadingMore(false); }
+  }, [loadingMore, hasMore, query, journeys.length, sortMode, total]);
 
   useEffect(() => {
     (async () => { setLoading(true); await load(''); setLoading(false); })();
@@ -481,7 +493,7 @@ export default function UserAnalyticsScreen() {
                   key={k}
                   style={[styles.sortBtn, sortMode === k && styles.sortBtnOn]}
                   activeOpacity={0.85}
-                  onPress={() => setSortMode(k)}
+                  onPress={() => { setSortMode(k); load(query, k); }}
                 >
                   <Text style={[styles.sortBtnTx, sortMode === k && styles.sortBtnTxOn]}>{label}</Text>
                 </TouchableOpacity>
@@ -494,7 +506,18 @@ export default function UserAnalyticsScreen() {
               <Text style={styles.emptyText}>{query ? 'No journeys match your search.' : 'No user activity recorded yet.'}</Text>
             </View>
           ) : (
-            sortedJourneys.map((j) => <JourneyCard key={j.uid} j={j} onPress={() => setSelected(j)} />)
+            <>
+              {sortedJourneys.map((j) => <JourneyCard key={j.uid} j={j} onPress={() => setSelected(j)} />)}
+              <View style={styles.moreWrap}>
+                <Text style={styles.moreCount}>Showing {sortedJourneys.length} of {total}</Text>
+                {hasMore ? (
+                  <TouchableOpacity style={styles.moreBtn} activeOpacity={0.85} onPress={loadMore} disabled={loadingMore}>
+                    {loadingMore ? <ActivityIndicator color={C.ink} size="small" />
+                      : <Text style={styles.moreTx}>Load {Math.min(80, total - sortedJourneys.length)} more</Text>}
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            </>
           )}
         </ScrollView>
       )}
@@ -545,6 +568,10 @@ const styles = StyleSheet.create({
   notifyRowName: { fontSize: 13.5, fontWeight: '700', color: C.ink },
   notifyRowDesc: { fontSize: 11.5, color: C.textMuted, marginTop: 1 },
   sortBar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingBottom: 10, flexWrap: 'wrap' },
+  moreWrap: { alignItems: 'center', paddingVertical: 16, gap: 10 },
+  moreCount: { fontSize: 12, color: C.textFaint, fontWeight: '600' },
+  moreBtn: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 999, borderWidth: 1, borderColor: '#06B6D4', backgroundColor: 'rgba(6,182,212,0.10)', minWidth: 150, alignItems: 'center' },
+  moreTx: { fontSize: 13, fontWeight: '800', color: C.ink },
   sortLbl: { fontSize: 11, letterSpacing: 0.6, color: C.textFaint, fontWeight: '700', marginRight: 2 },
   sortBtn: { paddingHorizontal: 11, paddingVertical: 5, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(11,15,34,0.10)' },
   sortBtnOn: { backgroundColor: 'rgba(6,182,212,0.14)', borderColor: '#06B6D4' },
