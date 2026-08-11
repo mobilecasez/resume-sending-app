@@ -1,6 +1,6 @@
 // AI Hub — new feature. Safe to delete without affecting existing app.
 //
-// The plan catalog: the 7-day free trial and five monthly tiers, wired to real store subscriptions.
+// The plan catalog: the Free plan and five monthly tiers, wired to real store subscriptions.
 //
 // ── The rule this screen is built around ─────────────────────────────────────────────────────
 // A plan gets a BUY button only if the store returned a product for it, and its price is the
@@ -400,6 +400,12 @@ export default function PlansScreen() {
   const pendingKey = status?.subscription?.pendingPlanKey || null;
   const source = status?.subscription?.source || null;
   const trial = status?.trialState;
+  // The Free plan refills instead of ending, so the date is a REFILL date, not an expiry.
+  const renewsOn = (() => {
+    const iso = (trial as any)?.renewsAt || trial?.endsAt;
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); } catch { return ''; }
+  })();
   const trialActive = !current && trial?.active;
   const busy = !!busyKey || restoring;
 
@@ -414,18 +420,22 @@ export default function PlansScreen() {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: T.bg }} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
-      {/* ── Trial card ── */}
+      {/* ── Free plan card ──
+          ⚠️ EVERY NUMBER AND THE NAME COME FROM THE SERVER (`status.trial`, which now carries the
+          Free plan). This card used to hard-code "7-day free trial / 5 + 2", so when the server
+          moved to the Free plan the app kept advertising a trial that no longer existed. Nothing
+          about the offer may be written in here again. */}
       <View style={[s.trialCard, trialActive ? s.trialOn : null]}>
         <View style={s.trialHead}>
           <Ionicons name={trialActive ? 'checkmark-circle' : trial?.blocked ? 'close-circle-outline' : 'time-outline'} size={20} color={trialActive ? T.emerald : T.faint} />
-          <Text style={s.trialTitle}>7-day free trial</Text>
+          <Text style={s.trialTitle}>{status?.trial?.label || 'Free plan'}</Text>
         </View>
         <Text style={s.trialBody}>
           {trialActive
-            ? `Active — ${Math.max(0, (status?.trial.letters || 5) - (trial?.used?.letters || 0))} cover letters and ${Math.max(0, (status?.trial.resumes || 2) - (trial?.used?.resumes || 0))} resume generations left.`
+            ? `Active — ${Math.max(0, (status?.trial?.letters ?? 5) - (trial?.used?.letters || 0))} cover letters and ${Math.max(0, (status?.trial?.resumes ?? 1) - (trial?.used?.resumes || 0))} resume generations left${renewsOn ? `, refilling on ${renewsOn}` : ''}.`
             : trial?.blocked === 'device_trial_used'
-              ? 'This device has already used its free trial.'
-              : 'Every new account starts with 5 cover letters + 2 resume generations, free for 7 days.'}
+              ? 'This device has already used its free allowance.'
+              : `Every account gets ${status?.trial?.letters ?? 5} cover letters and ${status?.trial?.resumes ?? 1} AI resume every ${status?.trial?.days ?? 30} days, free.`}
         </Text>
       </View>
 

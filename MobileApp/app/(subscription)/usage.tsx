@@ -86,12 +86,13 @@ export default function UsageScreen() {
         <LinearGradient colors={['#0B0F22', '#0F1635', '#0B0F22']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={StyleSheet.absoluteFillObject} />
         <View style={s.planHead}>
           <View style={{ flex: 1 }}>
-            <Text style={s.planEyebrow}>{sub ? 'CURRENT PLAN' : trialActive ? 'FREE TRIAL' : 'NO ACTIVE PLAN'}</Text>
+            <Text style={s.planEyebrow}>{sub ? 'CURRENT PLAN' : trialActive ? 'CURRENT PLAN' : 'NO ACTIVE PLAN'}</Text>
             <Text style={s.planName}>
-              {sub ? sub.label : trialActive ? '7-day free trial' : trial?.blocked === 'device_trial_used' ? 'Trial already used on this device' : 'Trial ended'}
+              {sub ? sub.label : trialActive ? (status?.trial?.label || 'Free plan') : trial?.blocked === 'device_trial_used' ? 'Free allowance already used on this device' : 'No plan'}
             </Text>
             {sub ? <Text style={s.planSub}>Renews {when(sub.periodEnd)}</Text>
-              : trialActive && trial?.endsAt ? <Text style={s.planSub}>Ends {when(trial.endsAt)}</Text>
+              : trialActive && ((trial as any)?.renewsAt || trial?.endsAt)
+                ? <Text style={s.planSub}>Refills {when((trial as any).renewsAt || trial.endsAt)}</Text>
               : <Text style={s.planSub}>Pick a plan to keep generating</Text>}
           </View>
           <Ionicons name={sub ? 'diamond-outline' : trialActive ? 'time-outline' : 'lock-closed-outline'} size={26} color="#22D3EE" />
