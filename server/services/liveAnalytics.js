@@ -250,7 +250,19 @@ async function recordStoreNotification(d) {
 // List recent users with an activity summary, so the admin can pick one to inspect. Search by
 // email/name. Anonymous (pre-login) devices are grouped under their anon_id.
 async function getUserJourneys({ search = '', limit = 60 } = {}) {
-  limit = Math.min(Math.max(parseInt(limit, 10) || 60, 1), 200);
+  // ⚠️ TEMPORARY: the client-supplied limit is IGNORED and everyone is returned.
+  //
+  // This endpoint never had a date filter — it returns the N most recently active users, and with
+  // 821 of them the shipped app's limit of 80 only reached back ~3 days. That looked like "analytics
+  // only keeps 2 days" when in fact nothing is pruned; the history runs to 29 Jun.
+  //
+  // Overriding here rather than raising the cap is deliberate: build 162 hard-codes `limit: 80`, so
+  // a bigger ceiling alone would change nothing until a new build shipped, and the whole point is
+  // to see the full list NOW.
+  //
+  // Cheap at this size (821 users / ~5k events, one grouped scan). REPLACE THIS WITH PAGINATION —
+  // an offset plus a server-side sort — before the event table grows, and delete this override then.
+  limit = 5000;
   const term = String(search || '').trim().toLowerCase().slice(0, 80);
   const rows = await dbConfig.query(
     `SELECT ${UID} AS uid,
