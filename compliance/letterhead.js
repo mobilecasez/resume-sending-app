@@ -118,8 +118,11 @@ function icon() {
   return fs.existsSync(p) ? 'data:image/png;base64,' + fs.readFileSync(p).toString('base64') : '';
 }
 
-/** Masthead + identifiers + date + addressee — everything above the letter's own title. */
-function masthead(D, company) {
+/** Masthead + identifiers + date + addressee — everything above the letter's own title.
+ *  `addressee:false` drops the "To," block: a certified extract from the minutes book is a record of
+ *  the Company's own act, not a letter written to someone, and addressing it makes it read as the
+ *  wrong kind of document. */
+function masthead(D, company, { addressee = true } = {}) {
   const ic = icon();
   return `
 <div class="head">
@@ -144,11 +147,11 @@ function masthead(D, company) {
   <div><b>Date:</b> ${fill(D.date, 140)}</div>
 </div>
 
-<div class="to">
+${addressee ? `<div class="to">
   <div class="l">To,</div>
   <div>${esc(D.addressee || 'The Authorised Officer')}</div>
   <div>${esc(D.addresseeOrg || 'BillDesk / Google Play — Payments Profile Verification')}</div>
-</div>`;
+</div>` : ''}`;
 }
 
 /** Closing declaration, signature space, and the seal area. */
