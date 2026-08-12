@@ -16,10 +16,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, SafeAreaView,
-  Dimensions, StatusBar, Platform,
+  Dimensions, StatusBar, Platform, AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Video, ResizeMode, Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import { downloadAsync, getInfoAsync, cacheDirectory } from 'expo-file-system/legacy';
 import { API_BASE } from '../../config';
@@ -39,6 +39,11 @@ type Src = { uri: string };
 
 export default function TutorialScreen() {
   const router = useRouter();
+  // Set when the screen was reached from a push, so a watch can be credited to the campaign that
+  // drove it. Absent when opened from the menu or the help sheet — which is most of the time, and
+  // is exactly why watches must not all be attributed to whatever push went out that day.
+  const { nid: nidParam } = useLocalSearchParams<{ nid?: string }>();
+  const nid = typeof nidParam === 'string' && nidParam ? nidParam : null;
   const videoRef = useRef<Video | null>(null);
   const [source, setSource] = useState<Src | null>(null);
   const [ready, setReady] = useState(false);
@@ -98,26 +103,94 @@ export default function TutorialScreen() {
     };
   }, []);
 
-  useEffect(() => { track('tutorial_opened', { file: TUTORIAL_FILE }).catch(() => {}); }, []);
+  useEffect(() => { track('tutorial_opened', { file: TUTORIAL_FILE, nid: nid || undefined }).catch(() => {}); }, [nid]);
+
+  // ── Watch measurement ───────────────────────────────────────────────────────────────────────
+  //
+  // TWO numbers, because neither alone is honest:
+  //
+  //   coverPct — how much of the film they actually SAW. The timeline is cut into BUCKETS and a
+  //     bucket is marked as the position passes through it. Immune to scrubbing (this player has
+  //     useNativeControls, so people DO scrub), cannot exceed 100%, and counts a replayed second
+  //     only once.
+  //   seconds — time actually spent playing. Only forward deltas smaller than MAX_STEP_MS are
+  //     banked, so dragging the scrubber 40s ahead adds nothing. Can exceed the running time when
+  //     someone genuinely rewatches, which is real and worth seeing.
+  //
+  // A plain "watched %" built from positionMillis would report 100% for a user who dragged the
+  // scrubber to the end in two seconds. That number would be worse than having none.
+  const BUCKETS = 40;
+  const MAX_STEP_MS = 1500;
+  const watch = useRef({ seen: new Set<number>(), ms: 0, lastPos: -1, replays: 0, sent: 0 });
+
+  /** Send what we have. Called on a timer, on unmount, and when the app goes to the background. */
+  const flush = useCallback((reason: string) => {
+    const w = watch.current;
+    const seconds = Math.round(w.ms / 1000);
+    // Nothing meaningful yet, and nothing new since the last flush → stay quiet.
+    if (seconds < 1 || seconds === w.sent) return;
+    w.sent = seconds;
+    track('tutorial_progress', {
+      file: TUTORIAL_FILE,
+      seconds,
+      coverPct: Math.min(100, Math.round((w.seen.size / BUCKETS) * 100)),
+      completed: reported.current.end,
+      replays: w.replays,
+      reason,
+      nid: nid || undefined,
+    }).catch(() => {});
+  }, [nid]);
+
+  // Periodic flush while watching, so a user who force-quits mid-film is not lost entirely.
+  useEffect(() => {
+    const t = setInterval(() => flush('tick'), 10000);
+    return () => clearInterval(t);
+  }, [flush]);
+
+  // Backgrounding is the common way a watch ends — more common than pressing close.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st !== 'active') flush('background');
+    });
+    return () => sub.remove();
+  }, [flush]);
+
+  // The last word on the way out. An empty deps array on purpose: this must run on unmount only.
+  useEffect(() => () => { flush('unmount'); }, [flush]);
 
   const onStatus = useCallback((s: any) => {
     if (!s?.isLoaded) return;
     const dur = s.durationMillis || 0;
     const pos = s.positionMillis || 0;
+    const w = watch.current;
+
+    if (dur > 0) {
+      w.seen.add(Math.min(BUCKETS - 1, Math.floor((pos / dur) * BUCKETS)));
+      const step = pos - w.lastPos;
+      // Forward, and small enough to be real playback rather than a seek.
+      if (w.lastPos >= 0 && step > 0 && step <= MAX_STEP_MS && s.isPlaying) w.ms += step;
+      w.lastPos = pos;
+    }
+
     if (dur > 0 && !reported.current.half && pos / dur >= 0.5) {
       reported.current.half = true;
-      track('tutorial_halfway').catch(() => {});
+      track('tutorial_halfway', { nid: nid || undefined }).catch(() => {});
     }
     if (s.didJustFinish && !reported.current.end) {
       reported.current.end = true;
       setDone(true);
-      track('tutorial_completed').catch(() => {});
+      track('tutorial_completed', { nid: nid || undefined }).catch(() => {});
+      flush('finished');
     }
-  }, []);
+  }, [flush, nid]);
 
   const replay = useCallback(async () => {
     setDone(false);
     reported.current = { half: false, end: false };
+    // Keep `seen` and `ms` across a replay — a rewatch adds to the time spent, and coverage of a
+    // second already watched must not be double-counted. Only the position tracker resets.
+    watch.current.replays += 1;
+    watch.current.lastPos = -1;
     try { await videoRef.current?.replayAsync(); } catch { /* ignore */ }
   }, []);
 

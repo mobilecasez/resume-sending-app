@@ -276,6 +276,36 @@ async function sendRows({ campaignId, userId, source, limit = 100, offset = 0 } 
  * duration, so until the instrumented build ships this answers "how many watched" and not
  * "for how long", and cannot be split by campaign.
  */
+/**
+ * Per-user watch detail: one row per person who has watched, with their best watch.
+ *
+ * "Best" and not "latest" on purpose — someone who watched it fully in the morning and reopened it
+ * for four seconds at night has watched it, and a latest-wins query would report four seconds.
+ * ⚠️ `seconds` can exceed the film's running time when someone genuinely rewatches. That is real,
+ * not a bug, and is why coverage is reported alongside it rather than instead of it.
+ */
+async function videoWatchers({ days = 30, limit = 200, offset = 0 } = {}) {
+  const d = Math.max(1, Math.min(365, parseInt(days, 10) || 30));
+  const lim = Math.max(1, Math.min(500, parseInt(limit, 10) || 200));
+  const off = Math.max(0, parseInt(offset, 10) || 0);
+  const rows = await dbConfig.query(
+    `SELECT e.user_id, u.email, u.full_name,
+            MAX((e.props->>'seconds')::numeric)::int   AS best_seconds,
+            MAX((e.props->>'coverPct')::numeric)::int  AS best_cover_pct,
+            BOOL_OR((e.props->>'completed') = 'true')  AS completed,
+            MAX((e.props->>'replays')::numeric)::int   AS replays,
+            COUNT(*)::int                              AS samples,
+            MAX(e.created_at)                          AS last_at,
+            MAX(e.props->>'nid')                       AS nid
+       FROM app_events e LEFT JOIN users u ON u.id = e.user_id
+      WHERE e.event = 'tutorial_progress' AND e.user_id IS NOT NULL
+        AND e.created_at > NOW() - ($1 || ' days')::interval
+      GROUP BY e.user_id, u.email, u.full_name
+      ORDER BY MAX((e.props->>'seconds')::numeric) DESC NULLS LAST
+      LIMIT ${lim} OFFSET ${off}`, [String(d)]);
+  return rows || [];
+}
+
 async function videoStats(days = 30) {
   const d = Math.max(1, Math.min(365, parseInt(days, 10) || 30));
   const rows = await dbConfig.query(
@@ -286,20 +316,40 @@ async function videoStats(days = 30) {
       GROUP BY event`, [String(d)]);
   const by = {};
   for (const r of (rows || [])) by[r.event] = { plays: r.n, users: r.users };
-  // Seconds watched only exists once the instrumented build is out; absent is reported as null
-  // rather than 0, so "no data yet" cannot be misread as "nobody watched".
+  // Watch DURATION only exists once an instrumented build is out. Absent is reported as null, not
+  // zero — "no data yet" must never render as "nobody watched".
+  //
+  // Averaged over each user's BEST watch, not over every progress ping: a ping fires every 10s, so
+  // averaging raw pings would weight a long watch many times and drag the mean toward whoever
+  // watched longest.
   const secs = await dbConfig.get(
-    `SELECT ROUND(AVG((props->>'seconds')::numeric))::int AS avg_seconds,
-            ROUND(AVG((props->>'coverPct')::numeric))::int AS avg_cover_pct,
-            COUNT(*)::int AS samples
-       FROM app_events
-      WHERE event = 'tutorial_progress' AND props ? 'seconds'
-        AND created_at > NOW() - ($1 || ' days')::interval`, [String(d)]).catch(() => null);
-  return { byEvent: by, duration: (secs && secs.samples) ? secs : null };
+    `WITH best AS (
+        SELECT user_id,
+               MAX((props->>'seconds')::numeric)  AS seconds,
+               MAX((props->>'coverPct')::numeric) AS cover_pct,
+               BOOL_OR((props->>'completed') = 'true') AS completed
+          FROM app_events
+         -- WARNING: never use the JSONB key-exists operator (a bare question mark) in this codebase.
+         -- db-config.toPg rewrites EVERY question mark into a $n placeholder, so it becomes a syntax
+         -- error — and one a catch() turns into a silent null rather than a visible failure.
+         -- Use ->> IS NOT NULL instead, always.
+         WHERE event = 'tutorial_progress' AND props->>'seconds' IS NOT NULL AND user_id IS NOT NULL
+           AND created_at > NOW() - ($1 || ' days')::interval
+         GROUP BY user_id)
+     SELECT COUNT(*)::int                                    AS watchers,
+            ROUND(AVG(seconds))::int                         AS avg_seconds,
+            ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY seconds))::int AS median_seconds,
+            ROUND(AVG(cover_pct))::int                       AS avg_cover_pct,
+            COUNT(*) FILTER (WHERE completed)::int           AS completed,
+            COUNT(*) FILTER (WHERE cover_pct >= 75)::int     AS watched_75,
+            COUNT(*) FILTER (WHERE cover_pct >= 50)::int     AS watched_50,
+            COUNT(*) FILTER (WHERE cover_pct >= 25)::int     AS watched_25
+       FROM best`, [String(d)]).catch(() => null);
+  return { byEvent: by, duration: (secs && secs.watchers) ? secs : null };
 }
 
 module.exports = {
   newNid, recordSend, recordSkip, recordOpen, upsertCampaign,
   pollReceipts, startReceiptPoller,
-  campaignList, sourceRollup, campaignFunnel, activityAfter, sendRows, videoStats,
+  campaignList, sourceRollup, campaignFunnel, activityAfter, sendRows, videoStats, videoWatchers,
 };

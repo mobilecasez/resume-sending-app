@@ -42,6 +42,29 @@ router.get('/admin/push-analytics', authenticateAdmin, async (req, res) => {
     }
 });
 
+// GET /admin/push-analytics/video?days=30 → the watch summary plus one row per watcher
+router.get('/admin/push-analytics/video', authenticateAdmin, async (req, res) => {
+    try {
+        const log = require('../services/pushLog');
+        const days = parseInt(req.query.days, 10) || 30;
+        const [summary, watchers] = await Promise.all([
+            log.videoStats(days),
+            log.videoWatchers({ days, limit: parseInt(req.query.limit, 10) || 200 }),
+        ]);
+        res.json({
+            success: true, days, ...summary, watchers,
+            notes: {
+                coverage: 'Watched % is how much of the film they actually saw, measured by which parts of the timeline played. Scrubbing to the end does not count as watching it.',
+                seconds: 'Seconds is time genuinely spent playing, so it can exceed the running time when someone rewatches.',
+                availability: 'Only builds carrying the watch measurement report this. Watches on older builds are counted as plays but have no duration.',
+            },
+        });
+    } catch (e) {
+        console.error('[adminNotify] video analytics:', e.message);
+        res.status(500).json({ error: 'Failed to load video analytics', detail: e.message });
+    }
+});
+
 router.get('/admin/push-analytics/:id', authenticateAdmin, async (req, res) => {
     try {
         const log = require('../services/pushLog');
