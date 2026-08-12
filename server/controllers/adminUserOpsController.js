@@ -181,6 +181,16 @@ async function getFile(req, res) {
   }
 }
 
+// 2a) GET /api/admin/health/uploads — stored paths with no file behind them, fleet-wide
+async function getUploadsHealth(req, res) {
+  try {
+    res.json({ success: true, ...(await ops.uploadsHealth()) });
+  } catch (e) {
+    console.error('[adminUserOps] uploads health:', e.message);
+    res.status(500).json({ error: 'Failed to run the uploads health check', detail: e.message });
+  }
+}
+
 // 3) GET /api/admin/users/:id/matched-jobs?limit=20
 async function getMatchedJobs(req, res) {
   const id = idOf(req);
@@ -349,7 +359,7 @@ async function notifySegmentUsers(req, res) {
 }
 
 module.exports = {
-  getOverview, getFile, getMatchedJobs, getActivity, getCoverLetter, getTemplates, notifyUser,
+  getOverview, getFile, getUploadsHealth, getMatchedJobs, getActivity, getCoverLetter, getTemplates, notifyUser,
   getSegments, getSegmentUsers, notifySegmentUsers,
   getResumeProfile, getResumePdf, getSearches, getSearchJobs, testCoverLetter, reparseResumes,
 };

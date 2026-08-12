@@ -1,7 +1,61 @@
+const fs = require('fs');
+const path = require('path');
 const dbConfig = require('../../db-config');
 const { notifyProfileUpdated } = require('./notificationsController');
 const { triggerResumeParsingBackground } = require('../../services/resumeParserService');
 const { emit } = require('../services/track');   // first-party analytics
+
+const UPLOAD_ROOT = path.resolve(process.cwd(), 'uploads');
+
+/**
+ * A stored path is only worth reporting if the file is actually there.
+ *
+ * Rows can outlive their files: account deletion removes uploads/user_<id>/ from disk, and until
+ * this was fixed it left the three path columns set, so signing back in produced a live user whose
+ * profile pointed at deleted files. Rather than trust the column, stat it.
+ *
+ * Returns the relative path when the file is present, otherwise null. Anything resolving outside the
+ * uploads root is refused — a stored path is user-influenced data, not a licence to read the disk.
+ */
+function livePath(rel) {
+    const p = String(rel || '').trim();
+    if (!p) return null;
+    const abs = path.resolve(process.cwd(), p);
+    if (abs !== UPLOAD_ROOT && !abs.startsWith(UPLOAD_ROOT + path.sep)) return null;
+    try { return fs.statSync(abs).isFile() ? p : null; } catch { return null; }
+}
+
+/**
+ * Record an upload ONLY once its bytes are durably on disk.
+ *
+ * multer has already written the file by the time a handler runs, but "written" is not "durable" and
+ * a failed UPDATE would leave an orphan file. Sync the file, then write the row; if the row fails,
+ * remove the file. The caller's catch turns any throw into a 500, so the client sees a real failure
+ * instead of a green tick over a file that is not there.
+ */
+async function commitUpload(req, column, userId) {
+    const abs = path.resolve(req.file.path);
+    if (abs !== UPLOAD_ROOT && !abs.startsWith(UPLOAD_ROOT + path.sep)) {
+        throw new Error('Upload landed outside the uploads directory');
+    }
+    const fh = await fs.promises.open(abs, 'r');
+    try {
+        const st = await fh.stat();
+        if (!st.isFile() || st.size === 0) throw new Error('Uploaded file is empty');
+        await fh.sync();                       // on the volume before the database hears about it
+    } finally {
+        await fh.close();
+    }
+
+    const rel = path.relative(process.cwd(), abs);
+    try {
+        await dbConfig.run(`UPDATE users SET ${column} = ? WHERE id = ?`, [rel, userId]);
+    } catch (e) {
+        await fs.promises.unlink(abs).catch(() => {});   // no row -> don't leave the file behind
+        throw e;
+    }
+    return rel;
+}
 
 // Get user profile data
 const getProfile = async (req, res) => {
@@ -24,14 +78,22 @@ const getProfile = async (req, res) => {
         
         const protocol = req.get('x-forwarded-proto') || req.protocol;
         const baseUrl = `${protocol}://${req.get('host')}`;
-        
+
+        // ⚠️ A PATH IN THE DATABASE IS NOT PROOF OF A FILE. Handing back a URL for a file that is not
+        // on disk gives the app a permanently broken image with no way to recover — the user cannot
+        // tell whether they ever uploaded, and the checklist says "done". Treat a missing file as an
+        // empty slot so the app simply asks for it again.
+        const photoPath = livePath(user.photoPath);
+        const resumePath = livePath(user.resumePath);
+        const signaturePath = livePath(user.signaturePath);
+
         // First-run setup completeness — drives the onboarding "Getting Started" checklist.
         // profile = the basics filled beyond signup defaults (phone/address/DOB).
         const setup = {
             profile: !!(user.phoneNumber && user.address && formattedDOB),
-            resume: !!user.resumePath,
-            photo: !!user.photoPath,
-            signature: !!user.signaturePath,
+            resume: !!resumePath,
+            photo: !!photoPath,
+            signature: !!signaturePath,
         };
         setup.complete = setup.profile && setup.resume && setup.photo && setup.signature;
 
@@ -42,9 +104,9 @@ const getProfile = async (req, res) => {
             address: user.address,
             dateOfBirth: formattedDOB,
             gender: user.gender || '',
-            profileImage: user.photoPath ? `${baseUrl}/${user.photoPath}` : null,
-            resume: user.resumePath ? `${baseUrl}/${user.resumePath}` : null,
-            signature: user.signaturePath ? `${baseUrl}/${user.signaturePath}` : null,
+            profileImage: photoPath ? `${baseUrl}/${photoPath}` : null,
+            resume: resumePath ? `${baseUrl}/${resumePath}` : null,
+            signature: signaturePath ? `${baseUrl}/${signaturePath}` : null,
             createdAt: user.createdAt,
             oauth_provider: user.oauthProvider || null,
             setup
@@ -63,9 +125,7 @@ const uploadProfileImage = async (req, res) => {
             return res.status(400).json({ error: 'No file uploaded' });
         }
         
-        const filePath = req.file.path.replace(process.cwd() + '/', '');
-        
-        await dbConfig.run('UPDATE users SET photo_path = ? WHERE id = ?', [filePath, userId]);
+        const filePath = await commitUpload(req, 'photo_path', userId);
         emit(req, 'photo_uploaded');
 
         const protocol = req.get('x-forwarded-proto') || req.protocol;
@@ -90,9 +150,7 @@ const uploadResume = async (req, res) => {
             return res.status(400).json({ error: 'No file uploaded' });
         }
         
-        const filePath = req.file.path.replace(process.cwd() + '/', '');
-        
-        await dbConfig.run('UPDATE users SET resume_path = ? WHERE id = ?', [filePath, userId]);
+        const filePath = await commitUpload(req, 'resume_path', userId);
         emit(req, 'resume_uploaded');
 
         // Run resume metadata extraction in the background without delaying the upload response.
@@ -120,9 +178,7 @@ const uploadSignature = async (req, res) => {
             return res.status(400).json({ error: 'No file uploaded' });
         }
         
-        const filePath = req.file.path.replace(process.cwd() + '/', '');
-        
-        await dbConfig.run('UPDATE users SET signature_path = ? WHERE id = ?', [filePath, userId]);
+        const filePath = await commitUpload(req, 'signature_path', userId);
         emit(req, 'signature_uploaded');
 
         const protocol = req.get('x-forwarded-proto') || req.protocol;

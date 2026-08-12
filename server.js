@@ -3794,11 +3794,21 @@ app.delete('/api/account/delete', authenticateToken, sensitiveLimiter, async (re
 
         // Soft-delete the user record — preserve email/ip so re-registration can be detected
         // Clear sensitive OAuth tokens but keep the row
+        //
+        // ⚠️ THE THREE PATH COLUMNS MUST BE CLEARED HERE. The rm above deletes the files, but the row
+        // survives a soft delete, and signing back in reactivates it (authController sets deleted_at
+        // = NULL and touches nothing else). Leaving the paths set produced live users whose profile
+        // pointed at files that had been deleted minutes earlier: a permanently broken photo in the
+        // app and "recorded in the database but missing on disk" in the admin file viewer. Three real
+        // users were in that state before this was fixed. If the files go, the paths go with them.
         await dbConfig.run(
             `UPDATE users SET
                 deleted_at = ?,
                 deleted_by = ?,
                 password = NULL,
+                photo_path = NULL,
+                resume_path = NULL,
+                signature_path = NULL,
                 google_access_token = NULL,
                 google_refresh_token = NULL,
                 microsoft_access_token = NULL,

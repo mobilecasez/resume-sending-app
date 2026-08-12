@@ -899,6 +899,53 @@ async function getUserFile(userId, kind) {
   return { path: abs, filename: path.basename(abs), mime: MIME[ext] || 'application/octet-stream' };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 2a) GET /api/admin/health/uploads — every stored path that has no file behind it
+//
+// This exists because six such rows sat in production unnoticed until a user reported a broken
+// photo. Account deletion wiped the files and left the columns set; nothing anywhere compared the
+// two. The scan is ~3 stat() calls per user with an upload, so it is cheap enough to run daily.
+//
+// `root_exists: false` is the loud one — it means the uploads volume is not mounted where the app
+// expects it, and every upload from that moment is being written to disposable container disk.
+// ─────────────────────────────────────────────────────────────────────────────
+async function uploadsHealth() {
+  // dbConfig.query directly, not the swallowing `q` helper: a health check that reports
+  // "0 missing" because the query threw would be worse than no health check at all.
+  const rows = (await dbConfig.query(
+    `SELECT id, email, deleted_at, photo_path, resume_path, signature_path FROM users
+      WHERE photo_path IS NOT NULL OR resume_path IS NOT NULL OR signature_path IS NOT NULL`)) || [];
+  const root = path.resolve(process.cwd(), 'uploads');
+  const missing = [];
+  let checked = 0;
+  for (const u of rows) {
+    for (const [kind, col] of Object.entries(FILE_KINDS)) {
+      const rel = String(u[col] || '').trim();
+      if (!rel) continue;
+      checked++;
+      const abs = path.resolve(process.cwd(), rel);
+      const outside = abs !== root && !abs.startsWith(root + path.sep);
+      if (outside || !fs.existsSync(abs)) {
+        missing.push({
+          userId: u.id, email: u.email, kind, stored: rel,
+          reason: outside ? 'outside_uploads' : 'missing_on_disk',
+          // After the deletion fix this should always be false. A true means the soft-delete path
+          // regressed and is again leaving paths behind on a wiped account.
+          soft_deleted: !!u.deleted_at,
+        });
+      }
+    }
+  }
+  return {
+    users_with_uploads: rows.length,
+    paths_checked: checked,
+    missing_count: missing.length,
+    missing,
+    uploads_root: root,
+    root_exists: fs.existsSync(root),
+  };
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // 2b) GET /api/admin/users/:id/activity?kind=...   — the ITEMS, not the counts
 //
@@ -1880,7 +1927,7 @@ module.exports = {
   pushBlockReason, compareVersions, ANDROID_FCM_MIN_VERSION,
   htmlToText, previewOf, sanitizeLetterHtml, parseCard, cardStr, titleFromUrl,
   getUserActivity, getUserCoverLetter,
-  getUserOverview, getUserFile, getMatchedJobs, resolveJob,
+  getUserOverview, getUserFile, uploadsHealth, getMatchedJobs, resolveJob,
   listTemplates, sendToUser,
   listSegments, getSegmentUsers, getSegment, notifySegment,
 };

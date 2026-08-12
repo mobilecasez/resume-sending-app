@@ -18,6 +18,10 @@ const router = express.Router();
 const { authenticateAdmin } = require('../middleware/auth');
 const ctrl = require('../controllers/adminUserOpsController');
 
+// Fleet-wide: which stored file paths have nothing behind them. Static segment, so it must be
+// declared before nothing — :id never matches "health" — but keep it first for visibility.
+router.get('/admin/health/uploads', authenticateAdmin, ctrl.getUploadsHealth);
+
 router.get('/admin/users/:id/overview', authenticateAdmin, ctrl.getOverview);
 router.get('/admin/users/:id/files/:kind', authenticateAdmin, ctrl.getFile);
 router.get('/admin/users/:id/matched-jobs', authenticateAdmin, ctrl.getMatchedJobs);
