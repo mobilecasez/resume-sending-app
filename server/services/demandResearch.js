@@ -267,7 +267,8 @@ async function notifyMatchedUsers(sinceIso) {
       const scoreTerms = (m.terms && m.terms.length) ? m.terms : [m.skill];
       const standout = ir.pickStandoutJob(ordered.map((j) => ({ ...j, score: ir.overlapScore(j, scoreTerms) })));
       const params = ir.pushParamsForMatch(standout);
-      const pushed = await sendPushNotification(m.token, title, body, { route: '/(discover)', params, action: 'demand_jobs' });
+      const pushed = await sendPushNotification(m.token, title, body, { route: '/(discover)', params, action: 'demand_jobs' },
+        { userId: m.userId || m.user_id, source: 'demand_jobs', audience: 'user' });
       await dbConfig.query(
         `INSERT INTO notifications (user_id, type, title, message, created_at) VALUES ($1,'demand_jobs',$2,$3,NOW())`,
         [userId, title, body]).catch(() => {});
@@ -546,7 +547,8 @@ async function notifyResumeMatchedUsers(sinceIso, { dryRun = false } = {}) {
       const ordered = ir.orderByProximity(rows, { city: u.city, country });
       const standout = ir.pickStandoutJob(ordered.map((j) => ({ ...j, score: ir.overlapScore(j, terms) })));
       const params = ir.pushParamsForMatch(standout);
-      const pushed = await sendPushNotification(u.expo_push_token, title, body, { route: '/(discover)', params, action: 'resume_match_jobs' });
+      const pushed = await sendPushNotification(u.expo_push_token, title, body, { route: '/(discover)', params, action: 'resume_match_jobs' },
+        { userId: u.id, source: 'resume_match', audience: 'user' });
       await dbConfig.query(
         `INSERT INTO notifications (user_id, type, title, message, created_at) VALUES ($1,'resume_match_jobs',$2,$3,NOW())`,
         [u.id, title, body]).catch(() => {});

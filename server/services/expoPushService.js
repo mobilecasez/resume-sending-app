@@ -34,9 +34,13 @@ function getPushHealth() {
     };
 }
 
-// Ticket ids still owed a receipt check. Receipts are the only place Apple-side failures surface.
-const pending = [];
-let drainTimer = null;
+// Receipts moved to services/pushLog.js (Migration 040).
+//
+// They used to be tracked here in a module-level array that died on every deploy, and the drain read
+// Object.values() — throwing away the ticket id — so a receipt could tell you "something failed"
+// but never WHICH device. Ticket ids are now persisted on push_sends and polled from there, so a
+// failure is attributable to a user and survives a restart. This rolling `health` still records
+// ticket-time failures, which is the signal that says push is broken right now.
 
 function noteError(kind, detail) {
     health.failed += 1;
@@ -52,40 +56,29 @@ function noteOk() {
     health.lastOkAt = new Date().toISOString();
 }
 
-async function drainReceipts() {
-    drainTimer = null;
-    const batch = pending.splice(0, 100);
-    if (!batch.length) return;
-    try {
-        const r = await fetch(RECEIPT_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-            body: JSON.stringify({ ids: batch }),
-            signal: AbortSignal.timeout(9000),
-        });
-        const j = await r.json().catch(() => ({}));
-        for (const rec of Object.values(j?.data || {})) {
-            if (rec && rec.status === 'error') noteError(rec.details?.error || 'ReceiptError', rec.message);
-        }
-    } catch (e) {
-        console.warn('[push] receipt check failed:', e.message);
-    }
-    if (pending.length) scheduleDrain();
-}
-function scheduleDrain() {
-    if (drainTimer) return;
-    // Apple needs a few seconds to actually attempt delivery before a receipt means anything.
-    drainTimer = setTimeout(() => { drainReceipts().catch(() => {}); }, 8000);
-    if (drainTimer.unref) drainTimer.unref();   // never hold the process open
-}
-
-async function sendPushNotification(pushToken, title, body, data = {}) {
+async function sendPushNotification(pushToken, title, body, data = {}, log = null) {
     if (!pushToken || !/^Expo(nent)?PushToken\[/.test(pushToken)) return false;
+    // The id that ties this payload to its ticket, its receipt, and any later tap. Stamped into the
+    // payload so the app can hand it back when the user opens the notification.
+    const pushLog = require('./pushLog');
+    const nid = pushLog.newNid();
+    const payload = { ...(data || {}), nid };
+    const logRow = (ticket) => {
+        if (!log) return;
+        pushLog.recordSend({
+            nid, userId: log.userId, campaignId: log.campaignId, source: log.source || 'unknown',
+            audience: log.audience || 'user', templateKey: log.templateKey,
+            notifType: (data && data.type) || null, title, body,
+            route: (data && data.route) || null, params: data || null,
+            tokenPrefix: String(pushToken).slice(0, 12), adminLogId: log.adminLogId,
+            ...ticket,
+        }).catch(() => {});
+    };
     try {
         const r = await fetch(SEND_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({ to: pushToken, title, body, data, sound: 'default', priority: 'high', channelId: 'default' }),
+            body: JSON.stringify({ to: pushToken, title, body, data: payload, sound: 'default', priority: 'high', channelId: 'default' }),
             signal: AbortSignal.timeout(9000),
         });
         const j = await r.json().catch(() => ({}));
@@ -101,16 +94,24 @@ async function sendPushNotification(pushToken, title, body, data = {}) {
                 console.warn(`[push] ticket error  token=${String(pushToken).slice(0, 12)}…  reason=${err || 'unknown'}  ${String(ticket.message || '').slice(0, 160)}`);
             } catch {}
             noteError(err || 'TicketError', ticket.message);
+            logRow({ ticketStatus: 'error', ticketError: err || 'TicketError', ticketMessage: ticket.message });
             // DeviceNotRegistered → the token really is stale, so the caller clears it. Anything
             // else (notably InvalidCredentials) is OUR configuration: leave the token alone, or a
             // project-level outage would wipe every user's token and they'd all need a reinstall.
             return err === 'DeviceNotRegistered' ? 'stale' : false;
         }
         noteOk();
-        if (ticket && ticket.id) { pending.push(ticket.id); scheduleDrain(); }
+        // ⚠️ A ticket WITHOUT status 'error' is not the same as status 'ok' — a malformed response
+        // would otherwise be counted as a success. Record what we actually got.
+        logRow({
+            ticketId: (ticket && ticket.id) || null,
+            ticketStatus: ticket && ticket.status === 'ok' ? 'ok' : (ticket && ticket.id ? 'ok' : 'exception'),
+            ticketMessage: ticket && ticket.id ? null : 'no ticket id in Expo response',
+        });
         return true;
     } catch (e) {
         noteError('SendFailed', e.message);
+        logRow({ ticketStatus: 'exception', ticketError: 'SendFailed', ticketMessage: e.message });
         return false;
     }
 }

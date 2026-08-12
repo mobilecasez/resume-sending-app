@@ -35,4 +35,31 @@ router.get('/app-version-gate', async (req, res) => {
   }
 });
 
+// POST /api/push/opened  { nid, kind?, coldStart?, platform?, appVersion? }
+//
+// Public and unauthenticated ON PURPOSE: a notification tap very often happens on a cold start
+// before the session is restored, and requiring auth would drop exactly the opens we most want to
+// count. The nid is an unguessable UUID that we minted and only ever put in one payload, so it is
+// its own capability — there is nothing to gain by posting a random one, and nothing sensitive is
+// returned. Always answers 200 so a reporting failure can never break the app's launch path.
+router.post('/push/opened', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const nid = String(b.nid || '').trim();
+    // Cheap shape check so a malformed id never reaches the database as a failed cast.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nid)) {
+      return res.json({ success: true, recorded: false });
+    }
+    const ok = await require('../services/pushLog').recordOpen({
+      nid,
+      userId: (req.user && req.user.id) || (Number(b.userId) || null),
+      kind: b.kind, coldStart: b.coldStart, platform: b.platform, appVersion: b.appVersion,
+    });
+    res.json({ success: true, recorded: !!ok });
+  } catch (e) {
+    console.warn('[push/opened]', e.message);
+    res.json({ success: true, recorded: false });
+  }
+});
+
 module.exports = router;

@@ -17,6 +17,46 @@ router.post('/admin/version-gate', authenticateAdmin, async (req, res) => {
     catch (e) { res.status(500).json({ error: 'Failed to save the version gate' }); }
 });
 
+// ── Push analytics ────────────────────────────────────────────────────────────────────────────
+// GET /admin/push-analytics?days=30      → campaign list + per-source rollup + video stats
+// GET /admin/push-analytics/:id?hours=24 → one campaign's funnel, activity proxy, recipient rows
+router.get('/admin/push-analytics', authenticateAdmin, async (req, res) => {
+    try {
+        const log = require('../services/pushLog');
+        const days = parseInt(req.query.days, 10) || 30;
+        const [campaigns, sources, video] = await Promise.all([
+            log.campaignList(days), log.sourceRollup(days), log.videoStats(days),
+        ]);
+        res.json({
+            success: true, days, campaigns, sources, video,
+            // Rendered verbatim by the app so the numbers can never be read as more than they are.
+            notes: {
+                delivered: 'Apple and Google never confirm delivery. “Handed to Apple/Google” is as far as it goes — it is not proof the notification appeared, and never proof it was seen.',
+                opens: 'Taps are only reported by app builds that carry the tap ping. Anything older reports nothing, so opens read as 0 for those users no matter how many really tapped.',
+                activity: 'Active after is a correlation, not an attribution: it counts people who used the app within the window, including those who would have opened it anyway.',
+            },
+        });
+    } catch (e) {
+        console.error('[adminNotify] push-analytics:', e.message);
+        res.status(500).json({ error: 'Failed to load push analytics', detail: e.message });
+    }
+});
+
+router.get('/admin/push-analytics/:id', authenticateAdmin, async (req, res) => {
+    try {
+        const log = require('../services/pushLog');
+        const id = String(req.params.id || '');
+        const hours = parseInt(req.query.hours, 10) || 24;
+        const [funnel, activeAfter, rows] = await Promise.all([
+            log.campaignFunnel(id), log.activityAfter(id, hours), log.sendRows({ campaignId: id, limit: 200 }),
+        ]);
+        res.json({ success: true, id, hours, ...funnel, active_after: activeAfter, rows });
+    } catch (e) {
+        console.error('[adminNotify] push-analytics detail:', e.message);
+        res.status(500).json({ error: 'Failed to load campaign', detail: e.message });
+    }
+});
+
 // Current toggles
 router.get('/admin/notification-settings', authenticateAdmin, async (req, res) => {
     try { res.json({ success: true, settings: await notifier.getSettings(), categories: notifier.CATEGORIES }); }

@@ -47,7 +47,8 @@ async function sendNudge(nudgeKey, opts = {}) {
   if (opts.testUserId) {
     const u = await dbConfig.get('SELECT id, expo_push_token FROM users WHERE id = ?', [opts.testUserId]).catch(() => null);
     if (!u || !/^Expo(nent)?PushToken\[/.test(u.expo_push_token || '')) return { test: true, sent: 0, reason: 'no_push_token' };
-    const res = await sendPushNotification(u.expo_push_token, title, body, { type: 'reward', screen: 'rewards', nudge: nudgeKey, test: true });
+    const res = await sendPushNotification(u.expo_push_token, title, body, { type: 'reward', screen: 'rewards', nudge: nudgeKey, test: true },
+      { userId: u.id, source: 'reward_nudge', templateKey: nudgeKey, audience: 'user' });
     return { test: true, sent: res === true ? 1 : 0, reason: res === true ? undefined : (res === 'stale' ? 'stale_token' : 'send_failed') };
   }
 
@@ -57,7 +58,8 @@ async function sendNudge(nudgeKey, opts = {}) {
   if (opts.dryRun) return { dryRun: true, nudgeKey, credits, wouldTarget: tgt.length };
   let sent = 0, stale = 0;
   for (const u of tgt) {
-    const res = await sendPushNotification(u.expo_push_token, title, body, { type: 'reward', screen: 'rewards', nudge: nudgeKey });
+    const res = await sendPushNotification(u.expo_push_token, title, body, { type: 'reward', screen: 'rewards', nudge: nudgeKey },
+      { userId: u.id, source: 'reward_nudge', templateKey: nudgeKey, audience: 'user' });
     if (res === 'stale') { stale++; try { await dbConfig.run('UPDATE users SET expo_push_token = NULL WHERE id = ?', [u.id]); } catch (_) {} }
     else if (res) { sent++; try { await dbConfig.run('INSERT INTO reward_nudges_sent (user_id, nudge_key) VALUES (?, ?)', [u.id, nudgeKey]); } catch (_) {} }
   }

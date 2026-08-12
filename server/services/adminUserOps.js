@@ -1720,7 +1720,10 @@ async function sendToUser({ userId, templateKey, jobId, overrides, adminId, batc
   let pushError = null;
   try {
     const res = await expoPush.sendPushNotification(u.expo_push_token, r.title, r.body,
-      { type: r.notifType, route: r.route, params: pushParams, templateKey: tpl.key });
+      { type: r.notifType, route: r.route, params: pushParams, templateKey: tpl.key },
+      // Analytics context — what makes this send show up as part of a campaign afterwards.
+      { userId: u.id, source: batchId ? 'admin_segment' : 'admin_single',
+        campaignId: batchId || null, templateKey: tpl.key, audience: 'user' });
     if (res === true) pushOk = true;
     else if (res === 'stale') {
       pushError = 'stale_token';
@@ -2037,6 +2040,15 @@ async function notifySegment({ key, templateKey, overrides, confirm, maxRecipien
   }
 
   const batchId = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  // Campaign header first, so the analytics screen can show a campaign that is still going out —
+  // and so a crash mid-send leaves a campaign with a known intended size rather than nothing.
+  try {
+    await require('./pushLog').upsertCampaign({
+      id: batchId, kind: 'segment', segmentKey: key || null, templateKey: tpl.key,
+      title: (overrides && overrides.title) || tpl.key, sentBy: adminId,
+      recipients: reachableIds.length,
+    });
+  } catch { /* analytics must never block a send */ }
   let sent = 0;
   let failed = 0;
   const failures = [];

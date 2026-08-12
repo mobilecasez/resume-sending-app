@@ -1415,6 +1415,87 @@ async function runPostgresMigrations(db) {
         await col(`ALTER TABLE app_version_gate ADD COLUMN IF NOT EXISTS mandatory BOOLEAN NOT NULL DEFAULT FALSE`);
         console.log('✅ Migration 039: app_version_gate target/mandatory done (inert)');
 
+        // ── Migration 040: PUSH ANALYTICS — one durable row per (push, recipient) ──────────────
+        // Until now there was no answer to "did this user's phone get it?". The Expo ticket id lived
+        // for one line in a module-level array (expoPushService `pending`) and died on every deploy,
+        // and the receipt drain read Object.values() — throwing the ticket id away — so no receipt
+        // was ever attributable to a device. Most send paths wrote no record at all.
+        //
+        // A NEW TABLE, deliberately not extra columns on admin_notification_log: that table is a
+        // mutex as well as a log (uq_admin_notif_log_inflight is UNIQUE(user_id, template_key)
+        // WHERE push_ok IS NULL), so pouring every automated send into it would start SUPPRESSING
+        // real notifications.
+        //
+        // ⚠️ NO unique constraints and NO foreign keys, on purpose: this table must never be able to
+        // block a send, and deleting a user must not erase the record of what we sent them.
+        // ⚠️ There is no column called `delivered`. Apple and Google do not report delivery — the
+        // furthest we can honestly go is "handed off to Apple/Google" (receipt_status = 'ok').
+        await col(`CREATE TABLE IF NOT EXISTS push_sends (
+            id              UUID PRIMARY KEY,
+            user_id         INTEGER,
+            campaign_id     VARCHAR(64),
+            source          VARCHAR(40) NOT NULL,
+            audience        VARCHAR(10) NOT NULL DEFAULT 'user',
+            template_key    VARCHAR(60),
+            notif_type      VARCHAR(40),
+            title           TEXT,
+            body            TEXT,
+            route           VARCHAR(80),
+            params          JSONB,
+            token_prefix    VARCHAR(24),
+            admin_log_id    INTEGER,
+            ticket_id       TEXT,
+            ticket_status   VARCHAR(20),
+            ticket_error    VARCHAR(60),
+            ticket_message  TEXT,
+            receipt_status     VARCHAR(20),
+            receipt_error      VARCHAR(60),
+            receipt_message    TEXT,
+            receipt_checked_at TIMESTAMPTZ,
+            sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_push_sends_campaign ON push_sends(campaign_id, sent_at DESC)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_push_sends_user ON push_sends(user_id, sent_at DESC)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_push_sends_sent_at ON push_sends(sent_at DESC)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_push_sends_source ON push_sends(source, sent_at DESC)`);
+        // The receipt poller's work queue. PARTIAL, so it stays a handful of rows forever.
+        await col(`CREATE INDEX IF NOT EXISTS idx_push_sends_receipt_todo
+                     ON push_sends(sent_at) WHERE ticket_id IS NOT NULL AND receipt_status IS NULL`);
+
+        // Campaign header, so the admin screen lists campaigns rather than GROUP BY-ing send rows.
+        // id reuses the batch id that already exists on the admin/segment paths.
+        await col(`CREATE TABLE IF NOT EXISTS push_campaigns (
+            id            VARCHAR(64) PRIMARY KEY,
+            kind          VARCHAR(30),
+            segment_key   VARCHAR(60),
+            template_key  VARCHAR(60),
+            title         TEXT,
+            body          TEXT,
+            route         VARCHAR(80),
+            sent_by       INTEGER,
+            recipients    INTEGER,
+            created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_push_campaigns_created ON push_campaigns(created_at DESC)`);
+
+        // Taps. Written by the app when a notification opens it, keyed by the nid we put in the
+        // payload. NO foreign key: a tap must record even if the send row is missing.
+        // ⚠️ Every row here requires an app build that reports taps. Builds already in the field
+        // will never write one, so this table stays empty for them — that is a known limit, not a bug.
+        await col(`CREATE TABLE IF NOT EXISTS push_opens (
+            id          BIGSERIAL PRIMARY KEY,
+            nid         UUID NOT NULL,
+            user_id     INTEGER,
+            kind        VARCHAR(20) NOT NULL DEFAULT 'open',
+            cold_start  BOOLEAN,
+            platform    TEXT,
+            app_version TEXT,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_push_opens_nid ON push_opens(nid)`);
+        await col(`CREATE INDEX IF NOT EXISTS idx_push_opens_created ON push_opens(created_at DESC)`);
+        console.log('✅ Migration 040: push_sends / push_campaigns / push_opens done');
+
         console.log('✅ PostgreSQL migrations completed successfully');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);

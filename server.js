@@ -4108,6 +4108,12 @@ catch (e) { console.error('[firehose] failed to start:', e.message); }
 
 // Start server
 const HOST = process.env.HOST || '0.0.0.0';
+// Push receipt poller. A READER — it asks Expo what became of messages we already sent and writes
+// the answer onto push_sends. It sends nothing, so the "ship schedulers disarmed" rule for anything
+// that can push to users does not apply; PUSH_RECEIPT_POLL_DISABLED=1 stops it regardless.
+try { require('./server/services/pushLog').startReceiptPoller(); }
+catch (e) { console.warn('[push] receipt poller not started:', e.message); }
+
 app.listen(PORT, HOST, () => {
     console.log(`
 ╔═══════════════════════════════════════════════════════╗

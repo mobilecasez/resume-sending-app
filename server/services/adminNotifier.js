@@ -58,7 +58,9 @@ async function notifyAdmins(category, title, body, data = {}) {
         let sent = 0;
         for (const a of admins) {
             try {
-                const res = await sendPushNotification(a.expo_push_token, title, body, { ...data, adminAlert: true });
+                // audience 'admin' — these are alerts to US, and must never be counted in a user campaign funnel.
+                const res = await sendPushNotification(a.expo_push_token, title, body, { ...data, adminAlert: true },
+                    { userId: a.id, source: 'admin_alert', audience: 'admin' });
                 if (res === true) sent++;
                 else if (res === 'stale') { try { await dbConfig.run(`UPDATE users SET expo_push_token = NULL WHERE id = ?`, [a.id]); } catch {} }
             } catch {}
