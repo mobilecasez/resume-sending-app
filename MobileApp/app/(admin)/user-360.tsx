@@ -36,7 +36,7 @@ import {
   type AdminActivitySavedJob, type AdminActivityApplication, type AdminActivityCredit,
   type AdminActivitySearch, type AdminActivityItemMap, type AdminCoverLetter,
   type AdminNotifyTemplate, type AdminNotifyTemplatesResponse, type AdminUserNotifyResult,
-  type AdminFileKind, type AdminPushBlock,
+  type AdminFileKind, type AdminPushBlock, type AdminUserPlan, type AdminPlanQuota,
   fetchAdminResumeProfile, adminResumePdfUrl, fetchAdminFileToCache,
   fetchAdminSearches, fetchAdminSearchJobs, adminTestCoverLetter,
   type AdminResumeProfile, type AdminResumeEntry,
@@ -1772,15 +1772,15 @@ export default function User360Screen() {
               {/* ── 2. AT A GLANCE ────────────────────────────────────────── */}
               <Section title="At a glance" sub="How many — the items themselves are further down.">
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.statRow}>
+                  {/* The plan, not the legacy credit balance. Credits were showing 0/0 for every
+                      account created since plans shipped, which read as "this user has nothing"
+                      when in fact they had a Free plan with a full allowance. */}
                   <Stat
-                    n={fmt(ov.credits?.remaining)}
-                    suffix={` / ${fmt(ov.credits?.total)}`}
-                    label="Credits"
-                    sub={ov.credits?.expiry_date
-                      ? `expires ${dateLabel(ov.credits.expiry_date)}`
-                      : ov.credits?.last_purchase_date ? `last buy ${dateLabel(ov.credits.last_purchase_date)}` : 'no expiry set'}
-                    tone={C.emerald}
-                    icon="wallet-outline"
+                    n={ov.plan?.label || 'Free plan'}
+                    label="Current plan"
+                    sub={planTileSub(ov.plan)}
+                    tone={ov.plan?.status === 'paid' ? C.emerald : ov.plan?.status === 'unknown_plan' ? C.rose : C.blueDeep}
+                    icon={ov.plan?.status === 'paid' ? 'card-outline' : 'gift-outline'}
                   />
                   <Stat n={fmt(ov.activity?.saved_jobs)} label="Saved jobs" tone={C.blue} icon="bookmark-outline" />
                   {/* ⚠️ This is NOT the same number as the Applications tab, and the difference is
@@ -1821,7 +1821,9 @@ export default function User360Screen() {
                   “Application records” is a union of an emailed application and its cover letter marked applied — open the
                   Applications tab for the server’s own breakdown.
                 </Text>
-                {arr(ov.credits?.recent).length ? (
+                {/* Legacy credit movements: only worth screen space for accounts that still hold a
+                    balance. For everyone on plans this row was always empty noise. */}
+                {(ov.plan?.legacy?.remaining || 0) > 0 && arr(ov.credits?.recent).length ? (
                   <View style={s.chips}>
                     {arr(ov.credits?.recent).slice(0, 4).map((x, i) => {
                       const amt = Number(x.amount) || 0;
@@ -1848,6 +1850,9 @@ export default function User360Screen() {
                   </View>
                 ) : null}
               </Section>
+
+              {/* ── 2b. PLAN & USAGE ──────────────────────────────────────── */}
+              <PlanSection plan={ov.plan} />
 
               {/* ── 3. PROFILE DETAILS ────────────────────────────────────── */}
               <Section title="Profile details">
@@ -2163,6 +2168,138 @@ function Stat({ n, suffix, label, sub, tone, icon }: {
       <Text style={s.statL} numberOfLines={2}>{label}</Text>
       {!!sub && <Text style={s.statS} numberOfLines={2}>{sub}</Text>}
     </View>
+  );
+}
+
+// ── Plan & usage ──────────────────────────────────────────────────────────────────────────────
+// Replaces the old "Credits" tile, which showed 0 / 0 for every account created since plans
+// shipped — i.e. it said "this user has nothing" about users who in fact had a full Free allowance.
+
+/** One line of small print under the plan tile, tuned to the state the account is actually in. */
+function planTileSub(p?: AdminUserPlan | null): string {
+  if (!p) return '';
+  if (p.status === 'never_started') return 'nothing used yet';
+  if (p.status === 'unknown_plan') return 'plan key not in catalog';
+  if (p.window_days_left != null) {
+    return p.status === 'paid'
+      ? `renews in ${p.window_days_left}d`
+      : `refills in ${p.window_days_left}d`;
+  }
+  return p.status === 'paid' ? 'active' : 'free plan';
+}
+
+/** The sentence that explains the plan in words, so the numbers below have context. */
+function planSubline(p: AdminUserPlan): string {
+  if (p.status === 'never_started') {
+    return 'On the Free plan. They have not generated anything yet, so their 30-day window has not started.';
+  }
+  if (p.status === 'unknown_plan') {
+    return `Subscription row has plan key “${p.key}”, which is not in the catalog — the app falls back to Free for this user.`;
+  }
+  if (p.status === 'paid') {
+    const bits = [`Paid${p.price_usd != null ? ` · $${p.price_usd.toFixed(2)}/mo` : ''}`];
+    if (p.period_end) bits.push(`period ends ${dateLabel(p.period_end)}`);
+    if (p.auto_renew === false) bits.push('auto-renew OFF — will not renew');
+    if (p.pending_label) bits.push(`changing to ${p.pending_label} at renewal`);
+    return bits.join(' · ');
+  }
+  const bits = ['Free plan — 5 cover letters and 1 résumé every 30 days'];
+  if (p.window_end) bits.push(`allowance refills ${dateLabel(p.window_end)}`);
+  return bits.join(' · ');
+}
+
+function QuotaBar({ q }: { q: AdminPlanQuota }) {
+  const pct = q.allowance > 0 ? Math.max(0, Math.min(100, Math.round((q.used / q.allowance) * 100))) : 100;
+  const tone = q.remaining === 0 ? C.rose : pct >= 80 ? C.amber : C.emerald;
+  return (
+    <View style={s.quotaBox}>
+      <View style={s.compTop}>
+        <Text style={s.quotaLbl}>{q.label}</Text>
+        <Text style={[s.quotaN, { color: tone }]}>
+          {fmt(q.used)} used<Text style={s.quotaNSub}> · {fmt(q.remaining)} left of {fmt(q.allowance)}</Text>
+        </Text>
+      </View>
+      <View style={s.compTrack}>
+        <View style={{ width: `${pct}%`, height: '100%', borderRadius: 100, backgroundColor: tone }} />
+      </View>
+      <View style={s.chips}>
+        {q.bonus > 0 ? <Chip label="Bonus granted" value={`+${fmt(q.bonus)}`} tone={C.purple} /> : null}
+        {/* Usage paid for out of another pool (legacy credits). Without this, a heavy user who
+            spent credits reads as barely active. */}
+        {q.used_any_pool > q.used
+          ? <Chip label="Incl. other pools" value={fmt(q.used_any_pool)} tone={C.amber} /> : null}
+        <Chip label="All time" value={fmt(q.used_lifetime)} />
+        {q.last_used ? <Chip label="Last used" value={dateLabel(q.last_used)} /> : null}
+      </View>
+      {q.over ? (
+        <Text style={s.footnote}>
+          Used {fmt(q.used)} against an allowance of {fmt(q.allowance)} — the free résumé allowance dropped
+          from 2 to 1, so earlier usage can exceed it. Nothing is owed.
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function PlanSection({ plan }: { plan?: AdminUserPlan | null }) {
+  const p = plan;
+  if (!p) return null;
+  const paid = p.status === 'paid';
+  const tone = paid ? C.emerald : p.status === 'unknown_plan' ? C.rose : C.blueDeep;
+  return (
+    <Section title="Plan & usage" sub="What they are on right now, and what is left in this period.">
+      <View style={s.planHead}>
+        <View style={[s.statIcon, { backgroundColor: `${tone}18`, marginBottom: 0 }]}>
+          <Ionicons name={paid ? 'card-outline' : 'gift-outline'} size={14} color={tone} />
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={s.planName}>{p.label}</Text>
+          <Text style={s.planSub}>{planSubline(p)}</Text>
+        </View>
+        <Pill
+          text={paid ? 'paid' : p.status === 'never_started' ? 'not started' : p.status === 'unknown_plan' ? 'check' : 'free'}
+          tone={tone}
+        />
+      </View>
+
+      <View style={s.chips}>
+        {p.price_usd != null ? <Chip label="Price" value={`$${p.price_usd.toFixed(2)}/mo`} /> : null}
+        {has(p.source) ? <Chip label="Granted by" value={String(p.source)} tone={p.source === 'admin' ? C.purple : undefined} /> : null}
+        {has(p.store) ? <Chip label="Store" value={String(p.store)} /> : null}
+        {p.window_start ? <Chip label="Period started" value={dateLabel(p.window_start)} /> : null}
+        {p.window_end ? <Chip label={paid ? 'Renews' : 'Refills'} value={dateLabel(p.window_end)} /> : null}
+        {p.free_since ? <Chip label="Free since" value={dateLabel(p.free_since)} /> : null}
+      </View>
+
+      {p.quotas.map((q) => <QuotaBar key={q.kind} q={q} />)}
+
+      {p.status === 'never_started' ? (
+        <Text style={s.footnote}>
+          No usage recorded. Their 30-day window starts the first time they generate something, so the
+          full allowance is available.
+        </Text>
+      ) : null}
+
+      {p.pending_label ? (
+        <Note tone={C.amber} text={`Scheduled change: moves to ${p.pending_label} at the end of the current period. Both stores defer a downgrade to renewal.`} />
+      ) : null}
+
+      {p.other_environment ? (
+        <Note
+          tone={C.amber}
+          text={`This user has a live store subscription in the ${p.other_environment} environment (sandbox / TestFlight), which does not count in production. They may believe they have paid.`}
+        />
+      ) : null}
+
+      {(p.legacy?.remaining || 0) > 0 ? (
+        <Note
+          tone={C.blueDeep}
+          text={`Legacy credits: ${fmt(p.legacy?.remaining)} left of ${fmt(p.legacy?.total)}. Still spendable once the plan allowance runs out${p.legacy?.expiry_date ? `, expires ${dateLabel(p.legacy.expiry_date)}` : ''}.`}
+        />
+      ) : null}
+
+      {arr(p.caveats).map((c, i) => <Note key={i} tone={C.rose} text={String(c)} />)}
+    </Section>
   );
 }
 
@@ -2487,6 +2624,16 @@ const s = StyleSheet.create({
 
   compBox: { marginTop: 14, backgroundColor: C.bgSoft, borderRadius: 14, padding: 12 },
   compTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  planHead: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
+  planName: { fontSize: 15.5, fontWeight: '800', color: C.ink, letterSpacing: -0.2 },
+  planSub: { fontSize: 11.5, color: C.textMuted, fontWeight: '600', marginTop: 2, lineHeight: 16 },
+  quotaBox: {
+    marginTop: 12, padding: 12, borderRadius: 14,
+    backgroundColor: C.bgSoft, borderWidth: 1, borderColor: C.border,
+  },
+  quotaLbl: { fontSize: 12.5, fontWeight: '800', color: C.inkSoft },
+  quotaN: { fontSize: 12.5, fontWeight: '800' },
+  quotaNSub: { fontSize: 11.5, fontWeight: '700', color: C.textMuted },
   compPct: { fontSize: 20, fontWeight: '800', letterSpacing: -0.6 },
   compTrack: { marginTop: 8, height: 7, borderRadius: 100, backgroundColor: 'rgba(11,15,34,0.08)', overflow: 'hidden' },
 

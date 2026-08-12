@@ -625,6 +625,10 @@ module.exports = {
   adminSetSubscription, storeSetSubscription, storeSubscriptionFor, deviceIdOf, ipHashOf,
   // exported for the lifecycle nudges (which must know what a user has LEFT before offering more)
   activeSubscription, usedSince, bonusSince, allowanceIn, planByKey, KIND_QUOTA_FIELD,
+  // The rolling free-plan window. Exported so the admin screens compute "used this period" the
+  // same way the app does — counting from signup instead makes every account older than 30 days
+  // look permanently exhausted.
+  freeWindowStart, freeWindowEnd, FREE_WINDOW_MS,
   // re-exported so callers do not have to know where the environment vocabulary lives
   PRODUCTION, normalizeEnvironment, requestEnvironment,
 };

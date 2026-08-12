@@ -1420,6 +1420,54 @@ export type AdminUserCredits = {
   remaining: number; total: number; expiry_date: string | null;
   last_purchase_date: string | null; recent: AdminCreditTxn[];
 };
+/** One metered feature's allowance and consumption for the CURRENT billing/refill period. */
+export type AdminPlanQuota = {
+  kind: 'cover_letter' | 'resume';
+  label: string;
+  /** The plan's own allowance before any admin/reward bonus. */
+  base: number;
+  bonus: number;
+  allowance: number;
+  /** Used in this period, against THIS plan's pool. */
+  used: number;
+  remaining: number;
+  /** Used in this period across every pool (incl. legacy credits) — always >= `used`. */
+  used_any_pool: number;
+  used_lifetime: number;
+  last_used: string | null;
+  /** Used exceeds allowance: the free résumé allowance dropped 2 → 1, so old usage can outrun it. */
+  over: boolean;
+};
+
+/**
+ * What the user is actually on TODAY. Read without side effects — deliberately NOT from
+ * entitlements.getStatus(), which would create a trial row just by being asked.
+ */
+export type AdminUserPlan = {
+  key: string;
+  label: string;
+  via: 'plan' | 'plan_unknown' | 'free' | null;
+  status: 'paid' | 'unknown_plan' | 'free' | 'never_started';
+  price_usd: number | null;
+  source: string | null;
+  store: string | null;
+  environment: string | null;
+  auto_renew: boolean | null;
+  pending_plan_key: string | null;
+  pending_label: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  window_start: string | null;
+  window_end: string | null;
+  window_days_left: number | null;
+  free_since: string | null;
+  /** A live store plan in the OTHER environment (Sandbox/TestFlight). Diagnostic only. */
+  other_environment: string | null;
+  quotas: AdminPlanQuota[];
+  legacy: { remaining: number; total: number; expiry_date: string | null; last_purchase_date: string | null } | null;
+  caveats: string[];
+};
+
 export type AdminUserResumeMeta = {
   parse_status: string | null; summary: string | null; skills: string[]; technical_skills: string[];
   soft_skills: string[]; experience_years: number | null; job_titles: string[]; industries: string[];
@@ -1462,6 +1510,9 @@ export type AdminUserOverview = {
   success: boolean;
   user: AdminOverviewUser;
   assets: AdminUserAssets;
+  /** The live entitlement. This — not `credits` — is what the user is on. */
+  plan: AdminUserPlan;
+  /** Legacy credit pool. Still a live fallback for grandfathered accounts, so kept, but secondary. */
   credits: AdminUserCredits;
   resume: AdminUserResumeMeta;
   activity: AdminUserActivityCounts;

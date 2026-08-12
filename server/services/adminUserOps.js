@@ -739,11 +739,17 @@ async function quotaStateOf(userId) {
     if (!(await tableExists('user_trials'))) return out;
     const t = await g('SELECT started_at, ends_at FROM user_trials WHERE user_id = $1', [userId]);
     if (!t) return out;                                   // no trial row — do NOT create one
+    // ⚠️ Count from the CURRENT 30-day window, not from signup. The free allowance refills every
+    // 30 days; measuring from started_at accumulates every generation the account has ever made
+    // against a 5-letter allowance, so anyone older than a month reports "0 left" forever — and
+    // this feeds the lifecycle nudges, which would then offer bonus letters to people who have
+    // plenty. freeWindowStart is the same helper the app's own quota check uses.
+    const winStart = ent.freeWindowStart(t.started_at);
     const [uL, uR, aL, aR] = await Promise.all([
-      ent.usedSince(userId, 'cover_letter', 'trial', '$4', [t.started_at]),
-      ent.usedSince(userId, 'resume', 'trial', '$4', [t.started_at]),
-      ent.allowanceIn(userId, 'cover_letter', ent.TRIAL.letters, t.started_at),
-      ent.allowanceIn(userId, 'resume', ent.TRIAL.resumes, t.started_at),
+      ent.usedSince(userId, 'cover_letter', 'trial', '$4', [winStart]),
+      ent.usedSince(userId, 'resume', 'trial', '$4', [winStart]),
+      ent.allowanceIn(userId, 'cover_letter', ent.TRIAL.letters, winStart),
+      ent.allowanceIn(userId, 'resume', ent.TRIAL.resumes, winStart),
     ]);
     // Floor at -1 rather than 0 so "already expired" stays distinguishable from "ends today".
     const msLeft = new Date(t.ends_at).getTime() - Date.now();
@@ -754,6 +760,144 @@ async function quotaStateOf(userId) {
       via: 'trial',
     };
   } catch (e) { console.warn('[adminUserOps] quotaStateOf:', e.message); return out; }
+}
+
+// ── The user's CURRENT entitlement, for the admin profile screen. READ-ONLY BY CONSTRUCTION. ──
+//
+// ⚠️ NEVER call entitlements.getStatus() from here. getStatus calls ensureTrial(), which INSERTs a
+// user_trials row with started_at = NOW() for anyone who has none. started_at is the origin of the
+// rolling 30-day window, so simply OPENING a user's profile would move that user's refill date to
+// the moment of the page view and orphan any quota_grant written before it. A screen that describes
+// an account must never modify it. Everything below reads tables directly.
+//
+// Returns the plan plus, per metered kind, allowance / used / remaining for the CURRENT period.
+async function planStateOf(userId) {
+  const ent = require('./entitlements');
+  const KINDS = [
+    { kind: 'cover_letter', label: 'Cover letters', quota: 'letters' },
+    { kind: 'resume', label: 'AI résumés', quota: 'resumes' },
+  ];
+  const out = {
+    key: 'free', label: 'Free plan', via: 'free', status: 'never_started',
+    price_usd: null, source: null, store: null, environment: null,
+    auto_renew: null, pending_plan_key: null, pending_label: null,
+    period_start: null, period_end: null,
+    window_start: null, window_end: null, window_days_left: null,
+    free_since: null, other_environment: null,
+    quotas: [], legacy: null, caveats: [],
+  };
+  try {
+    // An admin has no request, so no store environment. Production is the fail-closed default and
+    // matches what a real user on a shipped build gets; a sandbox-only plan is reported separately
+    // below rather than silently shown as the live one.
+    let sub = null;
+    try { sub = await ent.activeSubscription(userId, 'Production'); } catch { sub = null; }
+    const plan = sub ? ent.planByKey(sub.plan_key) : null;
+
+    let base = { letters: ent.TRIAL.letters, resumes: ent.TRIAL.resumes };
+    let winStart = null, winEnd = null, ledgerSource = null;
+
+    if (sub) {
+      out.source = sub.source || null;
+      out.store = sub.store || null;
+      out.environment = sub.environment || null;
+      out.auto_renew = sub.auto_renew == null ? null : Boolean(sub.auto_renew);
+      out.pending_plan_key = sub.pending_plan_key || null;
+      out.pending_label = sub.pending_plan_key
+        ? ((ent.planByKey(sub.pending_plan_key) || {}).label || sub.pending_plan_key) : null;
+      out.period_start = sub.period_start || null;
+      out.period_end = sub.period_end || null;
+      winStart = sub.period_start; winEnd = sub.period_end; ledgerSource = 'plan';
+      out.window_start = winStart; out.window_end = winEnd;
+    }
+
+    if (sub && plan) {
+      out.key = plan.key; out.label = plan.label; out.price_usd = plan.priceUsd;
+      out.via = 'plan'; out.status = 'paid';
+      base = { letters: plan.letters, resumes: plan.resumes };
+    } else if (sub && !plan) {
+      // A live subscription row whose plan_key is not in the catalog (an admin comp, or a renamed
+      // key). entitlements silently treats this user as Free; the admin screen must not hide it.
+      out.key = sub.plan_key; out.label = String(sub.plan_key || 'unknown');
+      out.via = 'plan_unknown'; out.status = 'unknown_plan';
+      out.caveats.push(`Subscription row exists with plan key "${sub.plan_key}", which is not in the plan catalog — the app treats this user as Free.`);
+    } else if (await tableExists('user_trials')) {
+      // Free plan. A missing row means they have never used a metered feature — NOT an error, and
+      // emphatically not a reason to create one.
+      const t = await g('SELECT started_at FROM user_trials WHERE user_id = $1', [userId]);
+      if (t && t.started_at) {
+        out.status = 'free'; out.free_since = t.started_at;
+        winStart = ent.freeWindowStart(t.started_at);
+        winEnd = ent.freeWindowEnd(t.started_at);
+        ledgerSource = 'trial';          // the ledger source string is still 'trial' for Free
+        out.window_start = winStart.toISOString();
+        out.window_end = winEnd.toISOString();
+      }
+    }
+    if (winEnd) {
+      out.window_days_left = Math.max(0, Math.ceil((new Date(winEnd).getTime() - Date.now()) / 86400000));
+    }
+
+    // A live store plan in the OTHER environment. Without this a TestFlight/sandbox subscriber
+    // reads as an ordinary free user and the admin cannot explain why they say they paid.
+    if (!(sub && plan)) {
+      const other = await g(
+        `SELECT environment FROM user_subscriptions
+          WHERE user_id = $1 AND status = 'active' AND period_end > NOW()
+            AND store IS NOT NULL AND environment IS NOT NULL AND environment <> $2
+          ORDER BY period_end DESC LIMIT 1`, [userId, 'Production']);
+      out.other_environment = other ? other.environment : null;
+    }
+
+    // Usage. Three numbers per kind: this period against the plan's own pool, this period across
+    // ANY pool, and lifetime. The pool-scoped number alone misleads — someone who burned legacy
+    // credits shows as barely active when they are one of the heaviest users on the system.
+    const ledger = (await tableExists('usage_ledger')) ? await q(
+      `SELECT kind,
+              COUNT(*) FILTER (WHERE source = $2 AND created_at >= $3)::int AS used_in_window,
+              COUNT(*) FILTER (WHERE created_at >= $3)::int                 AS used_any_pool,
+              COUNT(*)::int                                                 AS used_lifetime,
+              MAX(created_at)                                               AS last_used
+         FROM usage_ledger
+        WHERE user_id = $1 AND kind IN ('cover_letter','resume')
+        GROUP BY kind`,
+      [userId, ledgerSource || 'trial', winStart || new Date(0)]) : [];
+    const byKind = {};
+    for (const r of (ledger || [])) byKind[r.kind] = r;
+
+    for (const k of KINDS) {
+      const row = byKind[k.kind] || {};
+      const baseN = base[k.quota];
+      const allowance = winStart ? await ent.allowanceIn(userId, k.kind, baseN, winStart) : baseN;
+      const used = winStart ? int(row.used_in_window) : 0;
+      out.quotas.push({
+        kind: k.kind, label: k.label,
+        base: baseN, bonus: Math.max(0, allowance - baseN), allowance,
+        used, remaining: Math.max(0, allowance - used),
+        used_any_pool: winStart ? int(row.used_any_pool) : 0,
+        used_lifetime: int(row.used_lifetime),
+        last_used: row.last_used || null,
+        // The free résumé allowance dropped 2 → 1, so historical usage can legitimately exceed the
+        // current allowance. Flagged rather than clamped, so it does not read as a billing fault.
+        over: used > allowance,
+      });
+    }
+
+    // Legacy credits are still a live fallback pool, so they are reported — but demoted, and only
+    // rendered when non-zero.
+    const cr = await g(`SELECT credits_remaining, credits_total, expiry_date, last_purchase_date
+                          FROM user_credits WHERE user_id = $1 ORDER BY id DESC LIMIT 1`, [userId]);
+    if (cr) {
+      out.legacy = {
+        remaining: int(cr.credits_remaining), total: int(cr.credits_total),
+        expiry_date: cr.expiry_date || null, last_purchase_date: cr.last_purchase_date || null,
+      };
+    }
+  } catch (e) {
+    console.warn('[adminUserOps] planStateOf:', e.message);
+    out.caveats.push('Some plan details could not be loaded.');
+  }
+  return out;
 }
 
 async function hasOpenThread(userId) {
@@ -773,8 +917,9 @@ async function getUserOverview(userId) {
   const id = u.id;
   const state = await buildUserState(u);
 
-  const [meta, creditRow, txns, notes, sends, prefs] = await Promise.all([
+  const [meta, plan, creditRow, txns, notes, sends, prefs] = await Promise.all([
     (await tableExists('resume_metadata')) ? g(`SELECT * FROM resume_metadata WHERE user_id = $1 ORDER BY id DESC LIMIT 1`, [id]) : null,
+    planStateOf(id),
     g(`SELECT credits_remaining, credits_total, expiry_date, last_purchase_date FROM user_credits WHERE user_id = $1 ORDER BY id DESC LIMIT 1`, [id]),
     q(`SELECT * FROM credit_transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`, [id]),
     q(`SELECT type, title, message, created_at, is_read FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`, [id]),
@@ -806,6 +951,9 @@ async function getUserOverview(userId) {
   return {
     user: publicUser(u),
     assets,
+    // What the user is actually on TODAY. `credits` below is the legacy pool, kept because it is
+    // still a live fallback for grandfathered accounts — but `plan` is the truth for everyone else.
+    plan,
     credits: {
       remaining: creditRow ? int(creditRow.credits_remaining) : 0,
       total: creditRow ? int(creditRow.credits_total) : 0,
@@ -1927,7 +2075,7 @@ module.exports = {
   pushBlockReason, compareVersions, ANDROID_FCM_MIN_VERSION,
   htmlToText, previewOf, sanitizeLetterHtml, parseCard, cardStr, titleFromUrl,
   getUserActivity, getUserCoverLetter,
-  getUserOverview, getUserFile, uploadsHealth, getMatchedJobs, resolveJob,
+  getUserOverview, getUserFile, uploadsHealth, planStateOf, getMatchedJobs, resolveJob,
   listTemplates, sendToUser,
   listSegments, getSegmentUsers, getSegment, notifySegment,
 };
