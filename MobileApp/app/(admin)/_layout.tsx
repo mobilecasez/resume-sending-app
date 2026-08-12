@@ -17,6 +17,7 @@ export default function AdminLayout() {
       <Stack.Screen name="support" options={{ headerShown: false }} />
       <Stack.Screen name="push-notifications" options={{ headerShown: false }} />
       <Stack.Screen name="app-updates" options={{ headerShown: false }} />
+      <Stack.Screen name="push-analytics" options={{ headerShown: false }} />
     </Stack>
   );
 }

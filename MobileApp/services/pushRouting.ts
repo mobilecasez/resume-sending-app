@@ -294,7 +294,11 @@ function responseId(response: any): string {
  * is never acted on twice: in-memory for this session, and persisted so the stale "last response"
  * the OS keeps around is not re-handled on the next launch.
  */
-export async function handleNotificationResponse(response: any, router: PushRouter | null | undefined): Promise<PushRouteAction> {
+export async function handleNotificationResponse(
+  response: any,
+  router: PushRouter | null | undefined,
+  opts?: { coldStart?: boolean },
+): Promise<PushRouteAction> {
   const id = responseId(response);
   if (id) {
     if (lastHandledId === id) return { kind: 'none', reason: 'already-handled' };
@@ -306,7 +310,37 @@ export async function handleNotificationResponse(response: any, router: PushRout
     try { await AsyncStorage?.setItem?.(HANDLED_KEY, id); } catch { /* ignore */ }
   }
   const data = response?.notification?.request?.content?.data;
+  // Report the tap AFTER the dedupe above, so one tap is counted once — and BEFORE routing, which
+  // may navigate away. Fire-and-forget on purpose: analytics must never delay or block where a
+  // notification lands, and must never be able to throw on the launch path.
+  reportPushOpen(data, !!opts?.coldStart);
   return handleNotificationRoute(data, router);
+}
+
+/**
+ * Tell the server this notification was opened.
+ *
+ * `nid` is stamped into every push payload by the server. No nid (an older push, or a local
+ * notification) simply means nothing to report — never an error.
+ *
+ * Deliberately unauthenticated and deliberately not awaited: a tap very often lands on a cold start
+ * before the session has been restored, so waiting for a token would drop exactly the opens most
+ * worth counting.
+ */
+function reportPushOpen(data: any, coldStart: boolean): void {
+  try {
+    const nid = data && typeof data.nid === 'string' ? data.nid : null;
+    if (!nid) return;
+    const { API_BASE } = require('../config');
+    const { Platform } = require('react-native');
+    let appVersion = '';
+    try { appVersion = require('./analytics').APP_BUILD || ''; } catch { /* optional */ }
+    fetch(`${API_BASE}/push/opened`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nid, kind: 'open', coldStart, platform: Platform.OS, appVersion }),
+    }).catch(() => { /* offline — the tap still routes, we just never learn about it */ });
+  } catch { /* never let analytics break a notification tap */ }
 }
 
 /**
@@ -319,7 +353,7 @@ export async function handleColdStartNotification(router: PushRouter | null | un
     if (!Notifications?.getLastNotificationResponseAsync) return { kind: 'none', reason: 'no-native-module' };
     const response = await Notifications.getLastNotificationResponseAsync();
     if (!response) return { kind: 'none', reason: 'no-last-response' };
-    const action = await handleNotificationResponse(response, router);
+    const action = await handleNotificationResponse(response, router, { coldStart: true });
     try { await Notifications.clearLastNotificationResponseAsync?.(); } catch { /* older SDK — the
       persisted HANDLED_KEY above is the backstop */ }
     return action;

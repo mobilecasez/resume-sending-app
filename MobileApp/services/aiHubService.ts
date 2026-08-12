@@ -1114,6 +1114,67 @@ export async function saveVersionGate(patch: Partial<VersionGate>): Promise<Vers
   };
 }
 
+// ── Admin: push analytics ───────────────────────────────────────────────────────
+// ⚠️ Read the field names literally. There is no "delivered" — Apple and Google never report it.
+export type PushFunnel = {
+  rows: number; not_reachable: number; opted_out: number; no_token: number;
+  accepted: number; rejected: number;
+  /** Apple/Google accepted it FROM Expo. Not proof of delivery, never proof anyone saw it. */
+  handed_off: number;
+  /** Uninstalled, or notifications turned off. The hardest fact in the funnel. */
+  dead_device: number;
+  receipt_pending: number;
+  /** Taps. Only builds carrying the tap ping report these — older builds always read 0. */
+  opened: number;
+};
+export type PushCampaignRow = PushFunnel & {
+  id: string; sent_at: string; source: string | null;
+  template_key: string | null; title: string | null;
+};
+export type PushSourceRow = PushFunnel & { source: string; last_at: string };
+export type PushVideoDuration = {
+  watchers: number; avg_seconds: number; median_seconds: number; avg_cover_pct: number;
+  completed: number; watched_75: number; watched_50: number; watched_25: number;
+};
+export type PushAnalytics = {
+  days: number;
+  campaigns: PushCampaignRow[];
+  sources: PushSourceRow[];
+  video: { byEvent: Record<string, { plays: number; users: number }>; duration: PushVideoDuration | null };
+  /** Rendered verbatim — the server owns this wording so the screen cannot overstate a number. */
+  notes: Record<string, string>;
+};
+export type PushWatcher = {
+  user_id: number; email: string | null; full_name: string | null;
+  best_seconds: number | null; best_cover_pct: number | null;
+  completed: boolean; replays: number | null; samples: number; last_at: string; nid: string | null;
+};
+export type PushSendRow = {
+  id: string; user_id: number | null; email: string | null; source: string;
+  template_key: string | null; title: string | null; sent_at: string;
+  ticket_status: string | null; ticket_error: string | null;
+  receipt_status: string | null; receipt_error: string | null; opened_at: string | null;
+};
+
+export async function fetchPushAnalytics(days = 30): Promise<PushAnalytics> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE}/admin/push-analytics`, { headers, params: { days }, timeout: 30000 });
+  return data;
+}
+export async function fetchPushCampaign(id: string, hours = 24):
+  Promise<PushFunnel & { id: string; hours: number; active_after: number; rows: PushSendRow[]; campaign: any }> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE}/admin/push-analytics/${encodeURIComponent(id)}`,
+    { headers, params: { hours }, timeout: 30000 });
+  return data;
+}
+export async function fetchPushVideo(days = 30):
+  Promise<{ duration: PushVideoDuration | null; byEvent: Record<string, any>; watchers: PushWatcher[]; notes: Record<string, string> }> {
+  const headers = await getAuthHeader();
+  const { data } = await axios.get(`${API_BASE}/admin/push-analytics/video`, { headers, params: { days }, timeout: 30000 });
+  return data;
+}
+
 /** Admin: fire a test push to all admin devices. */
 export async function sendAdminTestNotification(): Promise<{ sent: number; admins?: number }> {
   const headers = await getAuthHeader();
