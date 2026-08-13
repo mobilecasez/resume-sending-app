@@ -960,6 +960,97 @@ function helpersSourceProblems() {
     await p.close();
   }
 
+  // ── COUNTRY / NATIONALITY MATCHING ──────────────────────────────────────────────────────────
+  // The bug this guards: "Indian" (the demonym a résumé gives for nationality) appears INSIDE
+  // "British Indian Ocean Territory" and matches no other option, so pickOpt's single-candidate
+  // substring rule selected a 60-person atoll — on a real application.
+  {
+    const p = await browser.newPage();
+    await p.setContent('<!doctype html><html><body></body></html>');
+    const r = await p.evaluate(`(function(){
+      ${JS_HELPERS}
+      var LIST=['Select a country','British Indian Ocean Territory','India','Indonesia','United States',
+                'United Kingdom','United Arab Emirates','Germany','France','Ireland','Iceland',
+                'Northern Mariana Islands','Marshall Islands'];
+      var opts=LIST.map(function(t){ return {text:t, value:t}; });
+      var name=function(o){ return o?o.text:null; };
+      return {
+        demonym:   name(pickCountry(opts,'Indian')),
+        exact:     name(pickCountry(opts,'India')),
+        flagged:   name(pickCountry([{text:'\\uD83C\\uDDEE\\uD83C\\uDDF3 India (+91)'},{text:'British Indian Ocean Territory'}],'Indian')),
+        indonesia: name(pickCountry(opts,'Indonesian')),
+        uk:        name(pickCountry(opts,'United Kingdom')),
+        german:    name(pickCountry(opts,'German')),
+        irish:     name(pickCountry(opts,'Ireland')),
+        nonsense:  name(pickCountry(opts,'Atlantis')),
+        // the detector must fire on a list with no helpful label at all
+        isList:    looksLikeCountryList(opts),
+        notList:   looksLikeCountryList([{text:'Yes'},{text:'No'},{text:'Prefer not to say'}]),
+        // and pickOpt — the old path — must still show the bug, proving the guard is what fixes it
+        oldPath:   (function(){ var m=pickOpt(opts,'Indian'); return m?m.text:null; })()
+      };
+    })();`);
+    ok('NATIONALITY: "Indian" resolves to India, not British Indian Ocean Territory',
+      r.demonym === 'India', r);
+    ok('...and the unguarded matcher really does pick the atoll (so this test means something)',
+      r.oldPath === 'British Indian Ocean Territory', r);
+    ok('an exact country name still matches itself', r.exact === 'India', r);
+    // The option's own text is returned verbatim (flag and dial code included) — only the MATCHING
+    // is normalised, so the widget still receives exactly the row it renders.
+    ok('a flag emoji and a dial code in the option text do not break it',
+      typeof r.flagged === 'string' && r.flagged.indexOf('India') >= 0 && r.flagged.indexOf('Ocean') < 0, r);
+    ok('"Indonesian" resolves to Indonesia, not India', r.indonesia === 'Indonesia', r);
+    ok('"German" resolves to Germany', r.german === 'Germany', r);
+    ok('a multi-word country matches exactly', r.uk === 'United Kingdom', r);
+    ok('"Ireland" does not drift to Iceland', r.irish === 'Ireland', r);
+    ok('an unknown value matches NOTHING rather than guessing', r.nonsense === null, r);
+    ok('a country list is recognised without any label', r.isList === true, r);
+    ok('...and a yes/no list is not mistaken for one', r.notList === false, r);
+    await p.close();
+  }
+
+  // ── A FRAMEWORK THAT REVERTS WHAT WE TYPED ──────────────────────────────────────────────────
+  // Reproduces nexplore.ch (Nuxt 3 + VeeValidate): the page keeps its own model and rewrites every
+  // input back to it on re-render. Before stickCheck the run reported "filled N fields" and the
+  // user watched the form blank itself. Here the model DOES accept a proper input event, so the
+  // repair pass must both restore the values and stop lying about the ones it cannot.
+  {
+    const p = await browser.newPage();
+    await p.setContent(`<!doctype html><html><body><form>
+      <label>First name<input name="firstname"></label>
+      <label>Last name<input name="lastname"></label>
+    </form></body></html>`);
+    await p.evaluate(`${BRIDGE}
+      // A miniature reactive runtime: state + a re-render that forces every input back to state.
+      window.__state={firstname:'',lastname:''};
+      var ins=document.querySelectorAll('input');
+      for(var i=0;i<ins.length;i++){
+        (function(el){
+          // 'lastname' listens for input (a well-behaved binding); 'firstname' does NOT, so the
+          // re-render keeps wiping it — that is the field the user must be told about.
+          if(el.name==='lastname') el.addEventListener('input',function(){ window.__state[el.name]=el.value; });
+        })(ins[i]);
+      }
+      window.__render=function(){
+        var n=document.querySelectorAll('input');
+        for(var i=0;i<n.length;i++){ if(n[i].value!==window.__state[n[i].name]) n[i].value=window.__state[n[i].name]; }
+      };
+      setInterval(window.__render, 120);      // the framework's own render loop`);
+    await p.evaluate(fillJs({ 'n:firstname|text': 'Rishi', 'n:lastname|text': 'Samadhiya' }));
+    await p.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 20000 });
+    const out = await p.evaluate(() => ({
+      msg: window.__msgs.find((m) => m.type === 'FILLED'),
+      shown: Array.from(document.querySelectorAll('input')).map((n) => n.name + '=' + n.value),
+    }));
+    const failedKeys = (out.msg.failed || []).map((f) => f.key).join(',');
+    ok('REVERTING FORM: a value the page accepts survives the re-render loop',
+      out.shown.indexOf('lastname=Samadhiya') >= 0, out);
+    ok('...and a value the page keeps wiping is REPORTED, not counted as filled',
+      /firstname/.test(failedKeys) && /kept clearing/.test(JSON.stringify(out.msg.failed)), out.msg);
+    ok('...so the count reflects what is actually on the form', out.msg.count === 1, out.msg);
+    await p.close();
+  }
+
   await browser.close();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

@@ -15,6 +15,7 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const dbConfig = require('../../db-config');
 const jobService = require('../services/jobService');
+const { cleanSkills, seniorityFromTitle } = require('../utils/jobFields');
 
 // Strip query/hash + trailing slash so the same job dedupes to one jobs row (UNIQUE job_url).
 function cleanUrl(u) {
@@ -160,7 +161,10 @@ async function captureJob(req, res) {
     if (!title) title = 'Job application';
     if (!company) company = domainOf(url) || 'Company';
     responsibilities = responsibilities.slice(0, 20);
-    skills = skills.slice(0, 30);
+    // Shape-check whatever came back (ours OR the client's card, which may carry another pipeline's
+    // output): a requirement sentence stored as a "skill" gets rendered as a chip. See utils/jobFields.
+    skills = cleanSkills(skills);
+    if (!experience) experience = seniorityFromTitle(title);
 
     // Look up any existing row for this URL ONCE, for two reasons:
     //  (a) Never SHRINK stored responsibilities — upsertJob overwrites the row, so a field-only

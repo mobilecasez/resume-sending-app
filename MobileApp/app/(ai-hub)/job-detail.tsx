@@ -19,6 +19,8 @@ import {
   AppState,
   AppStateStatus,
   Clipboard,
+  Keyboard,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
@@ -1306,6 +1308,72 @@ const JS_HELPERS = `
       if(t===name||t.indexOf(name+' ')===0||t.indexOf(name+'+')===0||t.indexOf(name+'(')===0) return opts[i]; } }
     return null;
   }
+  // ── COUNTRY / NATIONALITY LISTS ─────────────────────────────────────────────────────────────
+  // ⚠️ "CONTAINS" IS ACTIVELY WRONG HERE, and it put "British Indian Ocean Territory" on a founder's
+  // application. pickOpt falls back to substring matching, and "indian" (the demonym the résumé
+  // gives for nationality) appears INSIDE "British Indian Ocean Territory" while matching no other
+  // option — so its single-candidate rule returned a 60-person atoll with total confidence.
+  //
+  // Order below is the fix, and each rung exists for a measured reason:
+  //   exact        "India" → India
+  //   demonym      the option's WHOLE name opens the value: "India" ⊂ "Indian", "Poland" ⊂ "Polish"?
+  //                no — that one is not a prefix, so it simply falls through rather than guessing
+  //   prefix       "United" → "United Kingdom" when nothing better exists
+  //   whole word   "India" as its OWN word — which "British Indian Ocean Territory" is not
+  // A mid-word substring never wins. Returning null is correct: the field is then handed back to the
+  // applicant, which is strictly better than a confident wrong country on a job application.
+  var CTRY_SENTINEL=/^(india|germany|france|united states|united kingdom|canada|australia|brazil|japan|china|spain|italy|netherlands|switzerland|sweden|poland|mexico|nigeria|kenya|singapore|ireland|portugal|belgium|austria|denmark|norway|finland)$/;
+  function ctryName(s){
+    // "🇮🇳 India (+91)" → "india". Strip leading flags/punctuation and any trailing parenthetical.
+    return cleanTxt(s).replace(/^[^A-Za-z\\u00C0-\\u024F]+/,'').replace(/\\s*[({\\[].*$/,'').replace(/\\s+/g,' ').trim().toLowerCase();
+  }
+  // A list is a country list if it names several unmistakable countries — no label required, so a
+  // picker labelled only "Select…" is still protected.
+  function looksLikeCountryList(opts){
+    var n=0;
+    for(var i=0;i<opts.length && i<300;i++){ if(CTRY_SENTINEL.test(ctryName(optText(opts[i])))) { n++; if(n>=5) return true; } }
+    return false;
+  }
+  function isCountryish(el){
+    try{
+      var L=nlbl(el);
+      // Nationality/citizenship are excluded from the DIAL matcher on purpose (they are legal
+      // questions, not phone codes) — but they are exactly where the demonym bug bites.
+      return isCountryLabel(L) || /nationalit|citizen|staatsangeh|nacionalidad|nationalit\\u00e9|country of/i.test(cleanTxt(L));
+    }catch(e){ return false; }
+  }
+  // Whole-word containment WITHOUT a RegExp — country names would need escaping, and building the
+  // pattern here means writing regex metacharacters inside this injected template, which is how the
+  // last attempt broke the whole script at parse time.
+  function hasWholeWord(hay, needle){
+    if(!hay || !needle) return false;
+    var i=hay.indexOf(needle);
+    while(i>=0){
+      var b = i===0 ? ' ' : hay.charAt(i-1);
+      var a = (i+needle.length>=hay.length) ? ' ' : hay.charAt(i+needle.length);
+      if(!/[a-z0-9]/i.test(b) && !/[a-z0-9]/i.test(a)) return true;
+      i=hay.indexOf(needle, i+1);
+    }
+    return false;
+  }
+  function pickCountry(opts, v){
+    var want=ctryName(String(v==null?'':v).replace(/[+0-9]+/g,' '));
+    if(!want || want.length<3) return null;
+    var i,x,ex=null,demo=[],sw=[],word=[];
+    for(i=0;i<opts.length;i++){
+      x=ctryName(optText(opts[i]));
+      if(!x) continue;
+      if(x===want){ ex=opts[i]; break; }
+      if(x.length>=4 && want.indexOf(x)===0){ demo.push({o:opts[i],x:x}); continue; }   // India ⊂ Indian
+      if(x.indexOf(want)===0){ sw.push({o:opts[i],x:x}); continue; }
+      if(hasWholeWord(x, want)) word.push({o:opts[i],x:x});
+    }
+    if(ex) return ex;
+    if(demo.length){ demo.sort(function(a,b){ return b.x.length-a.x.length; }); return demo[0].o; }
+    if(sw.length){ sw.sort(function(a,b){ return a.x.length-b.x.length; }); return sw[0].o; }
+    if(word.length){ word.sort(function(a,b){ return a.x.length-b.x.length; }); return word[0].o; }
+    return null;
+  }
   // Inverse of PRIM_NAME: "India" / "India (+91)" → "91". Only ever a FALLBACK for reading back a
   // dial code out of a value that carries no "+NN" at all (the model answering a code picker with a
   // country name). Exact whole-name match, so "Indian Ocean Territory" can never resolve to India.
@@ -2131,8 +2199,13 @@ const JS_HELPERS = `
           if(os.length){
             var pool=[]; for(var i=0;i<os.length;i++) pool.push({text:cbText(os[i]),el:os[i]});
             m=isCountryLabel(nlbl(el)) ? pickDial(pool,want) : null;
-            if(!m) m=pickOpt(pool, step.q||want);
-            if(!m && step.q && step.q!==want) m=pickOpt(pool, want);
+            // Same guard as the native-select path: on a country list a substring match is a wrong
+            // answer, not a near miss. Judged against the applicant's value, never the search query
+            // we typed — a rung like "indian" must not be allowed to match by containment either.
+            var ctry = isCountryish(el) || looksLikeCountryList(pool);
+            if(!m && ctry) m=pickCountry(pool, want);
+            if(!m && !ctry) m=pickOpt(pool, step.q||want);
+            if(!m && !ctry && step.q && step.q!==want) m=pickOpt(pool, want);
             // A query WE invented clears a higher bar than one we were handed: the row must contain
             // the token we searched for AND claim nothing the applicant's own value does not.
             if(m && step.strict){
@@ -2254,6 +2327,7 @@ const JS_HELPERS = `
       cvfDeadlineIn(55000);
       var total = 0; for(var kk in bySig){ if(Object.prototype.hasOwnProperty.call(bySig,kk)) total++; }
       var filled={}, fails={}, deferred=[], dseen={};
+      var wrote={};        // sig → the text value we put in, so stickCheck() can prove it stayed
       // Groups are answered ONCE for all their members; chips and repeaters need their own async
       // phase (a menu to open, a row to appear) so they queue up exactly like the dropdowns do.
       var grpDone={}, chipQ=[], cseen={}, repQ=[], consented=[];
@@ -2342,6 +2416,8 @@ const JS_HELPERS = `
               // dial codes numerically, so "+1"/"+44"/"+7" matched nothing on a full country list.
               var oarr=Array.prototype.slice.call(el.options);
               var m=isCountrySelect(el) ? pickDial(oarr,v) : null;
+              // Country/nationality lists get the strict matcher BEFORE pickOpt's substring rules.
+              if (!m && (isCountryish(el) || looksLikeCountryList(oarr))) m=pickCountry(oarr,v);
               if (!m) m=pickOpt(el.options,v);
               if (m){
                 setNative(el, m.value);
@@ -2407,7 +2483,9 @@ const JS_HELPERS = `
               if (t==='date' || t==='month') vv=dateVal(vv);
               bringIntoView(el);
               try{el.focus();}catch(e){} setNative(el,vv); try{el.dispatchEvent(new Event('blur',{bubbles:true}));el.blur();}catch(e){}
-              if (sameAnswer(el.value,vv)) filled[s]=true;
+              // Remember what we wrote. Reading it back HERE only proves the DOM took it — see
+              // stickCheck() for why that is not the same as the field keeping it.
+              if (sameAnswer(el.value,vv)){ filled[s]=true; wrote[s]=vv; }
               else fails[s]={key:s,label:nlbl(el).slice(0,90),why:'the field rejected the value'};
             }
           } catch(e){}
@@ -2915,6 +2993,52 @@ const JS_HELPERS = `
           }
         }catch(e){}
       }
+      // ── DID IT ACTUALLY STAY? ───────────────────────────────────────────────────────────────
+      // Reading a field back the instant after writing it proves only that the DOM accepted the
+      // value. Vue, React, Angular and Svelte all re-render from their OWN state, and a framework
+      // that never registered our input event will put the field back to empty on its next render.
+      //
+      // Measured on nexplore.ch (Nuxt 3 + VeeValidate, reported live): every field filled, the run
+      // announced "filled 7 fields", and then the whole form blanked at once — the re-render came
+      // from touching a dropdown elsewhere on the same form. The user saw their details appear and
+      // vanish, and we had already claimed success.
+      //
+      // So look again once the page has settled, re-apply anything that reverted (holding focus and
+      // driving a fuller event sequence, which is what makes a reluctant framework commit), and if
+      // it STILL will not stay, say so instead of counting it as filled.
+      function reapply(el, v){
+        try{
+          bringIntoView(el);
+          try{ el.focus(); }catch(e){}
+          try{ el.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Process'})); }catch(e){}
+          setNative(el, v);
+          try{ el.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key:'Process'})); }catch(e){}
+          try{ el.dispatchEvent(new Event('change',{bubbles:true})); }catch(e){}
+          try{ el.dispatchEvent(new Event('blur',{bubbles:true})); el.blur(); }catch(e){}
+        }catch(e){}
+      }
+      function stickCheck(round, done){
+        var keys=[], k;
+        for(k in wrote){ if(Object.prototype.hasOwnProperty.call(wrote,k)) keys.push(k); }
+        if(!keys.length){ done(); return; }
+        var els=ctrls(), bySigEl={}, i, s2;
+        for(i=0;i<els.length;i++){ try{ s2=sig(els[i]); if(s2 && !(s2 in bySigEl)) bySigEl[s2]=els[i]; }catch(e){} }
+        var lost=0;
+        for(i=0;i<keys.length;i++){
+          var s3=keys[i], el3=bySigEl[s3];
+          if(!el3) continue;                          // the field is gone (wizard step changed) — not our call
+          var want3=wrote[s3];
+          try{ if(sameAnswer(el3.value, want3)) continue; }catch(e){ continue; }
+          lost++;
+          if(round<2) reapply(el3, want3);
+          else {
+            delete filled[s3];
+            fails[s3]={key:s3,label:nlbl(el3).slice(0,90),why:'the page kept clearing this — please type it yourself'};
+          }
+        }
+        if(!lost || round>=2){ done(); return; }
+        setTimeout(function(){ stickCheck(round+1, done); }, 700);
+      }
       function report(){
         // Leave the page as we found it: no half-open pickers for the user to dismiss by hand.
         try{ cbCloseAllOpened(); }catch(e){}
@@ -2944,7 +3068,9 @@ const JS_HELPERS = `
               drainChips(function(){
                 drainRepeaters(function(){
                   try{ cbCloseAllOpened(); }catch(e){}
-                  setTimeout(function(){ phoneReconcile(); report(); }, 180);
+                  // 600ms before the first look: long enough for a framework re-render triggered by
+                  // closing the pickers above, short enough not to eat the run's ceiling.
+                  setTimeout(function(){ phoneReconcile(); setTimeout(function(){ stickCheck(0, report); }, 600); }, 180);
                 });
               });
             });
@@ -4080,6 +4206,7 @@ export default function JobDetailScreen() {
   const xlateGenRef     = useRef(0);      // discard replies from a superseded pass
   const xlateBusyRef    = useRef(false);  // a pass is mid-flight — ignore the DOM churn it causes
   const xlatePendingRef = useRef(false);  // tapped mid-load → run once the load finishes
+  const xlateEarlyRef   = useRef(false);  // this load already got its "most of the page is up" pass
   const webLoadingRef   = useRef(false);
   const submitMarkedRef = useRef(false);                          // fire the "Applied" mark only once per session
   const submitIntentRef = useRef(0);                              // ts of last real apply-form submit (for the URL backstop)
@@ -4100,6 +4227,9 @@ export default function JobDetailScreen() {
   const capturedIdRef = useRef<string | null>(null);          // canonical id readable from early callbacks
   const lastPageTextRef = useRef<string>('');                 // latest apply-page innerText (for on-demand capture)
   const capturePrefetchedRef = useRef(false);                 // grab the page text once per apply session
+  // The URL this screen was opened for — frozen on first render. Every capture keys off it so a job
+  // keeps ONE identity no matter where the apply flow later navigates. See buildCapturePayload.
+  const identityUrlRef = useRef<string>('');
   const ensureTrackedRef = useRef<((pt?: string) => Promise<{ id: string; job: CapturedJob | null }>) | null>(null);
 
   // Mark the job "Applied" once — against the CANONICAL job (create + track it first if it was a
@@ -4201,6 +4331,25 @@ export default function JobDetailScreen() {
   const setStep = (key: string, status: string) => setAfStep(prev => ({ ...prev, [key]: status }));
 
   // File-tap interception: offer our resume / cover letter when the user taps an upload field.
+  // Where the user dragged the Job-tools robot. Lives on the SCREEN so it outlives the dock's own
+  // mount/unmount cycle (see JobToolsDock.positionRef).
+  const dockPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  // ── Sheets must clear the keyboard ──────────────────────────────────────────────────────────
+  // "My details" and the upload sheet are bottom-anchored overlays inside the apply Modal, so with
+  // a web field focused the keyboard sat right on top of them. Lift by its height on iOS only —
+  // Android's default `resize` mode has already shrunk the window, and lifting again would leave
+  // the sheet floating in the middle of the screen.
+  const [kbLift, setKbLift] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    const show = Keyboard.addListener('keyboardWillChangeFrame', (e) => {
+      const screenH = Dimensions.get('window').height;
+      const below = (e?.endCoordinates?.screenY ?? screenH) >= screenH;   // sliding away, not a height
+      setKbLift(below ? 0 : (e?.endCoordinates?.height || 0));
+    });
+    const hide = Keyboard.addListener('keyboardWillHide', () => setKbLift(0));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
   const [filePick,     setFilePick]     = useState<{ key: string; accept: string; label: string } | null>(null);
   const [filePickBusy, setFilePickBusy] = useState<string | null>(null);
   const filesRef = useRef<Record<string, any>>({}); // 'kind:region' -> file ({base64,name,mime}) or null
@@ -4289,7 +4438,7 @@ export default function JobDetailScreen() {
     setSmartOpen(false); setSmartExpanded(false); setCopiedKey(null);
     focusedFieldRef.current = null; smartValuesRef.current = {};
     setWebTranslated(false); setWebTranslating(false); webTranslatedRef.current = false; autoXlateRef.current = true;
-    xlateOnRef.current = false; xlatePendingRef.current = false; xlateGenRef.current++; webLoadingRef.current = false;
+    xlateOnRef.current = false; xlatePendingRef.current = false; xlateGenRef.current++; webLoadingRef.current = false; xlateEarlyRef.current = false;
     bridgeXlateRef.current = false;
     loadLocalFill();
     if (!smartData) { getSmartFillData().then(setSmartData).catch(() => {}); }
@@ -4302,7 +4451,12 @@ export default function JobDetailScreen() {
   // page scan never short-circuits, so turning translate off and on again always works.
   const runXlate = (why = 'toggle') => {
     if (!applyWebRef.current || !xlateOnRef.current) return;
-    if (webLoadingRef.current) { xlatePendingRef.current = true; setWebTranslating(true); return; }
+    // ⚠️ THIS USED TO REFUSE TO SCAN WHILE THE PAGE WAS LOADING — it only set a pending flag and
+    // spun. On a heavy portal (and after an upload that reloads the form) "loading" lasts many
+    // seconds AFTER the text is on screen, so tapping Translate appeared to do nothing at all.
+    // Scan what is rendered NOW; the scan is repeatable and de-dupes against what it has already
+    // collected, so the pass that runs when the load finishes only picks up what arrived later.
+    if (webLoadingRef.current) xlatePendingRef.current = true;
     const gen = ++xlateGenRef.current;
     setWebTranslating(true);
     try { applyWebRef.current.injectJavaScript(xlateScanJS(gen)); }
@@ -4562,6 +4716,12 @@ export default function JobDetailScreen() {
   // Canonicalise on the way out as well: jobs saved BEFORE this fix still hold the login/popup
   // URL, and this repairs them at open time without needing a migration.
   const effectiveApplyUrl = canonicalJobUrl(overrideUrl || (job as any).applyUrl || '');
+  // Freeze the job's identity on the first render that has a URL, BEFORE any override loads. This is
+  // the spelling the Saved list hashes, so it is the one every capture must key off.
+  if (!identityUrlRef.current) {
+    const seed = String((job as any).applyUrl || applyNowUrl || '').trim();
+    if (seed) identityUrlRef.current = seed;
+  }
   // Auto-route a LinkedIn job link to the hidden on-device extractor (once per link; backend caches by URL).
   useEffect(() => {
     if (!effectiveApplyUrl || !isLinkedInJobUrl(effectiveApplyUrl)) return;
@@ -4590,6 +4750,16 @@ export default function JobDetailScreen() {
     if (!job?.id) return;
     loadJobCoverLetter(job.id).then(record => {
       if (!record) return;
+      // ADOPT THE CANONICAL ID. The server resolves our synthetic `gj_` id to the real jobs row that
+      // holds this letter — take that id as ours for the rest of the session, so generating again,
+      // downloading, or marking Applied all write to the row the letter is already on. Without this
+      // a second row appeared for the same job and the two drifted: the letter under one id, the
+      // "applied" flag under another, and the Saved card showing neither.
+      if (record.job_id && record.job_id !== job.id && isUuid(record.job_id)) {
+        capturedRef.current.id = record.job_id;
+        capturedIdRef.current = record.job_id;
+        setCapturedJobId(record.job_id);
+      }
       setCoverLetterHtml(record.cover_letter_html);
       setCompanyNameCL(record.company_name || '');
       setWebsiteUrlCL(record.website_url || '');
@@ -4669,7 +4839,17 @@ export default function JobDetailScreen() {
 
   // Build the capture payload from the best-known fields (+ optional page text for AI extraction).
   const buildCapturePayload = (track: boolean, pageText?: string) => ({
-    url: effectiveApplyUrl || (job as any).applyUrl || currentUrlRef.current || '',
+    // ⚠️ IDENTITY, NOT DESTINATION — and it must never move. `jobs.job_url` is the primary key for a
+    // job, and this used to send effectiveApplyUrl, which PREFERS the captured portal link. So on a
+    // LinkedIn job the first capture wrote a row under linkedin.com/jobs/view/… and, once Apply had
+    // redirected to the employer's ATS and we saved that as the apply link, the NEXT capture wrote a
+    // SECOND row under ohws.prospective.ch/… The cover letter stayed on the first, "applied" landed
+    // on the second, and the saved job showed neither (measured on saved job 67).
+    //
+    // The URL the screen was OPENED with is the one the Saved list, the cover letter and the status
+    // map all key off, so that is the identity. Where the apply form actually lives is a separate
+    // question, and effectiveApplyUrl still answers it everywhere else.
+    url: identityUrlRef.current || effectiveApplyUrl || currentUrlRef.current || '',
     // Prefer what we actually extracted from the posting. Never ship a page-title / job-board host
     // as the title/company — the server treats client values as authoritative, so that junk would
     // block the AI's real extraction and the letter would be addressed to the job board.
@@ -5297,7 +5477,9 @@ export default function JobDetailScreen() {
     if (msg.type === 'XLATE_ITEMS') {
       if (msg.gen !== xlateGenRef.current || !xlateOnRef.current) return;   // superseded / turned off
       const items: XlateItem[] = Array.isArray(msg.items) ? msg.items : [];
-      if (!items.length) { setWebTranslating(false); return; }
+      // Nothing to translate YET (tapped before the body rendered) is not "nothing to translate" —
+      // a pass is already queued for load-end, so keep the spinner rather than reporting done.
+      if (!items.length) { if (!xlatePendingRef.current) setWebTranslating(false); return; }
       const gen = msg.gen;
       xlateBusyRef.current = true;
       (async () => {
@@ -6558,7 +6740,7 @@ export default function JobDetailScreen() {
               startInLoadingState
               pullToRefreshEnabled
               onMessage={onWebMessage}
-              onLoadStart={() => { setApplyLoading(true); webLoadingRef.current = true; }}
+              onLoadStart={() => { setApplyLoading(true); webLoadingRef.current = true; xlateEarlyRef.current = false; }}
               onLoadEnd={() => {
                 setApplyLoading(false);
                 // Grab the job page's visible text ONCE per session (the first load is the job
@@ -6572,10 +6754,20 @@ export default function JobDetailScreen() {
                 // happened WHILE the page was still loading (xlatePendingRef), which used to be lost.
                 if (xlateOnRef.current || xlatePendingRef.current) {
                   xlatePendingRef.current = false;
-                  setTimeout(() => runXlate('load'), 400);
+                  setTimeout(() => runXlate('load'), 150);
                 }
               }}
-              onLoadProgress={({ nativeEvent }) => setApplyProgress(nativeEvent.progress)}
+              onLoadProgress={({ nativeEvent }) => {
+                setApplyProgress(nativeEvent.progress);
+                // Translation ON and the document is mostly there → start on what has rendered
+                // rather than waiting for the last asset. Once per load; the load-end pass then
+                // picks up whatever arrived afterwards.
+                if (nativeEvent.progress >= 0.7 && xlateOnRef.current && webLoadingRef.current
+                    && !xlateBusyRef.current && !xlateEarlyRef.current) {
+                  xlateEarlyRef.current = true;
+                  runXlate('early');
+                }
+              }}
               onNavigationStateChange={(nav) => {
                 setApplyCanGoBack(nav.canGoBack);
                 if (nav.url) { currentUrlRef.current = nav.url; try { setApplyHost(new URL(nav.url).hostname.replace(/^www\./, '')); } catch {} }
@@ -6656,6 +6848,9 @@ export default function JobDetailScreen() {
                 smart-copy FAB). A plain overlay (NOT a Modal — it lives inside the apply Modal). ── */}
           {autofillState !== 'running' && !smartOpen && !filePick && (
             <JobToolsDock
+              // Held here, not in the dock: this element is unmounted every time a sheet opens over
+              // it, and the robot used to spring back to the corner on the way out.
+              positionRef={dockPosRef}
               bottomInset={insets.bottom}
               busy={fetchState === 'fetching'}
               busyLabel={fetchState === 'fetching' ? 'Saving this job…' : undefined}
@@ -6686,7 +6881,7 @@ export default function JobDetailScreen() {
             return (
               <>
                 <TouchableOpacity style={s.smartBackdrop} activeOpacity={1} onPress={() => setSmartOpen(false)} />
-                <View style={[s.smartSheet, { paddingBottom: 12 + insets.bottom }]}>
+                <View style={[s.smartSheet, { bottom: kbLift, paddingBottom: 12 + (kbLift ? 8 : insets.bottom) }]}>
                   <View style={s.smartHandle} />
                   <View style={s.smartHeader}>
                     <Ionicons name="sparkles" size={15} color={T.blue} />
@@ -6851,7 +7046,7 @@ export default function JobDetailScreen() {
 
           {/* File-pick sheet — offer our resume / cover letter when an upload field is tapped */}
           {!!filePick && (
-            <View style={s.afOverlay}>
+            <View style={[s.afOverlay, { paddingBottom: kbLift }]}>
               <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => !filePickBusy && clState !== 'loading' && setFilePick(null)} />
               <View style={s.sheetCard}>
                 <View style={s.sheetGrabber} />

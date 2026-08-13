@@ -483,6 +483,14 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
     logEvent('google_search_opened');
   }, [query, pushRecent]);
 
+  // What the recents popup actually lists: everything when the box is empty, otherwise the ones that
+  // match what is being typed (minus an exact repeat of it, which would be a row that does nothing).
+  const recentShown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return recent;
+    return recent.filter((r) => { const t = r.toLowerCase(); return t !== q && t.includes(q); });
+  }, [recent, query]);
+
   const pickField = (f: string) => { const nf = f === field ? '' : f; setField(nf); setRoleCat(''); };
 
   const scopeLabel = field ? shortField(field) : 'All fields';
@@ -504,14 +512,18 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
         </TouchableOpacity>
       </View>
 
-      {/* Recent searches (last 5) — shown while the box is focused + empty. */}
-      {showRecent && recent.length > 0 && query.trim().length === 0 && !aiActive && (
+      {/* Recent searches — shown whenever the box is focused, filtered by what is typed.
+          ⚠️ THIS USED TO REQUIRE AN EMPTY BOX (`query.trim().length === 0`), which meant it
+          effectively never appeared: the box KEEPS its text after a search, so from the first
+          search onwards tapping it showed nothing and the feature looked broken. Filtering as you
+          type is also what every search box does. */}
+      {showRecent && recentShown.length > 0 && !aiActive && (
         <View style={styles.recentBox}>
           <View style={styles.recentHead}>
             <Text style={styles.recentTitle}>Recent searches</Text>
             <TouchableOpacity onPress={() => { setRecent([]); AsyncStorage.removeItem('discover_recent_v1').catch(() => {}); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={styles.recentClear}>Clear</Text></TouchableOpacity>
           </View>
-          {recent.map((r, i) => (
+          {recentShown.map((r, i) => (
             <TouchableOpacity key={r + i} style={styles.recentRow} activeOpacity={0.7} onPress={() => { setQuery(r); setShowRecent(false); searchRef.current?.blur(); openGoogle(r); }}>
               <Ionicons name="time-outline" size={15} color={T.textFaint} />
               <Text style={styles.recentRowTx} numberOfLines={1}>{r}</Text>
@@ -566,7 +578,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
       </View>
       </>)}
     </View>
-  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, webPhase, webNote, runAiSearch, clearAiSearch, openGoogle, recent, showRecent]);
+  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, webPhase, webNote, runAiSearch, clearAiSearch, openGoogle, recent, recentShown, showRecent]);
 
   // Only blank to a spinner on the FIRST load (no data yet). A re-load triggered by facets setting the
   // field must NOT clear the screen — that was the "shows page → blank → reloads" flicker on the tab.

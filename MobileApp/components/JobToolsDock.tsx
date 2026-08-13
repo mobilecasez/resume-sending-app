@@ -3,8 +3,8 @@
 // the apply WebView (Auto Fill / My details / Upload) so every job — Saved, My Jobs, live — has one
 // simple, consistent control. Rendered as a plain overlay VIEW (never a Modal — it lives INSIDE the
 // apply Modal, and Modal-in-Modal crashes iOS).
-import React, { useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Animated, PanResponder, Pressable, Dimensions } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Animated, PanResponder, Pressable, Dimensions, Keyboard, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import RobotIcon from './RobotIcon';
@@ -13,14 +13,20 @@ const { height: SH } = Dimensions.get('window');
 
 export type DockAction = { key: string; icon: any; label: string; sub?: string; colors: [string, string]; onPress: () => void };
 
-export default function JobToolsDock({ actions, bottomInset = 0, busy, busyLabel }: {
+export default function JobToolsDock({ actions, bottomInset = 0, busy, busyLabel, positionRef }: {
   actions: DockAction[];
   bottomInset?: number;
   busy?: boolean;         // an action is running → bubble shows a spinner-ish state, dock disabled-ish
   busyLabel?: string;
+  // ⚠️ WHERE THE USER PUT THE ROBOT, owned by the PARENT. This component is unmounted whenever a
+  // sheet opens over it ("My details", "Upload"), and a remount starts a fresh Animated.ValueXY —
+  // so the robot silently jumped back to its default corner every time a popup closed. Keeping the
+  // offset outside the component is what makes the position survive that.
+  positionRef?: React.MutableRefObject<{ x: number; y: number }>;
 }) {
   const [open, setOpen] = useState(false);
-  const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const start = positionRef?.current || { x: 0, y: 0 };
+  const pan = useRef(new Animated.ValueXY({ x: start.x, y: start.y })).current;
   const moved = useRef(false);
   const responder = useRef(
     PanResponder.create({
@@ -28,14 +34,38 @@ export default function JobToolsDock({ actions, bottomInset = 0, busy, busyLabel
       onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 4 || Math.abs(g.dy) > 4,
       onPanResponderGrant: () => { moved.current = false; pan.setOffset({ x: (pan.x as any).__getValue(), y: (pan.y as any).__getValue() }); pan.setValue({ x: 0, y: 0 }); },
       onPanResponderMove: (e, g) => { if (Math.abs(g.dx) > 4 || Math.abs(g.dy) > 4) moved.current = true; pan.setValue({ x: g.dx, y: g.dy }); },
-      onPanResponderRelease: () => { pan.flattenOffset(); if (!moved.current) setOpen((o) => !o); },
+      onPanResponderRelease: () => {
+        pan.flattenOffset();
+        if (positionRef) positionRef.current = { x: (pan.x as any).__getValue(), y: (pan.y as any).__getValue() };
+        if (!moved.current) setOpen((o) => !o);
+      },
     })
   ).current;
+
+  // ── ABOVE THE KEYBOARD ──────────────────────────────────────────────────────────────────────
+  // Both the robot and the dock are absolutely positioned against the bottom of the apply Modal, so
+  // an open keyboard covers them — tap a field, then reach for Job tools, and there is nothing to
+  // reach for. Lift by the keyboard's height on iOS. NOT on Android: `softwareKeyboardLayoutMode`
+  // is the default "resize" there, so the window has already shrunk and adding the height again
+  // would push the robot into the middle of the screen.
+  const [kb, setKb] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    const show = Keyboard.addListener('keyboardWillChangeFrame', (e) => {
+      const h = e?.endCoordinates?.height || 0;
+      const screenH = Dimensions.get('window').height;
+      // A frame that starts below the screen is the keyboard leaving, not a height to lift by.
+      setKb((e?.endCoordinates?.screenY ?? screenH) >= screenH ? 0 : h);
+    });
+    const hide = Keyboard.addListener('keyboardWillHide', () => setKb(0));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+  const lift = kb > 0 ? Math.max(kb - bottomInset, 0) : 0;
 
   return (
     <>
       {open && (
-        <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
+        <Pressable style={[styles.backdrop, { bottom: lift }]} onPress={() => setOpen(false)}>
           <Pressable style={[styles.dock, { paddingBottom: Math.max(bottomInset, 12) }]} onPress={() => {}}>
             <View style={styles.grip} />
             <View style={styles.head}>
@@ -60,7 +90,7 @@ export default function JobToolsDock({ actions, bottomInset = 0, busy, busyLabel
         </Pressable>
       )}
 
-      <Animated.View style={[styles.fabWrap, { bottom: Math.max(bottomInset, 12) + 70 }, { transform: pan.getTranslateTransform() }]} {...responder.panHandlers}>
+      <Animated.View style={[styles.fabWrap, { bottom: Math.max(bottomInset, 12) + 70 + lift }, { transform: pan.getTranslateTransform() }]} {...responder.panHandlers}>
         <View style={styles.fabInner}>
           <LinearGradient colors={['#7C6BFF', '#4F8DFF']} style={styles.fab}>
             <RobotIcon size={26} color="#fff" />

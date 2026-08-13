@@ -8,6 +8,7 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const store = require('../services/linkedinJobStore');
 const jobService = require('../services/jobService');
+const { cleanSkills, seniorityFromTitle } = require('../utils/jobFields');
 
 // Strip query/hash + trailing slash so the same job dedupes to one row.
 function cleanUrl(u) {
@@ -48,6 +49,12 @@ Return ONLY a JSON object with EXACTLY these keys:
 "skills" (array of strings), "responsibilities" (array of short bullet strings),
 "description" (a clean plain-text summary of the role, max ~150 words).
 Rules: use ONLY facts present in the text; use "" or [] when absent; never invent. JSON only, no markdown.
+"skills" are NAMES ONLY — a technology, tool, language or named competency, 1-4 words each
+("Kubernetes", ".NET", "Docker", "Agile methodologies", "Technical coaching"). NEVER copy a
+requirement sentence: "Several years of experience in software development" and "In-depth knowledge
+of the .NET environment" are NOT skills — the skills there are "Software development" and ".NET".
+"seniority" is the level as a single word or short phrase (Internship / Junior / Mid-level / Senior /
+Lead / Principal). Read it from the title when the body does not state it.
 
 LINKEDIN JOB PAGE TEXT:
 ${text}`;
@@ -57,11 +64,16 @@ ${text}`;
   if (!out || typeof out !== 'object' || !String(out.title || '').trim()) return { error: 'Could not read this LinkedIn job.', status: 502 };
 
   const arr = (v) => Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
+  const title = String(out.title || '').trim();
   const job = {
-    title: String(out.title || '').trim(), company: String(out.company || '').trim(), location: String(out.location || '').trim(),
+    title, company: String(out.company || '').trim(), location: String(out.location || '').trim(),
     employment_type: String(out.employment_type || '').trim(), work_mode: String(out.work_mode || '').trim(),
-    salary: String(out.salary || '').trim(), seniority: String(out.seniority || '').trim(),
-    skills: arr(out.skills).slice(0, 30), responsibilities: arr(out.responsibilities).slice(0, 20),
+    salary: String(out.salary || '').trim(),
+    // The card renders these straight from here, so shape them BEFORE they are stored — see
+    // utils/jobFields. Previously a requirements list arrived as "skills" and three sentences were
+    // rendered as chips until the job was opened and a second pipeline replaced them.
+    seniority: String(out.seniority || '').trim() || seniorityFromTitle(title),
+    skills: cleanSkills(out.skills), responsibilities: arr(out.responsibilities).slice(0, 20),
     description: String(out.description || '').trim(), url, source: 'linkedin',
   };
   await store.saveLinkedInJob({ userId, url, rawText: text, data: job }).catch((e) => console.error('[linkedin] save failed:', e.message));

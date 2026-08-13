@@ -4651,10 +4651,13 @@ async function ensureCoverLetterTable() {
 /** POST /api/ai-hub/jobs/:jobId/cover-letter — save generated cover letter */
 async function saveJobCoverLetter(req, res) {
     const userId = req.user.id;
-    const { jobId } = req.params;
     const { coverLetterHtml, companyName, websiteUrl, position, companyAddress, companyLocations } = req.body;
     try {
         await ensureCoverLetterTable();
+        // Write to the row this job already owns. An app that still knows the job by its `gj_` id
+        // would otherwise start a SECOND row, and from then on the letter and the Applied flag live
+        // on different rows — the exact split that made a saved job look like it had neither.
+        const jobId = await canonicalJobId(userId, req.params.jobId);
         const locsJson = companyLocations ? JSON.stringify(companyLocations) : '[]';
         await dbConfig.run(`
             INSERT INTO job_cover_letters (user_id, job_id, cover_letter_html, company_name, website_url, position, company_address, company_locations, status, updated_at)
@@ -4674,7 +4677,11 @@ async function saveJobCoverLetter(req, res) {
                 position           = EXCLUDED.position,
                 company_address    = EXCLUDED.company_address,
                 company_locations  = EXCLUDED.company_locations,
-                status             = 'generated',
+                -- Never demote an application back to "not applied". Writing a letter for a job the
+                -- user has already applied to (or re-picking the office address, which comes through
+                -- here too) must not erase the fact that they applied.
+                status             = CASE WHEN job_cover_letters.status = 'applied'
+                                            THEN 'applied' ELSE 'generated' END,
                 updated_at         = CURRENT_TIMESTAMP
         `, [userId, jobId, coverLetterHtml, companyName, websiteUrl, position, companyAddress || '', locsJson]);
         return res.json({ success: true });
@@ -4695,13 +4702,25 @@ async function getJobCoverLetter(req, res) {
         );
         // Asked for by the app's synthetic `gj_` id but generation stored it under the captured job's
         // real UUID → follow the alias, so reopening a saved job shows the letter it already has.
-        if (!row && /^gj_/i.test(String(jobId || ''))) {
-            const canonical = (await jobAliasMap(userId)).get(String(jobId));
-            if (canonical) {
-                row = await dbConfig.get(
-                    `SELECT * FROM job_cover_letters WHERE user_id=$1 AND job_id=$2`, [userId, canonical]
-                );
+        // A job split across sibling rows (see jobAliasGroups) is read as one: take the row that
+        // actually holds a letter, and report the strongest status any of them recorded — otherwise
+        // the user sees the letter they paid for but not the fact that they applied with it.
+        // Only pay for the alias scan when it can change the answer: a `gj_` request (which is what
+        // the Saved/Search lists send) or a miss. A hit on a real UUID is already the right row.
+        const needAlias = /^gj_/i.test(String(jobId || '')) || !row;
+        const siblings = needAlias ? ((await jobAliasGroups(userId)).get(String(jobId || '')) || []) : [];
+        if (siblings.length) {
+            let best = row;
+            let status = row ? row.status : undefined;
+            for (const id of siblings) {
+                const r = await dbConfig.get(
+                    `SELECT * FROM job_cover_letters WHERE user_id=$1 AND job_id=$2`, [userId, id]);
+                if (!r) continue;
+                status = status === undefined ? r.status : strongestStatus(status, r.status);
+                const has = (x) => String((x && x.cover_letter_html) || '').length;
+                if (!best || has(r) > has(best)) best = r;
             }
+            if (best) { row = { ...best, status: status || best.status }; }
         }
         return res.json({ coverLetter: row || null });
     } catch (e) {
@@ -4712,24 +4731,40 @@ async function getJobCoverLetter(req, res) {
 /** PATCH /api/ai-hub/jobs/:jobId/cover-letter/status — update status (generated/applied) */
 async function updateJobCoverLetterStatus(req, res) {
     const userId = req.user.id;
-    const { jobId } = req.params;
     const { status } = req.body;
     if (!['generated', 'downloaded', 'applied'].includes(status)) {
         return res.status(400).json({ error: 'Invalid status' });
     }
     try {
         await ensureCoverLetterTable();
+        // Land on the SAME row the letter is on. Without this, an app that still knows the job by its
+        // `gj_` id writes the status to a second row and the two drift apart — the letter says
+        // "generated" under the UUID while "applied" sits under the alias, so neither list is right.
+        const jobId = await canonicalJobId(userId, req.params.jobId);
+        const cur = await dbConfig.get(
+            `SELECT status FROM job_cover_letters WHERE user_id=$1 AND job_id=$2`, [userId, jobId]);
         // Detect the first transition INTO 'applied' so we record the application only once.
-        let alreadyApplied = false;
-        if (status === 'applied') {
-            const cur = await dbConfig.get(
-                `SELECT status FROM job_cover_letters WHERE user_id=$1 AND job_id=$2`, [userId, jobId]);
-            alreadyApplied = !!cur && cur.status === 'applied';
+        const alreadyApplied = !!cur && cur.status === 'applied';
+        if (cur) {
+            await dbConfig.run(
+                `UPDATE job_cover_letters SET status=$1, updated_at=CURRENT_TIMESTAMP WHERE user_id=$2 AND job_id=$3`,
+                [status, userId, jobId]
+            );
+        } else if (status === 'applied') {
+            // ⚠️ APPLYING WITHOUT A COVER LETTER USED TO RECORD NOTHING AT ALL. This was a bare
+            // UPDATE, and a user who applied straight on the employer's portal has no row here — so
+            // it matched zero rows, silently: no Applied badge, no application_history, nothing on
+            // the dashboard. An application is a fact about the user, not about a cover letter, so
+            // the row is created on demand with an empty letter.
+            await dbConfig.run(
+                `INSERT INTO job_cover_letters (user_id, job_id, cover_letter_html, company_name, website_url, position, status, updated_at)
+                 VALUES ($1,$2,'','','','','applied', CURRENT_TIMESTAMP)
+                 ON CONFLICT (user_id, job_id) DO UPDATE SET status='applied', updated_at=CURRENT_TIMESTAMP`,
+                [userId, jobId]
+            );
+        } else {
+            return res.json({ success: true, skipped: 'no cover letter for this job' });
         }
-        await dbConfig.run(
-            `UPDATE job_cover_letters SET status=$1, updated_at=CURRENT_TIMESTAMP WHERE user_id=$2 AND job_id=$3`,
-            [status, userId, jobId]
-        );
         // Portal / auto-fill applies never send an email, so they don't hit the email
         // controller's application_history insert. Record it here so the job shows up
         // under "Recent applications" on the home dashboard. Runs once per job.
@@ -4746,13 +4781,33 @@ async function updateJobCoverLetterStatus(req, res) {
 
 /** Insert an application_history row for a Job Hub job marked "applied" (no email sent). */
 async function recordJobHubApplication(userId, jobId) {
-    const row = await dbConfig.get(
-        `SELECT j.title AS position, e.name AS company_name
-         FROM jobs j JOIN employers e ON e.id = j.employer_id
-         WHERE j.id = $1`, [jobId]);
-    if (!row) return;
-    const company = row.company_name || '';
-    const position = row.position || '';
+    let company = '';
+    let position = '';
+    // ⚠️ `jobs.id` is UUID, so passing a `gj_` alias here THREW ("operator does not exist: uuid =
+    // text") and the caller only logged it — the application silently never reached the dashboard.
+    // A saved job that was never captured has no jobs row at all, so fall back to the saved card.
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(jobId || ''))) {
+        const row = await dbConfig.get(
+            `SELECT j.title AS position, e.name AS company_name
+             FROM jobs j JOIN employers e ON e.id = j.employer_id
+             WHERE j.id = $1`, [jobId]);
+        if (!row) return;
+        company = row.company_name || '';
+        position = row.position || '';
+    } else {
+        const saved = await dbConfig.query(
+            `SELECT job_url, card FROM user_saved_jobs
+              WHERE user_id = $1 AND job_url IS NOT NULL
+              ORDER BY saved_at DESC LIMIT 500`, [userId]).catch(() => null);
+        const hit = (saved?.rows || saved || []).find(
+            (r) => urlAliasIds(r.job_url).includes(String(jobId)));
+        if (!hit) return;
+        let card = hit.card;
+        try { if (typeof card === 'string') card = JSON.parse(card); } catch (_) { card = null; }
+        position = String((card && card.title) || '');
+        company = String((card && (card.company || card.employer_name)) || '');
+    }
+    if (!company && !position) return;
     // Dedup: if this application was already recorded recently (e.g. an email send via
     // sendSingleApplication already inserted it), don't add a duplicate card. ISO-8601
     // strings compare chronologically, so this works for text or timestamp columns.
@@ -4791,11 +4846,16 @@ function hashJobUrlId(u) {
 }
 // The app hashes the URL as SAVED, but jobs.job_url is the cleaned form (no query/hash/trailing
 // slash) — so a lookup has to consider both spellings.
+// Exactly the cleaning jobCaptureController.cleanUrl does before it writes jobs.job_url — the two
+// MUST agree or a saved job can never be matched to the row that was captured from it.
+function cleanJobUrlForAlias(rawUrl) {
+    const raw = String(rawUrl || '');
+    try { const x = new URL(raw); return (x.origin + x.pathname).replace(/\/+$/, ''); }
+    catch { return raw.split('?')[0].split('#')[0].replace(/\/+$/, ''); }
+}
 function urlAliasIds(rawUrl) {
     const raw = String(rawUrl || '');
-    let clean = raw;
-    try { const x = new URL(raw); clean = (x.origin + x.pathname).replace(/\/+$/, ''); }
-    catch { clean = raw.split('?')[0].split('#')[0].replace(/\/+$/, ''); }
+    const clean = cleanJobUrlForAlias(raw);
     const ids = new Set([hashJobUrlId(raw), hashJobUrlId(clean)]);
     return [...ids];
 }
@@ -4805,8 +4865,21 @@ function urlAliasIds(rawUrl) {
  * data. Built from the user's own saved jobs + tracked matches only, so it can never leak across
  * users, and capped so a huge account can't turn this into a slow query.
  */
-async function jobAliasMap(userId) {
-    const alias = new Map();
+async function jobAliasGroups(userId) {
+    const groups = new Map();                       // aliasId → [canonical jobs.id, …] in preference order
+    const alias = {
+        has: (a) => groups.has(a),
+        set: (a, id) => {
+            const list = groups.get(a);
+            if (!list) groups.set(a, [id]);
+            else if (!list.includes(id)) list.push(id);
+        },
+        add: (a, id) => {                           // record a SIBLING without changing the preferred id
+            const list = groups.get(a);
+            if (!list) groups.set(a, [id]);
+            else if (!list.includes(id)) list.push(id);
+        },
+    };
     try {
         // ⚠️ THIS USED TO SCAN user_job_matches WITH `LIMIT 4000` AND NO ORDER BY — which is not a
         // cap, it is a silent lottery. A user with 4,610 matches got an ARBITRARY 4,000 of them,
@@ -4832,7 +4905,93 @@ async function jobAliasMap(userId) {
             urlAliasIds(r.job_url).forEach((a) => { if (!alias.has(a)) alias.set(a, String(r.id)); });
         });
     } catch (_) { /* best-effort: a missing alias just means the old behaviour */ }
-    return alias;
+
+    // ⚠️ THE ABOVE ALONE CANNOT MATCH A SAVED JOB WHOSE URL CARRIES A QUERY STRING — which is most
+    // of them (LinkedIn appends ?trackingId=…&ebsKey=…, boards append ?src=, ?gh_jid=).
+    //
+    // The app hashes the URL exactly as it was SAVED. `jobs.job_url` is the CLEANED form, so the loop
+    // above only ever produces the hash of the clean URL. Measured on the founder's saved job 67:
+    // the app asks for gj_tp2p4p (raw, with ?trackingId=…) while the map only held gj_1jw86xx
+    // (clean) — so the cover letter it had already paid for was invisible, and the job never showed
+    // as Applied. Hash the SAVED spelling too, and point it at the job that owns that clean URL.
+    try {
+        const saved = await dbConfig.query(
+            `SELECT job_url FROM user_saved_jobs
+              WHERE user_id = $1 AND job_url IS NOT NULL
+              ORDER BY saved_at DESC LIMIT 500`,
+            [userId]
+        );
+        const byClean = new Map();          // cleaned URL → every raw spelling the user has saved
+        (saved?.rows || saved || []).forEach((r) => {
+            const c = cleanJobUrlForAlias(r.job_url);
+            if (!c) return;
+            if (!byClean.has(c)) byClean.set(c, []);
+            byClean.get(c).push(r.job_url);
+        });
+        if (byClean.size) {
+            const found = await dbConfig.query(
+                `SELECT id, job_url FROM jobs WHERE job_url = ANY($1)`, [[...byClean.keys()]]
+            );
+            (found?.rows || found || []).forEach((j) => {
+                (byClean.get(j.job_url) || []).forEach((raw) => {
+                    urlAliasIds(raw).forEach((a) => { if (!alias.has(a)) alias.set(a, String(j.id)); });
+                });
+            });
+        }
+    } catch (_) { /* best-effort, as above */ }
+
+    // ── One job, two rows ───────────────────────────────────────────────────────────────────────
+    // Applying on LinkedIn lands the user on the employer's own ATS, and we save that landing URL as
+    // this job's apply link. A capture from there writes a SECOND jobs row under the new URL — so the
+    // letter ends up on the LinkedIn row while "applied" lands on the ATS row, and the saved job
+    // shows neither. The override is the user's own statement that these two URLs are one job, so
+    // treat both rows as the same job on read. (New builds keep one identity; this repairs the ones
+    // already split.)
+    try {
+        const ovr = await dbConfig.query(
+            `SELECT job_id, url FROM user_job_url_overrides
+              WHERE user_id = $1 AND url IS NOT NULL LIMIT 500`, [userId]);
+        const rows = ovr?.rows || ovr || [];
+        const cleans = [...new Set(rows.map((r) => cleanJobUrlForAlias(r.url)).filter(Boolean))];
+        if (cleans.length) {
+            const found = await dbConfig.query(
+                `SELECT id, job_url FROM jobs WHERE job_url = ANY($1)`, [cleans]);
+            const byUrl = new Map((found?.rows || found || []).map((j) => [j.job_url, String(j.id)]));
+            rows.forEach((r) => {
+                const sibling = byUrl.get(cleanJobUrlForAlias(r.url));
+                if (!sibling) return;
+                // Every alias this job answers to gains the sibling, including the override URL's own
+                // hashes (the app uses those once the apply link has been rewritten).
+                const keys = new Set([String(r.job_id), ...urlAliasIds(r.url)]);
+                keys.forEach((k) => alias.add(k, sibling));
+            });
+        }
+    } catch (_) { /* best-effort, as above */ }
+    return groups;
+}
+
+/**
+ * alias → the ONE canonical id that holds the job's data. Writes use this, so a job never gains a
+ * second row; reads that care about siblings use jobAliasGroups directly.
+ */
+async function jobAliasMap(userId) {
+    const map = new Map();
+    (await jobAliasGroups(userId)).forEach((ids, a) => { if (ids.length) map.set(a, ids[0]); });
+    return map;
+}
+
+/** Resolve a `gj_` synthetic id to the canonical `jobs.id` that holds the user's data (or itself). */
+async function canonicalJobId(userId, jobId) {
+    const id = String(jobId || '');
+    if (!/^gj_/i.test(id)) return id;
+    try { return (await jobAliasMap(userId)).get(id) || id; } catch (_) { return id; }
+}
+
+// Applied beats downloaded beats generated: when one job is spread over sibling rows, the strongest
+// thing the user actually did is the truth about that job.
+const CL_STATUS_RANK = { applied: 3, downloaded: 2, generated: 1 };
+function strongestStatus(a, b) {
+    return (CL_STATUS_RANK[b] || 0) > (CL_STATUS_RANK[a] || 0) ? b : a;
 }
 
 /** GET /api/ai-hub/employers/:employerId/job-statuses — bulk status for all jobs of an employer */
@@ -4881,9 +5040,17 @@ async function getAllJobStatuses(req, res) {
         // key off the URL hash) see a letter that was stored under the captured job's real UUID.
         // Both keys point at the same row — nothing is duplicated, nothing is overwritten.
         try {
-            const alias = await jobAliasMap(userId);
-            alias.forEach((canonicalId, aliasId) => {
-                if (map[aliasId] === undefined && map[canonicalId] !== undefined) map[aliasId] = map[canonicalId];
+            const groups = await jobAliasGroups(userId);
+            groups.forEach((canonicalIds, aliasId) => {
+                // Take the strongest status across the group: a job that was applied to on the
+                // employer's portal and has its letter on the LinkedIn row must read as Applied.
+                let best;
+                for (const id of canonicalIds) {
+                    if (map[id] === undefined) continue;
+                    best = best === undefined ? map[id] : strongestStatus(best, map[id]);
+                }
+                if (best === undefined) return;
+                map[aliasId] = map[aliasId] === undefined ? best : strongestStatus(map[aliasId], best);
             });
         } catch (_) { /* aliases are an enhancement, never a reason to fail the call */ }
         return res.json({ statuses: map });
