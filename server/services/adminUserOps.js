@@ -1817,6 +1817,30 @@ async function segmentDefs() {
     { key: 'reachable_all', label: 'Everyone reachable', suggests: ['whats_new'],
       description: 'Every user with a push token — the release-announcement audience. The send rails still skip opt-outs and anyone notified in the last day, per user.',
       where: `(u.expo_push_token IS NOT NULL AND u.expo_push_token <> '')` },
+    // ── Build-aware audiences ─────────────────────────────────────────────────────────────────
+    // A push is only as good as the screen it lands on. The explainer video screen was added on
+    // 2026-08-07 and first shipped in build 158; on anything older the `tutorial` route is unknown,
+    // so the tap opens the app and does nothing. Sending "watch the video" to those users spends
+    // their attention on a dead end, so the audience is split by what the build can actually do.
+    //
+    // The build number is parsed out of app_events.app_version ("3.8 (165)" → 165) with split_part
+    // rather than a regex — no backslash escaping to get wrong between JS and SQL. A version with
+    // no parenthesised build ("3.4") yields NULL → 0, which is correct: every pre-video release
+    // predates the build-number format.
+    { key: 'has_video_screen', label: 'Can open the video (build 158+)', suggests: ['how_it_works'],
+      description: 'Reachable users whose last seen build contains the in-app explainer video. Tapping a video push actually reaches the film.',
+      where: `(u.expo_push_token IS NOT NULL AND u.expo_push_token <> '')
+        AND COALESCE((SELECT NULLIF(split_part(split_part(v.app_version, '(', 2), ')', 1), '')::int
+                        FROM (SELECT e.app_version FROM app_events e
+                               WHERE e.user_id = u.id AND e.app_version IS NOT NULL
+                               ORDER BY e.created_at DESC LIMIT 1) v), 0) >= 158` },
+    { key: 'needs_update', label: 'On an old build (pre-158)', suggests: ['whats_new'],
+      description: 'Reachable users on a build older than the explainer video. Their tap cannot reach a new screen, so only the notification TEXT works — write the message to stand on its own.',
+      where: `(u.expo_push_token IS NOT NULL AND u.expo_push_token <> '')
+        AND COALESCE((SELECT NULLIF(split_part(split_part(v.app_version, '(', 2), ')', 1), '')::int
+                        FROM (SELECT e.app_version FROM app_events e
+                               WHERE e.user_id = u.id AND e.app_version IS NOT NULL
+                               ORDER BY e.created_at DESC LIMIT 1) v), 0) < 158` },
     { key: 'active_appliers', label: 'Has applied', suggests: ['stalled_application', 'weekly_digest'],
       description: 'Applied at least once (cover letter marked applied, an emailed application, or an apply_complete event).',
       where: APPLIED },
