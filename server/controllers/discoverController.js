@@ -937,17 +937,53 @@ async function savedJobs(req, res) {
     // Attach a live résumé match % to every saved card (computed at read time so it tracks the current
     // résumé). Null when the user has no parsed skills — the card then simply shows no match badge.
     const userSkills = skillsOf(await getResume(req.user && req.user.id));
-    const jobs = (rows || []).map((r) => {
-      const c = typeof r.card === 'string' ? JSON.parse(r.card) : r.card;
+    const cards = (rows || []).map((r) => ({
+      c: typeof r.card === 'string' ? JSON.parse(r.card) : r.card,
+      saved_at: r.saved_at,
+    }));
+
+    // ── Borrow the real skills from the captured job ────────────────────────────────────────────
+    // Shaping alone leaves a card with NO chips when every stored "skill" was a requirement
+    // sentence (measured: all 14 on the Quickline card). The capture pipeline already extracted
+    // proper ones for the same posting — ".NET · Kubernetes · Docker · Microservices" — so read
+    // them from there instead of rendering an empty card. Two queries for the whole list, and
+    // purely additive: a card that already has good skills is untouched.
+    const cleanUrl = (u) => {
+      try { const x = new URL(String(u)); return (x.origin + x.pathname).replace(/\/+$/, ''); }
+      catch { return String(u || '').split('?')[0].split('#')[0].replace(/\/+$/, ''); }
+    };
+    const bySkills = new Map();     // cleaned job_url → [skill names]
+    const byLevel = new Map();      // cleaned job_url → experience
+    try {
+      const urls = [...new Set(cards.map((x) => cleanUrl(x.c && x.c.job_url)).filter(Boolean))];
+      if (urls.length) {
+        const found = await dbConfig.query(
+          `SELECT j.job_url, j.experience, s.name AS skill
+             FROM jobs j
+             LEFT JOIN job_skills js ON js.job_id = j.id
+             LEFT JOIN skills s ON s.id = js.skill_id
+            WHERE j.job_url = ANY($1)`, [urls]);
+        (found?.rows || found || []).forEach((row) => {
+          if (row.experience && !byLevel.has(row.job_url)) byLevel.set(row.job_url, row.experience);
+          if (!row.skill) return;
+          if (!bySkills.has(row.job_url)) bySkills.set(row.job_url, []);
+          bySkills.get(row.job_url).push(row.skill);
+        });
+      }
+    } catch (_) { /* best-effort: an empty chip row is not worth failing the list for */ }
+
+    const jobs = cards.map(({ c, saved_at: savedAt }) => {
       // ⚠️ SHAPE THE CARD ON READ, not just on write. Cards saved before the extractors were fixed
       // hold requirement SENTENCES in `skills` ("Several years of experience in the software
       // development of modern solutions…"), which the Saved list renders as chips, and no seniority
       // at all — so the card looked wrong until the job was opened and a richer pipeline replaced
       // it. Doing it here repairs every card already saved, for every user, with no migration and
       // without needing an app update. The stored row is left untouched.
-      const skills = cleanSkills(c && c.skills);
-      const experience = (c && c.experience) || seniorityFromTitle(c && c.title);
-      return { ...c, skills, experience, match: computeCardMatch({ ...c, skills }, userSkills), saved_at: r.saved_at };
+      const key = cleanUrl(c && c.job_url);
+      let skills = cleanSkills(c && c.skills);
+      if (!skills.length) skills = cleanSkills(bySkills.get(key));
+      const experience = (c && c.experience) || byLevel.get(key) || seniorityFromTitle(c && c.title);
+      return { ...c, skills, experience, match: computeCardMatch({ ...c, skills }, userSkills), saved_at: savedAt };
     });
     res.json({ success: true, jobs, count: jobs.length });
   } catch (e) { console.error('[discover] saved-jobs:', e.message); res.status(500).json({ error: 'Could not load saved jobs' }); }
