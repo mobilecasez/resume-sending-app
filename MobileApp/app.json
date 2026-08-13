@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.cvapplyr.mobile",
-      "buildNumber": "166",
+      "buildNumber": "167",
       "usesAppleSignIn": true,
       "infoPlist": {
         "CFBundleURLTypes": [
@@ -32,7 +32,7 @@
     "android": {
       "package": "com.cvapplyr.mobile",
       "googleServicesFile": "./google-services.json",
-      "versionCode": 79,
+      "versionCode": 80,
       "intentFilters": [
         {
           "action": "VIEW",
