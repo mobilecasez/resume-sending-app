@@ -132,6 +132,17 @@ const BROWSER_UA = Platform.OS === 'android'
   ? 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36'
   : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1';
 
+// The ONLY hosts the cancel-and-reload guard in the apply WebView applies to (ported verbatim from
+// Browse & Fetch, which has shipped it since b158). LinkedIn claims its own links as iOS universal
+// links, so a user-activated navigation to linkedin.com is handed to the LinkedIn APP by the OS and
+// the apply session is lost. Cancelling and re-issuing the identical URL from app code (a native
+// loadRequest, not user-activated) keeps the page inside our WebView. Scoped to LinkedIn on purpose:
+// cancelling every cross-host hop is correct but pays a cancelled navigation on every link.
+const APP_CLAIMED_HOST_RE = /(^|\.)(linkedin\.com|lnkd\.in)$/i;
+const isAppClaimedUrl = (u: string) => {
+  try { return APP_CLAIMED_HOST_RE.test(new URL(u).hostname); } catch { return false; }
+};
+
 // True only for a real DB job id (UUID). Live/web/LinkedIn cards arrive with a synthetic id
 // (gj_… / hashId) — those need a capture round-trip to get a canonical UUID for tracking.
 const isUuid = (s?: string | null): boolean =>
@@ -4109,6 +4120,8 @@ export default function JobDetailScreen() {
   const applyWebRef = useRef<WebView>(null);
   const applyOriginRef = useRef<string>('');   // origin of the apply page — injections are gated to it
   const currentUrlRef  = useRef<string>('');   // live page URL (from onNavigationStateChange)
+  const selfNavRef     = useRef<string>('');   // URL WE re-issued natively — must not cancel itself
+  const applyUriRef    = useRef<string>('');   // what the WebView's source.uri currently IS
   // ── LinkedIn → company-portal capture ──
   // LinkedIn hides a job's external apply URL from guests, but when the user taps Apply ON the
   // LinkedIn page, the browser lands on the company's own portal. Capture that landing URL and save
@@ -4243,16 +4256,15 @@ export default function JobDetailScreen() {
     const u = (url || '').trim();
     if (!u) return;
     track('apply_open', { linkedin: isLinkedInJobUrl(u) });
-    // LinkedIn ADD-ON (LinkedIn URLs only — every other site is untouched and keeps the in-app
-    // WebView below). A raw WKWebView blocks Google sign-in (disallowed_useragent) and LinkedIn
-    // deep-links into its native app, so open LinkedIn in the OS secure in-app browser instead —
-    // SFSafariViewController on iOS / Chrome Custom Tabs on Android (expo-web-browser). It shares
-    // the system browser session, so Google sign-in + passkeys work. Falls back to the system
-    // browser if it can't present.
-    if (isLinkedInJobUrl(u)) {
-      WebBrowser.openBrowserAsync(u).catch(() => { Linking.openURL(u).catch(() => {}); });
-      return;
-    }
+    // ⚠️ LinkedIn used to early-return into WebBrowser.openBrowserAsync here (commit 6f66d73). That
+    // handed the whole apply session to SFSafariViewController / Chrome Custom Tabs, which is an OS
+    // surface: no dock, no Auto Fill robot, no résumé/cover-letter attach, no Translate — all of
+    // that lives inside <Modal visible={!!applyWebUrl}> below, and applyWebUrl never got set. It
+    // also made the LinkedIn→company-portal capture (onNavigationStateChange) permanently dead, so
+    // the job could never heal itself. The two reasons for that escape hatch are both fixed here
+    // now: BROWSER_UA solves Google's "disallowed_useragent", and the cancel-and-replay guard in
+    // onShouldStartLoadWithRequest stops iOS from deep-linking LinkedIn into its native app.
+    // The dock's "Open in browser" action (openCurrentInBrowser) keeps the OS browser as a CHOICE.
     setApplyCanGoBack(false);
     setApplyProgress(0);
     try { setApplyHost(new URL(u).hostname.replace(/^www\./, '')); } catch { setApplyHost(''); }
@@ -4269,6 +4281,7 @@ export default function JobDetailScreen() {
     setResumeRegion(''); setClRegion(''); setResumeExpanded(false); setClExpanded(false); setPreview(null); setPreviewBusy(null);
     submitMarkedRef.current = false; submitIntentRef.current = 0; setAppliedBanner(false);
     sawLinkedInRef.current = false; portalCapturedRef.current = false; setPortalSavedBanner(false);
+    selfNavRef.current = '';
     capturePrefetchedRef.current = false; lastPageTextRef.current = '';   // re-grab the job page text for this session
     preAuthUrlRef.current = ''; authOriginRef.current = ''; authAtRef.current = 0; setAuthBanner(false);
     if (authRestoreTmr.current) { clearTimeout(authRestoreTmr.current); authRestoreTmr.current = null; }
@@ -4280,6 +4293,7 @@ export default function JobDetailScreen() {
     bridgeXlateRef.current = false;
     loadLocalFill();
     if (!smartData) { getSmartFillData().then(setSmartData).catch(() => {}); }
+    applyUriRef.current = u;
     setApplyWebUrl(u);
   };
 
@@ -6508,6 +6522,37 @@ export default function JobDetailScreen() {
                 const u = req?.url || '';
                 if (/^mailto:/i.test(u)) { handleMailtoApply(u); return false; }
                 if (/^(tel|sms|facetime|maps|geo):/i.test(u)) { Linking.openURL(u).catch(() => {}); return false; }
+                // ── iOS universal-link guard (same code Browse & Fetch ships) ──
+                // A user-activated navigation to linkedin.com is claimed by the LinkedIn APP; iOS
+                // decides before any JS can run, so the only public remedy is to CANCEL and load the
+                // URL ourselves. A scripted/native load is not user-activated, so universal links do
+                // not apply — it comes back through here as our own re-issue and is let through.
+                // NOT gated on navigationType 'click': a board link that 302-redirects to LinkedIn
+                // arrives as 'other' and would slip past a click-only guard.
+                // Back/forward is a history load, not a link activation — iOS does not hand those to
+                // the app, and cancelling them would break our own Back button (the apply session
+                // usually STARTS on the LinkedIn page, so Back goes there).
+                if (Platform.OS === 'ios' && req?.isTopFrame !== false
+                    && req?.navigationType !== 'backforward' && isAppClaimedUrl(u)) {
+                  const bare = (x: string) => String(x || '').replace(/#.*$/, '');
+                  if (selfNavRef.current && bare(selfNavRef.current) === bare(u)) { selfNavRef.current = ''; return true; }
+                  let sameHost = false;
+                  try { sameHost = new URL(u).host === new URL(currentUrlRef.current || u).host; } catch {}
+                  if (!sameHost) {
+                    // A native re-load only fires when the source URI actually CHANGES, and this
+                    // session's source often IS this LinkedIn URL — nudge the fragment so the same
+                    // destination still counts as a new request instead of silently loading nothing.
+                    const next = applyUriRef.current === u ? (u.includes('#') ? u.replace(/#.*$/, '') : u + '#') : u;
+                    selfNavRef.current = next;
+                    setApplyLoading(true);          // the re-load starts from nothing — show progress
+                    // ⚠️ A NATIVE load (source.uri via state), not injectJavaScript. location.assign
+                    // still runs inside the user's gesture and iOS hands it to the app anyway.
+                    // Same WebView, so the back-forward list survives and Back still works.
+                    applyUriRef.current = next;
+                    setApplyWebUrl(next);
+                    return false;
+                  }
+                }
                 return true;
               }}
               startInLoadingState
