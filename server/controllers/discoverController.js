@@ -21,6 +21,7 @@ const aiJobExtractor = require('../services/aiJobExtractor');   // fetch-detail:
 const jobCapture = require('./jobCaptureController');   // fetch-detail fallback: visible page TEXT → structured job (SPA/iframe-proof)
 const { chargeCredits, getEventCost } = require('../services/eventCosts');   // credit metering for AI search + live fetch
 const synonyms = require('../utils/searchSynonyms');   // .net⇄dotnet, node⇄node.js, sde⇄software engineer …
+const { cleanSkills, seniorityFromTitle } = require('../utils/jobFields');   // a skill is a name, not a sentence
 const geoRank = require('../utils/geoRank');            // ONE country-then-distance comparator, shared app-wide
 const geoContext = require('../services/geoContext');   // …and the per-user anchor/mode behind it
 
@@ -936,7 +937,18 @@ async function savedJobs(req, res) {
     // Attach a live résumé match % to every saved card (computed at read time so it tracks the current
     // résumé). Null when the user has no parsed skills — the card then simply shows no match badge.
     const userSkills = skillsOf(await getResume(req.user && req.user.id));
-    const jobs = (rows || []).map((r) => { const c = typeof r.card === 'string' ? JSON.parse(r.card) : r.card; return { ...c, match: computeCardMatch(c, userSkills), saved_at: r.saved_at }; });
+    const jobs = (rows || []).map((r) => {
+      const c = typeof r.card === 'string' ? JSON.parse(r.card) : r.card;
+      // ⚠️ SHAPE THE CARD ON READ, not just on write. Cards saved before the extractors were fixed
+      // hold requirement SENTENCES in `skills` ("Several years of experience in the software
+      // development of modern solutions…"), which the Saved list renders as chips, and no seniority
+      // at all — so the card looked wrong until the job was opened and a richer pipeline replaced
+      // it. Doing it here repairs every card already saved, for every user, with no migration and
+      // without needing an app update. The stored row is left untouched.
+      const skills = cleanSkills(c && c.skills);
+      const experience = (c && c.experience) || seniorityFromTitle(c && c.title);
+      return { ...c, skills, experience, match: computeCardMatch({ ...c, skills }, userSkills), saved_at: r.saved_at };
+    });
     res.json({ success: true, jobs, count: jobs.length });
   } catch (e) { console.error('[discover] saved-jobs:', e.message); res.status(500).json({ error: 'Could not load saved jobs' }); }
 }
