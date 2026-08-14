@@ -68,7 +68,7 @@ const CSS = `
 
   h1 { font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
        font-size:11.4pt; font-weight:700; text-align:center; letter-spacing:.04em;
-       text-decoration:underline; text-underline-offset:4px; margin:13px 0 11px; }
+       text-decoration:underline; text-underline-offset:4px; margin:12px 0 10px; }
 
   p { margin-bottom:8px; text-align:justify; }
 
@@ -87,14 +87,14 @@ const CSS = `
 
   /* The seal is OPEN SPACE with a caption beneath, never a drawn box — a rubber stamp lands where
      it lands, and a printed rectangle it fails to line up with makes the page look wrong. */
-  .sign { margin-top:12px; page-break-inside:avoid; display:flex; justify-content:space-between;
+  .sign { margin-top:10px; page-break-inside:avoid; display:flex; justify-content:space-between;
           align-items:flex-start; gap:30px; }
   .signL { flex:1; }
   .forco { font-weight:bold; font-size:11.1pt; margin-bottom:40px; }   /* the gap IS the signature space */
   .sigline { width:262px; border-top:0.9px solid #111; padding-top:5px;
              font-family:"Helvetica Neue",Helvetica,Arial,sans-serif; font-size:8.6pt; color:#555;
              letter-spacing:.04em; text-transform:uppercase; }
-  .sigfield { margin-top:6px; font-size:10.4pt; }
+  .sigfield { margin-top:5px; font-size:10.4pt; }
   .sigfield .k { display:inline-block; width:104px; color:#555; }
   .sealwrap { flex:none; width:150px; text-align:center; padding-top:6px; }
   .sealspace { height:104px; }
