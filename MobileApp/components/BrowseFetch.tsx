@@ -482,7 +482,18 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
       return;
     }
     if (savedUrlsRef.current.has(normUrl(u))) {
-      Alert.alert('Already saved', 'This job is already in your Saved Jobs.');
+      // ⚠️ THIS USED TO BE A DEAD END, and it is what "Fetch job stopped working" turned out to be:
+      // the job had been fetched once before, so every later tap answered "Already saved" and did
+      // nothing — indistinguishable from a broken button, especially while testing the same posting
+      // repeatedly. Re-fetching is a legitimate thing to want (the posting may have changed, and a
+      // card saved by an older extractor holds worse details), so offer it instead of refusing.
+      Alert.alert(
+        'Already saved',
+        fetchCost > 0
+          ? `This job is already in your Saved Jobs. Fetching it again refreshes its details and costs ${fetchCost} credit${fetchCost === 1 ? '' : 's'}.`
+          : 'This job is already in your Saved Jobs. Fetching it again refreshes its details.',
+        [{ text: 'Keep what I have', style: 'cancel' }, { text: 'Fetch again', onPress: doGrab }],
+      );
       return;
     }
     // The URL LOOKS like a list — but SPA boards (Glassdoor/Indeed) open a job without changing the
@@ -496,7 +507,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
       return;
     }
     doGrab();
-  }, [doGrab]);
+  }, [doGrab, fetchCost]);
 
   // Hand the page to the apply tools. On a page with nothing typed (browsing results, reading a
   // posting) this just goes — the old unconditional "this will reopen the page" confirm was friction
