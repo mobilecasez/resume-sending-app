@@ -45,7 +45,7 @@ import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
 import { canonicalJobUrl, isAuthUrl } from '../../utils/jobUrl';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../../utils/webviewAuth';
-import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, type XlateItem } from '../../utils/webviewTranslate';
+import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../../utils/webviewTranslate';
 import { PAGE_TEXT_FN } from '../../utils/webviewPageText';
 import type { Contact, Job, Employer } from '../../types/aiHub';
 
@@ -4207,6 +4207,7 @@ export default function JobDetailScreen() {
   const xlateBusyRef    = useRef(false);  // a pass is mid-flight — ignore the DOM churn it causes
   const xlatePendingRef = useRef(false);  // tapped mid-load → run once the load finishes
   const xlateEarlyRef   = useRef(false);  // this load already got its "most of the page is up" pass
+  const xlateManualRef  = useRef(false);  // the user TAPPED translate → an "already English" page is worth saying out loud
   const webLoadingRef   = useRef(false);
   const submitMarkedRef = useRef(false);                          // fire the "Applied" mark only once per session
   const submitIntentRef = useRef(0);                              // ts of last real apply-form submit (for the URL backstop)
@@ -4471,6 +4472,7 @@ export default function JobDetailScreen() {
     autoXlateRef.current = next;                 // opting out also stops auto-translate on this page
     setWebTranslated(next);
     if (next) {
+      xlateManualRef.current = true;
       runXlate('toggle-on');
     } else {
       xlatePendingRef.current = false;
@@ -5481,6 +5483,21 @@ export default function JobDetailScreen() {
       // a pass is already queued for load-end, so keep the spinner rather than reporting done.
       if (!items.length) { if (!xlatePendingRef.current) setWebTranslating(false); return; }
       const gen = msg.gen;
+      // An English page has nothing to translate. The apply WebView used to send it to the server
+      // anyway — a paid round trip whose result is the same words back, so the page visibly does not
+      // change and Translate reads as broken. Say so instead, and only when the user ASKED (an
+      // auto-translate pass that finds English should just stay quiet).
+      if (looksAlreadyEnglish(items)) {
+        xlateBusyRef.current = false;
+        setWebTranslating(false);
+        xlateOnRef.current = false; webTranslatedRef.current = false; setWebTranslated(false);
+        if (xlateManualRef.current) {
+          xlateManualRef.current = false;
+          Alert.alert('Already in English', 'This page is already in English, so there is nothing to translate.');
+        }
+        return;
+      }
+      xlateManualRef.current = false;
       xlateBusyRef.current = true;
       (async () => {
         const stale = () => gen !== xlateGenRef.current || !xlateOnRef.current;

@@ -300,7 +300,12 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
 
   const runXlate = useCallback((_why = 'toggle') => {
     if (!webRef.current || !xlateOnRef.current) return;
-    if (webLoadingRef.current) { setWebTranslating(true); return; }   // remembered; flushed on load-end
+    // ⚠️ DO NOT WAIT FOR THE LOAD TO FINISH. This used to return here and only show a spinner, so on
+    // a slow board (or after an upload reloads the page) tapping Translate looked like it did
+    // nothing for many seconds. The scan is repeatable and de-dupes against what it already
+    // collected, so translating what is on screen NOW costs nothing — the load-end pass below picks
+    // up whatever arrived afterwards. Same fix as the apply WebView in job-detail.
+    if (webLoadingRef.current) setWebTranslating(true);
     // ⚠️ NEVER start a pass on top of a running one. Bumping the generation makes the in-flight pass
     // stale, and its already-scanned strings stay marked "seen" — so the page ends up permanently
     // untranslated with no error. This is what the 2.2s settle sweep was doing to the 400ms one.
@@ -583,9 +588,15 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
       xlateBusyRef.current = true;
       (async () => {
         const stale = () => gen !== xlateGenRef.current || !xlateOnRef.current;
-        if (looksAlreadyEnglish(items)) {          // nothing to do — don't spend a round trip saying so
+        if (looksAlreadyEnglish(items)) {
+          // Nothing to translate — but SAY SO. This used to return silently: the spinner stopped,
+          // the button stayed lit, and not one word on the page changed. On an English posting
+          // (measured on efinancialcareers.com — 310 strings, all English) that is indistinguishable
+          // from "Translate is broken", which is exactly how it was reported.
           xlateBusyRef.current = false;
           setWebTranslating(false);
+          xlateOnRef.current = false; setWebTranslated(false);   // leave the control off, not falsely lit
+          Alert.alert('Already in English', 'This page is already in English, so there is nothing to translate.');
           return;
         }
         let applied = 0;
