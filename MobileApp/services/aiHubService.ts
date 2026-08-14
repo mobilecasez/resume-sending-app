@@ -784,6 +784,20 @@ export type CapturedJob = {
   responsibilities: string[]; skills: string[]; description: string; url: string;
   contacts?: Contact[];   // "To apply, email …" — captured from the page's apply instructions
 };
+/** Thrown when the SERVER says its AI provider is unavailable — distinct from "we couldn't read it". */
+export class AiUnavailableError extends Error {
+  kind: string;
+  constructor(message: string, kind = 'quota') { super(message); this.name = 'AiUnavailableError'; this.kind = kind; }
+}
+/** Does this axios error carry the server's ai_unavailable envelope? */
+export function aiOutageOf(e: any): AiUnavailableError | null {
+  const d = e?.response?.data;
+  if (e?.response?.status === 503 && d && d.error === 'ai_unavailable') {
+    return new AiUnavailableError(String(d.message || 'This is temporarily unavailable.'), String(d.kind || 'quota'));
+  }
+  return null;
+}
+
 export async function captureJob(
   input: CaptureJobInput
 ): Promise<{ jobId: string; job: CapturedJob; tracked: boolean } | null> {
@@ -792,7 +806,12 @@ export async function captureJob(
     const { data } = await axios.post(`${API_BASE}/ai-hub/jobs/capture`, input, { headers, timeout: 30000 });
     if (data && data.jobId) return { jobId: String(data.jobId), job: data.job as CapturedJob, tracked: !!data.tracked };
     return null;
-  } catch {
+  } catch (e) {
+    // ⚠️ "The AI is down" must NOT look like "offline" here. Returning null made the caller carry on
+    // with a synthetic id and, during the 2026-08-14 credit outage, quietly save a job called
+    // "Job application" while telling the user it had worked. Throw so the caller can say why.
+    const outage = aiOutageOf(e);
+    if (outage) throw outage;
     return null;   // graceful: pre-deploy 404 / offline → caller falls back to the synthetic id
   }
 }

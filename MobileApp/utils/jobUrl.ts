@@ -16,6 +16,30 @@ const POPUP_PARAMS = /^(mobile|width|height|bga|needsredirect|jan1offset|jun1off
 // A path segment that means "sign in / create an account", not "the job".
 const AUTH_SEG = /^(login|signin|sign-in|register|registration|createaccount|create-account|auth)$/i;
 
+/**
+ * A sign-in that can ONLY answer by postMessage to `window.opener` — Google Identity Services and
+ * the legacy gapi popup flow.
+ *
+ * ⚠️ iOS never gives a WKWebView a real popup window, so there IS no opener to answer. Our
+ * window.open stub therefore takes the MAIN frame to Google; Google finishes and redirects to
+ * `storagerelay://…`, which WKWebView cannot load — and the user is parked on a dead page with the
+ * half-filled application gone. Nothing about that is recoverable in-app, so the only honest move is
+ * to spot it BEFORE navigating and offer the phone's browser instead.
+ *
+ * Deliberately narrow: a normal redirect-flow OAuth (`redirect_uri=https://portal.com/callback`)
+ * works fine through the main frame and must NOT be caught here.
+ */
+export function isPostMessageOnlyAuth(url: string): boolean {
+  try {
+    const u = new URL(String(url));
+    if (/^\/gsi\//i.test(u.pathname)) return true;                                    // Google Identity Services
+    const ru = u.searchParams.get('redirect_uri') || '';
+    if (/^storagerelay:/i.test(ru)) return true;                                      // the GIS popup relay
+    if (/^\/o\/oauth2\//i.test(u.pathname) && /^postmessage$/i.test(ru)) return true;  // legacy gapi
+    return false;
+  } catch { return false; }
+}
+
 /** True when the URL is an account/sign-in page rather than a job posting. */
 export function isAuthUrl(url: string): boolean {
   try {

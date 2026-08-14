@@ -43,8 +43,8 @@ import CreditCostPill from '../../components/CreditCostPill';
 import JobToolsDock from '../../components/JobToolsDock';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import RatingPromptModal, { useRatingPrompt } from '../../components/RatingPromptModal';
-import { canonicalJobUrl, isAuthUrl } from '../../utils/jobUrl';
-import { FRAME_GUARD_JS, AUTH_FLOW_JS } from '../../utils/webviewAuth';
+import { canonicalJobUrl, isAuthUrl, isPostMessageOnlyAuth } from '../../utils/jobUrl';
+import { FRAME_GUARD_JS, AUTH_FLOW_JS, PASSKEY_GUARD_JS } from '../../utils/webviewAuth';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../../utils/webviewTranslate';
 import { PAGE_TEXT_FN } from '../../utils/webviewPageText';
 import type { Contact, Job, Employer } from '../../types/aiHub';
@@ -3857,7 +3857,13 @@ const AUTODETECT_JS = `(function(){
       var lang=(document.documentElement.getAttribute('lang')||'').toLowerCase().trim();
       if(!lang){ var ml=document.querySelector('meta[http-equiv="content-language"],meta[name="language"]'); if(ml) lang=(ml.getAttribute('content')||'').toLowerCase().trim(); }
       var nonEn=false;
-      if(lang && /^[a-z]{2}/.test(lang)) nonEn = !/^en($|[-_])/.test(lang);
+      // ⚠️ SOME SITES PUT A COUNTRY IN lang=. efinancialcareers.com ships <html lang="us">, and
+      // reading that as a language made an entirely English page look foreign, so auto-translate
+      // fired on it. Only these six are safe to treat as English-speaking countries — do NOT add
+      // 'uk' (that is ISO-639-1 UKRAINIAN), nor 'ca' (Catalan), 'in' (Indonesian), 'is' (Icelandic)
+      // or 'sg' (Sango).
+      var NOT_A_LANG=/^(us|gb|au|nz|ie|za)$/;
+      if(lang && /^[a-z]{2}/.test(lang) && !NOT_A_LANG.test(lang.slice(0,2))) nonEn = !/^en($|[-_])/.test(lang);
       var t=((document.body&&document.body.innerText)||'').slice(0,4000);
       if(!nonEn && t){
         var nonAscii=(t.match(/[^\\x00-\\x7F]/g)||[]).length;
@@ -4231,6 +4237,9 @@ export default function JobDetailScreen() {
   // The URL this screen was opened for — frozen on first render. Every capture keys off it so a job
   // keeps ONE identity no matter where the apply flow later navigates. See buildCapturePayload.
   const identityUrlRef = useRef<string>('');
+  // Hosts we've already explained passkeys for — a site can retry the ceremony on every tap, and
+  // one alert per tap would be worse than the silence it replaces.
+  const passkeyToldRef = useRef<Set<string>>(new Set());
   const ensureTrackedRef = useRef<((pt?: string) => Promise<{ id: string; job: CapturedJob | null }>) | null>(null);
 
   // Mark the job "Applied" once — against the CANONICAL job (create + track it first if it was a
@@ -4240,12 +4249,19 @@ export default function JobDetailScreen() {
     submitMarkedRef.current = true;
     setAppliedBanner(true);
     (async () => {
+      let id = '';
       try {
         const cap = ensureTrackedRef.current
           ? await ensureTrackedRef.current(lastPageTextRef.current || undefined)
           : { id: capturedIdRef.current || '' };
-        if (cap.id) await updateJobCLStatus(cap.id, 'applied');
-      } catch {}
+        id = cap.id || '';
+      } catch {
+        // ⚠️ The capture can now throw when the AI service is down — but THE USER STILL APPLIED, and
+        // that fact must not be lost because a job description could not be re-read. Fall back to
+        // whatever id we already hold; the server records the application against it either way.
+        id = capturedIdRef.current || (job as any)?.id || '';
+      }
+      try { if (id) await updateJobCLStatus(id, 'applied'); } catch {}
     })();
   }, []);
   const applyWebRef = useRef<WebView>(null);
@@ -4377,6 +4393,20 @@ export default function JobDetailScreen() {
   // Take over a sign-in popup: remember where we were, then run the auth in this same view.
   const beginAuthFlow = (target: string, from?: string) => {
     if (!target || !applyWebRef.current) return;
+    // ⚠️ REFUSE THE ONES THAT CANNOT POSSIBLY FINISH. Google Identity Services returns the
+    // credential only by postMessage to window.opener — and iOS never gives a WKWebView a popup, so
+    // there is no opener. Taking the main frame to Google therefore destroys the half-filled form
+    // and ends on a `storagerelay://` URL that will not load. Say so up front and offer the phone's
+    // browser, which is the only place this flow can actually complete.
+    if (isPostMessageOnlyAuth(target)) {
+      const host = (() => { try { return new URL(target).hostname; } catch { return 'This provider'; } })();
+      Alert.alert(
+        'Sign in needs your browser',
+        `${host} signs you in with a pop-up window, which apps aren't allowed to show. Open this job in your phone's browser to sign in and apply there — or use the site's email and password option instead.`,
+        [{ text: 'Not now', style: 'cancel' }, { text: 'Open in browser', onPress: () => openCurrentInBrowser() }],
+      );
+      return;
+    }
     const back = (from && /^https?:/i.test(from) ? from : currentUrlRef.current) || '';
     // Don't overwrite the remembered form with an auth page if the provider chains through several.
     if (back && !isAuthUrl(back)) {
@@ -4922,7 +4952,12 @@ export default function JobDetailScreen() {
     // No same-origin gate here (unlike autofill): Fetch sends only the page's PUBLIC text, and the
     // whole point is to capture whatever job you browsed to — usually a different site than you
     // started on (a board → the company's own ATS).
-    if (fetchState !== 'idle' || !applyWebRef.current) return;
+    // ⚠️ NEVER A SILENT NO-OP. The old guard returned on any non-idle state, so a tap during the
+    // 2.4s "Saved ✓" window — or while a previous fetch was still running — did literally nothing,
+    // which is indistinguishable from a broken button.
+    if (!applyWebRef.current) return;
+    if (fetchState === 'fetching') { Alert.alert('Still reading this job', "Give it a moment — we're saving it now."); return; }
+    if (fetchTimerRef.current) { clearTimeout(fetchTimerRef.current); fetchTimerRef.current = null; }
     setFetchState('fetching');
     fetchWantRef.current = true;
     try { applyWebRef.current.injectJavaScript(FETCH_PAGE_JS); } catch { fetchWantRef.current = false; setFetchState('idle'); return; }
@@ -5442,6 +5477,21 @@ export default function JobDetailScreen() {
       const liveUrl = String(msg.url || currentUrlRef.current || '');
       lastPageTextRef.current = String(msg.text || '');
       void captureFetchedPage(liveUrl, String(msg.text || ''), String(msg.wall || ''), String(msg.mainText || ''));
+      return;
+    }
+
+    // The page asked for a passkey. It cannot work here (see PASSKEY_GUARD_JS) and we have already
+    // rejected it so the site shows its password fallback — now tell the user why, once per host,
+    // and offer the one place it CAN work.
+    if (msg.type === 'PASSKEY_BLOCKED') {
+      const host = String(msg.host || '');
+      if (passkeyToldRef.current.has(host)) return;
+      passkeyToldRef.current.add(host);
+      Alert.alert(
+        'Passkeys need your browser',
+        "Passkeys and Face ID sign-in only work in your phone's own browser, not inside an app. Use a password here, or open this job in your browser.",
+        [{ text: 'Stay here', style: 'cancel' }, { text: 'Open in browser', onPress: () => openCurrentInBrowser() }],
+      );
       return;
     }
 
@@ -6693,7 +6743,7 @@ export default function JobDetailScreen() {
               source={{ uri: applyWebUrl }}
               style={s.webView}
               originWhitelist={['*']}
-              injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + XLATE_WATCH_JS + '\n' + INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + WIZARD_WATCH_JS + '\n' + FRAME_AGENT_JS}
+              injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + XLATE_WATCH_JS + '\n' + INTERCEPT_FILES_JS + '\n' + SUBMIT_DETECT_JS + '\n' + FOCUS_DETECT_JS + '\n' + AUTODETECT_JS + '\n' + WIZARD_WATCH_JS + '\n' + FRAME_AGENT_JS}
               injectedJavaScriptForMainFrameOnly={false}
               javaScriptEnabled
               domStorageEnabled
@@ -6721,6 +6771,15 @@ export default function JobDetailScreen() {
                 const u = req?.url || '';
                 if (/^mailto:/i.test(u)) { handleMailtoApply(u); return false; }
                 if (/^(tel|sms|facetime|maps|geo):/i.test(u)) { Linking.openURL(u).catch(() => {}); return false; }
+                // ⚠️ A SCHEME WKWebView CANNOT LOAD MUST NOT BE "ALLOWED". Returning true for
+                // `storagerelay://…` — where Google's popup sign-in delivers its result — parked the
+                // user on a permanently dead page with their half-filled form gone. Anything outside
+                // the loadable set is cancelled; blob:/data:/about: stay allowed because the résumé
+                // and cover-letter previews use them.
+                if (u && !/^(https?|about|blob|data|file):/i.test(u)) {
+                  if (preAuthUrlRef.current) returnFromAuth(0);
+                  return false;
+                }
                 // ── iOS universal-link guard (same code Browse & Fetch ships) ──
                 // A user-activated navigation to linkedin.com is claimed by the LinkedIn APP; iOS
                 // decides before any JS can run, so the only public remedy is to CANCEL and load the

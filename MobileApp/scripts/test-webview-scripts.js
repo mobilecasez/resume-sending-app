@@ -8,6 +8,9 @@ const { chromium } = require('playwright');
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'app', '(ai-hub)', 'job-detail.tsx'), 'utf8')
   + fs.readFileSync(path.join(__dirname, '..', 'utils', 'webviewAuth.ts'), 'utf8');
+// Standalone guards (no ${…} interpolation) — taken verbatim from utils/webviewAuth.ts.
+const PASSKEY_GUARD_JS = (fs.readFileSync(path.join(__dirname, '..', 'utils', 'webviewAuth.ts'), 'utf8')
+  .match(/export const PASSKEY_GUARD_JS = `([\s\S]*?)`;/) || [])[1] || '';
 
 // Pull a `const NAME = \`…\`;` template literal out of the TSX. The only interpolation these
 // scripts use is ${JS_HELPERS}, which we resolve so the tested code is byte-identical to shipped.
@@ -1048,6 +1051,45 @@ function helpersSourceProblems() {
     ok('...and a value the page keeps wiping is REPORTED, not counted as filled',
       /firstname/.test(failedKeys) && /kept clearing/.test(JSON.stringify(out.msg.failed)), out.msg);
     ok('...so the count reflects what is actually on the form', out.msg.count === 1, out.msg);
+    await p.close();
+  }
+
+  // ── PASSKEY GUARD ───────────────────────────────────────────────────────────────────────────
+  // A passkey ceremony can never complete in a third-party WKWebView (associated-domains is a
+  // compile-time list; a job browser cannot enumerate every employer portal). Left alone the
+  // promise never settles and the button reads as broken. Reject with the exact error the spec
+  // defines so the site falls back to a password, and tell RN so it can offer the real browser.
+  {
+    const p = await browser.newPage();
+    await p.setContent('<!doctype html><html><body></body></html>');
+    await p.evaluate(`${BRIDGE}
+      window.__real = [];
+      navigator.credentials = {
+        get:    function(o){ window.__real.push(['get', o]);    return Promise.resolve('REAL_GET'); },
+        create: function(o){ window.__real.push(['create', o]); return Promise.resolve('REAL_CREATE'); },
+      };`);
+    await p.evaluate(PASSKEY_GUARD_JS);
+    await p.evaluate(PASSKEY_GUARD_JS);          // double injection must be a no-op
+    const r = await p.evaluate(async () => {
+      const out = { };
+      try { await navigator.credentials.get({ publicKey: { challenge: new Uint8Array(1) } }); out.pk = 'RESOLVED'; }
+      catch (e) { out.pk = e.name; }
+      try { await navigator.credentials.create({ publicKey: { challenge: new Uint8Array(1) } }); out.pkCreate = 'RESOLVED'; }
+      catch (e) { out.pkCreate = e.name; }
+      out.password = await navigator.credentials.get({ password: true }).catch((e) => 'REJECTED:' + e.name);
+      out.msgs = window.__msgs.filter((m) => m.type === 'PASSKEY_BLOCKED');
+      out.realCalls = window.__real.map((c) => c[0]);
+      return out;
+    });
+    ok('a passkey get() is rejected with NotAllowedError (the error sites fall back on)', r.pk === 'NotAllowedError', r);
+    ok('…and so is create()', r.pkCreate === 'NotAllowedError', r);
+    // `host` is empty here only because setContent runs on about:blank; assert the field is carried
+    // and that the guard reads the real location, which is what the once-per-host gate keys on.
+    ok('RN is told for each attempt, carrying the host field', r.msgs.length === 2
+      && r.msgs.every((m) => 'host' in m) && r.msgs[0].op === 'get' && r.msgs[1].op === 'create', r.msgs);
+    ok('…and the host comes from the live location', /host:location\.hostname/.test(PASSKEY_GUARD_JS));
+    ok('a PASSWORD credential still reaches the real implementation', r.password === 'REAL_GET', r);
+    ok('…and only the password call did', r.realCalls.length === 1 && r.realCalls[0] === 'get', r.realCalls);
     await p.close();
   }
 

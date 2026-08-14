@@ -132,3 +132,40 @@ export const STAY_IN_APP_JS = `(function(){
   document.addEventListener('click', onClick, true);
   document.addEventListener('auxclick', onClick, true);
 })(); true;`;
+
+// ── PASSKEYS / WEBAUTHN ─────────────────────────────────────────────────────────────────────────
+//
+// ⚠️ A PASSKEY CEREMONY CANNOT WORK IN THIS WEBVIEW, AND NEVER WILL.
+//
+// A passkey binds to the site's Relying Party ID (its own domain). iOS only lets an app take part
+// when BOTH sides opt in: the site publishes /.well-known/apple-app-site-association naming
+// <TeamID>.com.cvapplyr.mobile, AND the app ships a compile-time
+// `com.apple.developer.associated-domains: webcredentials:<domain>` list. A job browser has to work
+// on arbitrary employer portals, so that list can never be complete — efinancialcareers, Workday and
+// Google are not going to publish our Team ID.
+//
+// Left alone, `navigator.credentials.get({publicKey})` simply never settles: the button spins
+// forever and reads as broken (reported as "Passkey also not works for webview"). Every real site
+// has a password/email fallback branch keyed on a REJECTED promise, so rejecting with the exact
+// error the spec defines makes the site show it — turning a dead end into a normal sign-in.
+export const PASSKEY_GUARD_JS = `(function(){
+  if (window.__cvfSkipFrame || window.__cvfPkHook) return; window.__cvfPkHook = true;
+  function post(o){ try{ o.__cvf=true; window.ReactNativeWebView.postMessage(JSON.stringify(o)); }catch(e){} }
+  try{
+    var c = navigator.credentials; if(!c) return;
+    ['get','create'].forEach(function(k){
+      var real = c[k] && c[k].bind(c); if(!real) return;
+      c[k] = function(opts){
+        // ONLY WebAuthn. A password-manager credentials.get({password:true}) must still work, and so
+        // must federated/identity requests — narrowing on opts.publicKey is what keeps this safe.
+        if(opts && opts.publicKey){
+          post({type:'PASSKEY_BLOCKED', host:location.hostname, op:k});
+          var e = new Error('Passkeys are not available in this browser.');
+          e.name = 'NotAllowedError';       // the exact error every fallback branch checks for
+          return Promise.reject(e);
+        }
+        return real(opts);
+      };
+    });
+  }catch(e){}
+})(); true;`;

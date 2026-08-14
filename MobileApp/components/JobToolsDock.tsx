@@ -36,7 +36,15 @@ export default function JobToolsDock({ actions, bottomInset = 0, busy, busyLabel
       onPanResponderMove: (e, g) => { if (Math.abs(g.dx) > 4 || Math.abs(g.dy) > 4) moved.current = true; pan.setValue({ x: g.dx, y: g.dy }); },
       onPanResponderRelease: () => {
         pan.flattenOffset();
-        if (positionRef) positionRef.current = { x: (pan.x as any).__getValue(), y: (pan.y as any).__getValue() };
+        // ⚠️ CLAMP TO THE SCREEN. Persisting the drag position (so a sheet opening over the robot no
+        // longer resets it) also made an off-screen drag PERMANENT — and this robot is the only way
+        // to reach Fetch job, Auto Fill, Upload and My details. Dragged out of sight, the apply
+        // browser loses every tool with no way back.
+        const { width: SW, height: SH2 } = Dimensions.get('window');
+        const x = Math.min(0, Math.max(-(SW - 86), (pan.x as any).__getValue()));    // right-anchored: never past the left edge
+        const y = Math.min(24, Math.max(-(SH2 - 200), (pan.y as any).__getValue())); // never above the header or below the dock
+        pan.setValue({ x, y });
+        if (positionRef) positionRef.current = { x, y };
         if (!moved.current) setOpen((o) => !o);
       },
     })

@@ -25,6 +25,7 @@ const { getEventCost, chargeCredits, refundCredits } = require('../services/even
 const { emit } = require('../services/track');   // first-party analytics
 const geoRank = require('../utils/geoRank');            // ONE country-then-distance comparator, shared app-wide
 const geoContext = require('../services/geoContext');   // …and the per-user anchor/mode behind it
+const { classifyAiError, isOutage, noteAiFailure, outageResponse } = require('../services/aiHealth');
 
 // ─── Batch tuning ─────────────────────────────────────────────────────────────
 // How many job-detail pages to scrape + process per Gemini call
@@ -4563,6 +4564,7 @@ SNIPPETS (JSON array of {i,t}):
 ${JSON.stringify(batch)}`;
 
         const deadline = Date.now() + XL_DEADLINE_MS;
+        let outageKind = null;   // set below when the provider itself is unavailable, not just this call
         async function translateOne(batch) {
             for (let attempt = 0; attempt < 3; attempt += 1) {
                 try {
@@ -4575,6 +4577,12 @@ ${JSON.stringify(batch)}`;
                     throw new Error('empty JSON object');
                 } catch (e) {
                     const msg = String((e && e.message) || '');
+                    // Out of credit / bad key / dead model: retrying cannot help and every other
+                    // sub-batch is about to fail the same way. Record WHY so the response can say it,
+                    // and stop burning the deadline. (Before this, an outage spent all 3 attempts on
+                    // every batch and then answered with a bare 502.)
+                    const kind = classifyAiError(e);
+                    if (isOutage(kind)) { outageKind = kind; noteAiFailure(e, 'translateBatch'); return null; }
                     // A malformed/short reply is worth one more go too — the model is non-deterministic.
                     const retryable = /\b429\b|\b50[0234]\b|rate|quota|overload|unavailable|high demand|temporarily|timeout|deadline|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|JSON|json/i.test(msg);
                     if (attempt < 2 && retryable && Date.now() < deadline) {
@@ -4612,9 +4620,16 @@ ${JSON.stringify(batch)}`;
                 translations[it.i] = (typeof v === 'string' && v.trim()) ? v : it.t;
             }
         });
-        if (!okBatches) return res.status(502).json({ error: 'Translation failed.' });
+        // Nothing came back at all. If we know the provider is down, SAY THAT — "Translation failed"
+        // over a 502 told the founder nothing and read as a bug in the app for a whole day.
+        if (!okBatches) {
+            if (outageKind) return outageResponse(res, outageKind, 'Translation');
+            return res.status(502).json({ error: 'Translation failed.' });
+        }
         return res.json({ translations, partial: okBatches < batches.length });
     } catch (error) {
+        const kind = noteAiFailure(error, 'translateBatch');
+        if (isOutage(kind)) return outageResponse(res, kind, 'Translation');
         console.error('[aiHub] translateBatch error:', error.message);
         return res.status(500).json({ error: 'Translation failed.' });
     }

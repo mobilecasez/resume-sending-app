@@ -82,6 +82,8 @@ const env = {
   setApplyWebUrl: (u) => calls.push(['setApplyWebUrl', u]),
   handleMailtoApply: (u) => calls.push(['mailto', u]),
   Linking: { openURL: (u) => { calls.push(['openURL', u]); return { catch: () => {} }; } },
+  preAuthUrlRef: { current: '' },
+  returnFromAuth: (d) => calls.push(['returnFromAuth', d]),
 };
 const handler = new Function(...Object.keys(env), 'return function (req) ' + js(handlerBody) + ';')(...Object.values(env));
 
@@ -146,6 +148,54 @@ ok('mailto: still routes to the in-app compose flow',
   handler({ url: 'mailto:jobs@acme.com?subject=Application' }) === false && calls[0] && calls[0][0] === 'mailto', calls);
 calls.length = 0;
 ok('tel: still hands off to the OS', handler({ url: 'tel:+41791234567' }) === false && calls[0][0] === 'openURL', calls);
+
+// i. Schemes WKWebView cannot load must be CANCELLED, not "allowed".
+//    Google's popup sign-in ends on storagerelay://; returning true parked the user on a dead page
+//    with their half-filled application gone, and that is the whole of "Google sign-in is broken".
+calls.length = 0; env.preAuthUrlRef.current = 'https://www.efinancialcareers.com/jobs/1';
+ok('storagerelay:// is cancelled, not allowed',
+  handler({ url: 'storagerelay://https/www.efinancialcareers.com?id=auth1' }) === false, calls);
+ok('...and it takes the user back to the form they were filling',
+  calls.some((c) => c[0] === 'returnFromAuth'), calls);
+env.preAuthUrlRef.current = '';
+ok('an unknown app scheme is cancelled too', handler({ url: 'intent://x#Intent;scheme=http;end' }) === false);
+
+// …but the schemes our own previews rely on must still load.
+ok('blob: still loads (résumé / cover-letter preview)', handler({ url: 'blob:https://acme.com/abc' }) === true);
+ok('data: still loads', handler({ url: 'data:text/html,<b>hi</b>' }) === true);
+ok('about:blank still loads', handler({ url: 'about:blank' }) === true);
+ok('https is untouched by the scheme guard', handler({ url: 'https://boards.greenhouse.io/x/1' }) === true);
+
+// j. Popup-only sign-in is classified BEFORE we navigate — the credential can only come back
+//    through window.opener, and iOS never gives a WKWebView one.
+{
+  // Extract the REAL function from utils/jobUrl.ts — balanced braces, then drop the TS annotations
+  // from the signature (the body has none). Never a copy: the point is to run what ships.
+  const U = fs.readFileSync(path.join(__dirname, '..', 'utils', 'jobUrl.ts'), 'utf8');
+  const at = U.indexOf('export function isPostMessageOnlyAuth');
+  ok('isPostMessageOnlyAuth is defined', at > 0);
+  const bodyOf = (src, from) => {
+    const start = src.indexOf('{', from);
+    let depth = 0;
+    for (let i = start; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(start + 1, i); }
+    }
+    throw new Error('unbalanced');
+  };
+  const isPostMessageOnlyAuth = new Function('url', bodyOf(U, at));
+  ok('Google Identity Services popup is caught',
+    isPostMessageOnlyAuth('https://accounts.google.com/gsi/select?client_id=x') === true);
+  ok('the storagerelay redirect_uri is caught',
+    isPostMessageOnlyAuth('https://accounts.google.com/o/oauth2/auth?redirect_uri=storagerelay%3A%2F%2Fhttps%2Fx.com') === true);
+  ok('legacy gapi postmessage is caught',
+    isPostMessageOnlyAuth('https://accounts.google.com/o/oauth2/auth?redirect_uri=postmessage') === true);
+  // …and an ordinary redirect flow, which DOES work through the main frame, must not be.
+  ok('a normal OAuth redirect is NOT caught',
+    isPostMessageOnlyAuth('https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=https%3A%2F%2Fportal.com%2Fcb') === false);
+  ok('a plain job URL is NOT caught', isPostMessageOnlyAuth('https://boards.greenhouse.io/acme/jobs/1') === false);
+  ok('garbage does not throw', isPostMessageOnlyAuth('not a url') === false);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

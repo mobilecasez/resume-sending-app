@@ -16,6 +16,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const dbConfig = require('../../db-config');
 const jobService = require('../services/jobService');
 const { cleanSkills, seniorityFromTitle } = require('../utils/jobFields');
+const { noteAiFailure, isOutage, outageResponse } = require('../services/aiHealth');
 
 // Strip query/hash + trailing slash so the same job dedupes to one jobs row (UNIQUE job_url).
 function cleanUrl(u) {
@@ -112,7 +113,17 @@ JOB PAGE TEXT:
 ${t}`;
   const callOnce = async (corrective) => JSON.parse((await model.generateContent(build(corrective))).response.text());
   let out = null;
-  try { out = await callOnce(false); } catch { try { out = await callOnce(false); } catch { return null; } }
+  try { out = await callOnce(false); } catch (e1) {
+    // ⚠️ THIS USED TO BE `catch { return null }` TWICE, WHICH IS HOW A BILLING OUTAGE BECAME A
+    // "successful" capture: null here means the caller falls back to title "Job application" and
+    // the domain as the company, and then SAVES that. Tell the caller WHY it failed instead — an
+    // out-of-credit provider is not the same as a page with nothing on it.
+    try { out = await callOnce(false); } catch (e2) {
+      const kind = noteAiFailure(e2, 'capture.extractFromText');
+      if (isOutage(kind)) { const err = new Error('ai_unavailable'); err.aiKind = kind; throw err; }
+      return null;
+    }
+  }
   if (looksThin(out, t)) {
     try {
       const second = await callOnce(true);
@@ -143,7 +154,22 @@ async function captureJob(req, res) {
     const postingText = pickPostingText(b.pageText, b.mainText);
     if (needExtract && str(postingText).length >= 120) {
       const hint = [title && ('title=' + title), company && ('company=' + company)].filter(Boolean).join('; ');
-      const out = await extractFromText(postingText, hint);
+      let out = null;
+      try {
+        out = await extractFromText(postingText, hint);
+      } catch (e) {
+        // ⚠️ THE PROVIDER IS DOWN, NOT THE PAGE. Falling through here would stamp this job with
+        // title "Job application" and the domain as the employer and SAVE it — which is exactly
+        // what happened during the 2026-08-14 credit outage: Fetch job reported success and the
+        // user got a junk row. Refuse, and say so, UNLESS the client already sent enough to stand
+        // on its own (a rich card from search) — in that case there is nothing to be sorry about.
+        if (e && e.aiKind) {
+          const haveOwn = !!title && !!company && (responsibilities.length >= 2 || !!description);
+          if (!haveOwn) return outageResponse(res, e.aiKind, 'Reading this job');
+        } else {
+          throw e;
+        }
+      }
       if (out && typeof out === 'object') {
         title       = title       || fixShoutyTitle(out.title);
         company     = company     || str(out.company);

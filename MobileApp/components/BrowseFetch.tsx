@@ -21,7 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchJobDetail, saveCard, translateBatch, type LiveJobCard } from '../services/aiHubService';
 import { isListingUrl, isSearchEngineUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
-import { FRAME_GUARD_JS, AUTH_FLOW_JS, STAY_IN_APP_JS } from '../utils/webviewAuth';
+import { FRAME_GUARD_JS, AUTH_FLOW_JS, STAY_IN_APP_JS, PASSKEY_GUARD_JS } from '../utils/webviewAuth';
 import { APP_BUILD } from '../services/analytics';
 import { xlateScanJS, xlateApplyJS, XLATE_RESTORE_JS, XLATE_WATCH_JS, runXlatePasses, looksAlreadyEnglish, type XlateItem } from '../utils/webviewTranslate';
 import { PAGE_TEXT_FN, FORM_TOUCH_JS } from '../utils/webviewPageText';
@@ -243,6 +243,8 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   // because the gap between those two is exactly the dead-feeling part.
   const [handoff, setHandoff] = useState(false);
   const handoffTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Hosts already told that passkeys need the real browser — sites retry on every tap.
+  const passkeyToldRef = useRef<Set<string>>(new Set());
   const [canGoBack, setCanGoBack] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
@@ -281,6 +283,12 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const xlateGenRef = useRef(0);       // discard replies from a superseded pass
   const xlateBusyRef = useRef(false);  // a pass is mid-flight — ignore the DOM churn it causes
   const webLoadingRef = useRef(false); // don't scan while a page load is in flight
+  // Translate runs by itself here, so "this page is already English" is only worth SAYING when the
+  // user actually asked. Without this the alert fires on every English job page, unprompted.
+  const xlateManualRef = useRef(false);
+  // …and an English page switching itself off must not disable translate for every LATER page.
+  // Only an explicit tap on the control counts as "the user wants this off".
+  const xlateOptOutRef = useRef(false);
 
   const platform = platformOf(currentUrl);
 
@@ -319,8 +327,8 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     if (!webRef.current) return;
     const next = !xlateOnRef.current;
     xlateOnRef.current = next; setWebTranslated(next);
-    if (next) runXlate('toggle-on');
-    else { xlateGenRef.current++; setWebTranslating(false); try { webRef.current.injectJavaScript(XLATE_RESTORE_JS); } catch {} }
+    if (next) { xlateManualRef.current = true; xlateOptOutRef.current = false; runXlate('toggle-on'); }
+    else { xlateOptOutRef.current = true; xlateGenRef.current++; setWebTranslating(false); try { webRef.current.injectJavaScript(XLATE_RESTORE_JS); } catch {} }
   }, [runXlate]);
 
   // The query this browsing session started from, so a blocked engine can be swapped for another one.
@@ -607,9 +615,15 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           xlateBusyRef.current = false;
           setWebTranslating(false);
           xlateOnRef.current = false; setWebTranslated(false);   // leave the control off, not falsely lit
-          Alert.alert('Already in English', 'This page is already in English, so there is nothing to translate.');
+          // …but only SAY it when the user asked. Translate is on by default here, so alerting on
+          // every English job page would be an unrequested modal on most of them.
+          if (xlateManualRef.current) {
+            xlateManualRef.current = false;
+            Alert.alert('Already in English', 'This page is already in English, so there is nothing to translate.');
+          }
           return;
         }
+        xlateManualRef.current = false;   // a real pass is running; the tap has been answered
         let applied = 0;
         try {
           applied = await runXlatePasses(
@@ -632,6 +646,19 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     }
     // Only the FINAL round ends the pass — earlier rounds are progress, not completion.
     if (payload && payload.__cvf && payload.type === 'XLATE_APPLIED') { if (payload.gen === xlateGenRef.current && payload.final) setWebTranslating(false); return; }
+    // A passkey prompt cannot complete inside a WebView (see PASSKEY_GUARD_JS). We already rejected
+    // it so the site falls back to a password — say why, once per host, and offer the browser.
+    if (payload && payload.__cvf && payload.type === 'PASSKEY_BLOCKED') {
+      const host = String(payload.host || '');
+      if (passkeyToldRef.current.has(host)) return;
+      passkeyToldRef.current.add(host);
+      Alert.alert(
+        'Passkeys need your browser',
+        "Passkeys and Face ID sign-in only work in your phone's own browser, not inside an app. Use a password here, or open this page in your browser.",
+        [{ text: 'Stay here', style: 'cancel' }, { text: 'Open in browser', onPress: () => openInBrowser() }],
+      );
+      return;
+    }
     // Our own writes churn the DOM, so a mid-pass "dirty" would restart (and cancel) the pass.
     if (payload && payload.__cvf && payload.type === 'XLATE_DIRTY') {
       if (!xlateOnRef.current || webLoadingRef.current) return;
@@ -673,7 +700,10 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     const degrade = async () => {
       try {
         await saveCard({ id: srcUrl, job_url: srcUrl, title: String(payload.title || '').slice(0, 200) || 'Job', company: null, employer_name: null, location: null, work_mode: null, job_type: null, salary: null, experience: null, responsibilities: [], skills: [], source: plat, highlights: [], saved: false, summary: null } as any);
-        savedUrlsRef.current.add(normUrl(srcUrl));
+        // ⚠️ DO NOT mark this URL as saved. This is the title-only fallback after a fetch FAILED —
+        // adding it here poisoned the set, so every later attempt on the same posting was
+        // intercepted by the "Already saved" gate and the user could never get the real details.
+        // Only the success path below records it.
         return true;
       } catch { return false; }
     };
@@ -860,6 +890,11 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           setPageLoading(true); webLoadingRef.current = true;
           // New document: nothing from the old page's pass can apply to it, and its records are gone.
           xlateGenRef.current += 1; xlateBusyRef.current = false; xlateDirtyRef.current = false;
+          // RE-ARM. The "already English" branch turns translate off so the control is not falsely
+          // lit — but this browser translates by default, so leaving it off would mean the NEXT
+          // page (a German posting, say) silently stays untranslated for the rest of the session.
+          // An explicit tap on the control still sticks, via xlateOptOutRef.
+          if (!xlateOnRef.current && !xlateOptOutRef.current) { xlateOnRef.current = true; setWebTranslated(true); }
           if (xlateSettleRef.current) { clearTimeout(xlateSettleRef.current); xlateSettleRef.current = null; }
         }}
         onLoadEnd={() => {
@@ -881,7 +916,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         // Re-injection is harmless: the __cvfStayHook guard makes the second run a no-op.
         injectedJavaScriptBeforeContentLoaded={FRAME_GUARD_JS + '\n' + STAY_IN_APP_JS}
         injectedJavaScriptBeforeContentLoadedForMainFrameOnly={false}
-        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + STAY_IN_APP_JS + '\n' + XLATE_WATCH_JS + '\n' + FORM_TOUCH_JS}
+        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + XLATE_WATCH_JS + '\n' + FORM_TOUCH_JS}
         injectedJavaScriptForMainFrameOnly={false}
         onMessage={(e) => onMessage(e.nativeEvent.data)}
         javaScriptEnabled

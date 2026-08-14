@@ -295,6 +295,32 @@ const ok = (n, c, extra) => { if (c) { pass++; console.log('  ✓ ' + n); } else
   ok('toggling off mid-pass stops further rounds', rounds5.length === 1, rounds5);
   ok('a cancelled pass still reports what it wrote', n5 > 0 && n5 < many.length, { n5 });
 
+
+// ── BrowseFetch: "already English" must not silence translate for the whole session ─────────────
+// Translate is ON by default in Browse & Fetch and auto-runs per page. The English short-circuit
+// turns the control off so it is not falsely lit — but nothing turned it back ON, so after one
+// English job page every LATER page (a German posting) silently stayed untranslated. And because
+// the branch alerted unconditionally, it also popped an unrequested modal on most job pages.
+{
+  const fs2 = require('fs'), path2 = require('path');
+  const BF = fs2.readFileSync(path2.join(__dirname, '..', 'components', 'BrowseFetch.tsx'), 'utf8');
+  ok('the English branch only alerts when the user actually tapped Translate',
+    /looksAlreadyEnglish\(items\)[\s\S]{0,900}if \(xlateManualRef\.current\)[\s\S]{0,200}Alert\.alert\('Already in English'/.test(BF));
+  ok('a new document re-arms translate',
+    /onLoadStart[\s\S]{0,700}!xlateOnRef\.current && !xlateOptOutRef\.current[\s\S]{0,80}xlateOnRef\.current = true/.test(BF));
+  ok('…but an explicit tap OFF still sticks (opt-out is set only by the toggle)',
+    /const next = !xlateOnRef\.current;[\s\S]{0,400}xlateOptOutRef\.current = true;/.test(BF));
+  ok('tapping the control ON marks it manual, so "already English" is worth saying',
+    /if \(next\) \{ xlateManualRef\.current = true;/.test(BF));
+
+  // ── and a failed fetch must not block the retry ──
+  const deg = BF.slice(BF.indexOf('const degrade ='), BF.indexOf('const degrade =') + 700);
+  ok('a title-only degrade does NOT mark the URL as saved (that blocked every retry)',
+    !/savedUrlsRef\.current\.add/.test(deg), deg.slice(0, 200));
+  ok('…while the success path still records it',
+    /if \(job\) \{[\s\S]{0,200}savedUrlsRef\.current\.add/.test(BF));
+}
+
   await browser.close();
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
