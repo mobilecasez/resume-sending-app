@@ -2902,8 +2902,11 @@ const JS_HELPERS = `
         if(!deferred.length){ done(); return; }
         cbGuardOn();
         var di=0, t0=Date.now();
-        function fin(){ cbGuardOff(); done(); }
+        function fin(){ try{ restoreWrote(); }catch(e){} cbGuardOff(); done(); }
         function step(){
+          // Put back anything the PREVIOUS dropdown wiped, before touching the next one — otherwise
+          // a form cleared at picker #1 stays cleared while we work through pickers #2 and #3.
+          try{ restoreWrote(); }catch(e){}
           // 9s was not enough once a picker needs ~1s to open, ~0.4s to filter and ~0.3s to verify:
           // later dropdowns were abandoned mid-run (some of them still on screen).
           if(di>=deferred.length || Date.now()-t0>30000 || cbAborted()){ try{ cbEnsureNoneOpen(); }catch(e){} fin(); return; }
@@ -3016,6 +3019,39 @@ const JS_HELPERS = `
           try{ el.dispatchEvent(new Event('change',{bubbles:true})); }catch(e){}
           try{ el.dispatchEvent(new Event('blur',{bubbles:true})); el.blur(); }catch(e){}
         }catch(e){}
+      }
+      // ⚠️ A DROPDOWN CAN TAKE THE WHOLE FORM DOWN WITH IT.
+      //
+      // Reported live on nexplore.ch (Nuxt 3 + VeeValidate + vue-select): every text field fills,
+      // then the moment the "How did you hear about us?" picker is answered, ALL of them go blank.
+      // I could not reproduce it in Chromium — there the same page, the same injected script, the
+      // same real option click and Escape leave all five fields intact and fire no submit and no
+      // form.reset(). So the trigger is something only the device does (the widget's close tearing
+      // down a host container, or a re-render from a model that never took our value).
+      //
+      // Chasing that blind would be guesswork. This is a GUARD instead: after every dropdown, put
+      // back anything that vanished. It costs one signature sweep per picker, it is idempotent, and
+      // it does not care WHY the value went — which is exactly the property needed here.
+      //
+      // ONLY restores fields that are now EMPTY. Anything the page or the user has since put there
+      // is left alone — we never overwrite a real answer to defend our own.
+      function restoreWrote(){
+        var keys=[], k;
+        for(k in wrote){ if(Object.prototype.hasOwnProperty.call(wrote,k)) keys.push(k); }
+        if(!keys.length) return 0;
+        var els=ctrls(), bySigEl={}, i, s2, back=0;
+        for(i=0;i<els.length;i++){ try{ s2=sig(els[i]); if(s2 && !(s2 in bySigEl)) bySigEl[s2]=els[i]; }catch(e){} }
+        for(i=0;i<keys.length;i++){
+          var el=bySigEl[keys[i]];
+          if(!el) continue;
+          try{
+            if(el.value) continue;                                  // still holds something — hands off
+            if(sameAnswer(el.value, wrote[keys[i]])) continue;
+          }catch(e){ continue; }
+          reapply(el, wrote[keys[i]]);
+          back++;
+        }
+        return back;
       }
       function stickCheck(round, done){
         var keys=[], k;

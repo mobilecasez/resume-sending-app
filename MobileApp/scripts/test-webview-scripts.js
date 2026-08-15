@@ -1054,6 +1054,51 @@ function helpersSourceProblems() {
     await p.close();
   }
 
+  // ── A DROPDOWN THAT BLANKS THE FORM ─────────────────────────────────────────────────────────
+  // The nexplore.ch report: every field fills, then answering "How did you hear about us?" clears
+  // the lot. Modelled here literally — picking an option wipes every text input — because the guard
+  // must hold whatever the cause is (host container torn down, framework re-render, anything).
+  {
+    const p = await browser.newPage();
+    await p.setContent(`<!doctype html><html><body><form onsubmit="return false">
+      <label>First name<input name="firstname"></label>
+      <label>Last name<input name="lastname"></label>
+      <label>Email<input name="email" type="email"></label>
+      <div class="select__control" role="combobox" aria-expanded="false" aria-haspopup="listbox">
+        <label for="hear">How did you hear about us?</label>
+        <input id="hear" name="hear" role="combobox" aria-autocomplete="list" autocomplete="off">
+        <div id="menu" style="display:none"></div>
+      </div>
+    </form></body></html>`);
+    await p.evaluate(`${BRIDGE}
+      var box=document.getElementById('hear'), menu=document.getElementById('menu');
+      var OPTS=['LinkedIn','Online Job-Portal','A friend'];
+      function open(){ menu.style.display='block'; menu.innerHTML='';
+        OPTS.forEach(function(t){ var d=document.createElement('div'); d.setAttribute('role','option');
+          d.textContent=t; d.style.padding='8px';
+          d.addEventListener('click', function(){
+            box.value=t; menu.style.display='none'; box.setAttribute('aria-expanded','false');
+            // THE BUG: answering this control blanks every other field on the form.
+            document.querySelectorAll('input').forEach(function(n){ if(n!==box) n.value=''; });
+          });
+          menu.appendChild(d); }); box.setAttribute('aria-expanded','true'); }
+      box.addEventListener('click', open); box.addEventListener('focus', open);`);
+    await p.evaluate(fillJs({
+      'n:firstname|text': 'Rishi', 'n:lastname|text': 'Samadhiya',
+      'n:email|email': 'rishi@example.com', 'n:hear|text': 'LinkedIn',
+    }));
+    await p.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 30000 });
+    const r = await p.evaluate(() => ({
+      vals: Array.from(document.querySelectorAll('input')).map((n) => n.name + '=' + n.value),
+      msg: window.__msgs.find((m) => m.type === 'FILLED'),
+    }));
+    ok('DROPDOWN WIPE: the picker was answered', /hear=LinkedIn/.test(r.vals.join(' ')), r.vals);
+    ok('…and the fields it blanked are put back', /firstname=Rishi/.test(r.vals.join(' '))
+      && /lastname=Samadhiya/.test(r.vals.join(' ')) && /email=rishi@example\.com/.test(r.vals.join(' ')), r.vals);
+    ok('…and they are still counted as filled', r.msg.count >= 3, r.msg);
+    await p.close();
+  }
+
   // ── PASSKEY GUARD ───────────────────────────────────────────────────────────────────────────
   // A passkey ceremony can never complete in a third-party WKWebView (associated-domains is a
   // compile-time list; a job browser cannot enumerate every employer portal). Left alone the
