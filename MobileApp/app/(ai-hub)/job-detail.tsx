@@ -1729,7 +1729,14 @@ const JS_HELPERS = `
     try{
       var w=cbCtrl(el);
       if(w&&w.querySelector){
-        var sv=w.querySelector('[class*=single-value],[class*=multi-value],[class*=select2-selection__rendered],[class*=chosen-single] span,[aria-selected="true"]');
+        // ⚠️ vue-select (.vs__selected) WAS MISSING, and the cost was not a missed read — it was the
+        // "the dropdown clears itself" report. On nexplore.ch the engine opened the picker, matched
+        // the row and clicked it CORRECTLY (the page really showed "Nexplore-Website"), but this
+        // read came back empty, so the pick was judged a failure — and the retry rung wipes the
+        // search box and picks again, three times, before giving up and handing the field back.
+        // The applicant watched their answer appear and then blank out. Verify what the widget
+        // SHOWS, and the same click is scored as the success it already was.
+        var sv=w.querySelector('[class*=single-value],[class*=multi-value],[class*=select2-selection__rendered],[class*=chosen-single] span,.vs__selected,[aria-selected="true"]');
         if(sv){
           var t=cbText(sv);
           // select2/Chosen render their PLACEHOLDER through the same node.
@@ -2334,6 +2341,18 @@ const JS_HELPERS = `
       // The phone number we wrote, and the number we were HANDED before splitting it. Kept so the
       // split can be undone at the end if the dial half never landed (see phoneReconcile).
       var phoneRec=null;
+      // Is it safe to write this control when another element with the SAME signature was already
+      // filled? Only for controls whose answer lives in .value. A dropdown, chip box or tick is
+      // driven by an async queue keyed on the signature (dseen/cseen/grpDone), so a duplicate must
+      // not re-enter it — one queued dropdown must stay one queued dropdown.
+      function dupFillable(el,t){
+        try{
+          if (t==='radio' || t==='checkbox' || t==='file') return false;
+          if (isChipInput(el) || isCombo(el)) return false;
+          if (el.tagName==='SELECT') return !el.multiple;
+          return true;
+        }catch(e){ return false; }
+      }
       function fillVisible(){
         var els = ctrls();
         for (var i=0;i<els.length;i++){ var el=els[i]; var t=(el.type||'').toLowerCase();
@@ -2361,7 +2380,17 @@ const JS_HELPERS = `
             }
           }
           if (!(s in bySig)) continue;
-          if (filled[s]) continue;
+          // ⚠️ A PAGE CAN RENDER THE SAME FORM TWICE. nexplore.ch prints "Bewerbungsformular" twice
+          // — once under the job description and once at the foot of the page — and BOTH copies are
+          // real, visible and tappable. Because the skip below was keyed on the SIGNATURE, the first
+          // copy was filled and the second was skipped forever, so an applicant sitting on the lower
+          // form watched the page scroll, saw fields fill, and then found an empty form: reported,
+          // exactly, as "it fills everything and then clears it". Nothing was ever cleared.
+          // So: never write the same ELEMENT twice, but let a second copy through — and only for
+          // controls that keep their answer in .value. Dropdowns, chips and ticks own once-only
+          // queues keyed on the signature and must not be re-entered.
+          if (el.__cvfW) continue;
+          if (filled[s] && !dupFillable(el,t)) continue;
           var v = bySig[s]; if (v==null || v===''){ filled[s]=true; continue; }
           if (keepUser(el,t,v)){ filled[s]=true; continue; }   // user already answered this — leave it
           if (t!=='radio' && t!=='checkbox' && el.tagName!=='SELECT' && isCombo(el)){
@@ -2421,13 +2450,14 @@ const JS_HELPERS = `
               if (!m) m=pickOpt(el.options,v);
               if (m){
                 setNative(el, m.value);
+                el.__cvfW=1;
                 // READ BACK — a controlled <select> can reject the assignment. Reporting a fill we
                 // did not make is worse than reporting nothing.
                 var so=el.options[el.selectedIndex];
                 if (so && (so===m || cleanTxt(so.text)===cleanTxt(m.text))) filled[s]=true;
-                else fails[s]={key:s,label:nlbl(el).slice(0,90),why:'the dropdown rejected the value'};
+                else if (!filled[s]) fails[s]={key:s,label:nlbl(el).slice(0,90),why:'the dropdown rejected the value'};
               }
-              else fails[s]={key:s,label:nlbl(el).slice(0,90),why:'no matching option'};
+              else if (!filled[s]) fails[s]={key:s,label:nlbl(el).slice(0,90),why:'no matching option'};
             } else if (t==='checkbox'){
               // A checkbox GROUP ("What are your pronouns?" → He/him · She/her · They/them) carries
               // the answer in each box's LABEL, and its value attribute is just "on". Testing the
@@ -2483,10 +2513,12 @@ const JS_HELPERS = `
               if (t==='date' || t==='month') vv=dateVal(vv);
               bringIntoView(el);
               try{el.focus();}catch(e){} setNative(el,vv); try{el.dispatchEvent(new Event('blur',{bubbles:true}));el.blur();}catch(e){}
+              el.__cvfW=1;
               // Remember what we wrote. Reading it back HERE only proves the DOM took it — see
               // stickCheck() for why that is not the same as the field keeping it.
               if (sameAnswer(el.value,vv)){ filled[s]=true; wrote[s]=vv; }
-              else fails[s]={key:s,label:nlbl(el).slice(0,90),why:'the field rejected the value'};
+              // A SECOND copy that rejects the value must never overwrite the first copy's success.
+              else if (!filled[s]) fails[s]={key:s,label:nlbl(el).slice(0,90),why:'the field rejected the value'};
             }
           } catch(e){}
         }
@@ -3039,17 +3071,23 @@ const JS_HELPERS = `
         var keys=[], k;
         for(k in wrote){ if(Object.prototype.hasOwnProperty.call(wrote,k)) keys.push(k); }
         if(!keys.length) return 0;
+        // EVERY element carrying the signature, not just the first: a page that renders the same
+        // form twice has two, and repairing only one of them leaves the copy the applicant is
+        // looking at empty (see the duplicate-form note in fillVisible).
         var els=ctrls(), bySigEl={}, i, s2, back=0;
-        for(i=0;i<els.length;i++){ try{ s2=sig(els[i]); if(s2 && !(s2 in bySigEl)) bySigEl[s2]=els[i]; }catch(e){} }
+        for(i=0;i<els.length;i++){ try{ s2=sig(els[i]); if(s2){ if(!(s2 in bySigEl)) bySigEl[s2]=[]; bySigEl[s2].push(els[i]); } }catch(e){} }
         for(i=0;i<keys.length;i++){
-          var el=bySigEl[keys[i]];
-          if(!el) continue;
-          try{
-            if(el.value) continue;                                  // still holds something — hands off
-            if(sameAnswer(el.value, wrote[keys[i]])) continue;
-          }catch(e){ continue; }
-          reapply(el, wrote[keys[i]]);
-          back++;
+          var group=bySigEl[keys[i]];
+          if(!group) continue;
+          for(var gi=0; gi<group.length; gi++){
+            var el=group[gi];
+            try{
+              if(el.value) continue;                                // still holds something — hands off
+              if(sameAnswer(el.value, wrote[keys[i]])) continue;
+            }catch(e){ continue; }
+            reapply(el, wrote[keys[i]]);
+            back++;
+          }
         }
         return back;
       }
@@ -3057,19 +3095,24 @@ const JS_HELPERS = `
         var keys=[], k;
         for(k in wrote){ if(Object.prototype.hasOwnProperty.call(wrote,k)) keys.push(k); }
         if(!keys.length){ done(); return; }
+        // EVERY element carrying the signature. Checking only the first is how a duplicated form
+        // reported "5 of 6 filled" while the copy the applicant could actually see sat empty.
         var els=ctrls(), bySigEl={}, i, s2;
-        for(i=0;i<els.length;i++){ try{ s2=sig(els[i]); if(s2 && !(s2 in bySigEl)) bySigEl[s2]=els[i]; }catch(e){} }
+        for(i=0;i<els.length;i++){ try{ s2=sig(els[i]); if(s2){ if(!(s2 in bySigEl)) bySigEl[s2]=[]; bySigEl[s2].push(els[i]); } }catch(e){} }
         var lost=0;
         for(i=0;i<keys.length;i++){
-          var s3=keys[i], el3=bySigEl[s3];
-          if(!el3) continue;                          // the field is gone (wizard step changed) — not our call
+          var s3=keys[i], grp3=bySigEl[s3];
+          if(!grp3) continue;                         // the field is gone (wizard step changed) — not our call
           var want3=wrote[s3];
-          try{ if(sameAnswer(el3.value, want3)) continue; }catch(e){ continue; }
-          lost++;
-          if(round<2) reapply(el3, want3);
-          else {
-            delete filled[s3];
-            fails[s3]={key:s3,label:nlbl(el3).slice(0,90),why:'the page kept clearing this — please type it yourself'};
+          for(var gj=0; gj<grp3.length; gj++){
+            var el3=grp3[gj];
+            try{ if(sameAnswer(el3.value, want3)) continue; }catch(e){ continue; }
+            lost++;
+            if(round<2) reapply(el3, want3);
+            else {
+              delete filled[s3];
+              fails[s3]={key:s3,label:nlbl(el3).slice(0,90),why:'the page kept clearing this — please type it yourself'};
+            }
           }
         }
         if(!lost || round>=2){ done(); return; }

@@ -1099,6 +1099,87 @@ function helpersSourceProblems() {
     await p.close();
   }
 
+  // ── THE SAME FORM RENDERED TWICE ────────────────────────────────────────────────────────────
+  // nexplore.ch prints its "Bewerbungsformular" twice — once under the job description and once at
+  // the foot of the page — and BOTH copies are real, visible and tappable. Dedupe by SIGNATURE
+  // filled the first and skipped the second forever, so an applicant sitting on the lower form saw
+  // the page scroll, watched fields fill, then found an empty form. It was reported as "it fills
+  // everything and then clears it"; nothing was ever cleared.
+  {
+    const p = await browser.newPage();
+    const form = `<form>
+        <label>First name<input name="firstname"></label>
+        <label>Last name<input name="lastname"></label>
+        <label>Email<input name="email" type="email"></label>
+      </form>`;
+    await p.setContent(`<!doctype html><html><body>${form}<div style="height:900px"></div>${form}</body></html>`);
+    await p.evaluate(BRIDGE);
+    await p.evaluate(fillJs({
+      'n:firstname|text': 'Rishi', 'n:lastname|text': 'Samadhiya', 'n:email|email': 'rishi@example.com',
+    }));
+    await p.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 30000 });
+    const d = await p.evaluate(() => ({
+      first: Array.from(document.querySelectorAll('input[name="firstname"]')).map((n) => n.value),
+      last: Array.from(document.querySelectorAll('input[name="lastname"]')).map((n) => n.value),
+      mail: Array.from(document.querySelectorAll('input[name="email"]')).map((n) => n.value),
+    }));
+    ok('DUPLICATE FORM: both copies of every field are filled, not just the first',
+      d.first.length === 2 && d.first[0] === 'Rishi' && d.first[1] === 'Rishi', d.first);
+    ok('…for every field on the duplicated form',
+      d.last.join('|') === 'Samadhiya|Samadhiya' && d.mail.join('|') === 'rishi@example.com|rishi@example.com',
+      { last: d.last, mail: d.mail });
+    await p.close();
+  }
+
+  // ── VUE-SELECT: THE PICK THAT SUCCEEDED AND WAS SCORED A FAILURE ────────────────────────────
+  // vue-select shows the chosen answer in .vs__selected and CLEARS its own search input, so
+  // reading el.value after a correct pick returns "". cbShown() did not know that class, judged
+  // the pick a failure, and the retry rung wiped the box and picked again — three times — before
+  // handing the field back. On nexplore.ch the applicant watched the dropdown answer itself and
+  // then blank out. Verify what the widget SHOWS.
+  {
+    const p = await browser.newPage();
+    await p.setContent(`<!doctype html><html><body><form>
+      <label for="hear">How did you hear about us?</label>
+      <div class="v-select"><div class="vs__dropdown-toggle"><div class="vs__selected-options">
+        <input id="hear" class="vs__search" type="search" autocomplete="off"
+               aria-autocomplete="list" aria-controls="lb" role="combobox" aria-expanded="false">
+      </div></div><ul id="lb" role="listbox" class="vs__dropdown-menu" style="display:none"></ul></div>
+    </form></body></html>`);
+    await p.evaluate(`${BRIDGE}
+      var box=document.getElementById('hear'), menu=document.getElementById('lb');
+      var OPTS=['Online Job-Portal','Nexplore-Website','Social Media'];
+      function open(){
+        menu.style.display='block'; menu.innerHTML='';
+        OPTS.filter(function(t){ return !box.value || t.toLowerCase().indexOf(box.value.toLowerCase())>=0; })
+          .forEach(function(t){
+            var li=document.createElement('li'); li.setAttribute('role','option');
+            li.className='vs__dropdown-option'; li.textContent=t; li.style.padding='8px';
+            li.addEventListener('click', function(){
+              // EXACTLY what vue-select does: the answer moves into .vs__selected and the search
+              // input is emptied, so el.value is NOT evidence of the selection.
+              var sel=document.createElement('span'); sel.className='vs__selected'; sel.textContent=t;
+              box.parentNode.insertBefore(sel, box);
+              box.value=''; menu.style.display='none'; box.setAttribute('aria-expanded','false');
+            });
+            menu.appendChild(li);
+          });
+        box.setAttribute('aria-expanded','true');
+      }
+      box.addEventListener('click', open); box.addEventListener('focus', open);
+      box.addEventListener('input', open);`);
+    await p.evaluate(fillJs({ 'i:hear|search': 'Nexplore-Website' }));
+    await p.waitForFunction(() => window.__msgs.some((m) => m.type === 'FILLED'), null, { timeout: 40000 });
+    const v = await p.evaluate(() => ({
+      shown: (document.querySelector('.vs__selected') || {}).textContent || '',
+      msg: window.__msgs.find((m) => m.type === 'FILLED'),
+    }));
+    ok('VUE-SELECT: the option is actually selected', v.shown === 'Nexplore-Website', v.shown);
+    ok('…and the pick is scored as a SUCCESS, not retried and handed back',
+      v.msg.count === 1 && v.msg.failed.length === 0, v.msg);
+    await p.close();
+  }
+
   // ── PASSKEY GUARD ───────────────────────────────────────────────────────────────────────────
   // A passkey ceremony can never complete in a third-party WKWebView (associated-domains is a
   // compile-time list; a job browser cannot enumerate every employer portal). Left alone the
