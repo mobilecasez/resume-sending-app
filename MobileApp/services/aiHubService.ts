@@ -726,6 +726,23 @@ export async function updateJobCLStatus(jobId: string, status: 'generated' | 'do
   } catch {}
 }
 
+/**
+ * Record an application when all we have is the page URL — the Browse tab has no jobId.
+ * Send the most-identifying URL FIRST: a submit usually ends on a thank-you page that was never the
+ * job's own URL, so the session's starting URL is the one that actually resolves.
+ * The server never guesses; `matched:false` means it belonged to no job of ours and nothing was
+ * written. Returns whether a job was actually marked, so the caller can stay quiet when it wasn't.
+ */
+export async function markAppliedByUrl(urls: string[]): Promise<boolean> {
+  try {
+    const clean = (urls || []).filter((u) => /^https?:\/\//i.test(String(u || '')));
+    if (!clean.length) return false;
+    const headers = await getAuthHeader();
+    const { data } = await axios.post(`${API_BASE}/ai-hub/jobs/applied-by-url`, { urls: clean }, { headers });
+    return !!(data && data.matched);
+  } catch { return false; }
+}
+
 export async function loadJobStatuses(employerId: string): Promise<Record<string, string>> {
   try {
     const headers = await getAuthHeader();

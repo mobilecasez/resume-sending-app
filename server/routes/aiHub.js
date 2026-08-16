@@ -33,6 +33,7 @@ const {
     saveJobCoverLetter,
     getJobCoverLetter,
     updateJobCoverLetterStatus,
+    markAppliedByUrl,
     getJobStatuses,
     generateEmailBodyHandler,
     getMatchScores,
@@ -77,6 +78,8 @@ router.post('/translate-batch',                         authenticateToken, trans
 router.post('/jobs/:jobId/cover-letter',                authenticateToken, saveJobCoverLetter);
 router.get( '/jobs/:jobId/cover-letter',                authenticateToken, getJobCoverLetter);
 router.patch('/jobs/:jobId/cover-letter/status',        authenticateToken, updateJobCoverLetterStatus);
+// The Browse tab has no jobId — it records an application by the page URL instead (never guesses).
+router.post( '/jobs/applied-by-url',                     authenticateToken, markAppliedByUrl);
 router.get( '/employers/:employerId/job-statuses',      authenticateToken, getJobStatuses);
 router.get( '/job-statuses',                            authenticateToken, getAllJobStatuses);   // ALL employers in one call
 

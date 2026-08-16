@@ -4794,6 +4794,71 @@ async function updateJobCoverLetterStatus(req, res) {
     }
 }
 
+/**
+ * POST /api/ai-hub/jobs/applied-by-url — record an application when all we have is the PAGE URL.
+ *
+ * The Browse tab has no jobId: a user could open a job there, submit the employer's form, and
+ * nothing was recorded at all — no Applied badge, no dashboard row. The apply screen has always
+ * had this via the jobId; this is the same fact arriving by a different door.
+ *
+ * ⚠️ IT NEVER GUESSES. Identity is resolved only through THIS user's own alias groups, and a URL
+ * that resolves to nothing records nothing and says so. Marking the WRONG job applied is worse than
+ * marking none — the user would stop chasing an application they never sent.
+ *
+ * Takes `urls` (most-identifying first). A submit usually ends on a thank-you page whose URL was
+ * never the job's, so the caller sends the URL the browse session STARTED from as well as the page
+ * the submit happened on, and the first one that resolves wins.
+ */
+async function markAppliedByUrl(req, res) {
+    const userId = req.user.id;
+    const body = req.body || {};
+    const urls = (Array.isArray(body.urls) ? body.urls : [body.url])
+        .map((u) => String(u || '').trim())
+        .filter((u) => /^https?:\/\//i.test(u));
+    if (!urls.length) return res.status(400).json({ error: 'a http(s) url is required' });
+    try {
+        await ensureCoverLetterTable();
+        const groups = await jobAliasGroups(userId);
+        let jobId = '';
+        let via = '';
+        for (const u of urls) {
+            for (const alias of urlAliasIds(u)) {
+                const ids = groups.get(alias);
+                if (ids && ids.length) { jobId = ids[0]; via = u; break; }
+            }
+            if (jobId) break;
+        }
+        // Not one of this user's jobs — say so plainly rather than inventing a row.
+        if (!jobId) return res.json({ success: true, matched: false });
+
+        const cur = await dbConfig.get(
+            `SELECT status FROM job_cover_letters WHERE user_id=$1 AND job_id=$2`, [userId, jobId]);
+        const alreadyApplied = !!cur && cur.status === 'applied';
+        if (cur) {
+            await dbConfig.run(
+                `UPDATE job_cover_letters SET status='applied', updated_at=CURRENT_TIMESTAMP
+                 WHERE user_id=$1 AND job_id=$2`, [userId, jobId]);
+        } else {
+            // Same reasoning as updateJobCoverLetterStatus: an application is a fact about the user,
+            // not about a cover letter, so the row is created on demand with an empty letter.
+            await dbConfig.run(
+                `INSERT INTO job_cover_letters (user_id, job_id, cover_letter_html, company_name, website_url, position, status, updated_at)
+                 VALUES ($1,$2,'','','','','applied', CURRENT_TIMESTAMP)
+                 ON CONFLICT (user_id, job_id) DO UPDATE SET status='applied', updated_at=CURRENT_TIMESTAMP`,
+                [userId, jobId]);
+        }
+        if (!alreadyApplied) {
+            recordJobHubApplication(userId, jobId).catch(
+                (err) => console.error('[aiHub] application_history record failed:', err.message));
+            emit(req, 'apply_complete', { jobId, source: 'browse' });
+        }
+        return res.json({ success: true, matched: true, jobId, via });
+    } catch (e) {
+        console.error('[aiHub] markAppliedByUrl failed:', e.message);
+        return res.status(500).json({ error: 'Failed to record the application' });
+    }
+}
+
 /** Insert an application_history row for a Job Hub job marked "applied" (no email sent). */
 async function recordJobHubApplication(userId, jobId) {
     let company = '';
@@ -6836,6 +6901,7 @@ module.exports = {
     saveJobCoverLetter,
     getJobCoverLetter,
     updateJobCoverLetterStatus,
+    markAppliedByUrl,
     getJobStatuses,
     generateEmailBodyHandler,
     getMatchScores,

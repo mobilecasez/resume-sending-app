@@ -18,7 +18,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fetchJobDetail, saveCard, translateBatch, type LiveJobCard } from '../services/aiHubService';
+import { fetchJobDetail, saveCard, translateBatch, markAppliedByUrl, type LiveJobCard } from '../services/aiHubService';
+import { SUBMIT_DETECT_JS } from '../app/(ai-hub)/submitDetect';
 import { isListingUrl, isSearchEngineUrl } from '../utils/jobListing';
 import RobotIcon from './RobotIcon';
 import { FRAME_GUARD_JS, AUTH_FLOW_JS, STAY_IN_APP_JS, PASSKEY_GUARD_JS } from '../utils/webviewAuth';
@@ -265,6 +266,18 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkText, setLinkText] = useState('');
   const sawLinkedInRef = useRef(false);
+  // An application submitted HERE used to be recorded nowhere: this view has no jobId, so the
+  // submit detector was never even injected and the job stayed "not applied" forever. Identity is
+  // resolved server-side from the URL, and `openedUrl` is the one that resolves — a submit usually
+  // lands on a thank-you page whose URL was never the job's.
+  const openedUrlRef = useRef(url);
+  const appliedSentRef = useRef(false);       // record at most once per browse session
+  const [appliedBanner, setAppliedBanner] = useState(false);
+  useEffect(() => {
+    if (!appliedBanner) return;
+    const t = setTimeout(() => setAppliedBanner(false), 4000);
+    return () => clearTimeout(t);
+  }, [appliedBanner]);
   const currentUrlRef = useRef(url);
   const currentTitleRef = useRef('');
   const canGoBackRef = useRef(false);
@@ -580,6 +593,24 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
     if (payload && payload.__cvf && payload.type === 'STAY_BLOCKED_SCHEME') {
       console.log('[stay-in-app] blocked an app-scheme link:', payload.url);
       setStayKept((n) => n + 1);
+      return;
+    }
+    // The employer's form was submitted and confirmed on this page. The job is only marked when the
+    // server can resolve the URL to one of THIS user's own jobs — a URL it does not recognise
+    // records nothing, and we say nothing, because a wrong "Applied" would stop the user chasing an
+    // application they never sent.
+    if (payload && payload.__cvf && payload.type === 'SUBMIT_SUCCESS') {
+      if (appliedSentRef.current) return;
+      appliedSentRef.current = true;
+      (async () => {
+        const marked = await markAppliedByUrl([
+          openedUrlRef.current,                    // the job we opened — the URL that actually resolves
+          String(payload.url || ''),               // where the confirmation appeared
+          currentUrlRef.current,
+        ]);
+        if (marked) setAppliedBanner(true);
+        else appliedSentRef.current = false;       // unrecognised page — let a later, better URL try
+      })();
       return;
     }
     if (payload && payload.__cvf && payload.type === 'AUTH_POPUP') { beginAuthFlow(String(payload.url || ''), String(payload.from || '')); return; }
@@ -916,7 +947,7 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         // Re-injection is harmless: the __cvfStayHook guard makes the second run a no-op.
         injectedJavaScriptBeforeContentLoaded={FRAME_GUARD_JS + '\n' + STAY_IN_APP_JS}
         injectedJavaScriptBeforeContentLoadedForMainFrameOnly={false}
-        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + XLATE_WATCH_JS + '\n' + FORM_TOUCH_JS}
+        injectedJavaScript={FRAME_GUARD_JS + '\n' + AUTH_FLOW_JS + '\n' + PASSKEY_GUARD_JS + '\n' + STAY_IN_APP_JS + '\n' + XLATE_WATCH_JS + '\n' + FORM_TOUCH_JS + '\n' + SUBMIT_DETECT_JS}
         injectedJavaScriptForMainFrameOnly={false}
         onMessage={(e) => onMessage(e.nativeEvent.data)}
         javaScriptEnabled
@@ -1010,6 +1041,19 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
         }}
       />
 
+      {/* Only ever shown when the server actually matched and recorded the job — never on a guess. */}
+      {appliedBanner && (
+        <View style={[styles.appliedToast, { top: insets.top + 56 }]} pointerEvents="box-none">
+          <View style={styles.appliedToastCard}>
+            <Ionicons name="checkmark-circle" size={18} color="#fff" />
+            <Text style={styles.appliedToastText} numberOfLines={2}>Application recorded — this job is now marked Applied.</Text>
+            <TouchableOpacity onPress={() => setAppliedBanner(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close" size={17} color="rgba(255,255,255,0.85)" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* ── translucent DOCK (iOS-style sheet above the bubble) ── */}
       {dockOpen && (
         <Pressable style={styles.dockBackdrop} onPress={() => setDockOpen(false)}>
@@ -1096,6 +1140,13 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
 }
 
 const styles = StyleSheet.create({
+  appliedToast: { position: 'absolute', left: 0, right: 0, alignItems: 'center', zIndex: 60 },
+  appliedToastCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, maxWidth: '92%',
+    backgroundColor: '#059669', borderRadius: 14, paddingVertical: 11, paddingHorizontal: 14,
+    shadowColor: '#0F172A', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.18, shadowRadius: 20, elevation: 8,
+  },
+  appliedToastText: { flex: 1, color: '#fff', fontSize: 13, fontWeight: '700' },
   root: { backgroundColor: '#F0F4FA', zIndex: 100, elevation: 100 },
   topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingBottom: 10, gap: 4, backgroundColor: '#F0F4FA' },
   navBtn: { width: 36, height: 36, borderRadius: 12, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
