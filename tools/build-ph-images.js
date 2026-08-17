@@ -1,95 +1,103 @@
-// Product Hunt gallery images — 1270x760, built from the SAME simulator screenshots as the
-// uploaded App Store set (marketing/iOS, June 10 captures) + the brand kit.
+// Product Hunt gallery images — 1270x760, built from the July 2026 feature recordings + brand kit.
 //
-// v2 used video frames; the user rejected them ("not up to the mark") — video compression and
-// mid-animation frames read badly at gallery size. These are the crisp native captures behind
-// marketing/store-screenshots/apple/*, so the PH gallery matches what's live on the stores.
+// History: v2 used video frames the user rejected (small phone, mid-animation frames); v3 used the
+// June simulator captures behind the App Store set, rejected as "older screenshots". v4 = video
+// frames again (current UI: Job tools dock, Still-needs-you list, Applied toast) but with the v3
+// layout — big phone bleeding off the bottom — and every timestamp hand-picked from contact sheets
+// to land on a static, fully-rendered screen.
 //
-// ⚠️ PRIVACY: two source shots contain REAL recruiter names/emails (Experis contacts). The store
-// set pixelated them; the same blur boxes are replicated here. Never ship these without the blur.
+// Frames are extracted frame-accurately (⚠️ -ss AFTER -i; keyframe seeking lands on the wrong
+// screen; the recordings are VFR so always re-verify visually after changing a timestamp).
 //
-// Every headline names what the AI actually DOES (reads the posting / writes the letter / preps
-// the application) — captions must match the visible UI, and the guardrails ban vague filler.
+// Privacy: the chosen frames contain NO real-person data — the persona is the fictional
+// "John Mathews" (cvapplyrtest@gmail.com) and the SQUER Hiring Contacts card is empty.
+// ⚠️ If you add or move a frame, re-check it for real names/emails before shipping.
 //
 // Usage: node tools/build-ph-images.js
 'use strict';
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 
-const RAW_DIR = path.join(__dirname, '..', 'marketing', 'iOS');
+const SRC_DIR = '/Volumes/External/Work/cvApplyr/Videos/July 2026/Edited';
 const OUT_DIR = path.join(__dirname, '..', 'Claude', 'cvApplyr', 'ph_gallery');
+const TMP = path.join(require('os').tmpdir(), 'cvf-ph-images');
 
 const W = 1270, H = 760;
-const SRC_W = 1320, SRC_H = 2868;
+const CROP = { x: 712, y: 0, w: 496, h: 1080 };        // phone strip inside the 1920x1080 recordings
 const PHONE_W = 420;                                    // phone bleeds off the bottom edge
 const PHONE_X = W - PHONE_W - 96;
 const PHONE_Y = 96;
 const PHONE_R = 34;
 
-// sorted() order matches marketing/store-screenshots/make_store_shots.py IOS[] indices
-const RAW = fs.readdirSync(RAW_DIR).filter((f) => f.endsWith('.png')).sort()
-  .map((f) => path.join(RAW_DIR, f));
-
-// blur boxes in full-res source coords [x0, y0, x1, y1] — same as the uploaded store set
-const BLURS = {
-  5: [[85, 1195, 1000, 1455]],  // apply screen: hiring-contact block (taller than the store box — it clipped the name's top)
-  6: [[200, 850, 950, 935]],    // email compose: To: address
+const V = {
+  resume: 'Resume Builder.mov',
+  fetch: 'Fetch Job and Generate Cover Letter.mov',
+  apply: 'Apply Job with Auto Fill.mov',
 };
 
 // kicker = cyan eyebrow; head lines drawn as given (manual wrapping = no surprises)
 const IMAGES = [
   {
-    id: '01_hero', src: 11,
+    id: '01_hero', v: 'apply', t: 14.4,                 // Job tools dock over SQUER's own portal
     kicker: 'CVAPPLYR — AI JOB APPLICATIONS',
     head: ['The AI that does the', 'job-hunt paperwork'],
-    sub: ['Point it at any company. The AI finds their live jobs,', 'writes your cover letter and preps the application.', 'You review everything — and you hit submit.'],
+    sub: ['Find jobs on the real Google. The AI reads the posting,', 'writes your cover letter and fills the employer’s own', 'application form. You review — and you hit submit.'],
     foot: 'cvapplyr.com  ·  iOS + Android',
   },
   {
-    id: '02_livejobs', src: 3,
-    kicker: 'LIVE JOBS',
-    head: ['Real roles, from the', 'employer’s own site'],
-    sub: ['No stale board copies. The AI reads each company’s', 'careers page and pulls the live openings — title,', 'location, skills, and salary when listed.'],
-    foot: 'Straight from the source, not a scraped feed',
+    id: '02_google', v: 'fetch', t: 4.6,                // real Google results, AI Overview, Job tools FAB
+    kicker: 'SEARCH',
+    head: ['The real Google,', 'inside the app'],
+    sub: ['No scraped listings, no stale board. Open any result —', 'tap the robot on the job’s own page and the AI reads', 'and saves the posting with full details.'],
+    foot: 'Works on any job site — even ones we’ve never seen',
   },
   {
-    id: '03_apply', src: 5,
+    id: '03_apply', v: 'apply', t: 2.0,                 // job detail: match %, salary, contacts, AI letter
     kicker: 'APPLY',
     head: ['Apply on the portal', '— or straight by email'],
-    sub: ['The AI writes the letter and preps your documents', 'for the company’s own application. Visa, salary and', 'personal questions stay yours — nothing sends without you.'],
+    sub: ['Match score, salary and skills up front. The AI writes', 'the letter and preps your documents — add a hiring', 'contact and the same application can go out by email.'],
     foot: 'You review every application before it goes out',
   },
   {
-    id: '04_coverletter', src: 10,
+    id: '04_autofill', v: 'apply', t: 15.7,             // "Done — review & submit" + STILL NEEDS YOU list
+    kicker: 'AUTO FILL',
+    head: ['AI fills the form.', 'You stay in charge.'],
+    sub: ['It completes the company’s own application and lists', 'what still needs you. Visa, salary and personal questions', 'are always yours — nothing is submitted without you.'],
+    foot: 'Works on the employer’s own career portal',
+  },
+  {
+    id: '05_coverletter', v: 'apply', t: 5.5,           // Cover Letter, country tabs, photo template
     kicker: 'COVER LETTERS',
     head: ['Written from the', 'real posting'],
     sub: ['The AI reads the actual job description and writes', 'for it — not a template. Pick the format the country', 'expects. Preview free, download as PDF or Word.'],
     foot: 'Country-correct formats, ready to attach',
   },
   {
-    id: '05_email', src: 6,
-    kicker: 'EMAIL APPLY',
-    head: ['Email the recruiter,', 'documents attached'],
-    sub: ['The app finds recruiter and HR contacts — with verified', 'emails where available — and drafts the email with your', 'résumé and tailored letter already attached.'],
-    foot: 'You press send — always',
-  },
-  {
-    id: '06_resume', src: 9,
+    id: '06_resume', v: 'resume', t: 1.6,               // "Tell Us Your Story", no keyboard
     kicker: 'RÉSUMÉ BUILDER',
     head: ['Paste your messy story.', 'Get a clean résumé.'],
     sub: ['Old résumé text, a LinkedIn bio, rough notes — the AI', 'structures it into an ATS-friendly résumé, with every', 'section editable before you export.'],
     foot: 'Your words in, a hiring-ready document out',
   },
   {
-    id: '07_formats', src: 8,
+    id: '07_formats', v: 'resume', t: 6.5,              // Choose a Format, Azure Sidebar template
     kicker: 'COUNTRY FORMATS',
     head: ['One profile.', 'Every country’s format.'],
     sub: ['Swipe to compare designs and switch region any time —', 'the same profile exports in the format local', 'recruiters expect. Previews are free.'],
+    foot: 'Generic, USA/Canada, UK/Australia and more',
+  },
+  {
+    id: '08_applied', v: 'apply', t: 18.4,              // green "marked as Applied" toast on the thank-you page
+    kicker: 'TRACKING',
+    head: ['Submitted — and', 'tracked automatically'],
+    sub: ['The app detects the employer’s real “thank you” page', 'and marks the job Applied on your dashboard — no', 'manual logging, no spreadsheets.'],
     foot: 'Free to download, credit packs for AI actions',
   },
 ];
 
+const sh = (cmd, args) => execFileSync(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 function backdropSvg(img) {
@@ -132,45 +140,33 @@ function backdropSvg(img) {
 const phoneMask = (w, h, r) => Buffer.from(
   `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><rect width="${w}" height="${h + r}" rx="${r}" ry="${r}" fill="#fff"/></svg>`);
 
-async function pixelate(srcPath, boxes) {
-  const buf = fs.readFileSync(srcPath);
-  const overlays = [];
-  for (const [x0, y0, x1, y1] of boxes) {
-    const w = x1 - x0, h = y1 - y0;
-    // ⚠️ two resizes must be separate pipelines — chained .resize() calls override, not compose
-    const small = await sharp(buf)
-      .extract({ left: x0, top: y0, width: w, height: h })
-      .resize(Math.max(1, Math.round(w / 24)), Math.max(1, Math.round(h / 24)), { fit: 'fill' })
-      .png().toBuffer();
-    const region = await sharp(small)
-      .resize(w, h, { fit: 'fill', kernel: 'nearest' })
-      .png().toBuffer();
-    overlays.push({ input: region, left: x0, top: y0 });
-  }
-  return sharp(buf).composite(overlays).png().toBuffer();
-}
+// the recordings carry iOS's red screen-recording dot inside the (pure black) island pill at a
+// fixed spot — a black circle over it reads as a normal pill (source coords, same in every video)
+const RECORD_DOT_PATCH = Buffer.from(
+  `<svg width="${CROP.w}" height="${CROP.h}" xmlns="http://www.w3.org/2000/svg"><circle cx="159" cy="40" r="15" fill="#000"/></svg>`);
 
 (async () => {
+  fs.rmSync(TMP, { recursive: true, force: true });
+  fs.mkdirSync(TMP, { recursive: true });
   fs.mkdirSync(OUT_DIR, { recursive: true });
-  // clear v2 leftovers so the folder is exactly this set
+  // clear the previous set so the folder is exactly this one
   for (const f of fs.readdirSync(OUT_DIR)) fs.unlinkSync(path.join(OUT_DIR, f));
   let total = 0;
 
   for (const img of IMAGES) {
-    const srcPath = RAW[img.src];
-    if (!srcPath) throw new Error('missing raw screenshot index ' + img.src);
-    const meta = await sharp(srcPath).metadata();
-    if (meta.width !== SRC_W || meta.height !== SRC_H) {
-      throw new Error(`${path.basename(srcPath)} is ${meta.width}x${meta.height}, expected ${SRC_W}x${SRC_H}`);
-    }
+    const src = path.join(SRC_DIR, V[img.v]);
+    if (!fs.existsSync(src)) throw new Error('missing source: ' + src);
+    const framePng = path.join(TMP, img.id + '.png');
+    sh('ffmpeg', ['-v', 'error', '-i', src, '-ss', String(img.t),
+      '-vf', `crop=${CROP.w}:${CROP.h}:${CROP.x}:${CROP.y}`, '-frames:v', '1', framePng, '-y']);
 
-    const srcBuf = BLURS[img.src]
-      ? await pixelate(srcPath, BLURS[img.src])
-      : fs.readFileSync(srcPath);
+    const cleaned = await sharp(framePng)
+      .composite([{ input: RECORD_DOT_PATCH }])
+      .png().toBuffer();
 
     const visibleH = H - PHONE_Y;                       // phone bleeds off the bottom
-    const phone = await sharp(srcBuf)
-      .resize(PHONE_W, Math.round(SRC_H * PHONE_W / SRC_W), { kernel: 'lanczos3' })
+    const phone = await sharp(cleaned)
+      .resize(PHONE_W, Math.round(CROP.h * PHONE_W / CROP.w), { kernel: 'lanczos3' })
       .extract({ left: 0, top: 0, width: PHONE_W, height: visibleH })
       .composite([{ input: phoneMask(PHONE_W, visibleH, PHONE_R), blend: 'dest-in' }])
       .png().toBuffer();
@@ -182,7 +178,7 @@ async function pixelate(srcPath, boxes) {
 
     const kb = Math.round(fs.statSync(out).size / 1024);
     total += kb;
-    console.log(`${img.id.padEnd(16)} ${W}x${H}  ${kb} KB  (raw #${img.src}${BLURS[img.src] ? ', blurred' : ''})`);
+    console.log(`${img.id.padEnd(16)} ${W}x${H}  ${kb} KB  (${img.v} @ ${img.t}s)`);
   }
   console.log(`\n${IMAGES.length} gallery images, ${Math.round(total / 1024 * 10) / 10} MB → ${OUT_DIR}`);
 })().catch((e) => { console.error(e.message); process.exit(1); });

@@ -99,17 +99,18 @@ I'd especially love to hear from people applying into a country that isn't their
 
 **Deliberately not in scope, and staying that way:** it never auto-submits anything; it never mass-applies or bulk-sends; it never answers visa, work-authorization, salary, or demographic questions (those go to the "Still needs you" list); it never sends from any account other than your own; it runs no job board of its own; and it makes no promises about jobs, interviews, reply rates, or email discovery. The restraint is the feature.
 
-## 8. Gallery image captions (7, in upload order)
+## 8. Gallery image captions (8, in upload order)
 
-1. **Hero (Job Hub):** The AI that does the job-hunt paperwork. Point it at any company — it finds their live jobs, writes your cover letter, and preps the application. You review everything, and you hit submit.
-2. **Live jobs:** Real roles from the employer's own site — title, location, skills, and salary when listed. Not a scraped feed.
-3. **Apply:** Apply on the company's own portal or straight by email. Visa, salary, and personal questions stay yours — nothing sends without you.
-4. **Cover letters:** Written from the real posting the app just read — not a template. Country-correct formats, preview free, PDF or Word.
-5. **Email apply:** Recruiter and HR contacts — with verified emails where available — and a drafted email with your documents already attached. You press send, always.
+1. **Hero (Auto Fill dock):** The AI that does the job-hunt paperwork — it reads the posting, writes your cover letter, and fills the employer's own form. You review, and you hit submit.
+2. **Search:** The real Google, inside the app. Open any result, tap the robot on the job's own page, and the AI reads and saves the posting.
+3. **Apply:** Match score, salary, and skills up front. Apply on the company's own portal — or add a hiring contact and go straight by email.
+4. **Auto Fill:** It fills the form and lists what still needs you. Visa, salary, and personal questions are always yours — nothing is submitted without you.
+5. **Cover letters:** Written from the real posting the app just read — not a template. Country-correct formats, preview free, PDF or Word.
 6. **Resume builder:** Paste your messy career story. The AI structures it into a clean, ATS-friendly résumé, every section editable.
 7. **Country formats:** One profile, exported in the format local recruiters expect. Swipe to compare designs; previews are free.
+8. **Tracking:** The app detects the employer's real "thank you" page and marks the job Applied on your dashboard automatically.
 
-All seven (files in Claude/cvApplyr/ph_gallery/, 1270×760) are built from the SAME June simulator captures as the live App Store screenshots — crisp native shots, with the real recruiter contact details pixelated exactly as in the store set. Rebuild any time with `node tools/build-ph-images.js`.
+All eight (files in Claude/cvApplyr/ph_gallery/, 1270×760) are frame-accurate stills from the July 2026 feature recordings — the current UI, including the Job tools dock, the "Still needs you" list, and the Applied toast. No real-person data appears (the persona is the fictional John Mathews) and the iOS screen-recording dot is scrubbed. Rebuild any time with `node tools/build-ph-images.js`.
 
 ## 9. Tags
 
