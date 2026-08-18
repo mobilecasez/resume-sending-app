@@ -66,3 +66,32 @@ export async function fetchCityOptions(country: string): Promise<PlaceOption[]> 
   const { data } = await axios.get(`${API_BASE}/interests/cities?country=${encodeURIComponent(country)}`, { headers, timeout: 20000 });
   return (data?.cities ?? []) as PlaceOption[];
 }
+
+// ── Search-launcher support ───────────────────────────────────────────────────────────────────
+// All three fail SOFT: the panel must still open and still search when the network is unhappy.
+export type RoleOption = { name: string; jobs: number };
+export type PlaceSuggestion = { label: string; city: string; country: string; jobs: number };
+
+export async function fetchSearchPrefill(): Promise<{ role: string; location: string; hasResume: boolean }> {
+  try {
+    const headers = await authHeader();
+    const { data } = await axios.get(`${API_BASE}/interests/search-prefill`, { headers, timeout: 12000 });
+    return { role: String(data?.role || ''), location: String(data?.location || ''), hasResume: !!data?.hasResume };
+  } catch { return { role: '', location: '', hasResume: false }; }
+}
+
+export async function fetchRoleSuggestions(q: string): Promise<RoleOption[]> {
+  try {
+    const headers = await authHeader();
+    const { data } = await axios.get(`${API_BASE}/interests/roles?q=${encodeURIComponent(q)}`, { headers, timeout: 12000 });
+    return (data?.roles ?? []) as RoleOption[];
+  } catch { return []; }
+}
+
+export async function fetchPlaceSuggestions(q: string): Promise<PlaceSuggestion[]> {
+  try {
+    const headers = await authHeader();
+    const { data } = await axios.get(`${API_BASE}/interests/places?q=${encodeURIComponent(q)}`, { headers, timeout: 12000 });
+    return (data?.places ?? []) as PlaceSuggestion[];
+  } catch { return []; }
+}

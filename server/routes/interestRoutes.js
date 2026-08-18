@@ -63,6 +63,96 @@ router.get('/interests/meta', authenticateToken, async (req, res) => {
   }
 });
 
+// ── Search-launcher support: prefill, role suggestions, place suggestions ─────────────────────
+// These three feed the "Find your job now" panel on the Jobs tab. They exist because the old search
+// was a single empty text box: users had to invent a query with no idea what we hold, and we logged
+// nothing about what they wanted. Every response here is bounded and count-ordered, so a suggestion
+// is only ever offered when we actually have jobs behind it.
+
+// What the panel opens WITH. A returning jobseeker should not retype their own job title.
+router.get('/interests/search-prefill', authenticateToken, async (req, res) => {
+  try {
+    let role = '';
+    let location = '';
+    const rm = await dbConfig.query(
+      `SELECT job_titles FROM resume_metadata
+        WHERE user_id = $1 AND parse_status = 'done' ORDER BY id DESC LIMIT 1`, [req.user.id]);
+    if (rm && rm[0]) {
+      try {
+        const t = Array.isArray(rm[0].job_titles) ? rm[0].job_titles : JSON.parse(rm[0].job_titles || '[]');
+        if (Array.isArray(t) && t.length) role = String(t[0]).trim().slice(0, 80);
+      } catch (_) {}
+    }
+    // The résumé has no location column, so the profile is the honest source.
+    const u = await dbConfig.get('SELECT city, country FROM users WHERE id = $1', [req.user.id]);
+    if (u) location = [u.city, u.country].map((x) => String(x || '').trim()).filter(Boolean).join(', ').slice(0, 80);
+    res.json({ success: true, role, location, hasResume: !!(rm && rm[0]) });
+  } catch (e) {
+    res.json({ success: true, role: '', location: '', hasResume: false });   // never block the panel
+  }
+});
+
+// Role suggestions, drawn from titles we ACTUALLY hold so a pick always has supply behind it.
+router.get('/interests/roles', authenticateToken, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json({ success: true, roles: [] });
+    const rows = await dbConfig.query(
+      `SELECT title, COUNT(*)::int AS n FROM global_jobs
+        WHERE is_active AND title IS NOT NULL AND title <> '' AND LOWER(title) LIKE LOWER($1)
+        GROUP BY title ORDER BY n DESC LIMIT 40`, [`%${q}%`]);
+    // Collapse near-duplicates ("Senior Java Developer (m/f/d)" vs "Senior Java Developer") so the
+    // list reads as distinct ROLES rather than distinct postings.
+    const seen = new Set(); const roles = [];
+    for (const r of rows || []) {
+      const clean = String(r.title).replace(/\s*[\(\[][^)\]]*[\)\]]\s*/g, ' ')
+        .replace(/[-–—|,/]+\s*(m\/f\/d|w\/m\/d|f\/m\/d|all genders?).*$/i, '')
+        .replace(/\s+/g, ' ').trim();
+      if (clean.length < 2 || clean.length > 70) continue;
+      const k = clean.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      roles.push({ name: clean, jobs: r.n });
+      if (roles.length >= 8) break;
+    }
+    res.json({ success: true, roles });
+  } catch (e) {
+    res.json({ success: true, roles: [] });
+  }
+});
+
+// Place suggestions as ONE free-text list: "Berlin, Germany" and "Germany" both come back, so the
+// user types a city OR a country and never has to know which box it belonged in.
+router.get('/interests/places', authenticateToken, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json({ success: true, places: [] });
+    const like = `%${q}%`;
+    const cities = await dbConfig.query(
+      `SELECT city, country, COUNT(*)::int AS n FROM (
+         SELECT INITCAP(TRIM(SPLIT_PART(location, ',', 1))) AS city, country
+           FROM global_jobs
+          WHERE is_active AND location IS NOT NULL AND country IS NOT NULL AND country <> ''
+            AND TRIM(SPLIT_PART(location, ',', 1)) <> ''
+            AND LOWER(SPLIT_PART(location, ',', 1)) LIKE LOWER($1)
+       ) t GROUP BY city, country ORDER BY n DESC LIMIT 12`, [like]);
+    const countries = await dbConfig.query(
+      `SELECT country, COUNT(*)::int AS n FROM global_jobs
+        WHERE is_active AND country IS NOT NULL AND country <> '' AND country <> 'Global'
+          AND LOWER(country) LIKE LOWER($1)
+        GROUP BY country ORDER BY n DESC LIMIT 6`, [like]);
+    const places = [];
+    for (const c of cities || []) {
+      if (!c.city) continue;
+      places.push({ label: `${c.city}, ${c.country}`, city: c.city, country: c.country, jobs: c.n });
+    }
+    for (const c of countries || []) places.push({ label: c.country, city: '', country: c.country, jobs: c.n });
+    res.json({ success: true, places: places.slice(0, 10) });
+  } catch (e) {
+    res.json({ success: true, places: [] });
+  }
+});
+
 router.get('/interests/cities', authenticateToken, async (req, res) => {
   try {
     const country = String(req.query.country || '').trim();

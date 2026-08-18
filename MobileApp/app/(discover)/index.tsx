@@ -27,6 +27,7 @@ import { logEvent } from '../../services/firebaseAnalytics';
 import SilentWebSearch from '../../components/SilentWebSearch';
 import { useEventCosts } from '../../hooks/useEventCosts';
 import GoogleJobBrowser, { directUrlOf } from '../../components/GoogleJobBrowser';
+import JobSearchLauncher, { type LaunchPayload } from '../../components/JobSearchLauncher';
 import SavedJobsList from '../../components/SavedJobsList';
 
 const T = {
@@ -258,6 +259,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
   const [tab, setTab] = useState<'explore' | 'saved'>('explore');   // top segmented tabs
   const [savedCount, setSavedCount] = useState(0);
   const [liveOpen, setLiveOpen] = useState(false);   // "Look for live jobs on Google" modal
+  const [launcherOpen, setLauncherOpen] = useState(false);   // the Find-your-job panel is expanded
   const [liveQuery, setLiveQuery] = useState('');
   const [sort, setSort] = useState<'match' | 'recent'>(initialSort === 'recent' ? 'recent' : 'match');
   const [mode, setMode] = useState('');          // work_mode
@@ -494,6 +496,21 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
     });
   }, [query, pushRecent]);
 
+  // The launcher's single exit. A pasted link opens straight away; otherwise we build the query
+  // string the existing Google search already handles, so this is new INPUT, not a new engine.
+  const launchSearch = useCallback((p: LaunchPayload) => {
+    const q = (p.mode === 'url' ? p.url : p.query).trim();
+    if (!q) return;
+    logEvent('job_search_launched', {
+      mode: p.mode,
+      role: p.role.slice(0, 80),
+      location: p.location.slice(0, 80),
+      hasRole: !!p.role, hasLocation: !!p.location,
+      q: q.slice(0, 160),
+    });
+    openGoogle(q);
+  }, [openGoogle]);
+
   // What the recents popup actually lists: everything when the box is empty, otherwise the ones that
   // match what is being typed (minus an exact repeat of it, which would be a row that does nothing).
   const recentShown = useMemo(() => {
@@ -510,25 +527,18 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
   const header = useMemo(() => (
     <View>
       {!embedded && <HeroCard facets={facets} total={total} />}
-      <View style={styles.searchWrap}>
-        <Ionicons name="search" size={16} color={T.blueDeep} />
-        <TextInput ref={searchRef} value={query} onChangeText={setQuery} placeholder="Search jobs — or paste a job link" placeholderTextColor={T.textFaint} style={styles.searchInput} autoCapitalize="none" autoCorrect={false} returnKeyType="search" onFocus={() => setShowRecent(true)} onBlur={() => setTimeout(() => setShowRecent(false), 150)} onSubmitEditing={() => openGoogle()} />
-        {query.length > 0 && <TouchableOpacity onPress={() => setQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Ionicons name="close-circle" size={17} color={T.textFaint} /></TouchableOpacity>}
-        {/* A pasted link OPENS directly in the browser (save it there via robot → Fetch job);
-            anything else Google-searches. The label tells the user which will happen. */}
-        <TouchableOpacity onPress={() => openGoogle()} disabled={!query.trim()} style={[styles.askAiBtn, !query.trim() && { opacity: 0.5 }]} activeOpacity={0.85}>
-          {directUrlOf(query)
-            ? <><Ionicons name="link-outline" size={13} color="#fff" /><Text style={styles.askAiText}>Open Link</Text></>
-            : <><Ionicons name="logo-google" size={13} color="#fff" /><Text style={styles.askAiText}>Google Search</Text></>}
-        </TouchableOpacity>
-      </View>
+      {/* ⚠️ THIS REPLACED A BARE TEXT BOX. 18 people ever used it against 87 who opened the feed:
+          an empty box asks the user to invent a query with no idea what we hold. The launcher asks
+          for a role and a place, prefills both from their résumé, and only suggests things we have
+          jobs for. See components/JobSearchLauncher.tsx. */}
+      <JobSearchLauncher onLaunch={launchSearch} onExpandChange={setLauncherOpen} />
 
       {/* Recent searches — shown whenever the box is focused, filtered by what is typed.
           ⚠️ THIS USED TO REQUIRE AN EMPTY BOX (`query.trim().length === 0`), which meant it
           effectively never appeared: the box KEEPS its text after a search, so from the first
           search onwards tapping it showed nothing and the feature looked broken. Filtering as you
           type is also what every search box does. */}
-      {showRecent && recentShown.length > 0 && !aiActive && (
+      {showRecent && !launcherOpen && recentShown.length > 0 && !aiActive && (
         <View style={styles.recentBox}>
           <View style={styles.recentHead}>
             <Text style={styles.recentTitle}>Recent searches</Text>
@@ -589,7 +599,7 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
       </View>
       </>)}
     </View>
-  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, webPhase, webNote, runAiSearch, clearAiSearch, openGoogle, recent, recentShown, showRecent]);
+  ), [facets, total, query, sort, activeCount, noProfile, field, userField, scopeLabel, isOwnField, aiActive, aiLoading, aiParsed, aiTotal, webPhase, webNote, runAiSearch, clearAiSearch, openGoogle, recent, recentShown, showRecent, launchSearch, launcherOpen]);
 
   // Only blank to a spinner on the FIRST load (no data yet). A re-load triggered by facets setting the
   // field must NOT clear the screen — that was the "shows page → blank → reloads" flicker on the tab.
