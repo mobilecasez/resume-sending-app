@@ -4341,6 +4341,8 @@ export default function JobDetailScreen() {
         id = capturedIdRef.current || (job as any)?.id || '';
       }
       try { if (id) await updateJobCLStatus(id, 'applied'); } catch {}
+      // They have applied at least once — the tab bar stops steering them to Jobs from now on.
+      try { await AsyncStorage.setItem('cvf_has_applied_v1', '1'); } catch {}
     })();
   }, []);
   const applyWebRef = useRef<WebView>(null);

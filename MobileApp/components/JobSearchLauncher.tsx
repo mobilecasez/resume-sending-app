@@ -10,8 +10,14 @@ import {
   ActivityIndicator, Keyboard, Platform, LayoutAnimation, UIManager,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
+// Same reason as THREAD_ROUTE in app/(support)/index.tsx: expo-router builds its typed-route table
+// during prebuild, so a group it has not indexed yet fails typecheck even though the path is real.
+// This widens only this one path and resolves itself once the table regenerates.
+const TUTORIAL_ROUTE = '/(tutorial)' as never;
 import { LinearGradient } from 'expo-linear-gradient';
 import { fetchSearchPrefill, fetchRoleSuggestions, fetchPlaceSuggestions } from '../services/interestsService';
+import { localRoles, localPlaces, mergeSuggestions, composeQuery } from '../utils/searchSuggest';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -24,6 +30,33 @@ const T = {
 };
 
 export type LaunchPayload = { query: string; role: string; location: string; url: string; mode: 'query' | 'url' };
+
+// The robot's nudge. It sits under the search card rather than floating over it: the point is to be
+// FOUND when someone is about to search and does not yet know what happens next, not to interrupt.
+function CoachRow({ onWatch }: { onWatch: () => void }) {
+  const wave = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(wave, { toValue: 1, duration: 620, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      Animated.timing(wave, { toValue: 0, duration: 620, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      Animated.delay(2400),
+    ]));
+    loop.start();
+    return () => loop.stop();
+  }, [wave]);
+  return (
+    <TouchableOpacity activeOpacity={0.85} onPress={onWatch} style={s.coach}>
+      <Animated.View style={{ transform: [{ rotate: wave.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '16deg'] }) }] }}>
+        <View style={s.coachBot}><Ionicons name="hardware-chip-outline" size={17} color="#fff" /></View>
+      </Animated.View>
+      <View style={{ flex: 1 }}>
+        <Text style={s.coachTitle}>New here? Watch how it works</Text>
+        <Text style={s.coachSub}>Search · save a job · write the cover letter · apply — 90 seconds</Text>
+      </View>
+      <Ionicons name="play-circle" size={26} color="#F4A259" />
+    </TouchableOpacity>
+  );
+}
 
 type Suggest = { label: string; sub?: string };
 
@@ -49,6 +82,9 @@ export default function JobSearchLauncher({
   // BEFORE the browser takes over, so a wrong reading is caught by the user, not discovered later.
   const [launching, setLaunching] = useState(false);
   const [typed, setTyped] = useState('');
+
+  const router = useRouter();
+  const watchTutorial = useCallback(() => { try { router.push(TUTORIAL_ROUTE); } catch {} }, [router]);
 
   const grow = useRef(new Animated.Value(0)).current;      // collapsed → expanded
   const shine = useRef(new Animated.Value(0)).current;     // idle sheen on the closed CTA
@@ -90,28 +126,36 @@ export default function JobSearchLauncher({
 
   // Debounced suggestions. Only what we hold jobs for is ever offered.
   useEffect(() => {
-    if (focus !== 'role' || role.trim().length < 2) { setRoleSug([]); return; }
+    if (focus !== 'role' || role.trim().length < 1) { setRoleSug([]); return; }
+    // Show something on the FIRST keystroke. The server call is an enrichment, not a dependency —
+    // when it is slow or undeployed the list still works.
+    const local = localRoles(role.trim());
+    setRoleSug(local);
     const t = setTimeout(async () => {
       try {
         const r = await fetchRoleSuggestions(role.trim());
-        setRoleSug(r.map((x) => ({ label: x.name, sub: `${x.jobs.toLocaleString('en-US')} jobs` })));
-      } catch { setRoleSug([]); }
-    }, 260);
+        const server = r.map((x) => ({ label: x.name, sub: `${Number(x.jobs).toLocaleString('en-US')} jobs` }));
+        if (server.length) setRoleSug(mergeSuggestions(server, local));
+      } catch { /* keep the local list */ }
+    }, 240);
     return () => clearTimeout(t);
   }, [role, focus]);
 
   useEffect(() => {
-    if (focus !== 'place' || location.trim().length < 2) { setPlaceSug([]); return; }
+    if (focus !== 'place' || location.trim().length < 1) { setPlaceSug([]); return; }
+    const local = localPlaces(location.trim());
+    setPlaceSug(local);
     const t = setTimeout(async () => {
       try {
         const r = await fetchPlaceSuggestions(location.trim());
-        setPlaceSug(r.map((x) => ({ label: x.label, sub: `${x.jobs.toLocaleString('en-US')} jobs` })));
-      } catch { setPlaceSug([]); }
-    }, 260);
+        const server = r.map((x) => ({ label: x.label, sub: `${Number(x.jobs).toLocaleString('en-US')} jobs` }));
+        if (server.length) setPlaceSug(mergeSuggestions(server, local));
+      } catch { /* keep the local list */ }
+    }, 240);
     return () => clearTimeout(t);
   }, [location, focus]);
 
-  const composed = [role.trim(), location.trim() ? `in ${location.trim()}` : ''].filter(Boolean).join(' ');
+  const composed = composeQuery(role, location);
   const canGo = !!(url.trim() || role.trim() || location.trim());
 
   const go = useCallback(() => {
@@ -133,7 +177,7 @@ export default function JobSearchLauncher({
         setTimeout(() => {
           setLaunching(false);
           onLaunch({
-            query: isUrl ? url.trim() : (composed || role.trim() || location.trim()),
+            query: isUrl ? url.trim() : composed,
             role: role.trim(), location: location.trim(), url: url.trim(),
             mode: isUrl ? 'url' : 'query',
           });
@@ -145,7 +189,8 @@ export default function JobSearchLauncher({
   // ── collapsed ────────────────────────────────────────────────────────────────────────────────
   if (!open) {
     return (
-      <TouchableOpacity activeOpacity={0.9} onPress={expand} style={s.wrap}>
+      <View style={s.wrap}>
+        <TouchableOpacity activeOpacity={0.9} onPress={expand}>
         <LinearGradient colors={[T.cyan, T.blue]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.cta}>
           <View style={s.ctaIcon}><Ionicons name="search" size={18} color="#fff" /></View>
           <View style={{ flex: 1 }}>
@@ -156,7 +201,9 @@ export default function JobSearchLauncher({
             <Ionicons name="arrow-forward-circle" size={26} color="#fff" />
           </Animated.View>
         </LinearGradient>
-      </TouchableOpacity>
+        </TouchableOpacity>
+        <CoachRow onWatch={watchTutorial} />
+      </View>
     );
   }
 
@@ -255,6 +302,7 @@ export default function JobSearchLauncher({
         </LinearGradient>
       </TouchableOpacity>
       {!url.trim() && !!composed && <Text style={s.preview} numberOfLines={1}>We'll search: {composed}</Text>}
+      <CoachRow onWatch={watchTutorial} />
 
       {/* The typing moment */}
       {launching && (
@@ -268,7 +316,7 @@ export default function JobSearchLauncher({
 }
 
 const s = StyleSheet.create({
-  wrap: { marginHorizontal: 14, marginTop: 10, marginBottom: 8 },
+  wrap: { marginHorizontal: 16, marginTop: 12, marginBottom: 10 },
   cta: {
     flexDirection: 'row', alignItems: 'center', gap: 12, padding: 15, borderRadius: 20,
     shadowColor: '#0284C7', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.3, shadowRadius: 18, elevation: 6,
@@ -308,6 +356,18 @@ const s = StyleSheet.create({
   goBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 50, borderRadius: 15 },
   goTx: { color: '#fff', fontSize: 15.5, fontWeight: '800', letterSpacing: -0.2 },
   preview: { fontSize: 11.5, color: T.faint, textAlign: 'center', marginTop: 8 },
+
+  coach: {
+    flexDirection: 'row', alignItems: 'center', gap: 11, marginTop: 10,
+    backgroundColor: '#FFF8EF', borderRadius: 15, padding: 12,
+    borderWidth: 1, borderColor: 'rgba(244,162,89,0.28)',
+  },
+  coachBot: {
+    width: 34, height: 34, borderRadius: 11, backgroundColor: '#F4A259',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  coachTitle: { fontSize: 13.5, fontWeight: '800', color: T.ink, letterSpacing: -0.2 },
+  coachSub: { fontSize: 11, color: T.muted, marginTop: 2 },
 
   launchOverlay: {
     ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(255,255,255,0.96)',

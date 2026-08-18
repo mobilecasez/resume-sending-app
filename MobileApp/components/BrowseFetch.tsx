@@ -17,6 +17,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchJobDetail, saveCard, translateBatch, markAppliedByUrl, type LiveJobCard } from '../services/aiHubService';
 import { SUBMIT_DETECT_JS } from '../app/(ai-hub)/submitDetect';
@@ -608,7 +609,10 @@ export default function BrowseFetch({ url, fetchCost, onClose, onFetched, onAppl
           String(payload.url || ''),               // where the confirmation appeared
           currentUrlRef.current,
         ]);
-        if (marked) setAppliedBanner(true);
+        if (marked) {
+          setAppliedBanner(true);
+          try { await AsyncStorage.setItem('cvf_has_applied_v1', '1'); } catch {}
+        }
         else appliedSentRef.current = false;       // unrecognised page — let a later, better URL try
       })();
       return;
