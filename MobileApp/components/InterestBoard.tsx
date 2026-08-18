@@ -164,13 +164,13 @@ export default function InterestBoard({
           const sug = await fetchSuggestedByCountry();
           setSuggested(sug.groups);
           setSuggestedNote(sug.noResume ? 'Upload your résumé and this fills with jobs matched to your skills.' : (sug.skills && sug.skills.length ? `Matched to your skills: ${sug.skills.slice(0, 3).join(', ')}` : null));
-          onStats?.({ groups: sug.groups.length, jobs: sug.groups.reduce((s, g) => s + (g.total || 0), 0), pinned: 0 });
+          onStats?.({ groups: sug.groups.length, jobs: sug.groups.reduce((s, g) => s + (Number(g.total) || 0), 0), pinned: 0 });
         } catch { setSuggested([]); onStats?.({ groups: 0, jobs: 0, pinned: 0 }); }
       } else {
         setSuggested([]);
         onStats?.({
           groups: list.length,
-          jobs: list.reduce((s, i) => s + (i.jobCount || 0), 0),
+          jobs: list.reduce((s, i) => s + (Number(i.jobCount) || 0), 0),
           pinned: list.filter((i) => !!i.jobUrl).length,
         });
       }

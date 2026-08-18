@@ -17,11 +17,19 @@ const GRAD_ACCENT = [T.blue, T.purple];
 const GRAD_DONE = [T.emeraldLite, T.emerald];
 
 // Ordered steps. `key` matches the backend `setup` booleans; `target` is passed to onStep().
+// ⚠️ RESUME IS FIRST BECAUSE IT IS THE GATE, not because it is the tidiest order. Measured on
+// production: 337 registered, only 92 ever uploaded one — and until they do, we cannot match jobs
+// and every cover letter is refused (the cl_blocked_no_resume event fires). Each hint therefore
+// states what the user DOESN'T GET yet, which is the only thing that reliably moves someone.
 const STEPS = [
-  { key: 'profile',   target: 'profile',   icon: 'person-outline',        label: 'Complete your profile', hint: 'Name, phone & date of birth' },
-  { key: 'resume',    target: 'resume',    icon: 'document-text-outline', label: 'Upload your resume',    hint: 'We tailor every application to it' },
-  { key: 'photo',     target: 'photo',     icon: 'image-outline',         label: 'Add a profile photo',   hint: 'Shown on your applications' },
-  { key: 'signature', target: 'signature', icon: 'create-outline',        label: 'Add your signature',    hint: 'Signs your cover letters' },
+  { key: 'resume',    target: 'resume',    icon: 'document-text-outline', label: 'Upload your resume',
+    hint: 'Required — no resume means no matched jobs and no cover letters', critical: true },
+  { key: 'profile',   target: 'profile',   icon: 'person-outline',        label: 'Complete your profile',
+    hint: 'So Auto Fill can complete application forms for you' },
+  { key: 'signature', target: 'signature', icon: 'create-outline',        label: 'Add your signature',
+    hint: 'Signs your cover letters, so they go out ready to send' },
+  { key: 'photo',     target: 'photo',     icon: 'image-outline',         label: 'Add a profile photo',
+    hint: 'Shown on applications that ask for one' },
 ];
 
 export default function OnboardingChecklist({ setup, firstName, onStep, onDismiss }) {
@@ -30,10 +38,26 @@ export default function OnboardingChecklist({ setup, firstName, onStep, onDismis
   const total = STEPS.length;
   const pct = Math.round((completed / total) * 100);
 
+  const next = STEPS.find((s) => !done[s.key]) || null;
+
   const enter = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     Animated.timing(enter, { toValue: 1, duration: 380, useNativeDriver: true }).start();
   }, [enter]);
+
+  // A slow breath on the primary action — enough to pull the eye on a busy Home screen, and it
+  // STOPS once the blocking step is done so the card never nags about a photo.
+  const pulse = useRef(new Animated.Value(0)).current;
+  const wantPulse = !!(next && next.critical);
+  useEffect(() => {
+    if (!wantPulse) { pulse.stopAnimation(); pulse.setValue(0); return; }
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
+      Animated.timing(pulse, { toValue: 0, duration: 900, useNativeDriver: true }),
+    ]));
+    loop.start();
+    return () => loop.stop();
+  }, [wantPulse, pulse]);
 
   if (completed >= total) return null; // nothing left → hide entirely
 
@@ -45,8 +69,12 @@ export default function OnboardingChecklist({ setup, firstName, onStep, onDismis
           <Ionicons name="rocket-outline" size={19} color="#fff" />
         </LinearGradient>
         <View style={{ flex: 1 }}>
-          <Text style={styles.title}>Finish setting up{firstName ? `, ${firstName}` : ''}</Text>
-          <Text style={styles.subtitle}>Just a few quick steps to get going</Text>
+          <Text style={styles.title}>{next && next.critical
+            ? 'Upload your resume to see jobs'
+            : `Finish setting up${firstName ? `, ${firstName}` : ''}`}</Text>
+          <Text style={styles.subtitle}>{next
+            ? next.hint
+            : 'Just a few quick steps to get going'}</Text>
         </View>
         <TouchableOpacity onPress={onDismiss} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} style={styles.close}>
           <Ionicons name="close" size={17} color={T.faint} />
@@ -109,6 +137,21 @@ export default function OnboardingChecklist({ setup, firstName, onStep, onDismis
         })}
       </View>
 
+      {/* The single next action, named. A checklist tells you what is missing; this does it. */}
+      {next && (
+        <Animated.View style={{ transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.022] }) }] }}>
+          <TouchableOpacity activeOpacity={0.85} onPress={() => onStep && onStep(next.target)}>
+            <LinearGradient
+              colors={next.critical ? GRAD_ACCENT : ['#EEF2FF', '#EEF2FF']}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.cta}>
+              <Ionicons name={next.icon} size={17} color={next.critical ? '#fff' : T.blue} />
+              <Text style={[styles.ctaText, !next.critical && { color: T.blue }]}>{next.label}</Text>
+              <Ionicons name="arrow-forward" size={16} color={next.critical ? '#fff' : T.blue} />
+            </LinearGradient>
+          </TouchableOpacity>
+        </Animated.View>
+      )}
+
       {/* Footer link */}
       <TouchableOpacity style={styles.footer} activeOpacity={0.7} onPress={() => onStep && onStep('account')}>
         <Ionicons name="settings-outline" size={13} color={T.muted} />
@@ -128,6 +171,11 @@ const styles = StyleSheet.create({
     shadowColor: '#0B1220', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.08, shadowRadius: 24, elevation: 4,
   },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  cta: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9,
+    height: 46, borderRadius: 14, marginTop: 4,
+  },
+  ctaText: { color: '#fff', fontSize: 14.5, fontWeight: '800', letterSpacing: -0.2 },
   badge: {
     width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
     shadowColor: T.blue, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.28, shadowRadius: 8, elevation: 3,

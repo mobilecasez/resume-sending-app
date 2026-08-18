@@ -1970,7 +1970,7 @@ export default function AIHubScreen() {
             : hubTab === 'saved'
             ? (hubSavedStats.count > 0 ? `${hubSavedStats.count} job${hubSavedStats.count === 1 ? '' : 's'} fetched from the web` : 'Jobs you fetch from the web appear here')
             : (interestStats.groups > 0
-              ? `${interestStats.groups} ${interestStats.groups === 1 ? 'watchlist' : 'watchlists'} · ${interestStats.jobs.toLocaleString('en-US')} matched jobs — researched twice a day`
+              ? `${interestStats.groups} ${interestStats.groups === 1 ? 'watchlist' : 'watchlists'} · ${Number(interestStats.jobs).toLocaleString('en-US')} matched jobs — researched twice a day`
               : 'Tell us where and what — we research it for you twice a day')}
         </Text>
         <View style={styles.statsRow}>
@@ -1989,7 +1989,7 @@ export default function AIHubScreen() {
               ]
             : [
                 { value: String(interestStats.groups), label: 'Watchlists', color: '#22D3EE' },
-                { value: interestStats.jobs.toLocaleString('en-US'), label: 'Matched jobs', color: '#A78BFA' },
+                { value: Number(interestStats.jobs).toLocaleString('en-US'), label: 'Matched jobs', color: '#A78BFA' },
                 { value: String(interestStats.pinned), label: 'Pinned', color: '#34D399' },
                 { value: '2×', label: 'Daily runs', color: '#FB923C' },
               ]

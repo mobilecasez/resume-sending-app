@@ -480,7 +480,18 @@ export function ExploreFeed({ embedded = false, onStats, onSavedChange, initialS
     Keyboard.dismiss();
     pushRecent(q); setShowRecent(false);
     setLiveQuery(q); setLiveOpen(true);
-    logEvent('google_search_opened');
+    // ⚠️ LOG WHAT THEY ACTUALLY SEARCHED FOR. This fired with no props for months, so the only
+    // record of demand was an event COUNT — we could not tell a user hunting "warehouse Tangier"
+    // from one hunting "react developer Berlin", and every roadmap argument about which jobs to
+    // ingest was therefore guesswork. The text is the whole point of the event.
+    logEvent('google_search_opened', {
+      q: q.slice(0, 160),
+      len: q.length,
+      words: q.split(/\s+/).filter(Boolean).length,
+      // did they type it, or re-run one of their own recents?
+      source: (text != null ? 'recent' : (query.trim() ? 'typed' : 'lastQuery')),
+      isUrl: /^https?:\/\//i.test(q),
+    });
   }, [query, pushRecent]);
 
   // What the recents popup actually lists: everything when the box is empty, otherwise the ones that

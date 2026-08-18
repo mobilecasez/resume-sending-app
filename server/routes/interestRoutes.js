@@ -109,7 +109,11 @@ router.get('/interests/suggested', authenticateToken, async (req, res) => {
          SELECT id, job_url, title, employer_name, employer_domain, location, work_mode, job_type,
                 salary, experience, responsibilities, skills, country, first_seen,
                 ROW_NUMBER() OVER (PARTITION BY country ORDER BY first_seen DESC) AS rn,
-                COUNT(*) OVER (PARTITION BY country) AS country_total
+                -- ⚠️ ::int LIKE EVERY OTHER COUNT IN THIS FILE. Without the cast Postgres returns
+                -- bigint, node-postgres hands it back as a STRING, and
+                -- the app's sum + g.total silently CONCATENATES: five groups rendered as
+                -- "03043093339142138106" under Matched jobs.
+                (COUNT(*) OVER (PARTITION BY country))::int AS country_total
            FROM global_jobs
           WHERE is_active AND country IS NOT NULL AND country <> '' AND country <> 'Global'
             AND COALESCE(source, '') <> 'user_pinned' AND (${likeAny})
@@ -120,7 +124,7 @@ router.get('/interests/suggested', authenticateToken, async (req, res) => {
     const groups = [];
     const byCountry = new Map();
     for (const r of rows || []) {
-      if (!byCountry.has(r.country)) { byCountry.set(r.country, { country: r.country, total: r.country_total, jobs: [] }); groups.push(byCountry.get(r.country)); }
+      if (!byCountry.has(r.country)) { byCountry.set(r.country, { country: r.country, total: Number(r.country_total) || 0, jobs: [] }); groups.push(byCountry.get(r.country)); }
       const g = byCountry.get(r.country);
       const { rn, country_total, ...job } = r;
       g.jobs.push(job);
