@@ -14,7 +14,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, Animated, Easing,
-  ActivityIndicator, Keyboard, Modal, Pressable, ScrollView,
+  ActivityIndicator, Keyboard, Modal, Pressable, ScrollView, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -212,6 +212,11 @@ export default function JobSearchLauncher({
 
       {/* The form, as a bottom sheet — the Filters popup's own language: overlay, grip, radius. */}
       <Modal visible={open} transparent animationType="slide" onRequestClose={() => setOpen(false)}>
+        {/* ⚠️ THE SHEET MUST RIDE THE KEYBOARD. Without this, focusing Role/Location opened the
+            keyboard OVER the sheet and the fields vanished behind it. iOS only: Android's
+            adjustResize already resizes the Modal window itself, and adding KAV there
+            double-shifts (the DOCX-screen lesson). */}
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={s.sheetOverlay}>
           <Pressable style={{ flex: 1 }} onPress={() => { Keyboard.dismiss(); setOpen(false); }} />
           <View style={s.sheet}>
@@ -290,6 +295,7 @@ export default function JobSearchLauncher({
             )}
           </View>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
