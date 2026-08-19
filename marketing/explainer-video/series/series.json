@@ -1,0 +1,532 @@
+{
+  "_comment": "Five standalone films, cut from the same four screen recordings as the 90-second explainer but with their own narration. Every in/out point below was read off frame strips of the source, not guessed - see README. Scene LENGTH is never set here: each scene runs exactly as long as its narration, so re-writing a line re-times the picture automatically.",
+  "voice": "Charon",
+  "ratio": "vertical",
+  "sources": {
+    "profile": "/Volumes/External/Work/cvApplyr/Videos/July 2026/Edited/Profile Update.mov",
+    "resume": "/Volumes/External/Work/cvApplyr/Videos/July 2026/Edited/Resume Builder.mov",
+    "fetch": "/Volumes/External/Work/cvApplyr/Videos/July 2026/Edited/Fetch Job and Generate Cover Letter.mov",
+    "apply": "/Volumes/External/Work/cvApplyr/Videos/July 2026/Edited/Apply Job with Auto Fill.mov"
+  },
+  "phone_crop": "496:1080:712:0",
+  "films": [
+    {
+      "n": 1,
+      "id": "f1",
+      "slug": "CVApplyr-01-Set-Up-Your-Profile",
+      "title": "Set up your profile",
+      "subtitle": "Once. Not every time.",
+      "scenes": [
+        {
+          "id": "f1-01",
+          "kind": "anim",
+          "anim": "chapter",
+          "vo": "Part one. Setting up your profile. You do this once, and then you are done with it.",
+          "card": {
+            "big": "Set up your profile",
+            "sub": "Once. Not every time."
+          }
+        },
+        {
+          "id": "f1-02",
+          "kind": "anim",
+          "anim": "stack",
+          "vo": "Every job application asks you for the same things. Your name, your phone number, your address, your résumé, a signature at the bottom. Even your gender, which this app only ever asks so it can answer that question when a form insists on it. Fill it in here one time, and it is carried into every form you meet after that."
+        },
+        {
+          "id": "f1-03",
+          "kind": "screen",
+          "source": "profile",
+          "in": 0.15,
+          "out": 2.3,
+          "vo": "Open the menu, and tap Account Settings.",
+          "head": "Menu, then Account Settings",
+          "sub": "Everything about you lives here",
+          "i": 1
+        },
+        {
+          "id": "f1-04",
+          "kind": "screen",
+          "source": "profile",
+          "in": 2.3,
+          "out": 4.4,
+          "vo": "Your photo, name, email, phone, address, date of birth.",
+          "head": "Your details",
+          "sub": "Typed once, kept for every form",
+          "i": 2
+        },
+        {
+          "id": "f1-05",
+          "kind": "screen",
+          "source": "profile",
+          "in": 4.4,
+          "out": 5.7,
+          "vo": "Then attach your résumé, straight from your phone.",
+          "head": "Attach your résumé",
+          "sub": "PDF or Word, straight from your phone",
+          "i": 3
+        },
+        {
+          "id": "f1-06",
+          "kind": "screen",
+          "source": "profile",
+          "in": 5.7,
+          "out": 7.0,
+          "vo": "That is the file it attaches for you later.",
+          "head": "Uploaded",
+          "sub": "This is the file it will attach for you",
+          "i": 4
+        },
+        {
+          "id": "f1-07",
+          "kind": "screen",
+          "source": "profile",
+          "in": 7.0,
+          "out": 9.5,
+          "vo": "No signature? It draws one from your name. Pick a style.",
+          "head": "A signature from your name",
+          "sub": "Or upload your own",
+          "i": 5
+        },
+        {
+          "id": "f1-08",
+          "kind": "screen",
+          "source": "profile",
+          "in": 9.5,
+          "out": 10.6,
+          "vo": "Save, and the setup is done.",
+          "head": "Saved",
+          "sub": "You won’t be asked for this again",
+          "i": 6
+        },
+        {
+          "id": "f1-09",
+          "kind": "anim",
+          "anim": "next",
+          "vo": "Next, we turn that into a résumé built for the country you are applying to.",
+          "card": {
+            "kicker": "Next in the series",
+            "n": "02",
+            "big": "Your résumé, built by AI"
+          }
+        }
+      ]
+    },
+    {
+      "n": 2,
+      "id": "f2",
+      "slug": "CVApplyr-02-AI-Resume-And-Formats",
+      "title": "Your résumé, built by AI",
+      "subtitle": "Read by the machine first",
+      "scenes": [
+        {
+          "id": "f2-01",
+          "kind": "anim",
+          "anim": "chapter",
+          "vo": "Part two. Building your résumé, and formatting it for wherever you are applying.",
+          "card": {
+            "big": "Your résumé, built by AI",
+            "sub": "And formatted for where you apply"
+          }
+        },
+        {
+          "id": "f2-02",
+          "kind": "anim",
+          "anim": "parse",
+          "vo": "Here is the part nobody tells you. Before a person ever reads your résumé, software reads it first, and it is trying to pull out your name, your dates, your job titles and your skills. The handsome two column template, with the icons and the little skill bars, is exactly where that goes wrong. So the app rates every one of its formats on how cleanly it reads to that software. The five star ones are built to be understood by the machine first, and admired by the human second.",
+          "note": "Claim check: the five-star rating is the app's own ATS rating, shown on the template picker and defined in server/utils/resumeTemplates.js. No percentile or success-rate claim is made anywhere in this film."
+        },
+        {
+          "id": "f2-03",
+          "kind": "screen",
+          "source": "resume",
+          "in": 0.15,
+          "out": 1.9,
+          "vo": "Open Resume Builder, and tell it your story.",
+          "head": "Tell it your story",
+          "sub": "Rough notes are enough",
+          "i": 1
+        },
+        {
+          "id": "f2-04",
+          "kind": "screen",
+          "source": "resume",
+          "in": 1.9,
+          "out": 3.4,
+          "vo": "Paste in anything. An old résumé, a LinkedIn bio, rough notes.",
+          "head": "Paste anything",
+          "sub": "Old résumé · LinkedIn bio · rough notes",
+          "i": 2
+        },
+        {
+          "id": "f2-05",
+          "kind": "screen",
+          "source": "resume",
+          "in": 3.4,
+          "out": 6.0,
+          "vo": "What comes back is structured, not just tidied up.",
+          "head": "Structured, not just tidied",
+          "sub": "Summary · experience · skills",
+          "i": 3
+        },
+        {
+          "id": "f2-06",
+          "kind": "anim",
+          "anim": "regions",
+          "vo": "And a résumé is not the same document everywhere in the world. A German CV is expected to carry a photo. A US résumé must not have one. India, the United Kingdom, Singapore, the European Union — each has its own shape, and getting it wrong is the sort of thing that quietly costs you an interview, and you never find out why. Choose your region here, and the whole document is rebuilt to fit it."
+        },
+        {
+          "id": "f2-07",
+          "kind": "screen",
+          "source": "resume",
+          "in": 6.0,
+          "out": 8.6,
+          "vo": "Swipe the formats for your region. Each one carries that star rating.",
+          "head": "Choose a format",
+          "sub": "Every design carries its ATS rating",
+          "i": 4
+        },
+        {
+          "id": "f2-08",
+          "kind": "screen",
+          "source": "resume",
+          "in": 8.6,
+          "out": 9.55,
+          "vo": "Then download it as a PDF or a Word file.",
+          "head": "PDF or Word",
+          "sub": "One page, or full length",
+          "i": 5
+        },
+        {
+          "id": "f2-09",
+          "kind": "anim",
+          "anim": "next",
+          "vo": "Next, finding a job — and handing the research over.",
+          "card": {
+            "kicker": "Next in the series",
+            "n": "03",
+            "big": "Save a job, and let it do the research"
+          }
+        }
+      ]
+    },
+    {
+      "n": 3,
+      "id": "f3",
+      "slug": "CVApplyr-03-Save-A-Job",
+      "title": "Save a job",
+      "subtitle": "And hand over the research",
+      "scenes": [
+        {
+          "id": "f3-01",
+          "kind": "anim",
+          "anim": "chapter",
+          "vo": "Part three. Finding a job, and handing the homework over.",
+          "card": {
+            "big": "Save a job",
+            "sub": "And hand over the research"
+          }
+        },
+        {
+          "id": "f3-02",
+          "kind": "anim",
+          "anim": "hours",
+          "vo": "Every application you take seriously starts with the same unpaid hour. Reading the posting properly. Working out what the company actually does. Digging out the salary, the skills they want, and who you should be writing to. Save the job here instead, and that whole list moves across to the app. You spend your time applying, not researching."
+        },
+        {
+          "id": "f3-03",
+          "kind": "screen",
+          "source": "fetch",
+          "in": 0.9,
+          "out": 3.0,
+          "vo": "Search from inside the app. Describe the job in your own words.",
+          "head": "Describe the job you want",
+          "sub": "Live openings, matched to your résumé",
+          "i": 1
+        },
+        {
+          "id": "f3-04",
+          "kind": "screen",
+          "source": "fetch",
+          "in": 3.0,
+          "out": 5.1,
+          "vo": "Or search the live web right there. Real results, current listings.",
+          "head": "Or search the live web",
+          "sub": "Real results, inside the app",
+          "i": 2
+        },
+        {
+          "id": "f3-05",
+          "kind": "screen",
+          "source": "fetch",
+          "in": 5.1,
+          "out": 11.4,
+          "vo": "Open any careers page you like. The robot button travels with you, so it is sitting right there on the employer's own site.",
+          "head": "Any careers page",
+          "sub": "The robot travels with you",
+          "i": 3
+        },
+        {
+          "id": "f3-06",
+          "kind": "screen",
+          "source": "fetch",
+          "in": 11.4,
+          "out": 13.3,
+          "vo": "Tap it, hit Fetch job, and it reads the whole page.",
+          "head": "Fetch job",
+          "sub": "It reads the page and saves it",
+          "i": 4
+        },
+        {
+          "id": "f3-07",
+          "kind": "screen",
+          "source": "fetch",
+          "in": 13.3,
+          "out": 14.9,
+          "vo": "The posting lands in your saved list, scored against your résumé.",
+          "head": "Saved, and matched",
+          "sub": "Scored against your résumé",
+          "i": 5
+        },
+        {
+          "id": "f3-08",
+          "kind": "anim",
+          "anim": "next",
+          "vo": "Next, what it does with all that. It reads the role, goes and researches the company, and writes the letter for you.",
+          "card": {
+            "kicker": "Next in the series",
+            "n": "04",
+            "big": "The cover letter writes itself"
+          }
+        }
+      ]
+    },
+    {
+      "n": 4,
+      "id": "f4",
+      "slug": "CVApplyr-04-Cover-Letter",
+      "title": "The cover letter",
+      "subtitle": "Written for that job, at that company",
+      "scenes": [
+        {
+          "id": "f4-01",
+          "kind": "anim",
+          "anim": "chapter",
+          "vo": "Part four. The cover letter.",
+          "card": {
+            "big": "The cover letter",
+            "sub": "Written for that job, at that company"
+          }
+        },
+        {
+          "id": "f4-02",
+          "kind": "anim",
+          "anim": "letter",
+          "vo": "A generic cover letter is worse than sending none at all, because everybody can spot the template. A good one names what the company actually does, and connects it to what you have actually done. That is an hour of work for every single application, which is why almost nobody writes one every time. Here, it is one tap.",
+          "note": "The 'one tap' claim is what the recording shows: the AI Cover Letter card is a single button. No wall-clock time is claimed for generation."
+        },
+        {
+          "id": "f4-03",
+          "kind": "screen",
+          "source": "fetch",
+          "in": 14.35,
+          "out": 15.4,
+          "vo": "Open a saved job, and tap generate.",
+          "head": "Open a saved job",
+          "sub": "AI Cover Letter — one tap",
+          "i": 1
+        },
+        {
+          "id": "f4-04",
+          "kind": "screen",
+          "source": "apply",
+          "in": 2.7,
+          "out": 3.5,
+          "vo": "It reads the posting properly first.",
+          "head": "It reads the posting",
+          "sub": "The role, the skills, the seniority",
+          "i": 2
+        },
+        {
+          "id": "f4-05",
+          "kind": "screen",
+          "source": "apply",
+          "in": 3.5,
+          "out": 4.4,
+          "vo": "Then it goes and researches the company itself.",
+          "head": "Then researches the company",
+          "sub": "Not just re-wording the advert",
+          "i": 3
+        },
+        {
+          "id": "f4-06",
+          "kind": "screen",
+          "source": "fetch",
+          "in": 15.4,
+          "out": 17.35,
+          "vo": "What comes back is written for that role, at that company.",
+          "head": "Written for that role",
+          "sub": "Not a template with the name swapped",
+          "i": 4
+        },
+        {
+          "id": "f4-07",
+          "kind": "screen",
+          "source": "fetch",
+          "in": 17.35,
+          "out": 19.3,
+          "vo": "Same regional formats. Pick yours, then download it, or edit the wording first.",
+          "head": "Your region, your format",
+          "sub": "PDF or Word — edit it first if you like",
+          "i": 5
+        },
+        {
+          "id": "f4-08",
+          "kind": "anim",
+          "anim": "next",
+          "vo": "One thing left. Did you know the app can fill in the employer's form for you, and apply? That is the last one.",
+          "card": {
+            "kicker": "Next in the series",
+            "n": "05",
+            "big": "Auto Fill the employer’s form"
+          }
+        }
+      ]
+    },
+    {
+      "n": 5,
+      "id": "f5",
+      "slug": "CVApplyr-05-Auto-Fill-And-Apply",
+      "title": "Auto Fill the form",
+      "subtitle": "On the employer’s own portal",
+      "scenes": [
+        {
+          "id": "f5-01",
+          "kind": "anim",
+          "anim": "chapter",
+          "vo": "Part five. The one that saves the most time — filling in the employer's own application form.",
+          "card": {
+            "big": "Auto Fill the form",
+            "sub": "On the employer’s own portal"
+          }
+        },
+        {
+          "id": "f5-02",
+          "kind": "anim",
+          "anim": "fields",
+          "vo": "This is where applications quietly die. You have the résumé, you have the letter, and now there is a thirty field form on a portal you have never seen before, asking you for everything you have already written down twice. Auto Fill reads that form and completes it from your profile. On their site, not ours."
+        },
+        {
+          "id": "f5-03",
+          "kind": "screen",
+          "source": "apply",
+          "in": 3.9,
+          "out": 4.35,
+          "vo": "From the job, tap Apply on Portal.",
+          "head": "Apply on Portal",
+          "sub": "Their site, opened in the app",
+          "i": 1
+        },
+        {
+          "id": "f5-04",
+          "kind": "screen",
+          "source": "apply",
+          "in": 9.1,
+          "out": 12.6,
+          "vo": "The employer's real application page opens inside the app, and the robot button comes with it.",
+          "head": "The employer’s own form",
+          "sub": "Opened in the app, robot attached",
+          "i": 2
+        },
+        {
+          "id": "f5-05",
+          "kind": "screen",
+          "source": "apply",
+          "in": 13.6,
+          "out": 14.75,
+          "vo": "Tap the robot, then Auto Fill.",
+          "head": "Tap Auto Fill",
+          "sub": "Fetch job · Auto Fill · Upload · My details",
+          "i": 3
+        },
+        {
+          "id": "f5-06",
+          "kind": "screen",
+          "source": "apply",
+          "in": 14.75,
+          "out": 15.5,
+          "vo": "It scans the form and matches each question to your profile.",
+          "head": "Scans · matches · fills",
+          "sub": "And says what it left for you",
+          "i": 4
+        },
+        {
+          "id": "f5-07",
+          "kind": "screen",
+          "source": "apply",
+          "in": 15.5,
+          "out": 16.1,
+          "vo": "The questions that need a human are flagged, not guessed at.",
+          "head": "Flagged, not guessed",
+          "sub": "Availability · salary · work permit",
+          "i": 5
+        },
+        {
+          "id": "f5-08",
+          "kind": "screen",
+          "source": "apply",
+          "in": 16.1,
+          "out": 16.7,
+          "vo": "Then your files attach themselves.",
+          "head": "Files attach themselves",
+          "sub": "Résumé and cover letter",
+          "i": 6
+        },
+        {
+          "id": "f5-09",
+          "kind": "screen",
+          "source": "apply",
+          "in": 16.7,
+          "out": 17.75,
+          "vo": "And notice it attaches the right regional version of each one.",
+          "head": "The right version of each",
+          "sub": "Résumé: Europe / EU · Letter: Germany",
+          "i": 7
+        },
+        {
+          "id": "f5-10",
+          "kind": "screen",
+          "source": "apply",
+          "in": 17.75,
+          "out": 18.32,
+          "vo": "You look it over, and you submit it.",
+          "head": "You review, you submit",
+          "sub": "Nothing is sent without you",
+          "i": 8
+        },
+        {
+          "id": "f5-11",
+          "kind": "screen",
+          "source": "apply",
+          "in": 18.32,
+          "out": 18.85,
+          "vo": "And it is logged on your dashboard as applied.",
+          "head": "Logged as applied",
+          "sub": "Tracked on your dashboard",
+          "i": 9
+        },
+        {
+          "id": "f5-12",
+          "kind": "anim",
+          "anim": "end",
+          "vo": "And that is the whole loop. Set it up once, then find a job and apply, without typing it all out again. CVApplyr. Free to start, on iPhone and Android.",
+          "card": {
+            "big": "CVApplyr",
+            "sub": "Free to start — iPhone and Android",
+            "url": "cvapplyr.com"
+          }
+        }
+      ]
+    }
+  ]
+}
