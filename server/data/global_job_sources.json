@@ -3460,10 +3460,6 @@
     "region": "US"
   },
   {
-    "url": "https://personio.recruitee.com",
-    "region": "Germany"
-  },
-  {
     "url": "https://boards.greenhouse.io/staffbase",
     "region": "Germany"
   },
@@ -4942,5 +4938,19 @@
   {
     "url": "https://careers.smartrecruiters.com/Auto1",
     "region": "EU"
+  },
+  {
+    "url": "https://jobs.sap.com/",
+    "region": "Global",
+    "budgetMs": 120000
+  },
+  {
+    "url": "https://www.amazon.jobs/en/search",
+    "region": "Global",
+    "budgetMs": 480000
+  },
+  {
+    "url": "https://jobs.zalando.com/en/jobs/",
+    "region": "Europe"
   }
 ]

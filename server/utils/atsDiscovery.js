@@ -862,6 +862,16 @@ const adapters = [
 
 ];
 
+// ── Bespoke single-employer boards ───────────────────────────────────────────
+// A few employers are large enough to be worth their own adapter (Amazon ~19.5k postings, SAP
+// ~1k). They live in employerBoards.js so this file stays about multi-tenant PLATFORMS. They are
+// UNSHIFTED so a host-anchored employer adapter always wins over a generic fingerprint match, and
+// the whole require is wrapped: if that file is deleted, every platform adapter still works.
+try {
+  const employerAdapters = require('./employerBoards')({ fetchText, fetchJson, mapLimit, makeJob, strip, bulletsFrom, jobType, formatSalary, extractSkills });
+  adapters.unshift(...employerAdapters);
+} catch (e) { console.warn('[atsDiscovery] employer boards unavailable:', e.message); }
+
 /**
  * Detect the ATS for a careers URL and return all its jobs (structured) or null.
  * @param {string} url     the careers/scrape URL

@@ -85,10 +85,21 @@ async function saveJobs(jobs, source, region) {
   return saved;
 }
 
+// The 25s cap exists so ONE slow board can't stall a whole pass, and for a normal ATS board it is
+// generous. A handful of bespoke employer boards legitimately need longer: SAP ships its entire
+// catalogue as one ~16MB RSS document (measured 57s), and Amazon has to sweep 57 country
+// partitions to get past a 10,000-result API window. Those sources carry an explicit `budgetMs`
+// so they get the time they need WITHOUT relaxing the cap for the other 1,200 boards.
+const MAX_BOARD_MS = parseInt(process.env.FIREHOSE_BOARD_MS_MAX || '600000', 10);
+const budgetFor = (src) => {
+  const want = parseInt((src && src.budgetMs) || 0, 10);
+  return (Number.isFinite(want) && want > PER_BOARD_MS) ? Math.min(want, MAX_BOARD_MS) : PER_BOARD_MS;
+};
+
 async function ingestOne(src) {
   const url = src.url || src;
   try {
-    const res = await withTimeout(ats.detectAndFetchAts(url), PER_BOARD_MS, url).catch(() => null);
+    const res = await withTimeout(ats.detectAndFetchAts(url), budgetFor(src), url).catch(() => null);
     if (!res || !Array.isArray(res.jobs) || !res.jobs.length) return { url, jobs: 0 };
     const saved = await saveJobs(res.jobs, res.ats || 'ats', src.region);
     console.log(`[firehose] ${res.companyName || url}: ${saved} jobs (${res.ats})`);
